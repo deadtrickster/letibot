@@ -387,10 +387,15 @@ fn build_ext(
     // the leticode seat does: relative paths still start in the tree, but an
     // absolute path — the session's scratch directory — is reachable. The scratch
     // is a per-session temp dir, set on the backend the way the daemon does.
-    let scratch = if unconfined { Some(TempDir::new()) } else { None };
+    let scratch = if unconfined {
+        Some(TempDir::new())
+    } else {
+        None
+    };
     let (backend, registry): (HostBackend, Registry) = if writable && unconfined {
         (
-            HostBackend::writable("/").expect("root")
+            HostBackend::writable("/")
+                .expect("root")
                 .with_cwd(dir.path())
                 .expect("fixture cwd")
                 .with_scratch_dir(scratch.as_ref().unwrap().path()),

@@ -617,7 +617,8 @@ mod once_tests {
     /// counting them in one card: *"how many times is 'nothing ran' needed?"*
     #[test]
     fn an_outcome_does_not_restate_a_reason_the_payload_carries() {
-        let refusal = format!("REFUSED — not failed.\n\nwho decided: boundary:normaliser\nbasis: {WHY}\n");
+        let refusal =
+            format!("REFUSED — not failed.\n\nwho decided: boundary:normaliser\nbasis: {WHY}\n");
         let o = ToolOutcome::NotRun { why: WHY.into() };
         assert_eq!(outcome_word_beside(&o, &refusal), "not run — see below");
         // The same rule for a failure whose payload explains itself.
@@ -640,8 +641,13 @@ mod once_tests {
     /// is the same statement.
     #[test]
     fn a_short_reason_is_left_alone() {
-        let o = ToolOutcome::Failed { reason: "no such file".into() };
-        assert_eq!(outcome_word_beside(&o, "no such file\n"), "failed — no such file");
+        let o = ToolOutcome::Failed {
+            reason: "no such file".into(),
+        };
+        assert_eq!(
+            outcome_word_beside(&o, "no such file\n"),
+            "failed — no such file"
+        );
     }
 
     /// Every other outcome is untouched — this is about reasons, and `ok`,
@@ -651,7 +657,9 @@ mod once_tests {
         for o in [
             ToolOutcome::Ok,
             ToolOutcome::Timeout,
-            ToolOutcome::Denied { req_id: "r1".into() },
+            ToolOutcome::Denied {
+                req_id: "r1".into(),
+            },
         ] {
             assert_eq!(outcome_word_beside(&o, "anything"), outcome_word(&o));
         }

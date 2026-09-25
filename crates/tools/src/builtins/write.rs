@@ -334,7 +334,10 @@ mod tests {
         // **The disclosure survives the guard.** The operator still sees what was
         // replaced — the diff pair, with the old contents on the before side — which is
         // the half of this that was never about refusing anything.
-        let e = r.edit.as_ref().expect("the write carries its before/after pair");
+        let e = r
+            .edit
+            .as_ref()
+            .expect("the write carries its before/after pair");
         assert!(
             e.before.contains("letibot"),
             "the replaced content is the before side: {:?}",

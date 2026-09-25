@@ -116,13 +116,7 @@ impl Parser for QwenParser {
     }
 }
 
-fn flush(
-    buf: &mut String,
-    out: &mut Vec<ParsedSpan>,
-    reasoning: bool,
-    start: usize,
-    end: usize,
-) {
+fn flush(buf: &mut String, out: &mut Vec<ParsedSpan>, reasoning: bool, start: usize, end: usize) {
     if buf.is_empty() {
         return;
     }
@@ -237,7 +231,11 @@ impl TableDecoder {
 
     /// Register an ordinary (non-control) token.
     pub fn word(&mut self, text: &str) -> u32 {
-        if let Some((id, _, _)) = self.entries.iter().find(|(_, t, r)| t == text && r.is_none()) {
+        if let Some((id, _, _)) = self
+            .entries
+            .iter()
+            .find(|(_, t, r)| t == text && r.is_none())
+        {
             return *id;
         }
         let id = self.entries.len() as u32;
@@ -332,7 +330,9 @@ mod tests {
         let call = spans
             .iter()
             .find_map(|s| match s {
-                ParsedSpan::ToolCall { name, arguments, .. } => Some((name, arguments)),
+                ParsedSpan::ToolCall {
+                    name, arguments, ..
+                } => Some((name, arguments)),
                 _ => None,
             })
             .expect("a tool call");
@@ -375,7 +375,9 @@ mod tests {
             "{spans:?}"
         );
         assert!(
-            spans.iter().any(|s| matches!(s, ParsedSpan::ToolCall { name, arguments, .. }
+            spans
+                .iter()
+                .any(|s| matches!(s, ParsedSpan::ToolCall { name, arguments, .. }
                 if name == "grep" && arguments == r#"{"pattern": "fn main", "glob": "*.rs"}"#)),
             "{spans:?}"
         );
@@ -386,12 +388,18 @@ mod tests {
         // The §5.7 case. `{}` here would mean executing a call the model never
         // finished writing.
         let spans = roundtrip("<tool_call>\n<function=read>\n<parameter=path>\nsrc/ma");
-        let ParsedSpan::ToolCall { name, arguments, .. } = &spans[spans.len() - 1] else {
+        let ParsedSpan::ToolCall {
+            name, arguments, ..
+        } = &spans[spans.len() - 1]
+        else {
             panic!("{spans:?}");
         };
         assert_eq!(name, "read");
         assert!(arguments.contains("src/ma"), "{arguments}");
-        assert!(serde_json::from_str::<Value>(arguments).is_err(), "{arguments}");
+        assert!(
+            serde_json::from_str::<Value>(arguments).is_err(),
+            "{arguments}"
+        );
     }
 
     #[test]
@@ -410,6 +418,9 @@ mod tests {
         let mut d = TableDecoder::new();
         let ids = d.encode(&spans_to_string(&generation_prompt()));
         assert_eq!(d.control_role(ids[0]), Some(ControlRole::Other));
-        assert!(ids.iter().any(|id| d.control_role(*id) == Some(ControlRole::ThinkOpen)));
+        assert!(
+            ids.iter()
+                .any(|id| d.control_role(*id) == Some(ControlRole::ThinkOpen))
+        );
     }
 }

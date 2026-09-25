@@ -179,8 +179,9 @@ impl InlineStyle {
     /// unreadable.
     fn nest(self, inner: InlineStyle) -> InlineStyle {
         match (self, inner) {
-            (InlineStyle::Bold, InlineStyle::Italic)
-            | (InlineStyle::Italic, InlineStyle::Bold) => InlineStyle::BoldItalic,
+            (InlineStyle::Bold, InlineStyle::Italic) | (InlineStyle::Italic, InlineStyle::Bold) => {
+                InlineStyle::BoldItalic
+            }
             // Already both: a third marker does not add a fourth attribute.
             (InlineStyle::BoldItalic, _) => InlineStyle::BoldItalic,
             _ => inner,
@@ -367,7 +368,8 @@ impl IncrementalMarkdown {
     fn project(&mut self) -> (Vec<Block>, Vec<(usize, usize)>) {
         let src = self.raw[self.window_start..].to_string();
         let fences = fences_in(&src);
-        let (blocks, spans) = parse_blocks(&src, &fences, &mut self.bytes_lexed, &mut self.lex_calls);
+        let (blocks, spans) =
+            parse_blocks(&src, &fences, &mut self.bytes_lexed, &mut self.lex_calls);
         let _ = spans;
         (blocks, fence_spans(&src))
     }
@@ -579,7 +581,10 @@ fn push_around_continuations(n: &Node, out: &mut Vec<(usize, usize)>) {
 fn collect_spans(node: &Node, src: &str, style: InlineStyle, out: &mut Vec<Span>) {
     match node.kind.as_str() {
         // Markers and link targets: covered, and not text.
-        "emphasis_delimiter" | "code_span_delimiter" | "link_destination" | "link_title"
+        "emphasis_delimiter"
+        | "code_span_delimiter"
+        | "link_destination"
+        | "link_title"
         | "link_label" => dropped(node, out),
         // A code span's content is raw: the inline grammar does not parse inside it,
         // so the whole interior is one span and the backticks are gone.
@@ -629,7 +634,10 @@ fn collect_spans(node: &Node, src: &str, style: InlineStyle, out: &mut Vec<Span>
         "strikethrough" => gaps(node, src, InlineStyle::Strikethrough, out),
         // Only the label is shown; the destination and title were dropped above. The
         // label's own text is its gap, so it gets the same walk.
-        "inline_link" | "collapsed_reference_link" | "full_reference_link" | "shortcut_link"
+        "inline_link"
+        | "collapsed_reference_link"
+        | "full_reference_link"
+        | "shortcut_link"
         | "image" => {
             for c in &node.children {
                 if c.kind == "link_text" || c.kind == "image_description" {
@@ -962,7 +970,6 @@ fn collect_blocks(
     }
 }
 
-
 fn block_of(node: &Node, src: &str, spans: &[Span], fences: &[Fence]) -> Option<Block> {
     match node.kind.as_str() {
         "atx_heading" | "setext_heading" => {
@@ -999,7 +1006,10 @@ fn block_of(node: &Node, src: &str, spans: &[Span], fences: &[Fence]) -> Option<
                 return None;
             }
             Some(Block::Paragraph {
-                lines: text.lines().map(|l| vec![run(l.to_string(), InlineStyle::Plain)]).collect(),
+                lines: text
+                    .lines()
+                    .map(|l| vec![run(l.to_string(), InlineStyle::Plain)])
+                    .collect(),
             })
         }
     }
@@ -1060,15 +1070,30 @@ fn lines_of_node(node: &Node, src: &str, spans: &[Span]) -> Vec<Vec<Run>> {
 /// everything a reader would see. The cost is that a quoted fence is quote prose rather
 /// than a coloured code box: the model cannot say "this line is code" inside a quote,
 /// and showing the ``` markers instead would be worse.
-fn subtree_lines(node: &Node, src: &str, spans: &[Span], fences: &[Fence], out: &mut Vec<Vec<Run>>) {
+fn subtree_lines(
+    node: &Node,
+    src: &str,
+    spans: &[Span],
+    fences: &[Fence],
+    out: &mut Vec<Vec<Run>>,
+) {
     for c in &node.children {
         match c.kind.as_str() {
             // Structure and link targets: not text.
-            "block_quote_marker" | "block_continuation" | "list_marker_minus"
-            | "list_marker_plus" | "list_marker_star" | "list_marker_dot"
-            | "list_marker_parenthesis" | "task_list_marker_checked"
-            | "task_list_marker_unchecked" | "fenced_code_block_delimiter" | "info_string"
-            | "link_destination" | "link_title" | "link_label" => {}
+            "block_quote_marker"
+            | "block_continuation"
+            | "list_marker_minus"
+            | "list_marker_plus"
+            | "list_marker_star"
+            | "list_marker_dot"
+            | "list_marker_parenthesis"
+            | "task_list_marker_checked"
+            | "task_list_marker_unchecked"
+            | "fenced_code_block_delimiter"
+            | "info_string"
+            | "link_destination"
+            | "link_title"
+            | "link_label" => {}
             // Text, with inline styling.
             "inline" => lines_of_ranges(src, spans, &inline_ranges(c), out),
             // No arm for `fenced_code_block` or `code_fence_content`: after [`mask`] the
@@ -1103,12 +1128,7 @@ fn subtree_lines(node: &Node, src: &str, spans: &[Span], fences: &[Fence], out: 
 }
 
 /// The lines of a run of ranges, cut at `\n`, appended to `out`.
-fn lines_of_ranges(
-    src: &str,
-    spans: &[Span],
-    ranges: &[(usize, usize)],
-    out: &mut Vec<Vec<Run>>,
-) {
+fn lines_of_ranges(src: &str, spans: &[Span], ranges: &[(usize, usize)], out: &mut Vec<Vec<Run>>) {
     let mut cur: Vec<Run> = out.pop().unwrap_or_default();
     for &(a, b) in ranges {
         for r in runs_of(src, spans, a, b) {
@@ -1151,7 +1171,13 @@ fn item_runs(body: &[Node], src: &str, spans: &[Span], fences: &[Fence]) -> Vec<
 
 /// [`subtree_lines`] for a single detached node: the node's own contribution, then
 /// each of its children's.
-fn subtree_lines_one(node: &Node, src: &str, spans: &[Span], fences: &[Fence], out: &mut Vec<Vec<Run>>) {
+fn subtree_lines_one(
+    node: &Node,
+    src: &str,
+    spans: &[Span],
+    fences: &[Fence],
+    out: &mut Vec<Vec<Run>>,
+) {
     let before = out.len();
     subtree_lines(node, src, spans, fences, out);
     // A node with no children of its own contributes its whole text — the case a
@@ -1269,7 +1295,10 @@ fn collect_items(
     for c in &node.children {
         match c.kind.as_str() {
             "list_item" => {
-                let marker = c.children.iter().find(|g| g.kind.starts_with("list_marker"));
+                let marker = c
+                    .children
+                    .iter()
+                    .find(|g| g.kind.starts_with("list_marker"));
                 // Everything in the item except a nested list, which follows as its own
                 // items. `subtree_runs` rather than a byte range: an item can hold a
                 // fenced block, and a byte sweep of the range turned the fence markers
@@ -1289,8 +1318,8 @@ fn collect_items(
                 if *first {
                     *first = false;
                     if let Some(m) = marker {
-                        let is_ordered = m.kind == "list_marker_dot"
-                            || m.kind == "list_marker_parenthesis";
+                        let is_ordered =
+                            m.kind == "list_marker_dot" || m.kind == "list_marker_parenthesis";
                         *ordered = is_ordered;
                         if is_ordered {
                             // The marker node's text includes the delimiter and the
@@ -1311,15 +1340,11 @@ fn collect_items(
                 }
                 for g in &c.children {
                     if g.kind == "list" {
-                        collect_items(
-                            g, src, spans, fences, items, indents, ordered, start, first,
-                        );
+                        collect_items(g, src, spans, fences, items, indents, ordered, start, first);
                     }
                 }
             }
-            "list" => collect_items(
-                c, src, spans, fences, items, indents, ordered, start, first,
-            ),
+            "list" => collect_items(c, src, spans, fences, items, indents, ordered, start, first),
             _ => {}
         }
     }
@@ -1414,7 +1439,9 @@ fn runs_of(src: &str, spans: &[Span], a: usize, b: usize) -> Vec<Run> {
         if s0 > pos {
             push_text(&mut out, &src[pos..s0], InlineStyle::Plain);
         }
-        if s1 > s0 && let Some(style) = s.style {
+        if s1 > s0
+            && let Some(style) = s.style
+        {
             push_text(&mut out, &src[s0..s1], style);
         }
         pos = pos.max(s1);
@@ -1768,7 +1795,11 @@ pub fn stable_boundary_with(s: &str, relax_at: usize) -> Option<usize> {
 /// the marker and its text.
 fn list_kind(t: &str) -> Option<bool> {
     let t = t.trim_start();
-    if t == "-" || t == "*" || t == "+" || t.starts_with("- ") || t.starts_with("* ")
+    if t == "-"
+        || t == "*"
+        || t == "+"
+        || t.starts_with("- ")
+        || t.starts_with("* ")
         || t.starts_with("+ ")
     {
         return Some(false);
@@ -1880,7 +1911,11 @@ tail
         for c in doc.as_bytes().chunks(8) {
             md.push(std::str::from_utf8(c).unwrap());
         }
-        assert!(md.stable_count() > 300, "only {} settled", md.stable_count());
+        assert!(
+            md.stable_count() > 300,
+            "only {} settled",
+            md.stable_count()
+        );
         assert!(
             md.window_len() <= DEFAULT_MAX_UNFROZEN,
             "the window grew to {} bytes on a {} byte document",
@@ -1928,7 +1963,11 @@ tail
                 "settled {} of {items} items",
                 items_settled(&md)
             );
-            assert!(md.window_len() <= DEFAULT_MAX_UNFROZEN, "{}", md.window_len());
+            assert!(
+                md.window_len() <= DEFAULT_MAX_UNFROZEN,
+                "{}",
+                md.window_len()
+            );
             md.bytes_lexed()
         }
         let small = lexed(800);
@@ -1991,12 +2030,18 @@ tail
     #[test]
     fn inline_markers_become_runs_and_do_not_reach_the_model() {
         let b = lex("plain **bold** and *italic* and `code` and ~~struck~~ end\n");
-        let Block::Paragraph { lines } = &b[0] else { panic!("{b:#?}") };
+        let Block::Paragraph { lines } = &b[0] else {
+            panic!("{b:#?}")
+        };
         let styles: Vec<InlineStyle> = lines[0].iter().map(|r| r.style).collect();
         assert!(styles.contains(&InlineStyle::Bold), "{:?}", lines[0]);
         assert!(styles.contains(&InlineStyle::Italic), "{:?}", lines[0]);
         assert!(styles.contains(&InlineStyle::Code), "{:?}", lines[0]);
-        assert!(styles.contains(&InlineStyle::Strikethrough), "{:?}", lines[0]);
+        assert!(
+            styles.contains(&InlineStyle::Strikethrough),
+            "{:?}",
+            lines[0]
+        );
         // The markers are gone from the text, and so is nothing else.
         assert_eq!(
             runs_text(&lines[0]),
@@ -2011,7 +2056,9 @@ tail
     #[test]
     fn nested_emphasis_is_one_style_not_two_markers() {
         let b = lex("***both*** and **bold *and italic***\n");
-        let Block::Paragraph { lines } = &b[0] else { panic!("{b:#?}") };
+        let Block::Paragraph { lines } = &b[0] else {
+            panic!("{b:#?}")
+        };
         let both = lines[0]
             .iter()
             .find(|r| r.text == "both")
@@ -2027,15 +2074,23 @@ tail
     #[test]
     fn a_star_that_is_not_emphasis_stays_literal() {
         let b = lex("the product 2 * 3 and 4 * 5 is 120\n");
-        let Block::Paragraph { lines } = &b[0] else { panic!("{b:#?}") };
+        let Block::Paragraph { lines } = &b[0] else {
+            panic!("{b:#?}")
+        };
         assert_eq!(runs_text(&lines[0]), "the product 2 * 3 and 4 * 5 is 120");
-        assert!(lines[0].iter().all(|r| r.style == InlineStyle::Plain), "{:?}", lines[0]);
+        assert!(
+            lines[0].iter().all(|r| r.style == InlineStyle::Plain),
+            "{:?}",
+            lines[0]
+        );
     }
 
     #[test]
     fn a_link_shows_its_text_and_not_its_destination() {
         let b = lex("see [the plan](docs/plan.md) and <https://example.invalid>\n");
-        let Block::Paragraph { lines } = &b[0] else { panic!("{b:#?}") };
+        let Block::Paragraph { lines } = &b[0] else {
+            panic!("{b:#?}")
+        };
         assert_eq!(
             runs_text(&lines[0]),
             "see the plan and https://example.invalid"
@@ -2045,18 +2100,31 @@ tail
     #[test]
     fn a_table_is_cells_and_alignment_from_the_tree() {
         let b = lex("| n | name | size |\n|--:|:----:|:-----|\n| 1 | a\\|b | wide |\n");
-        let Block::Table { head, align, rows } = &b[0] else { panic!("{b:#?}") };
+        let Block::Table { head, align, rows } = &b[0] else {
+            panic!("{b:#?}")
+        };
         let text = |c: &Vec<Run>| runs_text(c);
-        assert_eq!(head.iter().map(text).collect::<Vec<_>>(), ["n", "name", "size"]);
+        assert_eq!(
+            head.iter().map(text).collect::<Vec<_>>(),
+            ["n", "name", "size"]
+        );
         assert_eq!(align, &[Align::Right, Align::Center, Align::Left]);
-        assert_eq!(rows[0].iter().map(text).collect::<Vec<_>>(), ["1", "a|b", "wide"]);
+        assert_eq!(
+            rows[0].iter().map(text).collect::<Vec<_>>(),
+            ["1", "a|b", "wide"]
+        );
     }
 
     #[test]
     fn an_unterminated_fence_still_renders() {
         let md = stream("```rust\nlet a = 1;\n", 3);
         let all = blocks(&md);
-        let Some(Block::Code { lang, closed, lines }) = all.last() else {
+        let Some(Block::Code {
+            lang,
+            closed,
+            lines,
+        }) = all.last()
+        else {
             panic!("{all:#?}");
         };
         assert_eq!(lang, "rust");
@@ -2064,7 +2132,9 @@ tail
         assert_eq!(lines, &["let a = 1;"]);
         // A closed one says so, and does not carry the closing fence as content.
         let b = lex("```rust\nlet a = 1;\n```\n");
-        let Some(Block::Code { closed, lines, .. }) = b.first() else { panic!("{b:#?}") };
+        let Some(Block::Code { closed, lines, .. }) = b.first() else {
+            panic!("{b:#?}")
+        };
         assert!(closed);
         assert_eq!(lines, &["let a = 1;"]);
     }
@@ -2081,7 +2151,13 @@ tail
     #[test]
     fn a_loose_ordered_list_keeps_the_numbers_it_was_written_with() {
         let b = lex("1. first\n\n2. second\n\n3. third\n\ntail\n");
-        let Some(Block::List { ordered, start, items, .. }) = b.first() else {
+        let Some(Block::List {
+            ordered,
+            start,
+            items,
+            ..
+        }) = b.first()
+        else {
             panic!("{b:#?}");
         };
         assert!(ordered);
@@ -2095,26 +2171,40 @@ tail
         assert_eq!(numbered, vec![1, 2, 3]);
         // A list the model started at seven stays at seven.
         let b = lex("7. seven\n8. eight\n\ntail\n");
-        assert!(matches!(b.first(), Some(Block::List { start: 7, .. })), "{b:#?}");
+        assert!(
+            matches!(b.first(), Some(Block::List { start: 7, .. })),
+            "{b:#?}"
+        );
         // A bullet list has no written number and starts at one.
         let b = lex("- a\n- b\n");
         assert!(matches!(
             b.first(),
-            Some(Block::List { ordered: false, start: 1, .. })
+            Some(Block::List {
+                ordered: false,
+                start: 1,
+                ..
+            })
         ));
     }
 
     #[test]
     fn a_list_item_does_not_keep_its_marker() {
         let b = lex("- one\n- two\n");
-        let Some(Block::List { items, .. }) = b.first() else { panic!("{b:#?}") };
-        assert_eq!(items.iter().map(|i| runs_text(i)).collect::<Vec<_>>(), ["one", "two"]);
+        let Some(Block::List { items, .. }) = b.first() else {
+            panic!("{b:#?}")
+        };
+        assert_eq!(
+            items.iter().map(|i| runs_text(i)).collect::<Vec<_>>(),
+            ["one", "two"]
+        );
     }
 
     #[test]
     fn a_nested_list_reads_flat() {
         let b = lex("- one\n  - sub\n- two\n");
-        let Some(Block::List { items, .. }) = b.first() else { panic!("{b:#?}") };
+        let Some(Block::List { items, .. }) = b.first() else {
+            panic!("{b:#?}")
+        };
         assert_eq!(
             items.iter().map(|i| runs_text(i)).collect::<Vec<_>>(),
             ["one", "sub", "two"]
@@ -2124,7 +2214,9 @@ tail
     #[test]
     fn a_quote_does_not_keep_its_markers() {
         let b = lex("> one **two**\n> three\n");
-        let Block::Quote { lines } = &b[0] else { panic!("{b:#?}") };
+        let Block::Quote { lines } = &b[0] else {
+            panic!("{b:#?}")
+        };
         assert_eq!(lines.len(), 2);
         assert_eq!(runs_text(&lines[0]), "one two");
         assert_eq!(runs_text(&lines[1]), "three");
@@ -2247,7 +2339,10 @@ mod nesting {
         }
         text(&blocks, &mut got);
         for w in words {
-            assert!(got.contains(w), "{w:?} was dropped: {got:?} from {blocks:#?}");
+            assert!(
+                got.contains(w),
+                "{w:?} was dropped: {got:?} from {blocks:#?}"
+            );
         }
     }
 
@@ -2264,7 +2359,14 @@ mod nesting {
         let src = "> ```rust\n> let a = 1;\n> ```\n";
         keeps(src, &["let a = 1;"]);
         let b = lex(src);
-        let Some(Block::Code { lang, lines, closed }) = b.first() else { panic!("{b:#?}") };
+        let Some(Block::Code {
+            lang,
+            lines,
+            closed,
+        }) = b.first()
+        else {
+            panic!("{b:#?}")
+        };
         assert_eq!(lang, "rust");
         assert_eq!(lines, &["let a = 1;"]);
         assert!(*closed);
@@ -2283,12 +2385,20 @@ mod nesting {
         let src = "- item\n\n  ```rust\n  let a = 1;\n  ```\n";
         keeps(src, &["item", "let a = 1;"]);
         let b = lex(src);
-        let Some(Block::List { items, .. }) = b.first() else { panic!("{b:#?}") };
+        let Some(Block::List { items, .. }) = b.first() else {
+            panic!("{b:#?}")
+        };
         let item = runs_text(&items[0]);
         assert_eq!(item, "item", "the item is the item's own prose");
-        let Some(Block::Code { lang, lines, .. }) = b.get(1) else { panic!("{b:#?}") };
+        let Some(Block::Code { lang, lines, .. }) = b.get(1) else {
+            panic!("{b:#?}")
+        };
         assert_eq!(lang, "rust");
-        assert_eq!(lines, &["let a = 1;"], "the item's indent is not part of the code");
+        assert_eq!(
+            lines,
+            &["let a = 1;"],
+            "the item's indent is not part of the code"
+        );
     }
 
     /// A table inside a quote or an item: rows survive as lines, columns do not.
@@ -2297,7 +2407,9 @@ mod nesting {
         let src = "> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
         keeps(src, &["a b", "1 2"]);
         let b = lex(src);
-        let Block::Quote { lines } = &b[0] else { panic!("{b:#?}") };
+        let Block::Quote { lines } = &b[0] else {
+            panic!("{b:#?}")
+        };
         let texts: Vec<String> = lines.iter().map(|l| runs_text(l)).collect();
         assert!(texts.iter().any(|t| t.contains("1 2")), "{texts:?}");
         assert!(!texts.iter().any(|t| t.contains('|')), "{texts:?}");
@@ -2308,7 +2420,14 @@ mod nesting {
     #[test]
     fn a_fence_in_an_unknown_language_is_still_code() {
         let b = lex("```brainfuck\n+++\n```\n");
-        let Some(Block::Code { lang, lines, closed }) = b.first() else { panic!("{b:#?}") };
+        let Some(Block::Code {
+            lang,
+            lines,
+            closed,
+        }) = b.first()
+        else {
+            panic!("{b:#?}")
+        };
         assert_eq!(lang, "brainfuck");
         assert_eq!(lines, &["+++"]);
         assert!(closed);
@@ -2335,17 +2454,23 @@ mod nesting {
             .collect();
         assert_eq!(kinds, ["code", "text", "code"], "{b:#?}");
         // The first closed at the inner fence, so `beta` is prose…
-        let Block::Code { lines, closed, .. } = &b[0] else { panic!("{b:#?}") };
+        let Block::Code { lines, closed, .. } = &b[0] else {
+            panic!("{b:#?}")
+        };
         assert_eq!(lines, &["alpha"]);
         assert!(*closed);
         // …and the trailing fence is the one still open, which is what the footer says.
-        let Some(Block::Code { closed, lines, .. }) = b.last() else { panic!("{b:#?}") };
+        let Some(Block::Code { closed, lines, .. }) = b.last() else {
+            panic!("{b:#?}")
+        };
         assert!(!*closed);
         assert!(lines.is_empty());
         // Four backticks is how to quote three: then the inner fence is content.
         let b = lex("````\nalpha\n```\n````\n");
         assert_eq!(b.len(), 1, "{b:#?}");
-        let Some(Block::Code { lines, closed, .. }) = b.first() else { panic!("{b:#?}") };
+        let Some(Block::Code { lines, closed, .. }) = b.first() else {
+            panic!("{b:#?}")
+        };
         assert_eq!(lines, &["alpha", "```"]);
         assert!(closed);
     }
@@ -2357,11 +2482,15 @@ mod nesting {
         keeps(src, &["There is", "redacted", "let a = 1;"]);
         let b = lex(src);
         // The quote keeps its prose ...
-        let Some(Block::Quote { lines }) = b.first() else { panic!("{b:#?}") };
+        let Some(Block::Quote { lines }) = b.first() else {
+            panic!("{b:#?}")
+        };
         let texts: Vec<String> = lines.iter().map(|l| runs_text(l)).collect();
         assert_eq!(texts, &["There is redacted here:"], "{texts:?}");
         // ... and the code is the next block, as code.
-        let Some(Block::Code { lang, lines, .. }) = b.get(1) else { panic!("{b:#?}") };
+        let Some(Block::Code { lang, lines, .. }) = b.get(1) else {
+            panic!("{b:#?}")
+        };
         assert_eq!(lang, "rust");
         assert_eq!(lines, &["let a = 1;"]);
         assert_eq!(b.len(), 2, "{b:#?}");
@@ -2406,7 +2535,9 @@ mod streaming_matches_one_parse {
         let doc = "```\nalpha\n```\nbeta\n```\n\nPinned as a test.\n";
         let b = lex(doc);
         assert_eq!(b.len(), 3, "{b:#?}");
-        let Some(Block::Code { lines, closed, .. }) = b.get(2) else { panic!("{b:#?}") };
+        let Some(Block::Code { lines, closed, .. }) = b.get(2) else {
+            panic!("{b:#?}")
+        };
         assert!(!*closed, "the last fence is open");
         assert!(
             lines.iter().any(|l| l.contains("Pinned")),
@@ -2431,7 +2562,9 @@ mod streaming_matches_one_parse {
         let doc = "1. one\n\n2. two\n\n3. three\n\n4. four\n\n5. five\n\n6. six\n\nThat is all.\n";
         agrees(doc);
         let blocks = lex(doc);
-        let Some(Block::List { items, start, .. }) = blocks.first() else { panic!() };
+        let Some(Block::List { items, start, .. }) = blocks.first() else {
+            panic!()
+        };
         assert_eq!(*start, 1);
         assert_eq!(items.len(), 6, "six points, one list");
     }
@@ -2455,7 +2588,9 @@ mod streaming_matches_one_parse {
     fn a_long_code_block_stays_whole_and_its_window_is_the_block() {
         let doc: String = format!(
             "```rust\n{}```\n",
-            (0..800).map(|i| format!("fn f{i}() {{}}\n")).collect::<String>()
+            (0..800)
+                .map(|i| format!("fn f{i}() {{}}\n"))
+                .collect::<String>()
         );
         assert!(doc.len() > 2 * DEFAULT_MAX_UNFROZEN, "{}", doc.len());
         let mut md = IncrementalMarkdown::new();
@@ -2464,11 +2599,16 @@ mod streaming_matches_one_parse {
         }
         // One code block, because the closing fence arrived and closed it.
         let all = blocks(&md);
-        let code: Vec<&Block> = all.iter().filter(|b| matches!(b, Block::Code { .. })).collect();
+        let code: Vec<&Block> = all
+            .iter()
+            .filter(|b| matches!(b, Block::Code { .. }))
+            .collect();
         assert_eq!(code.len(), 1, "the block was split: {code:#?}");
         // Nothing else: the code did not become prose.
         assert_eq!(all.len(), 1, "{all:#?}");
-        let Block::Code { lines, closed, .. } = code[0] else { panic!() };
+        let Block::Code { lines, closed, .. } = code[0] else {
+            panic!()
+        };
         assert!(*closed);
         assert_eq!(lines.len(), 800, "a line was lost");
         assert_eq!(lines[0], "fn f0() {}");
@@ -2483,7 +2623,9 @@ mod streaming_matches_one_parse {
         let mut md = IncrementalMarkdown::new();
         let with_prose = format!(
             "```rust\n{}```\n\nprose after\n",
-            (0..800).map(|i| format!("fn f{i}() {{}}\n")).collect::<String>()
+            (0..800)
+                .map(|i| format!("fn f{i}() {{}}\n"))
+                .collect::<String>()
         );
         for c in with_prose.as_bytes().chunks(64) {
             md.push(std::str::from_utf8(c).unwrap());
@@ -2491,7 +2633,10 @@ mod streaming_matches_one_parse {
         assert!(md.stable_count() >= 1, "the finished block settled");
         let all = blocks(&md);
         assert_eq!(all.len(), 2, "{all:#?}");
-        assert!(matches!(all[0], Block::Code { closed: true, .. }), "{all:#?}");
+        assert!(
+            matches!(all[0], Block::Code { closed: true, .. }),
+            "{all:#?}"
+        );
     }
 
     /// The shapes the corpus above was built from, plus the fixture, at several chunk
@@ -2548,7 +2693,9 @@ mod inline_ranges_are_not_one_document {
     fn a_delimiter_does_not_pair_with_one_in_another_paragraph() {
         let blocks = lex(REAL);
         // The first paragraph is prose with two code spans in it ...
-        let Block::Paragraph { lines } = &blocks[0] else { panic!("{:#?}", blocks[0]) };
+        let Block::Paragraph { lines } = &blocks[0] else {
+            panic!("{:#?}", blocks[0])
+        };
         assert!(
             runs_text(&lines[0])
                 .starts_with("Here — each block below exercises one of the paths I just fixed"),
@@ -2561,7 +2708,9 @@ mod inline_ranges_are_not_one_document {
         assert!(text.contains("still arriving."), "{text:?}");
         // The second block keeps the bold it was written with — under the bug the whole
         // paragraph was one Code run and the markers showed.
-        let Block::Paragraph { lines } = &blocks[1] else { panic!("{:#?}", blocks[1]) };
+        let Block::Paragraph { lines } = &blocks[1] else {
+            panic!("{:#?}", blocks[1])
+        };
         assert!(
             lines[0].iter().any(|r| r.style == InlineStyle::Bold),
             "{:?}",
@@ -2594,17 +2743,31 @@ mod inline_ranges_are_not_one_document {
     fn the_smallest_case_of_the_same_bug() {
         let doc = "a ``` b\n\n**bold** c\n\n```rust\nlet a = 1;\n```\n\nd ``` e\n";
         let b = lex(doc);
-        let Some(Block::Paragraph { lines }) = b.first() else { panic!("{b:#?}") };
-        assert_eq!(runs_text(&lines[0]), "a ``` b", "the ``` is text, not a delimiter");
+        let Some(Block::Paragraph { lines }) = b.first() else {
+            panic!("{b:#?}")
+        };
+        assert_eq!(
+            runs_text(&lines[0]),
+            "a ``` b",
+            "the ``` is text, not a delimiter"
+        );
         assert!(
             lines[0].iter().all(|r| r.style == InlineStyle::Plain),
             "{:?}",
             lines[0]
         );
-        let Some(Block::Paragraph { lines }) = b.get(1) else { panic!("{b:#?}") };
+        let Some(Block::Paragraph { lines }) = b.get(1) else {
+            panic!("{b:#?}")
+        };
         assert_eq!(runs_text(&lines[0]), "bold c");
-        assert!(lines[0].iter().any(|r| r.style == InlineStyle::Bold), "{:?}", lines[0]);
-        let Some(Block::Paragraph { lines }) = b.last() else { panic!("{b:#?}") };
+        assert!(
+            lines[0].iter().any(|r| r.style == InlineStyle::Bold),
+            "{:?}",
+            lines[0]
+        );
+        let Some(Block::Paragraph { lines }) = b.last() else {
+            panic!("{b:#?}")
+        };
         assert_eq!(runs_text(&lines[0]), "d ``` e");
         // One-shot and streamed must be the same document.
         for chunk in [1, 3, 4096] {
@@ -2624,7 +2787,9 @@ mod inline_ranges_are_not_one_document {
         let b = lex(doc);
         assert_eq!(b.len(), 3, "{b:#?}");
         let spans = |i: usize| -> Vec<(InlineStyle, String)> {
-            let Block::Paragraph { lines } = &b[i] else { panic!("{b:#?}") };
+            let Block::Paragraph { lines } = &b[i] else {
+                panic!("{b:#?}")
+            };
             lines[0].iter().map(|r| (r.style, r.text.clone())).collect()
         };
         assert_eq!(
@@ -2635,7 +2800,11 @@ mod inline_ranges_are_not_one_document {
             ]
         );
         assert!(spans(1).iter().all(|(s, _)| *s == InlineStyle::Plain));
-        assert!(spans(2).iter().any(|(s, t)| *s == InlineStyle::Code && t == "b"));
+        assert!(
+            spans(2)
+                .iter()
+                .any(|(s, t)| *s == InlineStyle::Code && t == "b")
+        );
         for chunk in [1, 5, 4096] {
             let a = stream(doc, chunk).blocks().cloned().collect::<Vec<_>>();
             assert_eq!(a, b, "chunk {chunk}");
@@ -2664,11 +2833,16 @@ mod a_fence_ends_only_at_a_line_of_its_own {
         for (src, want) in [
             ("```\nabc ```\ndef\n```\n", vec!["abc ```", "def"]),
             ("```\nfoo │ ```\nbar\n```\n", vec!["foo │ ```", "bar"]),
-            ("```\nbar                      ```\nend\n```\n", vec!["bar                      ```", "end"]),
+            (
+                "```\nbar                      ```\nend\n```\n",
+                vec!["bar                      ```", "end"],
+            ),
         ] {
             let b = lex(src);
             assert_eq!(b.len(), 1, "{src:?} gave {b:#?}");
-            let Some(Block::Code { lines, closed, .. }) = b.first() else { panic!("{b:#?}") };
+            let Some(Block::Code { lines, closed, .. }) = b.first() else {
+                panic!("{b:#?}")
+            };
             assert!(closed, "{src:?}");
             assert_eq!(lines, &want, "{src:?}");
         }
@@ -2727,7 +2901,10 @@ mod a_fence_ends_only_at_a_line_of_its_own {
             }
         }
         walk2(&root, &mut kinds);
-        assert!(kinds.iter().any(|k| k == "indented_code_block"), "{kinds:?}");
+        assert!(
+            kinds.iter().any(|k| k == "indented_code_block"),
+            "{kinds:?}"
+        );
     }
 
     /// **A fence on the list marker's own line.** `- ```rust` was not found by the scan at
@@ -2741,10 +2918,20 @@ mod a_fence_ends_only_at_a_line_of_its_own {
     /// is the content column.
     #[test]
     fn a_fence_on_a_list_markers_line_is_not_item_text() {
-        for src in ["- ```rust\n  let a = 1;\n  ```\n", "1. ```rust\n   let a = 1;\n   ```\n"] {
+        for src in [
+            "- ```rust\n  let a = 1;\n  ```\n",
+            "1. ```rust\n   let a = 1;\n   ```\n",
+        ] {
             let b = lex(src);
             assert_eq!(b.len(), 1, "{src:?} gave {b:#?}");
-            let Some(Block::Code { lang, lines, closed }) = b.first() else { panic!("{b:#?}") };
+            let Some(Block::Code {
+                lang,
+                lines,
+                closed,
+            }) = b.first()
+            else {
+                panic!("{b:#?}")
+            };
             assert_eq!(lang, "rust", "{src:?}");
             assert_eq!(lines, &["let a = 1;"], "{src:?}");
             assert!(*closed, "{src:?}");
@@ -2753,7 +2940,9 @@ mod a_fence_ends_only_at_a_line_of_its_own {
         for marker in ["-", "*", "+"] {
             let src = format!("{marker} ```rust\n  let a = 1;\n  ```\n");
             let b = lex(&src);
-            let Some(Block::Code { lang, .. }) = b.first() else { panic!("{src:?} gave {b:#?}") };
+            let Some(Block::Code { lang, .. }) = b.first() else {
+                panic!("{src:?} gave {b:#?}")
+            };
             assert_eq!(lang, "rust", "{src:?}");
         }
     }
@@ -2764,18 +2953,24 @@ mod a_fence_ends_only_at_a_line_of_its_own {
     fn stripping_a_content_column_does_not_eat_content() {
         // Indentation inside a top-level fence is the code's, not the container's.
         let b = lex("```rust\n    indented();\n\n        deeper();\n```\n");
-        let Some(Block::Code { lines, .. }) = b.first() else { panic!("{b:#?}") };
+        let Some(Block::Code { lines, .. }) = b.first() else {
+            panic!("{b:#?}")
+        };
         assert_eq!(lines, &["    indented();", "", "        deeper();"]);
 
         // A list *inside* a fence is the code's too.
         let b = lex("- item\n\n  ```\n  - a\n  - b\n  ```\n");
         assert_eq!(b.len(), 2, "{b:#?}");
-        let Some(Block::Code { lines, .. }) = b.get(1) else { panic!("{b:#?}") };
+        let Some(Block::Code { lines, .. }) = b.get(1) else {
+            panic!("{b:#?}")
+        };
         assert_eq!(lines, &["- a", "- b"]);
 
         // And a quoted fence's code that begins with `> ` keeps it.
         let b = lex("> ```\n> > nested quote\n> ```\n");
-        let Some(Block::Code { lines, .. }) = b.first() else { panic!("{b:#?}") };
+        let Some(Block::Code { lines, .. }) = b.first() else {
+            panic!("{b:#?}")
+        };
         assert_eq!(lines, &["> nested quote"]);
     }
 
@@ -2792,8 +2987,18 @@ mod a_fence_ends_only_at_a_line_of_its_own {
     fn a_four_space_indented_fence_is_read_as_a_fence() {
         // CommonMark would make this literal text: ```rust / let a = 1; / ```
         let b = lex("    ```rust\n    let a = 1;\n    ```\n");
-        let Some(Block::Code { lang, lines, closed }) = b.first() else { panic!("{b:#?}") };
-        assert_eq!(lang, "rust", "read as a fence, not as an indented code block");
+        let Some(Block::Code {
+            lang,
+            lines,
+            closed,
+        }) = b.first()
+        else {
+            panic!("{b:#?}")
+        };
+        assert_eq!(
+            lang, "rust",
+            "read as a fence, not as an indented code block"
+        );
         assert_eq!(lines, &["let a = 1;"]);
         assert!(*closed);
         // And it is one block, not three lines of prose with the markers showing.
@@ -2808,11 +3013,16 @@ mod a_fence_ends_only_at_a_line_of_its_own {
                    ```\n│ }                                  └─\n└─\n```\n";
         let b = lex(src);
         assert_eq!(b.len(), 1, "{b:#?}");
-        let Some(Block::Code { lines, closed, .. }) = b.first() else { panic!("{b:#?}") };
+        let Some(Block::Code { lines, closed, .. }) = b.first() else {
+            panic!("{b:#?}")
+        };
         assert!(closed);
         assert_eq!(lines.len(), 6, "{lines:#?}");
         assert!(lines[0].contains("┌─ rust"), "{lines:?}");
-        assert!(lines[3].contains("```"), "the art's own backticks survive: {lines:?}");
+        assert!(
+            lines[3].contains("```"),
+            "the art's own backticks survive: {lines:?}"
+        );
         assert_eq!(lines[5], "└─");
     }
 
@@ -2821,8 +3031,18 @@ mod a_fence_ends_only_at_a_line_of_its_own {
     fn a_longer_fence_can_quote_a_shorter_one() {
         let b = lex("````\n```rust\nlet a = 1;\n```\n````\n");
         assert_eq!(b.len(), 1, "{b:#?}");
-        let Some(Block::Code { lang, lines, closed }) = b.first() else { panic!("{b:#?}") };
-        assert_eq!(lang, "", "the info string is the outer fence's, and it has none");
+        let Some(Block::Code {
+            lang,
+            lines,
+            closed,
+        }) = b.first()
+        else {
+            panic!("{b:#?}")
+        };
+        assert_eq!(
+            lang, "",
+            "the info string is the outer fence's, and it has none"
+        );
         assert_eq!(lines, &["```rust", "let a = 1;", "```"]);
         assert!(closed);
     }
@@ -2832,7 +3052,9 @@ mod a_fence_ends_only_at_a_line_of_its_own {
     fn a_quoted_fence_closes_on_a_prefixed_line() {
         let src = "> ```rust\n> let a = 1;\n> ```\n\nafter\n";
         let b = lex(src);
-        let Some(Block::Code { lines, .. }) = b.first() else { panic!("{b:#?}") };
+        let Some(Block::Code { lines, .. }) = b.first() else {
+            panic!("{b:#?}")
+        };
         assert_eq!(lines, &["let a = 1;"]);
         // The prose after it is prose, not part of the code.
         assert_eq!(b.len(), 2, "{b:#?}");
@@ -2862,7 +3084,9 @@ mod a_fence_ends_only_at_a_line_of_its_own {
         let quoted = b
             .iter()
             .find_map(|x| match x {
-                Block::Code { lines, .. } if lines.first().is_some_and(|l| l.starts_with("```rust")) => {
+                Block::Code { lines, .. }
+                    if lines.first().is_some_and(|l| l.starts_with("```rust")) =>
+                {
                     Some(lines)
                 }
                 _ => None,
@@ -2920,7 +3144,9 @@ mod tail_cut_is_exact {
     /// the last blank line in the final 4 KB gave a tail that disagreed all the way up —
     /// which is why the guards are applied rather than a `find`.
     fn exact_below_the_first(src: &str, min: usize) {
-        let Some(cut) = tail_cut(src, min) else { return };
+        let Some(cut) = tail_cut(src, min) else {
+            return;
+        };
         let whole = lex(src);
         let tail = lex(&src[cut..]);
         if cut == 0 {
@@ -2954,7 +3180,9 @@ mod tail_cut_is_exact {
     #[test]
     fn the_ragged_part_is_one_block() {
         let src = "para one line one\npara one line two\n\nsecond para\n\nthird para\n";
-        let Some(cut) = tail_cut(src, 12) else { panic!("no cut") };
+        let Some(cut) = tail_cut(src, 12) else {
+            panic!("no cut")
+        };
         assert!(cut > 0, "the cut is inside the document");
         let whole = lex(src);
         let tail = lex(&src[cut..]);
@@ -2968,7 +3196,9 @@ mod tail_cut_is_exact {
         let src = include_str!("../tests/fixtures/box-art-message.md");
         let spans: Vec<(usize, usize)> = fences_in(src).iter().map(|f| (f.open, f.end)).collect();
         for min in [16usize, 48, 128, 512] {
-            let Some(cut) = tail_cut(src, min) else { continue };
+            let Some(cut) = tail_cut(src, min) else {
+                continue;
+            };
             assert!(
                 !inside_a_fence(&spans, cut),
                 "min {min}: cut {cut} is inside a fence ({spans:?})"
@@ -2983,7 +3213,10 @@ mod tail_cut_is_exact {
         let src = "日本語のテキストです\n\nsecond 段落 here\n\nthird one\n\nfourth\n";
         for min in [0usize, 4, 8, 16, 32, 100, 1000] {
             if let Some(cut) = tail_cut(src, min) {
-                assert!(src.is_char_boundary(cut), "min {min}: cut {cut} is mid-char");
+                assert!(
+                    src.is_char_boundary(cut),
+                    "min {min}: cut {cut} is mid-char"
+                );
                 // And the result is usable, which a mid-char offset would not be.
                 let _ = lex(&src[cut..]);
             }
@@ -2997,7 +3230,9 @@ mod tail_cut_is_exact {
     #[test]
     fn a_cut_inside_a_loose_list_still_numbers_the_items_right() {
         let src = "1. first\n\n2. second\n\n3. third\n\ntail para\n";
-        let Some(cut) = tail_cut(src, 8) else { panic!("no cut") };
+        let Some(cut) = tail_cut(src, 8) else {
+            panic!("no cut")
+        };
         let tail = lex(&src[cut..]);
         let whole = lex(src);
         let starts = |bs: &[Block]| -> Vec<usize> {

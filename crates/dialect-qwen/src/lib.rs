@@ -327,7 +327,11 @@ mod tests {
     #[test]
     fn medium_is_the_effort_that_says_nothing() {
         assert_eq!(ReasoningEffort::Medium.instruction(), "");
-        assert!(ReasoningEffort::Xhigh.instruction().starts_with("Reasoning effort is set to xhigh."));
+        assert!(
+            ReasoningEffort::Xhigh
+                .instruction()
+                .starts_with("Reasoning effort is set to xhigh.")
+        );
         assert_eq!(ReasoningEffort::default(), ReasoningEffort::Xhigh);
     }
 

@@ -940,7 +940,9 @@ mod tests {
         // conversation away.
         let mut e = ed();
         type_str(&mut e, "look at this: ");
-        let trace = (0..40).map(|i| format!("  at frame {i}\n")).collect::<String>();
+        let trace = (0..40)
+            .map(|i| format!("  at frame {i}\n"))
+            .collect::<String>();
         e.key(Key::Paste(trace.clone()), 0);
         // **Forty lines, not forty-one** (§6): the pasted text ends in a newline and
         // the old count added one to the newline total, so every whole file dragged
@@ -986,7 +988,11 @@ mod tests {
         // off-by-one seen from the other side.
         let mut e = ed();
         e.key(Key::Paste("a\nb\nc\nd\n".into()), 0);
-        assert_eq!(e.text(), "a\nb\nc\nd\n", "four lines are ordinary typed text");
+        assert_eq!(
+            e.text(),
+            "a\nb\nc\nd\n",
+            "four lines are ordinary typed text"
+        );
         let mut e = ed();
         e.key(Key::Paste("a\nb\nc\nd\ne\n".into()), 0);
         assert!(e.text().contains("~5 lines"), "{}", e.text());
@@ -1062,7 +1068,10 @@ mod tests {
 
         // The double-taps still speak, which is the part that must not be lost.
         e.key(Key::Esc, 2_000);
-        assert!(e.hint(2_100, Palette::None).contains("esc again to interrupt"));
+        assert!(
+            e.hint(2_100, Palette::None)
+                .contains("esc again to interrupt")
+        );
         // And each lapses back to nothing.
         assert_eq!(e.hint(99_000, Palette::None), "");
     }
@@ -1238,7 +1247,11 @@ mod tests {
         let mut e = ed();
         e.key(Key::Paste("x\n".repeat(9)), 0);
         let (lines, _) = e.render(60, Palette::Colour);
-        assert!(lines[0].contains(Palette::Colour.open(Role::Attention)), "{:?}", lines[0]);
+        assert!(
+            lines[0].contains(Palette::Colour.open(Role::Attention)),
+            "{:?}",
+            lines[0]
+        );
     }
 
     #[test]

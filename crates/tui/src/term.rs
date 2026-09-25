@@ -560,7 +560,8 @@ fn restore(fd: i32, original: &libc::termios) {
     // synchronised update, mouse tracking off, bracketed paste off, the cursor
     // shape back to whatever the operator's terminal had, then show it and leave
     // the alternate screen.
-    let _ = out.write_all(b"\x1b[?2026l\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l");
+    let _ =
+        out.write_all(b"\x1b[?2026l\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l");
     let _ = out.flush();
 }
 
@@ -993,7 +994,10 @@ mod tests {
         // or not anything arrived; over one measured 28-second session, 221 of 269
         // frames were byte-identical to the one before and every one of them
         // erased and repainted the whole screen.
-        let frame: Vec<String> = ["one", "two", "three"].iter().map(|s| s.to_string()).collect();
+        let frame: Vec<String> = ["one", "two", "three"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let mut shown = Vec::new();
         let cur = Some((2, 4));
         let (first, next) = paint(&shown, &frame, cur, None);
@@ -1045,7 +1049,10 @@ mod tests {
     fn a_frame_that_changed_height_does_not_erase_the_screen() {
         // The composer grows a row every time a prompt wraps. Erasing the screen
         // for that is a flash per wrap.
-        let a: Vec<String> = ["one", "two", "three"].iter().map(|s| s.to_string()).collect();
+        let a: Vec<String> = ["one", "two", "three"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let mut shown = Vec::new();
         let (_, next) = paint_full(&shown, &a, None, None, true);
         shown = next;
@@ -1106,18 +1113,30 @@ mod tests {
         }
 
         let t = Terminal::headless();
-        let frame: Vec<String> = ["one", "two", "three"].iter().map(|s| s.to_string()).collect();
+        let frame: Vec<String> = ["one", "two", "three"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         // The frame draws onto the glass, and the glass is remembered.
-        let mut ok = Dies { left: usize::MAX, wrote: Vec::new() };
-        assert!(!t.paint_to(&mut ok, &frame, None), "a good write invalidates nothing");
+        let mut ok = Dies {
+            left: usize::MAX,
+            wrote: Vec::new(),
+        };
+        assert!(
+            !t.paint_to(&mut ok, &frame, None),
+            "a good write invalidates nothing"
+        );
         assert_eq!(*t.shown.borrow(), frame, "the frame is on the glass");
         assert!(!ok.wrote.is_empty(), "the premise: bytes really went out");
 
         // **Now a frame whose write dies after one call.** `paint_to` writes the
         // synchronised-output opener first, so one call in means the glass got that and
         // nothing of the row itself.
-        let mut dead = Dies { left: 1, wrote: Vec::new() };
+        let mut dead = Dies {
+            left: 1,
+            wrote: Vec::new(),
+        };
         let mut changed = frame.clone();
         changed[1] = "TWO".into();
         assert!(
@@ -1134,7 +1153,10 @@ mod tests {
         // And the next frame is a **full** repaint, so the hole cannot outlive the
         // failure. This is the half the old code could not do: it had left a memory of
         // rows it never wrote, and `full` was the only way back out.
-        let mut ok = Dies { left: usize::MAX, wrote: Vec::new() };
+        let mut ok = Dies {
+            left: usize::MAX,
+            wrote: Vec::new(),
+        };
         t.paint_to(&mut ok, &changed, None);
         let sent = String::from_utf8_lossy(&ok.wrote).to_string();
         assert!(
@@ -1142,14 +1164,20 @@ mod tests {
             "the recovery must be a full repaint, not a diff against a guess: {sent:?}"
         );
         for row in ["one", "TWO", "three"] {
-            assert!(sent.contains(row), "the repaint must carry every row: {sent:?}");
+            assert!(
+                sent.contains(row),
+                "the repaint must carry every row: {sent:?}"
+            );
         }
 
         // **And the counters do not claim bytes that were never written.** A frame that
         // failed is a frame; its bytes are not on the glass, so they are not counted as
         // having been sent.
         let t = Terminal::headless();
-        let mut dead = Dies { left: 1, wrote: Vec::new() };
+        let mut dead = Dies {
+            left: 1,
+            wrote: Vec::new(),
+        };
         t.paint_to(&mut dead, &frame, None);
         assert_eq!(
             t.write_stats().bytes,
@@ -1161,7 +1189,10 @@ mod tests {
 
     #[test]
     fn only_the_rows_that_changed_are_written() {
-        let a: Vec<String> = ["one", "two", "three"].iter().map(|s| s.to_string()).collect();
+        let a: Vec<String> = ["one", "two", "three"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let mut b = a.clone();
         b[1] = "TWO".into();
         let mut shown = Vec::new();
@@ -1169,7 +1200,10 @@ mod tests {
         shown = next;
         let (bytes, _) = paint(&shown, &b, None, None);
         assert!(bytes.contains("TWO"));
-        assert!(!bytes.contains("one") && !bytes.contains("three"), "{bytes:?}");
+        assert!(
+            !bytes.contains("one") && !bytes.contains("three"),
+            "{bytes:?}"
+        );
         // Addressed absolutely: row 2, column 1.
         assert!(bytes.contains("\x1b[2;1H"), "{bytes:?}");
     }

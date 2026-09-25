@@ -234,7 +234,11 @@ impl Tool for TaskTool {
 /// The subtask's first line, for a one-line echo. The whole prompt back would be
 /// the model's own bytes returned to it as a result.
 fn first_line(prompt: &str) -> String {
-    let l = prompt.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let l = prompt
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     if l.chars().count() <= 100 {
         return l.to_string();
     }
@@ -310,8 +314,10 @@ impl Tool for TaskResultTool {
             TaskStatus::Done { answer } => Invocation::ok(answer),
             TaskStatus::Failed { why } => Invocation::failed(
                 format!("subagent `{handle}` did not finish"),
-                format!("{why}\n\nNothing of its work is lost: it has its own session, \
-                         and its transcript is on the board under `{handle}`."),
+                format!(
+                    "{why}\n\nNothing of its work is lost: it has its own session, \
+                         and its transcript is on the board under `{handle}`."
+                ),
             ),
             TaskStatus::Running { note } => Invocation::abstained(
                 format!("subagent `{handle}` is still working"),
@@ -325,8 +331,7 @@ impl Tool for TaskResultTool {
             ),
             TaskStatus::Unknown => Invocation::failed(
                 format!("no subagent called `{handle}` was started here"),
-                "call `task_result` with no `task` to list the ones that were."
-                    .to_string(),
+                "call `task_result` with no `task` to list the ones that were.".to_string(),
             ),
         }
     }
@@ -361,14 +366,27 @@ mod tests {
         }
 
         fn collect(&self, handle: &str, _timeout: std::time::Duration) -> TaskStatus {
-            match self.answers.lock().unwrap().iter().find(|(h, _)| h == handle) {
-                Some((_, answer)) => TaskStatus::Done { answer: answer.clone() },
+            match self
+                .answers
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(h, _)| h == handle)
+            {
+                Some((_, answer)) => TaskStatus::Done {
+                    answer: answer.clone(),
+                },
                 None => TaskStatus::Unknown,
             }
         }
 
         fn started(&self) -> Vec<String> {
-            self.answers.lock().unwrap().iter().map(|(h, _)| h.clone()).collect()
+            self.answers
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(h, _)| h.clone())
+                .collect()
         }
     }
 
@@ -405,10 +423,14 @@ mod tests {
                 let deadline = std::time::Instant::now() + timeout;
                 loop {
                     if self.release.load(Ordering::SeqCst) {
-                        return TaskStatus::Done { answer: "the child answered".into() };
+                        return TaskStatus::Done {
+                            answer: "the child answered".into(),
+                        };
                     }
                     if std::time::Instant::now() >= deadline {
-                        return TaskStatus::Running { note: Some("still going".into()) };
+                        return TaskStatus::Running {
+                            note: Some("still going".into()),
+                        };
                     }
                     std::thread::yield_now();
                 }
@@ -419,7 +441,9 @@ mod tests {
         }
 
         let release = StdArc::new(AtomicBool::new(false));
-        let runner: Arc<dyn TaskRunner> = Arc::new(Slow { release: release.clone() });
+        let runner: Arc<dyn TaskRunner> = Arc::new(Slow {
+            release: release.clone(),
+        });
         let tool = TaskTool::new(runner.clone());
         let result = TaskResultTool::new(runner);
 
@@ -430,7 +454,10 @@ mod tests {
         reg.register(Box::new(result)).unwrap();
         let mut rt = crate::runtime::ToolRuntime::new(reg, Box::new(backend));
         let mut sink = crate::NullToolSink;
-        let call = |rt: &mut crate::runtime::ToolRuntime, sink: &mut crate::NullToolSink, name: &str, args: &str| {
+        let call = |rt: &mut crate::runtime::ToolRuntime,
+                    sink: &mut crate::NullToolSink,
+                    name: &str,
+                    args: &str| {
             rt.invoke(
                 "t1",
                 &letibot_transcript::ToolCall {
@@ -446,9 +473,16 @@ mod tests {
         // `Backgrounded`, not `Ok`: it is running and has not answered yet.
         let started = std::time::Instant::now();
         let r = call(&mut rt, &mut sink, "task", r#"{"prompt": "a long job"}"#);
-        assert!(started.elapsed() < std::time::Duration::from_secs(1), "{:?}", started.elapsed());
         assert!(
-            matches!(r.outcome, letibot_transcript::ToolOutcome::Backgrounded { .. }),
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            matches!(
+                r.outcome,
+                letibot_transcript::ToolOutcome::Backgrounded { .. }
+            ),
             "{:?}",
             r.outcome
         );
@@ -456,9 +490,17 @@ mod tests {
 
         // Collecting before it is done is the WAIT ending, not the child ending:
         // an abstention, which `is_grounded` will not treat as an answer.
-        let waited = call(&mut rt, &mut sink, "task_result", r#"{"task": "sub-slow", "timeout_ms": 5}"#);
+        let waited = call(
+            &mut rt,
+            &mut sink,
+            "task_result",
+            r#"{"task": "sub-slow", "timeout_ms": 5}"#,
+        );
         assert!(
-            matches!(waited.outcome, letibot_transcript::ToolOutcome::Abstained { .. }),
+            matches!(
+                waited.outcome,
+                letibot_transcript::ToolOutcome::Abstained { .. }
+            ),
             "{:?}",
             waited.outcome
         );
@@ -467,12 +509,19 @@ mod tests {
         release.store(true, Ordering::SeqCst);
         let done = call(&mut rt, &mut sink, "task_result", r#"{"task": "sub-slow"}"#);
         assert_eq!(done.payload, "the child answered");
-        assert!(matches!(done.outcome, letibot_transcript::ToolOutcome::Ok), "{:?}", done.outcome);
+        assert!(
+            matches!(done.outcome, letibot_transcript::ToolOutcome::Ok),
+            "{:?}",
+            done.outcome
+        );
 
         // A handle nobody started is a failure that says how to find the ones
         // that were.
         let miss = call(&mut rt, &mut sink, "task_result", r#"{"task": "sub-nope"}"#);
-        assert!(matches!(miss.outcome, letibot_transcript::ToolOutcome::Failed { .. }));
+        assert!(matches!(
+            miss.outcome,
+            letibot_transcript::ToolOutcome::Failed { .. }
+        ));
         let listed = call(&mut rt, &mut sink, "task_result", "{}");
         assert!(listed.payload.contains("sub-slow"), "{}", listed.payload);
     }
@@ -483,7 +532,9 @@ mod tests {
         let h = e.start("find the bug", &spec("coder")).unwrap();
         assert_eq!(
             e.collect(&h, std::time::Duration::ZERO),
-            TaskStatus::Done { answer: "coder [none] @host: find the bug".into() }
+            TaskStatus::Done {
+                answer: "coder [none] @host: find the bug".into()
+            }
         );
         assert!(
             NoTaskRunner
@@ -531,7 +582,8 @@ mod tests {
         use letibot_transcript::ToolCall;
         let mut reg = Registry::new();
         let runner: Arc<dyn TaskRunner> = Arc::new(Echo::default());
-        reg.register(Box::new(TaskTool::new(runner.clone()))).unwrap();
+        reg.register(Box::new(TaskTool::new(runner.clone())))
+            .unwrap();
         reg.register(Box::new(TaskResultTool::new(runner))).unwrap();
         let d = crate::backend::tempdir::TempDir::new();
         let backend = crate::backend::HostBackend::new(d.path()).unwrap();
@@ -571,8 +623,7 @@ mod tests {
             )
             .payload;
         assert_eq!(
-            collected,
-            "researcher [no write, no exec, no network] @firecode: survey the crates",
+            collected, "researcher [no write, no exec, no network] @firecode: survey the crates",
             "the spec `task` parsed is the spec the subagent ran under"
         );
         let p = run(&mut rt, &mut sink, r#"{"prompt": "x", "access": "root"}"#);

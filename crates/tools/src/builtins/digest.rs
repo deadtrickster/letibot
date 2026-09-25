@@ -152,10 +152,12 @@ pub struct NoDigest;
 
 impl DigestRunner for NoDigest {
     fn fold(&self, _: &str, _: &str, _: &str, _: usize, _: usize) -> Result<String, String> {
-        Err("no subagent runner is installed in this session, so there is nobody to \
+        Err(
+            "no subagent runner is installed in this session, so there is nobody to \
              read the findings. `transcript` with a `limit` still works — it costs \
              this context the rows."
-            .into())
+                .into(),
+        )
     }
 }
 
@@ -254,7 +256,10 @@ impl Tool for DigestTool {
                 .unwrap_or_default(),
             tool: s("tool"),
             last: args.get("last").and_then(|v| v.as_u64()).map(|v| v as u32),
-            history: args.get("history").and_then(|v| v.as_bool()).unwrap_or(true),
+            history: args
+                .get("history")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
             limit: MAX_ROWS,
             ..Default::default()
         };
@@ -419,7 +424,10 @@ fn chunk_rows(rows: &[super::transcript::TranscriptRow], cap: usize) -> Vec<Chun
             r.text.trim()
         );
         if !cur.is_empty() && cur.len() + piece.len() > cap {
-            out.push(Chunk { text: std::mem::take(&mut cur), rows: n });
+            out.push(Chunk {
+                text: std::mem::take(&mut cur),
+                rows: n,
+            });
             n = 0;
         }
         cur.push_str(&piece);
@@ -578,7 +586,10 @@ mod tests {
             serde_json::json!({"question": "what happened"}),
         );
         let total = all.seen.lock().unwrap().len();
-        assert!(total > 2, "the fixture must fold several parts, got {total}");
+        assert!(
+            total > 2,
+            "the fixture must fold several parts, got {total}"
+        );
 
         let waiting = std::sync::Arc::new(|| true) as crate::runtime::OperatorWaiting;
         let r = ask_with(
@@ -618,7 +629,11 @@ mod tests {
             .map(|i| row(0, i, &format!("row {i}: {}", "x".repeat(2_000))))
             .collect();
         let rec: Arc<Recorder> = Arc::new(Recorder::default());
-        let r = ask(rows, rec.clone(), serde_json::json!({"question": "what happened"}));
+        let r = ask(
+            rows,
+            rec.clone(),
+            serde_json::json!({"question": "what happened"}),
+        );
         // More than one part, because 40 * 2k is past the chunk budget.
         let seen = rec.seen.lock().unwrap();
         assert!(seen.len() > 1, "it folded in {} part(s)", seen.len());
@@ -629,7 +644,11 @@ mod tests {
             "the rows did not come back: {} bytes",
             r.payload.len()
         );
-        assert!(r.payload.contains("Read by a subagent over 40 row(s)"), "{}", r.payload);
+        assert!(
+            r.payload.contains("Read by a subagent over 40 row(s)"),
+            "{}",
+            r.payload
+        );
     }
 
     /// The fold is cumulative and oldest-first: part 2 is handed part 1's answer,
@@ -647,7 +666,10 @@ mod tests {
         assert!(seen[0].1.contains("the older one"), "gen 1 is read first");
         assert!(seen[1].1.contains("the newer one"), "gen 0 second");
         assert!(seen[0].0.is_empty(), "the first fold knows nothing yet");
-        assert_eq!(seen[1].0, "after part 1: q", "the second is handed the first");
+        assert_eq!(
+            seen[1].0, "after part 1: q",
+            "the second is handed the first"
+        );
     }
 
     /// A fold that dies mid-way reports how far it got and what it had — a partial
@@ -664,15 +686,26 @@ mod tests {
             "{:?}",
             r.outcome
         );
-        assert!(r.payload.contains("part one said something"), "{}", r.payload);
+        assert!(
+            r.payload.contains("part one said something"),
+            "{}",
+            r.payload
+        );
         assert!(r.payload.contains("OLDEST"), "{}", r.payload);
     }
 
     /// No question is a refusal, not a summary of everything.
     #[test]
     fn a_digest_without_a_question_refuses() {
-        let r = ask(vec![row(0, 0, "x")], Arc::new(NoDigest), serde_json::json!({}));
-        assert!(matches!(&r.outcome, letibot_transcript::ToolOutcome::Failed { .. }));
+        let r = ask(
+            vec![row(0, 0, "x")],
+            Arc::new(NoDigest),
+            serde_json::json!({}),
+        );
+        assert!(matches!(
+            &r.outcome,
+            letibot_transcript::ToolOutcome::Failed { .. }
+        ));
         assert!(r.payload.contains("nothing to read FOR"), "{}", r.payload);
     }
 
@@ -697,7 +730,10 @@ mod tests {
         let chunks = chunk_rows(&rows, CHUNK);
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].rows, 1);
-        assert!(chunks[0].text.contains(&"z".repeat(50_000)), "whole, not halved");
+        assert!(
+            chunks[0].text.contains(&"z".repeat(50_000)),
+            "whole, not halved"
+        );
     }
 
     #[test]
@@ -707,9 +743,11 @@ mod tests {
             Arc::new(NoDigest),
             serde_json::json!({"question": "q"}),
         );
-        assert!(r.payload.contains("nobody to read") || {
-            matches!(&r.outcome, letibot_transcript::ToolOutcome::Failed { reason }
+        assert!(
+            r.payload.contains("nobody to read") || {
+                matches!(&r.outcome, letibot_transcript::ToolOutcome::Failed { reason }
                 if reason.contains("nobody to read"))
-        });
+            }
+        );
     }
 }

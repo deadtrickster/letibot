@@ -335,7 +335,10 @@ fn walk(
 }
 
 fn text(node: &Node, src: &str) -> String {
-    src.get(node.start..node.end).unwrap_or_default().trim().to_string()
+    src.get(node.start..node.end)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 /// The child in field `name`.
@@ -602,10 +605,7 @@ mod tests {
     use super::*;
 
     fn kinds(o: &Outline) -> Vec<(&str, String)> {
-        o.symbols
-            .iter()
-            .map(|s| (s.kind, s.qualified()))
-            .collect()
+        o.symbols.iter().map(|s| (s.kind, s.qualified())).collect()
     }
 
     #[test]
@@ -682,12 +682,21 @@ mod tests {
         let o = outline(src, Language::Rust);
         let names: Vec<String> = o.symbols.iter().map(|s| s.qualified()).collect();
         // `^(pub )?fn` misses this one; dropping the anchor finds the two above it.
-        assert!(names.contains(&"indented_under_nothing".to_string()), "{names:?}");
+        assert!(
+            names.contains(&"indented_under_nothing".to_string()),
+            "{names:?}"
+        );
         assert!(names.contains(&"tests".to_string()), "{names:?}");
         assert!(names.contains(&"tests::nested".to_string()), "{names:?}");
         // And neither the comment nor the string is a definition.
-        assert!(!names.iter().any(|n| n.contains("commented_out")), "{names:?}");
-        assert!(!names.iter().any(|n| n.contains("in_a_string")), "{names:?}");
+        assert!(
+            !names.iter().any(|n| n.contains("commented_out")),
+            "{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("in_a_string")),
+            "{names:?}"
+        );
         assert_eq!(names.len(), 4, "{names:?}");
     }
 
@@ -774,7 +783,10 @@ int global_var = 3;
 
     #[test]
     fn bash_and_json_have_a_structure_too() {
-        let o = outline("function top() { echo hi; }\nother() { echo bye; }\n", Language::Bash);
+        let o = outline(
+            "function top() { echo hi; }\nother() { echo bye; }\n",
+            Language::Bash,
+        );
         assert_eq!(
             kinds(&o),
             vec![("fn", "top".to_string()), ("fn", "other".to_string())]

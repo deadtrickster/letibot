@@ -174,6 +174,16 @@ pub enum CommandKind {
     /// it is a quiet no-op, because a prompt that survived to here is about to
     /// run as its own turn and is no longer the operator's to take back.
     WithdrawPrompts,
+    /// **The operator's half of the todo board**, replaced wholesale.
+    ///
+    /// A head owns these rows — they are its own store's contents — so it sends the whole list on
+    /// every change rather than a delta: a delta protocol for a list of tens of items would be a
+    /// second source of truth about them, and `TodoBoard::set_operator` replaces one half atomically.
+    ///
+    /// Nothing here is a decision and nothing is gated: the operator's own list is not a tool call.
+    SetOperatorTodos {
+        items: Vec<crate::event::TodoEntry>,
+    },
     /// A head settled an open request. **Which kind** it settled is [`Reply`], and
     /// it is an enum rather than two variants here because every consumer that only
     /// cares "an answer arrived for `req_id`" already destructures this variant with
@@ -283,6 +293,7 @@ impl CommandKind {
             CommandKind::OperatorCall { .. } => "operator-call",
             CommandKind::OperatorResult { .. } => "operator-result",
             CommandKind::WithdrawPrompts => "take-back",
+            CommandKind::SetOperatorTodos { .. } => "operator todos",
             CommandKind::Promote => "promote",
         }
     }
@@ -1038,6 +1049,9 @@ impl Hub {
                 .into(),
                 (CommandKind::Interrupt { .. }, _) => "interrupt requested".into(),
                 (CommandKind::WithdrawPrompts, _) => "prompt take-back requested".into(),
+                (CommandKind::SetOperatorTodos { items }, _) => {
+                    format!("the operator's {} todo(s) sent", items.len())
+                }
                 (CommandKind::Promote, _) => "background requested".into(),
                 (CommandKind::Answer { reply, .. }, _) => {
                     format!("{} answered", reply.as_str())

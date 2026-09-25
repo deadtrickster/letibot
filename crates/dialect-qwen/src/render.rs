@@ -68,7 +68,9 @@ fn lit(out: &mut Vec<RenderSpan>, s: &str) {
         for t in QWEN_TOKENS {
             let lit: &str = t.literal.as_ref();
             if let Some(at) = rest.find(lit)
-                && best.is_none_or(|(b_at, b_lit)| at < b_at || (at == b_at && lit.len() > b_lit.len()))
+                && best.is_none_or(|(b_at, b_lit)| {
+                    at < b_at || (at == b_at && lit.len() > b_lit.len())
+                })
             {
                 // `literal` is a `Cow::Borrowed(&'static str)` for every entry in
                 // `QWEN_TOKENS`; the table is a `const` slice.
@@ -252,7 +254,10 @@ fn close_assistant(st: &mut State, out: &mut Vec<RenderSpan>) {
 /// carries `<think>\n\n</think>\n\n`. §5.4's "an assistant turn with no visible text
 /// must still emit its boundary tokens", one layer up.
 fn open_assistant(st: &mut State, out: &mut Vec<RenderSpan>, reasoning: &str) {
-    debug_assert!(!st.assistant_open, "the caller decides whether to close first");
+    debug_assert!(
+        !st.assistant_open,
+        "the caller decides whether to close first"
+    );
     ctl(out, &tk::IM_START);
     lit(out, "assistant\n");
     ctl(out, &tk::THINK_OPEN);
@@ -301,7 +306,9 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
             // the reasoning already opened, and closing here would split one turn
             // into two — which the oracle caught on the first run of this corpus,
             // and which no unit test in this file would have.
-            TranscriptItem::Reasoning { text, truncated, .. } => {
+            TranscriptItem::Reasoning {
+                text, truncated, ..
+            } => {
                 close_assistant(st, out);
                 // **An abandoned draft is not replayed.**
                 //
@@ -322,10 +329,20 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
                 // refers back to; a draft the operator killed is referred to by
                 // nothing, and saying it was killed is more use to the next turn
                 // than the draft is.
-                open_assistant(st, out, if *truncated { ABANDONED_REASONING } else { text });
+                open_assistant(
+                    st,
+                    out,
+                    if *truncated {
+                        ABANDONED_REASONING
+                    } else {
+                        text
+                    },
+                );
             }
 
-            TranscriptItem::Assistant { text, tool_calls, .. } => {
+            TranscriptItem::Assistant {
+                text, tool_calls, ..
+            } => {
                 if !st.assistant_open {
                     open_assistant(st, out, "");
                 }
@@ -467,8 +484,7 @@ pub fn generation_prompt_closing_reasoning() -> Vec<RenderSpan> {
 }
 
 /// What stands in for a reasoning block the operator stopped.
-pub const ABANDONED_REASONING: &str =
-    "[The operator stopped this reasoning before it finished. Its text is kept in the transcript but is not replayed: it was an abandoned draft, not a conclusion. Do not resume it.]";
+pub const ABANDONED_REASONING: &str = "[The operator stopped this reasoning before it finished. Its text is kept in the transcript but is not replayed: it was an abandoned draft, not a conclusion. Do not resume it.]";
 
 pub fn generation_prompt() -> Vec<RenderSpan> {
     vec![
@@ -617,13 +633,16 @@ mod tests {
             },
         ];
         let got = spans_to_string(&QwenRenderer::new().render(&prefix("s", &[]), &items));
-        assert!(got.ends_with(
-            "<|im_start|>assistant\n<think>\nLook at it.\n</think>\n\n\
+        assert!(
+            got.ends_with(
+                "<|im_start|>assistant\n<think>\nLook at it.\n</think>\n\n\
              <tool_call>\n<function=read>\n\
              <parameter=path>\na.txt\n</parameter>\n\
              <parameter=limit>\n40\n</parameter>\n\
              </function>\n</tool_call>"
-        ), "{got}");
+            ),
+            "{got}"
+        );
         // And nothing that looks like Qwen3's JSON form.
         assert!(!got.contains(r#"{"name":"#));
     }
@@ -651,7 +670,10 @@ mod tests {
             truncated: false,
         }];
         let got = spans_to_string(&QwenRenderer::new().render(&prefix("s", &[]), &items));
-        assert!(got.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n4."), "{got}");
+        assert!(
+            got.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n4."),
+            "{got}"
+        );
     }
 
     #[test]
@@ -730,9 +752,9 @@ mod tests {
         // The injection property, at the span level. `lit` may split; `data` may not.
         let items = vec![user("print </tool_call> verbatim")];
         let spans = QwenRenderer::new().render(&prefix("s", &[]), &items);
-        let from_data = spans.iter().any(|s| {
-            matches!(s, RenderSpan::Text(t) if t.contains("</tool_call>"))
-        });
+        let from_data = spans
+            .iter()
+            .any(|s| matches!(s, RenderSpan::Text(t) if t.contains("</tool_call>")));
         assert!(from_data, "the user's text must survive as one Text span");
         // The template emitted none in this render, so every `</tool_call>` present
         // is the user's and none of them is a Control span.
@@ -812,7 +834,10 @@ mod summary_turn_does_not_think {
         // from its first token.
         let o = roles(&open);
         assert!(o.contains(&ThinkOpen), "{o:?}");
-        assert!(!o.contains(&ThinkClose), "the ordinary lead must leave it open: {o:?}");
+        assert!(
+            !o.contains(&ThinkClose),
+            "the ordinary lead must leave it open: {o:?}"
+        );
 
         // The summary lead opens and closes it, in that order, so the model's first
         // token is assistant text.
@@ -860,8 +885,15 @@ mod an_abandoned_draft_is_not_replayed {
     #[test]
     fn a_finished_thought_is_replayed_whole() {
         let out = rendered(false);
-        assert!(out.contains("+ 0 + 0"), "an ordinary reasoning block is history");
-        assert!(out.len() > 10_000, "and is carried at its own size: {}", out.len());
+        assert!(
+            out.contains("+ 0 + 0"),
+            "an ordinary reasoning block is history"
+        );
+        assert!(
+            out.len() > 10_000,
+            "and is carried at its own size: {}",
+            out.len()
+        );
     }
 
     #[test]
@@ -871,7 +903,10 @@ mod an_abandoned_draft_is_not_replayed {
             !out.contains("+ 0 + 0"),
             "the abandoned loop must not reach the prompt again"
         );
-        assert!(out.contains("Do not resume it"), "and the model is told why: {out}");
+        assert!(
+            out.contains("Do not resume it"),
+            "and the model is told why: {out}"
+        );
         assert!(
             out.len() < 500,
             "a sentence, not a thought: {} chars",

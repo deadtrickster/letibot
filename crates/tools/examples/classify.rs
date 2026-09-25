@@ -73,7 +73,10 @@ fn main() {
     }
     let default_cwd = cwd.clone();
     for pair in if pairs.is_empty() {
-        lines.into_iter().map(|c| (default_cwd.clone(), c)).collect::<Vec<_>>()
+        lines
+            .into_iter()
+            .map(|c| (default_cwd.clone(), c))
+            .collect::<Vec<_>>()
     } else {
         pairs
     } {

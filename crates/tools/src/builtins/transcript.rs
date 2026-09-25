@@ -196,10 +196,12 @@ impl TranscriptSource for NoTranscript {
         Vec::new()
     }
     fn find(&self, _q: &TranscriptQuery) -> Result<TranscriptHits, String> {
-        Err("this session has no store, so nothing was written down to search. A \
+        Err(
+            "this session has no store, so nothing was written down to search. A \
              session started without `--store` keeps its conversation only in memory, \
              and when it ends the rows are gone."
-            .into())
+                .into(),
+        )
     }
 }
 
@@ -342,10 +344,7 @@ impl TranscriptTool {
                 .map(|v| v as usize)
                 .unwrap_or(DEFAULT_LIMIT)
                 .clamp(1, MAX_LIMIT),
-            offset: args
-                .get("offset")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize,
+            offset: args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
         }
     }
 
@@ -358,14 +357,21 @@ impl TranscriptTool {
                     .to_string(),
             );
         }
-        let mut out = format!("{} session(s) in the store, newest activity first:\n\n", all.len());
+        let mut out = format!(
+            "{} session(s) in the store, newest activity first:\n\n",
+            all.len()
+        );
         for s in &all {
             out.push_str(&format!(
                 "  {}{}  {} rows  {}\n",
                 if s.current { "* " } else { "  " },
                 s.id,
                 s.rows,
-                if s.title.is_empty() { "(unnamed)" } else { &s.title }
+                if s.title.is_empty() {
+                    "(unnamed)"
+                } else {
+                    &s.title
+                }
             ));
         }
         out.push_str("\n`*` is this session. Pass `session=` an id, or part of a title.\n");
@@ -495,7 +501,11 @@ impl TranscriptTool {
                     if s.current { "* " } else { "  " },
                     s.id,
                     s.rows,
-                    if s.title.is_empty() { "(unnamed)" } else { &s.title }
+                    if s.title.is_empty() {
+                        "(unnamed)"
+                    } else {
+                        &s.title
+                    }
                 ));
             }
         }
@@ -774,7 +784,10 @@ mod tests {
         let out = call(serde_json::json!({"match": "oracle", "history": false}));
         assert!(out.contains("nothing matched"), "{out}");
         assert!(out.contains("`history=false`"), "{out}");
-        assert!(out.contains("what=chain"), "the miss offers the chain: {out}");
+        assert!(
+            out.contains("what=chain"),
+            "the miss offers the chain: {out}"
+        );
     }
 
     /// Predicates AND, the way find's do.
@@ -782,7 +795,10 @@ mod tests {
     fn kind_and_match_narrow_together() {
         let out = call(serde_json::json!({"match": "gate", "kind": "assistant"}));
         assert!(out.contains("fails closed"), "{out}");
-        assert!(!out.contains("what did we decide"), "the user row is out: {out}");
+        assert!(
+            !out.contains("what did we decide"),
+            "the user row is out: {out}"
+        );
     }
 
     /// A miss on a kind lists the kinds there are — clause 1, so the retry is

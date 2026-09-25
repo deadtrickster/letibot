@@ -4037,6 +4037,19 @@ impl<'a> Harness<'a> {
     /// this with the intent ledger's own finding, because a turn boundary is where both are
     /// checked and one nudge budget has to carry both. This is the same text with nothing
     /// joined to it, for the caller that has no turn boundary to hang it on.
+    /// **The operator's half of the board** — see `Sessions::dispatch`'s `SetOperatorTodos`.
+    ///
+    /// The board is one list with two authors; this replaces the operator's half and leaves the
+    /// model's alone. Anything that reads the board afterwards — the pane, the model's prompt, and
+    /// `nag_notice` above — sees both, which is the whole of the design.
+    /// **The version bump IS the announcement.** `set_operator` raises the board's version, and
+    /// `flush_todos` — which runs at every turn boundary — publishes a `TodosUpdated` and persists
+    /// when the version has moved. So the operator's rows reach every head and the store by the same
+    /// path the model's do, with no second mechanism.
+    pub fn set_operator_todos(&mut self, items: Vec<letibot_tokencore::store::TodoItem>) {
+        self.todos.set_operator(items);
+    }
+
     pub fn nag_notice(&self) -> Option<String> {
         unfinished_plan(&self.todos.snapshot())
     }
@@ -5932,6 +5945,12 @@ impl<'a> Harness<'a> {
     pub(crate) fn todo_entry(t: TodoItem) -> TodoEntry {
         TodoEntry {
             content: t.content,
+            by: match t.by {
+                letibot_tokencore::store::TodoBy::Model => letibot_sessionlog::event::TodoBy::Model,
+                letibot_tokencore::store::TodoBy::Operator => {
+                    letibot_sessionlog::event::TodoBy::Operator
+                }
+            },
             status: match t.status {
                 letibot_tokencore::store::TodoStatus::Pending => WireTodoStatus::Pending,
                 letibot_tokencore::store::TodoStatus::InProgress => WireTodoStatus::InProgress,

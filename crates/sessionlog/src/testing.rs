@@ -10,7 +10,7 @@ use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 
 use crate::event::{
     Decider, DecisionOption, DecisionOutcome, DeltaTarget, FinishReason, OnTimeout, OptionKind,
-    PromptProgress, SessionEvent, Timings, TodoEntry, TodoStatus, Usage,
+    PromptProgress, SessionEvent, Timings, TodoBy, TodoEntry, TodoStatus, Usage,
 };
 
 pub fn warn(detail: &str) -> SessionEvent {
@@ -263,10 +263,12 @@ pub fn one_of_each() -> Vec<SessionEvent> {
                 TodoEntry {
                     content: "read the harness".into(),
                     status: TodoStatus::Completed,
+                    by: TodoBy::Model,
                 },
                 TodoEntry {
                     content: "render the pane".into(),
                     status: TodoStatus::Pending,
+                    by: TodoBy::Model,
                 },
             ],
         },

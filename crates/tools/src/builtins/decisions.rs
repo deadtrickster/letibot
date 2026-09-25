@@ -164,10 +164,12 @@ pub struct NoDecisions;
 
 impl DecisionSource for NoDecisions {
     fn find(&self, _q: &DecisionQuery) -> Result<DecisionHits, String> {
-        Err("this session has no store, so no decision was written down. The gate \
+        Err(
+            "this session has no store, so no decision was written down. The gate \
              still ran — a decision the corpus did not record is not a decision that \
              did not happen."
-            .into())
+                .into(),
+        )
     }
     fn counts(&self, _session: Option<&str>) -> Result<DecisionCounts, String> {
         Err("this session has no store, so the corpus is empty by construction.".into())
@@ -362,16 +364,32 @@ fn render_full(r: &DecisionRow) -> String {
         r.decided_ms,
         r.session_id,
         r.turn_id,
-        if r.tool.is_empty() { "(unrecorded)" } else { &r.tool },
+        if r.tool.is_empty() {
+            "(unrecorded)"
+        } else {
+            &r.tool
+        },
         r.action,
-        if r.mode.is_empty() { "(unrecorded)" } else { &r.mode },
+        if r.mode.is_empty() {
+            "(unrecorded)"
+        } else {
+            &r.mode
+        },
         r.tier,
         r.effect,
     );
     out.push_str(&format!(
         "  verdict   {}\n  by        {}\n",
-        if r.verdict.is_empty() { "(none recorded)" } else { &r.verdict },
-        if r.verdict_by.is_empty() { "(none recorded)" } else { &r.verdict_by },
+        if r.verdict.is_empty() {
+            "(none recorded)"
+        } else {
+            &r.verdict
+        },
+        if r.verdict_by.is_empty() {
+            "(none recorded)"
+        } else {
+            &r.verdict_by
+        },
     ));
     if !r.verdict_basis.is_empty() {
         out.push_str(&format!("  because   {}\n", r.verdict_basis));
@@ -398,7 +416,10 @@ fn render_full(r: &DecisionRow) -> String {
         }
     ));
     if !r.operator_kind.is_empty() {
-        out.push_str(&format!("\n  the operator later ruled: {}", r.operator_kind));
+        out.push_str(&format!(
+            "\n  the operator later ruled: {}",
+            r.operator_kind
+        ));
         if !r.operator_note.is_empty() {
             out.push_str(&format!(" — {}", r.operator_note));
         }
@@ -423,9 +444,21 @@ fn render_short(r: &DecisionRow) -> String {
     let head = format!(
         "  {}  {}  {}  by {}{}",
         r.request_id,
-        if r.verdict.is_empty() { "?" } else { &r.verdict },
-        if r.tool.is_empty() { "(tool unrecorded)" } else { &r.tool },
-        if r.verdict_by.is_empty() { "?" } else { &r.verdict_by },
+        if r.verdict.is_empty() {
+            "?"
+        } else {
+            &r.verdict
+        },
+        if r.tool.is_empty() {
+            "(tool unrecorded)"
+        } else {
+            &r.tool
+        },
+        if r.verdict_by.is_empty() {
+            "?"
+        } else {
+            &r.verdict_by
+        },
         if r.asked { "  [person asked]" } else { "" },
     );
     let why = if r.verdict_basis.is_empty() {
@@ -555,8 +588,7 @@ mod tests {
                 .cloned()
                 .collect();
             let matched = rows.len();
-            let mut verdicts: Vec<String> =
-                self.0.iter().map(|r| r.verdict.clone()).collect();
+            let mut verdicts: Vec<String> = self.0.iter().map(|r| r.verdict.clone()).collect();
             verdicts.sort();
             verdicts.dedup();
             let mut tools: Vec<String> = self.0.iter().map(|r| r.tool.clone()).collect();
@@ -667,7 +699,11 @@ mod tests {
     /// missing value — the row says layer B never ran.
     #[test]
     fn a_decision_with_no_oracle_says_so_rather_than_showing_an_empty_brief() {
-        let out = ask(vec![human_row()], serde_json::json!({"request": "adj-s1-0226"})).payload;
+        let out = ask(
+            vec![human_row()],
+            serde_json::json!({"request": "adj-s1-0226"}),
+        )
+        .payload;
         assert!(out.contains("No oracle was consulted"), "{out}");
         assert!(
             out.contains("not a model's reasoning"),
@@ -752,7 +788,10 @@ mod tests {
             letibot_transcript::ToolOutcome::Failed { reason } => {
                 assert!(reason.contains("no store"), "{reason}");
                 // And it does not let "unrecorded" be read as "did not happen".
-                assert!(reason.contains("not a decision that did not happen"), "{reason}");
+                assert!(
+                    reason.contains("not a decision that did not happen"),
+                    "{reason}"
+                );
             }
             other => panic!("{other:?}"),
         }

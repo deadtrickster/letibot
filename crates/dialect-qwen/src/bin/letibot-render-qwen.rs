@@ -69,10 +69,10 @@ fn main() {
     }
     let mut cases = Vec::new();
     for path in &paths {
-        let src = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("reading fixture {path}: {e}"));
-        let fx: Fixture = serde_json::from_str(&src)
-            .unwrap_or_else(|e| panic!("parsing fixture {path}: {e}"));
+        let src =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("reading fixture {path}: {e}"));
+        let fx: Fixture =
+            serde_json::from_str(&src).unwrap_or_else(|e| panic!("parsing fixture {path}: {e}"));
         cases.extend(expand(&fx));
     }
     println!(
@@ -253,7 +253,9 @@ fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value 
                 flush(&mut turn, &mut msgs);
                 turn = Some((Some(text.clone()), String::new(), Vec::new()));
             }
-            TranscriptItem::Assistant { text, tool_calls, .. } => {
+            TranscriptItem::Assistant {
+                text, tool_calls, ..
+            } => {
                 let t = turn.get_or_insert((None, String::new(), Vec::new()));
                 t.1.push_str(text);
                 t.2.extend(tool_calls.iter().cloned());

@@ -526,15 +526,17 @@ impl HostProcesses {
     /// behind a lock: a grant replaces the confinement, so a borrow of the one
     /// inside it cannot outlive the guard.
     pub fn boundary(&self) -> Option<crate::exec::confine::Boundary> {
-        self.confine.read().expect("confinement").boundary().cloned()
+        self.confine
+            .read()
+            .expect("confinement")
+            .boundary()
+            .cloned()
     }
 
     /// What the boundary is, in its own words.
     pub fn confinement_describe(&self) -> String {
         self.confine.read().expect("confinement").describe()
     }
-
-
 
     pub fn with_capture_bytes(mut self, bytes: usize) -> Self {
         self.capture_bytes = bytes;
@@ -1254,15 +1256,24 @@ impl ProcessHost for HostProcesses {
     }
 
     fn absence_notes(&self, output: &str) -> Vec<String> {
-        self.confine.read().expect("confinement").absence_notes(output)
+        self.confine
+            .read()
+            .expect("confinement")
+            .absence_notes(output)
     }
 
     fn outside_paths(&self, output: &str) -> Vec<std::path::PathBuf> {
-        self.confine.read().expect("confinement").outside_paths(output)
+        self.confine
+            .read()
+            .expect("confinement")
+            .outside_paths(output)
     }
 
     fn launcher_failure(&self, output: &str) -> Option<String> {
-        self.confine.read().expect("confinement").launcher_failure(output)
+        self.confine
+            .read()
+            .expect("confinement")
+            .launcher_failure(output)
     }
 }
 

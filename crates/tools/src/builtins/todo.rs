@@ -16,7 +16,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use letibot_tokencore::store::{TodoItem, TodoStatus};
+use letibot_tokencore::store::{TodoBy, TodoItem, TodoStatus};
 use serde_json::{Value, json};
 
 use crate::runtime::{Invocation, InvokeCtx, Tool};
@@ -26,6 +26,19 @@ use crate::schema::{Access, ToolSchema};
 /// harness that persists and announces it.
 pub struct TodoBoard {
     todos: Mutex<Vec<TodoItem>>,
+    /// **The operator's rows, kept BESIDE the model's and never written by the `todo` tool.**
+    ///
+    /// The operator's ruling: *"the existing getter should return mine and yours, and the rest is
+    /// also the same. the only difference is who created and that is it."* So this is one board with
+    /// two halves and no second concept — `snapshot` is their union, which is what makes the pane,
+    /// the NAG (`harness.rs`'s `nag_notice` → `unfinished_plan`) and the prompt the model reads all
+    /// pick the operator's items up for free, with no code that knows they exist.
+    ///
+    /// **Separate, and not appended to `todos`, for one reason: the `todo` tool REPLACES the model's
+    /// list wholesale** — *"the whole list is replaced on every write, because a delta the model got
+    /// wrong is a delta nobody can audit"* — so an operator row left in that vector would be deleted
+    /// by the model's next `todo` call. Two halves, one getter.
+    operator: Mutex<Vec<TodoItem>>,
     version: AtomicU64,
 }
 
@@ -35,8 +48,28 @@ impl TodoBoard {
     pub fn new(initial: Vec<TodoItem>) -> Self {
         TodoBoard {
             todos: Mutex::new(initial),
+            operator: Mutex::new(Vec::new()),
             version: AtomicU64::new(0),
         }
+    }
+
+    /// **The operator's half, replaced wholesale.** A head sends its whole list on every change: it
+    /// owns these rows, they are its own store's contents, and a delta protocol for a list of tens of
+    /// items would be a second source of truth about them.
+    ///
+    /// Returns the new version, so the caller decides whether an announcement is owed exactly as it
+    /// does for the model's half.
+    pub fn set_operator(&self, todos: Vec<TodoItem>) -> u64 {
+        *self.operator.lock().unwrap_or_else(|e| e.into_inner()) = todos;
+        self.version.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// The operator's half alone, for a caller that needs to tell the two apart.
+    pub fn operator_snapshot(&self) -> Vec<TodoItem> {
+        self.operator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Replace the list. Returns the new version, which is what the harness
@@ -49,7 +82,16 @@ impl TodoBoard {
 
     /// The list as it stands.
     pub fn snapshot(&self) -> Vec<TodoItem> {
-        self.todos.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        // **THE UNION, and it is the whole of the feature.** Everything downstream reads this one
+        // getter — the pane's `Todos` reply, the model's own view of the plan, and the idle nag
+        // (`harness.rs`'s `nag_notice`, which asks `unfinished_plan` of exactly this) — so nothing
+        // else had to learn that the operator can write a row too. The model's list comes first
+        // because it is the list the model has been working from, and the operator's rows are the
+        // ones it has been asked for on top.
+        let mut out = self.todos.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let operator = self.operator.lock().unwrap_or_else(|e| e.into_inner());
+        out.extend(operator.iter().cloned());
+        out
     }
 
     /// How many writes have landed. Version, not dirty-flag: a harness that
@@ -214,6 +256,8 @@ impl Tool for TodoWriteTool {
             items.push(TodoItem {
                 content: content.to_string(),
                 status,
+                // the MODEL's list, by definition: this function is the `todo` tool
+                by: letibot_tokencore::store::TodoBy::Model,
             });
         }
         self.board.replace(items);
@@ -249,6 +293,52 @@ mod tests {
     use crate::events::RecordingToolSink;
     use crate::runtime::{Registry, ToolRuntime};
     use letibot_transcript::{ToolCall, ToolOutcome};
+
+    /// **THE OPERATOR'S ROWS ARE ON THE SAME BOARD, so the nag and the pane see them.** The
+    /// operator's ruling: *"the existing getter should return mine and yours, and the rest is also
+    /// the same. the only difference is who created and that is it."*
+    ///
+    /// Two claims, and the second is why the halves are separate: the union is what `snapshot`
+    /// answers — which is what `unfinished_plan`, and therefore the idle nag, reads — and the `todo`
+    /// tool's wholesale REPLACE of the model's list does not take the operator's rows with it.
+    #[test]
+    fn the_board_returns_the_operators_rows_alongside_the_models() {
+        let mut b = TodoBoard::new(vec![TodoItem {
+            content: "the model's".into(),
+            status: TodoStatus::Pending,
+            by: TodoBy::Model,
+        }]);
+        assert_eq!(b.snapshot().len(), 1, "the model's list as given");
+
+        b.set_operator(vec![TodoItem {
+            content: "the operator's".into(),
+            status: TodoStatus::Pending,
+            by: TodoBy::Operator,
+        }]);
+
+        let all = b.snapshot();
+        assert_eq!(all.len(), 2, "**the getter returns BOTH**: {all:?}");
+        assert!(
+            all.iter().any(|t| t.by == TodoBy::Operator),
+            "and says who wrote each"
+        );
+        // **`unfinished_plan` — what the nag asks — sees the operator's row with no change at all**
+        assert!(
+            unfinished_plan(&all).is_some(),
+            "so the reminder can fire for work the OPERATOR queued"
+        );
+
+        // **AND THE MODEL'S WHOLESALE REPLACE DOES NOT DELETE THEM.** `replace` is the `todo` tool's
+        // own write, and it is why the two halves are kept apart rather than concatenated.
+        b.replace(vec![TodoItem {
+            content: "the model's, revised".into(),
+            status: TodoStatus::Pending,
+            by: TodoBy::Model,
+        }]);
+        let after = b.snapshot();
+        assert_eq!(after.len(), 2, "the operator's row survived: {after:?}");
+        assert!(after.iter().any(|t| t.content == "the operator's"));
+    }
 
     /// The tool behind a real runtime, because the call goes through the gate on
     /// its way past — and `Access::Session` must pass it unattended, which this
@@ -352,6 +442,7 @@ mod tests {
         TodoItem {
             content: content.into(),
             status,
+            by: TodoBy::Model,
         }
     }
 
@@ -394,7 +485,10 @@ mod tests {
         // exit is to lie about its own statuses, which is the failure this exists to stop.
         assert!(msg.contains("do them"), "{msg}");
         assert!(msg.contains("mark them done"), "{msg}");
-        assert!(msg.contains("drop the ones you no longer mean to do"), "{msg}");
+        assert!(
+            msg.contains("drop the ones you no longer mean to do"),
+            "{msg}"
+        );
         assert!(
             msg.contains("deliberately"),
             "and stopping on purpose is answerable: {msg}"
@@ -411,7 +505,10 @@ mod tests {
             .collect();
         let msg = unfinished_plan(&todos).expect("ten open items is a finding");
         assert!(msg.contains("10 of 10"), "{msg}");
-        assert!(msg.contains("and 4 more"), "ten minus the six printed: {msg}");
+        assert!(
+            msg.contains("and 4 more"),
+            "ten minus the six printed: {msg}"
+        );
         assert!(msg.contains("item 5"), "{msg}");
         assert!(
             !msg.contains("item 6"),

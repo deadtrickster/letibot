@@ -396,11 +396,19 @@ impl Backgrounding {
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ToolOutcome {
     Ok,
-    Abstained { reason: String },
-    Failed { reason: String },
-    Denied { req_id: String },
+    Abstained {
+        reason: String,
+    },
+    Failed {
+        reason: String,
+    },
+    Denied {
+        req_id: String,
+    },
     Timeout,
-    NotRun { why: String },
+    NotRun {
+        why: String,
+    },
     /// **Still running.** Not finished, not failed, not abandoned.
     Backgrounded {
         /// The job id, spelled as the recovery verbs take it.
@@ -418,9 +426,17 @@ pub enum ToolOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UserPart {
-    Text { text: String },
-    Image { media_type: String, data_ref: String },
-    FileRef { path: String, sha256: String },
+    Text {
+        text: String,
+    },
+    Image {
+        media_type: String,
+        data_ref: String,
+    },
+    FileRef {
+        path: String,
+        sha256: String,
+    },
 }
 
 #[cfg(test)]
@@ -562,9 +578,7 @@ mod tests {
             outcome: ToolOutcome::Ok,
             payload: "the page".into(),
             edit: None,
-            origin: Some(CallOrigin::Operator {
-                who: "dead".into(),
-            }),
+            origin: Some(CallOrigin::Operator { who: "dead".into() }),
         };
         let json = serde_json::to_string(&mine).unwrap();
         assert!(
@@ -651,7 +665,11 @@ mod tests {
         let TranscriptItem::User { speaker, .. } = item else {
             panic!("a user row");
         };
-        assert_eq!(speaker, Speaker::Operator, "an absent speaker is the operator");
+        assert_eq!(
+            speaker,
+            Speaker::Operator,
+            "an absent speaker is the operator"
+        );
         assert_eq!(speaker.as_str(), "operator");
 
         let wire = r#"{"type":"user","speaker":"agent","parts":[{"kind":"text","text":"hi"}]}"#;

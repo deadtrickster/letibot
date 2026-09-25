@@ -489,7 +489,11 @@ mod tests {
                         time_ms: 100,
                     };
                     let b = bar(&p, w, Palette::Colour);
-                    assert_eq!(width::width(&b), w, "cache {cache} processed {processed} w {w}");
+                    assert_eq!(
+                        width::width(&b),
+                        w,
+                        "cache {cache} processed {processed} w {w}"
+                    );
                 }
             }
         }
@@ -505,7 +509,11 @@ mod tests {
         };
         for w in [12usize, 20, 30, 50, 80, 120, 200] {
             let l = prefill_line(&p, w, Palette::Colour);
-            assert!(width::width(&l) <= w, "{w}: {} cols {l:?}", width::width(&l));
+            assert!(
+                width::width(&l) <= w,
+                "{w}: {} cols {l:?}",
+                width::width(&l)
+            );
             assert!(l.contains("prefill"), "{w}: {l:?}");
         }
     }

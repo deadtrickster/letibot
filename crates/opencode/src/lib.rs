@@ -427,9 +427,9 @@ impl Source {
                 r.get::<_, String>(0)
             })
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => ImportError::NoSuchSession {
-                    id: id.to_string(),
-                },
+                rusqlite::Error::QueryReturnedNoRows => {
+                    ImportError::NoSuchSession { id: id.to_string() }
+                }
                 other => ImportError::Sql(other.to_string()),
             })
     }

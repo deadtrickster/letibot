@@ -724,7 +724,11 @@ fn render_page(ctx: &mut InvokeCtx<'_>, req: &FetchRequest, page: FetchedPage) -
         req.format.as_str()
     );
 
-    if let Some(scratch) = ctx.backend.scratch_dir().filter(|_| ctx.backend.is_writable()) {
+    if let Some(scratch) = ctx
+        .backend
+        .scratch_dir()
+        .filter(|_| ctx.backend.is_writable())
+    {
         let path = scratch_path(&scratch, req.format, &page.body);
         match ctx.backend.write(&path, quarantined.as_bytes()) {
             Ok(()) => {

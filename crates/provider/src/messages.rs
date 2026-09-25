@@ -389,7 +389,10 @@ mod pairing_tests {
         );
         // And it goes BEFORE the user turn that followed, not at the end.
         let at = m.iter().position(|r| r["role"] == "tool").unwrap();
-        let next = m.iter().position(|r| r["content"] == "never mind, carry on").unwrap();
+        let next = m
+            .iter()
+            .position(|r| r["content"] == "never mind, carry on")
+            .unwrap();
         assert!(at < next, "the filler answers the call it belongs to");
     }
 
@@ -408,7 +411,12 @@ mod pairing_tests {
     fn only_the_missing_half_of_a_fan_out_is_filled() {
         let m = convert(
             "sys",
-            &[user("go"), calls(&["c1", "c2", "c3"]), result("c2"), user("next")],
+            &[
+                user("go"),
+                calls(&["c1", "c2", "c3"]),
+                result("c2"),
+                user("next"),
+            ],
         );
         assert_paired(&m);
         let tools: Vec<&Value> = m.iter().filter(|r| r["role"] == "tool").collect();

@@ -558,7 +558,9 @@ fn a_wait_on_a_job_the_harness_is_delivering_returns_at_once() {
 
     // The job is untouched — this declined to wait, it did not stop anything.
     let host = h.processes.clone().unwrap();
-    let view = host.job(&JobId(id.clone())).expect("the job is still known");
+    let view = host
+        .job(&JobId(id.clone()))
+        .expect("the job is still known");
     assert!(view.state.is_running(), "the wait must not stop the job");
     let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
 }
@@ -711,7 +713,10 @@ fn job_output_on_a_redirected_job_names_the_file_instead_of_an_empty_window() {
         .to_string(),
     );
     let id = job_id_anywhere(&r.render()).expect("a job id");
-    let o = h.call("job_output", &serde_json::json!({"job": id.clone()}).to_string());
+    let o = h.call(
+        "job_output",
+        &serde_json::json!({"job": id.clone()}).to_string(),
+    );
     let body = o.render();
     // **`out.log` is not enough, and that is the whole trap in this assertion.** The
     // fall-through's own body prints `command: …`, which contains the path too — so a test
@@ -722,7 +727,11 @@ fn job_output_on_a_redirected_job_names_the_file_instead_of_an_empty_window() {
         body.contains("redirected to") || body.contains("output goes to"),
         "the answer must say the output goes to the file, not merely print the command: {body}"
     );
-    for wrong in ["wrote nothing at all", "written nothing yet", "still running"] {
+    for wrong in [
+        "wrote nothing at all",
+        "written nothing yet",
+        "still running",
+    ] {
         assert!(
             !body.contains(wrong),
             "a redirected job answered as `{wrong}`: {body}"

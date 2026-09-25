@@ -97,7 +97,11 @@ impl Span {
 
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{} (bytes {}..{})", self.line, self.column, self.start, self.end)
+        write!(
+            f,
+            "{}:{} (bytes {}..{})",
+            self.line, self.column, self.start, self.end
+        )
     }
 }
 
@@ -330,7 +334,10 @@ impl RedirectOp {
     }
 
     pub fn writes(self) -> bool {
-        matches!(self, RedirectOp::Write | RedirectOp::Append | RedirectOp::ReadWrite)
+        matches!(
+            self,
+            RedirectOp::Write | RedirectOp::Append | RedirectOp::ReadWrite
+        )
     }
 
     pub fn reads(self) -> bool {
@@ -351,7 +358,10 @@ pub enum RedirectTarget {
     /// A here-document. `literal` is false when the delimiter was unquoted, i.e.
     /// the shell will expand the body — and then the body's own expansions are
     /// separately unresolvable.
-    HereDoc { literal: bool, body: String },
+    HereDoc {
+        literal: bool,
+        body: String,
+    },
     /// A here-string's word. It is stdin, not a file — reporting it as
     /// `RedirectTarget::File` would invent a read of a file named after the text,
     /// which is precisely what this grammar's error recovery does with `<<<` when it
@@ -552,7 +562,9 @@ impl Stage {
             return false;
         }
         !self.redirects.iter().any(|r| {
-            r.op.writes() && matches!(r.fd, None | Some(1)) && matches!(r.target, RedirectTarget::File(_))
+            r.op.writes()
+                && matches!(r.fd, None | Some(1))
+                && matches!(r.target, RedirectTarget::File(_))
         })
     }
 }
@@ -603,7 +615,10 @@ impl Normalised {
     /// so a caller must consult [`Normalised::is_resolved`] first or it is reading a
     /// list with silent holes. [`Normalised::unresolved_programs`] is the other half.
     pub fn binaries(&self) -> Vec<&str> {
-        self.stages.iter().filter_map(|s| s.program_name()).collect()
+        self.stages
+            .iter()
+            .filter_map(|s| s.program_name())
+            .collect()
     }
 
     /// The stages whose program nobody can name.
@@ -616,12 +631,18 @@ impl Normalised {
 
     /// Files written through a redirection, anywhere in the command.
     pub fn redirect_writes(&self) -> Vec<&Word> {
-        self.stages.iter().flat_map(|s| s.redirect_writes()).collect()
+        self.stages
+            .iter()
+            .flat_map(|s| s.redirect_writes())
+            .collect()
     }
 
     /// Files read through a redirection, anywhere in the command.
     pub fn redirect_reads(&self) -> Vec<&Word> {
-        self.stages.iter().flat_map(|s| s.redirect_reads()).collect()
+        self.stages
+            .iter()
+            .flat_map(|s| s.redirect_reads())
+            .collect()
     }
 
     /// The unresolvable constructs, for a refusal body — **one explanation per
@@ -727,7 +748,12 @@ pub fn normalise(source: &str) -> Normalised {
         out.unresolved.push(Unresolved {
             construct: Construct::ParseError,
             decides: Decides::Structure,
-            span: Span { start: 0, end: source.len(), line: 1, column: 0 },
+            span: Span {
+                start: 0,
+                end: source.len(),
+                line: 1,
+                column: 0,
+            },
             text: clip(source, 200),
             known_prefix: None,
             stage: None,
@@ -746,7 +772,12 @@ pub fn normalise(source: &str) -> Normalised {
             .map(|n| (Span::of(n), clip(src(n, source), 120)))
             .unwrap_or_else(|| {
                 (
-                    Span { start: 0, end: source.len(), line: 1, column: 0 },
+                    Span {
+                        start: 0,
+                        end: source.len(),
+                        line: 1,
+                        column: 0,
+                    },
                     clip(source, 120),
                 )
             });
@@ -811,7 +842,11 @@ fn certainty_of(ctx: &[Context]) -> Certainty {
     if ctx.iter().any(|c| {
         matches!(
             c,
-            Context::Loop | Context::Conditional | Context::AndThen | Context::OrElse | Context::Test
+            Context::Loop
+                | Context::Conditional
+                | Context::AndThen
+                | Context::OrElse
+                | Context::Test
         )
     }) {
         return Certainty::Conditional;
@@ -1008,14 +1043,28 @@ fn redirected(
         .filter(|&i| {
             !out.stages[i].context[depth.min(out.stages[i].context.len())..]
                 .iter()
-                .any(|c| matches!(c, Context::CommandSubstitution | Context::ProcessSubstitution))
+                .any(|c| {
+                    matches!(
+                        c,
+                        Context::CommandSubstitution | Context::ProcessSubstitution
+                    )
+                })
         })
         .collect();
     let single_owner = matches!(
         body_kind,
-        "command" | "declaration_command" | "unset_command" | "pipeline" | "list" | "redirected_statement"
+        "command"
+            | "declaration_command"
+            | "unset_command"
+            | "pipeline"
+            | "list"
+            | "redirected_statement"
     );
-    let owner = if single_owner { own.last().copied() } else { None };
+    let owner = if single_owner {
+        own.last().copied()
+    } else {
+        None
+    };
     match owner {
         Some(i) => out.stages[i].redirects.extend(reds),
         None => {
@@ -1037,8 +1086,13 @@ fn redirected(
 /// the here-document: what followed the `<<` operator on its line.
 fn is_continuation(k: &Node) -> bool {
     k.named
-        && !matches!(k.kind.as_str(),
-            "heredoc_start" | "heredoc_body" | "heredoc_end" | "file_redirect" | "herestring_redirect"
+        && !matches!(
+            k.kind.as_str(),
+            "heredoc_start"
+                | "heredoc_body"
+                | "heredoc_end"
+                | "file_redirect"
+                | "herestring_redirect"
         )
 }
 
@@ -1147,7 +1201,15 @@ fn collect_redirects(node: &Node, source: &str, out: &mut Normalised, into: &mut
             let w = kids(node)
                 .into_iter()
                 .find(|c| c.named)
-                .map(|c| word_of(c, source, out, Decides::RedirectTarget, Some(out.stages.len().saturating_sub(1))))
+                .map(|c| {
+                    word_of(
+                        c,
+                        source,
+                        out,
+                        Decides::RedirectTarget,
+                        Some(out.stages.len().saturating_sub(1)),
+                    )
+                })
                 .unwrap_or(Word::Literal(String::new()));
             into.push(Redirect {
                 op: RedirectOp::HereString,
@@ -1161,9 +1223,10 @@ fn collect_redirects(node: &Node, source: &str, out: &mut Normalised, into: &mut
             // `<<EOF > f` puts the file redirect inside the heredoc redirect.
             for child in &node.children {
                 if child.kind.as_str() == "file_redirect"
-                    && let Some(r) = file_redirect(child, source, out) {
-                        into.push(r);
-                    }
+                    && let Some(r) = file_redirect(child, source, out)
+                {
+                    into.push(r);
+                }
             }
         }
         _ => {
@@ -1201,8 +1264,7 @@ fn redirect_op(node: &Node) -> Option<RedirectOp> {
 
 fn file_redirect(node: &Node, source: &str, out: &mut Normalised) -> Option<Redirect> {
     let op = redirect_op(node)?;
-    let fd = child_field(node, "descriptor")
-        .and_then(|n| src(n, source).parse::<u32>().ok());
+    let fd = child_field(node, "descriptor").and_then(|n| src(n, source).parse::<u32>().ok());
     let dest = child_field(node, "destination");
     let target = match dest {
         Some(d) if op == RedirectOp::Duplicate && d.kind == "number" => {
@@ -1232,7 +1294,9 @@ fn heredoc_redirect(node: &Node, source: &str, out: &mut Normalised) -> Redirect
     let body_node = kids(node)
         .into_iter()
         .find(|c| c.kind.as_str() == "heredoc_body");
-    let body = body_node.map(|b| src(b, source).to_string()).unwrap_or_default();
+    let body = body_node
+        .map(|b| src(b, source).to_string())
+        .unwrap_or_default();
     if let Some(b) = body_node
         && !literal
         && kids(b).iter().any(|c| c.kind != "heredoc_content")
@@ -1415,7 +1479,11 @@ fn word_of(
     match resolve(node, source) {
         Resolved::Literal(s) => Word::Literal(s),
         Resolved::Glob(s) => Word::Glob(s),
-        Resolved::Blocked { construct, prefix, at } => {
+        Resolved::Blocked {
+            construct,
+            prefix,
+            at,
+        } => {
             let idx = out.unresolved.len();
             let why = why_of(&construct, decides);
             out.unresolved.push(Unresolved {
@@ -1500,12 +1568,20 @@ fn resolve<'t>(node: &'t Node, source: &str) -> Resolved<'t> {
                     at: node,
                 };
             }
-            if glob { Resolved::Glob(text) } else { Resolved::Literal(text) }
+            if glob {
+                Resolved::Glob(text)
+            } else {
+                Resolved::Literal(text)
+            }
         }
         // `'…'`: no expansion of any kind, and no globbing either.
         "raw_string" => {
             let t = src(node, source);
-            Resolved::Literal(t.trim_start_matches('\'').trim_end_matches('\'').to_string())
+            Resolved::Literal(
+                t.trim_start_matches('\'')
+                    .trim_end_matches('\'')
+                    .to_string(),
+            )
         }
         "number" | "test_operator" | "regex" => Resolved::Literal(src(node, source).to_string()),
         "ansi_c_string" => Resolved::Blocked {
@@ -1553,7 +1629,11 @@ fn resolve<'t>(node: &'t Node, source: &str) -> Resolved<'t> {
                         lit.push_str(&s);
                         glob = true;
                     }
-                    Resolved::Blocked { construct, prefix, at } => {
+                    Resolved::Blocked {
+                        construct,
+                        prefix,
+                        at,
+                    } => {
                         let mut p = lit;
                         if let Some(inner) = prefix {
                             p.push_str(&inner);
@@ -1575,7 +1655,11 @@ fn resolve<'t>(node: &'t Node, source: &str) -> Resolved<'t> {
                     at: node,
                 };
             }
-            if glob { Resolved::Glob(lit) } else { Resolved::Literal(lit) }
+            if glob {
+                Resolved::Glob(lit)
+            } else {
+                Resolved::Literal(lit)
+            }
         }
         other => match construct_of(other) {
             Some(construct) => Resolved::Blocked {
@@ -1599,7 +1683,9 @@ fn resolve<'t>(node: &'t Node, source: &str) -> Resolved<'t> {
 /// this kind" — which is not the same as "this kind is harmless".
 fn construct_of(kind: &str) -> Option<Construct> {
     Some(match kind {
-        "simple_expansion" | "expansion" => Construct::ParameterExpansion { name: String::new() },
+        "simple_expansion" | "expansion" => Construct::ParameterExpansion {
+            name: String::new(),
+        },
         "command_substitution" => Construct::CommandSubstitutionValue,
         "process_substitution" => Construct::ProcessSubstitutionPath,
         "arithmetic_expansion" => Construct::ArithmeticExpansion,
@@ -1616,7 +1702,9 @@ fn named(construct: Construct, node: &Node, source: &str) -> Construct {
         Construct::ParameterExpansion { .. } => {
             let name = kids(node)
                 .into_iter()
-                .find(|c| c.kind.as_str() == "variable_name" || c.kind.as_str() == "special_variable_name")
+                .find(|c| {
+                    c.kind.as_str() == "variable_name" || c.kind.as_str() == "special_variable_name"
+                })
                 .map(|c| src(c, source).to_string())
                 .unwrap_or_else(|| src(node, source).trim_start_matches('$').to_string());
             Construct::ParameterExpansion { name }
@@ -1745,19 +1833,11 @@ mod tests {
         assert!(x.binaries().contains(&"cat"));
         let p = x.unresolved_programs();
         assert_eq!(p.len(), 1);
-        assert!(
-            x.unresolved
-                .iter()
-                .any(|u| u.decides == Decides::Program
-                    && matches!(&u.construct, Construct::ParameterExpansion { name } if name == "X"))
-        );
+        assert!(x.unresolved.iter().any(|u| u.decides == Decides::Program
+            && matches!(&u.construct, Construct::ParameterExpansion { name } if name == "X")));
         // And the assignment's value is unresolvable for a different reason.
-        assert!(
-            x.unresolved
-                .iter()
-                .any(|u| u.decides == Decides::Assignment
-                    && u.construct == Construct::CommandSubstitutionValue)
-        );
+        assert!(x.unresolved.iter().any(|u| u.decides == Decides::Assignment
+            && u.construct == Construct::CommandSubstitutionValue));
     }
 
     #[test]
@@ -1849,16 +1929,28 @@ mod tests {
     #[test]
     fn a_stage_in_a_function_body_is_not_claimed_to_run() {
         let x = n("nuke() { rm -rf /; }\nls");
-        let rm = x.stages.iter().find(|s| s.program_name() == Some("rm")).unwrap();
+        let rm = x
+            .stages
+            .iter()
+            .find(|s| s.program_name() == Some("rm"))
+            .unwrap();
         assert_eq!(rm.certainty, Certainty::OnlyIfCalled);
-        let ls = x.stages.iter().find(|s| s.program_name() == Some("ls")).unwrap();
+        let ls = x
+            .stages
+            .iter()
+            .find(|s| s.program_name() == Some("ls"))
+            .unwrap();
         assert_eq!(ls.certainty, Certainty::Always);
     }
 
     #[test]
     fn the_guarded_side_of_a_list_is_conditional() {
         let x = n("test -f x && rm x");
-        let rm = x.stages.iter().find(|s| s.program_name() == Some("rm")).unwrap();
+        let rm = x
+            .stages
+            .iter()
+            .find(|s| s.program_name() == Some("rm"))
+            .unwrap();
         assert_eq!(rm.certainty, Certainty::Conditional);
         assert!(rm.context.contains(&Context::AndThen));
     }
@@ -1866,7 +1958,11 @@ mod tests {
     #[test]
     fn a_prefix_assignment_belongs_to_its_stage_and_a_statement_one_does_not() {
         let x = n("VAR=1 env; Y=2");
-        let env = x.stages.iter().find(|s| s.program_name() == Some("env")).unwrap();
+        let env = x
+            .stages
+            .iter()
+            .find(|s| s.program_name() == Some("env"))
+            .unwrap();
         assert_eq!(env.assignments.len(), 1);
         assert_eq!(env.assignments[0].name, "VAR");
         assert_eq!(x.assignments.len(), 1);
@@ -1876,9 +1972,17 @@ mod tests {
     #[test]
     fn a_subshell_and_a_loop_are_recorded_as_context_not_flattened_away() {
         let x = n("(cd /x && make) ; for f in *.rs; do wc -l $f; done");
-        let make = x.stages.iter().find(|s| s.program_name() == Some("make")).unwrap();
+        let make = x
+            .stages
+            .iter()
+            .find(|s| s.program_name() == Some("make"))
+            .unwrap();
         assert!(make.context.contains(&Context::Subshell));
-        let wc = x.stages.iter().find(|s| s.program_name() == Some("wc")).unwrap();
+        let wc = x
+            .stages
+            .iter()
+            .find(|s| s.program_name() == Some("wc"))
+            .unwrap();
         assert!(wc.context.contains(&Context::Loop));
         // `$f` is unresolvable even though a human can see the loop's list.
         assert!(!x.is_resolved());
@@ -2029,7 +2133,6 @@ pub fn shape(n: &Normalised) -> String {
     out
 }
 
-
 #[cfg(test)]
 mod redirect_ownership {
     //! Which stage a hoisted redirection belongs to, and that the commands the
@@ -2046,7 +2149,10 @@ mod redirect_ownership {
     }
 
     fn programs(n: &Normalised) -> Vec<&str> {
-        n.stages.iter().map(|s| s.program_name().unwrap_or("?")).collect()
+        n.stages
+            .iter()
+            .map(|s| s.program_name().unwrap_or("?"))
+            .collect()
     }
 
     #[test]
@@ -2062,7 +2168,10 @@ mod redirect_ownership {
         let n = normalise("a | b > f");
         assert_eq!(programs(&n), ["a", "b"]);
         assert!(n.stages[0].redirects.is_empty());
-        assert_eq!(n.stages[1].redirect_writes(), vec![&Word::Literal("f".into())]);
+        assert_eq!(
+            n.stages[1].redirect_writes(),
+            vec![&Word::Literal("f".into())]
+        );
         // The substitution inside the last member ran to make a word; the
         // redirection is not its.
         let n = normalise("a && b $(c) > f");
@@ -2100,7 +2209,10 @@ mod redirect_ownership {
         let n = normalise("cat > f.sh <<'EOF' && chmod +x f.sh\nbody\nEOF");
         assert!(n.is_resolved(), "{:?}", n.unresolved);
         assert_eq!(programs(&n), ["cat", "chmod"]);
-        assert_eq!(n.stages[0].redirect_writes(), vec![&Word::Literal("f.sh".into())]);
+        assert_eq!(
+            n.stages[0].redirect_writes(),
+            vec![&Word::Literal("f.sh".into())]
+        );
         assert_eq!(heredoc_of(&n.stages[0]), Some("body\n"));
         assert!(n.stages[1].context.contains(&Context::AndThen));
         assert_eq!(n.stages[1].argv.len(), 2);
@@ -2125,9 +2237,7 @@ mod unresolved_reporting {
     /// same 220-character sentence.
     #[test]
     fn one_cause_is_explained_once_however_many_places_it_has() {
-        let n = normalise(
-            "R=/tmp/x; grep q $R/a.rs $R/b.rs $R/c.rs; ls $R/d $R/e",
-        );
+        let n = normalise("R=/tmp/x; grep q $R/a.rs $R/b.rs $R/c.rs; ls $R/d $R/e");
         let report = n.unresolved_report();
         assert!(n.unresolved.len() >= 5, "{} entries", n.unresolved.len());
 
@@ -2142,7 +2252,11 @@ mod unresolved_reporting {
         // rather than dropped — a summary may never be silent about what it
         // summarised.
         assert!(report.contains("… and 1 more place(s)"), "{report}");
-        assert!(report.lines().count() <= 7, "{} lines:\n{report}", report.lines().count());
+        assert!(
+            report.lines().count() <= 7,
+            "{} lines:\n{report}",
+            report.lines().count()
+        );
     }
 
     /// Two different causes keep two explanations: the grouping is by the
@@ -2156,7 +2270,10 @@ mod unresolved_reporting {
         assert!(report.contains("command_substitution"), "{report}");
         // Two headers, one per cause.
         assert_eq!(
-            report.lines().filter(|l| l.starts_with("  ") && !l.starts_with("      ")).count(),
+            report
+                .lines()
+                .filter(|l| l.starts_with("  ") && !l.starts_with("      "))
+                .count(),
             2,
             "{report}"
         );

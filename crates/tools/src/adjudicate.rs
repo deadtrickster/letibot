@@ -4632,7 +4632,10 @@ mod tests {
         /// **The fixture now carries both halves of an exchange** (R11), because the
         /// corpus columns have to come from the adjudicator that asked an oracle.
         fn last_brief(&self) -> Option<String> {
-            Some(format!("brief — {}\ntrail: 1 operator message(s) of 1 scanned", self.id))
+            Some(format!(
+                "brief — {}\ntrail: 1 operator message(s) of 1 scanned",
+                self.id
+            ))
         }
 
         fn last_reply(&self) -> Option<String> {
@@ -4781,7 +4784,10 @@ mod tests {
             .shown
             .as_deref()
             .expect("an oracle was consulted, so the brief is on the row");
-        assert!(shown.contains("model:test"), "not the oracle's brief: {shown}");
+        assert!(
+            shown.contains("model:test"),
+            "not the oracle's brief: {shown}"
+        );
         assert!(
             !shown.starts_with("decision —"),
             "the person's card is on a row an oracle decided: {shown}"
@@ -4800,7 +4806,10 @@ mod tests {
         let _ = g.admit(&call("edit", &json!({"path": "src/lib.rs"})));
         let row = g.corpus().remove(0);
         assert!(row.asked, "the person answered");
-        assert_eq!(row.shown, None, "a person's answer is not an oracle's brief");
+        assert_eq!(
+            row.shown, None,
+            "a person's answer is not an oracle's brief"
+        );
         assert_eq!(row.reply, None, "and it is not a reply either");
 
         // **The model's own verdict admits, and that path uses to file nothing at all.**
@@ -4816,7 +4825,9 @@ mod tests {
             "the model decided this one: {row:?}"
         );
         assert!(
-            row.shown.as_deref().is_some_and(|s| s.contains("model:test")),
+            row.shown
+                .as_deref()
+                .is_some_and(|s| s.contains("model:test")),
             "the model decided and its brief was not filed: {:?}",
             row.shown
         );
@@ -5016,8 +5027,14 @@ mod tests {
         // settle the *second* identical call — only for a `MayApprove` tier, which an
         // exec call is — so what this asks of two shapes is the honest version of
         // *nobody but the person settles these*.
-        for cmd in ["/bin/sed -n 1p /w/src/lib.rs", "/usr/bin/awk {print} /w/src/lib.rs"] {
-            assert_eq!(g.admit(&bash(&json!({"command": cmd}))), GateDecision::Admit);
+        for cmd in [
+            "/bin/sed -n 1p /w/src/lib.rs",
+            "/usr/bin/awk {print} /w/src/lib.rs",
+        ] {
+            assert_eq!(
+                g.admit(&bash(&json!({"command": cmd}))),
+                GateDecision::Admit
+            );
         }
         assert_eq!(
             asks.load(Ordering::SeqCst),
@@ -5928,10 +5945,19 @@ mod tests {
         // the guardrails are the requirement, so they are asserted as loudly as the yes.
         for (cmd, why) in [
             ("cd /w && frobnicate src/lib.rs", "an unknown program"),
-            ("cd /w && cat src/lib.rs | tee /w/copy", "a pipeline into a writer"),
-            ("cd /w && cat src/lib.rs > /w/copy", "a redirection into a writer"),
+            (
+                "cd /w && cat src/lib.rs | tee /w/copy",
+                "a pipeline into a writer",
+            ),
+            (
+                "cd /w && cat src/lib.rs > /w/copy",
+                "a redirection into a writer",
+            ),
             ("cat /etc/passwd", "a read outside the boundary"),
-            ("cd /w && sed -n 1p src/lib.rs", "a program that can execute"),
+            (
+                "cd /w && sed -n 1p src/lib.rs",
+                "a program that can execute",
+            ),
             ("cd /w && rm -f src/lib.rs", "a deletion"),
         ] {
             let (mut g, asked) = gate();
@@ -5962,8 +5988,15 @@ mod tests {
         let row = g.request_for(&bash(&secret));
         assert_eq!(row.class.access, Access::Exec);
         assert!(matches!(row.tier, Tier::Blocked { .. }), "{:?}", row.tier);
-        assert!(matches!(g.admit(&bash(&secret)), GateDecision::Refuse { .. }));
-        assert_eq!(asked.load(Ordering::Relaxed), 0, "a secret reached a person");
+        assert!(matches!(
+            g.admit(&bash(&secret)),
+            GateDecision::Refuse { .. }
+        ));
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            0,
+            "a secret reached a person"
+        );
 
         // **And a line the parser refused is refused**, which is a stronger statement
         // than "it asks": the ruling's whole payment is that the parser's refusals are

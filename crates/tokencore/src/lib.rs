@@ -51,7 +51,6 @@ pub use control::{
 };
 pub use ledger::{LedgerRow, PromptSpan, TokenLedger, chain, hash_tokens};
 pub use region::TokenRegion;
-pub use store::{SessionRecord, StablePrefixRecord, Store};
 /// **The SQL driver, re-exported.** `Store::connection` already hands out a
 /// `&rusqlite::Connection`, so the type is public API here whether or not the
 /// name is. A caller that needs to write a query against it — the daemon's
@@ -59,6 +58,7 @@ pub use store::{SessionRecord, StablePrefixRecord, Store};
 /// two versions of it in one tree makes `&Connection` and `&Connection` two
 /// unrelated types with one spelling.
 pub use rusqlite;
+pub use store::{SessionRecord, StablePrefixRecord, Store};
 pub use vocab::{ResolveCause, TokenId, Vocab};
 
 #[cfg(test)]
@@ -169,12 +169,19 @@ mod tests {
     #[test]
     fn which_half_of_the_round_trip_eats_the_space() {
         let v = vocab();
-        let with = v.tokenize_text("if self.session_id != s.session_id {").unwrap();
-        let without = v.tokenize_text("if self.session_id!= s.session_id {").unwrap();
+        let with = v
+            .tokenize_text("if self.session_id != s.session_id {")
+            .unwrap();
+        let without = v
+            .tokenize_text("if self.session_id!= s.session_id {")
+            .unwrap();
         eprintln!("with space:    {with:?}");
         eprintln!("without space: {without:?}");
         eprintln!("detok(with)    = {:?}", v.detokenize(&with, false).unwrap());
-        eprintln!("detok(without) = {:?}", v.detokenize(&without, false).unwrap());
+        eprintln!(
+            "detok(without) = {:?}",
+            v.detokenize(&without, false).unwrap()
+        );
         assert_ne!(
             with, without,
             "TOKENIZE is lossy: `x != y` and `x!= y` produce identical ids, so the \
@@ -346,7 +353,10 @@ mod tests {
             "a startup failure must name every broken literal, not the first: {err}"
         );
         let text = err.to_string();
-        assert!(text.contains("<|no_such_thing|>") && text.contains("hi"), "{text}");
+        assert!(
+            text.contains("<|no_such_thing|>") && text.contains("hi"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -492,7 +502,9 @@ mod tests {
                 RenderSpan::Text(text.clone()),
                 ctl(ControlRole::ThinkClose),
             ],
-            TranscriptItem::Assistant { text, tool_calls, .. } => {
+            TranscriptItem::Assistant {
+                text, tool_calls, ..
+            } => {
                 let mut spans = vec![
                     ctl(ControlRole::TurnStartUser),
                     RenderSpan::Text(format!("assistant\n{text}")),
@@ -581,7 +593,10 @@ mod tests {
             let live = ledger.tokens();
 
             for (earlier, earlier_tokens) in spans_so_far.iter().zip(&tokens_so_far) {
-                assert!(now.extends(earlier), "request {k} did not extend an earlier one");
+                assert!(
+                    now.extends(earlier),
+                    "request {k} did not extend an earlier one"
+                );
                 assert_eq!(earlier.offset(), 0);
                 assert_eq!(
                     &live[..earlier_tokens.len()],
@@ -649,7 +664,10 @@ mod tests {
         // tokenizer is not the thing that would make them differ.
         let v = vocab();
         let map = resolve(&v, &qwen()).unwrap();
-        let prefix = StablePrefix { system: "sys".into(), tools_json: vec!["{}".into()] };
+        let prefix = StablePrefix {
+            system: "sys".into(),
+            tools_json: vec!["{}".into()],
+        };
         let items = conversation(6);
         let spans = render(&prefix, &items);
 
@@ -703,8 +721,8 @@ mod tests {
                 workspace_root: "/w".into(),
                 owner: "deadtrickster".into(),
                 role: None,
-            approvers: vec![],
-            parent_session_id: None,
+                approvers: vec![],
+                parent_session_id: None,
             })
             .unwrap();
         store.put_transcript("t", "s", &prefix_id).unwrap();
@@ -713,7 +731,9 @@ mod tests {
         for (seq, item) in conversation(12).iter().enumerate() {
             let toks = tokenize_spans(&v, &map, &render_item(item)).unwrap();
             let row = ledger.append(&format!("i{seq}"), &toks).unwrap().clone();
-            store.append_item("t", seq as u32, item, &row, &toks).unwrap();
+            store
+                .append_item("t", seq as u32, item, &row, &toks)
+                .unwrap();
         }
 
         // The daemon comes back up. Nothing is re-rendered and no vocabulary is
@@ -801,13 +821,13 @@ mod tests {
                 return;
             };
             let ours = v.tokenize_text(probe).unwrap();
-            let theirs: Vec<u32> = serde_json::from_str::<serde_json::Value>(&reply)
-                .unwrap()["tokens"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|t| t.as_u64().unwrap() as u32)
-                .collect();
+            let theirs: Vec<u32> =
+                serde_json::from_str::<serde_json::Value>(&reply).unwrap()["tokens"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t.as_u64().unwrap() as u32)
+                    .collect();
             assert_eq!(ours, theirs, "disagreed with the server on {probe:?}");
             checked += 1;
         }
@@ -821,13 +841,13 @@ mod tests {
         })
         .to_string();
         if let Some(reply) = post("/tokenize", &body) {
-            let theirs: Vec<u32> = serde_json::from_str::<serde_json::Value>(&reply).unwrap()
-                ["tokens"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|t| t.as_u64().unwrap() as u32)
-                .collect();
+            let theirs: Vec<u32> =
+                serde_json::from_str::<serde_json::Value>(&reply).unwrap()["tokens"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t.as_u64().unwrap() as u32)
+                    .collect();
             // llama-server's /tokenize parses specials by default, so this is its
             // *control* answer and must match resolve_control, not tokenize_text.
             assert_eq!(theirs, vec![v.resolve_control("<|im_start|>").unwrap()]);

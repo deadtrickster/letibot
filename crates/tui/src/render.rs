@@ -22,7 +22,6 @@
 //! title, a count of what was elided, and its last N lines — which is what a reader
 //! of a streaming model actually wants, because the interesting end is the end.
 
-
 use letibot_ui::style::{Painter, Palette, Role};
 
 use rano::syntax::Stream;
@@ -279,10 +278,11 @@ impl CodePaint {
                     painted.extend(&chars[cursor..start]);
                 }
                 let text: String = chars[start..end].iter().collect();
-                painted.push_str(&self.painter.paint(
-                    letibot_ui::highlight::role_for_capture(&s.name),
-                    &text,
-                ));
+                painted.push_str(
+                    &self
+                        .painter
+                        .paint(letibot_ui::highlight::role_for_capture(&s.name), &text),
+                );
                 cursor = end;
             }
             painted.extend(&chars[cursor.min(chars.len())..]);
@@ -482,7 +482,10 @@ fn table_lines(
     // The column count is the header's; a row with more cells than the header has
     // is showing something the header does not name, so the table widens to it
     // rather than dropping it.
-    let cols = head.len().max(rows.iter().map(Vec::len).max().unwrap_or(0)).max(1);
+    let cols = head
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(0))
+        .max(1);
     fn cell<'a>(r: &'a [Vec<Run>], i: usize) -> &'a [Run] {
         r.get(i).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -533,7 +536,11 @@ fn table_lines(
                     row.push_str(&sep);
                 }
                 let text = wrapped[i].get(line).cloned().unwrap_or_default();
-                row.push_str(&pad(&text, widths[i], align.get(i).copied().unwrap_or(Align::Left)));
+                row.push_str(&pad(
+                    &text,
+                    widths[i],
+                    align.get(i).copied().unwrap_or(Align::Left),
+                ));
             }
             // The last column's padding is trailing whitespace on the screen and
             // in a copy-paste; the columns are already established by the ones
@@ -573,7 +580,12 @@ fn fit_columns(natural: &[usize], available: usize) -> Vec<usize> {
     let mut widths = vec![0usize; n];
     let mut settled = vec![false; n];
     loop {
-        let taken: usize = widths.iter().zip(&settled).filter(|(_, s)| **s).map(|(w, _)| *w).sum();
+        let taken: usize = widths
+            .iter()
+            .zip(&settled)
+            .filter(|(_, s)| **s)
+            .map(|(w, _)| *w)
+            .sum();
         let free = settled.iter().filter(|s| !**s).count();
         if free == 0 {
             break;
@@ -1022,9 +1034,18 @@ mod tests {
     #[test]
     fn wrapping_counts_visible_columns_not_escape_bytes() {
         let runs = vec![
-            Run { text: "a ".into(), style: InlineStyle::Plain },
-            Run { text: "code".into(), style: InlineStyle::Code },
-            Run { text: " b".into(), style: InlineStyle::Plain },
+            Run {
+                text: "a ".into(),
+                style: InlineStyle::Plain,
+            },
+            Run {
+                text: "code".into(),
+                style: InlineStyle::Code,
+            },
+            Run {
+                text: " b".into(),
+                style: InlineStyle::Plain,
+            },
         ];
         let coloured = paint_runs(&runs, Painter::new(Palette::Colour));
         assert!(coloured.len() > 10);
@@ -1042,10 +1063,22 @@ mod tests {
     #[test]
     fn the_renderer_sees_styles_not_markers() {
         let runs = vec![
-            Run { text: "plain ".into(), style: InlineStyle::Plain },
-            Run { text: "bold".into(), style: InlineStyle::Bold },
-            Run { text: " and ".into(), style: InlineStyle::Plain },
-            Run { text: "code".into(), style: InlineStyle::Code },
+            Run {
+                text: "plain ".into(),
+                style: InlineStyle::Plain,
+            },
+            Run {
+                text: "bold".into(),
+                style: InlineStyle::Bold,
+            },
+            Run {
+                text: " and ".into(),
+                style: InlineStyle::Plain,
+            },
+            Run {
+                text: "code".into(),
+                style: InlineStyle::Code,
+            },
         ];
         let painted = paint_runs(&runs, Painter::new(Palette::Colour));
         assert!(painted.contains(sgr::BOLD), "{painted:?}");
@@ -1219,11 +1252,18 @@ mod tables {
         | `main` | moved to `7056c64` (your intent + plan commits) | — |\n";
 
     fn cfg(width: usize) -> RenderConfig {
-        RenderConfig { width, color: false, ..RenderConfig::default() }
+        RenderConfig {
+            width,
+            color: false,
+            ..RenderConfig::default()
+        }
     }
 
     fn render(src: &str, width: usize) -> Vec<String> {
-        lex(src).iter().flat_map(|b| render_block(b, &cfg(width))).collect()
+        lex(src)
+            .iter()
+            .flat_map(|b| render_block(b, &cfg(width)))
+            .collect()
     }
 
     /// A cell's plain text. The model holds runs; a test asserting on a table's
@@ -1312,17 +1352,38 @@ mod tables {
         let out = render(BOARD, 120);
         let screen = out.join("\n");
         // Every cell's text survives.
-        for want in ["branch", "autocompact", "1129111", "webfetch", "f363cb0", "harnessd offline", "7056c64"] {
+        for want in [
+            "branch",
+            "autocompact",
+            "1129111",
+            "webfetch",
+            "f363cb0",
+            "harnessd offline",
+            "7056c64",
+        ] {
             assert!(screen.contains(want), "{want} missing:\n{screen}");
         }
         // The separator column sits at the same place on the header and on the
         // first body row — which is the whole claim a table makes.
-        let bar = |l: &str| l.char_indices().filter(|(_, c)| *c == '│').map(|(i, _)| i).collect::<Vec<_>>();
+        let bar = |l: &str| {
+            l.char_indices()
+                .filter(|(_, c)| *c == '│')
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>()
+        };
         assert!(!bar(&out[0]).is_empty(), "no column separators:\n{screen}");
-        assert_eq!(bar(&out[0]), bar(&out[2]), "header and first row disagree:\n{screen}");
+        assert_eq!(
+            bar(&out[0]),
+            bar(&out[2]),
+            "header and first row disagree:\n{screen}"
+        );
         // Nothing runs past the terminal.
         for l in &out {
-            assert!(visible_width(l) <= 120, "{} columns: {l:?}", visible_width(l));
+            assert!(
+                visible_width(l) <= 120,
+                "{} columns: {l:?}",
+                visible_width(l)
+            );
         }
     }
 
@@ -1331,7 +1392,11 @@ mod tables {
         let out = render(BOARD, 60);
         let screen = out.join("\n");
         for l in &out {
-            assert!(visible_width(l) <= 60, "{} columns: {l:?}", visible_width(l));
+            assert!(
+                visible_width(l) <= 60,
+                "{} columns: {l:?}",
+                visible_width(l)
+            );
         }
         // The long status text is wrapped, not cut: every word still there.
         assert!(screen.contains("harnessd"), "{screen}");
@@ -1344,10 +1409,18 @@ mod tables {
     fn alignment_and_escaped_pipes_are_honoured() {
         let src = "| n | name | size |\n|--:|:----:|:-----|\n| 1 | a\\|b | wide |\n";
         let blocks = lex(src);
-        let Block::Table { align, rows, .. } = &blocks[0] else { panic!("{blocks:#?}") };
+        let Block::Table { align, rows, .. } = &blocks[0] else {
+            panic!("{blocks:#?}")
+        };
         assert_eq!(align, &[Align::Right, Align::Center, Align::Left]);
-        assert_eq!(rows[0][1], vec![Run { text: "a|b".into(), style: InlineStyle::Plain }],
-            "an escaped pipe is a pipe, not a cell break");
+        assert_eq!(
+            rows[0][1],
+            vec![Run {
+                text: "a|b".into(),
+                style: InlineStyle::Plain
+            }],
+            "an escaped pipe is a pipe, not a cell break"
+        );
         let out = render(src, 40);
         // Right-aligned `n`: the digit sits at the column's right edge, under the
         // header's own right edge.
@@ -1391,7 +1464,11 @@ mod inline_render {
     use crate::markdown::lex;
 
     fn cfg(width: usize) -> RenderConfig {
-        RenderConfig { width, color: true, ..RenderConfig::default() }
+        RenderConfig {
+            width,
+            color: true,
+            ..RenderConfig::default()
+        }
     }
 
     /// The whole point of the workstream, asserted on the rendered output: a model's
@@ -1473,7 +1550,10 @@ done
             assert!(text.contains(word), "{word:?} is missing from: {text}");
         }
         assert!(!text.contains("**"), "{text}");
-        assert!(!text.contains("|--:"), "the delimiter row reached the screen: {text}");
+        assert!(
+            !text.contains("|--:"),
+            "the delimiter row reached the screen: {text}"
+        );
         // The hashes *do* stay, and deliberately: `render_block`'s heading arm keeps
         // them faint so the level survives a monochrome palette. What must not reach
         // the screen is a marker *inside* prose.
@@ -1508,7 +1588,10 @@ done
             );
         }
         assert!(out.contains(sgr::BOLD), "nothing came out bold:\n{out:?}");
-        assert!(out.contains(sgr::CYAN), "nothing came out as code:\n{out:?}");
+        assert!(
+            out.contains(sgr::CYAN),
+            "nothing came out as code:\n{out:?}"
+        );
         // Every item is still on the screen, and the last line of the 100-line fence.
         for n in 1..=10 {
             assert!(text.contains(&format!("\n{n}. ")), "item {n} is missing");
@@ -1537,15 +1620,17 @@ done
     }
 }
 
-
-
 #[cfg(test)]
 mod a_fence_is_coloured_only_if_it_names_a_language {
     use super::*;
     use crate::markdown::lex;
 
     fn cfg() -> RenderConfig {
-        RenderConfig { width: 60, color: true, ..RenderConfig::default() }
+        RenderConfig {
+            width: 60,
+            color: true,
+            ..RenderConfig::default()
+        }
     }
 
     /// The language in the info string is what gets coloured, and nothing else is.
@@ -1564,7 +1649,10 @@ mod a_fence_is_coloured_only_if_it_names_a_language {
         let named = lex("```rust\nfn main() {}\n```\n");
         let out = render_block(&named[0], &cfg()).join("\n");
         assert!(out.contains("┌─ rust"), "{out:?}");
-        assert!(out.contains(sgr::MAGENTA), "the keyword is not coloured: {out:?}");
+        assert!(
+            out.contains(sgr::MAGENTA),
+            "the keyword is not coloured: {out:?}"
+        );
 
         let bare = lex("```\nfn main() {}\n```\n");
         let out = render_block(&bare[0], &cfg()).join("\n");
@@ -1590,7 +1678,10 @@ mod a_fence_is_coloured_only_if_it_names_a_language {
         assert_eq!(quoted.len(), 1, "{quoted:#?}");
         let out = render_block(&quoted[0], &cfg()).join("\n");
         assert!(out.contains("┌─ code"), "{out:?}");
-        assert!(!out.contains("┌─ rust"), "the inner fence was interpreted: {out:?}");
+        assert!(
+            !out.contains("┌─ rust"),
+            "the inner fence was interpreted: {out:?}"
+        );
         // Not one byte of the demonstration was eaten.
         for line in ["```rust", "let a = 1;", "```"] {
             assert!(out.contains(line), "{line:?} is missing from {out:?}");
@@ -1617,13 +1708,19 @@ mod code_fences_are_coloured_by_rano {
     use crate::markdown::lex;
 
     fn cfg() -> RenderConfig {
-        RenderConfig { width: 72, color: true, ..RenderConfig::default() }
+        RenderConfig {
+            width: 72,
+            color: true,
+            ..RenderConfig::default()
+        }
     }
 
     fn painted(fence: &str, body: &str) -> String {
         let src = format!("```{fence}\n{body}```\n");
         let b = lex(&src);
-        let Some(Block::Code { .. }) = b.first() else { panic!("not a code block: {b:#?}") };
+        let Some(Block::Code { .. }) = b.first() else {
+            panic!("not a code block: {b:#?}")
+        };
         render_block(&b[0], &cfg()).join("\n")
     }
 
@@ -1652,20 +1749,34 @@ mod code_fences_are_coloured_by_rano {
         for (fence, body, header) in [
             ("tsx", "const App = () => <div>hi</div>;\n", "tsx"),
             ("lua", "local function f(x)\n  return x + 1\nend\n", "lua"),
-            ("ruby", "def greet(name)\n  puts \"hi #{name}\"\nend\n", "ruby"),
-            ("diff", "--- a/f.rs\n+++ b/f.rs\n@@ -1 +1 @@\n-old\n+new\n", "diff"),
+            (
+                "ruby",
+                "def greet(name)\n  puts \"hi #{name}\"\nend\n",
+                "ruby",
+            ),
+            (
+                "diff",
+                "--- a/f.rs\n+++ b/f.rs\n@@ -1 +1 @@\n-old\n+new\n",
+                "diff",
+            ),
             ("clojure", "(defn f [x] (+ x 1))\n", "clojure"),
             ("sql", "SELECT id FROM t WHERE n > 1;\n", "sql"),
         ] {
             let out = painted(fence, body);
-            assert!(out.contains(header), "{fence}: no `{header}` in the header: {out:?}");
+            assert!(
+                out.contains(header),
+                "{fence}: no `{header}` in the header: {out:?}"
+            );
             assert!(
                 out.contains('\x1b'),
                 "{fence} was rendered with no colour at all: {out:?}"
             );
             // And the text survives the painting, which is the invariant everything else
             // rests on.
-            assert!(strip(&out).contains(body.lines().next().unwrap()), "{fence}");
+            assert!(
+                strip(&out).contains(body.lines().next().unwrap()),
+                "{fence}"
+            );
         }
     }
 
@@ -1674,14 +1785,23 @@ mod code_fences_are_coloured_by_rano {
     #[test]
     fn the_header_names_the_grammar_that_ran() {
         assert!(painted("rust", "fn main() {}\n").contains("┌─ rust"));
-        assert!(painted("rs", "fn main() {}\n").contains("┌─ rust"), "`rs` is rust");
+        assert!(
+            painted("rs", "fn main() {}\n").contains("┌─ rust"),
+            "`rs` is rust"
+        );
         assert!(painted("ts", "const x = 1;\n").contains("┌─ typescript"));
-        assert!(painted("sh", "echo hi\n").contains("┌─ bash"), "`sh` is bash");
+        assert!(
+            painted("sh", "echo hi\n").contains("┌─ bash"),
+            "`sh` is bash"
+        );
         // A language rano has no grammar for keeps the fence's own word, uncoloured —
         // naming a language we are not colouring is honest, inventing one is not.
         let out = painted("brainfuck", "+[->+<]\n");
         assert!(out.contains("┌─ brainfuck"), "{out:?}");
-        assert!(!out.contains('\x1b') || !out.contains("\x1b[35m"), "invented a grammar");
+        assert!(
+            !out.contains('\x1b') || !out.contains("\x1b[35m"),
+            "invented a grammar"
+        );
         assert_eq!(strip(&out), "┌─ brainfuck\n│ +[->+<]\n└─", "{out:?}");
     }
 
@@ -1726,11 +1846,17 @@ mod code_fences_are_coloured_by_rano {
         // **A macro is a function though only `!` follows it.** The old lexer looked for
         // `(` immediately after the word, found `!(`, and left the name plain.
         let out = painted("rust", "println!(\"hi\");\n");
-        assert!(out.contains("\x1b[34m"), "`println!` is not a function: {out:?}");
+        assert!(
+            out.contains("\x1b[34m"),
+            "`println!` is not a function: {out:?}"
+        );
 
         // **A Python decorator is a function.** Not in the old lexer's model at all.
         let out = painted("python", "@decorator\ndef f():\n    pass\n");
-        assert!(out.contains("\x1b[34m@decorator"), "not a function: {out:?}");
+        assert!(
+            out.contains("\x1b[34m@decorator"),
+            "not a function: {out:?}"
+        );
     }
 
     /// A block comment **closing** lines later is a comment, which the old lexer needed a

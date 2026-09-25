@@ -844,7 +844,9 @@ impl ExecBackend for HostBackend {
     }
 
     fn scratch_dir(&self) -> Option<String> {
-        self.scratch.as_ref().map(|p| p.to_string_lossy().to_string())
+        self.scratch
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
     }
 
     fn home_path(&self) -> Option<String> {

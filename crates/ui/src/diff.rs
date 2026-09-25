@@ -152,7 +152,9 @@ pub fn diff_lines_with(old: &[&str], new: &[&str], max_d: usize) -> Diff {
         lo += 1;
     }
     let mut hi = 0usize;
-    while hi < old.len() - lo && hi < new.len() - lo && old[old.len() - 1 - hi] == new[new.len() - 1 - hi]
+    while hi < old.len() - lo
+        && hi < new.len() - lo
+        && old[old.len() - 1 - hi] == new[new.len() - 1 - hi]
     {
         hi += 1;
     }
@@ -336,8 +338,16 @@ pub fn hunks(d: &Diff, context: usize) -> Vec<Hunk> {
             }
         }
         out.push(Hunk {
-            old_start: if old_start == usize::MAX { 0 } else { old_start },
-            new_start: if new_start == usize::MAX { 0 } else { new_start },
+            old_start: if old_start == usize::MAX {
+                0
+            } else {
+                old_start
+            },
+            new_start: if new_start == usize::MAX {
+                0
+            } else {
+                new_start
+            },
             rows,
         });
         i = j + 1;
@@ -533,7 +543,11 @@ fn row_lines(
     // rule the split renderer's number follows — and stays dim on a context
     // row.
     let gut = cfg.palette.paint(
-        if role == Role::Plain { Role::Faint } else { role.foreground() },
+        if role == Role::Plain {
+            Role::Faint
+        } else {
+            role.foreground()
+        },
         &gutter,
     );
     let mut out = Vec::with_capacity(wrapped.len());
@@ -542,13 +556,17 @@ fn row_lines(
             // The sign keeps the foreground the role always had; the line's
             // own paint is background-only, so the text keeps its original
             // foregrounds (the operator's ruling on the first cube tint).
-            out.push(format!("{gut}{}{l}", cfg.palette.paint(role.foreground(), sign)));
+            out.push(format!(
+                "{gut}{}{l}",
+                cfg.palette.paint(role.foreground(), sign)
+            ));
         } else {
             // A wrapped continuation keeps the colour and loses the sign, so the
             // eye does not read it as a second changed line.
             out.push(format!(
                 "{}{}{l}",
-                cfg.palette.paint(Role::Faint, &" ".repeat(width::width(&gutter))),
+                cfg.palette
+                    .paint(Role::Faint, &" ".repeat(width::width(&gutter))),
                 " "
             ));
         }
@@ -557,12 +575,7 @@ fn row_lines(
 }
 
 /// Paint a line, emphasising the byte ranges in `emph`.
-fn paint_with_emphasis(
-    text: &str,
-    role: Role,
-    emph: Option<&Spans>,
-    p: Palette,
-) -> String {
+fn paint_with_emphasis(text: &str, role: Role, emph: Option<&Spans>, p: Palette) -> String {
     let base = p.open(role);
     let em = p.open(Role::Emphasis);
     let Some(spans) = emph else {
@@ -745,7 +758,14 @@ mod tests {
     /// deletion take the old file's, the addition the new file's.
     #[test]
     fn an_excerpt_is_numbered_from_where_it_starts_in_the_file() {
-        let cfg = DiffConfig { width: 80, palette: Palette::None, context: 1, line_numbers: true, intra_line: false, max_rows: 60 };
+        let cfg = DiffConfig {
+            width: 80,
+            palette: Palette::None,
+            context: 1,
+            line_numbers: true,
+            intra_line: false,
+            max_rows: 60,
+        };
         let old = ["a", "b", "c"];
         let new = ["a", "B", "c"];
         let rows = render_from(&old, &new, &cfg, 310, 310);
@@ -760,7 +780,11 @@ mod tests {
         );
         // `render` is the same thing from line 1, with the numbers one column wide.
         let from_one = render(&old, &new, &cfg);
-        assert_eq!(from_one, vec!["1  a", "2 -b", "2 +B", "3  c"], "{from_one:?}");
+        assert_eq!(
+            from_one,
+            vec!["1  a", "2 -b", "2 +B", "3  c"],
+            "{from_one:?}"
+        );
     }
 
     /// **The single column never shows a blank.** Two columns printed an old number
@@ -769,7 +793,14 @@ mod tests {
     /// against. Every row of a real diff must carry a number in the one column.
     #[test]
     fn every_row_of_a_diff_carries_a_number_in_the_one_column() {
-        let cfg = DiffConfig { width: 80, palette: Palette::None, context: 2, line_numbers: true, intra_line: false, max_rows: 60 };
+        let cfg = DiffConfig {
+            width: 80,
+            palette: Palette::None,
+            context: 2,
+            line_numbers: true,
+            intra_line: false,
+            max_rows: 60,
+        };
         let old = ["a", "b", "c", "d", "e", "f"];
         let new = ["a", "B", "c", "D", "E", "f"];
         let rows = render_from(&old, &new, &cfg, 1, 1);
@@ -814,7 +845,14 @@ mod tests {
         let old = [long.as_str(), "b"];
         let new = [other.as_str(), "b"];
         for width in [24usize, 40, 100] {
-            let cfg = DiffConfig { width, palette: Palette::None, context: 0, line_numbers: true, intra_line: false, max_rows: 60 };
+            let cfg = DiffConfig {
+                width,
+                palette: Palette::None,
+                context: 0,
+                line_numbers: true,
+                intra_line: false,
+                max_rows: 60,
+            };
             let rows = render(&old, &new, &cfg);
             assert!(rows.len() > 2, "width {width} must wrap: {rows:?}");
             // Row 0 is `<num> -<code>`; a continuation is the same gutter's width of
@@ -836,7 +874,6 @@ mod tests {
             );
         }
     }
-
 
     fn lines(s: &str) -> Vec<&str> {
         s.lines().collect()
@@ -935,7 +972,10 @@ mod tests {
             other.iter().map(String::as_str).collect(),
         );
         let d = diff_lines_with(&bl, &bnl, 16);
-        assert!(d.degraded, "the cap must be reachable, or this case proves nothing");
+        assert!(
+            d.degraded,
+            "the cap must be reachable, or this case proves nothing"
+        );
         assert!(regions_list_deletions_first(&d.ops), "the degraded path");
 
         // And the corpus.
@@ -978,7 +1018,7 @@ mod tests {
     /// `deletions_precede_additions_within_a_changed_region` exists.
     #[test]
     fn pair_rows_pairs_the_k_th_removal_with_the_k_th_addition() {
-        let old = ["    let total = a + b;", "    let count = n;" ];
+        let old = ["    let total = a + b;", "    let count = n;"];
         let new = ["    let sum = a + b;", "    let tally = n;"];
         let rows = vec![
             Row::Removed { a: 0 },
@@ -1136,16 +1176,10 @@ mod tests {
         let out = render(&o, &n, &cfg);
         let joined: String = out
             .iter()
-            .map(|l| {
-                width::cells(l)
-                    .iter()
-                    .map(|c| c.text)
-                    .collect::<String>()
-            })
+            .map(|l| width::cells(l).iter().map(|c| c.text).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n");
         assert!(joined.contains("let total = a + b;"), "{joined}");
         assert!(joined.contains("let sum = a + b;"), "{joined}");
     }
 }
-

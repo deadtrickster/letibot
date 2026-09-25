@@ -45,9 +45,7 @@ impl OpenAiProvider {
             // route that builds a provider gets the same answer.
             model: model
                 .map(str::to_string)
-                .unwrap_or_else(|| {
-                    preset.default_model(&crate::catalogue::Catalogue::load())
-                }),
+                .unwrap_or_else(|| preset.default_model(&crate::catalogue::Catalogue::load())),
             url,
             creds,
             agent: ureq::Agent::new_with_config(config),

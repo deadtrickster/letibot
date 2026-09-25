@@ -946,9 +946,7 @@ mod tests {
         // the script writes it only on the branch that also exits `EXIT_NOT_SCOPED`.
         assert!(join_script().contains(&format!("exit {EXIT_NOT_SCOPED}")));
         assert_eq!(
-            join_script()
-                .matches(NOT_SCOPED_MARKER)
-                .count(),
+            join_script().matches(NOT_SCOPED_MARKER).count(),
             1,
             "the marker appears once, on the failure branch"
         );

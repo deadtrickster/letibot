@@ -505,7 +505,10 @@ fn literal_argv(words: &[letibot_code::shell::Word]) -> Vec<String> {
 pub enum ScriptBody {
     Read(String),
     /// Read, but longer than the brief carries: the head, and how much went.
-    Truncated { head: String, omitted: usize },
+    Truncated {
+        head: String,
+        omitted: usize,
+    },
     /// Named but not readable, and why — missing, a directory, not UTF-8.
     Unreadable(String),
 }
@@ -633,7 +636,10 @@ pub trait Gate: Send + Sync {
     ///
     /// Replaces whatever was there. The default refuses, for `set_supervision`'s
     /// reason.
-    fn attach_advisor(&mut self, _advisor: std::sync::Arc<dyn crate::adjudicate::Adjudicator>) -> Result<(), String> {
+    fn attach_advisor(
+        &mut self,
+        _advisor: std::sync::Arc<dyn crate::adjudicate::Adjudicator>,
+    ) -> Result<(), String> {
         Err("this gate has no adjudicator, so an advisor would have nothing to advise".into())
     }
 }
@@ -735,7 +741,15 @@ pub mod roles {
             // `task_result` beside `task`: `task` hands back a handle now rather
             // than blocking on the child, so a seat with `task` and no way to
             // collect it would be a seat that can start work and never read it.
-            &["task", "task_result", "read", "grep", "glob", "ask_code", "ask_corpus"],
+            &[
+                "task",
+                "task_result",
+                "read",
+                "grep",
+                "glob",
+                "ask_code",
+                "ask_corpus",
+            ],
         )
     }
 
@@ -1613,8 +1627,7 @@ impl ToolRuntime {
         // command on the model's behalf is a decision nobody made.
         let mut invocation = invocation;
         if !invocation.needs_in_view.is_empty() {
-            let asked: Vec<std::path::PathBuf> =
-                std::mem::take(&mut invocation.needs_in_view);
+            let asked: Vec<std::path::PathBuf> = std::mem::take(&mut invocation.needs_in_view);
             for path in asked {
                 match self.gate.grant_view(&path, &schema.name) {
                     ViewGrant::Refused(why) => {
@@ -1635,7 +1648,11 @@ impl ToolRuntime {
                                  The command above already ran without it — run it again \
                                  and it will see the path. The view is now: {view}",
                                 path.display(),
-                                if writable { ", writable" } else { ", read-only" },
+                                if writable {
+                                    ", writable"
+                                } else {
+                                    ", read-only"
+                                },
                             )),
                             Err(e) => invocation.notes.push(format!(
                                 "`{}` was approved but could not be bound into the view, \
@@ -1840,14 +1857,19 @@ mod tests {
 
         let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut reg = Registry::new();
-        reg.register(Box::new(CommandProbe { ran: ran.clone() })).unwrap();
+        reg.register(Box::new(CommandProbe { ran: ran.clone() }))
+            .unwrap();
         let backend = crate::backend::HostBackend::new(d.path()).unwrap();
         let mut rt = ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(RewritingGate {
             path: script.clone(),
             to: "print('swapped')\n".into(),
         }));
         let mut sink = RecordingToolSink::default();
-        let r = rt.invoke("t1", &call("run", r#"{"command":"python3 deploy.py"}"#), &mut sink);
+        let r = rt.invoke(
+            "t1",
+            &call("run", r#"{"command":"python3 deploy.py"}"#),
+            &mut sink,
+        );
         assert!(
             !ran.load(std::sync::atomic::Ordering::SeqCst),
             "the command ran with a body nobody judged: {r:?}"
@@ -1870,11 +1892,16 @@ mod tests {
 
         let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut reg = Registry::new();
-        reg.register(Box::new(CommandProbe { ran: ran.clone() })).unwrap();
+        reg.register(Box::new(CommandProbe { ran: ran.clone() }))
+            .unwrap();
         let backend = crate::backend::HostBackend::new(d.path()).unwrap();
         let mut rt = ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(AdmitGate));
         let mut sink = RecordingToolSink::default();
-        let r = rt.invoke("t1", &call("run", r#"{"command":"python3 deploy.py"}"#), &mut sink);
+        let r = rt.invoke(
+            "t1",
+            &call("run", r#"{"command":"python3 deploy.py"}"#),
+            &mut sink,
+        );
         assert!(
             ran.load(std::sync::atomic::Ordering::SeqCst),
             "an unchanged script was refused: {r:?}"
@@ -2097,7 +2124,10 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].path, "~/.ssh/id_rsa");
         let ScriptBody::Unreadable(why) = &found[0].body else {
-            panic!("a secret-store path came back readable: {:?}", found[0].body);
+            panic!(
+                "a secret-store path came back readable: {:?}",
+                found[0].body
+            );
         };
         assert!(why.contains(".ssh"), "{why}");
         assert!(
@@ -2112,7 +2142,11 @@ mod tests {
             opened.set(opened.get() + 1);
             Ok(format!("print('{p}')").into_bytes())
         });
-        assert_eq!(opened.get(), 1, "an ordinary script was not read: {found:?}");
+        assert_eq!(
+            opened.get(),
+            1,
+            "an ordinary script was not read: {found:?}"
+        );
         assert!(
             matches!(&found[0].body, ScriptBody::Read(t) if t.contains("deploy.py")),
             "{:?}",

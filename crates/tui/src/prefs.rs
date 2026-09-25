@@ -284,7 +284,12 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
     // one and never a half of either.
     let tmp = match path.file_name().and_then(|n| n.to_str()) {
         Some(n) => path.with_file_name(format!(".{n}.tmp")),
-        None => return Err(format!("{}: has no file name to write beside", path.display())),
+        None => {
+            return Err(format!(
+                "{}: has no file name to write beside",
+                path.display()
+            ));
+        }
     };
     std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
@@ -310,7 +315,9 @@ mod tests {
     #[test]
     fn a_save_replaces_the_file_whole_and_leaves_nothing_beside_it() {
         let p = tmp("atomic");
-        let many: Vec<String> = (0..40).map(|i| format!("w|code{i}|17900000000{i:02}|deadbeef{i:08}")).collect();
+        let many: Vec<String> = (0..40)
+            .map(|i| format!("w|code{i}|17900000000{i:02}|deadbeef{i:08}"))
+            .collect();
         save(
             &p,
             &HeadPrefs {
@@ -321,7 +328,10 @@ mod tests {
         .unwrap();
         let (back, notes) = load(&p);
         assert!(notes.is_empty(), "{notes:?}");
-        assert_eq!(back.retired, many, "the list did not survive the round trip");
+        assert_eq!(
+            back.retired, many,
+            "the list did not survive the round trip"
+        );
 
         let dir = p.parent().unwrap();
         let debris: Vec<String> = std::fs::read_dir(dir)
@@ -352,13 +362,21 @@ mod tests {
             },
         )
         .unwrap();
-        let merged = merge_retired(&p, &["w|mine|2|bbbb".to_string(), "w|theirs|1|aaaa".to_string()]);
-        assert!(merged.contains(&"w|theirs|1|aaaa".to_string()), "{merged:?}");
+        let merged = merge_retired(
+            &p,
+            &["w|mine|2|bbbb".to_string(), "w|theirs|1|aaaa".to_string()],
+        );
+        assert!(
+            merged.contains(&"w|theirs|1|aaaa".to_string()),
+            "{merged:?}"
+        );
         assert!(merged.contains(&"w|mine|2|bbbb".to_string()), "{merged:?}");
         assert_eq!(merged.len(), 2, "a duplicate was kept: {merged:?}");
 
         // And the cap holds, with the oldest out.
-        let flood: Vec<String> = (0..(RETIRED_CAP + 5)).map(|i| format!("w|f{i}|0|0")).collect();
+        let flood: Vec<String> = (0..(RETIRED_CAP + 5))
+            .map(|i| format!("w|f{i}|0|0"))
+            .collect();
         assert_eq!(merge_retired(&p, &flood).len(), RETIRED_CAP);
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
@@ -393,13 +411,27 @@ mod tests {
     fn unknown_lines_are_kept_and_bad_values_are_named() {
         let p = tmp("keep");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(&p, "# mine\ndiff = \"unified\"\nfuture_key = \"x\"\nthinking = \"sideways\"\n").unwrap();
+        std::fs::write(
+            &p,
+            "# mine\ndiff = \"unified\"\nfuture_key = \"x\"\nthinking = \"sideways\"\n",
+        )
+        .unwrap();
         let (prefs, notes) = load(&p);
         assert_eq!(prefs.diff, DiffPref::Unified);
-        assert_eq!(prefs.thinking, "folded", "a bad value fell back to the default");
+        assert_eq!(
+            prefs.thinking, "folded",
+            "a bad value fell back to the default"
+        );
         assert!(notes.iter().any(|n| n.contains("future_key")), "{notes:?}");
         assert!(notes.iter().any(|n| n.contains("sideways")), "{notes:?}");
-        save(&p, &HeadPrefs { diff: DiffPref::Split, ..prefs }).unwrap();
+        save(
+            &p,
+            &HeadPrefs {
+                diff: DiffPref::Split,
+                ..prefs
+            },
+        )
+        .unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.starts_with("# mine\n"), "{text}");
         assert!(text.contains("diff = \"split\""), "{text}");

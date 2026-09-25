@@ -220,7 +220,10 @@ impl TokenRegion {
             h.token_size = size_of::<TokenId>() as u32;
             h.head_hash = [0u8; 32];
         }
-        region.header().capacity.store(capacity as u64, Ordering::Release);
+        region
+            .header()
+            .capacity
+            .store(capacity as u64, Ordering::Release);
         region.header().len.store(0, Ordering::Release);
         Ok(region)
     }
@@ -298,9 +301,9 @@ impl TokenRegion {
     fn grow_to(&mut self, needed_tokens: usize) -> io::Result<()> {
         let mut capacity = self.capacity.max(INITIAL_CAPACITY_TOKENS);
         while capacity < needed_tokens {
-            capacity = capacity
-                .checked_mul(2)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::OutOfMemory, "token region overflow"))?;
+            capacity = capacity.checked_mul(2).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::OutOfMemory, "token region overflow")
+            })?;
         }
         let bytes = Self::bytes_for(capacity);
 
@@ -432,7 +435,11 @@ mod tests {
                 0,
             )
         };
-        assert_eq!(w, libc::MAP_FAILED, "a writable shared mapping must be refused");
+        assert_eq!(
+            w,
+            libc::MAP_FAILED,
+            "a writable shared mapping must be refused"
+        );
         assert_eq!(
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::EACCES)
@@ -456,10 +463,7 @@ mod tests {
         };
         assert_ne!(ro_map, libc::MAP_FAILED, "a read-only mapping must work");
         let seen = unsafe {
-            std::slice::from_raw_parts(
-                (ro_map as *const u8).add(HEADER_BYTES) as *const TokenId,
-                3,
-            )
+            std::slice::from_raw_parts((ro_map as *const u8).add(HEADER_BYTES) as *const TokenId, 3)
         };
         assert_eq!(seen, &[10, 20, 30]);
         unsafe { libc::munmap(ro_map, bytes) };

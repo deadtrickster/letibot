@@ -29,7 +29,11 @@ impl Formatter for HfFormatter {
     ) -> io::Result<()> {
         if first { Ok(()) } else { w.write_all(b", ") }
     }
-    fn begin_object_key<W: ?Sized + io::Write>(&mut self, w: &mut W, first: bool) -> io::Result<()> {
+    fn begin_object_key<W: ?Sized + io::Write>(
+        &mut self,
+        w: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
         if first { Ok(()) } else { w.write_all(b", ") }
     }
     fn begin_object_value<W: ?Sized + io::Write>(&mut self, w: &mut W) -> io::Result<()> {

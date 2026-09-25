@@ -246,9 +246,7 @@ pub enum Phase {
     /// The distinction exists because a replay has no honest elapsed time, and
     /// printing `0.0s` is worse than printing nothing — it is a measurement that
     /// was never taken, rendered as one that was.
-    Replayed {
-        outcome: Outcome,
-    },
+    Replayed { outcome: Outcome },
 }
 
 impl Phase {
@@ -393,9 +391,7 @@ impl Card {
         let (mark, mark_role) = match &self.phase {
             Phase::Proposed { .. } => ('○', Role::Faint),
             Phase::Running { .. } => ('◐', Role::Pending),
-            Phase::Finished { outcome, .. } | Phase::Replayed { outcome } => {
-                ('●', outcome.role())
-            }
+            Phase::Finished { outcome, .. } | Phase::Replayed { outcome } => ('●', outcome.role()),
         };
         let mut s = String::new();
         s.push_str(&p.paint(mark_role, &mark.to_string()));
@@ -409,7 +405,10 @@ impl Card {
             // `crate::text` because **this crate had none** — the falsification test in
             // `letibot-tui` found a tool-progress note reaching a card's tail raw, which
             // is exactly the hole a per-head helper leaves.
-            s.push_str(&p.paint(Role::Plain, &crate::text::without_control_lines(&self.target)));
+            s.push_str(&p.paint(
+                Role::Plain,
+                &crate::text::without_control_lines(&self.target),
+            ));
         }
         if cfg.show_id {
             s.push_str(&p.paint(
@@ -500,12 +499,7 @@ impl Card {
             return out;
         }
         let body = match cfg.mode {
-            DisplayMode::Expanded => head_tail(
-                &self.body,
-                cfg.budget.expanded_max,
-                0,
-                cfg.palette,
-            ),
+            DisplayMode::Expanded => head_tail(&self.body, cfg.budget.expanded_max, 0, cfg.palette),
             _ => head_tail(
                 &self.body,
                 cfg.budget.first_lines,
@@ -571,7 +565,10 @@ pub fn reasoning(
             Some(ms) => format!(
                 "{}{}",
                 p.paint(Role::Strong, "Thought"),
-                p.paint(Role::Faint, &format!(" for {}", crate::progress::duration(ms)))
+                p.paint(
+                    Role::Faint,
+                    &format!(" for {}", crate::progress::duration(ms))
+                )
             ),
             None => p.paint(Role::Strong, "Thought"),
         }
@@ -579,9 +576,7 @@ pub fn reasoning(
     let mut out = vec![width::truncate(&head, cfg.width)];
     if cfg.mode == DisplayMode::Collapsed {
         if !body.is_empty() {
-            out.push(
-                p.paint(Role::Faint, &format!("  … {} lines", body.len())),
-            );
+            out.push(p.paint(Role::Faint, &format!("  … {} lines", body.len())));
         }
         return out;
     }
@@ -646,10 +641,12 @@ mod tests {
 
     #[test]
     fn the_tense_says_whether_to_wait_without_a_colour() {
-        let running = Card::new("bash", "c1").target("cargo test").phase(Phase::Running {
-            elapsed_ms: 4_300,
-            note: None,
-        });
+        let running = Card::new("bash", "c1")
+            .target("cargo test")
+            .phase(Phase::Running {
+                elapsed_ms: 4_300,
+                note: None,
+            });
         let done = Card::new("bash", "c1")
             .target("cargo test")
             .phase(Phase::Finished {
@@ -665,10 +662,12 @@ mod tests {
 
     #[test]
     fn a_tool_progress_note_has_somewhere_to_go() {
-        let c = Card::new("bash", "c1").target("cargo build").phase(Phase::Running {
-            elapsed_ms: 9_000,
-            note: Some("Compiling letibot-ui".into()),
-        });
+        let c = Card::new("bash", "c1")
+            .target("cargo build")
+            .phase(Phase::Running {
+                elapsed_ms: 9_000,
+                note: Some("Compiling letibot-ui".into()),
+            });
         assert!(c.header(&cfg()).contains("Compiling letibot-ui"));
     }
 
@@ -688,12 +687,13 @@ mod tests {
 
     #[test]
     fn a_long_result_shows_a_head_a_count_and_a_tail() {
-        let c = Card::new("bash", "c1").target("ls -R").body(body(400)).phase(
-            Phase::Finished {
+        let c = Card::new("bash", "c1")
+            .target("ls -R")
+            .body(body(400))
+            .phase(Phase::Finished {
                 outcome: Outcome::Ok,
                 elapsed_ms: Some(300),
-            },
-        );
+            });
         let cfg = CardConfig {
             budget: Budget::SHELL,
             ..cfg()
@@ -715,7 +715,11 @@ mod tests {
         };
         let out = c.render(&cfg);
         assert!(out.len() <= 402, "{} lines", out.len());
-        assert!(out.iter().any(|l| l.contains("+4600 lines")), "{:?}", &out[..3]);
+        assert!(
+            out.iter().any(|l| l.contains("+4600 lines")),
+            "{:?}",
+            &out[..3]
+        );
     }
 
     #[test]
@@ -752,7 +756,11 @@ mod tests {
             outcome: Outcome::Ok,
         });
         assert!(live.header(&cfg()).contains("0ms"));
-        assert!(!replayed.header(&cfg()).contains("0"), "{}", replayed.header(&cfg()));
+        assert!(
+            !replayed.header(&cfg()).contains("0"),
+            "{}",
+            replayed.header(&cfg())
+        );
     }
 
     #[test]
@@ -795,7 +803,14 @@ mod tests {
         assert!(out[0].contains("Thought for 4.2s"), "{:?}", out[0]);
         assert!(out[1].starts_with('┃'), "{:?}", out[1]);
         // And under a colour palette the body carries the dim attribute.
-        let coloured = reasoning(&body(4), true, None, &CardConfig { ..Default::default() });
+        let coloured = reasoning(
+            &body(4),
+            true,
+            None,
+            &CardConfig {
+                ..Default::default()
+            },
+        );
         assert!(coloured[0].contains("Thinking…"));
         assert!(coloured[1].contains("\x1b[2;"), "{:?}", coloured[1]);
     }
@@ -827,7 +842,10 @@ mod tests {
              -Llib -lsecure_auth -Wl,-rpath,/opt/secure_auth/lib && ./test_auth --selftest",
             "-Iinclude ".repeat(12)
         );
-        assert!(target.len() > 227, "the premise is a target longer than the viewport");
+        assert!(
+            target.len() > 227,
+            "the premise is a target longer than the viewport"
+        );
         let c = Card::new("bash", "call_00000007")
             .target(&target)
             .phase(Phase::Finished {
@@ -835,7 +853,10 @@ mod tests {
                 elapsed_ms: Some(900),
             });
 
-        let wide = c.header(&CardConfig { width: 227, ..cfg() });
+        let wide = c.header(&CardConfig {
+            width: 227,
+            ..cfg()
+        });
         let narrow = c.header(&CardConfig { width: 80, ..cfg() });
         for (w, h) in [(227usize, &wide), (80, &narrow)] {
             assert!(width::width(h) <= w, "{w} columns overflowed: {h:?}");
@@ -852,7 +873,10 @@ mod tests {
         );
         // The cut is disclosed where it happened, at both widths.
         assert!(wide.ends_with('…'), "the wide cut is not disclosed: {wide}");
-        assert!(narrow.ends_with('…'), "the narrow cut is not disclosed: {narrow}");
+        assert!(
+            narrow.ends_with('…'),
+            "the narrow cut is not disclosed: {narrow}"
+        );
 
         // **And a target that fits is shown whole and marked not at all** — a card that put a
         // `…` on a complete command would be telling the reader something was cut when nothing
@@ -863,9 +887,15 @@ mod tests {
                 outcome: Outcome::Ok,
                 elapsed_ms: Some(900),
             });
-        let fits = short.header(&CardConfig { width: 227, ..cfg() });
+        let fits = short.header(&CardConfig {
+            width: 227,
+            ..cfg()
+        });
         assert!(fits.contains("cargo test --workspace"), "{fits}");
-        assert!(!fits.contains('…'), "a complete target was marked as cut: {fits}");
+        assert!(
+            !fits.contains('…'),
+            "a complete target was marked as cut: {fits}"
+        );
     }
 
     #[test]
@@ -884,7 +914,11 @@ mod tests {
                 ..Default::default()
             };
             for l in c.render(&cfg) {
-                assert!(width::width(&l) <= w, "{w}: {} cols {l:?}", width::width(&l));
+                assert!(
+                    width::width(&l) <= w,
+                    "{w}: {} cols {l:?}",
+                    width::width(&l)
+                );
             }
         }
     }

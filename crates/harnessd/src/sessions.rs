@@ -1761,6 +1761,42 @@ impl<'a> Sessions<'a> {
             // operator's to take back. Quietly nothing — the head cleared its
             // own echo when it recalled the line, and a warning here would be
             // noise about a no-op.
+            // **The operator's todos onto the board — ONE LIST, TWO AUTHORS.**
+            //
+            // The operator's ruling: *"the existing getter should return mine and yours, and the
+            // rest is also the same. the only difference is who created and that is it."* So this
+            // is not a second list on the daemon side: it is the other half of the SAME board, and
+            // `TodoBoard::snapshot` is their union. Everything that reads the board then sees the
+            // operator's rows for free — the pane's `Todos` reply, the prompt the model is sent, and
+            // the idle NAG (`Harness::nag_notice` → `unfinished_plan`), which is the whole reason
+            // this exists: until now the nag could only ever fire for work the MODEL had written.
+            CommandKind::SetOperatorTodos { items } => {
+                let converted: Vec<letibot_tokencore::store::TodoItem> = items
+                    .iter()
+                    .map(|e| letibot_tokencore::store::TodoItem {
+                        content: e.content.clone(),
+                        status: match e.status {
+                            letibot_sessionlog::event::TodoStatus::Pending => {
+                                letibot_tokencore::store::TodoStatus::Pending
+                            }
+                            letibot_sessionlog::event::TodoStatus::InProgress => {
+                                letibot_tokencore::store::TodoStatus::InProgress
+                            }
+                            letibot_sessionlog::event::TodoStatus::Completed => {
+                                letibot_tokencore::store::TodoStatus::Completed
+                            }
+                        },
+                        by: letibot_tokencore::store::TodoBy::Operator,
+                    })
+                    .collect();
+                // The head is the source of truth for its own rows, so its list REPLACES that half.
+                let n = converted.len();
+                if let Some(h) = self.open.get_mut(session_id) {
+                    h.set_operator_todos(converted);
+                }
+                let _ = n;
+                Outcome::Ignored
+            }
             CommandKind::WithdrawPrompts => Outcome::Ignored,
             // The request is honoured mid-turn by the `bash` wait loop, which reads
             // the hub's promote channel. Reaching here means nothing was running, so

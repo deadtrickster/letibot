@@ -71,7 +71,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use letibot_tools::builtins::external::web::{
-    FetchError, FetchedPage, Fetcher, FetchRequest, PageFormat,
+    FetchError, FetchRequest, FetchedPage, Fetcher, PageFormat,
 };
 
 /// How long one hop may take before it is a transport failure. A page the
@@ -263,7 +263,9 @@ fn run_curl(url: &UrlParts, pin: Option<IpAddr>, cap: usize) -> Result<Hop, Fetc
         .arg("--dump-header")
         .arg(&header_file)
         .arg("--write-out")
-        .arg(format!("{SENTINEL}%{{http_code}}\t%{{content_type}}\t%{{url_effective}}\n"))
+        .arg(format!(
+            "{SENTINEL}%{{http_code}}\t%{{content_type}}\t%{{url_effective}}\n"
+        ))
         .arg("--output")
         .arg("-");
     if let Some(ip) = pin {
@@ -304,7 +306,9 @@ fn run_curl(url: &UrlParts, pin: Option<IpAddr>, cap: usize) -> Result<Hop, Fetc
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = std::fs::remove_file(&header_file);
-                return Err(FetchError::Transport(format!("reading the body failed: {e}")));
+                return Err(FetchError::Transport(format!(
+                    "reading the body failed: {e}"
+                )));
             }
         }
     }
@@ -534,29 +538,29 @@ impl std::fmt::Display for UrlParts {
         if self.port == default_port(&self.scheme) {
             write!(f, "{}://{}{}", self.scheme, host, self.path_query)
         } else {
-            write!(f, "{}://{}:{}{}", self.scheme, host, self.port, self.path_query)
+            write!(
+                f,
+                "{}://{}:{}{}",
+                self.scheme, host, self.port, self.path_query
+            )
         }
     }
 }
 
 fn default_port(scheme: &str) -> u16 {
-    if scheme == "https" {
-        443
-    } else {
-        80
-    }
+    if scheme == "https" { 443 } else { 80 }
 }
 
 /// The fetcher's own scheme and credential checks. The tool makes the same
 /// two before calling; the trait doc is explicit that a fetcher repeats them,
 /// because the tool's are one refactor away from gone.
 fn parse_url(url: &str) -> Result<UrlParts, String> {
-    let (scheme, rest) = url
-        .split_once("://")
-        .ok_or("the address has no scheme")?;
+    let (scheme, rest) = url.split_once("://").ok_or("the address has no scheme")?;
     let scheme = scheme.to_lowercase();
     if scheme != "http" && scheme != "https" {
-        return Err(format!("web_fetch speaks http and https only, not `{scheme}`"));
+        return Err(format!(
+            "web_fetch speaks http and https only, not `{scheme}`"
+        ));
     }
     let (authority, path_query) = match rest.find(['/', '?', '#']) {
         Some(i) => (&rest[..i], &rest[i..]),
@@ -574,7 +578,10 @@ fn parse_url(url: &str) -> Result<UrlParts, String> {
             .ok_or("an [ipv6] address without its ]")?;
         let port = after
             .strip_prefix(':')
-            .map(|p| p.parse::<u16>().map_err(|_| "the port did not parse".to_string()))
+            .map(|p| {
+                p.parse::<u16>()
+                    .map_err(|_| "the port did not parse".to_string())
+            })
             .transpose()?
             .unwrap_or_else(|| default_port(&scheme));
         (h.to_lowercase(), port)
@@ -732,7 +739,10 @@ mod tests {
         assert_eq!(u.path_query, "/a/b?c=d");
         assert_eq!(u.to_string(), "https://example.com:8443/a/b?c=d");
         // The default port is elided, not carried.
-        assert_eq!(parse_url("http://example.com").unwrap().to_string(), "http://example.com/");
+        assert_eq!(
+            parse_url("http://example.com").unwrap().to_string(),
+            "http://example.com/"
+        );
         let v6 = parse_url("http://[::1]:8080/x").unwrap();
         assert_eq!(v6.host, "::1");
         assert_eq!(v6.port, 8080);
@@ -750,8 +760,18 @@ mod tests {
     #[test]
     fn private_addresses_are_refused_and_public_ones_pass() {
         for refused in [
-            "127.0.0.1", "10.1.2.3", "172.16.0.9", "192.168.1.1", "169.254.1.1", "0.0.0.0",
-            "100.64.0.1", "255.255.255.255", "::1", "fe80::1", "fc00::1", "::",
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.9",
+            "192.168.1.1",
+            "169.254.1.1",
+            "0.0.0.0",
+            "100.64.0.1",
+            "255.255.255.255",
+            "::1",
+            "fe80::1",
+            "fc00::1",
+            "::",
         ] {
             let ip: IpAddr = refused.parse().unwrap();
             assert!(!addr_is_public(ip), "{refused} must be refused");
@@ -792,7 +812,10 @@ mod tests {
         let same = parse_url("https://example.com/b").unwrap();
         assert!(check_redirect(&from, &same).is_ok());
         let upgraded_from = parse_url("http://example.com/a").unwrap();
-        assert!(check_redirect(&upgraded_from, &same).is_ok(), "an upgrade is allowed");
+        assert!(
+            check_redirect(&upgraded_from, &same).is_ok(),
+            "an upgrade is allowed"
+        );
         let cross = parse_url("https://other.example.com/b").unwrap();
         assert!(check_redirect(&from, &cross).is_err());
         let downgraded = parse_url("http://example.com/b").unwrap();
@@ -805,11 +828,15 @@ mod tests {
     fn a_location_resolves_against_its_base() {
         let base = parse_url("https://example.com/a/b/c?x=1").unwrap();
         assert_eq!(
-            resolve_location(&base, "https://elsewhere.org/p").unwrap().to_string(),
+            resolve_location(&base, "https://elsewhere.org/p")
+                .unwrap()
+                .to_string(),
             "https://elsewhere.org/p"
         );
         assert_eq!(
-            resolve_location(&base, "//other.com/q").unwrap().to_string(),
+            resolve_location(&base, "//other.com/q")
+                .unwrap()
+                .to_string(),
             "https://other.com/q"
         );
         assert_eq!(
@@ -845,7 +872,12 @@ mod tests {
         let html = "<html><head><script>evil()</script><style>.x{}</style></head>\
                     <body><h1>Heading</h1><p>one <a href=\"/x\">two</a> three</p>\
                     <ul><li>a</li><li>b</li></ul></body></html>";
-        let (md, notes) = render_body(html.as_bytes(), "text/html; charset=utf-8", "https://e.com/", PageFormat::Markdown);
+        let (md, notes) = render_body(
+            html.as_bytes(),
+            "text/html; charset=utf-8",
+            "https://e.com/",
+            PageFormat::Markdown,
+        );
         assert!(md.contains("# Heading"), "{md}");
         assert!(md.contains("[two](/x)"), "{md}");
         assert!(md.contains("*   a"), "{md}");
@@ -857,7 +889,12 @@ mod tests {
     #[test]
     fn text_mode_is_prose_without_markup() {
         let html = "<html><body><h1>Heading</h1><p>one two three</p></body></html>";
-        let (text, _) = render_body(html.as_bytes(), "text/html", "https://e.com/", PageFormat::Text);
+        let (text, _) = render_body(
+            html.as_bytes(),
+            "text/html",
+            "https://e.com/",
+            PageFormat::Text,
+        );
         assert!(text.contains("Heading"), "{text}");
         assert!(text.contains("one two three"), "{text}");
         assert!(!text.contains('<'), "{text}");
@@ -866,14 +903,24 @@ mod tests {
     #[test]
     fn html_format_passes_the_document_through() {
         let html = "<p>verbatim</p>";
-        let (body, notes) = render_body(html.as_bytes(), "text/html", "https://e.com/", PageFormat::Html);
+        let (body, notes) = render_body(
+            html.as_bytes(),
+            "text/html",
+            "https://e.com/",
+            PageFormat::Html,
+        );
         assert_eq!(body, html);
         assert!(notes.is_empty());
     }
 
     #[test]
     fn a_binary_content_type_renders_to_nothing() {
-        let (body, _) = render_body(b"\x25PDF-1.4 junk", "application/pdf", "https://e.com/", PageFormat::Markdown);
+        let (body, _) = render_body(
+            b"\x25PDF-1.4 junk",
+            "application/pdf",
+            "https://e.com/",
+            PageFormat::Markdown,
+        );
         assert_eq!(body, "");
     }
 
@@ -890,8 +937,16 @@ mod tests {
              <article><h1>The Title</h1><p>{article}</p><p>Second paragraph.</p></article>\
              <footer>SiteFooterJunk</footer></body></html>"
         );
-        let (md, notes) = render_body(html.as_bytes(), "text/html", "https://e.com/post/1", PageFormat::Markdown);
-        assert!(notes[0].contains("reader mode extracted the main content"), "{notes:?}");
+        let (md, notes) = render_body(
+            html.as_bytes(),
+            "text/html",
+            "https://e.com/post/1",
+            PageFormat::Markdown,
+        );
+        assert!(
+            notes[0].contains("reader mode extracted the main content"),
+            "{notes:?}"
+        );
         assert!(md.contains("The actual article content"), "{md}");
         assert!(!md.contains("SiteNavJunk"), "{md}");
         assert!(!md.contains("SiteFooterJunk"), "{md}");

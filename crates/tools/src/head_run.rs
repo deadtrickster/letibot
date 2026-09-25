@@ -223,10 +223,7 @@ mod the_derivation_is_read_off_the_real_schemas {
     fn every_door_tool_has_a_bare_field_and_it_is_the_obvious_one() {
         let reg = seat();
         let schemas = reg.schemas();
-        let got = bare_forms(
-            &["web_search", "web_fetch", "read"],
-            schemas.iter(),
-        );
+        let got = bare_forms(&["web_search", "web_fetch", "read"], schemas.iter());
         for (name, want) in [
             ("web_search", ("query", Kind::Text)),
             ("web_fetch", ("url", Kind::Url)),
@@ -237,13 +234,20 @@ mod the_derivation_is_read_off_the_real_schemas {
                 .find(|(n, _)| n == name)
                 .unwrap_or_else(|| panic!("`{name}` is in the door and not in the derivation"));
             match form {
-                BareForm::One { field, kind, defaults } => {
+                BareForm::One {
+                    field,
+                    kind,
+                    defaults,
+                } => {
                     assert_eq!(field, want.0, "`{name}`'s bare field");
                     assert_eq!(*kind, want.1, "`{name}`'s kind");
                     // **Nothing else required, so nothing to default** — asserted rather
                     // than assumed, because a default appearing here would silently change
                     // what a bare line sends.
-                    assert!(defaults.is_empty(), "`{name}` gained defaults: {defaults:?}");
+                    assert!(
+                        defaults.is_empty(),
+                        "`{name}` gained defaults: {defaults:?}"
+                    );
                 }
                 BareForm::None(why) => panic!("`{name}` has no bare form: {why}"),
             }
@@ -299,7 +303,10 @@ mod the_derivation_is_read_off_the_real_schemas {
             panic!("two required fields cannot have one bare form");
         };
         assert!(why.contains("needs 2 fields"), "{why}");
-        assert!(why.contains("/run pair"), "it names the form that works: {why}");
+        assert!(
+            why.contains("/run pair"),
+            "it names the form that works: {why}"
+        );
 
         let none = ToolSchema::new(
             "nothing",
@@ -332,7 +339,12 @@ mod the_derivation_is_read_off_the_real_schemas {
             }),
             crate::schema::Access::Network,
         );
-        let BareForm::One { field, kind, defaults } = bare_form(&s) else {
+        let BareForm::One {
+            field,
+            kind,
+            defaults,
+        } = bare_form(&s)
+        else {
             panic!("one required field is a bare form");
         };
         assert_eq!(field, "url");

@@ -661,6 +661,15 @@ pub enum ClientFrame {
         client_request_id: String,
         expected_seq: u64,
     },
+    /// **The operator's todos, from a head that owns them.** See
+    /// [`CommandKind::SetOperatorTodos`]: one list, two authors, and this carries the half the head
+    /// is the source of truth for. A new frame, so a version-19 daemon refuses it by name rather
+    /// than reading the rest of the line as something else.
+    SetOperatorTodos {
+        client_request_id: String,
+        expected_seq: u64,
+        items: Vec<crate::event::TodoEntry>,
+    },
     /// **Stop the daemon**, not just this head.
     ///
     /// Rings the same bell a `SIGTERM` does — one shutdown sequence, not two —
@@ -1423,6 +1432,7 @@ mod tests {
                 | ClientFrame::Slash { .. }
                 | ClientFrame::Stop { .. }
                 | ClientFrame::Switch { .. }
+                | ClientFrame::SetOperatorTodos { .. }
                 | ClientFrame::WithdrawPrompts { .. } => {}
             }
         }
@@ -1667,10 +1677,12 @@ mod tests {
                 crate::event::TodoEntry {
                     content: "read the harness".into(),
                     status: crate::event::TodoStatus::Completed,
+                    by: crate::event::TodoBy::Model,
                 },
                 crate::event::TodoEntry {
                     content: "render the pane".into(),
                     status: crate::event::TodoStatus::InProgress,
+                    by: crate::event::TodoBy::Model,
                 },
             ],
         };

@@ -387,7 +387,11 @@ fn list_sessions(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             s.status.running,
             s.status.heads,
             s.status.items,
-            if s.status.model.is_empty() { "-" } else { &s.status.model },
+            if s.status.model.is_empty() {
+                "-"
+            } else {
+                &s.status.model
+            },
         );
     }
     Ok(())
@@ -441,10 +445,7 @@ fn interrupt_all(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || pump(reader, tx));
 
     let sessions = ask_sessions(&mut client, &rx, deadline)?;
-    let running: Vec<SessionBrief> = sessions
-        .into_iter()
-        .filter(|s| s.status.running)
-        .collect();
+    let running: Vec<SessionBrief> = sessions.into_iter().filter(|s| s.status.running).collect();
     if running.is_empty() {
         println!("no turns in flight");
         return Ok(());
@@ -749,8 +750,8 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
 #[cfg(test)]
 mod probe_tests {
     use super::*;
-    use letibot_sessionlog::server::{self, ServerHandle};
     use letibot_sessionlog::Hub;
+    use letibot_sessionlog::server::{self, ServerHandle};
 
     fn socket_path(tag: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();

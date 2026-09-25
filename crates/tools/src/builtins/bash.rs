@@ -340,7 +340,9 @@ impl Tool for Bash {
                 id.0.clone(),
                 Duration::ZERO,
                 Backgrounding::Asked,
-                format!("carry on — `{id}`'s completion is delivered to you on its own when it ends, so there is nothing to wait for. {read_it}"),
+                format!(
+                    "carry on — `{id}`'s completion is delivered to you on its own when it ends, so there is nothing to wait for. {read_it}"
+                ),
                 format!(
                     "started `{id}` in the background.\n  command: {command}\n  \
                      pid: {}\n  scope: {} — {}\n\nIt is running now, and **its \

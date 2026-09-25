@@ -85,11 +85,32 @@ pub enum TodoStatus {
     Completed,
 }
 
+/// **Who wrote a todo**, on the wire — the whole of the difference between the operator's items and
+/// the model's, which share one list, one format and one tool. The operator's ruling: *"the existing
+/// getter should return mine and yours, and the rest is also the same. the only difference is who
+/// created and that is it."*
+///
+/// A copy of `letibot_tokencore::store::TodoBy` rather than a re-export, for the reason
+/// `TodoStatus` above is already a copy: this crate is the WIRE, and a wire type that aliases a
+/// storage type changes when the storage does. The two are converted at the one seam that owns the
+/// board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoBy {
+    #[default]
+    Model,
+    Operator,
+}
+
 /// One line of a session's todo list, on the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TodoEntry {
     pub content: String,
     pub status: TodoStatus,
+    /// **Who wrote the row** — the whole of the difference between the operator's items and the
+    /// model's, which share this list, this format and this tool. See `TodoItem::by`.
+    #[serde(default)]
+    pub by: TodoBy,
 }
 
 /// Why generation stopped.

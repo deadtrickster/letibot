@@ -103,7 +103,10 @@ impl Tool for HarnessView {
     }
 
     fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
-        let what = args.get("what").and_then(|v| v.as_str()).unwrap_or("status");
+        let what = args
+            .get("what")
+            .and_then(|v| v.as_str())
+            .unwrap_or("status");
         match what {
             "status" => {
                 let d = self.facts.disclosures();
@@ -225,7 +228,11 @@ mod tests {
         fn disclosures(&self) -> Vec<(String, String, String)> {
             vec![
                 ("mode".into(), String::new(), "writes allowed".into()),
-                ("flowy".into(), "NO SEAT".into(), "nothing is behind it".into()),
+                (
+                    "flowy".into(),
+                    "NO SEAT".into(),
+                    "nothing is behind it".into(),
+                ),
             ]
         }
         fn warnings(&self) -> Vec<(String, String, u64)> {
@@ -241,7 +248,11 @@ mod tests {
             vec![("tui".into(), "dead".into())]
         }
         fn screen(&self) -> Option<(usize, usize, Vec<String>)> {
-            Some((80, 2, vec!["\u{1b}[32mgreen\u{1b}[0m".into(), "plain".into()]))
+            Some((
+                80,
+                2,
+                vec!["\u{1b}[32mgreen\u{1b}[0m".into(), "plain".into()],
+            ))
         }
     }
 
@@ -290,12 +301,24 @@ mod tests {
         let f: Arc<dyn HarnessFacts> = Arc::new(Fake);
 
         let status = ask(f.clone(), r#"{"what":"status"}"#);
-        assert!(status.payload.contains("writes allowed"), "{}", status.payload);
-        assert!(status.payload.contains("flowy (NO SEAT)"), "{}", status.payload);
+        assert!(
+            status.payload.contains("writes allowed"),
+            "{}",
+            status.payload
+        );
+        assert!(
+            status.payload.contains("flowy (NO SEAT)"),
+            "{}",
+            status.payload
+        );
 
         // Newest last, and aged — the `!` lines as the terminal shows them.
         let w = ask(f.clone(), r#"{"what":"warnings"}"#);
-        assert!(w.payload.contains("! auto_compact (4s ago)"), "{}", w.payload);
+        assert!(
+            w.payload.contains("! auto_compact (4s ago)"),
+            "{}",
+            w.payload
+        );
         assert!(
             w.payload.find("old").unwrap() < w.payload.find("auto_compact").unwrap(),
             "oldest first, newest last: {}",
@@ -303,7 +326,11 @@ mod tests {
         );
 
         let t = ask(f.clone(), r#"{"what":"turn"}"#);
-        assert!(t.payload.contains("RUNNING after 3 round(s)"), "{}", t.payload);
+        assert!(
+            t.payload.contains("RUNNING after 3 round(s)"),
+            "{}",
+            t.payload
+        );
 
         let h = ask(f.clone(), r#"{"what":"heads"}"#);
         assert!(h.payload.contains("tui: dead"), "{}", h.payload);
@@ -323,7 +350,10 @@ mod tests {
         // `Access::Read`, so it never reaches the gate (clause 4): asking what you
         // are running inside must not need permission, and a session with no
         // adjudicator must still be able to discover that it has none.
-        assert_eq!(HarnessView::new(Arc::new(Fake)).schema().access, crate::schema::Access::Read);
+        assert_eq!(
+            HarnessView::new(Arc::new(Fake)).schema().access,
+            crate::schema::Access::Read
+        );
     }
 
     /// **Empty is reported as empty, never as fine.** A model told "no warnings"
@@ -357,7 +387,11 @@ mod tests {
     fn nothing_recorded_is_said_as_nothing_recorded() {
         let e: Arc<dyn HarnessFacts> = Arc::new(Empty);
         let w = ask(e.clone(), r#"{"what":"warnings"}"#);
-        assert!(w.payload.contains("not a claim that nothing is wrong"), "{}", w.payload);
+        assert!(
+            w.payload.contains("not a claim that nothing is wrong"),
+            "{}",
+            w.payload
+        );
         let t = ask(e.clone(), r#"{"what":"turn"}"#);
         assert!(t.payload.contains("no turn has run"), "{}", t.payload);
         let h = ask(e.clone(), r#"{"what":"heads"}"#);

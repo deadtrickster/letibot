@@ -21,10 +21,18 @@ use std::io;
 struct HfFormatter;
 
 impl Formatter for HfFormatter {
-    fn begin_array_value<W: ?Sized + io::Write>(&mut self, w: &mut W, first: bool) -> io::Result<()> {
+    fn begin_array_value<W: ?Sized + io::Write>(
+        &mut self,
+        w: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
         if first { Ok(()) } else { w.write_all(b", ") }
     }
-    fn begin_object_key<W: ?Sized + io::Write>(&mut self, w: &mut W, first: bool) -> io::Result<()> {
+    fn begin_object_key<W: ?Sized + io::Write>(
+        &mut self,
+        w: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
         if first { Ok(()) } else { w.write_all(b", ") }
     }
     fn begin_object_value<W: ?Sized + io::Write>(&mut self, w: &mut W) -> io::Result<()> {
@@ -57,15 +65,21 @@ pub fn glm_tool_json(tool: &Value) -> String {
     let mut out = serde_json::Map::new();
     out.insert(
         "name".into(),
-        f.get("name").cloned().unwrap_or_else(|| Value::String(String::new())),
+        f.get("name")
+            .cloned()
+            .unwrap_or_else(|| Value::String(String::new())),
     );
     out.insert(
         "description".into(),
-        f.get("description").cloned().unwrap_or_else(|| Value::String(String::new())),
+        f.get("description")
+            .cloned()
+            .unwrap_or_else(|| Value::String(String::new())),
     );
     out.insert(
         "parameters".into(),
-        f.get("parameters").cloned().unwrap_or_else(|| Value::Object(Default::default())),
+        f.get("parameters")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Default::default())),
     );
     hf_tojson(&Value::Object(out))
 }
@@ -90,7 +104,10 @@ mod tests {
     #[test]
     fn separators_match_the_shipped_template() {
         // Captured from POST /apply-template, 2026-09-09.
-        assert_eq!(hf_tojson(&json!({"a": 1, "b": "two"})), r#"{"a": 1, "b": "two"}"#);
+        assert_eq!(
+            hf_tojson(&json!({"a": 1, "b": "two"})),
+            r#"{"a": 1, "b": "two"}"#
+        );
         assert_eq!(hf_tojson(&json!([1, 2, "x"])), r#"[1, 2, "x"]"#);
         assert_eq!(hf_tojson(&json!({})), "{}");
         assert_eq!(hf_tojson(&json!([])), "[]");

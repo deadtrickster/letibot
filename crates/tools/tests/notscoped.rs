@@ -43,7 +43,10 @@ macro_rules! runner {
         match runner_harness() {
             Ok(h) => h,
             Err(e) => {
-                eprintln!("{}: no cgroup v2 subtree here, checking the refusal: {e}", $name);
+                eprintln!(
+                    "{}: no cgroup v2 subtree here, checking the refusal: {e}",
+                    $name
+                );
                 let msg = format!("{e}");
                 assert!(
                     msg.contains("nothing would reap it") || msg.contains("cgroup"),
@@ -143,10 +146,8 @@ fn a_command_that_exits_125_ran_and_did_not_fail_to_join_its_scope() {
 fn a_scope_that_cannot_be_joined_still_says_the_command_never_ran() {
     let dir = std::env::temp_dir().join(format!("letibot-notscoped-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch");
-    let host = HostProcesses::with_tree(&dir, Box::new(Unjoinable)).with_shell(vec![
-        "/bin/sh".into(),
-        "-c".into(),
-    ]);
+    let host = HostProcesses::with_tree(&dir, Box::new(Unjoinable))
+        .with_shell(vec!["/bin/sh".into(), "-c".into()]);
 
     let id = host
         .spawn(&SpawnRequest {
@@ -207,8 +208,7 @@ struct Unjoinable;
 
 impl ScopeTree for Unjoinable {
     fn describe(&self) -> String {
-        "a stub tree whose cgroup.procs cannot be written, for the launcher-failure path"
-            .into()
+        "a stub tree whose cgroup.procs cannot be written, for the launcher-failure path".into()
     }
     fn open(
         &self,

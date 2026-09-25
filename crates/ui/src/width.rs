@@ -552,10 +552,7 @@ pub fn wrap_ranges(s: &str, cols: usize) -> Vec<std::ops::Range<usize>> {
 pub fn locate(s: &str, byte: usize, cols: usize) -> (usize, usize) {
     let rows = wrap_ranges(s, cols);
     let byte = byte.min(s.len());
-    let row = rows
-        .iter()
-        .rposition(|r| r.start <= byte)
-        .unwrap_or(0);
+    let row = rows.iter().rposition(|r| r.start <= byte).unwrap_or(0);
     (row, width(&s[rows[row].start..byte]))
 }
 

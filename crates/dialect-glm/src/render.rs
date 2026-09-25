@@ -198,8 +198,7 @@ pub fn generation_prompt_closing_reasoning() -> Vec<RenderSpan> {
 }
 
 /// What stands in for a reasoning block the operator stopped.
-pub const ABANDONED_REASONING: &str =
-    "[The operator stopped this reasoning before it finished. Its text is kept in the transcript but is not replayed: it was an abandoned draft, not a conclusion. Do not resume it.]";
+pub const ABANDONED_REASONING: &str = "[The operator stopped this reasoning before it finished. Its text is kept in the transcript but is not replayed: it was an abandoned draft, not a conclusion. Do not resume it.]";
 
 pub fn generation_prompt() -> Vec<RenderSpan> {
     vec![
@@ -255,7 +254,9 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
             render_user_parts(parts, out);
         }
 
-        TranscriptItem::Reasoning { text: t, truncated, .. } => {
+        TranscriptItem::Reasoning {
+            text: t, truncated, ..
+        } => {
             st.prev_was_tool_result = false;
             // A second reasoning block in the same turn is not a thing GLM's grammar
             // has. Treat it as the start of the next turn, which is what it is: the
@@ -268,12 +269,23 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
             // The store keeps the text; the prompt gets a sentence saying it was
             // stopped, which is more use to the next turn than a thought that was
             // going nowhere and was killed for it.
-            text(out, if *truncated { ABANDONED_REASONING.to_string() } else { t.clone() });
+            text(
+                out,
+                if *truncated {
+                    ABANDONED_REASONING.to_string()
+                } else {
+                    t.clone()
+                },
+            );
             ctl(out, &tk::THINK_CLOSE);
             st.think = Think::Closed;
         }
 
-        TranscriptItem::Assistant { text: t, tool_calls, .. } => {
+        TranscriptItem::Assistant {
+            text: t,
+            tool_calls,
+            ..
+        } => {
             st.prev_was_tool_result = false;
             if st.think != Think::Closed {
                 ensure_think_open(st, out);

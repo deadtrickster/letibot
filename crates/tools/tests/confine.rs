@@ -201,7 +201,11 @@ fn describe_reports_the_boundary_that_was_measured_and_not_the_one_requested() {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
         if let Some(NsState::Entered { inode }) = b.ns.get(&n) {
-            assert_ne!(inode, &mine.as_str(), "{n} inside must differ from the harness's");
+            assert_ne!(
+                inode,
+                &mine.as_str(),
+                "{n} inside must differ from the harness's"
+            );
         }
     }
 
@@ -608,7 +612,8 @@ fn a_child_cannot_unshare_its_way_back_out_of_the_boundary() {
         other => panic!("a boundary with an open seal must never be handed back: {other:?}"),
     }
     assert!(
-        host.confinement_describe().contains("seal nested-namespaces"),
+        host.confinement_describe()
+            .contains("seal nested-namespaces"),
         "the disclosure must state the seal: {}",
         host.confinement_describe()
     );

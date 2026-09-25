@@ -386,7 +386,10 @@ fn an_address_carrying_credentials_is_refused_before_anything_is_sent() {
 
 /// A page long enough that one `read`'s worth is a proper subset of it.
 fn a_long_page() -> String {
-    (0..300).map(|i| format!("line {i} of the page")).collect::<Vec<_>>().join("\n")
+    (0..300)
+        .map(|i| format!("line {i} of the page"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
@@ -501,7 +504,10 @@ fn the_scratchpad_name_is_the_content_hash_and_the_extension_is_the_format() {
     let r = h.call("web_fetch", r#"{"url":"https://example.invalid/x"}"#);
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
     let scratch = h.scratch_dir().expect("unconfined harness has a scratch");
-    assert!(h.read_file(&format!("{}/web/{hash}.md", scratch.display())).contains("the same page"));
+    assert!(
+        h.read_file(&format!("{}/web/{hash}.md", scratch.display()))
+            .contains("the same page")
+    );
 
     // The same bytes rendered as html are a different file.
     let mut h2 = writable_external_harness(ExternalBackends {
@@ -514,7 +520,10 @@ fn the_scratchpad_name_is_the_content_hash_and_the_extension_is_the_format() {
     );
     assert_eq!(r2.outcome, ToolOutcome::Ok, "{}", r2.render());
     let scratch2 = h2.scratch_dir().expect("unconfined harness has a scratch");
-    assert!(h2.read_file(&format!("{}/web/{hash}.html", scratch2.display())).contains("the same page"));
+    assert!(
+        h2.read_file(&format!("{}/web/{hash}.html", scratch2.display()))
+            .contains("the same page")
+    );
 }
 
 #[test]
@@ -531,7 +540,10 @@ fn a_page_that_fits_in_the_preview_still_gets_its_file() {
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
     let hash = letibot_tools::spill::content_hash(body.as_bytes());
     let scratch = h.scratch_dir().expect("unconfined harness has a scratch");
-    assert!(h.read_file(&format!("{}/web/{hash}.md", scratch.display())).contains("Two lines"));
+    assert!(
+        h.read_file(&format!("{}/web/{hash}.md", scratch.display()))
+            .contains("Two lines")
+    );
     assert!(
         r.payload.contains("the preview above is the whole page"),
         "{}",
@@ -695,7 +707,9 @@ fn a_network_call_is_classed_external_and_irreversible() {
         turn_id: "t1",
         call_id: "c1",
         workspace: "/tmp/ws",
-        target_exists: None, scripts: &[] });
+        target_exists: None,
+        scripts: &[],
+    });
     assert_eq!(req.class.scope, EffectScope::External);
     assert_eq!(req.class.reversibility, Reversibility::Irreversible);
     assert_eq!(req.class.to_string(), "network,external,irreversible,free");
@@ -722,7 +736,9 @@ fn a_dispatching_tool_puts_its_op_in_front_of_whoever_decides() {
         turn_id: "t1",
         call_id: "c1",
         workspace: "/tmp/ws",
-        target_exists: None, scripts: &[] });
+        target_exists: None,
+        scripts: &[],
+    });
     assert!(req.brief().contains("merge_pr"), "{}", req.brief());
 }
 

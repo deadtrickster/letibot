@@ -721,6 +721,28 @@ pub struct StoredSession {
 pub struct TodoItem {
     pub content: String,
     pub status: TodoStatus,
+    /// **WHO PUT IT ON THE BOARD.** The operator's ruling is that there is ONE list — *"the existing
+    /// getter should return mine and yours, and the rest is also the same. the only difference is who
+    /// created and that is it"* — so the two authors share a list and a format, and this field is the
+    /// whole of the difference between them.
+    ///
+    /// `serde(default)` and `Model`, so every list already in a store — and every list a head sends
+    /// that predates this field — reads back as the model's, which is what it was.
+    #[serde(default)]
+    pub by: TodoBy,
+}
+
+/// Who authored a todo. See `TodoItem::by`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoBy {
+    /// The model wrote it with the `todo` tool.
+    #[default]
+    Model,
+    /// **The operator wrote it in the pane.** It is the same list, the same statuses and the same
+    /// tool — the model can mark the operator's item done, and the nag in `harness.rs` picks it up
+    /// like any other, because it reads the board and the board no longer cares who wrote a row.
+    Operator,
 }
 
 /// A todo's state. Serde as the lower-case words, so a stored list reads the
@@ -1071,9 +1093,8 @@ impl Store {
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn.execute_batch(
-                    "ALTER TABLE adjudication ADD COLUMN oracle_reading TEXT",
-                )?;
+                self.conn
+                    .execute_batch("ALTER TABLE adjudication ADD COLUMN oracle_reading TEXT")?;
             }
         }
         Ok(())
@@ -1748,7 +1769,11 @@ impl Store {
             "reply" => "oracle_reply",
             // `Refused`, not `Corrupt`: the store is fine and the caller named a field that
             // is not one of the two this locator answers for.
-            other => return Err(StoreError::Refused(format!("`{other}` is not a diagnostic field"))),
+            other => {
+                return Err(StoreError::Refused(format!(
+                    "`{other}` is not a diagnostic field"
+                )));
+            }
         };
         let sql = format!("SELECT {field} FROM adjudication WHERE request_id = ?1");
         let out: Option<Option<String>> = self
@@ -1949,7 +1974,9 @@ impl Store {
             //
             // **A count is not measuring what its NAME says, it is measuring what its
             // PREDICATE says** — and the predicate lives in one place now, above.
-            measured: one(&format!("SELECT COUNT(*) FROM adjudication WHERE {MEASURED_SQL}"))?,
+            measured: one(&format!(
+                "SELECT COUNT(*) FROM adjudication WHERE {MEASURED_SQL}"
+            ))?,
             disagreements: one(&format!(
                 "SELECT COUNT(*) FROM adjudication WHERE {DISAGREEMENT_SQL}"
             ))?,
@@ -2495,6 +2522,7 @@ mod tests {
             &[TodoItem {
                 content: "ship the pane".into(),
                 status: TodoStatus::InProgress,
+                by: TodoBy::Model,
             }],
         )
         .unwrap();
@@ -2513,14 +2541,17 @@ mod tests {
             TodoItem {
                 content: "read the harness".into(),
                 status: TodoStatus::Completed,
+                by: TodoBy::Model,
             },
             TodoItem {
                 content: "seat the tool".into(),
                 status: TodoStatus::InProgress,
+                by: TodoBy::Model,
             },
             TodoItem {
                 content: "render the pane".into(),
                 status: TodoStatus::Pending,
+                by: TodoBy::Model,
             },
         ];
         s.put_todos("sess-1", &first).unwrap();
@@ -2535,6 +2566,7 @@ mod tests {
         let second = vec![TodoItem {
             content: "render the pane".into(),
             status: TodoStatus::InProgress,
+            by: TodoBy::Model,
         }];
         s.put_todos("sess-1", &second).unwrap();
         assert_eq!(s.todos("sess-1").unwrap(), second);
@@ -2829,8 +2861,16 @@ mod corpus_tests {
         assert!(s.record_adjudication(&d).unwrap());
 
         let row = s.corpus(false, 10).unwrap().remove(0);
-        assert!(row.shown.as_deref().unwrap().starts_with("brief — "), "{:?}", row.shown);
-        assert!(row.reply.as_deref().unwrap().contains("ALLOW 0"), "{:?}", row.reply);
+        assert!(
+            row.shown.as_deref().unwrap().starts_with("brief — "),
+            "{:?}",
+            row.shown
+        );
+        assert!(
+            row.reply.as_deref().unwrap().contains("ALLOW 0"),
+            "{:?}",
+            row.reply
+        );
 
         // The other two facts, which are not the same as a missing column: no oracle was
         // consulted at all, and one was asked and said nothing.
@@ -2883,9 +2923,14 @@ mod corpus_tests {
     fn the_reading_of_an_unsure_is_a_column_and_the_rate_of_each_is_a_query() {
         let s = store();
         let session = a_session(&s);
-        for (i, kind) in ["could_not_decide", "between_thresholds", "unreadable", "out_of_room"]
-            .into_iter()
-            .enumerate()
+        for (i, kind) in [
+            "could_not_decide",
+            "between_thresholds",
+            "unreadable",
+            "out_of_room",
+        ]
+        .into_iter()
+        .enumerate()
         {
             let mut d = a_decision(&format!("adj-r12-{i}"), &session);
             d.consulted = Some(true);
@@ -2907,14 +2952,22 @@ mod corpus_tests {
         seen.sort_unstable();
         assert_eq!(
             seen,
-            ["between_thresholds", "could_not_decide", "out_of_room", "unreadable"]
+            [
+                "between_thresholds",
+                "could_not_decide",
+                "out_of_room",
+                "unreadable"
+            ]
         );
         let answered = rows
             .iter()
             .find(|r| r.request_id == "adj-r12-answered")
             .expect("the answered row");
         assert_eq!(answered.consulted, Some(true));
-        assert_eq!(answered.oracle_reading, None, "an answered verdict has no reading");
+        assert_eq!(
+            answered.oracle_reading, None,
+            "an answered verdict has no reading"
+        );
 
         // **The rate of each**, which is the thing the column exists for: one query, and
         // the answer is a count per token rather than a regex over a sentence.
@@ -3022,7 +3075,10 @@ mod corpus_tests {
         d.oracle_reading = Some("out_of_room".into());
         assert!(s.record_adjudication(&d).unwrap());
         let rows = s.corpus(false, 10).unwrap();
-        let fresh = rows.iter().find(|r| r.request_id == "adj-after-v11").unwrap();
+        let fresh = rows
+            .iter()
+            .find(|r| r.request_id == "adj-after-v11")
+            .unwrap();
         assert_eq!(fresh.oracle_reading.as_deref(), Some("out_of_room"));
     }
 

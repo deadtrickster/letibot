@@ -42,9 +42,9 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use letibot_sessionlog::ScrubReport;
 use letibot_sessionlog::protocol::{ClientFrame, PROTOCOL_VERSION, ServerFrame};
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
-use letibot_sessionlog::ScrubReport;
 use letibot_tui::app::App;
 use letibot_tui::driver::Link;
 use letibot_tui::render::RenderConfig;
@@ -257,7 +257,8 @@ fn the_head_waits_for_the_daemon_and_leaves_when_it_is_gone() {
             // **`Settings`, not `Stop`.** The `Hello` arm queues a settings read, so the
             // first frame on the wire is not the one under test — and filtering here rather
             // than in the peer keeps the peer a plain reporter of what it parsed.
-            peer.next().filter(|f| matches!(f, ClientFrame::Stop { .. }))
+            peer.next()
+                .filter(|f| matches!(f, ClientFrame::Stop { .. }))
         })
     );
     assert!(stop.contains("Stop"), "the frame the peer read: {stop}");
@@ -287,9 +288,12 @@ fn the_head_waits_for_the_daemon_and_leaves_when_it_is_gone() {
     // `/proc` — the same test `~/bin/letibot` makes, and for the same reason.
     child.kill().expect("kill");
     let _ = child.wait();
-    wait_ticking(&mut link, &mut a, "the head to notice the process is gone", |a| {
-        a.should_quit().then_some(())
-    });
+    wait_ticking(
+        &mut link,
+        &mut a,
+        "the head to notice the process is gone",
+        |a| a.should_quit().then_some(()),
+    );
     assert!(
         a.stopping().is_some_and(|s| s.gone),
         "the head must know it went, not merely stop waiting"
@@ -329,7 +333,8 @@ fn a_daemon_that_does_not_go_is_named_with_its_pid_and_the_verb() {
             // **`Settings`, not `Stop`.** The `Hello` arm queues a settings read, so the
             // first frame on the wire is not the one under test — and filtering here rather
             // than in the peer keeps the peer a plain reporter of what it parsed.
-            peer.next().filter(|f| matches!(f, ClientFrame::Stop { .. }))
+            peer.next()
+                .filter(|f| matches!(f, ClientFrame::Stop { .. }))
         })
     );
     assert!(stop.contains("Stop"), "{stop}");
@@ -362,7 +367,9 @@ fn a_daemon_that_does_not_go_is_named_with_its_pid_and_the_verb() {
          forbids"
     );
 
-    let said = a.stop_farewell().expect("a daemon that did not go is reported");
+    let said = a
+        .stop_farewell()
+        .expect("a daemon that did not go is reported");
     assert!(
         said.contains(&pid.to_string()),
         "the farewell names the pid, which is the number the operator took to `ps`: {said}"
@@ -411,7 +418,11 @@ fn a_successful_stop_says_nothing_on_the_way_out() {
     wait_ticking(&mut link, &mut a, "the head to leave", |a| {
         a.should_quit().then_some(())
     });
-    assert_eq!(a.stop_farewell(), None, "it went; there is nothing to report");
+    assert_eq!(
+        a.stop_farewell(),
+        None,
+        "it went; there is nothing to report"
+    );
     let _ = std::fs::remove_file(&peer.path);
 }
 

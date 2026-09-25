@@ -128,24 +128,42 @@ pub enum LedgerError {
         tokens_len: usize,
     },
     /// `fork` was asked to keep more rows than exist.
-    ForkPastEnd { keep: usize, rows: usize },
+    ForkPastEnd {
+        keep: usize,
+        rows: usize,
+    },
 }
 
 impl std::fmt::Display for LedgerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LedgerError::Io(e) => write!(f, "token region: {e}"),
-            LedgerError::ChainMismatch { index, item_id, expected, recomputed } => write!(
+            LedgerError::ChainMismatch {
+                index,
+                item_id,
+                expected,
+                recomputed,
+            } => write!(
                 f,
                 "hash chain broken at row {index} ({item_id}): persisted {}, recomputed {}",
                 hex(expected),
                 hex(recomputed)
             ),
-            LedgerError::NotContiguous { index, item_id, expected_offset, found_offset } => write!(
+            LedgerError::NotContiguous {
+                index,
+                item_id,
+                expected_offset,
+                found_offset,
+            } => write!(
                 f,
                 "row {index} ({item_id}) starts at {found_offset}, should start at {expected_offset}"
             ),
-            LedgerError::LengthMismatch { index, item_id, row_len, tokens_len } => write!(
+            LedgerError::LengthMismatch {
+                index,
+                item_id,
+                row_len,
+                tokens_len,
+            } => write!(
                 f,
                 "row {index} ({item_id}) says {row_len} tokens, blob holds {tokens_len}"
             ),
@@ -492,8 +510,7 @@ mod tests {
         // appends, every snapshot ever taken is still a prefix of the live
         // region, byte for byte, and the span never moves or shrinks.
         let mut l = ledger();
-        let mut snapshots: Vec<(PromptSpan, Vec<TokenId>)> =
-            vec![(l.span(), l.tokens().to_vec())];
+        let mut snapshots: Vec<(PromptSpan, Vec<TokenId>)> = vec![(l.span(), l.tokens().to_vec())];
 
         for k in 0..64u32 {
             let payload: Vec<TokenId> = (0..(k % 7)).map(|j| 1000 + k * 10 + j).collect();
@@ -527,7 +544,10 @@ mod tests {
             expected.extend_from_slice(&payload);
             assert_eq!(l.tokens(), expected.as_slice());
         }
-        assert!(l.len() > 16 * 1024, "must have grown past the initial capacity");
+        assert!(
+            l.len() > 16 * 1024,
+            "must have grown past the initial capacity"
+        );
         assert!(l.region().capacity() >= l.len());
         l.verify_chain().unwrap();
     }
@@ -588,7 +608,10 @@ mod tests {
         persisted[0].1 = vec![9, 9];
         let err = TokenLedger::restore("t-bad", l.prefix_tokens(), l.h_init(), &persisted)
             .expect_err("a changed token must break the chain");
-        assert!(matches!(err, LedgerError::ChainMismatch { index: 0, .. }), "{err}");
+        assert!(
+            matches!(err, LedgerError::ChainMismatch { index: 0, .. }),
+            "{err}"
+        );
 
         // And a hole where a row used to be.
         let mut gapped: Vec<(LedgerRow, Vec<TokenId>)> = l
@@ -600,7 +623,10 @@ mod tests {
         gapped.remove(0);
         let err = TokenLedger::restore("t-gap", l.prefix_tokens(), l.h_init(), &gapped)
             .expect_err("a removed row must not replay");
-        assert!(matches!(err, LedgerError::NotContiguous { index: 0, .. }), "{err}");
+        assert!(
+            matches!(err, LedgerError::NotContiguous { index: 0, .. }),
+            "{err}"
+        );
     }
 
     #[test]
@@ -620,12 +646,19 @@ mod tests {
 
         assert_eq!(forked.rows().len(), 3);
         assert_eq!(forked.h_init(), l.h_init());
-        assert_eq!(forked.head(), l.rows()[2].h_k, "the chain up to the fork point is identical");
+        assert_eq!(
+            forked.head(),
+            l.rows()[2].h_k,
+            "the chain up to the fork point is identical"
+        );
         assert_eq!(forked.tokens(), &l.tokens()[..l.rows()[2].end() as usize]);
         assert_ne!(forked.region().as_fd(), l.region().as_fd(), "a new region");
         forked.verify_chain().unwrap();
 
-        assert!(matches!(l.fork("t-x", 9), Err(LedgerError::ForkPastEnd { .. })));
+        assert!(matches!(
+            l.fork("t-x", 9),
+            Err(LedgerError::ForkPastEnd { .. })
+        ));
     }
 
     #[test]
@@ -685,14 +718,46 @@ mod tests {
     #[test]
     fn no_rewrite_operation_exists() {
         const LEDGER_ALLOWED: &[&str] = &[
-            "end", "offset", "len", "is_empty", "head", "extends", "fmt", "from", "hex",
-            "hash_tokens", "chain", "new", "append", "h_init", "span", "rows", "tokens",
-            "prefix_tokens", "prefix_len", "item_tokens", "readonly_fd", "region",
-            "verify_chain", "restore", "fork", "drop",
+            "end",
+            "offset",
+            "len",
+            "is_empty",
+            "head",
+            "extends",
+            "fmt",
+            "from",
+            "hex",
+            "hash_tokens",
+            "chain",
+            "new",
+            "append",
+            "h_init",
+            "span",
+            "rows",
+            "tokens",
+            "prefix_tokens",
+            "prefix_len",
+            "item_tokens",
+            "readonly_fd",
+            "region",
+            "verify_chain",
+            "restore",
+            "fork",
+            "drop",
         ];
         const REGION_ALLOWED: &[&str] = &[
-            "create", "len", "is_empty", "capacity", "as_slice", "append", "head_hash",
-            "read_published", "readonly_fd", "as_fd", "drop", "fmt",
+            "create",
+            "len",
+            "is_empty",
+            "capacity",
+            "as_slice",
+            "append",
+            "head_hash",
+            "read_published",
+            "readonly_fd",
+            "as_fd",
+            "drop",
+            "fmt",
         ];
 
         for (file, source, allowed) in [
@@ -703,7 +768,9 @@ mod tests {
             let api = source.split("\n#[cfg(test)]").next().unwrap();
             for line in api.lines() {
                 let line = line.trim();
-                let Some(rest) = line.strip_prefix("pub fn ") else { continue };
+                let Some(rest) = line.strip_prefix("pub fn ") else {
+                    continue;
+                };
                 let name = rest.split(['(', '<']).next().unwrap_or("").trim();
                 assert!(
                     allowed.contains(&name),
@@ -723,8 +790,17 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n");
             for forbidden in [
-                ".truncate(", ".set_len(", ".as_mut_slice(", "IndexMut", ".splice(",
-                ".drain(", ".retain(", ".swap_remove(", ".pop(", ".remove(", ".clear(",
+                ".truncate(",
+                ".set_len(",
+                ".as_mut_slice(",
+                "IndexMut",
+                ".splice(",
+                ".drain(",
+                ".retain(",
+                ".swap_remove(",
+                ".pop(",
+                ".remove(",
+                ".clear(",
                 ".insert(",
             ] {
                 assert!(

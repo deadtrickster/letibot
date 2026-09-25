@@ -580,7 +580,13 @@ mod tests {
             before_digest: String::new(),
             after_digest: String::new(),
             replacements: 900,
-            changed: ChangedSpan { first: 1, last_before: 900, last_after: 900, before_lines: 900, after_lines: 900 },
+            changed: ChangedSpan {
+                first: 1,
+                last_before: 900,
+                last_after: 900,
+                before_lines: 900,
+                after_lines: 900,
+            },
         };
         let ex = fe.excerpt(3, 100);
         assert!(ex.truncated);

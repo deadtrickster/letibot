@@ -118,8 +118,8 @@ impl Catalogue {
     pub fn read(path: &Path) -> Result<Catalogue, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("reading {}: {e}", path.display()))?;
-        let raw: BTreeMap<String, RawProvider> = serde_json::from_str(&text)
-            .map_err(|e| format!("parsing {}: {e}", path.display()))?;
+        let raw: BTreeMap<String, RawProvider> =
+            serde_json::from_str(&text).map_err(|e| format!("parsing {}: {e}", path.display()))?;
         let mut providers = BTreeMap::new();
         for (id, p) in raw {
             let mut models = BTreeMap::new();
@@ -307,7 +307,10 @@ mod tests {
     #[test]
     fn the_default_model_is_the_biggest_window_at_the_lowest_price() {
         let c = sample();
-        assert_eq!(c.default_model("deepseek").as_deref(), Some("deepseek-chat"));
+        assert_eq!(
+            c.default_model("deepseek").as_deref(),
+            Some("deepseek-chat")
+        );
         // `deepseek-legacy` has no price, so it is skipped rather than chosen —
         // unpriced and free are different, and a default that picked an unpriced
         // model would report every metered turn as costing nothing.
@@ -385,6 +388,10 @@ mod tests {
         let c = Catalogue::read(Path::new("/nonexistent/models.json"));
         assert!(c.is_err(), "read reports it");
         assert!(Catalogue::default().is_empty());
-        assert!(Catalogue::default().model("deepseek", "deepseek-chat").is_none());
+        assert!(
+            Catalogue::default()
+                .model("deepseek", "deepseek-chat")
+                .is_none()
+        );
     }
 }

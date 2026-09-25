@@ -727,7 +727,11 @@ fn measure_copy(from: &Path, to: &Path, exclude: &[String]) -> Result<u64, Backe
         .arg("--dry-run")
         .arg("--stats")
         .output()
-        .map_err(|e| BackendError::Io(format!("rsync: {e} (rsync is required to copy the workspace)")))?;
+        .map_err(|e| {
+            BackendError::Io(format!(
+                "rsync: {e} (rsync is required to copy the workspace)"
+            ))
+        })?;
     if !out.status.success() {
         return Err(BackendError::Io(format!(
             "measuring {}: {}",
@@ -739,7 +743,11 @@ fn measure_copy(from: &Path, to: &Path, exclude: &[String]) -> Result<u64, Backe
     stdout
         .lines()
         .find_map(|l| l.trim_start().strip_prefix("Total file size:"))
-        .map(|rest| rest.chars().filter(char::is_ascii_digit).collect::<String>())
+        .map(|rest| {
+            rest.chars()
+                .filter(char::is_ascii_digit)
+                .collect::<String>()
+        })
         .and_then(|d| d.parse().ok())
         .ok_or_else(|| BackendError::Io("rsync --stats printed no `Total file size` line".into()))
 }
@@ -780,7 +788,9 @@ fn copy_tree(from: &Path, to: &Path, exclude: &[String], max: u64) -> Result<(),
         )));
     }
     let out = rsync_cmd(from, to, exclude).output().map_err(|e| {
-        BackendError::Io(format!("rsync: {e} (rsync is required to copy the workspace)"))
+        BackendError::Io(format!(
+            "rsync: {e} (rsync is required to copy the workspace)"
+        ))
     })?;
     if !out.status.success() {
         return Err(BackendError::Io(format!(
@@ -861,7 +871,8 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("letibot-firecode-{}-{}", name, std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("letibot-firecode-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -890,9 +901,18 @@ mod tests {
         copy_tree(&src, &dst, &exclude, u64::MAX).unwrap();
 
         assert!(dst.join("repo/crates/a/src/lib.rs").exists());
-        assert!(!dst.join("repo/target").exists(), "nested target was copied");
-        assert!(!dst.join("repo/.claude/worktrees").exists(), "nested worktrees were copied");
-        assert!(!dst.join("repo/web/node_modules").exists(), "nested node_modules was copied");
+        assert!(
+            !dst.join("repo/target").exists(),
+            "nested target was copied"
+        );
+        assert!(
+            !dst.join("repo/.claude/worktrees").exists(),
+            "nested worktrees were copied"
+        );
+        assert!(
+            !dst.join("repo/web/node_modules").exists(),
+            "nested node_modules was copied"
+        );
         assert!(!dst.join("target").exists(), "root target was copied");
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(dst.parent().unwrap());
@@ -907,9 +927,14 @@ mod tests {
         file(&src.join("repo/data/blob"), 200_000);
         let exclude = FirecodeSpec::new(&src, "t").exclude;
 
-        let err = copy_tree(&src, &dst, &exclude, 100_000).unwrap_err().to_string();
+        let err = copy_tree(&src, &dst, &exclude, 100_000)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("refusing to copy"), "{err}");
-        assert!(err.contains("195 MiB") || err.contains("200000 bytes"), "{err}");
+        assert!(
+            err.contains("195 MiB") || err.contains("200000 bytes"),
+            "{err}"
+        );
         assert!(err.contains("LETIBOT_FIRECODE_COPY_MAX"), "{err}");
         assert!(!dst.exists(), "the refusal wrote the copy anyway");
 

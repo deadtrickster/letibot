@@ -183,7 +183,11 @@ fn incremental_agrees_span_for_span() {
             let mut built = r.render(&p, &items[..k]);
             built.extend(r.render_incremental(&items[..k], &items[k..k + 1]));
             let full = r.render(&p, &items[..k + 1]);
-            assert_eq!(merge_text(&built), merge_text(&full), "spans differ at k={k}");
+            assert_eq!(
+                merge_text(&built),
+                merge_text(&full),
+                "spans differ at k={k}"
+            );
         }
     });
 }
@@ -262,7 +266,9 @@ fn parse_round_trips_reasoning_and_two_tool_calls() {
         ParsedSpan::Control { role, .. } => format!("control:{role:?}"),
         ParsedSpan::Reasoning { text, .. } => format!("reasoning:{text}"),
         ParsedSpan::Content { text, .. } => format!("content:{text}"),
-        ParsedSpan::ToolCall { name, arguments, .. } => format!("call:{name}:{arguments}"),
+        ParsedSpan::ToolCall {
+            name, arguments, ..
+        } => format!("call:{name}:{arguments}"),
     };
     assert_eq!(
         parsed.iter().map(shape).collect::<Vec<_>>(),
@@ -334,7 +340,10 @@ fn a_string_argument_that_looks_like_json_does_not_round_trip() {
     let ParsedSpan::ToolCall { arguments, .. } = parsed.last().unwrap() else {
         panic!()
     };
-    assert_eq!(arguments, r#"{"n":3}"#, "the string became a number, as documented");
+    assert_eq!(
+        arguments, r#"{"n":3}"#,
+        "the string became a number, as documented"
+    );
 }
 
 /// A vocab-shaped tokenizer for the tests: one id per control literal, one per

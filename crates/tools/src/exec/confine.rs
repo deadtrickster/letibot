@@ -786,8 +786,7 @@ impl Boundary {
                 continue;
             }
             for tok in absolute_paths(line) {
-                if matches!(self.view.classify(&tok), Presence::Outside)
-                    && !outside.contains(&tok)
+                if matches!(self.view.classify(&tok), Presence::Outside) && !outside.contains(&tok)
                 {
                     outside.push(tok);
                 }

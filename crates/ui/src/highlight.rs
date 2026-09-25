@@ -96,7 +96,10 @@ mod tests {
     fn a_dotted_name_falls_back_to_its_prefix() {
         assert_eq!(role_for_capture("type.builtin"), Role::TypeName);
         assert_eq!(role_for_capture("function.method"), Role::FuncName);
-        assert_eq!(role_for_capture("keyword.control.conditional"), Role::Keyword);
+        assert_eq!(
+            role_for_capture("keyword.control.conditional"),
+            Role::Keyword
+        );
         assert_eq!(role_for_capture("string.escape"), Role::StringLit);
     }
 

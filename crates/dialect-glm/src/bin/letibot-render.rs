@@ -123,10 +123,10 @@ fn main() {
 
     let mut cases = Vec::new();
     for path in &paths {
-        let src = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("reading fixture {path}: {e}"));
-        let fx: Fixture = serde_json::from_str(&src)
-            .unwrap_or_else(|e| panic!("parsing fixture {path}: {e}"));
+        let src =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("reading fixture {path}: {e}"));
+        let fx: Fixture =
+            serde_json::from_str(&src).unwrap_or_else(|e| panic!("parsing fixture {path}: {e}"));
         cases.extend(expand(&fx));
     }
 
@@ -168,7 +168,18 @@ fn expand(fx: &Fixture) -> Vec<Value> {
         let spans = renderer.render(&prefix, items);
         let mid_turn = ends_mid_turn(items);
 
-        out.push(case(fx, k, false, &spans, items, &prefix, effort, &divergences, &normalise, &why));
+        out.push(case(
+            fx,
+            k,
+            false,
+            &spans,
+            items,
+            &prefix,
+            effort,
+            &divergences,
+            &normalise,
+            &why,
+        ));
 
         if !mid_turn {
             // The generation prompt is not a transcript item, so it is a separate
@@ -176,7 +187,18 @@ fn expand(fx: &Fixture) -> Vec<Value> {
             // that start every turn are the ones a mistake is most expensive in.
             let mut with_gen = spans.clone();
             with_gen.extend(generation_prompt());
-            out.push(case(fx, k, true, &with_gen, items, &prefix, effort, &divergences, &normalise, &why));
+            out.push(case(
+                fx,
+                k,
+                true,
+                &with_gen,
+                items,
+                &prefix,
+                effort,
+                &divergences,
+                &normalise,
+                &why,
+            ));
         }
     }
     out
@@ -286,7 +308,9 @@ fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value 
                 let t = turn.get_or_insert((None, String::new(), Vec::new()));
                 t.0 = Some(text.clone());
             }
-            TranscriptItem::Assistant { text, tool_calls, .. } => {
+            TranscriptItem::Assistant {
+                text, tool_calls, ..
+            } => {
                 let t = turn.get_or_insert((None, String::new(), Vec::new()));
                 t.1.push_str(text);
                 t.2.extend(tool_calls.iter().cloned());

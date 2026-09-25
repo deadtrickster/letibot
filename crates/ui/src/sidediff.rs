@@ -46,9 +46,9 @@
 //! in the source text, so the output is too, and the tests need no fixture
 //! beyond a string.
 
-use crate::diff::{hunks, diff_lines, DiffConfig, Hunk, Row};
+use crate::diff::{DiffConfig, Hunk, Row, diff_lines, hunks};
 use crate::highlight::role_for_capture;
-use crate::style::{Palette, Painter, Role};
+use crate::style::{Painter, Palette, Role};
 use crate::width;
 
 /// How the two panels are coloured, and where their numbers start.
@@ -166,7 +166,11 @@ impl Geometry {
         // space — or just sign and space when line numbers are off.
         let gutter_w = if sc.cfg.line_numbers { numw + 3 } else { 2 };
         let body_w = panel_w.saturating_sub(gutter_w).max(MIN_BODY);
-        Geometry { panel_w, body_w, numw }
+        Geometry {
+            panel_w,
+            body_w,
+            numw,
+        }
     }
 }
 
@@ -222,8 +226,16 @@ fn pair_rows(rows: &[Row]) -> Vec<Pair> {
         match rows[i] {
             Row::Context { a, b } => {
                 out.push(Pair {
-                    left: Some(Half { line: a, sign: ' ', role: Role::Plain }),
-                    right: Some(Half { line: b, sign: ' ', role: Role::Plain }),
+                    left: Some(Half {
+                        line: a,
+                        sign: ' ',
+                        role: Role::Plain,
+                    }),
+                    right: Some(Half {
+                        line: b,
+                        sign: ' ',
+                        role: Role::Plain,
+                    }),
                 });
                 i += 1;
             }
@@ -241,8 +253,16 @@ fn pair_rows(rows: &[Row]) -> Vec<Pair> {
                 let n = removed.len().max(added.len());
                 for k in 0..n {
                     out.push(Pair {
-                        left: removed.get(k).map(|&a| Half { line: a, sign: '-', role: Role::Removed }),
-                        right: added.get(k).map(|&b| Half { line: b, sign: '+', role: Role::Added }),
+                        left: removed.get(k).map(|&a| Half {
+                            line: a,
+                            sign: '-',
+                            role: Role::Removed,
+                        }),
+                        right: added.get(k).map(|&b| Half {
+                            line: b,
+                            sign: '+',
+                            role: Role::Added,
+                        }),
                     });
                 }
             }
@@ -262,10 +282,20 @@ fn render_pair(
     g: &Geometry,
 ) -> Vec<String> {
     let left = pair.left.as_ref().map(|h| {
-        (h, old.get(h.line).copied().unwrap_or(""), old_classes[h.line].as_slice(), sc.before_start + h.line)
+        (
+            h,
+            old.get(h.line).copied().unwrap_or(""),
+            old_classes[h.line].as_slice(),
+            sc.before_start + h.line,
+        )
     });
     let right = pair.right.as_ref().map(|h| {
-        (h, new.get(h.line).copied().unwrap_or(""), new_classes[h.line].as_slice(), sc.after_start + h.line)
+        (
+            h,
+            new.get(h.line).copied().unwrap_or(""),
+            new_classes[h.line].as_slice(),
+            sc.after_start + h.line,
+        )
     });
     let left_lines = side_lines(left, sc, g);
     let right_lines = side_lines(right, sc, g);
@@ -317,7 +347,11 @@ fn side_lines(
     let tinted = h.role != Role::Plain && p.is_colour();
     let q = Painter::inside(p, h.role);
     let painted = paint_classed(text, classes, p);
-    let painted = if tinted { q.rebase_resets(&painted) } else { painted };
+    let painted = if tinted {
+        q.rebase_resets(&painted)
+    } else {
+        painted
+    };
     let mut wrapped = width::wrap(&painted, g.body_w);
     if wrapped.is_empty() {
         // An empty line is still a line: it takes a row, with its number.
@@ -339,7 +373,11 @@ fn side_lines(
                 // which is what makes the gutter read as part of the change
                 // rather than as furniture. A context row keeps the dim
                 // number it always had.
-                let fg = if tinted { h.role.foreground() } else { Role::Faint };
+                let fg = if tinted {
+                    h.role.foreground()
+                } else {
+                    Role::Faint
+                };
                 q.paint(fg, &format!("{:>numw$} ", num, numw = g.numw))
             } else {
                 String::new()
@@ -508,7 +546,12 @@ pub fn render_edit_view(
 mod tests {
     use super::*;
 
-    fn sc(width: usize, palette: Palette, before_start: usize, after_start: usize) -> SplitConfig<'static> {
+    fn sc(
+        width: usize,
+        palette: Palette,
+        before_start: usize,
+        after_start: usize,
+    ) -> SplitConfig<'static> {
         // A leaked config is fine in a test: `DiffConfig` is `Copy` and the
         // leak keeps `SplitConfig<'a>` lifetimes out of every assertion.
         let cfg = Box::leak(Box::new(DiffConfig {
@@ -559,18 +602,31 @@ mod tests {
             .expect("the inserted line is shown");
         let (left, right) = ins.split_once('│').unwrap();
         assert!(right.contains('+'), "{ins:?}");
-        assert!(left.trim().is_empty(), "an insertion's left panel is blank: {ins:?}");
+        assert!(
+            left.trim().is_empty(),
+            "an insertion's left panel is blank: {ins:?}"
+        );
 
         let rows = plain(&render_split(&new, &old, &sc(80, Palette::None, 1, 1)));
-        let del = rows.iter().find(|r| r.contains('X')).expect("the deleted line is shown");
+        let del = rows
+            .iter()
+            .find(|r| r.contains('X'))
+            .expect("the deleted line is shown");
         let (left, right) = del.split_once('│').unwrap();
         assert!(left.contains('-'), "{del:?}");
-        assert!(right.trim().is_empty(), "a deletion's right panel is blank: {del:?}");
+        assert!(
+            right.trim().is_empty(),
+            "a deletion's right panel is blank: {del:?}"
+        );
     }
 
     #[test]
     fn a_created_file_is_all_right_panel() {
-        let rows = plain(&render_split(&[], &["x", "y"], &sc(80, Palette::None, 1, 1)));
+        let rows = plain(&render_split(
+            &[],
+            &["x", "y"],
+            &sc(80, Palette::None, 1, 1),
+        ));
         assert_eq!(rows.len(), 2, "{rows:?}");
         for r in rows {
             let (left, right) = r.split_once('│').unwrap();
@@ -585,7 +641,10 @@ mod tests {
         let new = ["keep", "added"];
         let rows = plain(&render_split(&old, &new, &sc(80, Palette::None, 41, 41)));
         // The added line is file line 42, not excerpt line 2.
-        assert!(rows.iter().any(|r| r.contains("42") && r.contains('+')), "{rows:?}");
+        assert!(
+            rows.iter().any(|r| r.contains("42") && r.contains('+')),
+            "{rows:?}"
+        );
     }
 
     #[test]
@@ -619,7 +678,11 @@ mod tests {
         // itself cannot end the background mid-row.
         let added = rows
             .iter()
-            .find(|r| r.contains("+ new();") || r.split_once(" │ ").map_or(false, |(_, r)| r.contains("new();")))
+            .find(|r| {
+                r.contains("+ new();")
+                    || r.split_once(" │ ")
+                        .map_or(false, |(_, r)| r.contains("new();"))
+            })
             .expect("the added row is shown");
         let (_, right) = added.split_once(" │ ").expect("two panels");
         assert!(
@@ -638,7 +701,10 @@ mod tests {
             right.contains("\x1b[32m2 \x1b[0m\x1b[48;5;22m"),
             "the line number takes the line's foreground on a changed row, as claude code's does: {added:?}"
         );
-        assert!(joined.contains("\x1b[31m-\x1b[0m\x1b[48;5;52m"), "the removed row is red: {joined:?}");
+        assert!(
+            joined.contains("\x1b[31m-\x1b[0m\x1b[48;5;52m"),
+            "the removed row is red: {joined:?}"
+        );
         // The cell ends with a reset — the padding inside the tint, then a
         // clean handoff — so the separator opens from a clean slate, not from
         // inside the tint.
@@ -650,7 +716,10 @@ mod tests {
 
         // And a context row is untouched: its base closes to a plain reset,
         // so its bytes are what they always were.
-        let ctx = rows.iter().find(|r| r.contains("fn a() {")).expect("context row");
+        let ctx = rows
+            .iter()
+            .find(|r| r.contains("fn a() {"))
+            .expect("context row");
         assert!(
             !ctx.contains("\x1b[48;5;22m") && !ctx.contains("\x1b[48;5;52m"),
             "{ctx:?}"
@@ -690,9 +759,17 @@ mod tests {
             intra_line: false,
             max_rows: 6,
         }));
-        let sc = SplitConfig { cfg, before_start: 1, after_start: 1, lang: None };
+        let sc = SplitConfig {
+            cfg,
+            before_start: 1,
+            after_start: 1,
+            lang: None,
+        };
         let rows = plain(&render_split(&old, &new, &sc));
-        assert!(rows.iter().any(|r| r.contains("more diff lines not shown")), "{rows:?}");
+        assert!(
+            rows.iter().any(|r| r.contains("more diff lines not shown")),
+            "{rows:?}"
+        );
         assert!(rows.len() <= 8, "{rows:?}");
     }
 
@@ -704,8 +781,14 @@ mod tests {
         for r in &rows {
             assert!(!r.contains('\x1b'), "{r:?}");
         }
-        assert!(rows.iter().any(|r| r.contains('-') && r.contains("a")), "{rows:?}");
-        assert!(rows.iter().any(|r| r.contains('+') && r.contains("b")), "{rows:?}");
+        assert!(
+            rows.iter().any(|r| r.contains('-') && r.contains("a")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains('+') && r.contains("b")),
+            "{rows:?}"
+        );
     }
 
     #[test]
@@ -727,17 +810,28 @@ mod tests {
             intra_line: false,
             max_rows: 60,
         }));
-        let sc = SplitConfig { cfg, before_start: 1, after_start: 1, lang: lang_for("a.rs") };
+        let sc = SplitConfig {
+            cfg,
+            before_start: 1,
+            after_start: 1,
+            lang: lang_for("a.rs"),
+        };
         assert_eq!(sc.lang, Some(rano::syntax::Lang::Rust));
         let rows = render_split(&old, &new, &sc);
         // `fn` is a keyword: rano names it, the table maps it to Role::Keyword,
         // and the palette paints magenta.
         assert!(
-            rows.iter().any(|r| r.contains("\x1b[35m") && r.contains("fn")),
+            rows.iter()
+                .any(|r| r.contains("\x1b[35m") && r.contains("fn")),
             "{rows:?}"
         );
 
-        let sc = SplitConfig { cfg, before_start: 1, after_start: 1, lang: lang_for("a.txt") };
+        let sc = SplitConfig {
+            cfg,
+            before_start: 1,
+            after_start: 1,
+            lang: lang_for("a.txt"),
+        };
         assert_eq!(sc.lang, None);
         let rows = render_split(&old, &new, &sc);
         // The gutters are still faint, but nothing is syntax-coloured: no
@@ -757,10 +851,7 @@ mod tests {
     /// is the test that says nothing here had to move.
     #[test]
     fn a_language_rano_gains_arrives_without_a_second_table() {
-        assert_eq!(
-            lang_for("patch.lisp"),
-            Some(rano::syntax::Lang::CommonLisp)
-        );
+        assert_eq!(lang_for("patch.lisp"), Some(rano::syntax::Lang::CommonLisp));
         // The batch of 2026-09-17 took rano from seven grammars to twenty-seven.
         // A few of them, across the table's shapes — extension, multi-extension,
         // filename — assert the delegation stayed a delegation.
@@ -789,7 +880,8 @@ mod tests {
         };
         let rows = render_split(&old, &new, &sc);
         assert!(
-            rows.iter().any(|r| r.contains("\x1b[35m") && r.contains("defun")),
+            rows.iter()
+                .any(|r| r.contains("\x1b[35m") && r.contains("defun")),
             "{rows:?}"
         );
     }
@@ -798,7 +890,11 @@ mod tests {
     fn capture_names_fall_back_through_their_prefix() {
         assert_eq!(role_for_capture("comment"), Role::Comment);
         assert_eq!(role_for_capture("string"), Role::StringLit);
-        assert_eq!(role_for_capture("type.builtin"), Role::TypeName, "dotted → prefix");
+        assert_eq!(
+            role_for_capture("type.builtin"),
+            Role::TypeName,
+            "dotted → prefix"
+        );
         assert_eq!(role_for_capture("variable.builtin"), Role::Keyword);
         assert_eq!(role_for_capture("punctuation.bracket"), Role::Plain);
         assert_eq!(role_for_capture("variable"), Role::Plain);
@@ -852,6 +948,10 @@ mod tests {
         // the right half carries one leading space that is not the panel's.)
         let changed = rows.iter().find(|r| r.contains('-')).unwrap();
         let (left, right) = changed.split_once('│').unwrap();
-        assert_eq!(left.find("fn").unwrap(), right.trim_start().find("fn").unwrap(), "{changed:?}");
+        assert_eq!(
+            left.find("fn").unwrap(),
+            right.trim_start().find("fn").unwrap(),
+            "{changed:?}"
+        );
     }
 }

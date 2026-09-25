@@ -269,9 +269,15 @@ pub const VERBOSITY_VALUES: &[(&str, &str)] = &[
         "your messages and the model's answers — nothing the head did to produce the words, \
          and one [N tool calls, M thinking lines] where the work was, which ctrl-t opens",
     ),
-    ("terse", "the above, plus one row per tool call and how it ended"),
+    (
+        "terse",
+        "the above, plus one row per tool call and how it ended",
+    ),
     ("normal", "the above, plus the model's thinking"),
-    ("loud", "the above, plus who attached, and who issued which command"),
+    (
+        "loud",
+        "the above, plus who attached, and who issued which command",
+    ),
 ];
 
 /// **What the diff style means** — named here so both heads spell one setting one way (R38,
@@ -2026,11 +2032,12 @@ fn filling_line(
             "  {} {}  {}",
             progress::bar(&p, bar_cols, cfg.palette()),
             cfg.palette().paint(Role::Faint, &counts),
-            cfg.palette()
-                .paint(Role::Faint, &format!("{cat:<CAT_SLOT$}", cat = cat_frame(now_ms)))
+            cfg.palette().paint(
+                Role::Faint,
+                &format!("{cat:<CAT_SLOT$}", cat = cat_frame(now_ms))
+            )
         ),
-        cfg.palette()
-            .paint(Role::Faint, &format!("  {what}")),
+        cfg.palette().paint(Role::Faint, &format!("  {what}")),
     ]
 }
 
@@ -2072,14 +2079,7 @@ fn filling_line(
 /// is one byte and one column.
 const CAT_FRAMES: [&str; 8] = [
     // A cat blinking, with its tail flicking behind it.
-    "(=^.^=) ",
-    "(=^-^=) ",
-    "(=^o^=) ",
-    "(=^-^=) ",
-    "(=^.^=)~",
-    "(=^-^=)~",
-    "(=^o^=)~",
-    "(=^-^=)~",
+    "(=^.^=) ", "(=^-^=) ", "(=^o^=) ", "(=^-^=) ", "(=^.^=)~", "(=^-^=)~", "(=^o^=)~", "(=^-^=)~",
 ];
 
 /// When the waiting frame starts naming the way out, in milliseconds.
@@ -2181,12 +2181,12 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
         "default-model",
         "what a NEW session starts on; /models switches this one",
     ),
-    ("verbosity", "how much reaches the transcript: the card, or a rung by name"),
-    ("diff", "how a diff is drawn: unified or side by side"),
     (
-        "notes",
-        "what this head has shown — and how to retire one",
+        "verbosity",
+        "how much reaches the transcript: the card, or a rung by name",
     ),
+    ("diff", "how a diff is drawn: unified or side by side"),
+    ("notes", "what this head has shown — and how to retire one"),
     (
         "config",
         "every setting, the runtime-editable ones editable in place",
@@ -2201,11 +2201,23 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     // here, but **listing what this head implements is this head's half of it.**
     ("todos", "open or close the todos pane (ctrl-p)"),
     ("subagents", "open or close the subagent tree (ctrl-g)"),
-    ("peek", "ID — read one subagent's output without leaving this session"),
+    (
+        "peek",
+        "ID — read one subagent's output without leaving this session",
+    ),
     ("resume", "ID — bring a session on disk back and go there"),
-    ("promote", "move the running command to the background (ctrl-o)"),
-    ("models", "which model answers: /models is a menu, /models PROVIDER/MODEL switches"),
-    ("resync", "throw this head's state away and take a fresh snapshot"),
+    (
+        "promote",
+        "move the running command to the background (ctrl-o)",
+    ),
+    (
+        "models",
+        "which model answers: /models is a menu, /models PROVIDER/MODEL switches",
+    ),
+    (
+        "resync",
+        "throw this head's state away and take a fresh snapshot",
+    ),
     ("cells", "MESSAGE — send it with a copy of this screen"),
     ("compact", "summarise this session and fork it"),
     (
@@ -2224,7 +2236,10 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     // the dispatcher's own aliases for `/config`/`/status`. All three worked and none
     // was offered, which is the whole finding: the table is a registry that was read as
     // if it were the dispatcher.
-    ("dismiss", "retire this head's notes — the same as /notes dismiss"),
+    (
+        "dismiss",
+        "retire this head's notes — the same as /notes dismiss",
+    ),
     ("settings", "every setting — the same as /config"),
     ("stats", "this head's counters — the same as /status"),
 ];
@@ -2426,7 +2441,11 @@ impl App {
         if self.bye.is_some() {
             return true;
         }
-        if self.stopping.as_ref().is_some_and(|s| !s.resolved(self.now_ms)) {
+        if self
+            .stopping
+            .as_ref()
+            .is_some_and(|s| !s.resolved(self.now_ms))
+        {
             return false;
         }
         self.quit
@@ -3481,7 +3500,8 @@ impl App {
                 .filter(|it| it.item.is_none())
                 .map(|it| it.item_id.as_str())
                 .collect();
-            self.bound_prompts.retain(|id, _| bodyless.contains(id.as_str()));
+            self.bound_prompts
+                .retain(|id, _| bodyless.contains(id.as_str()));
         }
         // The snapshot's turn carries its calls **with their edit excerpts**, and
         // the rows it appended in order — the same two facts the live hand-off
@@ -5387,7 +5407,11 @@ impl App {
             }
         }
         if let Some(subject) = self.pick {
-            let choices = self.pick_values().into_iter().map(|(v, _)| v).collect::<Vec<_>>();
+            let choices = self
+                .pick_values()
+                .into_iter()
+                .map(|(v, _)| v)
+                .collect::<Vec<_>>();
             let n = choices.len();
             match k {
                 Key::Up if n > 0 => {
@@ -5800,7 +5824,10 @@ impl App {
                 if typed.is_empty() {
                     return self.answer_marked();
                 }
-                let at = d.choices.iter().position(|c| c.trim().eq_ignore_ascii_case(typed));
+                let at = d
+                    .choices
+                    .iter()
+                    .position(|c| c.trim().eq_ignore_ascii_case(typed));
                 let answer = match at {
                     Some(i) => letibot_sessionlog::question::QuestionAnswer::choosing(i),
                     None => letibot_sessionlog::question::QuestionAnswer::free(typed),
@@ -6319,7 +6346,11 @@ impl App {
         let saved = self.save_prefs(RetiredWrite::Union);
         self.say(&format!(
             "diff {} — every edit card, drawn and future{saved}",
-            if split { "split (side by side)" } else { "unified" }
+            if split {
+                "split (side by side)"
+            } else {
+                "unified"
+            }
         ));
         None
     }
@@ -6421,7 +6452,11 @@ impl App {
     ///   R31 keeps for a tool with several arguments. A line that *starts* with `{` is the
     ///   operator asking for the JSON form; there is no tool whose bare text begins that way
     ///   by accident and the ambiguity is resolved in favour of the form they can see.
-    fn head_run_call(&self, tool: &letibot_sessionlog::HeadRunTool, line: &str) -> Result<String, String> {
+    fn head_run_call(
+        &self,
+        tool: &letibot_sessionlog::HeadRunTool,
+        line: &str,
+    ) -> Result<String, String> {
         let line = line.trim();
         if line.starts_with('{') {
             // **Checked for BEING json and for nothing else** — the original rule, kept.
@@ -6958,9 +6993,7 @@ impl App {
                 // **R16: the same mark, for the other fork.**
                 self.mark_fork();
                 if summarise {
-                    self.say(
-                        "re-seating: summarising, so the summary replaces the conversation…",
-                    );
+                    self.say("re-seating: summarising, so the summary replaces the conversation…");
                 } else {
                     self.say(
                         "re-seating: carrying the conversation across as it is. The next \
@@ -7941,9 +7974,7 @@ impl App {
             // last question it will be asked, and a list under it is a list
             // nobody is going to use.
             (None, None) if self.quit_card => (self.quit_card_lines(w), Vec::new()),
-            (None, None) if self.pick.is_some() => {
-                (self.setting_picker_lines(w), Vec::new())
-            }
+            (None, None) if self.pick.is_some() => (self.setting_picker_lines(w), Vec::new()),
             (None, None) => (Vec::new(), Vec::new()),
         };
         let dec_full = dec.len();
@@ -7952,7 +7983,11 @@ impl App {
         // — the same arrangement `pane_len`/`pane_room` make for the panes. The scroll
         // itself is reset in one place, here, so a second card cannot inherit the first
         // one's offset however it arrived.
-        let card_here = self.open.first().map(|d| d.req_id.clone()).unwrap_or_default();
+        let card_here = self
+            .open
+            .first()
+            .map(|d| d.req_id.clone())
+            .unwrap_or_default();
         if card_here != self.dec_scroll_for {
             self.dec_scroll_for = card_here;
             self.dec_scroll = 0;
@@ -8518,7 +8553,11 @@ impl App {
         let newest_payload = self.newest_payload_row();
         let mut k = self.hist_floor;
         let mut covered = |built: &[(usize, RowClass, Vec<String>, Option<Marker>, bool)]| {
-            self.hist_lines.len() + built.iter().map(|(_, _, l, _, _)| l.len() + 1).sum::<usize>()
+            self.hist_lines.len()
+                + built
+                    .iter()
+                    .map(|(_, _, l, _, _)| l.len() + 1)
+                    .sum::<usize>()
         };
         // **The row condition is `Option`al on purpose.** Written as `k > stop_row` with a
         // `0` meaning "no row", the disjunct is true for every `k > 0` and the walk renders
@@ -8615,26 +8654,26 @@ impl App {
             // the assembly loop's, because that is where forward order exists — this walk
             // renders newest first, so the prose this marker continues has not been reached
             // yet when the row is built. See [`hidden_run_marker`].
-            let marker = unseen
-                .filter(|(start, _)| *start == k)
-                .map(|(start, end)| {
-                    hidden_run_marker(
-                        &self.items,
-                        start,
-                        end,
-                        self.verbosity,
-                        &cfg,
-                        newest_run == Some(start),
-                        live,
-                    )
-                });
+            let marker = unseen.filter(|(start, _)| *start == k).map(|(start, end)| {
+                hidden_run_marker(
+                    &self.items,
+                    start,
+                    end,
+                    self.verbosity,
+                    &cfg,
+                    newest_run == Some(start),
+                    live,
+                )
+            });
             let (class, rows) = match unseen {
                 Some((start, _)) if start == k => (
                     RowClass::Activity,
-                    vec![marker
-                        .as_ref()
-                        .expect("a marker was built for this row")
-                        .painted(&cfg)],
+                    vec![
+                        marker
+                            .as_ref()
+                            .expect("a marker was built for this row")
+                            .painted(&cfg),
+                    ],
                 ),
                 Some(_) => (RowClass::Other, Vec::new()),
                 None => item_lines(
@@ -8801,7 +8840,8 @@ impl App {
     /// of the two things the key is about to open.
     fn newest_openable(&self) -> Option<String> {
         let live = self.live_work_now();
-        if let Some(start) = newest_unseen_run(&self.items, self.verbosity, &self.bound_prompts, live)
+        if let Some(start) =
+            newest_unseen_run(&self.items, self.verbosity, &self.bound_prompts, live)
         {
             // **A run with no row yet is addressed by a sentinel**, because there is no id to
             // key it on: the work in flight has no item. The chord still opens something —
@@ -9334,9 +9374,9 @@ impl App {
                 ) {
                     *note_upto += 1;
                 }
-                let note_next = notes
-                    .get(*note_upto)
-                    .is_some_and(|(place, _)| matches!(place, Placed::Seam(at) if *at <= *hist_upto));
+                let note_next = notes.get(*note_upto).is_some_and(
+                    |(place, _)| matches!(place, Placed::Seam(at) if *at <= *hist_upto),
+                );
                 if note_next {
                     // **A retired note contributes nothing — not its text, and not
                     // the blank line above it.** R10: the note is a disclosure, and
@@ -9822,7 +9862,11 @@ impl App {
                 // above it. The rung's liveness obligation is elsewhere and unbroken — the
                 // footer says a turn is running and for how long (R13/§5.6).
                 let live_calls = calls.get(*settled_calls..).unwrap_or(&[]);
-                let live_calls = if rung.hides_the_working() { &[][..] } else { live_calls };
+                let live_calls = if rung.hides_the_working() {
+                    &[][..]
+                } else {
+                    live_calls
+                };
                 if !live_calls.is_empty() {
                     let mut owned: Vec<String> = Vec::new();
                     for c in live_calls.iter() {
@@ -9837,7 +9881,11 @@ impl App {
                         // head's clock instead; one that was not — a `--replay`, whose
                         // frames are applied before any clock is set — keeps the log's
                         // own span, which is the only honest measurement there.
-                        let card_now = if c.started_at > 0 { self.now_ms } else { now_ms };
+                        let card_now = if c.started_at > 0 {
+                            self.now_ms
+                        } else {
+                            now_ms
+                        };
                         owned.extend(step_in(
                             call_card(c, &cfg, card_now, tool, self.diff_split),
                             ind,
@@ -9944,9 +9992,7 @@ impl App {
                      — `/resync` clears this"
                 )
             } else {
-                format!(
-                    "  {announced} row(s) announced, waiting for the daemon to send them"
-                )
+                format!("  {announced} row(s) announced, waiting for the daemon to send them")
             };
             segs.push(Seg::Owned(vec![
                 String::new(),
@@ -10297,10 +10343,7 @@ impl App {
 
         let mut left = String::new();
         left.push_str(&p.paint(Role::UserAccent, "▌ "));
-        left.push_str(&p.paint(
-            Role::Strong,
-            &without_control_lines(&name),
-        ));
+        left.push_str(&p.paint(Role::Strong, &without_control_lines(&name)));
         let mut left_cols = 2 + visible_width(&name);
         // The workspace fills whatever is left, shortened from its *left*: the end
         // of a path is the part that identifies it.
@@ -11397,7 +11440,6 @@ impl App {
         out
     }
 
-
     /// The password card: what is asking, for which command, and the two keys.
     fn secret_lines(&self, ask: &SecretAsk, w: usize) -> Vec<String> {
         // **The same countdown the gate card draws** (§1.6), which is the other half of
@@ -11567,10 +11609,9 @@ impl App {
                          opinion; `--oracle-max-tokens` is the knob)",
                         a.basis
                     ),
-                    Some("unreadable") => format!(
-                        "  the guard's reply was not a verdict — {}",
-                        a.basis
-                    ),
+                    Some("unreadable") => {
+                        format!("  the guard's reply was not a verdict — {}", a.basis)
+                    }
                     Some("could_not_decide") => {
                         format!("  the guard answered unsure — {}", a.basis)
                     }
@@ -11999,7 +12040,12 @@ impl App {
     /// True when a §13.2b disclosure counter is non-zero, i.e. when the bottom
     /// border has something to say at all.
     fn alarmed(&self) -> bool {
-        self.dropped + self.scrubbed + self.resyncs + self.unreadable + self.gaps + self.orphan_bodies
+        self.dropped
+            + self.scrubbed
+            + self.resyncs
+            + self.unreadable
+            + self.gaps
+            + self.orphan_bodies
             > 0
     }
 
@@ -13120,9 +13166,9 @@ fn newest_unseen_run(
     if live.work() > 0 && !live_tail_covered(items, rung, bound) {
         return Some(items.len());
     }
-    (0..items.len()).rev().find(|r| {
-        unseen_run_at(items, rung, bound, live, *r).is_some_and(|(start, _)| start == *r)
-    })
+    (0..items.len())
+        .rev()
+        .find(|r| unseen_run_at(items, rung, bound, live, *r).is_some_and(|(start, _)| start == *r))
 }
 
 /// **Is the work in flight already counted by a run that has rows.**
@@ -13254,9 +13300,8 @@ fn reserved_for_run(
 /// Split from the seam because the two are drawn in different registers, and the ruling is
 /// leticl's: *"counts plain, seam faint."*
 fn marker_counts(calls: usize, think_lines: usize) -> String {
-    let plural = |n: usize, one: &str, many: &str| {
-        format!("{n} {}", if n == 1 { one } else { many })
-    };
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let mut counts: Vec<String> = Vec::new();
     if calls > 0 {
         counts.push(plural(calls, "tool call", "tool calls"));
@@ -13283,7 +13328,11 @@ fn marker_seam(newest: bool) -> &'static str {
 /// The whole marker as one string, **for measuring** — the two halves painted as one run, so
 /// a caller asking *how wide is this* gets the width of what is drawn.
 fn marker_text(calls: usize, think_lines: usize, newest: bool) -> String {
-    format!("{}{}", marker_counts(calls, think_lines), marker_seam(newest))
+    format!(
+        "{}{}",
+        marker_counts(calls, think_lines),
+        marker_seam(newest)
+    )
 }
 
 /// **How the live pane knows what is in flight** — calls proposed or running with no result
@@ -13309,10 +13358,7 @@ fn live_work(turn: Option<&TurnPane>, cfg: &RenderConfig, superseded: bool) -> L
     } else {
         reasoning_display_lines(t.reasoning.raw(), cfg.width)
     };
-    LiveWork {
-        calls,
-        think_lines,
-    }
+    LiveWork { calls, think_lines }
 }
 
 /// **A marker, as the two halves that are painted differently.**
@@ -14186,7 +14232,13 @@ fn call_card(
         let before = without_control_lines(&e.before);
         let after = without_control_lines(&e.after);
         body = sidediff::render_edit_view(
-            &path, &before, &after, e.before_start, e.after_start, &dcfg, view,
+            &path,
+            &before,
+            &after,
+            e.before_start,
+            e.after_start,
+            &dcfg,
+            view,
         );
         if e.truncated {
             body.push(cfg.palette().paint(
@@ -14333,10 +14385,7 @@ fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
             String::new()
         };
         out.push(trim_to(
-            &format!(
-                "  {label}{}",
-                p.paint(Role::Faint, &format!("{l}{tail}"))
-            ),
+            &format!("  {label}{}", p.paint(Role::Faint, &format!("{l}{tail}"))),
             w,
         ));
     }
@@ -14844,7 +14893,6 @@ struct Held {
 /// a warning — because that is where the reader's attention has to move.
 ///
 
-
 /// Where the history walk stood before one row. See [`App::hist_marks`].
 ///
 /// Three fields because the walk carries three cursors, and the fourth —
@@ -14877,8 +14925,6 @@ struct Span {
     at: usize,
     lines: usize,
 }
-
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowClass {
@@ -15221,8 +15267,12 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // somebody in the conversation speaking, and the separator it draws around
             // itself should say so.
             match speaker {
-                letibot_transcript::Speaker::Operator => (RowClass::Speech, user_block(&text, it.ts, cfg)),
-                letibot_transcript::Speaker::Agent => (RowClass::Other, session_block(&text, it.ts, cfg)),
+                letibot_transcript::Speaker::Operator => {
+                    (RowClass::Speech, user_block(&text, it.ts, cfg))
+                }
+                letibot_transcript::Speaker::Agent => {
+                    (RowClass::Other, session_block(&text, it.ts, cfg))
+                }
             }
         }
         TranscriptItem::Reasoning { text, .. } => {
@@ -15709,11 +15759,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     &format!("  ↑ {page} more lines above · ↑ scrolls up"),
                 ));
             }
-            out.extend(
-                lines[page..end]
-                    .iter()
-                    .map(|l| dim(cfg, &format!("  {l}"))),
-            );
+            out.extend(lines[page..end].iter().map(|l| dim(cfg, &format!("  {l}"))));
             if below {
                 let hidden = total - end;
                 // grok-build's `execute.rs:549` form, kept: the seam where content was
@@ -15945,10 +15991,13 @@ fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
         // No `!`, no red, no request id: nothing here is answerable, and the id is
         // only useful to somebody typing a grant. The detail that was cut is not
         // lost — the model's own tool result carries it, folded, one row above.
-        Note::NotRun(w) => wrap(&without_control_lines(&format!("· {}", w.detail)), cfg.width)
-            .into_iter()
-            .map(|l| dim(cfg, &l))
-            .collect(),
+        Note::NotRun(w) => wrap(
+            &without_control_lines(&format!("· {}", w.detail)),
+            cfg.width,
+        )
+        .into_iter()
+        .map(|l| dim(cfg, &l))
+        .collect(),
         Note::Decided(d) => {
             use letibot_sessionlog::event::DecisionOutcome as O;
             let (word, code) = match &d.outcome {
@@ -16937,11 +16986,7 @@ mod tests {
             .iter()
             .filter(|l| l.contains("queued ·") || l.contains("… +"))
             .collect();
-        assert_eq!(
-            echo.len(),
-            1,
-            "the echo is one row, not thirty: {rows:#?}"
-        );
+        assert_eq!(echo.len(), 1, "the echo is one row, not thirty: {rows:#?}");
         assert!(echo[0].contains("queued · paragraph 0"), "{echo:?}");
         assert!(
             echo[0].contains("· /t opens it"),
@@ -16984,7 +17029,10 @@ mod tests {
         typed(&mut a, "a short one");
         a.key(Key::Enter);
         let rows = a.screen(120, 40);
-        assert!(rows.iter().any(|l| l.contains("queued · a short one")), "{rows:#?}");
+        assert!(
+            rows.iter().any(|l| l.contains("queued · a short one")),
+            "{rows:#?}"
+        );
         assert!(
             !rows.iter().any(|l| l.contains("opens it")),
             "nothing is hidden, so nothing is claimed: {rows:#?}"
@@ -17022,7 +17070,10 @@ mod tests {
             "the new echo is not marked by a snapshot that predates it"
         );
         let screen = a.screen(140, 30).join("\n");
-        assert!(screen.contains("unconfirmed · before the snapshot"), "{screen}");
+        assert!(
+            screen.contains("unconfirmed · before the snapshot"),
+            "{screen}"
+        );
         assert!(screen.contains("queued · after the snapshot"), "{screen}");
     }
 
@@ -17085,7 +17136,11 @@ mod tests {
         // passing.
         let setup = || {
             let mut a = app();
-            a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+            a.apply(hello(
+                "s",
+                vec![brief("s", "one", false)],
+                Hub::new("s").snapshot(),
+            ));
             typed(&mut a, "first of mine");
             a.key(Key::Enter);
             typed(&mut a, "second of mine");
@@ -17117,7 +17172,11 @@ mod tests {
             live.pending_prompts, snap.pending_prompts,
             "the two paths disagreed about what a row answered"
         );
-        assert!(live.pending_prompts.is_empty(), "{:?}", live.pending_prompts);
+        assert!(
+            live.pending_prompts.is_empty(),
+            "{:?}",
+            live.pending_prompts
+        );
     }
 
     /// **A line is spent once**, which is the property the old equality rule gave
@@ -17194,10 +17253,7 @@ mod tests {
         // The row is the front run of the echo.
         assert_eq!(go("one\ntwo", "one"), Some("two".into()));
         // The row is a middle and a tail run.
-        assert_eq!(
-            go("one\ntwo\nthree", "two\nthree"),
-            Some("one".into())
-        );
+        assert_eq!(go("one\ntwo\nthree", "two\nthree"), Some("one".into()));
         // Contained but not a line: untouched, every one of them.
         assert_eq!(go("two", "one\ntwo-guess"), None);
         assert_eq!(go("two", "one\nxtwo x"), None);
@@ -17374,8 +17430,7 @@ mod tests {
         a.apply(ServerFrame::Event(env(3, testing::appended("s.9", "user"))));
         let after = a.screen(100, 24);
         assert_eq!(
-            before,
-            after,
+            before, after,
             "**NOT ONE ROW CHANGES across the announcement** — that is the whole of *pure ui
  desync*: the frame before it and the frame after it are the same frame"
         );
@@ -17415,7 +17470,10 @@ mod tests {
         a.apply(ServerFrame::Event(env(2, testing::appended("s.9", "user"))));
         // And the model's reply starts streaming, which is what used to reach the
         // screen first.
-        a.apply(ServerFrame::Event(env(3, testing::delta("t1", "I'll fix the parser."))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            testing::delta("t1", "I'll fix the parser."),
+        )));
 
         let screen = a.screen(100, 24).join("\n");
         let prompt = screen
@@ -17442,7 +17500,10 @@ mod tests {
             4,
             testing::content("s.9", "also fix the parser"),
         )));
-        assert!(a.pending_prompts.is_empty(), "confirmed, so the echo retires");
+        assert!(
+            a.pending_prompts.is_empty(),
+            "confirmed, so the echo retires"
+        );
         assert!(a.bound_prompts.is_empty(), "and the binding is spent");
         let screen = a.screen(100, 24).join("\n");
         assert!(
@@ -17452,7 +17513,8 @@ mod tests {
         assert_eq!(screen.matches("also fix the parser").count(), 1, "{screen}");
         // Still above the reply, now from its own body.
         assert!(
-            screen.find("also fix the parser").unwrap() < screen.find("I'll fix the parser").unwrap(),
+            screen.find("also fix the parser").unwrap()
+                < screen.find("I'll fix the parser").unwrap(),
             "{screen}"
         );
     }
@@ -17532,10 +17594,22 @@ mod tests {
             vec!["first".to_string(), "second".to_string()]
         );
 
-        a.apply(ServerFrame::Event(env(1, testing::appended("s.10", "user"))));
-        a.apply(ServerFrame::Event(env(2, testing::appended("s.11", "user"))));
-        assert_eq!(a.bound_prompts.get("s.10").map(String::as_str), Some("first"));
-        assert_eq!(a.bound_prompts.get("s.11").map(String::as_str), Some("second"));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("s.10", "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::appended("s.11", "user"),
+        )));
+        assert_eq!(
+            a.bound_prompts.get("s.10").map(String::as_str),
+            Some("first")
+        );
+        assert_eq!(
+            a.bound_prompts.get("s.11").map(String::as_str),
+            Some("second")
+        );
         let screen = a.screen(100, 24).join("\n");
         assert_eq!(screen.matches("queued · first").count(), 1, "{screen}");
         assert_eq!(screen.matches("queued · second").count(), 1, "{screen}");
@@ -17579,7 +17653,10 @@ mod tests {
             }),
         });
         a.apply(hello("s", vec![brief("s", "one", false)], snap));
-        assert!(a.bound_prompts.is_empty(), "a row that is gone takes its guess with it");
+        assert!(
+            a.bound_prompts.is_empty(),
+            "a row that is gone takes its guess with it"
+        );
         assert_eq!(
             a.pending_prompts,
             vec!["still queued".to_string()],
@@ -17646,14 +17723,8 @@ mod tests {
         // One exchange of each kind: the operator's words, the model's answer, its reasoning,
         // a tool call with its result, and a head arrival.
         for (seq, event) in [
-            (
-                1,
-                testing::appended("s.0", "user"),
-            ),
-            (
-                2,
-                testing::content("s.0", "please read the file"),
-            ),
+            (1, testing::appended("s.0", "user")),
+            (2, testing::content("s.0", "please read the file")),
             (
                 3,
                 SessionEvent::TranscriptAppended {
@@ -17673,10 +17744,7 @@ mod tests {
                     }),
                 },
             ),
-            (
-                5,
-                testing::appended("s.2", "assistant"),
-            ),
+            (5, testing::appended("s.2", "assistant")),
             (
                 6,
                 SessionEvent::TranscriptContent {
@@ -17688,10 +17756,7 @@ mod tests {
                     }),
                 },
             ),
-            (
-                7,
-                testing::appended("s.3", "tool_result"),
-            ),
+            (7, testing::appended("s.3", "tool_result")),
             (
                 8,
                 SessionEvent::TranscriptContent {
@@ -17706,11 +17771,14 @@ mod tests {
                     }),
                 },
             ),
-            (9, SessionEvent::HeadAttached {
-                head_id: "h2".into(),
-                kind: "tui".into(),
-                identity: "somebody".into(),
-            }),
+            (
+                9,
+                SessionEvent::HeadAttached {
+                    head_id: "h2".into(),
+                    kind: "tui".into(),
+                    identity: "somebody".into(),
+                },
+            ),
         ] {
             a.apply(ServerFrame::Event(env(seq, event)));
         }
@@ -17767,7 +17835,9 @@ mod tests {
         a.verbosity = Verbosity::Conversation;
         a.invalidate_history();
         assert!(
-            !a.screen(100, 200).join("\n").contains("I should look at the file first"),
+            !a.screen(100, 200)
+                .join("\n")
+                .contains("I should look at the file first"),
             "and the rung is what removes it, with the fold open"
         );
 
@@ -17828,7 +17898,10 @@ mod tests {
                 access: "exec".into(),
             },
         )));
-        a.apply(ServerFrame::Event(env(4, testing::tool_progress("c1", "still going"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::tool_progress("c1", "still going"),
+        )));
         // And a gate card waiting for an answer.
         a.apply(ServerFrame::Event(env(
             5,
@@ -17933,9 +18006,15 @@ mod tests {
         // everything. (The first draft asked it before the switch and passed on the wrong
         // side of the same mistake.)
         a.verbosity = Verbosity::Conversation;
-        assert!(a.hidden_by_rung(held.ordinal), "the fixture must hold a hidden row");
+        assert!(
+            a.hidden_by_rung(held.ordinal),
+            "the fixture must hold a hidden row"
+        );
         a.reanchor_off_hidden();
-        let now = a.anchor.clone().expect("still holding, on a row that shows");
+        let now = a
+            .anchor
+            .clone()
+            .expect("still holding, on a row that shows");
         assert!(
             !a.hidden_by_rung(now.ordinal),
             "the view is holding a row the rung hides: {now:?}"
@@ -18245,7 +18324,11 @@ mod tests {
         // session is.
         let ids: Vec<String> = a.items.iter().map(|i| i.item_id.clone()).collect();
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-        a.apply(hello("s", vec![brief("s", "one", false)], snapshot_with(&ids)));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            snapshot_with(&ids),
+        ));
         a.screen(100, 30);
         assert_eq!(
             a.anchor,
@@ -18253,7 +18336,9 @@ mod tests {
             "a replacement that carries the row moved the view"
         );
         assert!(
-            !a.notes.iter().any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "anchor_lost")),
+            !a.notes
+                .iter()
+                .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "anchor_lost")),
             "and it said nothing, because nothing was lost"
         );
 
@@ -18268,7 +18353,11 @@ mod tests {
         // carried as itself.
         let tail: Vec<String> = (20..40).map(|i| format!("s.{i}")).collect();
         let tail: Vec<&str> = tail.iter().map(String::as_str).collect();
-        b.apply(hello("s", vec![brief("s", "one", false)], snapshot_with(&tail)));
+        b.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            snapshot_with(&tail),
+        ));
         let frame = b.screen(100, 30);
         let said = b
             .notes
@@ -18291,7 +18380,9 @@ mod tests {
         // the top — so the transient line above the composer carries it too, and that is the
         // one this asserts. A disclosure the reader cannot see is not a disclosure.
         assert!(
-            b.notice.as_deref().is_some_and(|n| n.contains(&lost.item_id)),
+            b.notice
+                .as_deref()
+                .is_some_and(|n| n.contains(&lost.item_id)),
             "the reader must be told on screen, not only at a seam below them: {:?}",
             b.notice
         );
@@ -18349,7 +18440,10 @@ mod tests {
         // naming the range so two gaps are two lines rather than one deduped one.
         let notes = a.notes_lines().join("\n");
         assert!(notes.contains("log_gap"), "nothing said the gap: {notes}");
-        assert!(notes.contains("2..3"), "the lost seqs are not named: {notes}");
+        assert!(
+            notes.contains("2..3"),
+            "the lost seqs are not named: {notes}"
+        );
         // **And repaired.** A resync is the one thing that can put the head back in
         // step, and the head cannot do it itself: the daemon owns the transcript.
         assert!(
@@ -18444,7 +18538,10 @@ mod tests {
             note: letibot_sessionlog::protocol::NOTE_PROMPT_QUEUED.into(),
         });
         assert_eq!(a.behind, 8, "the distance the daemon stated was not kept");
-        assert_eq!(a.gaps, 0, "being behind is not a gap, and must never move it");
+        assert_eq!(
+            a.gaps, 0,
+            "being behind is not a gap, and must never move it"
+        );
         assert!(
             !a.queued.iter().any(|x| matches!(x, Action::Resync)),
             "being behind is not a reason to resync"
@@ -18511,13 +18608,13 @@ mod tests {
         hub.publish(SessionEvent::Warning {
             code: "auto_compact".into(),
             detail: "938065 of 999999 tokens resident — compacting now".into(),
-        
+
             compaction: None,
         });
         hub.publish(SessionEvent::Warning {
             code: "compacted".into(),
             detail: "compacted: 940188 → 9181 tokens, on transcript s#t25".into(),
-        
+
             compaction: None,
         });
         hub.publish(SessionEvent::TranscriptAppended {
@@ -18561,13 +18658,13 @@ mod tests {
         hub.publish(SessionEvent::Warning {
             code: "auto_compact".into(),
             detail: "compacting again".into(),
-        
+
             compaction: None,
         });
         hub.publish(SessionEvent::Warning {
             code: "compacted".into(),
             detail: "compacted again".into(),
-        
+
             compaction: None,
         });
         feed(&mut a, &hub, &att.head_id);
@@ -18593,11 +18690,14 @@ mod tests {
             SessionEvent::Warning {
                 code: "compacted".into(),
                 detail: "compacted".into(),
-            
+
                 compaction: None,
             },
         )));
-        assert!(b.pending_prompts.is_empty(), "the manual fork resolved nothing");
+        assert!(
+            b.pending_prompts.is_empty(),
+            "the manual fork resolved nothing"
+        );
     }
 
     /// **A refusal the harness made is one dim line, not a wall in red.**
@@ -18782,15 +18882,21 @@ mod tests {
         // Four notes, which is the shape the operator actually reported: R19's restart was
         // four notes at three lines each, and R10's wall was two.
         for (code, detail) in [
-            ("gate_timeout", "denied: nobody answered before the deadline"),
+            (
+                "gate_timeout",
+                "denied: nobody answered before the deadline",
+            ),
             ("daemon_stopping", "`dead` asked this daemon to stop"),
             ("compacted", "compacted: 940188 → 9181 tokens"),
-            ("auto_compact", "938065 of 999999 tokens resident — compacting now"),
+            (
+                "auto_compact",
+                "938065 of 999999 tokens resident — compacting now",
+            ),
         ] {
             let e = hub.publish(SessionEvent::Warning {
                 code: code.into(),
                 detail: detail.into(),
-            
+
                 compaction: None,
             });
             a.apply(ServerFrame::Event(e));
@@ -18802,8 +18908,16 @@ mod tests {
         // **One key, and the wall goes.**
         assert_eq!(a.key(Key::CtrlN), None, "the chord is not a daemon action");
         let after = a.screen(100, 30).join("\n");
-        for code in ["gate_timeout", "daemon_stopping", "compacted", "auto_compact"] {
-            assert!(!after.contains(code), "`{code}` survived the press:\n{after}");
+        for code in [
+            "gate_timeout",
+            "daemon_stopping",
+            "compacted",
+            "auto_compact",
+        ] {
+            assert!(
+                !after.contains(code),
+                "`{code}` survived the press:\n{after}"
+            );
         }
         // **And it says what it did, in the VERB's own words** — because it calls the verb
         // rather than composing a second sentence. That is the property worth asserting here:
@@ -18840,7 +18954,10 @@ mod tests {
         a.key(Key::Enter);
         let back = a.screen(100, 30).join("\n");
         assert!(back.contains("gate_timeout"), "restore did nothing: {back}");
-        assert!(back.contains("/notes restore") || back.contains("back on the screen"), "{back}");
+        assert!(
+            back.contains("/notes restore") || back.contains("back on the screen"),
+            "{back}"
+        );
     }
 
     /// **The reflex survives a restart** (R22 + R19 part 3), which is the half that stops it
@@ -18856,7 +18973,7 @@ mod tests {
         let live = hub.publish(SessionEvent::Warning {
             code: "gate_timeout".into(),
             detail: "denied: nobody answered before the deadline".into(),
-        
+
             compaction: None,
         });
         a.apply(ServerFrame::Event(live.clone()));
@@ -18906,7 +19023,10 @@ mod tests {
         assert_eq!(a.input(), "hello", "ctrl-n typed into the composer");
         assert_eq!(a.reasoning, Fold::Folded, "ctrl-n moved the thinking fold");
         assert_eq!(a.tools, Fold::Folded, "ctrl-n moved the tool-output fold");
-        assert!(!a.jobs_pane && !a.todos_pane && !a.picker, "ctrl-n opened a pane");
+        assert!(
+            !a.jobs_pane && !a.todos_pane && !a.picker,
+            "ctrl-n opened a pane"
+        );
         assert!(!a.raw_calls, "ctrl-n toggled the raw view");
 
         // **On the bar, at 80 columns.** The bar is 151 columns now and the frame trims it,
@@ -18947,7 +19067,7 @@ mod tests {
         let published = hub.publish(SessionEvent::Warning {
             code: "gate_timeout".into(),
             detail: "denied: nobody answered before the deadline".into(),
-        
+
             compaction: None,
         });
         a.apply(ServerFrame::Event(published.clone()));
@@ -19099,7 +19219,11 @@ mod tests {
             "a dismissal discarded another head's key: {:?}",
             p.retired
         );
-        assert!(p.retired.iter().any(|k| k == "w|mine|2|bbbb"), "{:?}", p.retired);
+        assert!(
+            p.retired.iter().any(|k| k == "w|mine|2|bbbb"),
+            "{:?}",
+            p.retired
+        );
 
         // A restore replaces: this head's set is the whole truth, and nothing comes back.
         a.dismissed.clear();
@@ -19136,10 +19260,26 @@ mod tests {
                  — nothing confines this box, and this point stands on your confirmation \
                  rather than on a boundary.",
             ),
-            ("context_wall", 1790104751092, "stopping this turn after 22 round(s)"),
-            ("auto_compact", 1790104751092, "938785 of 999999 tokens resident"),
-            ("compacted", 1790104765616, "compacted: 941052 → 8748 tokens"),
-            ("auto_compact", 1790104765616, "compacted: 8748 tokens resident now"),
+            (
+                "context_wall",
+                1790104751092,
+                "stopping this turn after 22 round(s)",
+            ),
+            (
+                "auto_compact",
+                1790104751092,
+                "938785 of 999999 tokens resident",
+            ),
+            (
+                "compacted",
+                1790104765616,
+                "compacted: 941052 → 8748 tokens",
+            ),
+            (
+                "auto_compact",
+                1790104765616,
+                "compacted: 8748 tokens resident now",
+            ),
             ("promote_idle", 1790108290718, "nothing was running to move"),
         ];
 
@@ -19233,7 +19373,7 @@ mod tests {
         let live = hub.publish(SessionEvent::Warning {
             code: "gate_timeout".into(),
             detail: "nobody answered within 300s".into(),
-        
+
             compaction: None,
         });
         let mut a = app();
@@ -19356,12 +19496,15 @@ mod tests {
                 "auto_compact",
                 "938065 of 999999 tokens resident — compacting now",
             ),
-            ("compacted", "compacted: 940188 → 9181 tokens, on transcript s#t25"),
+            (
+                "compacted",
+                "compacted: 940188 → 9181 tokens, on transcript s#t25",
+            ),
         ] {
             hub.publish(SessionEvent::Warning {
                 code: code.into(),
                 detail: detail.into(),
-            
+
                 compaction: None,
             });
         }
@@ -19406,7 +19549,7 @@ mod tests {
         let live = hub.publish(SessionEvent::Warning {
             code: "context_wall".into(),
             detail: "stopping this turn: the window is full".into(),
-        
+
             compaction: None,
         });
         a.apply(ServerFrame::Event(live));
@@ -19459,7 +19602,14 @@ mod tests {
         ];
         let mut seen: Vec<(String, String)> = Vec::new();
         for (unsure, would) in five {
-            let screen = rendered(if unsure.is_empty() { None } else { Some(unsure) }, would);
+            let screen = rendered(
+                if unsure.is_empty() {
+                    None
+                } else {
+                    Some(unsure)
+                },
+                would,
+            );
             assert!(
                 screen.contains("THE-BASIS"),
                 "the daemon's sentence must still be there ({unsure:?}):\n{screen}"
@@ -19478,7 +19628,6 @@ mod tests {
         let unknown = rendered(Some("fifth_kind"), "ask");
         assert!(unknown.contains("fifth_kind"), "{unknown}");
     }
-
 
     /// **R19's second fault: routine is painted as failure.**
     ///
@@ -19508,7 +19657,7 @@ mod tests {
                 SessionEvent::Warning {
                     code: code.into(),
                     detail: detail.into(),
-                
+
                     compaction: None,
                 },
             )));
@@ -19526,7 +19675,10 @@ mod tests {
             !routine.contains(RED),
             "a compaction was painted in the failure colour: {routine:?}"
         );
-        assert!(routine.contains('·'), "not the routine register: {routine:?}");
+        assert!(
+            routine.contains('·'),
+            "not the routine register: {routine:?}"
+        );
         assert!(
             !routine.contains('!'),
             "the alarm glyph is on a housekeeping line: {routine:?}"
@@ -19565,8 +19717,14 @@ mod tests {
         });
         for (code, detail) in [
             ("compacted", "compacted: 940188 → 9181 tokens"),
-            ("slash_refused", "/qwe is not a daemon verb; /help lists the head's"),
-            ("ledger_chain_mismatch", "row 41's head is not the one that was stored"),
+            (
+                "slash_refused",
+                "/qwe is not a daemon verb; /help lists the head's",
+            ),
+            (
+                "ledger_chain_mismatch",
+                "row 41's head is not the one that was stored",
+            ),
         ] {
             a.apply(ServerFrame::Event(env(
                 1,
@@ -19596,9 +19754,18 @@ mod tests {
         assert!(refused.contains("× slash_refused"), "{refused:?}");
         assert!(failure.contains("! ledger_chain_mismatch"), "{failure:?}");
         // The colours: a typo is not red, and it is not the housekeeping dim either.
-        assert!(!refused.contains(RED), "a typo in the failure colour: {refused:?}");
-        assert!(refused.contains(YELLOW), "not the notice register: {refused:?}");
-        assert!(failure.contains(RED), "the chain mismatch lost its red: {failure:?}");
+        assert!(
+            !refused.contains(RED),
+            "a typo in the failure colour: {refused:?}"
+        );
+        assert!(
+            refused.contains(YELLOW),
+            "not the notice register: {refused:?}"
+        );
+        assert!(
+            failure.contains(RED),
+            "the chain mismatch lost its red: {failure:?}"
+        );
         // And the reason the register exists, in one assertion: the reader's own mistake is
         // not the same event as a session in trouble, and neither is housekeeping.
         assert_ne!(refused, failure);
@@ -20221,7 +20388,10 @@ mod tests {
         a.apply(ServerFrame::Event(env(1, tick(0))));
         let start = a.screen(100, 30).join("\n");
         assert!(start.contains("0 of 9570 parts"), "{start}");
-        assert!(start.contains("importing an opencode conversation"), "{start}");
+        assert!(
+            start.contains("importing an opencode conversation"),
+            "{start}"
+        );
 
         a.apply(ServerFrame::Event(env(2, tick(4_790))));
         let mid = a.screen(100, 30).join("\n");
@@ -22084,11 +22254,14 @@ mod tests {
         // **A default travels with the line**, so a bare form sends what a model's minimal
         // call would have sent.
         let mut b = app();
-        b.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        b.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         let mut row = door_row("web_fetch", "url", "url");
         if let ServerFrame::Settings { rows } = &mut row {
-            rows[0]
-                .tools[0]
+            rows[0].tools[0]
                 .defaults
                 .insert("format".into(), "markdown".into());
         }
@@ -22096,7 +22269,8 @@ mod tests {
         // **Compared as a VALUE, not as a string.** Key order in a JSON object is not a fact
         // about the call, and an assertion on it would fail the day the map's iteration
         // changes while the call stayed the same.
-        let Some(Action::HeadRun { name, arguments }) = b.command("web-fetch http://example.invalid")
+        let Some(Action::HeadRun { name, arguments }) =
+            b.command("web-fetch http://example.invalid")
         else {
             panic!("the bare form did not produce a door call");
         };
@@ -22115,7 +22289,11 @@ mod tests {
         // required fields, and the sentence it returns is the daemon's `why_json`. A test that
         // could not reach it would be no test at all.
         let mut c = app();
-        c.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        c.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         let two_fields = letibot_sessionlog::HeadRunTool {
             name: "pair".into(),
             field: String::new(),
@@ -22126,7 +22304,10 @@ mod tests {
         let why = c
             .head_run_call(&two_fields, "a b")
             .expect_err("a tool with no bare form is refused");
-        assert_eq!(why, "`pair` needs 2 fields (a, b)", "the daemon's own sentence");
+        assert_eq!(
+            why, "`pair` needs 2 fields (a, b)",
+            "the daemon's own sentence"
+        );
         // And a bare verb with nothing after it is refused by name, with the field named —
         // a call to a tool that needs a query, with no query, is a call nobody meant.
         let read = letibot_sessionlog::HeadRunTool {
@@ -22137,7 +22318,10 @@ mod tests {
             why_json: String::new(),
         };
         let why = c.head_run_call(&read, "   ").expect_err("no path, no call");
-        assert!(why.contains("/read WHAT") && why.contains("`path`"), "{why}");
+        assert!(
+            why.contains("/read WHAT") && why.contains("`path`"),
+            "{why}"
+        );
         assert!(why.contains("path"), "the kind is named: {why}");
 
         // **And the JSON form stays**, which is what a tool with several arguments needs.
@@ -22326,7 +22510,11 @@ mod tests {
             }
             d += line.matches('{').count() as i32 - line.matches('}').count() as i32;
         }
-        assert!(acted.len() > 20, "the extraction found {} verbs", acted.len());
+        assert!(
+            acted.len() > 20,
+            "the extraction found {} verbs",
+            acted.len()
+        );
 
         let offered: Vec<&str> = SLASH_COMMANDS.iter().map(|(n, _)| *n).collect();
         let mut missing: Vec<&String> = acted
@@ -23141,7 +23329,10 @@ mod tests {
         let shown = b.screen(80, 24).join("\n");
         assert!(!shown.contains("row 0"), "row 0 was skipped: {shown}");
         assert!(shown.contains("row 1"), "{shown}");
-        assert!(!shown.contains("esc closes"), "the footer is below the window: {shown}");
+        assert!(
+            !shown.contains("esc closes"),
+            "the footer is below the window: {shown}"
+        );
 
         // ---- and the page keys reach the listing too, which they did not ----
         let mut c = App::new(plain_cfg(80));
@@ -23291,7 +23482,10 @@ mod tests {
                     return Some(format!("{what}: {seq:?} in {r:?}"));
                 }
             }
-            if let Some(c) = r.chars().find(|c| *c == '\u{7f}' || ('\u{80}'..='\u{9f}').contains(c)) {
+            if let Some(c) = r
+                .chars()
+                .find(|c| *c == '\u{7f}' || ('\u{80}'..='\u{9f}').contains(c))
+            {
                 return Some(format!("a C1/DEL byte {c:?} in {r:?}"));
             }
         }
@@ -23450,10 +23644,7 @@ mod tests {
         // A live turn streaming the payload, which is the one surface that never goes
         // through `item_lines`.
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(
-            2,
-            testing::delta("t1", HOSTILE),
-        )));
+        a.apply(ServerFrame::Event(env(2, testing::delta("t1", HOSTILE))));
         a.apply(ServerFrame::Event(env(
             3,
             testing::reasoning("t1", HOSTILE),
@@ -23923,7 +24114,10 @@ mod tests {
         a.clock(2_000);
         a.say("again");
         let _ = a.key(Key::Char('x'));
-        assert!(a.notice.is_some(), "still there until the frame it is drawn on");
+        assert!(
+            a.notice.is_some(),
+            "still there until the frame it is drawn on"
+        );
         assert!(
             !a.screen(80, 12).join("\n").contains("again"),
             "and the next frame takes it down"
@@ -24382,7 +24576,10 @@ mod tests {
             seq,
             testing::proposed_on("t1", "c1", "bash", "cargo test"),
         )));
-        a.apply(ServerFrame::Event(env(seq + 1, testing::appended(id, "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            seq + 1,
+            testing::appended(id, "tool_result"),
+        )));
         a.apply(ServerFrame::Event(env(
             seq + 2,
             SessionEvent::TranscriptContent {
@@ -24437,7 +24634,10 @@ mod tests {
         a.key(Key::CtrlT);
         assert!(a.payload_sel.is_some(), "ctrl-t opened no view");
         let head = a.screen(100, 60).join("\n");
-        assert!(head.contains("line 0"), "the head is what is drawn: {head:?}");
+        assert!(
+            head.contains("line 0"),
+            "the head is what is drawn: {head:?}"
+        );
         assert!(head.contains("pages down"), "{head:?}");
 
         // Down pages: the window moves off the head, and the seam above says so.
@@ -24660,7 +24860,10 @@ mod tests {
             a.key(Key::PageDown);
             a.screen(80, 24);
         }
-        assert_eq!(a.scroll, 0, "scrolling back to the tail did not land at the tail");
+        assert_eq!(
+            a.scroll, 0,
+            "scrolling back to the tail did not land at the tail"
+        );
     }
 
     /// **Scrolling up renders more, on demand.**
@@ -25059,7 +25262,7 @@ mod tests {
         let published = hub.publish(letibot_sessionlog::SessionEvent::Warning {
             code: "reseated".into(),
             detail: "THE-WARNING".into(),
-        
+
             compaction: None,
         });
 
@@ -25143,7 +25346,10 @@ mod tests {
             !line.contains('▓'),
             "and none of them is still being worked on: {line:?}"
         );
-        assert!(line.contains('░'), "the one outstanding is not filled at all");
+        assert!(
+            line.contains('░'),
+            "the one outstanding is not filled at all"
+        );
     }
 
     /// **A `Hello` carrying a snapshot of `n` body-less rows** — the R9 tests' fixture.
@@ -26418,7 +26624,10 @@ mod tests {
         // than a literal so the two keys stay distinguishable — a PageUp that moved nothing
         // would still make this check meaningful.
         let page = a.screen_rows;
-        assert!(page > 10, "the fixture's screen is not tall enough to tell the two apart");
+        assert!(
+            page > 10,
+            "the fixture's screen is not tall enough to tell the two apart"
+        );
         assert_eq!(
             a.sub_out.as_ref().unwrap().scroll,
             3 + page,
@@ -27019,7 +27228,10 @@ mod tests {
         // A number in the hundreds of thousands is what the trap renders as, and it
         // is a *runtime* symptom rather than a shape in the source: nothing here
         // would have caught it in a type.
-        assert!(!card.contains("0000s left"), "a second epoch in seconds: {card}");
+        assert!(
+            !card.contains("0000s left"),
+            "a second epoch in seconds: {card}"
+        );
     }
 
     /// **R20 — the measurement first, and then the fix.** A card whose content is taller
@@ -27139,7 +27351,10 @@ mod tests {
 
         // **The ladder is where it was**, which is the point of the whole item.
         for opt in ["allow_once", "allow_session", "deny"] {
-            assert!(scrolled.contains(opt), "scrolling lost `{opt}`:\n{scrolled}");
+            assert!(
+                scrolled.contains(opt),
+                "scrolling lost `{opt}`:\n{scrolled}"
+            );
         }
         assert_eq!(
             first.find("allow_once").map(|_| "in"),
@@ -27260,7 +27475,10 @@ mod tests {
         assert!(a.open.is_empty(), "the premise: the first card closed");
         let mut d = decision_with(&[letibot_sessionlog::event::OptionKind::AllowOnce]);
         d.req_id = "d2".into();
-        d.detail = (0..40).map(|i| format!("  line {i}")).collect::<Vec<_>>().join("\n");
+        d.detail = (0..40)
+            .map(|i| format!("  line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         a.apply(ServerFrame::Event(env(
             2,
             SessionEvent::DecisionRequested {
@@ -27282,8 +27500,14 @@ mod tests {
         // The reset is in `screen`, where the offset is used, so the property is what the
         // *frame* does with it — the same reason the clamp lives there.
         let screen = a.screen(80, 24).join("\n");
-        assert_eq!(a.dec_scroll, 0, "the new card inherited the old card's offset");
-        assert!(screen.contains("line 0"), "the new card opened mid-wall:\n{screen}");
+        assert_eq!(
+            a.dec_scroll, 0,
+            "the new card inherited the old card's offset"
+        );
+        assert!(
+            screen.contains("line 0"),
+            "the new card opened mid-wall:\n{screen}"
+        );
     }
 
     /// **§1.6: the card says how long there is, and what silence will do.**
@@ -27337,7 +27561,10 @@ mod tests {
         let deny = ladder(NOW + 300_000, NOW, OnTimeout::Deny);
         assert!(deny.contains("if nobody answers, nothing runs"), "{deny}");
         let allow = ladder(NOW + 300_000, NOW, OnTimeout::Allow);
-        assert!(allow.contains("if nobody answers, it RUNS anyway"), "{allow}");
+        assert!(
+            allow.contains("if nobody answers, it RUNS anyway"),
+            "{allow}"
+        );
         let ask = ladder(NOW + 300_000, NOW, OnTimeout::Ask);
         assert!(
             ask.contains("if nobody answers, the guard model decides"),
@@ -27378,7 +27605,10 @@ mod tests {
         assert!(!bare.contains("expires in"), "{bare}");
         assert!(!bare.contains("s left"), "{bare}");
         assert!(!bare.contains("if nobody answers"), "{bare}");
-        assert!(bare.contains("allow_once"), "the card is still drawn: {bare}");
+        assert!(
+            bare.contains("allow_once"),
+            "the card is still drawn: {bare}"
+        );
     }
 
     /// **§1.7: a question can be answered.**
@@ -27412,9 +27642,15 @@ mod tests {
         // offered none — which is what it said while drawing an empty ladder.
         let a = app();
         let card = a.decision_lines(&one, 200).join("\n");
-        assert!(card.contains("which database should the migration target?"), "{card}");
+        assert!(
+            card.contains("which database should the migration target?"),
+            "{card}"
+        );
         for c in ["postgres", "sqlite", "a new one"] {
-            assert!(card.contains(c), "the choice {c:?} is not on the card: {card}");
+            assert!(
+                card.contains(c),
+                "the choice {c:?} is not on the card: {card}"
+            );
         }
         // A question's rows are prose, so there is no `(option_id)` beside them — and
         // the hint offers the free answer rather than naming an id the question has not
@@ -27466,7 +27702,10 @@ mod tests {
         a.open.push(one.clone());
         match a.submit("PostgreSQL".into()) {
             Some(Action::AnswerQuestion { answer, .. }) => {
-                assert_eq!(answer.option, None, "not a choice, so it is words: {answer:?}");
+                assert_eq!(
+                    answer.option, None,
+                    "not a choice, so it is words: {answer:?}"
+                );
                 assert_eq!(answer.free.as_deref(), Some("PostgreSQL"));
             }
             other => panic!("got {other:?}"),
@@ -27480,7 +27719,10 @@ mod tests {
         match a.submit("neither — split it into two migrations".into()) {
             Some(Action::AnswerQuestion { answer, .. }) => {
                 assert_eq!(answer.option, None);
-                assert_eq!(answer.free.as_deref(), Some("neither — split it into two migrations"));
+                assert_eq!(
+                    answer.free.as_deref(),
+                    Some("neither — split it into two migrations")
+                );
             }
             other => panic!("a typed sentence is an answer, got {other:?}"),
         }
@@ -27501,7 +27743,10 @@ mod tests {
         match a.submit("do whatever you think is best".into()) {
             Some(Action::AnswerQuestion { answer, .. }) => {
                 assert_eq!(answer.option, None, "{answer:?}");
-                assert_eq!(answer.free.as_deref(), Some("do whatever you think is best"));
+                assert_eq!(
+                    answer.free.as_deref(),
+                    Some("do whatever you think is best")
+                );
             }
             other => panic!("got {other:?}"),
         }
@@ -27524,8 +27769,15 @@ mod tests {
     fn the_row_count_is_the_kinds_own_field_in_both_directions() {
         use letibot_sessionlog::event::OptionKind;
         let permission = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
-        assert_eq!(decision_rows(&permission), 2, "a permission counts `options`");
-        assert!(permission.choices.is_empty(), "the premise: it has no choices");
+        assert_eq!(
+            decision_rows(&permission),
+            2,
+            "a permission counts `options`"
+        );
+        assert!(
+            permission.choices.is_empty(),
+            "the premise: it has no choices"
+        );
 
         let mut q = decision_with(&[]);
         q.kind = "question".into();
@@ -27629,7 +27881,11 @@ mod tests {
         // says it, the settled row does not repeat it.
         let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
         d.deadline = Some(1_788_984_300_000);
-        assert!(a.decision_lines(&d, 200).join("\n").contains("expires in 5 min"));
+        assert!(
+            a.decision_lines(&d, 200)
+                .join("\n")
+                .contains("expires in 5 min")
+        );
     }
 
     /// **R18's regression, reproduced on the bytes: a listing must not strip the colour
@@ -27828,7 +28084,7 @@ mod tests {
             SessionEvent::Warning {
                 code: "turn_failed".into(),
                 detail: "http io: Connection refused (os error 111)".into(),
-            
+
                 compaction: None,
             },
         )));
@@ -28798,10 +29054,7 @@ mod tests {
         assert_eq!(a.command("mode"), Some(Action::Settings));
         assert!(a.pick == Some(Pick::Mode));
         a.command("models");
-        assert!(
-            a.pick == Some(Pick::Model),
-            "the second closes the first"
-        );
+        assert!(a.pick == Some(Pick::Model), "the second closes the first");
         a.key(Key::Esc);
         assert!(a.pick.is_none(), "esc closes it");
     }
@@ -28973,7 +29226,10 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("the mode this session runs under"))
         );
-        assert!(a.pick == Some(Pick::Mode), "the card waits, it does not close");
+        assert!(
+            a.pick == Some(Pick::Mode),
+            "the card waits, it does not close"
+        );
         a.apply(ServerFrame::Event(env(2, testing::answered("r1", "deny"))));
         assert!(
             a.screen(110, 24)
@@ -29027,7 +29283,10 @@ mod tests {
         assert_eq!(a.command("mode"), Some(Action::Settings));
         typed(&mut a, "auto");
         assert_eq!(a.key(Key::Enter), None);
-        assert!(a.pick == Some(Pick::Mode), "an ambiguous prefix leaves the list up");
+        assert!(
+            a.pick == Some(Pick::Mode),
+            "an ambiguous prefix leaves the list up"
+        );
         let notice = a.notice.clone().unwrap();
         assert!(notice.contains("2 modes match"), "{notice}");
         // A prefix nothing matches is refused the same way.
@@ -29218,7 +29477,10 @@ mod tests {
         // The rows themselves are still gone — the point of the rung is that the reader does
         // not read them.
         for hidden in ["CONTENTS-0", "CONTENTS-3", "let me check the file"] {
-            assert!(!quiet.contains(hidden), "`{hidden}` is the working: {quiet}");
+            assert!(
+                !quiet.contains(hidden),
+                "`{hidden}` is the working: {quiet}"
+            );
         }
 
         // **It is the continuation of the sentence, not a row underneath it.** The prose ends
@@ -29567,7 +29829,11 @@ mod tests {
         let mut third = app();
         third.prefs_path = Some(path.clone());
         third.load_prefs();
-        assert_eq!(third.verbosity, Verbosity::Normal, "an unknown rung was obeyed");
+        assert_eq!(
+            third.verbosity,
+            Verbosity::Normal,
+            "an unknown rung was obeyed"
+        );
         assert!(
             third.notice.clone().unwrap_or_default().contains("chatty"),
             "an unreadable rung was swallowed: {:?}",
@@ -29594,7 +29860,12 @@ mod tests {
             Hub::new("s").snapshot(),
         ));
         for (seq, id, speaker, text) in [
-            (1u64, "s.0", letibot_transcript::Speaker::Operator, "run the tests"),
+            (
+                1u64,
+                "s.0",
+                letibot_transcript::Speaker::Operator,
+                "run the tests",
+            ),
             (
                 3,
                 "s.1",
@@ -29631,7 +29902,10 @@ mod tests {
             .find(|l| l.contains("job j89 exited 0"))
             .expect("the session's row is on the screen");
         // The mark that means *your own words*, and only on theirs.
-        assert!(theirs.contains('▌'), "the operator's row lost its bar: {theirs:?}");
+        assert!(
+            theirs.contains('▌'),
+            "the operator's row lost its bar: {theirs:?}"
+        );
         assert!(
             !ours.contains('▌'),
             "a job completion is drawn as the operator's own words: {ours:?}"
@@ -29809,7 +30083,8 @@ mod tests {
             },
         )));
         assert!(
-            count(&mut a).is_some_and(|l| l.contains("2 tool calls") && l.contains("thinking line")),
+            count(&mut a)
+                .is_some_and(|l| l.contains("2 tool calls") && l.contains("thinking line")),
             "the streamed reasoning is not counted: {:?}",
             count(&mut a)
         );
@@ -30076,7 +30351,8 @@ mod tests {
             .find(|l| l.contains("first the helpers:"))
             .expect("the prose is on the screen");
         assert!(
-            line.trim_end().ends_with("helpers: [1 tool call] · ctrl-t opens it"),
+            line.trim_end()
+                .ends_with("helpers: [1 tool call] · ctrl-t opens it"),
             "the model's sentence did not take the counts: {line:?}"
         );
     }
@@ -30159,9 +30435,7 @@ mod tests {
             let line = screen
                 .lines()
                 .find(|l| l.contains("[3 tool calls]"))
-                .unwrap_or_else(|| {
-                    panic!("the counts are missing at {width} columns:\n{screen}")
-                });
+                .unwrap_or_else(|| panic!("the counts are missing at {width} columns:\n{screen}"));
             assert!(
                 line.contains(": [3 tool calls]"),
                 "the counts are not on the end of the sentence that points at them, at \
@@ -30276,7 +30550,8 @@ mod tests {
             .find(|l| l.contains("First the helpers:"))
             .unwrap_or_else(|| panic!("the narration is not on the screen:\n{screen}"));
         assert!(
-            line.trim_end().ends_with("helpers: [8 tool calls] · ctrl-t opens it"),
+            line.trim_end()
+                .ends_with("helpers: [8 tool calls] · ctrl-t opens it"),
             "the marker did not join the sentence above it:\n{screen}"
         );
     }
@@ -30542,10 +30817,7 @@ mod tests {
             "a run left open across a rung change came back as a payload window"
         );
         let shown = a.screen(110, 40).join("\n");
-        assert!(
-            !shown.contains("pages down"),
-            "no window is open: {shown}"
-        );
+        assert!(!shown.contains("pages down"), "no window is open: {shown}");
     }
 
     /// **The three lines read as one paragraph** — the requirement's own claim, asserted in
@@ -30629,7 +30901,9 @@ mod tests {
             lines
                 .iter()
                 .position(|l| l.contains(needle))
-                .unwrap_or_else(|| panic!("`{needle}` is not on the screen:\n{}", screen.join("\n")))
+                .unwrap_or_else(|| {
+                    panic!("`{needle}` is not on the screen:\n{}", screen.join("\n"))
+                })
         };
         let prose = at("this has to give:");
         let report = at("and that is what it says.");
@@ -30694,7 +30968,10 @@ mod tests {
         assert_eq!(a.mode_sel, 2, "the cursor starts on the rung in force");
         let screen = a.screen(120, 40).join("\n");
         for (value, why) in VERBOSITY_VALUES {
-            assert!(screen.contains(value), "`{value}` is not on the card:\n{screen}");
+            assert!(
+                screen.contains(value),
+                "`{value}` is not on the card:\n{screen}"
+            );
             // The meaning, as a prefix of the sentence — long enough to be the sentence and
             // short enough that the card's wrap cannot have split it.
             let lead: String = why.chars().take(30).collect();
@@ -30713,7 +30990,10 @@ mod tests {
         );
         // **The fact that surprises people**, in the card and not only in a notice: the ladder
         // applies to the whole transcript, already drawn.
-        assert!(screen.contains("the WHOLE transcript, already drawn"), "{screen}");
+        assert!(
+            screen.contains("the WHOLE transcript, already drawn"),
+            "{screen}"
+        );
     }
 
     /// The card's `Enter` and the typed verb are the same act — one function behind both, so a
@@ -30748,7 +31028,11 @@ mod tests {
     fn the_v_alias_still_cycles_the_ladder() {
         let mut a = app();
         assert_eq!(a.verbosity, Verbosity::Normal);
-        assert_eq!(a.command("v"), None, "a rung is a local setting: nothing is sent");
+        assert_eq!(
+            a.command("v"),
+            None,
+            "a rung is a local setting: nothing is sent"
+        );
         assert_eq!(a.verbosity, Verbosity::Loud, "`v` is the next rung");
         assert!(
             a.pick.is_none(),
@@ -30790,7 +31074,10 @@ mod tests {
         assert_eq!(a.mode_sel, 1, "the cursor starts on the style in force");
         let screen = a.screen(120, 40).join("\n");
         for (value, why) in DIFF_VALUES {
-            assert!(screen.contains(value), "`{value}` is not on the card:\n{screen}");
+            assert!(
+                screen.contains(value),
+                "`{value}` is not on the card:\n{screen}"
+            );
             let lead: String = why.chars().take(30).collect();
             assert!(
                 screen.contains(&lead),
@@ -31053,7 +31340,10 @@ mod tests {
         // rows after wrapping and a notch that moves one wrapped row reads as
         // nothing happened.
         a.screen(80, 24);
-        assert!(!a.following(), "two notches up left the reader on the stream");
+        assert!(
+            !a.following(),
+            "two notches up left the reader on the stream"
+        );
         // **Six lines above the bottom**, which is the measurement the count was standing
         // in for: two notches of three, where a notch is three lines because one body line
         // can be two screen rows after wrapping.
@@ -31790,7 +32080,7 @@ mod tests {
             SessionEvent::Warning {
                 code: "slash".into(),
                 detail: "/job j89\nline one\nline two\nline three\nline four".into(),
-            
+
                 compaction: None,
             },
         )));
@@ -31814,7 +32104,7 @@ mod tests {
             SessionEvent::Warning {
                 code: "slash".into(),
                 detail: "/mode automode\nthis session is at `automode`".into(),
-            
+
                 compaction: None,
             },
         )));
@@ -31835,7 +32125,7 @@ mod tests {
             SessionEvent::Warning {
                 code: "slash".into(),
                 detail: "/job j1\n\u{1b}[2m dim \u{1b}[0m\nb\nc\nd".into(),
-            
+
                 compaction: None,
             },
         )));
@@ -32207,7 +32497,7 @@ mod tests {
             SessionEvent::Warning {
                 code: "job_output_refused".into(),
                 detail: "no job `j4` here; `/job` with no argument lists them".into(),
-            
+
                 compaction: None,
             },
         )));

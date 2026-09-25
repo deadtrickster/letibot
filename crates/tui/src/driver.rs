@@ -781,7 +781,6 @@ impl Link {
             app.mark_redraw();
         }
     }
-
 }
 
 impl Drop for Link {
@@ -892,13 +891,21 @@ mod tests {
             .expect("`/bin/sleep` starts");
         let pid = child.id() as i32;
         assert_eq!(parentage(pid), Parentage::Ours);
-        assert_eq!(process_gone(pid), Some(false), "a running child read as gone");
+        assert_eq!(
+            process_gone(pid),
+            Some(false),
+            "a running child read as gone"
+        );
         // **And asking did not kill it** — `WNOHANG` returns without waiting, and a version
         // that blocked here would hang the turn for five seconds while looking healthy.
         assert_eq!(process_gone(pid), Some(false));
         let _ = child.kill();
         let _ = child.wait();
-        assert_eq!(process_gone(pid), Some(true), "a killed child is gone once reaped");
+        assert_eq!(
+            process_gone(pid),
+            Some(true),
+            "a killed child is gone once reaped"
+        );
     }
 
     /// **A process this head is not the parent of is answered by `/proc`, and a pid that never

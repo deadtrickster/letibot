@@ -838,6 +838,21 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            Ok(ClientFrame::SetOperatorTodos {
+                client_request_id,
+                expected_seq,
+                items,
+            }) => {
+                // **Not gated and not a decision.** The operator's own todo list is their own
+                // authoring, sent to the daemon that keeps the board — the same trust as a prompt.
+                let f = seat.hub.submit(
+                    &seat.head_id,
+                    client_request_id,
+                    expected_seq,
+                    CommandKind::SetOperatorTodos { items },
+                );
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::WithdrawPrompts {
                 client_request_id,
                 expected_seq,
