@@ -128,6 +128,12 @@ pub struct Parts {
     pub skills: std::sync::Arc<letibot_tools::builtins::skill::SkillRegistry>,
 }
 
+/// How many ledger rows a resume announces between progress ticks.
+///
+/// See `Harness::republish`: a tick per row overflowed a head's queue and DEMOTED it, so the
+/// restore's own progress bar was killed by the events carrying it.
+const FILLING_STRIDE: usize = 64;
+
 impl Parts {
     pub fn load(cfg: &Config) -> Result<Parts, HarnessError> {
         if !cfg.vocab_gguf.is_file() {
@@ -3133,6 +3139,29 @@ impl<'a> Harness<'a> {
             let Some(item) = self.session.items.get(i) else {
                 continue;
             };
+            // **ONE PROGRESS TICK PER ROW IS A FLOOD, AND THE FLOOD IS WHAT BREAKS THE BAR.**
+            //
+            // This published ~2000 `Filling` events as fast as a loop can go — on top of a
+            // `TranscriptAppended` and a `record_item` for every row — and a head's queue has a
+            // cap. Over the cap the hub DEMOTES the head rather than blocking
+            // (`hub.rs:1369`): the queue is cleared, `needs_resync` is set, and from then on
+            // *"Already demoted; its queue is going to be thrown away"* — so the ticks stop
+            // arriving. MEASURED: the operator watched the bar freeze and then vanish —
+            // *"it was back and kinda frozen at 44 — the bar wasn't moving for seconds and then
+            // disappeared"* — on a head that finished holding all 2039 items, i.e. one that was
+            // demoted and handed a snapshot mid-restore.
+            //
+            // So the bar froze at the last tick it heard and never saw the rest, because the
+            // event stream carrying it had been dropped. **The thing that feeds the progress
+            // indicator was killing the progress.** A bar is read as a fraction, not as a row
+            // count, so a tick every `FILLING_STRIDE` rows loses the reader nothing and costs
+            // the head's queue ~30 events instead of ~2000.
+            //
+            // The first and last rows always tick, so a bar appears promptly and — with the
+            // completion below — ends by fact.
+            if i % FILLING_STRIDE != 0 && (i as u64 + 1) != total {
+                continue;
+            }
             self.filling(what, "rows", i as u64 + 1, total);
             self.hub
                 .publish(letibot_sessionlog::SessionEvent::TranscriptAppended {
@@ -3142,6 +3171,29 @@ impl<'a> Harness<'a> {
                 });
             self.hub.record_item(&row.item_id, item.clone());
         }
+        // **THE WALK ENDING IS THE OPERATION ENDING, SO SAY SO.**
+        //
+        // The operator watched this bar freeze and then vanish: *"it was back and kinda frozen at
+        // 44 — the bar wasn't moving for seconds and then disappeared."* Both halves have a cause,
+        // and only one of them is the head's.
+        //
+        // `continue` above skips a ledger row with no matching item, so when the two disagree the
+        // walk ends on an index BELOW `total` and the last tick anybody receives is short of it.
+        // The head then holds a bar that says `44 of N` with no completing tick to clear it —
+        // `note-filling` clears on `done == total` and on nothing else — until its 15-second
+        // no-news window expires and the line disappears. That expiry is a good guard against a
+        // daemon that has DIED and a bad way to end an operation that has finished: the bar
+        // vanishes because a timer ran out, not because the work completed.
+        //
+        // So the completion is published unconditionally, after the walk. It costs one event and
+        // it makes the bar end by FACT rather than by silence — which is the rule the head's own
+        // docstring states (*"a bar that cannot end is worse than no bar"*) and the reason
+        // `done == total` is the clear.
+        //
+        // This is the second time this exact shape has been measured; leticl's `filling-active-p`
+        // records the first (`57 of 1790 rows` for three and a half minutes). A head-side timer
+        // hid it that time, which is why it came back.
+        self.filling(what, "rows", total, total);
     }
 
     /// The turn this harness last started, or empty before the first one.
