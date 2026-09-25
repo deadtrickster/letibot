@@ -863,11 +863,15 @@ pub struct Stopping {
     /// when the kernel would not say, which is a fact the farewell states rather than
     /// fills in.
     pub pid: Option<i32>,
-    /// **Whether a turn was running when the head gave up waiting.** A daemon
-    /// mid-turn legitimately finishes its round first, so this is the difference between
-    /// *a slow stop* and *a daemon that did not go* — and it is the head's to know because
-    /// it is the head that was watching the turn.
-    pub turn_running: bool,
+    /// **Whether the model was still working when the head gave up waiting.** A daemon mid-turn
+    /// legitimately finishes its round first, so this is the difference between *a slow stop* and
+    /// *a daemon that did not go* — and it is the head's to know because it is the head that was
+    /// watching the turn.
+    ///
+    /// **`turn_busy` and not the state name**: the round a daemon finishes before it stops can be
+    /// one whose tool call is executing, and a head that asked only whether a round was generating
+    /// would call that stop *a refused one* when it was merely slow.
+    pub turn_busy: bool,
 }
 
 impl Stopping {
@@ -2503,7 +2507,7 @@ impl App {
             closed: false,
             gone: false,
             pid,
-            turn_running: self.turn_running(),
+            turn_busy: self.turn_busy(),
         });
         self.redraw = true;
     }
@@ -2546,7 +2550,7 @@ impl App {
         } else {
             "could NOT be sent"
         };
-        let because = if s.turn_running {
+        let because = if s.turn_busy {
             "A turn was running, and the daemon finishes its round before it stops — this \
              is a slow stop rather than a refused one."
         } else {
@@ -5694,7 +5698,12 @@ impl App {
         match reaction {
             Reaction::Submit(text) => self.submit(text),
             Reaction::Interrupt => {
-                if self.turn_running() {
+                // **Busy, not generating.** This gate read the state name, so it was dead for the
+                // whole of every command — which is the only time anybody reaches for it. Measured
+                // on leticl's head: esc esc during a `sleep 60`, and forty seconds later still
+                // `Responding · 42.0s` with the call running. A turn whose only work is a running
+                // tool call is exactly the turn a person wants to interrupt.
+                if self.turn_busy() {
                     // Interrupt is not quit. A shared session's interrupt is
                     // announced with the issuer, so it must be a deliberate act —
                     // and two presses of Esc inside five seconds is one.
@@ -5938,7 +5947,11 @@ impl App {
         // for the model, not a stack of fragments), so the echo joins the same
         // way — the landing row retires the echo by being its text. Idle submits
         // land each as their own row within a tick, so they stay separate.
-        if self.turn_running()
+        // **Busy, not generating** — see `turn_busy`. This gate decides whether the line joins the
+        // last echo or starts a new one, and the daemon merges everything typed during a ROUND
+        // while the state name only covers generation: two prompts typed during a tool call got two
+        // `queued` rows for one message.
+        if self.turn_busy()
             && let Some(last) = self.pending_prompts.last_mut()
         {
             last.push('\n');
@@ -7269,11 +7282,60 @@ impl App {
         self.notice_until = Some(self.now_ms.saturating_add(NOTICE_MS));
     }
 
-    fn turn_running(&self) -> bool {
+    /// **Is the model GENERATING right now?** The state name, and only that.
+    ///
+    /// This is the narrow question and it is almost never the one a caller means. Read
+    /// [`App::turn_busy`] first: `TurnFinished` fires per ROUND, so this goes false the instant a
+    /// round's generation ends — **which is precisely when a tool call starts.** A reader asking
+    /// *is the model working* who reaches for this gets *no* for the whole of every command.
+    ///
+    /// It is kept because one caller genuinely asks the generating question: [`App::stuck_line`],
+    /// which reports silence from a model that should be emitting. A call that runs for two
+    /// minutes emits nothing and is not stuck, and gating that line on `turn_busy` would make it
+    /// cry wolf through every long command.
+    fn turn_generating(&self) -> bool {
         matches!(
             self.turn.as_ref().and_then(|t| t.state.as_ref()),
             Some(TurnState::Running)
         )
+    }
+
+    /// **Is the model WORKING — generating, or waiting on a call it made?**
+    ///
+    /// This is R51's `turn-busy-p`, and it is the question four of this head's call sites were
+    /// silently asking with the state name instead. Measured on 2026-09-25 with a `sleep 60`
+    /// executing, the daemon's own view reads:
+    ///
+    /// ```text
+    /// (:TURN-STATE "finished"  :CALLS (("call_…" "running")))
+    /// ```
+    ///
+    /// — *generating* is false and the turn is plainly working, so **every question of the form
+    /// "is the model busy" must ask the CALLS.** The fact is: generating, OR any call of this
+    /// turn has not finished.
+    ///
+    /// **What it is not.** It is not "a call exists" and not "a call is running": a call that has
+    /// finished is history, and the calls of earlier rounds are in `calls` until the pane stands
+    /// down. It also says nothing about whether the turn as a whole is over — `TurnFinished`
+    /// carries a round's end, so for the few milliseconds between a last call finishing and the
+    /// next round's `TurnStarted` this answers *not busy* over a turn that is not finished. That
+    /// window is R51 §3's recorded limitation and it needs a daemon fact (*the prompt is over*)
+    /// that neither head has; it is not something this predicate can close.
+    ///
+    /// **One definition, because this colour and this line have now been wrong in four
+    /// directions** — see the call sites: the esc-esc gate dead exactly while a command ran, two
+    /// `queued` rows for one message, the promote message saying the wrong one of two silences,
+    /// and a status row that vanished during every call.
+    fn turn_busy(&self) -> bool {
+        let Some(t) = self.turn.as_ref() else {
+            return false;
+        };
+        if matches!(t.state, Some(TurnState::Running)) {
+            return true;
+        }
+        t.calls
+            .iter()
+            .any(|c| !matches!(c.state, CallState::Finished { .. }))
     }
 
     /// **`/todos` and `ctrl-p`, as one action.**
@@ -7329,8 +7391,10 @@ impl App {
             return Some(Action::Promote);
         }
         // Two different silences, and a head that said the same thing for both sent the
-        // operator looking for a command that had not been started yet.
-        if self.turn_running() {
+        // operator looking for a command that had not been started yet. **Busy, not generating**: a
+        // turn waiting on a call is still working, and *the model is still working* is the true
+        // sentence for it.
+        if self.turn_busy() {
             self.say("the model is still working — there is no command running to move yet");
         } else {
             self.say("nothing is running to move to the background");
@@ -7340,10 +7404,8 @@ impl App {
 
     /// **The command running right now**, whatever the turn's own state says.
     ///
-    /// Ctrl+O's precondition, and deliberately not [`App::turn_running`]: a turn
-    /// that has reached a terminal state can still hold a call the daemon is
-    /// executing, and that call is exactly what a promote moves. Only one command
-    /// runs at a time on this path, so the first is the one.
+    /// Ctrl+O's precondition, and deliberately not [`App::turn_busy`] either: this asks for a
+    /// command the daemon is *executing*, which is a fact about ONE call and not about the turn.
     fn running_call(&self) -> Option<&CallRow> {
         self.turn
             .as_ref()?
@@ -8004,6 +8066,27 @@ impl App {
         // operator reads while the daemon goes.
         let stopping = self.stopping_line(w);
         let stuck = self.stuck_line(w);
+        // **The turn's status is a ROW of its own, immediately above the composer** (R51 item 1).
+        //
+        // It used to be a legend inlaid in the composer's bottom border, sharing that edge with
+        // the alarm, the hold marker and the rung — and an edge truncates. leticl lifted it out
+        // (`8ebcfdb`) for the reason a border is the wrong container for a sentence: the words that
+        // matter are the ones a trim takes, and this line is allowed to grow (`Responding · 4.2s ·
+        // 12.4k tok`, or a whole prefill bar with its cache split).
+        //
+        // **What it costs, stated because the old comment claimed the opposite.** As a border
+        // legend it cost no row at all; as a row it costs one, so it enters the fit ladder below
+        // and is counted in the frame's height. It is given up *after* the stuck disclosure and
+        // before the box, which is the order of what a reader loses least by losing.
+        //
+        // **The past tense is not here, and that is deliberate rather than an omission.** The
+        // header already carries a finished turn's report — its duration, its rate and its output
+        // count, measured when it ended (`header_line`, from `last_timings` + `usage`) — and the
+        // transcript carries the reply. A second copy of those three numbers on a row above the
+        // composer would be the same facts twice, which is the defect this document keeps naming;
+        // so the row is present-tense and lives while the work does, and the tense comes from
+        // `turn_busy` rather than from the state name.
+        let status = self.turn_status(w);
         let notice = self
             .notice
             .clone()
@@ -8018,12 +8101,14 @@ impl App {
         // whole thing fits with a line of transcript left over. The old code
         // drained the chrome from the *front*, which for a box would have eaten
         // the top border and left the bottom one — a container with one side is
-        // worse than none. The turn's own status costs no row at all any more:
-        // it is inlaid in the bottom border, which is there anyway.
+        // worse than none. The turn's own status is now one of those rows — it used to be inlaid
+        // in the bottom border and cost nothing, and R51 item 1 moved it out because an edge
+        // truncates a sentence (see `let status` above).
         let mut rows = self.editor.height(self.composer_cols(), h);
         let mut hint = true;
         let mut show_notice = notice.is_some();
         let mut show_stuck = stuck.is_some();
+        let mut show_status = !status.is_empty();
         let mut show_completions = completions.is_some();
         let mut boxed = true;
         // **The content viewport, and R20's one rule about it.** The loop used to shrink the
@@ -8040,6 +8125,7 @@ impl App {
                 + seam
                 + dec_pinned.len()
                 + usize::from(show_stuck)
+                + usize::from(show_status)
                 + usize::from(show_notice)
                 + usize::from(show_completions)
                 + link.len()
@@ -8070,6 +8156,11 @@ impl App {
                 rows -= 1;
             } else if show_stuck {
                 show_stuck = false;
+            } else if show_status {
+                // **The turn's row goes before the box does**, and after the stuck disclosure:
+                // on a terminal this short something has to go, and what a reader loses least by
+                // losing is the aside about silence rather than the line saying work is happening.
+                show_status = false;
             } else if boxed {
                 boxed = false;
             } else if content_rows > 0 {
@@ -8117,6 +8208,12 @@ impl App {
         if show_completions && let Some(l) = completions {
             chrome.push(l);
         }
+        // The turn's own row, last before the box: directly above the composer when nothing else
+        // is up, and below the typing aids when they are — a completion list that is not adjacent
+        // to the line being typed is the one row here that must not move.
+        if show_status {
+            chrome.push(status);
+        }
         if boxed {
             // The top edge carries exactly one fact, pinned right, and only when
             // it is true: a subagent this session spawned is still running. The
@@ -8144,9 +8241,10 @@ impl App {
         let caret_at = chrome.len() + caret_row;
         chrome.extend(input_rows);
         if boxed {
-            // The bottom edge, pinned right: the alarm as a triangle — the
-            // counters behind it are /status's, and were never worth a resident
-            // sentence of bright yellow — and the turn's own status beside it.
+            // The bottom edge, pinned right: the alarm as a triangle — the counters behind it are
+            // /status's, and were never worth a resident sentence of bright yellow. **The turn's
+            // own status is no longer here** (R51 item 1): it is a row above the box, because a
+            // legend on an edge truncates and a status is allowed to grow a sentence.
             let mut right: Vec<String> = Vec::new();
             if self.alarmed() {
                 right.push(self.cfg.palette().paint(Role::Attention, "⚠"));
@@ -8156,10 +8254,6 @@ impl App {
             // owes the reader nothing — a marker that is always on is furniture. What it
             // buys is the reader who would otherwise scroll to find out whether they are
             // pinned, which is the affordance failing rather than working.
-            let status = self.turn_status(w);
-            if !status.is_empty() {
-                right.push(status);
-            }
             if let Some(state) = self.scroll_state() {
                 right.push(self.cfg.palette().paint(Role::Pending, state));
             }
@@ -11922,8 +12016,13 @@ impl App {
     /// the machine, which is the assumption the stuck line below already makes
     /// when it diffs `now_ms` against an event timestamp.
     fn turn_status(&self, w: usize) -> String {
+        // **Busy, not the state name** — `turn_busy`'s docstring has the measurement. This gate
+        // read `TurnState::Running`, so during every tool call the row was not drawn AT ALL,
+        // which is the worst of the three possible answers: not the wrong tense, but no line —
+        // indistinguishable from a head that has stopped, on the one screen whose whole job is to
+        // say the work is still going (R51 item 3).
         let t = match self.turn.as_ref() {
-            Some(t) if matches!(t.state, Some(TurnState::Running)) => t,
+            Some(t) if self.turn_busy() => t,
             _ => return String::new(),
         };
         // **`started_ms == 0` means the turn came out of a snapshot**, which has no
@@ -11975,11 +12074,11 @@ impl App {
             // which is the `messages` backend's turns. The prompt's size and
             // cache are on the header — live prefill numbers win there, and they
             // win for the whole turn, not only while prefill runs — so this
-            // carries only what it alone knows: how much has arrived. One
-            // **compact** string, for the border to pin right — this used to
-            // `split_row` into a justified full-width line, which as a legend
-            // put `Responding` at the left edge and clipped the count it was
-            // carrying.
+            // carries only what it alone knows: how much has arrived. One compact
+            // string, because it is drawn on ONE row: it used to `split_row` into a
+            // justified full-width line, and then to be a legend on the border,
+            // where it put `Responding` at the left edge and clipped the count it
+            // was carrying. A row of its own is what lets it grow a sentence.
             _ => {
                 let mut s = p.paint(Role::Pending, &format!("{spin} Responding{since}"));
                 if let Some(c) = count {
@@ -11990,7 +12089,7 @@ impl App {
         }
     }
 
-    /// A turn that is running and silent. The daemon sends prefill progress
+    /// A turn that is generating and silent. The daemon sends prefill progress
     /// while it prefills and a delta per chunk while it generates, so a gap this
     /// long is a real gap and not a slow model — and the case that produced this
     /// line is one a head cannot otherwise show: when a turn *fails*, the engine
@@ -12002,9 +12101,17 @@ impl App {
     /// A row of its own, above the border, and not inlaid: it is a disclosure
     /// with a sentence in it, and a sentence truncated to fit a border is a
     /// disclosure that lost the words that mattered.
+    ///
+    /// **`turn_generating` and deliberately NOT `turn_busy`, and this is the one site where
+    /// R51's instruction has to be read carefully.** R51 lists this line among the sites keyed on
+    /// the state name; measured, its gate is right and widening it would be a regression. The
+    /// question here is not *is the model working* but *should it be emitting and is it not* —
+    /// and a `cargo test` that runs silently for two minutes is a call, not a stall. Gated on
+    /// `turn_busy` this line would fire through every long command, which is exactly the false
+    /// alarm that trains a reader to ignore it.
     fn stuck_line(&self, w: usize) -> Option<String> {
         let t = self.turn.as_ref()?;
-        if !matches!(t.state, Some(TurnState::Running)) {
+        if !self.turn_generating() {
             return None;
         }
         let quiet = if self.last_event_at == 0 {
@@ -16803,9 +16910,10 @@ mod tests {
     /// Measured 2026-09-23 on the live head: six `queued ·` echoes, one per paragraph
     /// of the R27 instruction, every one of them answered — and the row that answered
     /// them was their JOIN. Six sends while the head did not think a turn was running
-    /// became six separate entries (`App::submit`'s coalescing is conditional on
-    /// `turn_running`), the engine merged them into ONE user item joined by newlines,
-    /// and against a whole-string rule every comparison was *no*.
+    /// became six separate entries (`App::submit`'s coalescing is conditional on the head
+    /// thinking a turn is RUNNING, which is `turn_busy`'s question — see it for why the state
+    /// name was the wrong instrument), the engine merged them into ONE user item joined by
+    /// newlines, and against a whole-string rule every comparison was *no*.
     ///
     /// Then the seventh thing: the operator's next message was sent while a turn WAS
     /// running, so the head appended it to the last entry — making an entry that is a
@@ -18590,7 +18698,7 @@ mod tests {
         ));
         hub.publish(testing::turn_started("t1"));
         feed(&mut a, &hub, &att.head_id);
-        assert!(a.turn_running(), "the premise: a turn is running");
+        assert!(a.turn_busy(), "the premise: a turn is running");
 
         // The operator types and sends. The hub takes the prompt as a follow-up user
         // item and the head echoes it — the R2 window, and the only place the words
@@ -20130,7 +20238,7 @@ mod tests {
         // And the head is still running: the next frame applies as though nothing had
         // happened, which is the whole point of surviving one.
         a.apply(ServerFrame::Event(env(9, testing::turn_started("t1"))));
-        assert!(a.turn_running(), "the head kept working");
+        assert!(a.turn_busy(), "the head kept working");
 
         // A second one counts twice, and the border names it now that it has moved.
         a.unreadable(Unreadable {
@@ -20225,7 +20333,7 @@ mod tests {
         assert!(!a.should_quit());
         assert_eq!(a.session_id, "s");
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        assert!(a.turn_running(), "the head kept working");
+        assert!(a.turn_busy(), "the head kept working");
 
         // An OLDER daemon: a writing problem, and quiet until it is fatal — so this is the
         // sentence that matters most.
@@ -22781,6 +22889,141 @@ mod tests {
         assert!(a.screen(100, 20).join("\n").contains("nothing is running"));
     }
 
+    /// **A turn whose only work is a running tool call can be interrupted** (R51 item 16, and the
+    /// preamble's first gate).
+    ///
+    /// The measured defect: `TurnFinished` fires per ROUND, so the state name reads `finished` from
+    /// the instant a call starts — and this gate read the state name, so esc esc was dead for the
+    /// whole of every command. leticl measured the same thing on its own head: esc esc during a
+    /// `sleep 60`, and forty seconds later still `Responding · 42.0s` with the call running.
+    #[test]
+    fn esc_twice_interrupts_a_turn_that_is_only_waiting_on_a_call() {
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::proposed_on("t1", "c1", "bash", "\"sleep 60\""),
+        )));
+        // The round's generation ends, which is exactly when the call starts.
+        a.apply(ServerFrame::Event(env(3, testing::turn_finished("t1"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
+        // The premise, and it is the whole bug: nothing is generating, and the model is working.
+        assert!(!a.turn_generating(), "the round is over");
+        assert!(a.turn_busy(), "and the call is running");
+        assert_eq!(a.key(Key::Esc), None, "one press arms, it does not fire");
+        assert!(
+            matches!(a.key(Key::Esc), Some(Action::Interrupt(_))),
+            "esc esc reaches the daemon while a command runs"
+        );
+    }
+
+    /// **Two prompts typed behind a running CALL are ONE echo** (R51 item 14, the preamble's second
+    /// gate).
+    ///
+    /// The daemon merges everything typed during a round into one held user item, so the head must
+    /// join them the same way. This gate read the state name, so during a tool call it did not join
+    /// — and the operator got two `queued` rows for one message, where the engine produced one row.
+    #[test]
+    fn two_prompts_behind_a_running_call_are_one_echo() {
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
+        )));
+        a.apply(ServerFrame::Event(env(3, testing::turn_finished("t1"))));
+        assert!(a.submit("first thing".into()).is_some());
+        assert!(a.submit("second thing".into()).is_some());
+        assert_eq!(
+            a.pending_prompts,
+            vec!["first thing\nsecond thing".to_string()],
+            "both lines joined into the one message the engine will read"
+        );
+    }
+
+    /// **The status row is drawn for the whole life of the turn — including through a call** (R51
+    /// item 3).
+    ///
+    /// The measured defect was not the wrong tense but NO LINE AT ALL: the gate read the state
+    /// name, so `Responding · 4.2s` vanished the moment a call started and the screen became
+    /// indistinguishable from a head that had stopped. The row says what the model is doing, and a
+    /// model waiting on a command is still doing something.
+    #[test]
+    fn the_status_row_survives_a_tool_call() {
+        // `began_ms` is the PROMPT's stamp and the daemon sends the same one on every round of it
+        // (`harnessd::sessions::run_prompt` → `begin_turn_clock`), which is what makes the clock a
+        // clock for the turn rather than for a round.
+        let started = |seq, ts, began: u64| {
+            ServerFrame::Event(env_at(
+                seq,
+                ts,
+                SessionEvent::TurnStarted {
+                    turn_id: "t1".into(),
+                    model: "m".into(),
+                    ledger_head: "0000".into(),
+                    began_ms: Some(began),
+                },
+            ))
+        };
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(started(1, 1_000, 1_000));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
+        )));
+        a.apply(ServerFrame::Event(env(3, testing::turn_finished("t1"))));
+        a.clock(5_000);
+        let line = a.turn_status(120);
+        assert!(line.contains("Responding"), "the row is still drawn: {line:?}");
+        assert!(
+            line.contains("4.0s"),
+            "and it counts from the prompt, through the call: {line:?}"
+        );
+        // The call lands and nothing else is outstanding, so the work is over and the row stands
+        // down. **This is the tense's own question**: not *is there a turn open* but *is the model
+        // working*, and here the answer is no until the next round starts.
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::ToolFinished {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload_digest: "d".into(),
+                inline_bytes: 1,
+                full_bytes: 1,
+                spill: None,
+                repairs: 0,
+                edit: None,
+            },
+        )));
+        assert!(!a.turn_busy(), "the call finished and nothing is generating");
+        assert!(
+            a.turn_status(120).is_empty(),
+            "the row stands down with the work"
+        );
+        // **And a second round does not move the base** (R51 item 2's *must not differ*). Round
+        // two's `TurnStarted` arrives three seconds later carrying the SAME `began_ms`, and the clock
+        // must not restart at it — that is the `2.1s` a minute into a turn the operator reported.
+        a.apply(started(5, 4_000, 1_000));
+        a.clock(6_000);
+        let line = a.turn_status(120);
+        assert!(
+            line.contains("5.0s"),
+            "the round boundary did not restart it: {line:?}"
+        );
+    }
+
     #[test]
     fn the_composer_is_a_field_with_a_caret_in_it_and_no_prose() {
         // The complaint, as an assertion: *"the chat prompt is basically not
@@ -23100,7 +23343,12 @@ mod tests {
                 access: Default::default(),
             },
         )));
-        assert!(!h.turn_running(), "the premise: the turn is over");
+        // **The premise is the two questions apart, which is what this fixture is for.** The turn's
+        // state name says the round is over, and the call it proposed is still executing — so
+        // `turn_generating` is false and the head is plainly busy. That gap is why `/promote` could
+        // not be gated on the turn, and why the message below it must ask the calls.
+        assert!(!h.turn_generating(), "the premise: the round is over");
+        assert!(h.turn_busy(), "the premise: and the model is still working");
         assert!(h.running_call().is_some(), "and its command is not");
         assert_eq!(h.submit("/promote".into()), Some(Action::Promote));
         assert_eq!(
@@ -28068,7 +28316,7 @@ mod tests {
         let mut a = app();
         a.clock(1_000);
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        assert!(a.turn_running());
+        assert!(a.turn_busy());
         a.apply(ServerFrame::Event(env(
             2,
             SessionEvent::TurnFailed {
@@ -28077,7 +28325,7 @@ mod tests {
                 partial_kept: false,
             },
         )));
-        assert!(!a.turn_running(), "the turn is still marked running");
+        assert!(!a.turn_busy(), "the turn is still marked running");
         assert!(a.turn_status(120).is_empty(), "the spinner is still there");
         let screen = a.screen(120, 16).join("\n");
         assert!(screen.contains("FAILED"), "{screen}");
@@ -28528,14 +28776,32 @@ mod tests {
             glyph(&second),
             "the glyph moved with no event in between: {first} → {second}"
         );
-        // And it is inlaid in the bottom border, pinned right — not a row of its
-        // own above the box.
+        // **And it is a ROW of its own, immediately above the box** (R51 item 1) — not inlaid in
+        // the bottom border, which is where it used to be and where an edge truncated it.
         let screen = a.screen(100, 24);
-        let row = screen
+        let at = screen
             .iter()
-            .find(|l| l.contains("Responding"))
+            .position(|l| l.contains("Responding"))
             .expect("the turn's status is on the screen");
-        assert!(row.contains('╰'), "inlaid in the bottom edge: {row}");
+        let row = &screen[at];
+        assert!(!row.contains('╰'), "not inlaid in the bottom edge: {row}");
+        assert!(!row.contains('╭'), "not inlaid in the top edge either: {row}");
+        // The row above it is the box's top edge, so `Responding` sits ON the composer.
+        let below = &screen[at + 1];
+        assert!(
+            below.contains('╭'),
+            "the status row's next line is the box top: {row} / {below}"
+        );
+        // And the bottom border no longer carries it — the edge that used to hold it is empty of
+        // the turn's words, which is what makes this a moved row rather than a second copy.
+        let bottom = screen
+            .iter()
+            .find(|l| l.contains('╰'))
+            .expect("the box is closed");
+        assert!(
+            !bottom.contains("Responding"),
+            "the turn's status left the bottom edge: {bottom}"
+        );
     }
 
     #[test]
@@ -32232,7 +32498,13 @@ mod tests {
                 partial_kept: false,
             },
         )));
-        assert!(!a.turn_running(), "the turn is terminal");
+        // **Two different questions, and this is the test that pins them apart.** The turn is
+        // terminal — nothing is generating — and the head is still BUSY, because the call the
+        // daemon is executing belongs to it. That gap is R51's whole root cause: every gate that
+        // asked the state name for *is the model working* got `false` here, which is why esc-esc
+        // was dead through every command and the status row vanished through every call.
+        assert!(!a.turn_generating(), "the turn is terminal");
+        assert!(a.turn_busy(), "and the head is still working on its call");
         assert!(
             a.running_call().is_some(),
             "and the command is still running"
