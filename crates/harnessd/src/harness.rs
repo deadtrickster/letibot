@@ -2761,7 +2761,10 @@ impl<'a> Harness<'a> {
             // a resume re-announces stored rows so the head can draw the conversation it already
             // had. Naming the wrong operation is the same defect the `Filling` event was written
             // to end, one layer up: an indicator must be the fact, not a rendering of the fact.
-            h.republish("restoring the stored conversation");
+            // ...and it restores the CONVERSATION, which a compaction splits across
+            // transcripts: the tail of the ones before comes back too, up to the view's bound.
+            let before = h.ancestor_tail();
+            h.republish_after("restoring the stored conversation", before);
         }
         // **R6: a session whose id marks an opencode conversation reads it in.**
         //
@@ -3133,12 +3136,64 @@ impl<'a> Harness<'a> {
     ///
     /// One `Filling` per row is the counter; the head draws it whenever the total is large
     /// enough to be worth a bar.
-    fn republish(&self, what: &str) {
-        let total = self.session.ledger.rows().len() as u64;
-        for (i, row) in self.session.ledger.rows().iter().enumerate() {
-            let Some(item) = self.session.items.get(i) else {
-                continue;
-            };
+    /// **The rows a compaction put behind the current transcript, as many as the view holds.**
+    ///
+    /// The operator, after a restart: *"conversation was gone — only a small recent portion was
+    /// displayed"*. A resume republished `self.session.ledger` — the CURRENT transcript — and a
+    /// compaction makes the current transcript a new one: the summary and what came after it. So
+    /// a session compacted twenty times came back as its last 791 rows, `items_dropped` said
+    /// nothing came before them, and no head could scroll above them. Before the restart it
+    /// could: the hub had lived through the compaction and still held the older rows.
+    ///
+    /// So a resume walks the chain, newest parent first, and takes rows from the END of each
+    /// until the view's own bound is met — the same bound the view trims to, so this never
+    /// publishes a row the view would drop. The ledger and the model's prompt are untouched:
+    /// this is what the SCREEN is given, which is the conversation, not what the model reads,
+    /// which is the summary. The first row of the current transcript is the compaction's own
+    /// system row, so the seam between the two says what it is without a mark of ours.
+    fn ancestor_tail(&self) -> Vec<(String, TranscriptItem, [u8; 32])> {
+        let Some(store) = self.store.as_ref() else {
+            return Vec::new();
+        };
+        let bound = letibot_sessionlog::view::ViewBounds::default().items;
+        let mut room = bound.saturating_sub(self.session.ledger.rows().len());
+        let mut chunks: Vec<Vec<(String, TranscriptItem, [u8; 32])>> = Vec::new();
+        let mut cursor = store.parent_of(&self.transcript_id).ok().flatten();
+        while room > 0 {
+            let Some(id) = cursor.take() else { break };
+            let Ok(t) = store.load_transcript(&id) else { break };
+            let n = t.items.len();
+            let take = n.min(room);
+            chunks.push(
+                t.items
+                    .into_iter()
+                    .skip(n - take)
+                    .map(|(item, row, _)| (row.item_id, item, row.h_k))
+                    .collect(),
+            );
+            room -= take;
+            cursor = t.parent_transcript_id;
+        }
+        // Collected newest-parent first; published oldest first, so the view reads in order.
+        chunks.into_iter().rev().flatten().collect()
+    }
+
+    fn republish_after(&self, what: &str, before: Vec<(String, TranscriptItem, [u8; 32])>) {
+        let current = self
+            .session
+            .ledger
+            .rows()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, row)| {
+                self.session
+                    .items
+                    .get(i)
+                    .map(|item| (row.item_id.clone(), item.clone(), row.h_k))
+            });
+        let rows: Vec<(String, TranscriptItem, [u8; 32])> = before.into_iter().chain(current).collect();
+        let total = rows.len() as u64;
+        for (i, (item_id, item, h_k)) in rows.iter().enumerate() {
             // **ONE PROGRESS TICK PER ROW IS A FLOOD, AND THE FLOOD IS WHAT BREAKS THE BAR.**
             //
             // This published ~2000 `Filling` events as fast as a loop can go — on top of a
@@ -3159,17 +3214,23 @@ impl<'a> Harness<'a> {
             //
             // The first and last rows always tick, so a bar appears promptly and — with the
             // completion below — ends by fact.
-            if i % FILLING_STRIDE != 0 && (i as u64 + 1) != total {
-                continue;
+            //
+            // **The stride is on the TICK, never on the row.** `7614785` put a `continue` here,
+            // ahead of the publish, so it skipped the row as well as the tick: a restore of 791
+            // rows announced 13 of them — row 0, every 64th, and the last. The operator after
+            // the next restart: *"conversation was gone — only a small recent portion was
+            // displayed"*. The head held 13 restored rows plus the live turns since, and nothing
+            // said anything was missing, because nothing had been dropped: it was never sent.
+            if i % FILLING_STRIDE == 0 || (i as u64 + 1) == total {
+                self.filling(what, "rows", i as u64 + 1, total);
             }
-            self.filling(what, "rows", i as u64 + 1, total);
             self.hub
                 .publish(letibot_sessionlog::SessionEvent::TranscriptAppended {
-                    item_id: row.item_id.clone(),
+                    item_id: item_id.clone(),
                     kind: letibot_tokencore::store::item_kind(item).to_string(),
-                    ledger_head: hex32(&row.h_k),
+                    ledger_head: hex32(h_k),
                 });
-            self.hub.record_item(&row.item_id, item.clone());
+            self.hub.record_item(item_id, item.clone());
         }
         // **THE WALK ENDING IS THE OPERATION ENDING, SO SAY SO.**
         //

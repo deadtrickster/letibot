@@ -1384,6 +1384,24 @@ impl Store {
         Ok(n as u32)
     }
 
+    /// **The transcript this one was forked from**, or `None` for a session's first.
+    ///
+    /// One indexed lookup rather than `load_transcript`, which reads every row and every
+    /// token of a transcript to answer this one column. A resume walks the chain to put the
+    /// conversation back on the screen, and the walk asks this once per step before it
+    /// decides whether the parent's rows are needed at all.
+    pub fn parent_of(&self, transcript_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT parent_transcript_id FROM transcript WHERE id = ?1",
+                params![transcript_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     /// **One row's JSON, by ordinal — the read behind `FetchRow`** (R19.2b).
     ///
     /// One indexed lookup: `transcript_item`'s primary key is
