@@ -13465,16 +13465,6 @@ fn marker_seam(newest: bool) -> &'static str {
     }
 }
 
-/// The whole marker as one string, **for measuring** — the halves painted as one run, so
-/// a caller asking *how wide is this* gets the width of what is drawn.
-fn marker_text(calls: usize, think_lines: usize, newest: bool) -> String {
-    format!(
-        "{}{}",
-        Counts::of(calls, think_lines).plain(),
-        marker_seam(newest)
-    )
-}
-
 /// **How the live pane knows what is in flight** — calls proposed or running with no result
 /// row yet, and reasoning streamed and not yet committed.
 ///
