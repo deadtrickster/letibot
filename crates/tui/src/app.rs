@@ -7295,12 +7295,23 @@ impl App {
     /// binding whose row has been trimmed out of the view, or replaced by a snapshot,
     /// draws nothing — and this then draws the echo at the tail again, which is the
     /// honest answer: the words are still this head's to show.
-    fn echoes_on_screen(&self) -> std::collections::HashSet<String> {
+    ///
+    /// **As LINES, not as whole texts** (R51 item 15). The tail does not ask *is this
+    /// entry already on screen* — that question is answered NO for any entry that grew
+    /// after it was bound, and the whole entry is then drawn twice. What it needs is the
+    /// pieces being drawn, so it can take exactly those out. See [`unclaimed_prompts`],
+    /// which is the walk that spends them.
+    fn echoes_on_screen(&self) -> Vec<(String, Vec<String>)> {
         self.items
             .iter()
             .filter(|it| it.item.is_none())
             .filter_map(|it| self.bound_prompts.get(&it.item_id))
-            .cloned()
+            .map(|text| {
+                (
+                    text.clone(),
+                    text.split('\n').map(str::to_string).collect(),
+                )
+            })
             .collect()
     }
 
@@ -9893,20 +9904,24 @@ impl App {
             let mut owned: Vec<String> = Vec::new();
             let open = self.echo_open;
             let unconfirmed = self.unconfirmed.clone();
-            for q in &self.pending_prompts {
-                // **An echo a row on screen is already drawing is not drawn twice.**
-                // The row that announced it carries the words now — in the transcript's own
-                // place, above the reply — and this block is for the queue, which is what is
-                // *not* in the conversation yet.
-                if echoes_on_screen.contains(q) {
-                    continue;
-                }
-                let mark = if unconfirmed.iter().any(|u| u == q) {
+            // **The pieces the rows above are already drawing, taken out of the queue** —
+            // R51 item 15. Computed once for the whole queue rather than asked per entry,
+            // because a claim is spent: two entries that read the same must not both claim
+            // the one line a row is drawing.
+            for (i, drawn, claimed_by) in unclaimed_prompts(&self.pending_prompts, &echoes_on_screen) {
+                // **The mark follows the words this row is drawing.** A remainder is drawing what
+                // the row above does not — the same prompt — so it asks `unconfirmed` under the
+                // text that claimed it, which is the text the row itself asked under. Asking
+                // under the remainder's own words would answer differently from the row beside it
+                // the moment an entry grew, and asking under the ENTRY's would too. See
+                // [`unclaimed_prompts`] for why that would be two statements about one fact.
+                let key = claimed_by.as_deref().unwrap_or(&self.pending_prompts[i]);
+                let mark = if unconfirmed.iter().any(|u| u == key) {
                     UNCONFIRMED
                 } else {
                     QUEUED
                 };
-                owned.extend(queued_lines(q, &cfg, mark, open));
+                owned.extend(queued_lines(&drawn, &cfg, mark, open));
             }
             // The trailing blank is the air the landed row will have, so it goes if the block is
             // empty: a lone blank row above the pane is a row of nothing.
@@ -14900,6 +14915,90 @@ fn strip_landed(
         .collect::<Vec<_>>()
         .join("\n");
     hit.then_some(rest)
+}
+
+/// **The queue as the tail must DRAW it** — R51 item 15, and it is `strip_landed`'s
+/// read-only twin.
+///
+/// # The defect
+///
+/// A body-less `user` row is drawn from the echo this head bound to it ([`App::bound_prompts`]),
+/// and the tail draws the rest of the queue. The two were kept apart by comparing WHOLE
+/// STRINGS — the tail skipped a pending entry whose text was exactly one a row was drawing —
+/// and **an entry that GREW after it was bound defeats that**: bound as `"A"`, it becomes
+/// `"A\nB\nC"` as the operator keeps typing (the coalescing item 14 requires), so the text no
+/// longer matches and the tail draws **the whole entry again** — `A` on the screen twice, once
+/// in the row's own place and once in the queue below it.
+///
+/// # The rule
+///
+/// **The unit of drawing is the entry; the unit of claiming is the piece.** Each whole line a
+/// bound row is drawing is spent once against the queue (the walk is [`strip_landed`]'s, so a
+/// claim here and a claim by a landing row cannot disagree about what a claim IS), and what is
+/// left of an entry is joined back and returned as ONE block.
+///
+/// Returns, per entry the tail still owes something for: **the index into `pending`, the
+/// remainder to draw, and the ORIGINAL text whose drawing claimed it** (`None` when nothing did).
+///
+/// # Why the third field, which is not about drawing at all
+///
+/// The `unconfirmed` mark is a sentence about the prompt this head sent — *the snapshot replaced
+/// the transcript, so I can no longer tell `still coming` from `replaced`* — and it is looked up
+/// **by text**. The row above looks it up under the text IT is drawing (the bound one), so a tail
+/// that looked it up under the ENTRY's text would answer differently for the same prompt the moment
+/// the entry grew: `unconfirmed` on one row and `queued` on the next, which is two statements about
+/// one fact. **The claiming text is returned so the remainder can carry the mark its own row
+/// carries** — the row in the transcript's own place is the senior drawing, and the tail's
+/// remainder is its tail.
+fn unclaimed_prompts(pending: &[String], bound: &[(String, Vec<String>)]) -> Vec<(usize, String, Option<String>)> {
+    if pending.is_empty() {
+        return Vec::new();
+    }
+    // One pass over the queue, in the order the daemon will append the rows — the same rule
+    // `retire_pending` keeps, and for the same reason: an entry may not claim a line that an
+    // earlier entry already claimed.
+    //
+    // Flattened into one line list with a flag per bound drawing, so the walk below can report
+    // which drawing spent a line as well as that it did.
+    let mut lines: Vec<&str> = Vec::new();
+    for (_, text_lines) in bound {
+        for l in text_lines {
+            lines.push(l.as_str());
+        }
+    }
+    // `owner[k]` is which bound drawing contributed line `k`.
+    let mut owner: Vec<usize> = Vec::with_capacity(lines.len());
+    for (b, (_, text_lines)) in bound.iter().enumerate() {
+        for _ in text_lines {
+            owner.push(b);
+        }
+    }
+    let mut claimed = vec![false; lines.len()];
+    let mut cursor = 0usize;
+    let mut out: Vec<(usize, String, Option<String>)> = Vec::new();
+    for (i, q) in pending.iter().enumerate() {
+        // Recorded before the walk, because `strip_landed` moves the cursor past what it spent and
+        // the first line this entry claimed is what says which row is drawing it.
+        let before = cursor;
+        let rest = strip_landed(q, &lines, &mut claimed, &mut cursor);
+        // **The drawing that claimed the FIRST line of this entry.** Cursor order is queue order,
+        // so the earliest claim is the one the entry's head belongs to; a later one is drawing a
+        // line further down the same prompt.
+        let by = (before..cursor)
+            .find(|k| claimed[*k])
+            .map(|k| owner[k])
+            .and_then(|b| bound.get(b))
+            .map(|(text, _)| text.clone());
+        match rest {
+            // Nothing of this entry is on screen in the row that bound it. Draw it whole.
+            None => out.push((i, q.clone(), None)),
+            // Every piece of it is. Nothing left to draw.
+            Some(rest) if rest.is_empty() => {}
+            // Some of it is drawn above; the rest is what the tail owes.
+            Some(rest) => out.push((i, rest, by)),
+        }
+    }
+    out
 }
 
 /// `14:32:07` in the local zone, or empty when the row carries no timestamp.
@@ -30571,6 +30670,332 @@ mod tests {
     ///
     /// **The earlier ruling still stands and is the other half of this**: the seam is gray,
     /// dot included. This test is where it is kept.
+    /// **An entry that GREW after a row was bound to it is not drawn twice** — R51 item 15.
+    ///
+    /// The shape that defeats a whole-string comparison: the operator types `A`, and it is bound to
+    /// the body-less row the daemon announced. Then they keep typing (behind a running turn, so item
+    /// 14's coalescing puts `B` and `C` into the SAME entry), and the entry is now `"A\nB\nC"` while
+    /// the row is still drawing `"A"`. The tail's question used to be *is this entry already on
+    /// screen* — answered NO for every such entry — so the WHOLE thing was drawn again and `A`
+    /// appeared twice.
+    ///
+    /// The rule is that the unit of DRAWING is the entry and the unit of CLAIMING is the piece: the
+    /// line the row is drawing is spent, and what is left of the entry is drawn as one block.
+    #[test]
+    fn an_echo_that_grew_after_it_was_bound_is_not_drawn_twice() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        // `A` is sent and queued; the daemon announces its row with no body yet; the head binds
+        // the echo it holds to that row, which is where the words belong.
+        typed(&mut a, "A");
+        a.key(Key::Enter);
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "user".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        assert_eq!(
+            a.bound_prompts.get("s.0").map(String::as_str),
+            Some("A"),
+            "the premise: the row is drawing the words it was bound to"
+        );
+        // …and then `B` and `C`, which coalesce ONTO that entry.
+        typed(&mut a, "B");
+        a.key(Key::Enter);
+        typed(&mut a, "C");
+        a.key(Key::Enter);
+        assert_eq!(
+            a.pending_prompts,
+            vec!["A\nB\nC".to_string()],
+            "the premise: one entry, three lines"
+        );
+        let screen = a.screen(100, 30).join("\n");
+        // **The claim, and it is the whole of this item.** The bound row draws `A`; the tail must
+        // draw only what that does not — not the whole entry a second time.
+        assert_eq!(
+            screen.matches("queued · A").count(),
+            1,
+            "`A` is on the screen more than once: {screen:?}"
+        );
+        // And the remainder is drawn as ONE block — the coalescing item 14 requires — so `B` and
+        // `C` are together in one queued row and not one row each.
+        assert_eq!(
+            screen.matches("queued · B").count(),
+            1,
+            "the leftover is drawn once: {screen:?}"
+        );
+    }
+
+    /// **An entry that grew is `unconfirmed` still, by its ORIGINAL text** — the mark rides on the
+    /// entry.
+    ///
+    /// The near-miss shape of item 15: the piece-claiming walk hands back a REMAINDER, and asking
+    /// `unconfirmed` about the remainder rather than about the entry would silently drop the mark for
+    /// exactly the case that item is about — a snapshot marked the echo, and then it grew.
+    #[test]
+    fn a_grown_entry_keeps_the_mark_its_original_text_carried() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "A");
+        a.key(Key::Enter);
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "user".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        // The mark is on the entry as it was, which is the entry's identity.
+        a.unconfirmed.push("A".into());
+        typed(&mut a, "B");
+        a.key(Key::Enter);
+        let screen = a.screen(100, 30).join("\n");
+        assert!(
+            screen.contains("unconfirmed · A"),
+            "the row is drawing the words it was bound to: {screen:?}"
+        );
+        // **And the tail's remainder carries the same word**, because it is the same prompt: the
+        // row above asked `unconfirmed` under the text it is drawing, and so does this.
+        assert!(
+            screen.contains("unconfirmed · B"),
+            "the remainder disagreed with its own row about one prompt: {screen:?}"
+        );
+    }
+
+    /// **`unclaimed_prompts` is the walk, stated as the three answers it gives.**
+    #[test]
+    fn the_claiming_walk_keeps_the_entries_the_rows_are_not_drawing() {
+        let entry = |s: &str| s.to_string();
+        // A row drawing `text`, in the shape the walk takes.
+        let drawing = |text: &str| {
+            (
+                text.to_string(),
+                text.split('\n').map(str::to_string).collect::<Vec<_>>(),
+            )
+        };
+        // Nothing bound: every entry is drawn as it stands, and there is no claiming row.
+        assert_eq!(
+            unclaimed_prompts(&[entry("A")], &[]),
+            vec![(0, "A".into(), None)]
+        );
+        // The whole entry is being drawn by a row: nothing for the tail.
+        assert!(unclaimed_prompts(&[entry("A")], &[drawing("A")]).is_empty());
+        // A piece is: the remainder, joined as one block. This is the case the whole-string
+        // comparison got wrong, and the claiming row is named so the remainder can carry its mark.
+        assert_eq!(
+            unclaimed_prompts(&[entry("A\nB\nC")], &[drawing("A")]),
+            vec![(0, "B\nC".into(), Some("A".into()))]
+        );
+        // **A blank line in an entry claims nothing**, so an entry whose words are all claimed but
+        // which carries a blank is not drawn as a row of nothing.
+        assert!(unclaimed_prompts(&[entry("A\n")], &[drawing("A")]).is_empty());
+        // **A line is spent once.** Two entries that read the same, and one line on screen: the
+        // first claims it, the second keeps its own.
+        assert_eq!(
+            unclaimed_prompts(&[entry("A"), entry("A")], &[drawing("A")]),
+            vec![(1, "A".into(), None)]
+        );
+        // And an entry the rows say nothing about is drawn whole, beside one they do.
+        assert_eq!(
+            unclaimed_prompts(&[entry("A\nB"), entry("C")], &[drawing("A")]),
+            vec![
+                (0, "B".into(), Some("A".into())),
+                (1, "C".into(), None)
+            ]
+        );
+    }
+
+    /// **The frame does not change height when the echo's row lands** — R51 item 13's third
+    /// *must not differ*, and the clause most able to rot quietly.
+    ///
+    /// An echo is words plus the air a landed row has, and a committed row is words plus the
+    /// separator's blank — so the two occupy the same rows and the live pane below does not jump
+    /// when the announcement arrives. Get it wrong (put the air BEFORE the echo, or give the
+    /// landed row one and not the other) and every row between the echo and the composer moves by
+    /// one at the moment the operator's own message lands, which is exactly when they are looking
+    /// at it.
+    ///
+    /// Asserted as *where the live pane sits*, not as a line count: the pane's row is the thing a
+    /// reader watches, and a count can be preserved by two errors that cancel.
+    #[test]
+    fn the_frame_does_not_change_height_when_the_echo_lands() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        // Some prose first, so the echo has committed rows above it and the frame is not the
+        // trivial empty one.
+        a_result_row(&mut a, 2, "s.0", "a settled row");
+        typed(&mut a, "a queued line");
+        a.key(Key::Enter);
+        let before = a.screen(100, 30);
+        assert!(
+            before.iter().any(|l| l.contains("queued ·")),
+            "the premise: the echo is drawn as a queued block"
+        );
+        // **Whose row to measure, and this is the whole of the measurement.** The live pane is
+        // pinned to the bottom of the frame — measured first, it cannot move whatever the echo
+        // does, so asserting on it proves nothing. What moves is the WORDS: with the air in front
+        // of the echo, they sit one row lower than the row that replaces them, so every committed
+        // row between them shifts when the announcement lands.
+        let words_row = |screen: &[String]| {
+            screen
+                .iter()
+                .position(|l| l.contains("a queued line"))
+                .expect("the words are on the screen")
+        };
+        let was = words_row(&before);
+        // The step boundary: the announcement, then the body. The transcript takes the words over.
+        a.apply(ServerFrame::Event(env(3, testing::appended("u2", "user"))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::TranscriptContent {
+                item_id: "u2".into(),
+                item: Box::new(TranscriptItem::User {
+                    speaker: Default::default(),
+                    parts: vec![UserPart::Text {
+                        text: "a queued line".into(),
+                    }],
+                }),
+            },
+        )));
+        let after = a.screen(100, 30);
+        assert!(
+            !after.iter().any(|l| l.contains("queued ·")),
+            "the echo stood down: {after:?}"
+        );
+        assert!(
+            after.iter().any(|l| l.contains("a queued line")),
+            "and the words are still on the screen, as a settled row: {after:?}"
+        );
+        assert_eq!(
+            words_row(&after),
+            was,
+            "their own words moved a row when the row that replaces the echo landed"
+        );
+    }
+
+    /// **A draft in the composer survives an ask on BOTH keys** — R51 items 13/14's neighbour, and
+    /// leticl's `1f48056`.
+    ///
+    /// The brief names `↑`; the same failure lives on Enter, and this is the pair of them measured
+    /// rather than reasoned about. Enter on a permission whose row the line does not name HOLDS the
+    /// words (`a_line_that_names_nothing_holds_the_words_and_answers_the_marked_row` is the other
+    /// half); `↑` must not recall a queued line over a draft either — readline's own history is
+    /// what a half-typed line gets.
+    #[test]
+    fn an_open_ask_does_not_take_the_draft_on_enter_or_on_up() {
+        use letibot_sessionlog::event::OptionKind;
+        // Up, with a draft: the composer's own history walk, and the draft stays.
+        let mut a = app();
+        a.open.push(decision_with(&[
+            OptionKind::AllowOnce,
+            OptionKind::RejectOnce,
+        ]));
+        typed(&mut a, "half a thought");
+        a.key(Key::Up);
+        assert_eq!(
+            a.input(),
+            "half a thought",
+            "the card's ladder moved and took the draft with it"
+        );
+        // The queued line is recalled only onto an EMPTY composer, so it cannot eat a draft.
+        let mut b = app();
+        b.open.push(decision_with(&[
+            OptionKind::AllowOnce,
+            OptionKind::RejectOnce,
+        ]));
+        b.pending_prompts.push("a queued line".into());
+        typed(&mut b, "half a thought");
+        assert!(
+            matches!(b.key(Key::Up), None),
+            "a draft's Up is not the queue's recall"
+        );
+        assert_eq!(b.input(), "half a thought", "and the draft is untouched");
+        assert_eq!(
+            b.pending_prompts,
+            vec!["a queued line".to_string()],
+            "the queue was not taken back by a key that did not recall it"
+        );
+
+        // **And with NO card up, which is where the recall is actually reachable** — and this is
+        // the assertion the two above cannot make: a card with options owns `↑` for its ladder
+        // (proved by removing the empty-composer guard and watching the two above still pass), so
+        // the guard is only ever exercised on the bare composer.
+        let mut c = app();
+        c.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        c.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut c, "a sent line");
+        c.key(Key::Enter);
+        c.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "user".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        // The entry the send left behind is stood down by hand, so the premise below is about ONE
+        // queued line rather than about the sent one the coalescing already folded it into.
+        c.pending_prompts.clear();
+        c.pending_prompts.push("a queued line".into());
+        // With nothing typed, `↑` IS the recall — the premise, so the refusal below is about the
+        // draft and not about the key being dead.
+        c.key(Key::Up);
+        assert_eq!(c.input(), "a queued line", "the premise: the recall works");
+        assert!(c.pending_prompts.is_empty(), "the premise: and it takes it back");
+        // Now with a draft: readline's own history, and the queue is not touched.
+        //
+        // **The draft is not lost, and that is the editor's contract rather than this head's** —
+        // §6: a history walk keeps the draft it interrupted, and `↓` brings it back. What this
+        // asserts is the half that IS this head's, and the half the brief is about: `↑` over a
+        // draft is NOT the queue's recall, so it can neither eat the draft nor take back a prompt
+        // the operator did not ask for.
+        c.set_composer("");
+        c.pending_prompts.push("a queued line".into());
+        typed(&mut c, "half a thought");
+        assert!(
+            matches!(c.key(Key::Up), None),
+            "a draft's Up is not the queue's recall"
+        );
+        assert_eq!(
+            c.input(),
+            "a sent line",
+            "the draft's Up is readline's: the previous entry"
+        );
+        assert_eq!(
+            c.pending_prompts,
+            vec!["a queued line".to_string()],
+            "and the queue is not taken back on the way"
+        );
+        assert!(
+            matches!(c.key(Key::Down), None),
+            "Down walks back out of the history"
+        );
+        assert_eq!(c.input(), "half a thought", "the draft survived the walk");
+    }
+
     #[test]
     fn the_counts_are_plain_and_the_seam_is_faint() {
         the_counts_are_plain_and_the_seam_is_faint_body()
