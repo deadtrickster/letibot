@@ -139,34 +139,47 @@ pub fn unfinished_plan(todos: &[TodoItem]) -> Option<String> {
     if open.is_empty() {
         return None;
     }
-    let mut out = format!(
-        "[todo check] this turn is finished and {} of {} item(s) are not:\n",
-        open.len(),
-        todos.len()
-    );
-    for t in open.iter().take(MAX_PLAN_LINES) {
-        let state = match t.status {
-            TodoStatus::InProgress => " (in progress)",
-            _ => "",
-        };
-        out.push_str(&format!("  - {}{}\n", t.content.trim(), state));
-    }
-    if open.len() > MAX_PLAN_LINES {
-        out.push_str(&format!("  … and {} more\n", open.len() - MAX_PLAN_LINES));
-    }
-    out.push_str(
-        "do them, or mark them done, or drop the ones you no longer mean to do — a plan \
-         left open is a plan nobody is following. If you are stopping here deliberately, \
-         say why in your reply.",
-    );
-    Some(out)
+    // **ONE ITEM, and the operator's reason is the model's own behaviour:** *"i think the nagger should
+    // mention only one todo at a time, so a model will not be defocused."*
+    //
+    // A list invites a model to touch all of it: it reads five open rows, does a little of each, and
+    // ends the next turn with five still open — which is the failure this check exists to prevent,
+    // arriving on the check's own message. Naming ONE is a directive; naming five is homework.
+    //
+    // **WHICH one, and it is not simply the first.** An item the model marked `in_progress` is the one
+    // it told the board it was doing, so that is the honest thing to name — an item it never started
+    // is a plan it has not got to, and interrupting that with a different row would be the nag
+    // choosing the model's next step. `in_progress` first, then the earliest open row, and the
+    // ordering within each is the list's own (the operator's rows come after the model's, so a
+    // model that has started nothing is pointed at its own plan before the operator's).
+    let next = open
+        .iter()
+        .find(|t| t.status == TodoStatus::InProgress)
+        .or_else(|| open.first())
+        .expect("open is not empty");
+    let left = open.len() - 1;
+    // The count of what is BEHIND this one, because the model is entitled to know the plan is bigger
+    // than the row it is being asked about — and that is exactly the fact that must not become a list.
+    let rest = match left {
+        0 => String::new(),
+        1 => " (1 more open)".to_string(),
+        n => format!(" ({n} more open)"),
+    };
+    let state = match next.status {
+        TodoStatus::InProgress => " — you had this one in progress",
+        _ => "",
+    };
+    Some(format!(
+        "[todo check] this turn is finished and one item is not done{rest}:\n  - {}{state}\n{}",
+        next.content.trim(),
+        "do this one, or mark it done, or drop it — a plan left open is a plan nobody is \
+         following. If you are stopping here deliberately, say why in your reply."
+    ))
 }
 
-/// How many unfinished items the message names before it counts the rest. The same
-/// reasoning as `intent`'s `MAX_FINDINGS`: a model that wrote forty items needs to know
-/// the plan is open, not to be read its own list back. Six is what that one uses, and two
-/// checks in one session should not disagree about how much of a list is worth printing.
-const MAX_PLAN_LINES: usize = 6;
+// `MAX_PLAN_LINES` is gone with the list it capped: the message names ONE item now, so there is no
+// length of list to truncate. The operator's ruling — *"only one todo at a time, so a model will not
+// be defocused"* — removes the thing that constant existed for.
 
 /// The write tool. Holds the board; the harness holds the same `Arc`.
 pub struct TodoWriteTool {
@@ -463,32 +476,50 @@ mod tests {
         );
     }
 
-    /// And when it does fire it names what is open, because a count alone is a nag: the
-    /// model cannot act on *three items* without being told which three.
+    /// **It names ONE item, and it names the RIGHT one.** The operator: *"i think the nagger
+    /// should mention only one todo at a time, so a model will not be defocused."*
+    ///
+    /// A list invites a model to touch all of it — read five open rows, do a little of each, end the
+    /// next turn with five still open — which is the failure this check exists to prevent, arriving
+    /// on the check's own message. And WHICH one is not the first by accident: an item the model
+    /// marked `in_progress` is the one it told the board it was doing, so that is what gets named.
     #[test]
-    fn an_open_plan_names_what_is_open_and_what_to_do_about_it() {
+    fn an_open_plan_names_one_item_and_what_to_do_about_it() {
         let msg = unfinished_plan(&[
+            item("write it up", TodoStatus::Completed),
             item("wire the check", TodoStatus::InProgress),
             item("test it", TodoStatus::Pending),
-            item("write it up", TodoStatus::Completed),
         ])
         .expect("one in progress and one pending is work left open");
-        assert!(msg.contains("2 of 3"), "the count, against the list: {msg}");
-        assert!(msg.contains("wire the check (in progress)"), "{msg}");
-        assert!(msg.contains("test it"), "{msg}");
+        // **the item it was WORKING ON**, not the first open row in the list
+        assert!(
+            msg.contains("wire the check"),
+            "the in-progress item is the one named: {msg}"
+        );
+        assert!(
+            msg.contains("you had this one in progress"),
+            "and the message says why this one: {msg}"
+        );
+        // **and NOT the other open row** — that is the defocusing the operator asked me to stop
+        assert!(
+            !msg.contains("test it"),
+            "the second open item is not named, because one is a directive and five is homework: {msg}"
+        );
         assert!(
             !msg.contains("write it up"),
             "a completed item is not part of what is open: {msg}"
         );
-        // **all three honest answers are offered, and the third is the one that keeps this
-        // from being a trap.** Without *drop what you no longer mean to do* the model's only
-        // exit is to lie about its own statuses, which is the failure this exists to stop.
-        assert!(msg.contains("do them"), "{msg}");
-        assert!(msg.contains("mark them done"), "{msg}");
+        // the rest is a COUNT, which is the fact that must not become a list
         assert!(
-            msg.contains("drop the ones you no longer mean to do"),
-            "{msg}"
+            msg.contains("(1 more open)"),
+            "the remainder is counted, not listed: {msg}"
         );
+        // **all three honest answers are offered, and the third is the one that keeps this from
+        // being a trap.** Without *drop what you no longer mean to do* the model's only exit is to
+        // lie about its own statuses, which is the failure this exists to stop.
+        assert!(msg.contains("do this one"), "{msg}");
+        assert!(msg.contains("mark it done"), "{msg}");
+        assert!(msg.contains("drop it"), "{msg}");
         assert!(
             msg.contains("deliberately"),
             "and stopping on purpose is answerable: {msg}"
@@ -496,24 +527,38 @@ mod tests {
         assert!(msg.starts_with("[todo check]"), "the house prefix: {msg}");
     }
 
-    /// A long plan is a COUNT and a few lines, not the model's own list read back to it —
-    /// the same rule (and the same number) `intent`'s steering follows.
+    /// **With nothing started, it names the first open row** — the model has told the board nothing,
+    /// so the list's own order is the only thing to go on, and singling one out is still the rule.
     #[test]
-    fn a_long_plan_is_capped_and_says_how_many_it_did_not_print() {
+    fn with_nothing_in_progress_it_names_the_first_open_row() {
+        let msg = unfinished_plan(&[
+            item("the first", TodoStatus::Pending),
+            item("the second", TodoStatus::Pending),
+            item("the third", TodoStatus::Pending),
+        ])
+        .expect("three open items is a finding");
+        assert!(msg.contains("the first"), "{msg}");
+        assert!(!msg.contains("the second"), "one at a time: {msg}");
+        assert!(!msg.contains("the third"), "one at a time: {msg}");
+        assert!(msg.contains("(2 more open)"), "{msg}");
+        assert!(
+            !msg.contains("in progress"),
+            "and it does not claim to know why this one: {msg}"
+        );
+    }
+
+    /// **A long plan is the same message as a short one.** Ten open items produce ONE named row and a
+    /// count — the rule `intent`'s steering follows, and the reason `MAX_PLAN_LINES` is gone: there is
+    /// no longer a length of list to cap.
+    #[test]
+    fn a_long_plan_is_one_item_and_a_count() {
         let todos: Vec<TodoItem> = (0..10)
             .map(|i| item(&format!("item {i}"), TodoStatus::Pending))
             .collect();
         let msg = unfinished_plan(&todos).expect("ten open items is a finding");
-        assert!(msg.contains("10 of 10"), "{msg}");
-        assert!(
-            msg.contains("and 4 more"),
-            "ten minus the six printed: {msg}"
-        );
-        assert!(msg.contains("item 5"), "{msg}");
-        assert!(
-            !msg.contains("item 6"),
-            "the seventh is counted, not named: {msg}"
-        );
+        assert!(msg.contains("item 0"), "the first is named: {msg}");
+        assert!(!msg.contains("item 1"), "and no other: {msg}");
+        assert!(msg.contains("(9 more open)"), "the rest is counted: {msg}");
     }
 
     /// **A list written and finished inside the turn says nothing**, which is what taking a
