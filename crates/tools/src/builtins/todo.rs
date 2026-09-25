@@ -103,6 +103,41 @@ impl TodoBoard {
     }
 }
 
+/// **The open work as a PRIORITY QUEUE, in the order it should be served.**
+///
+/// The operator: *"priority queues - in progress items than not done, one-by-one."* Two bands:
+///
+///   1. **`in_progress`** — the model told the board it was doing this, so it is the thing it owes an
+///      answer about first: finished, or admitted unfinished.
+///   2. **`pending`** — work nobody has started.
+///
+/// **`Completed` is not in the queue at all**, which is what makes it a queue of work rather than a
+/// copy of the list.
+///
+/// **Within a band the order is the list's own**, and the list is the model's rows before the
+/// operator's (`TodoBoard::snapshot`). So a model that has started two things and been asked for one
+/// more is pointed at its own in-progress work before the operator's, and at its own pending work
+/// before theirs — the order it would choose itself, which is the point of not shuffling it.
+///
+/// A STABLE sort, deliberately: equal keys keep their list order, and that is what makes the
+/// paragraph above true rather than aspirational.
+///
+/// **Why it is a function and not a `.find().or(first)` inside the message.** The message is one
+/// caller and the pane is a second reader of the same list; a queue stated once can be tested as an
+/// order — five items in, five items out in the serving order — where a find can only be tested by
+/// reading one message and hoping.
+pub fn open_priority(todos: &[TodoItem]) -> Vec<&TodoItem> {
+    let mut open: Vec<&TodoItem> = todos
+        .iter()
+        .filter(|t| t.status != TodoStatus::Completed)
+        .collect();
+    open.sort_by_key(|t| match t.status {
+        TodoStatus::InProgress => 0,
+        _ => 1,
+    });
+    open
+}
+
 /// **The plan a turn ended without finishing**, as a message for the model, or `None`
 /// when there is nothing to say — which is the common case and is meant to be.
 ///
@@ -132,31 +167,9 @@ impl TodoBoard {
 /// [`TodoBoard::snapshot`] is the state, taken at the turn boundary rather than watched,
 /// so a list written and finished inside one turn never produces a message.
 pub fn unfinished_plan(todos: &[TodoItem]) -> Option<String> {
-    let open: Vec<&TodoItem> = todos
-        .iter()
-        .filter(|t| t.status != TodoStatus::Completed)
-        .collect();
-    if open.is_empty() {
-        return None;
-    }
-    // **ONE ITEM, and the operator's reason is the model's own behaviour:** *"i think the nagger should
-    // mention only one todo at a time, so a model will not be defocused."*
-    //
-    // A list invites a model to touch all of it: it reads five open rows, does a little of each, and
-    // ends the next turn with five still open — which is the failure this check exists to prevent,
-    // arriving on the check's own message. Naming ONE is a directive; naming five is homework.
-    //
-    // **WHICH one, and it is not simply the first.** An item the model marked `in_progress` is the one
-    // it told the board it was doing, so that is the honest thing to name — an item it never started
-    // is a plan it has not got to, and interrupting that with a different row would be the nag
-    // choosing the model's next step. `in_progress` first, then the earliest open row, and the
-    // ordering within each is the list's own (the operator's rows come after the model's, so a
-    // model that has started nothing is pointed at its own plan before the operator's).
-    let next = open
-        .iter()
-        .find(|t| t.status == TodoStatus::InProgress)
-        .or_else(|| open.first())
-        .expect("open is not empty");
+    // **THE QUEUE, served one at a time** — see `open_priority` for the order and why it is one.
+    let open = open_priority(todos);
+    let next = open.first()?;
     let left = open.len() - 1;
     // The count of what is BEHIND this one, because the model is entitled to know the plan is bigger
     // than the row it is being asked about — and that is exactly the fact that must not become a list.
@@ -473,6 +486,72 @@ mod tests {
             ])
             .is_none(),
             "a finished plan is not a finding, it is the answer"
+        );
+    }
+
+    /// **The queue's ORDER, asserted as an order.** The operator: *"priority queues - in progress
+    /// items than not done, one-by-one."*
+    ///
+    /// Five items in, five out, and the two things that matter are both visible here: `in_progress`
+    /// before `pending` regardless of where each sits in the list, and list order kept WITHIN a band
+    /// (a stable sort — otherwise the operator's pending row could leapfrog the model's).
+    #[test]
+    fn the_open_work_is_queued_in_progress_first_then_not_done() {
+        let todos = vec![
+            item("model pending A", TodoStatus::Pending),
+            item("model done", TodoStatus::Completed),
+            item("model in progress", TodoStatus::InProgress),
+            item("operator pending", TodoStatus::Pending),
+            item("operator in progress", TodoStatus::InProgress),
+        ];
+        let queued: Vec<&str> = open_priority(&todos)
+            .iter()
+            .map(|t| t.content.as_str())
+            .collect();
+        assert_eq!(
+            queued,
+            vec![
+                "model in progress",
+                "operator in progress",
+                "model pending A",
+                "operator pending",
+            ],
+            "in_progress band first, then pending, list order kept inside each"
+        );
+        assert!(
+            !queued.contains(&"model done"),
+            "**a completed item is not in the queue at all**: {queued:?}"
+        );
+        // and the head of that queue is what the message names
+        let msg = unfinished_plan(&todos).expect("four open items is a finding");
+        assert!(msg.contains("model in progress"), "{msg}");
+        assert!(msg.contains("(3 more open)"), "{msg}");
+    }
+
+    /// **Every serve takes the next one**, which is what *one-by-one* means: deal with the head and
+    /// the queue's head moves on. This is the whole interaction the operator is describing, walked
+    /// one step at a time rather than asserted as a formula.
+    #[test]
+    fn serving_the_queue_one_by_one_walks_the_work() {
+        let mut todos = vec![
+            item("first", TodoStatus::Pending),
+            item("second", TodoStatus::Pending),
+            item("third", TodoStatus::Pending),
+        ];
+        for expected in ["first", "second", "third"] {
+            let msg = unfinished_plan(&todos).expect("open work");
+            assert!(
+                msg.contains(expected),
+                "the queue serves {expected} next: {msg}"
+            );
+            // the model deals with it — the only way the queue advances, and the reason a model that
+            // ignores the check is not nagged about the same row for ever
+            let at = todos.iter().position(|t| t.content == expected).unwrap();
+            todos[at].status = TodoStatus::Completed;
+        }
+        assert!(
+            unfinished_plan(&todos).is_none(),
+            "and when the work runs out, the check is silent"
         );
     }
 
