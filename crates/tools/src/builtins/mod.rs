@@ -200,7 +200,12 @@ pub(crate) fn text_of(bytes: &[u8]) -> (String, bool) {
 ///
 /// The first such target is returned. A command that redirects twice — `> a 2> b` — is
 /// named once, which is enough to say *the capture is not where your output is*.
-pub(crate) fn output_redirect_path(command: &str) -> Option<String> {
+///
+/// **Public because the daemon puts it on the wire, not only in a payload** (R51 item 5). A head
+/// that wanted to say which of its running jobs is unwatchable would otherwise have to parse a
+/// shell command itself — a second spelling of exactly this function, in another language, in a
+/// process that does not own the command. The daemon knows it; the row it publishes says it.
+pub fn output_redirect_path(command: &str) -> Option<String> {
     let n = letibot_code::shell::normalise(command);
     for stage in &n.stages {
         for r in &stage.redirects {

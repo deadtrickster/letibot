@@ -2991,6 +2991,15 @@ impl App {
                 // by deepseek: *"restarted the letibot - still qwen"*. It was:
                 // the daemon knew, and nothing had asked it.
                 self.queued.push(Action::Settings);
+                // **And the job count, for a case the brief names as a moment:** *"for a job already
+                // running when this head attached, which no event announces."* R51 item 5 puts that
+                // at the end of a turn, which is the earliest a turn boundary can answer it — but a
+                // head that attaches to a session with jobs already running would show no count at
+                // all until the next turn ended, which is the souvenir the item exists to prevent.
+                // The attach is the other half of the same fact, and it is the same shape of reason
+                // as the ask above: the daemon answers `ListJobs` and never sends the table
+                // unprompted.
+                self.queued.push(Action::ListJobs);
                 self.head_id = head_id.clone();
                 self.seated = Some(head_id);
                 self.wiring = wiring;
@@ -3801,6 +3810,11 @@ impl App {
                     // the daemon's own listing (`JobEntry`). A job that ran is never
                     // settled as one that did not.
                 }
+                // **And the count drops by one**, so the row above the composer re-asks (R51 item
+                // 5). The fold just above is the pane's copy: a job settled in a turn this head
+                // never watched has no row to fold into, which is exactly the case a count taken
+                // from the pane's rows would get wrong.
+                self.queued.push(Action::ListJobs);
                 self.redraw = true;
                 Disposition::Filtered
             }
@@ -4122,6 +4136,20 @@ impl App {
                 // table every round now, so the row arrives with the next
                 // `ListJobs` — with a command that is right whichever turn it is
                 // read in.
+                // **A backgrounded call is the job STARTING, and the only event that says so**
+                // (R51 item 5). There is no `JobStarted` on the wire: `JobSettled` is the whole
+                // job vocabulary, so the count cannot be folded out of events — it has to be
+                // ASKED for. The proof is the outcome rather than the tool's name: only a call
+                // that was actually backgrounded carries a handle.
+                //
+                // Without this the row a reader sees is a **souvenir**: a count drawn from a list
+                // only `/jobs` ever fetched sits at zero for the life of the job.
+                //
+                // Asked BEFORE the outcome is moved into the call's own state, because this is the
+                // last read of it in this arm.
+                if matches!(outcome, letibot_transcript::ToolOutcome::Backgrounded { .. }) {
+                    self.queued.push(Action::ListJobs);
+                }
                 if let Some(t) = self.turn.as_mut()
                     && let Some(c) = open_call(&mut t.calls, &call_id)
                 {
@@ -4247,6 +4275,13 @@ impl App {
                 }
                 self.usage_cache_measured = true;
                 self.last_timings = Some(timings);
+                // **And the count is re-read at the turn's end** (R51 item 5's third moment). A job
+                // that was already running when this head attached is announced by no event at all:
+                // the `ToolFinished` that started it happened before the attach, and a `JobSettled`
+                // may be an hour away. The turn boundary is the moment the head knows it has been
+                // through a round without hearing about it, so it is where the count gets its chance
+                // to be right.
+                self.queued.push(Action::ListJobs);
                 if let Some(t) = self.turn.as_mut() {
                     t.progress = None;
                     t.state = Some(TurnState::Finished {
@@ -8215,26 +8250,36 @@ impl App {
             chrome.push(status);
         }
         if boxed {
-            // The top edge carries exactly one fact, pinned right, and only when
-            // it is true: a subagent this session spawned is still running. The
-            // legend that used to live here — model, dialect, endpoint,
-            // verbosity — was a row of attention paid for ever for facts read
-            // once; this one is a fact that exists only while it does.
+            // The top edge carries the facts that exist ONLY while they are true, pinned right:
+            // subagents this session spawned and background jobs it started. The legend that used
+            // to live here — model, dialect, endpoint, verbosity — was a row of attention paid for
+            // ever for facts read once; these are facts that stop being drawn when they stop being
+            // true, which is what makes them worth a resident edge.
+            //
+            // **The jobs count is R51 item 5**, and the placement is this head's answer to *"the
+            // placement is yours"*: the other head put it on the status row, and here the status
+            // row has just been given to the turn (item 1) while this edge already carries the
+            // session's other running things. One edge for *what this session has in flight* is
+            // one place to look, and it is the same kind of fact as the subagent count beside it.
+            let mut facts: Vec<String> = Vec::new();
             let running = self
                 .subagents
                 .iter()
                 .filter(|s| s.state == "running")
                 .count();
-            let top = if running > 0 {
-                self.cfg.palette().paint(
-                    Role::Pending,
-                    &format!(
-                        "{running} subagent{} running",
-                        if running == 1 { "" } else { "s" }
-                    ),
-                )
-            } else {
+            if running > 0 {
+                facts.push(format!(
+                    "{running} subagent{} running",
+                    if running == 1 { "" } else { "s" }
+                ));
+            }
+            if let Some(jobs) = self.jobs_line() {
+                facts.push(jobs);
+            }
+            let top = if facts.is_empty() {
                 String::new()
+            } else {
+                self.cfg.palette().paint(Role::Pending, &facts.join(" · "))
             };
             chrome.push(self.box_edge(w, '╭', '╮', "", &top));
         }
@@ -9743,7 +9788,9 @@ impl App {
                     )
                 });
         if live_joins {
-            let painted = Marker::new(live.calls, live.think_lines, true).painted(&self.cfg);
+            let painted =
+                Marker::new(live.calls, live.think_lines, true, marker_carries_live(live))
+                    .painted(&self.cfg);
             if let Some(at) = self.hist_lines.iter().rposition(|l| !l.trim().is_empty()) {
                 let joined = format!("{} {painted}", self.hist_lines[at].trim_end());
                 if visible_width(&joined) <= self.cfg.width {
@@ -9903,7 +9950,9 @@ impl App {
             // Drawn where the work is: right after the prose that introduced it, which is where
             // the counts belong and where the reader is looking.
             if !superseded && rung.hides_the_working() && live.work() > 0 && !live_joins {
-                let painted = Marker::new(live.calls, live.think_lines, true).painted(&cfg);
+                let painted =
+                    Marker::new(live.calls, live.think_lines, true, marker_carries_live(live))
+                        .painted(&cfg);
                 segs.push(Seg::Owned(vec![format!("{}{painted}", " ".repeat(ind))]));
             }
             if !superseded && !reasoning.is_empty() && !rung.hides_the_working() {
@@ -11188,6 +11237,48 @@ impl App {
         out.push(dim(&self.cfg, &format!("    {hint}")));
         out.truncate(room);
         out
+    }
+
+    /// **How many jobs this session has running, for the composer's top edge** — R51 item 5.
+    ///
+    /// `None` when the answer is zero, and absent rather than `0 jobs`: a count that is always
+    /// there is furniture, and the edge it sits on is spent on facts that are true only while they
+    /// are.
+    ///
+    /// **The count comes from the daemon's table, never from a fold of the events.** There is no
+    /// `JobStarted` on the wire, so a head counting what it has seen start and settle would be
+    /// guessing at the one number the daemon already knows — and would get it wrong for a job that
+    /// was already running when the head attached. What the head owes is to ASK, at the three
+    /// moments it can know something changed (`ToolFinished` with a `backgrounded` outcome, a
+    /// `JobSettled`, and the end of a turn); see those arms.
+    ///
+    /// **And the redirected half, which is this head's own addition to the requirement.** A job
+    /// whose output goes to a file has a window that will be EMPTY however long it runs (R41,
+    /// `JobEntry::redirect`), so *"3 jobs running"* and *"3 jobs running, one of which you cannot
+    /// watch"* are different answers to the question this row exists to answer. It is said as a
+    /// count of the running ones, because that is the set the reader is about to go and look at:
+    ///
+    /// ```text
+    /// 3 jobs running · 1 to a file
+    /// ```
+    ///
+    /// A settled job's redirect is not counted: the row is about what is running now, and a
+    /// finished job's output is readable wherever it went.
+    fn jobs_line(&self) -> Option<String> {
+        let running = self.jobs.iter().filter(|j| j.running).count();
+        if running == 0 {
+            return None;
+        }
+        let mut out = format!("{running} job{} running", if running == 1 { "" } else { "s" });
+        let to_a_file = self
+            .jobs
+            .iter()
+            .filter(|j| j.running && j.redirect.is_some())
+            .count();
+        if to_a_file > 0 {
+            out.push_str(&format!(" · {to_a_file} to a file"));
+        }
+        Some(out)
     }
 
     fn jobs_lines(&self, w: usize) -> Vec<String> {
@@ -13352,7 +13443,146 @@ fn reserved_for_run(
     // Measured **plain**, which is the widest it can be: the seam is faint and an escape
     // adds no columns, so the reservation cannot come out short.
     let marker = hidden_run_marker(items, start, end, rung, cfg, newest, live);
-    Some(visible_width(&format!(" {}{}", marker.counts, marker.seam)))
+    Some(visible_width(&format!(" {}{}", marker.counts.plain(), marker.seam)))
+}
+
+/// # The seam, which is the one thing here that is not a count
+///
+/// ` · ctrl-t opens it`, or ` · /verbosity` on a run that is not the newest. R37 AMENDED
+/// requires a marker that **opens**, and R40's rule is that a chord may only be named where
+/// it acts — so the newest run's marker names the chord and every other one names the verb
+/// that does reach it. It is a seam and not content, exactly as `… +8 lines · /t unfolds it`
+/// is on every other elided row in this file, and it is one string to delete if the operator
+/// rules that the sentence is better without it.
+///
+/// The dot lives inside the seam string rather than being painted beside it, so the separator
+/// cannot come out in one register and its own key in another.
+fn marker_seam(newest: bool) -> &'static str {
+    if newest {
+        " · ctrl-t opens it"
+    } else {
+        " · /verbosity"
+    }
+}
+
+/// The whole marker as one string, **for measuring** — the halves painted as one run, so
+/// a caller asking *how wide is this* gets the width of what is drawn.
+fn marker_text(calls: usize, think_lines: usize, newest: bool) -> String {
+    format!(
+        "{}{}",
+        Counts::of(calls, think_lines).plain(),
+        marker_seam(newest)
+    )
+}
+
+/// **How the live pane knows what is in flight** — calls proposed or running with no result
+/// row yet, and reasoning streamed and not yet committed.
+///
+/// Recomputed every frame from the turn, which is the only place it exists: the daemon
+/// appends a round's results **after every call in it has run**, so between the narration and
+/// the first result the transcript is empty of the work and this is the whole of the evidence.
+///
+/// **And it is the correct reading of *is the model working*** (R51's preamble): it asks the
+/// CALLS rather than the turn's state name, so a call running under a `finished` round counts.
+/// [`App::turn_busy`] asks the same question of the same facts; this is the rendering half.
+fn live_work(turn: Option<&TurnPane>, cfg: &RenderConfig, superseded: bool) -> LiveWork {
+    let Some(t) = turn else {
+        return LiveWork::default();
+    };
+    if superseded {
+        return LiveWork::default();
+    }
+    let calls = t
+        .calls
+        .iter()
+        .filter(|c| !matches!(c.state, CallState::Finished { .. }))
+        .count();
+    let think_lines = if t.reasoning.is_empty() {
+        0
+    } else {
+        reasoning_display_lines(t.reasoning.raw(), cfg.width)
+    };
+    LiveWork { calls, think_lines }
+}
+
+/// **The counts, as the two halves that can be painted differently** — R51 item 7.
+///
+/// Split apart rather than composed, because the live-edge colour goes on ONE of them: the CALLS
+/// count alone, never the brackets and never the thinking count. The operator, twice, the second
+/// time correcting the first fix: *"when you correctly do account running jobs in verbosity mode [],
+/// mark counters yellow if the tail job is still running"*, then *"you should yellow only tool call
+/// number, not the whole [] thing."*
+///
+/// The reason it is only the number: a count still going up and a count that has stopped are the
+/// same characters, and the colour is the only thing that tells them apart — on a line whose whole
+/// job is to be punctuation inside the model's sentence. Colouring the brackets too makes it a
+/// highlight rather than a signal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Counts {
+    /// `1 tool call` — the only part that can go pending. `None` when no call is counted.
+    calls: Option<String>,
+    /// `2 thinking lines`. Never coloured; a thought is not work that is still happening.
+    think: Option<String>,
+}
+
+impl Counts {
+    fn of(calls: usize, think_lines: usize) -> Counts {
+        let plural =
+            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        Counts {
+            calls: (calls > 0).then(|| plural(calls, "tool call", "tool calls")),
+            think: (think_lines > 0).then(|| plural(think_lines, "thinking line", "thinking lines")),
+        }
+    }
+
+    /// **The counts as PLAIN text** — for measuring, and for a test that wants the words rather
+    /// than the registers. Never for drawing: a caller that painted this would be painting the
+    /// brackets and the thinking count along with the number.
+    fn plain(&self) -> String {
+        let parts: Vec<&str> = [self.calls.as_deref(), self.think.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        format!("[{}]", parts.join(", "))
+    }
+}
+
+/// **Does this marker carry the work that is in flight** — R51 item 8, and the whole of the colour
+/// question in one place.
+///
+/// # The three wrong answers, because this colour has been wrong in three directions
+///
+///   · keyed on the work IN FLIGHT at the card, it flickered off in the gap between a call
+///     finishing and the next round's first delta — *"running tool is no longer yellow the
+///     counter, wtf why it regressed."*
+///   · keyed on *the turn is running* for every marker, it lit the turn's settled history too —
+///     *"all tool call counters are yellow now."* A walk draws a marker for EVERY run in the
+///     transcript, so that question is not a property of a marker at all.
+///   · keyed on *the newest run*, it lit a row from the PREVIOUS turn while the current one had a
+///     call proposed and no result row yet — *"yes one old tool call is still yellow"*.
+///
+/// # What it is, and why a named predicate rather than an `and`
+///
+/// **The yellow is on the marker for the row that CARRIES the live work.** That is not a condition
+/// this function can test — only the caller knows which marker it is drawing — so it is the
+/// caller's answer encoded in [`Marker::live`], and this is the half that decides whether there is
+/// any work to speak of:
+///
+/// * **at least one call is proposed or running with no result row yet.** This is `live_work`'s
+///   own reading, which is the correct one (see [`App::turn_busy`]: the state name describes the
+///   GENERATION, and it reads `finished` for the whole of every command). Nothing else counts:
+///   a thought still streaming colours no count, because the thinking count is not the number that
+///   moves with the work.
+///
+/// A `bool` return, deliberately: the head and its tests must be able to ask the same question, and
+/// a truthy plist is a value two callers can disagree about while both are "not false".
+///
+/// **What it cannot close.** `TurnFinished` is emitted per ROUND, so between a call finishing and
+/// the next round's `TurnStarted` the answer is honestly *no* — the same millisecond window R51 §3
+/// records for the tense, and closing it needs the daemon to publish *the prompt is over* as its own
+/// fact. Neither head has that.
+fn marker_carries_live(live: LiveWork) -> bool {
+    live.calls > 0
 }
 
 /// **The marker: the two counts, and nothing else** — R37 AMENDED, final shape.
@@ -13384,118 +13614,39 @@ fn reserved_for_run(
 /// counts with no sentence are still the fact, and a marker that vanished would be the
 /// elision this document refuses.
 ///
-/// # The seam, which is the one thing here that is not a count
-///
-/// ` · ctrl-t opens it`, or ` · /verbosity` on a run that is not the newest. R37 AMENDED
-/// requires a marker that **opens**, and R40's rule is that a chord may only be named where
-/// it acts — so the newest run's marker names the chord and every other one names the verb
-/// that does reach it. It is a seam and not content, exactly as `… +8 lines · /t unfolds it`
-/// is on every other elided row in this file, and it is one string to delete if the operator
-/// rules that the sentence is better without it.
-/// **The marker, painted** — the counts and the seam in the faint register.
-///
-/// The operator: *"`ctrl-t opens it` and `/verbosity` must be gray, including the preceding
-/// dot."* They are right, and the reason is what the marker IS: the counts are a fact, and the
-/// seam is the head talking about its own keys — the same thing every other elided row says
-/// with `… +N lines · /t unfolds it`, in the same faint register. A seam drawn in the prose's
-/// own register reads as more of the sentence it sits in, which is the one thing it is not.
-///
-/// The dot lives inside the seam string rather than being painted beside it, so the separator
-/// cannot come out in one register and its own key in another.
-/// **The counts, as the marker's own content** — `[1 tool call]`, and nothing else.
-///
-/// Split from the seam because the two are drawn in different registers, and the ruling is
-/// leticl's: *"counts plain, seam faint."*
-fn marker_counts(calls: usize, think_lines: usize) -> String {
-    let plural =
-        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
-    let mut counts: Vec<String> = Vec::new();
-    if calls > 0 {
-        counts.push(plural(calls, "tool call", "tool calls"));
-    }
-    if think_lines > 0 {
-        counts.push(plural(think_lines, "thinking line", "thinking lines"));
-    }
-    format!("[{}]", counts.join(", "))
-}
 
-/// **The seam** — the note about the key that opens the run, dot included.
-///
-/// `· ` belongs to the seam rather than to the counts, because the two are painted
-/// differently and a separator in one register beside its own key in another is the one thing
-/// a split like this gets wrong.
-fn marker_seam(newest: bool) -> &'static str {
-    if newest {
-        " · ctrl-t opens it"
-    } else {
-        " · /verbosity"
-    }
-}
-
-/// The whole marker as one string, **for measuring** — the two halves painted as one run, so
-/// a caller asking *how wide is this* gets the width of what is drawn.
-fn marker_text(calls: usize, think_lines: usize, newest: bool) -> String {
-    format!(
-        "{}{}",
-        marker_counts(calls, think_lines),
-        marker_seam(newest)
-    )
-}
-
-/// **How the live pane knows what is in flight** — calls proposed or running with no result
-/// row yet, and reasoning streamed and not yet committed.
-///
-/// Recomputed every frame from the turn, which is the only place it exists: the daemon
-/// appends a round's results **after every call in it has run**, so between the narration and
-/// the first result the transcript is empty of the work and this is the whole of the evidence.
-fn live_work(turn: Option<&TurnPane>, cfg: &RenderConfig, superseded: bool) -> LiveWork {
-    let Some(t) = turn else {
-        return LiveWork::default();
-    };
-    if superseded {
-        return LiveWork::default();
-    }
-    let calls = t
-        .calls
-        .iter()
-        .filter(|c| !matches!(c.state, CallState::Finished { .. }))
-        .count();
-    let think_lines = if t.reasoning.is_empty() {
-        0
-    } else {
-        reasoning_display_lines(t.reasoning.raw(), cfg.width)
-    };
-    LiveWork { calls, think_lines }
-}
-
-/// **A marker, as the two halves that are painted differently.**
-///
 /// A struct rather than a `String` because the register is per half: passing the composed text
 /// around and splitting it at paint time would be a second definition of where the counts stop
 /// — and the counts are a string the head builds, so nothing may search them for a delimiter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Marker {
-    /// `[1 tool call]` — content, drawn plain.
-    counts: String,
+    /// `[1 tool call, 2 thinking lines]` — the content, drawn plain except for the calls count.
+    counts: Counts,
     /// ` · ctrl-t opens it` — an affordance, drawn faint. Dot included.
     seam: &'static str,
+    /// **Does this marker carry the work in flight** — [`marker_carries_live`], decided by the
+    /// caller because only the caller knows which row it is drawing.
+    live: bool,
 }
 
 impl Marker {
-    fn new(calls: usize, think_lines: usize, newest: bool) -> Marker {
+    fn new(calls: usize, think_lines: usize, newest: bool, live: bool) -> Marker {
         Marker {
-            counts: marker_counts(calls, think_lines),
+            counts: Counts::of(calls, think_lines),
             seam: marker_seam(newest),
+            live,
         }
     }
 
-    /// **Painted** — the counts PLAIN, the seam faint. See [`marker_painted`].
+    /// **Painted** — the counts plain (the calls count PENDING when this marker carries the live
+    /// work), the seam faint. See [`marker_painted`].
     fn painted(&self, cfg: &RenderConfig) -> String {
-        marker_painted(cfg, &self.counts, self.seam)
+        marker_painted(cfg, &self.counts, self.seam, self.live)
     }
 }
 
-/// **The marker, painted** — the counts PLAIN, the seam faint.
+/// **The marker, painted** — the counts PLAIN, the seam faint, and the calls count PENDING while
+/// the work is in flight.
 ///
 /// Ruled by the operator on the two heads' difference, and leticl's reading is the one that
 /// stands: *"counts plain, seam faint."* The counts are **punctuation inside a sentence** —
@@ -13508,11 +13659,28 @@ impl Marker {
 /// — an affordance, not the count — and it is the same register every other elided row says
 /// `… +N lines · /t unfolds it` in.
 ///
+/// **And the live edge, which is the ONE thing here that moves** (R51 item 7): with `live`, the
+/// calls count alone is painted [`Role::Pending`]. Not the brackets and not the thinking count —
+/// the operator's own correction, and the argument is in [`Counts`].
+///
 /// Takes the two halves already composed rather than re-splitting a string: a `]` searched for
 /// at paint time is a second definition of where the counts stop, and one marker whose counts
 /// carried a `]` would find the wrong one.
-fn marker_painted(cfg: &RenderConfig, counts: &str, seam: &str) -> String {
-    format!("{counts}{}", cfg.palette().paint(Role::Faint, seam))
+fn marker_painted(cfg: &RenderConfig, counts: &Counts, seam: &str, live: bool) -> String {
+    let p = cfg.palette();
+    let calls = match &counts.calls {
+        Some(c) if live => p.paint(Role::Pending, c),
+        Some(c) => c.clone(),
+        None => String::new(),
+    };
+    let mut body: Vec<&str> = Vec::new();
+    if !calls.is_empty() {
+        body.push(&calls);
+    }
+    if let Some(t) = &counts.think {
+        body.push(t);
+    }
+    format!("[{}]{}", body.join(", "), p.paint(Role::Faint, seam))
 }
 
 fn hidden_run_marker(
@@ -13549,11 +13717,19 @@ fn hidden_run_marker(
     // **And the work in flight, when this run is the one it belongs to.** A stretch that
     // reaches the end of the transcript is where the turn is, so the counts move as the round
     // runs — which is the operator's *"obviously be updated earlier, even for the empty card."*
+    //
+    // **This is also R51 item 8's *which marker* answer, and it falls out of the fact above:**
+    // the run that reaches the end of the transcript is the run carrying the live work, so it is
+    // the one whose calls count goes pending. Every other marker in the walk is settled history —
+    // a previous round, or a previous turn — and stays plain. The second of the three wrong cuts
+    // was exactly this question asked of the turn instead of the marker, which lit every run
+    // behind it.
+    let carries_live = end == items.len() && marker_carries_live(live);
     if end == items.len() {
         calls += live.calls;
         think_lines += live.think_lines;
     }
-    Marker::new(calls, think_lines, newest)
+    Marker::new(calls, think_lines, newest, carries_live)
 }
 
 /// The fold's own header, which is also where its key is advertised.
@@ -14154,6 +14330,30 @@ fn display_outcome(o: &letibot_transcript::ToolOutcome) -> card::Outcome {
             "in the background as `{handle}` after {:.1}s",
             *ran_for_ms as f64 / 1000.0
         )),
+    }
+}
+
+/// **The register a settled call's row is drawn in** — R51 item 9.
+///
+/// Through [`display_outcome`] and then the display crate's own [`card::Outcome::role`], so there
+/// is ONE outcome→register mapping in this tree and this row cannot disagree with the card the
+/// live call was drawn as.
+///
+/// **What it replaces.** The row asked its own question, `bad = !matches!(outcome, Ok)`, and drew
+/// every non-`ok` outcome in `Failure`. So a `backgrounded` call — a process still working, with a
+/// handle to reach it — was red, and read as something to retry, and a `denied` or `abstained` call
+/// read as a malfunction rather than as a decision. The operator, looking at the backgrounding
+/// message: *"why on earth backgrounding message is in red"*.
+///
+/// **One local decision layered on the mapping, and it is this head's own.** `ok` is drawn FAINT
+/// rather than `Success`: a green line under every command is a colour that says nothing, and the
+/// boring case is most of them. That is a decision about one row rather than about the mapping —
+/// leticl keeps it faint for the same reason — so it is applied here, on top, and never by
+/// rewriting the mapping.
+fn outcome_role(o: &letibot_transcript::ToolOutcome) -> Role {
+    match o {
+        letibot_transcript::ToolOutcome::Ok => Role::Faint,
+        other => display_outcome(other).role(),
     }
 }
 
@@ -15615,7 +15815,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             const BIG: usize = 40;
             let p = cfg.palette();
             let w = cfg.width.saturating_sub(ind).max(20);
-            let outcome_role = if bad { Role::Failure } else { Role::Faint };
+            let outcome_role = outcome_role(outcome);
             let size_role = if lines.len() >= BIG {
                 Role::Strong
             } else {
@@ -15646,7 +15846,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 &subject,
                 w.saturating_sub(visible_width(&lead) + tail_cols).max(8),
             );
-            let mut head = p.paint(if bad { Role::Failure } else { Role::Faint }, mark);
+            let mut head = p.paint(outcome_role, mark);
             head.push_str(&p.paint(Role::Faint, &format!(" {verb} ")));
             head.push_str(&p.paint(Role::Plain, &subject));
             head.push_str(&p.paint(outcome_role, &format!(" · {word}")));
@@ -30383,6 +30583,376 @@ mod tests {
     /// dot included. This test is where it is kept.
     #[test]
     fn the_counts_are_plain_and_the_seam_is_faint() {
+        the_counts_are_plain_and_the_seam_is_faint_body()
+    }
+
+    /// **Only the CALLS number goes yellow, and only on the marker that carries the live work** —
+    /// R51 items 7 and 8, the two halves of one colour.
+    ///
+    /// Two operator corrections are baked in here. The first: *"you should yellow only tool call
+    /// number, not the whole [] thing"* — so the thinking count and both brackets are asserted
+    /// PLAIN, not merely unasserted. The second: this colour has been wrong in three directions,
+    /// and the direction this test exists for is the third — a marker for a PREVIOUS turn's run
+    /// must not light up because the current turn has a call in flight.
+    #[test]
+    fn the_calls_count_goes_pending_and_nothing_else_in_the_marker_does() {
+        let mut a = app();
+        a.cfg.color = true;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // An earlier turn's settled work, hidden by the rung, with its own marker.
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "an earlier turn:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        for i in 0..2 {
+            let id = format!("s.{}", 1 + i);
+            a.apply(ServerFrame::Event(env(
+                3 + i * 2,
+                SessionEvent::TranscriptAppended {
+                    item_id: id.clone(),
+                    kind: "tool_result".into(),
+                    ledger_head: String::new(),
+                },
+            )));
+            a.apply(ServerFrame::Event(env(
+                4 + i * 2,
+                SessionEvent::TranscriptContent {
+                    item_id: id,
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: format!("old{i}"),
+                        name: "bash".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: "settled".into(),
+                        edit: None,
+                        origin: None,
+                    }),
+                },
+            )));
+        }
+        // The prose that ends that run, and then the CURRENT turn, whose work is in flight.
+        a.apply(ServerFrame::Event(env(
+            7,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.9".into(),
+                kind: "assistant".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            8,
+            SessionEvent::TranscriptContent {
+                item_id: "s.9".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "that was the easy part".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(9, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            10,
+            testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
+        )));
+        a.apply(ServerFrame::Event(env(11, testing::turn_finished("t1"))));
+        a.verbosity = Verbosity::Conversation;
+        a.invalidate_history();
+
+        // The premise: one call in flight, so the marker that carries it is the one to colour.
+        assert!(
+            marker_carries_live(a.live_work_now()),
+            "the premise: a call is in flight"
+        );
+        let screen = a.screen(120, 30).join("\n");
+        assert!(
+            screen.contains("\x1b[33m[1 tool call]\x1b[0m") || screen.contains("\x1b[33m1 tool call"),
+            "the live count is not pending: {screen:?}"
+        );
+        // **And the brackets are not.** The reversal of the operator's first cut, so a future
+        // decision to colour the whole thing fails here rather than passing on a substring.
+        assert!(
+            !screen.contains("\x1b[33m["),
+            "the bracket went yellow with the number: {screen:?}"
+        );
+        // **The earlier turn's marker is plain**, which is the third wrong direction: it is a
+        // marker in the same walk, and it must not be lit by work that is not its own.
+        let earlier = screen
+            .lines()
+            .find(|l| l.contains("[2 tool calls]"))
+            .expect("the earlier turn's marker is on the screen");
+        assert!(
+            !earlier.contains("\x1b[33m"),
+            "a settled marker went yellow while new work was in flight: {earlier:?}"
+        );
+    }
+
+    /// **A marker whose work is a THOUGHT alone colours nothing** — the other half of item 7.
+    ///
+    /// The styled thing is the CALLS count, so a marker carrying only thinking lines has nothing to
+    /// colour even while the model is plainly working. This is the case that would tempt a reader to
+    /// colour the brackets or the whole marker, and the operator ruled against both.
+    #[test]
+    fn a_marker_of_thinking_alone_goes_pending_nowhere() {
+        let mut a = app();
+        a.cfg.color = true;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::Delta {
+                turn_id: "t1".into(),
+                target: letibot_sessionlog::event::DeltaTarget::Reasoning,
+                text: "working it out".into(),
+            },
+        )));
+        assert!(
+            a.live_work_now().think_lines > 0,
+            "the premise: there is thinking to count"
+        );
+        assert!(
+            !marker_carries_live(a.live_work_now()),
+            "a thought is not a call, so there is no number to colour"
+        );
+    }
+
+    /// **The jobs count is on the composer's top edge, pluralised, and absent at zero** —
+    /// R51 item 5, plus the half of it this head has and the brief does not.
+    ///
+    /// The other head put it on the status row; here the status row was just given to the turn
+    /// (item 1), and this edge already carries `N subagents running`. Both are facts that stop being
+    /// drawn when they stop being true, which is what earns a resident edge.
+    ///
+    /// **The `to a file` clause is the operator's own point, and it is not in leticl's brief:** a
+    /// job whose output is redirected (R41) has a window that will be empty however long it runs, so
+    /// *"1 job running"* is a truthful count that answers the wrong question. The distinction
+    /// travels on the wire (`JobEntry::redirect`) because the daemon reads it out of the command.
+    #[test]
+    fn the_top_edge_counts_running_jobs_and_says_which_cannot_be_watched() {
+        let mut a = app();
+        // Attached, because a `Jobs` frame for another session is dropped — the answer is about the
+        // session this head is in, and the guard is what stops a switch showing the old session's.
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        let jobs = |cs: Vec<letibot_sessionlog::protocol::JobEntry>| ServerFrame::Jobs {
+            session_id: "s".into(),
+            jobs: cs,
+        };
+        let job = |id: &str, running: bool, redirect: Option<&str>| {
+            letibot_sessionlog::protocol::JobEntry {
+                id: id.into(),
+                command: "cargo build".into(),
+                how: "asked".into(),
+                state: if running { "running".into() } else { "exited 0".into() },
+                running,
+                never_ran: false,
+                redirect: redirect.map(str::to_string),
+                produced: 0,
+                elapsed_ms: 10,
+            }
+        };
+        // Zero jobs is no line at all — a count that is always there is furniture.
+        a.apply(jobs(vec![job("j1", false, None)]));
+        assert_eq!(a.jobs_line(), None, "a settled job is not a running one");
+        // One job, pluralised and singular, and the redirect clause only when it applies.
+        a.apply(jobs(vec![job("j1", true, None)]));
+        assert_eq!(a.jobs_line().as_deref(), Some("1 job running"));
+        a.apply(jobs(vec![job("j1", true, None), job("j2", true, None)]));
+        assert_eq!(a.jobs_line().as_deref(), Some("2 jobs running"));
+        a.apply(jobs(vec![
+            job("j1", true, Some("/tmp/build.log")),
+            job("j2", true, None),
+        ]));
+        assert_eq!(
+            a.jobs_line().as_deref(),
+            Some("2 jobs running · 1 to a file"),
+            "the unwatchable one is named before the reader opens the pane"
+        );
+        // A redirected job that has SETTLED is not counted: the row is about what is running now.
+        a.apply(jobs(vec![
+            job("j1", true, None),
+            job("j2", false, Some("/tmp/build.log")),
+        ]));
+        assert_eq!(a.jobs_line().as_deref(), Some("1 job running"));
+        // **And it is pinned to the top edge, beside the subagent count.** The screen is where the
+        // placement is actually decided, so this is asserted on the frame rather than on the string.
+        let screen = a.screen(100, 24).join("\n");
+        let top = screen
+            .lines()
+            .find(|l| l.contains('╭'))
+            .expect("the composer's top edge is drawn");
+        assert!(
+            top.contains("1 job running"),
+            "the count is not on the top edge: {top:?}"
+        );
+    }
+
+    /// **The count is ASKED for when the daemon's table can have changed** — R51 item 5's second
+    /// half, and the half that makes the row a readout rather than a souvenir.
+    ///
+    /// There is no `JobStarted` on the wire, so a count folded from events would be a guess. The
+    /// three moments are the two that say a job started or ended, and the turn boundary, which is
+    /// the only chance a job that was already running at attach ever gets.
+    #[test]
+    fn a_job_starting_ending_or_a_turn_ending_re_reads_the_count() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // **Drained, and the assertion below depends on it.** An attach asks for the table too (a
+        // job already running when this head joined is announced by no event at all), so a
+        // leftover `ListJobs` here would make the next assertion pass for the wrong reason.
+        assert!(
+            a.take_actions().contains(&Action::ListJobs),
+            "the attach re-read the count"
+        );
+        assert!(a.take_actions().is_empty(), "nothing else is owed");
+        // 1. A backgrounded call is the job STARTING.
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::ToolFinished {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                outcome: letibot_transcript::ToolOutcome::Backgrounded {
+                    handle: "j1".into(),
+                    ran_for_ms: 100,
+                    how: letibot_transcript::Backgrounding::Asked,
+                    next: "read it".into(),
+                },
+                payload_digest: "d".into(),
+                inline_bytes: 1,
+                full_bytes: 1,
+                spill: None,
+                repairs: 0,
+                edit: None,
+            },
+        )));
+        assert!(
+            a.take_actions().contains(&Action::ListJobs),
+            "a job started and the count was not re-read"
+        );
+        // An ordinary `ok` finish starts nothing, so it asks for nothing.
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::ToolFinished {
+                turn_id: "t1".into(),
+                call_id: "c2".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload_digest: "d".into(),
+                inline_bytes: 1,
+                full_bytes: 1,
+                spill: None,
+                repairs: 0,
+                edit: None,
+            },
+        )));
+        assert!(
+            !a.take_actions().contains(&Action::ListJobs),
+            "a call that started nothing re-read the count"
+        );
+        // 2. A settlement ends one.
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::JobSettled {
+                job: "j1".into(),
+                state: "exited 0".into(),
+                produced: 1,
+                elapsed_ms: 2,
+            },
+        )));
+        assert!(
+            a.take_actions().contains(&Action::ListJobs),
+            "a job ended and the count was not re-read"
+        );
+        // 3. The turn's end, which is the only chance a job running at attach ever gets.
+        a.apply(ServerFrame::Event(env(5, testing::turn_finished("t1"))));
+        assert!(
+            a.take_actions().contains(&Action::ListJobs),
+            "the turn ended and the count was not re-read"
+        );
+    }
+
+    /// **A settled row takes its register from the ONE outcome mapping** — R51 item 9.
+    ///
+    /// The operator, looking at a command the harness had just backgrounded: *"why on earth
+    /// backgrounding message is in red"*. The row asked `bad = !matches!(outcome, Ok)` and drew
+    /// every non-`ok` outcome in `Failure`, so a job still working read as something to retry and a
+    /// refusal read as a malfunction. This asks the mapping for each outcome, and only `ok` is
+    /// overruled — faint, because a green line under every command says nothing.
+    #[test]
+    fn a_settled_rows_register_comes_from_the_outcome_not_from_a_not_ok_test() {
+        use letibot_transcript::ToolOutcome as O;
+        // The three the operator named: none of them is a failure.
+        for waiting in [
+            O::Backgrounded {
+                handle: "j1".into(),
+                ran_for_ms: 1,
+                how: letibot_transcript::Backgrounding::Asked,
+                next: "read it".into(),
+            },
+            O::Denied {
+                req_id: "d1".into(),
+            },
+            O::Abstained {
+                reason: "nothing to do".into(),
+            },
+        ] {
+            assert_eq!(
+                outcome_role(&waiting),
+                Role::Attention,
+                "{waiting:?} is something to look at, not something that failed"
+            );
+        }
+        // A real failure is still loud, and `ok` is the quiet case this head chose.
+        assert_eq!(
+            outcome_role(&O::Failed {
+                reason: "boom".into()
+            }),
+            Role::Failure
+        );
+        assert_eq!(outcome_role(&O::Ok), Role::Faint);
+        // A `not run` is the mapping's own answer, whatever it is — the point is that it comes
+        // from there rather than from a second spelling here.
+        assert_eq!(
+            outcome_role(&O::NotRun {
+                why: "the scope closed".into()
+            }),
+            display_outcome(&O::NotRun {
+                why: "the scope closed".into()
+            })
+            .role()
+        );
+    }
+
+    fn the_counts_are_plain_and_the_seam_is_faint_body() {
         let mut a = app();
         a.cfg.color = true;
         a.apply(hello(
@@ -32267,6 +32837,7 @@ mod tests {
             },
             running,
             never_ran: false,
+            redirect: None,
             produced: 155,
             elapsed_ms: 14_600,
         }

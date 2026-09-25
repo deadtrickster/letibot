@@ -627,6 +627,22 @@ pub struct JobEntry {
     /// nothing, and "assume a process ran" renders exactly what those daemons rendered.
     #[serde(default)]
     pub never_ran: bool,
+    /// **Where this job's output goes, when it does not go to its window** — R41's fact, on the
+    /// row instead of in a payload.
+    ///
+    /// The daemon reads it out of the command text (`output_redirect_path`), so nothing has to run
+    /// to know it: `cargo build > /tmp/log 2>&1` writes a great deal and none of it here. A reader
+    /// who opens the job pane to watch such a job is looking at a window that will be empty
+    /// however long it runs — which is why the status row says so before they open anything.
+    ///
+    /// `None` for the ordinary job, and for `2>&1` (which MERGES into stdout and is what makes a
+    /// capture complete), for `<` and here-documents (stdin), and for a path built at run time —
+    /// the same refusals `output_redirect_path` itself documents.
+    ///
+    /// Defaulted and no `PROTOCOL_VERSION` bump, like every other added field: an older daemon
+    /// said nothing, and "assume it is watchable" renders exactly what those daemons rendered.
+    #[serde(default)]
+    pub redirect: Option<String>,
     pub produced: u64,
     pub elapsed_ms: u64,
 }

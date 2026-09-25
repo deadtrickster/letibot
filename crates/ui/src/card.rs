@@ -182,7 +182,20 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    fn role(&self) -> Role {
+    /// **The register this outcome is drawn in** — the one mapping, and the reason it is public.
+    ///
+    /// A head's settled row needs the same answer this card's own header gets, and the defect
+    /// that made this `pub` is a head asking the question a second time with a coarser test:
+    /// `let bad = !matches!(outcome, Ok)` puts `backgrounded`, `denied` and `abstained` all in
+    /// `Failure`. The operator, looking at a command the harness had just backgrounded: *"why on
+    /// earth backgrounding message is in red"*. Two spellings of one mapping — and `bceef58` in
+    /// the other head is the same fix, with the same comment warning that *"it used to be spelled
+    /// again here, and the two spellings disagreed about `not_run` and about backgrounded"*.
+    ///
+    /// A head may still overrule it for its own surface (leticl and letibot both draw `ok` faint
+    /// rather than green, which is a decision about one row rather than about this mapping) — but
+    /// it starts from here rather than from a test of its own.
+    pub fn role(&self) -> Role {
         match self {
             Outcome::Ok => Role::Success,
             Outcome::Abstained(_) => Role::Attention,

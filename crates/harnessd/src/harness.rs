@@ -3815,6 +3815,11 @@ impl<'a> Harness<'a> {
                 state: j.state.word(),
                 running: j.state.is_running(),
                 never_ran: j.state.never_ran(),
+                // **Read out of the COMMAND, not out of what has been captured** (R41). Nothing
+                // has to run to know it, and the answer does not change while the job does — so a
+                // reader learns which of their running jobs cannot be watched before they open
+                // the pane, rather than by finding an empty window and guessing why.
+                redirect: letibot_tools::builtins::output_redirect_path(&j.command),
                 produced: j.produced,
                 elapsed_ms: j
                     .ran_for
