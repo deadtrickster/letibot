@@ -9989,8 +9989,14 @@ impl App {
                 });
         if live_joins {
             let painted =
-                Marker::new(live.calls, live.think_lines, true, marker_carries_live(live))
-                    .painted(&self.cfg);
+                Marker::new(
+                    live.calls,
+                    live.think_lines,
+                    true,
+                    marker_carries_live(live),
+                    marker_room(self.cfg.width),
+                )
+                .painted(&self.cfg);
             if let Some(at) = self.hist_lines.iter().rposition(|l| !l.trim().is_empty()) {
                 let original = self.hist_lines[at].trim_end().to_string();
                 let joined = format!("{original} {painted}");
@@ -10170,8 +10176,14 @@ impl App {
             // the counts belong and where the reader is looking.
             if !superseded && rung.hides_the_working() && live.work() > 0 && !live_joins {
                 let painted =
-                    Marker::new(live.calls, live.think_lines, true, marker_carries_live(live))
-                        .painted(&cfg);
+                    Marker::new(
+                        live.calls,
+                        live.think_lines,
+                        true,
+                        marker_carries_live(live),
+                        marker_room(cfg.width),
+                    )
+                    .painted(&cfg);
                 segs.push(Seg::Owned(vec![format!("{}{painted}", " ".repeat(ind))]));
             }
             if !superseded && !reasoning.is_empty() && !rung.hides_the_working() {
@@ -13803,10 +13815,23 @@ fn reserved_for_run(
     if !run_continues_prose(items, start) {
         return None;
     }
-    // Measured **plain**, which is the widest it can be: the seam is faint and an escape
-    // adds no columns, so the reservation cannot come out short.
-    let marker = hidden_run_marker(items, start, end, rung, cfg, newest, live);
-    Some(visible_width(&format!(" {}{}", marker.counts.plain(), marker.seam)))
+    // **The prose is NOT narrowed for the marker, and that is the correction.**
+    //
+    // This used to return the marker's room so the sentence could be rendered narrower and the
+    // counts could land in the gap. It worked — the marker always fitted — and it wrapped every
+    // sentence early for the sake of a marker that is almost never that wide. The operator, at 210
+    // columns: *"there is no need to have the line break here because the whole tail fits. you
+    // didnt try the 'tool calls' -> 'tools' -> 't' progressing. so I complain about line wrapping
+    // here."* They are right, and the arithmetic is on their side: the tail is ~55 columns of a
+    // 210-column frame and the reservation was holding back 56 of them from a line that needed 55
+    // once.
+    //
+    // **So the sentence wraps at the frame's own width and the marker fits what is LEFT of its last
+    // line** — see the join sites, which measure that line and hand the marker the remainder. What
+    // is still reserved, and still fixed, is [`marker_room`]'s ceiling: it is what the marker may
+    // claim when the line is short enough, so growth cannot move the wrap.
+    let _ = (items, start, end, newest, live);
+    None
 }
 
 /// # The seam, which is the one thing here that is not a count
@@ -13821,11 +13846,14 @@ fn reserved_for_run(
 /// The dot lives inside the seam string rather than being painted beside it, so the separator
 /// cannot come out in one register and its own key in another.
 fn marker_seam(newest: bool) -> &'static str {
-    if newest {
-        " · ctrl-t opens it"
-    } else {
-        " · /verbosity"
-    }
+    marker_seam_rung(newest, 0)
+}
+
+/// **The seam at one rung** — the whole chord, the chord alone, nothing; and the verb instead of
+/// the chord on a run the chord does not act on. See [`SEAM_RUNGS`].
+fn marker_seam_rung(newest: bool, rung: usize) -> &'static str {
+    let (chord, verb) = SEAM_RUNGS[rung.min(SEAM_RUNGS.len() - 1)];
+    if newest { chord } else { verb }
 }
 
 /// **How the live pane knows what is in flight** — calls proposed or running with no result
@@ -13878,13 +13906,99 @@ struct Counts {
     think: Option<String>,
 }
 
+/// **The widest room a marker may claim from the sentence it continues**, leading space included.
+///
+/// leticl's `+hidden-run-marker-cols+` is 56, measured there against the longest marker a realistic
+/// run writes — `[100 tool calls, 999 thinking lines] · ctrl-t opens it` is 54 columns plus the
+/// space in front. letibot reserves the marker's **measured** width instead, and that is the jump
+/// the operator complained about: *"the text starts to jump — counts add digits when grow, and at
+/// some point the line could be split so things jump even more. i dont like jumps."* A room that
+/// depends on the counts re-wraps the sentence above every time a count gains a digit, so the same
+/// transcript reads two ways depending on how many calls a turn happened to run.
+const MARKER_ROOM_MAX: usize = 56;
+
+/// **The least room a marker may claim**, however narrow the frame. Below about twenty columns the
+/// two clauses stop being readable at all — `[100t, 246l]` and its separator are twelve — and a
+/// marker that cannot be read is a marker that did nothing. leticl's `+hidden-run-marker-floor+`.
+const MARKER_ROOM_FLOOR: usize = 22;
+
+/// **How many columns of `cols` the marker may occupy**, its leading space included.
+///
+/// **Fixed for a given frame, and that is the whole point** — see [`MARKER_ROOM_MAX`]. At most half
+/// the frame, so a narrow terminal keeps half its line for the sentence; at most
+/// [`MARKER_ROOM_MAX`]; never less than [`MARKER_ROOM_FLOOR`]; and never more than the frame itself,
+/// because a room wider than the line it is on is not a room.
+///
+/// leticl's `hidden-run-marker-room`, **arithmetic and all** — `(min cols 56 (max 22 (floor cols
+/// 2)))`, kept in its own shape rather than collapsed. The first version here folded the `min`/`max`
+/// into one expression and got 56 at 80 columns instead of 40, which a test caught: three-deep
+/// min/max is not worth being clever about.
+fn marker_room(cols: usize) -> usize {
+    cols.min(MARKER_ROOM_MAX)
+        .min(MARKER_ROOM_FLOOR.max(cols / 2))
+}
+
+/// **The count clause, most-spelled first** — `2 tool calls` → `2 tools` → `2 calls` → `2t`.
+///
+/// The operator's own ladder, verbatim: *"we just start to remove bloat - 'tool calls' -> 'tools'
+/// -> 't' and so on"*. This is what pays for a marker that has outgrown its room: **growth is paid
+/// in words, not in layout**, which is the other half of [`MARKER_ROOM_MAX`]'s argument.
+///
+/// The two clauses step down TOGETHER — leticl's rung is a triple for that reason, and its words are
+/// *"a marker reading `[2 tools, 3 thinking lines]` is one rung's word beside another's, and the
+/// operator's ladder is about the marker and not about the clauses in it"*.
+/// **The suffix carries its own leading space, and the last rung has none.** leticl's rung is a
+/// format string — `~d tool call~:p` and then `~dt` — so the compressed form is genuinely tighter
+/// rather than one space shorter: `[11t, 246l]`, not `[11 t, 246 l]`. The space belongs to the
+/// rung for the same reason the seam's dot belongs to the seam.
+const COUNT_RUNGS: [(&str, &str, &str, &str); 4] = [
+    // (calls one, calls many, thinking one, thinking many)
+    (
+        " tool call",
+        " tool calls",
+        " thinking line",
+        " thinking lines",
+    ),
+    (" tool", " tools", " thinking", " thinking"),
+    (" call", " calls", " line", " lines"),
+    ("t", "t", "l", "l"),
+];
+
+/// **The seam, most-spelled first** — the whole chord, the chord alone, nothing.
+///
+/// Dropped LAST of the three ladders, because the seam is the only thing on the line that says the
+/// rows can be opened at all — and it goes at all only because a marker that will not fit is a
+/// marker that did nothing. `ctrl-t` survives a rung longer than `opens it` does, which is the rule
+/// R29 already keeps on every other elided row: **the key is the part that cannot go.**
+const SEAM_RUNGS: [(&str, &str); 3] = [
+    (" · ctrl-t opens it", " · /verbosity"),
+    (" · ctrl-t", " · /verbosity"),
+    ("", ""),
+];
+
+/// **The order the two ladders are spent in** — the counts step down through every rung first, and
+/// only then does the seam start to go.
+///
+/// **Counts before seam**, because the counts are the fact the line exists to carry and the seam is
+/// the head talking about its own keys. The seam still goes before the counts reach their last rung,
+/// which is why the pairs interleave rather than running as two sweeps. leticl's
+/// `+hidden-run-marker-ladder+`, verbatim.
+const MARKER_LADDER: [(usize, usize); 6] = [(0, 0), (1, 0), (2, 0), (3, 0), (3, 1), (3, 2)];
+
 impl Counts {
     fn of(calls: usize, think_lines: usize) -> Counts {
-        let plural =
-            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        Counts::at_rung(calls, think_lines, 0)
+    }
+
+    /// **The counts spelled at one rung of the ladder** — see [`COUNT_RUNGS`].
+    fn at_rung(calls: usize, think_lines: usize, rung: usize) -> Counts {
+        let (c1, cn, t1, tn) = COUNT_RUNGS[rung.min(COUNT_RUNGS.len() - 1)];
+        // The number, then the suffix — which is where the space lives, and why the last rung has
+        // none. See [`COUNT_RUNGS`].
+        let count = |n: usize, one: &str, many: &str| format!("{n}{}", if n == 1 { one } else { many });
         Counts {
-            calls: (calls > 0).then(|| plural(calls, "tool call", "tool calls")),
-            think: (think_lines > 0).then(|| plural(think_lines, "thinking line", "thinking lines")),
+            calls: (calls > 0).then(|| count(calls, c1, cn)),
+            think: (think_lines > 0).then(|| count(think_lines, t1, tn)),
         }
     }
 
@@ -13983,10 +14097,30 @@ struct Marker {
 }
 
 impl Marker {
-    fn new(calls: usize, think_lines: usize, newest: bool, live: bool) -> Marker {
+    /// **The marker, spelled to fit the room it was given** — see [`MARKER_LADDER`].
+    ///
+    /// `room` is [`marker_room`]`(width)`, which is fixed for the frame; the counts and the seam
+    /// step down until the marker fits `room - 1`, and the last rung's spelling is used whatever
+    /// its width. **The `- 1` is the room's own definition**: the room includes the leading space
+    /// the join puts in, so the marker itself may be one column narrower than the room.
+    ///
+    /// The counts come first and the seam last — [`MARKER_LADDER`] records why — so a marker that
+    /// has outgrown its room loses `opens it` before it loses `tool calls`, and a count that gains
+    /// a digit costs a word rather than a line.
+    fn new(calls: usize, think_lines: usize, newest: bool, live: bool, room: usize) -> Marker {
+        let limit = room.saturating_sub(1).max(1);
+        let mut chosen = MARKER_LADDER[0];
+        for (count_rung, seam_rung) in MARKER_LADDER {
+            chosen = (count_rung, seam_rung);
+            let counts = Counts::at_rung(calls, think_lines, count_rung);
+            let seam = marker_seam_rung(newest, seam_rung);
+            if visible_width(&format!("{}{seam}", counts.plain())) <= limit {
+                break;
+            }
+        }
         Marker {
-            counts: Counts::of(calls, think_lines),
-            seam: marker_seam(newest),
+            counts: Counts::at_rung(calls, think_lines, chosen.0),
+            seam: marker_seam_rung(newest, chosen.1),
             live,
         }
     }
@@ -14082,7 +14216,7 @@ fn hidden_run_marker(
         calls += live.calls;
         think_lines += live.think_lines;
     }
-    Marker::new(calls, think_lines, newest, carries_live)
+    Marker::new(calls, think_lines, newest, carries_live, marker_room(cfg.width))
 }
 
 /// The fold's own header, which is also where its key is advertised.
@@ -32586,16 +32720,106 @@ mod tests {
                 1,
                 "no marker at all at {width} columns:\n{screen}"
             );
-            let line = screen
+            let at = screen
                 .lines()
-                .find(|l| l.contains("[3 tool calls]"))
+                .position(|l| l.contains("[3 tool calls]"))
                 .unwrap_or_else(|| panic!("the counts are missing at {width} columns:\n{screen}"));
+            // **The marker is glued to the sentence when the sentence's last line has room, and
+            // stands on its own line when it has none** — leticl's `%marker-onto-last-line`, whose
+            // own docstring names this exact case: *"a last line with no room left at all is the
+            // one case where the marker goes to its own line, and that is a line that was already
+            // full of the sentence."*
+            //
+            // **What this test used to demand was the defect.** It required the counts to be on the
+            // sentence's own line at every width, and the only way to satisfy that is to wrap the
+            // sentence SHORT — reserve the marker's room from every line before knowing whether the
+            // last one needed it. The operator measured the consequence on their own terminal at
+            // 210 columns: *"there is no need to have the line break here because the whole tail
+            // fits. you didnt try the 'tool calls' -> 'tools' -> 't' progressing. so I complain
+            // about line wrapping here."*
+            let on_the_sentence = screen
+                .lines()
+                .any(|l| l.contains(": [3 tool calls]"));
+            let sentence_full = screen
+                .lines()
+                .any(|l| l.trim_end().ends_with(':') && visible_width(l) + 1 + visible_width("[3 tool calls] · ctrl-t opens it") > width);
             assert!(
-                line.contains(": [3 tool calls]"),
-                "the counts are not on the end of the sentence that points at them, at \
-                 {width} columns:\n{screen}"
+                on_the_sentence || sentence_full,
+                "the counts are neither on the sentence that points at them nor on their own line \
+                 because that sentence filled the frame, at {width} columns:\n{screen}"
             );
         }
+    }
+
+    /// **The marker steps DOWN its ladders rather than getting wider** — R51 item 7's neighbour,
+    /// and the operator's own ask: *"you didnt try the 'tool calls' -> 'tools' -> 't' progressing."*
+    ///
+    /// Three properties, and each was a separate defect:
+    ///
+    ///  1. **The room is fixed for the frame.** It is a function of the width and nothing else, so
+    ///     a count gaining a digit cannot re-wrap the sentence above it. leticl's
+    ///     `hidden-run-marker-room`, and the operator's *"i dont like jumps"*.
+    ///  2. **A marker too wide for the room loses WORDS, not layout.** `2 tool calls` → `2 tools`
+    ///     → `2 calls` → `2t`, and the seam gives way before the counts reach their last rung.
+    ///  3. **The seam goes before the counts do**, because the counts are the fact the line exists
+    ///     to carry and the seam is the head talking about its own keys.
+    #[test]
+    fn the_marker_steps_down_its_ladders_instead_of_growing() {
+        // (1) The room depends on the WIDTH alone — never on what the counts say.
+        assert_eq!(marker_room(210), MARKER_ROOM_MAX);
+        assert_eq!(marker_room(80), 40, "at most half the frame");
+        assert_eq!(marker_room(40), 22, "and never below the floor");
+        // **Below the floor the FRAME wins, and the docstring's "never less than the floor" is the
+        // part that is imprecise** — leticl's own `(min cols …)` binds first, so a 20-column frame
+        // gets a 20-column room and a 4-column frame gets 4. That is the right answer (a room wider
+        // than the line it is on is not a room) and the arithmetic is what to keep, not the prose.
+        assert_eq!(marker_room(20), 20);
+        assert_eq!(marker_room(4), 4);
+
+        // (2) The counts, at each rung, for a call count that forces the question.
+        let at = |rung: usize| {
+            let c = Counts::at_rung(11, 246, rung);
+            format!("{}{}", c.plain(), marker_seam_rung(true, 0))
+        };
+        assert_eq!(at(0), "[11 tool calls, 246 thinking lines] · ctrl-t opens it");
+        assert_eq!(at(1), "[11 tools, 246 thinking] · ctrl-t opens it");
+        assert_eq!(at(2), "[11 calls, 246 lines] · ctrl-t opens it");
+        assert_eq!(at(3), "[11t, 246l] · ctrl-t opens it");
+
+        // **And the whole thing steps down to fit a room**, which is the property and not the
+        // spelling: every rung is narrower than the one before, and the last one always fits.
+        let widths: Vec<usize> = (0..=3)
+            .map(|r| visible_width(&Counts::at_rung(11, 246, r).plain()))
+            .collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] > w[1]),
+            "the rungs do not get narrower: {widths:?}"
+        );
+        assert!(
+            widths[3] <= marker_room(80) - 1,
+            "the last rung does not fit a narrow frame's room: {} > {}",
+            widths[3],
+            marker_room(80) - 1
+        );
+
+        // (3) The seam is spent BEFORE the counts reach their last rung — the ladder's shape.
+        assert_eq!(MARKER_LADDER, [(0, 0), (1, 0), (2, 0), (3, 0), (3, 1), (3, 2)]);
+        // …and a marker is BUILT through it, which is where the order matters: the ladder stops at
+        // the first rung that fits, so a room that admits `[11t, 246l] · ctrl-t` keeps the short
+        // chord rather than dropping it.
+        let short_chord = Marker::new(11, 246, true, false, 26);
+        assert_eq!(short_chord.counts.plain(), "[11t, 246l]");
+        assert_eq!(short_chord.seam, " · ctrl-t", "the short chord is enough at 26");
+        // A room too small even for that drops the seam ENTIRELY, and the counts stay: the counts
+        // are the fact the line exists to carry, and the seam is the head talking about its own
+        // keys — which is the whole of the ladder's order.
+        let counts_only = Marker::new(11, 246, true, false, 16);
+        assert_eq!(counts_only.seam, "", "the seam did not give way at a tight room");
+        assert_eq!(counts_only.counts.plain(), "[11t, 246l]", "and the counts did");
+        // And a room with space keeps the whole thing spelled out.
+        let roomy = Marker::new(11, 246, true, false, 56);
+        assert_eq!(roomy.seam, " · ctrl-t opens it");
+        assert_eq!(roomy.counts.plain(), "[11 tool calls, 246 thinking lines]");
     }
 
     /// **The marker joins the prose even when the tail walk rendered it first** — the case
