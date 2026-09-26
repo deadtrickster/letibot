@@ -31882,6 +31882,72 @@ mod tests {
     ///
     /// The state below is the sampled one: a round whose call has finished with its result row
     /// landed (so the walk has a run to count), and thinking streaming with no call outstanding.
+    /// **The marker is drawn ONCE per line, however many frames draw it.**
+    ///
+    /// The operator's screen, twice: `…half-fixed: [1 tool call] · ctrl-t opens it [1 tool call] ·
+    /// ctrl-t opens it` — the SAME marker twice on one line, which is the append problem again in
+    /// the other join.
+    ///
+    /// There are two places a marker is glued to a line, and only one of them was made undoable:
+    ///
+    ///   · the end-of-walk join (`App::live_join`) — recorded, restored next frame;
+    ///   · **the in-walk join, at a run's first row** — which appends to `hist_lines[at]` with no
+    ///     record at all, and `hist_lines` is the cache of RENDERED rows.
+    ///
+    /// So a frame that re-walks the run's row glues a second marker onto the line the first one is
+    /// already in. This renders the same state twice, which is the smallest thing that can catch it.
+    #[test]
+    fn a_marker_is_glued_to_a_line_once_however_many_frames_draw_it() {
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.verbosity = Verbosity::Conversation;
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(2, testing::appended("s.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(3, SessionEvent::TranscriptContent {
+            item_id: "s.0".into(),
+            item: Box::new(TranscriptItem::Assistant {
+                text: "Running the tests:".into(),
+                tool_calls: Vec::new(), truncated: false,
+            }),
+        })));
+        a.apply(ServerFrame::Event(env(4, testing::proposed_on("t1", "c1", "bash", "\"cargo test\""))));
+        // **CONSECUTIVE CALLS, which is the shape the operator named** — *"sometimes on consequtive
+        // tool calls and things"*. Each round: a call finishes with its result row, and the next is
+        // proposed, so between two renders the run grows and the marker's text changes.
+        for n in 0..4u64 {
+            let seq = 10 + n * 8;
+            a.apply(ServerFrame::Event(env(seq, SessionEvent::ToolFinished {
+                turn_id: "t1".into(),
+                call_id: format!("c{n}"),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload_digest: "d".into(), inline_bytes: 1, full_bytes: 1,
+                spill: None, repairs: 0, edit: None,
+            })));
+            let rid = format!("s.{}", 10 + n);
+            a.apply(ServerFrame::Event(env(seq + 1, testing::appended(&rid, "tool_result"))));
+            a.apply(ServerFrame::Event(env(seq + 2, SessionEvent::TranscriptContent {
+                item_id: rid,
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: format!("c{n}"), name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: format!("result {n}"), edit: None, origin: None,
+                }),
+            })));
+            // …and the next call is proposed, which is the live work of the next round.
+            a.apply(ServerFrame::Event(env(seq + 3, testing::proposed_on(
+                "t1", &format!("c{}", n + 1), "bash", "\"cargo test\"",
+            ))));
+            let screen = a.screen(100, 30).join("\n");
+            assert_eq!(
+                screen.matches("ctrl-t opens it").count(),
+                1,
+                "render {} drew the marker {} times:\n{screen}",
+                n + 1,
+                screen.matches("ctrl-t opens it").count()
+            );
+        }
+    }
+
     #[test]
     #[ignore = "REPRODUCES A LIVE DEFECT — the fix needs the live-edge rule, see the note below"]
     fn the_work_in_flight_is_counted_by_one_marker_not_two() {
