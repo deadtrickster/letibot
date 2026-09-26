@@ -1,0 +1,63 @@
+  when i send a message mid  ~/Projects/letibot                                                                1/87 · deepseek/deepseek-flash · $0.0633 · 797.2k ctx · 100% cached · 139 tok/s · 8.6s · 1201 out
+
+  [7 tool calls] · /verbosity
+
+  Restart confirmed — the running head is byte-identical to the binary built from cd111d7.
+
+         │ pid    │ started  │ md5
+  ───────┼────────┼──────────┼────────────────────────────────────────────────
+  head   │ 782485 │ 18:55:57 │ 6c3cb3a3… ✓
+  daemon │ 782513 │ 18:55:57 │ f3a97f9f… (unchanged — not rebuilt, not needed)
+
+  Both /proc/<pid>/exe hashes match the on-disk files, and cargo build says nothing to do. So the marker ladders are live now.
+
+  ## What to look for
+
+  · The counts step down instead of the line jumping. As a run grows you should see the words compress — 2 tool calls → 2 tools → 2 calls → 2t — and the sentence above them should not re-wrap when a count
+    gains a digit.
+  · The seam gives way before the counts:  · ctrl-t opens it →  · ctrl-t → nothing, and only when the room is genuinely exhausted.
+  · The sentence now wraps at the full frame width. At your 210 columns a line like …and the part that matters is here: should run out to the edge rather than breaking 56 columns early. When that line is
+    full, the counts move to their own line — that is leticl's own rule, not a failure.
+
+  ## Two things still open, and I am not going to guess at either
+
+  1. The stuck yellow. My hypothesis — and it is only that — is an interrupted turn leaving a call Running forever, which keeps the marker yellow for the session. leticl's distinction is exact and letibot
+  does not make it: the yellow keys on :running (is a call still executing), while the number counts calls with no result row yet. Two different facts. If your stuck one is a call that finished whose row
+  never landed, that is precisely the conflation.
+
+  What would settle it: when you next see one stuck, tell me whether the turn had been interrupted or failed, and whether the count was still rising. Or run /status and tell me whether the marker was on a
+  settled turn — if the yellow is on an old marker of a finished turn, that is the "all tool call counters are yellow now" shape and a different fix.
+
+  2. The thinking-only placement. You said "when it is thinking without response it prints it right above Responding." My probe showed thinking alone already advances the count and places the marker on the
+  sentence — but my probe was not your sequence, and I would be inventing a fix for a screen I have not seen. If you can reproduce it after this restart, the thing I need is whether there is committed prose
+  above it (a sentence to continue) or nothing — those are two different code paths, and which one you saw decides the fix.
+
+  ▌ i dont know I guess you have to set up a job that does say 100 tmux reading each 1 second and start investigation regariding the fact that you dont support persistent todos and leticl does        21:15:07
+
+  [3 tool calls, 22 thinking lines] · /verbosity
+
+  Before the job, let me test the persistence claim with evidence — letibot's code says it does persist (restore on open, write at turn boundary): [3 tool calls, 28 thinking lines] · /verbosity
+
+  The table has 9 rows for this session — so it does persist. But let me check what's actually in them: [1 tool call] · /verbosity
+
+  ▌ you dont have test, do as i told you                                                                                                                                                                21:15:45
+
+  You're right — I was reading code instead of building the instrument you asked for. Setting up the tmux reading job now. [2 tool calls] · /verbosity
+
+  There are two live heads — 1:2 (letibot-tui, this session) and 1:4 (leticl-head) — so I can capture both sides and compare. Building the sampler: [4 tool calls] · /verbosity
+
+  Works. Let me verify it captures a todo pane rather than guessing, then launch it for real: [1 tool call, 46 thinking lines] · /verbosity
+
+  Sampler works, and it caught something already: the ⚠ is up on your head right now, and leticl's hint bar has /t unfolds rows while yours does not — so 1:4 is a newer leticl build. Starting the real job:
+
+  ▌ and you hae this bug again - whne i see your response to my queued message just before that message is dequeued                                                                                     21:16:31
+
+  [1 tool call, 65 thinking lines] · /verbosity
+
+  Let me start that sampler properly, then look at the screen while the bug is visible. [1 tool call] · ctrl-t opens it [46 thinking lines] · ctrl-t opens it
+
+  ⠋ Responding · 1m39s
+  ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 2 jobs running ─╮
+  │ ›                                                                                                                                                                                                          │
+  ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ⚠ · conversation ─╯
+  ctrl-s sessions · ctrl-n notes · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t newest result · /t all tool rows · ctrl-q jobs · /help
