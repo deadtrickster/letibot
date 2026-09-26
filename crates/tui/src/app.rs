@@ -8570,17 +8570,41 @@ impl App {
             (body_rows + caret_at).min(out.len().saturating_sub(1)),
             caret_col.min(w.saturating_sub(1)) + gutter,
         ));
+        // **The gutter and the trim, in ONE pass and in place.**
+        //
+        // This was `out.into_iter().map(…).collect()`, and it cost two allocations per line per
+        // frame plus a whole second `Vec`:
+        //
+        //   * `collect()` built a NEW `Vec<String>` of `h` elements — the old one was dropped
+        //     straight after, so the frame existed twice for as long as it took to copy;
+        //   * `trim_to` is `width::truncate`, which returns an owned `String` **even when the line
+        //     already fits** (`s.to_string()` on the early path) — so a line that needed no
+        //     trimming was still re-allocated and re-copied;
+        //   * and the padded case allocated a second `String` for `format!("{pad}{l}")` on top of
+        //     that one.
+        //
+        // `App::screen` runs once per pass of the head's loop — tens of times a second — over a
+        // window of `h` lines, so this is the single hottest allocation site in the head: at 40
+        // lines and 38 passes/second it was on the order of three thousand `String`s a second,
+        // every one of them handed to `Terminal::draw`, compared character by character against
+        // the previous frame, and thrown away.
+        //
+        // **The width test is what makes it cheap, and it is not a micro-optimisation**: most
+        // lines of a settled frame are already the right width, and asking `visible_width` first
+        // turns *allocate-and-copy* into *measure* for all of them. `truncate`'s own early return
+        // is the same measurement, so nothing is measured twice.
         let pad = " ".repeat(gutter);
-        out.into_iter()
-            .map(|l| {
-                let l = trim_to(&l, w);
-                if gutter == 0 || l.is_empty() {
-                    l
-                } else {
-                    format!("{pad}{l}")
-                }
-            })
-            .collect()
+        for l in &mut out {
+            if visible_width(l) > w {
+                *l = trim_to(l, w);
+            }
+            // The pad goes on in place — one reallocation that may extend the existing buffer,
+            // rather than a second `String` that leaves the first to be freed.
+            if gutter > 0 && !l.is_empty() {
+                l.insert_str(0, &pad);
+            }
+        }
+        out
     }
 
     /// Columns of empty space down each side of the frame.
@@ -8632,17 +8656,19 @@ impl App {
         // somewhere they cannot see.
         let start = crow.saturating_sub(show - 1).min(n - show);
         let mut out = Vec::with_capacity(show);
+        // **The wall is drawn once, not once per row.** It is the same two bytes of the same
+        // register for every row of the composer — `paint` allocates a `String` — and this loop
+        // used to rebuild it inside, which is a per-row allocation for a value that cannot vary.
+        //
+        // `Role::Faint`, not `sgr::GREY`. 90 is the theme's *bright black*, which `style.rs`
+        // measured landing within a hair of the background on several light themes; the attribute
+        // de-emphasises whatever foreground the reader has already chosen.
+        let wall = boxed.then(|| self.cfg.palette().paint(Role::Faint, "│"));
         for i in start..start + show {
             let body = lines.get(i).cloned().unwrap_or_default();
-            out.push(if boxed {
-                // `Role::Faint`, not `sgr::GREY`. 90 is the theme's *bright
-                // black*, which `style.rs` measured landing within a hair of the
-                // background on several light themes; the attribute de-emphasises
-                // whatever foreground the reader has already chosen.
-                let wall = self.cfg.palette().paint(Role::Faint, "│");
-                format!("{wall} {}{wall}", width::fit(&body, inner + 1))
-            } else {
-                trim_to(&body, w)
+            out.push(match &wall {
+                Some(wall) => format!("{wall} {}{wall}", width::fit(&body, inner + 1)),
+                None => trim_to(&body, w),
             });
         }
         let col = if boxed { ccol + 2 } else { ccol };
@@ -9992,11 +10018,23 @@ impl App {
             ..
         } = self;
         let rung = *verbosity;
-        let mut segs: Vec<Seg<'_>> = vec![Seg::Borrowed(hist_lines)];
+        // **Room for the segments this frame will actually push.** A live frame adds the gap, the
+        // echo block, the pane and the chrome — a handful — and `vec![…]` starts at capacity 1, so
+        // the pushes past the first few are reallocations on a per-frame path. The number is a
+        // guess and a cheap one: too small only means one reallocation.
+        let mut segs: Vec<Seg<'_>> = Vec::with_capacity(8);
+        segs.push(Seg::Borrowed(hist_lines));
         // The history no longer ends with a blank — separators go *before* a row
         // now, so the last row of the transcript is the last line of it. The live
         // pane therefore brings its own.
-        let gap = vec![String::new()];
+        // `vec![String::new()]` allocated a heap `Vec` to hold ONE empty line. An array on the
+        // stack is the same slice without that allocation: `String::new()` itself allocates
+        // nothing, so the only thing that was being bought was the Vec's buffer.
+        //
+        // **One line, not zero.** The gap is the blank that separates the transcript from the
+        // echo and the live pane — emptying it would move every row below by one, which is the
+        // class of defect the comment above this block is about.
+        let gap: [String; 1] = [String::new()];
         if !hist_lines.is_empty() {
             segs.push(Seg::Borrowed(&gap));
         }

@@ -64,6 +64,20 @@ pub struct Terminal {
     /// The frame currently on the glass. [`Terminal::draw`] writes the difference
     /// against it and nothing else; see the note on flicker.
     shown: std::cell::RefCell<Vec<String>>,
+    /// **The glass state being built, kept between frames so its rows keep their buffers.**
+    ///
+    /// `paint_full` used to start from `shown.to_vec()` and hand the copy back, so a
+    /// `Vec<String>` of one `String` per screen row was allocated and freed on EVERY frame — tens
+    /// of times a second, on a screen that usually has not changed at all. Two buffers and a swap
+    /// make the steady state allocation-free: this one is filled (each row reusing its own
+    /// buffer) and then exchanged with `shown`.
+    ///
+    /// **It has to be a second buffer rather than in-place editing of `shown`, and that is the
+    /// one thing here that is not an optimisation.** A write can fail partway, and the rule this
+    /// type keeps is that `shown` records what is *actually on the glass*; editing it while
+    /// encoding would leave a memory of a frame that may never have been written. See
+    /// `draw_with_cursor`'s doc and the `clear()` on its error path.
+    next: std::cell::RefCell<Vec<String>>,
     /// Where the cursor was left, so an unchanged frame does not even move it.
     cursor: std::cell::Cell<Option<(usize, usize)>>,
     /// Frames drawn, and frames that needed no bytes at all. Instrumentation kept
@@ -201,6 +215,7 @@ impl Terminal {
             fd,
             entered: true,
             shown: std::cell::RefCell::new(Vec::new()),
+            next: std::cell::RefCell::new(Vec::new()),
             cursor: std::cell::Cell::new(None),
             frames: std::cell::Cell::new(0),
             silent: std::cell::Cell::new(0),
@@ -349,13 +364,20 @@ impl Terminal {
             self.last_size.set(size);
             self.full.set(true);
         }
-        let (s, next) = paint_full(
-            &self.shown.borrow(),
-            lines,
-            cursor,
-            self.cursor.get(),
-            self.full.replace(false),
-        );
+        // The two buffers are EXCHANGED, not copied: the scratch is filled from the frame and
+        // then becomes the memory of the glass, so what was `shown` is free to be the scratch
+        // next time and both keep the rows they have already allocated.
+        let s = {
+            let mut next = self.next.borrow_mut();
+            paint_full(
+                &self.shown.borrow(),
+                lines,
+                &mut next,
+                cursor,
+                self.cursor.get(),
+                self.full.replace(false),
+            )
+        };
         if s.is_empty() {
             self.silent.set(self.silent.get() + 1);
             st.silent += 1;
@@ -363,7 +385,7 @@ impl Terminal {
             // **Adopted, and nothing was written.** The frame needed no bytes, so the
             // memory it describes is already true — and taking it keeps `shown` the same
             // length as the frame, which is what the next frame diffs against.
-            *self.shown.borrow_mut() = next;
+            self.adopt_next();
             return false;
         }
         // The encoder, before the bytes go out. `?2026h` and `?2026l` are eight
@@ -398,9 +420,20 @@ impl Terminal {
             prev.push_str(&s);
         }
         self.stats.set(st);
-        *self.shown.borrow_mut() = next;
+        self.adopt_next();
         self.cursor.set(cursor);
         false
+    }
+
+    /// **The built state becomes the memory of the glass**, in one exchange.
+    ///
+    /// A swap rather than an assignment of a fresh `Vec`: the buffer `shown` gives up is the
+    /// scratch the next frame rebuilds into, so its rows keep their allocations. This is what
+    /// makes the steady state — a screen whose text has not changed — cost no allocation at all,
+    /// where the old `shown.to_vec()` paid one `String` per row per frame for the privilege of
+    /// comparing them and finding them equal.
+    fn adopt_next(&self) {
+        self.shown.swap(&self.next);
     }
 
     /// Forget what is on the glass, so the next draw repaints everything.
@@ -467,7 +500,9 @@ pub fn paint(
     cursor: Option<(usize, usize)>,
     prev_cursor: Option<(usize, usize)>,
 ) -> (String, Vec<String>) {
-    paint_full(shown, lines, cursor, prev_cursor, shown.is_empty())
+    let mut next = Vec::new();
+    let s = paint_full(shown, lines, &mut next, cursor, prev_cursor, shown.is_empty());
+    (s, next)
 }
 
 /// As [`paint`], with `full` forcing a whole-screen erase first.
@@ -489,44 +524,52 @@ pub fn paint(
 pub fn paint_full(
     shown: &[String],
     lines: &[String],
+    next: &mut Vec<String>,
     cursor: Option<(usize, usize)>,
     prev_cursor: Option<(usize, usize)>,
     full: bool,
-) -> (String, Vec<String>) {
+) -> String {
     let mut s = String::new();
-    // **The glass-state this frame is building TOWARD**, kept apart from the one it is
-    // diffed against. A copy rather than a second pass because the copy is one row per
-    // screen — fifty-odd `String`s next to the frame the caller is about to write — and
-    // the alternative is a diff list whose indices the caller has to re-apply, which is
-    // one more thing to get wrong in the one place where being wrong is silent.
-    let mut next: Vec<String> = shown.to_vec();
     if full {
         s.push_str("\x1b[2J");
-        next.clear();
     }
     // Rows the frame no longer has: erase them, rather than the whole screen.
-    for i in lines.len()..next.len() {
+    //
+    // Over `shown` and not over `next`: what is on the glass is what must be erased, and `next`
+    // is a scratch that happens to hold some other frame's rows.
+    for i in lines.len()..shown.len() {
         s.push_str(&format!("\x1b[{};1H\x1b[0m\x1b[K", i + 1));
     }
-    // Rows the frame gained are blank on the glass — either it was just erased,
-    // or the loop above erased them when the frame last shrank past them.
+    // **`next` becomes this frame, and a row it already holds costs nothing.**
+    //
+    // The loop this replaces started from a copy of `shown` and then assigned `l.clone()` over
+    // every differing row, so each of the screen's rows was allocated afresh on every frame. Here
+    // the buffer is reused: two frames of identical text leave every row untouched, and a row
+    // whose text changed gets `clear()` + `push_str` — one reallocation at most, into the buffer
+    // it already had.
+    //
+    // The comparison is against what the buffer holds rather than against `shown`, because that
+    // is what decides whether a copy is needed at all; `shown` decides what goes on the wire.
     next.resize(lines.len(), String::new());
     for (i, l) in lines.iter().enumerate() {
-        if next[i] == *l {
-            continue;
+        let on_the_glass = !full && shown.get(i) == Some(l);
+        if !on_the_glass {
+            s.push_str(&format!("\x1b[{};1H\x1b[0m\x1b[K", i + 1));
+            s.push_str(l);
         }
-        s.push_str(&format!("\x1b[{};1H\x1b[0m\x1b[K", i + 1));
-        s.push_str(l);
-        next[i] = l.clone();
+        if next[i] != *l {
+            next[i].clear();
+            next[i].push_str(l);
+        }
     }
     if s.is_empty() && cursor == prev_cursor {
-        return (String::new(), next);
+        return String::new();
     }
     match cursor {
         Some((r, c)) => s.push_str(&format!("\x1b[{};{}H\x1b[?25h", r + 1, c + 1)),
         None => s.push_str("\x1b[?25l"),
     }
-    (s, next)
+    s
 }
 
 /// **A terminal that writes where it is told, for the tests that are about the encoder
@@ -540,6 +583,7 @@ impl Terminal {
             fd: -1,
             entered: false,
             shown: std::cell::RefCell::new(Vec::new()),
+            next: std::cell::RefCell::new(Vec::new()),
             cursor: std::cell::Cell::new(None),
             frames: std::cell::Cell::new(0),
             silent: std::cell::Cell::new(0),
@@ -1029,14 +1073,20 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         let mut shown = Vec::new();
-        let (first, next) = paint_full(&shown, &a, None, None, true);
+        let first; let next;
+        {
+            let mut scratch = Vec::new();
+            first = paint_full(&shown, &a, &mut scratch, None, None, true);
+            next = scratch;
+        }
         assert_eq!(first.matches("\x1b[K").count(), 5, "every row, once");
         shown = next;
 
         let mut b = a.clone();
         b[1] = "TWO".into();
         b[3] = "FOUR".into();
-        let (second, _) = paint_full(&shown, &b, None, None, false);
+        let mut scratch = Vec::new();
+        let second = paint_full(&shown, &b, &mut scratch, None, None, false);
         assert_eq!(
             second.matches("\x1b[K").count(),
             2,
@@ -1054,22 +1104,26 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         let mut shown = Vec::new();
-        let (_, next) = paint_full(&shown, &a, None, None, true);
+        let mut next = Vec::new();
+        paint_full(&shown, &a, &mut next, None, None, true);
         shown = next;
         let mut b = a.clone();
         b.push("four".into());
-        let (bytes, next) = paint_full(&shown, &b, None, None, false);
+        let mut next = Vec::new();
+        let bytes = paint_full(&shown, &b, &mut next, None, None, false);
         shown = next;
         assert!(!bytes.contains("\x1b[2J"), "{bytes:?}");
         assert!(bytes.contains("four"), "{bytes:?}");
         assert!(!bytes.contains("one"), "unchanged rows stay put: {bytes:?}");
         // And shrinking erases exactly the row that went, not the screen.
-        let (bytes, next) = paint_full(&shown, &a, None, None, false);
+        let mut next = Vec::new();
+        let bytes = paint_full(&shown, &a, &mut next, None, None, false);
         shown = next;
         assert!(!bytes.contains("\x1b[2J"), "{bytes:?}");
         assert!(bytes.contains("\x1b[4;1H"), "row four is erased: {bytes:?}");
         // …and the glass is still an honest model of itself.
-        assert_eq!(paint_full(&shown, &a, None, None, false).0, "");
+        let mut scratch = Vec::new();
+        assert_eq!(paint_full(&shown, &a, &mut scratch, None, None, false), "");
     }
 
     /// **A paint that dies part way writes no record of the frame it did not finish.**

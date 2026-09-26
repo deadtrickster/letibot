@@ -64,9 +64,38 @@ pub struct Cell<'a> {
 /// The last cell may have an empty `text` when the string ends in escapes — a
 /// trailing `\x1b[0m` is the normal case and dropping it would leave attributes
 /// open.
+///
+/// **This is the collecting half of [`for_each_cell`]**, which is the walk itself. See that
+/// function for why the walk is shared rather than written twice: the cluster rules below (ZWJ,
+/// regional indicators, control characters that do NOT combine) are the subtlest code in this
+/// crate, and a second copy of them for the sake of one caller's buffer would be a second set of
+/// rules to keep in step.
 pub fn cells(s: &str) -> Vec<Cell<'_>> {
+    // A capacity guess rather than `Vec::new()`: the loop is per cluster and this is the
+    // measurement layer under every frame the head draws, so the early doublings are worth
+    // skipping. It is a guess, so a wrong one costs a little memory and nothing else.
+    let mut out = Vec::with_capacity(s.len() / 2 + 1);
+    for_each_cell(s, |c| out.push(c));
+    out
+}
+
+/// **The cluster walk, once.** Every cell of `s`, in order, handed to `f`.
+///
+/// The two things that need a cell list want different things from it — [`cells`] keeps every cell,
+/// [`width`] sums one field of each — and **neither needs the list**. `width` used to `collect` a
+/// `Vec<Cell>` and then sum its `cols`, which meant an allocation per measured line for a number
+/// that a single pass produces without one: `visible_width` is called several times per row of
+/// every frame the head draws (the trim, the wrap, the box edges, every card), so this is the
+/// allocator underneath the whole measurement layer.
+///
+/// Shared rather than duplicated because the rules being walked are the subtle ones: a ZWJ pulls
+/// in what follows, a regional-indicator pair is two columns however wide its halves claim to be, a
+/// combining mark extends the cluster but **a control character does not**. A second implementation
+/// written to avoid the closure would be a second place for those to be got wrong, and the crate's
+/// own rule is that a module's behaviour is one implementation — see the header's note about
+/// `%width-between` staying allocation-free for exactly this reason.
+pub fn for_each_cell<'a>(s: &'a str, mut f: impl FnMut(Cell<'a>)) {
     let b = s.as_bytes();
-    let mut out = Vec::new();
     let mut i = 0usize;
     while i < b.len() {
         let esc_start = i;
@@ -76,7 +105,7 @@ pub fn cells(s: &str) -> Vec<Cell<'_>> {
         let esc = &s[esc_start..i];
         if i >= b.len() {
             if !esc.is_empty() {
-                out.push(Cell {
+                f(Cell {
                     esc,
                     text: "",
                     cols: 0,
@@ -138,13 +167,12 @@ pub fn cells(s: &str) -> Vec<Cell<'_>> {
             }
             break;
         }
-        out.push(Cell {
+        f(Cell {
             esc,
             text: &s[cluster_start..i],
             cols,
         });
     }
-    out
 }
 
 /// Bytes past the escape sequence starting at `i`.
@@ -183,8 +211,15 @@ fn skip_escape(b: &[u8], i: usize) -> usize {
 }
 
 /// Columns a string occupies on a terminal, escapes excluded.
+///
+/// **Allocation-free**, which is the whole reason it is a sum over a walk rather than over a
+/// collected `Vec<Cell>` — see [`for_each_cell`]. This is called several times per row of every
+/// frame the head draws, and on a settled screen most of those calls are on lines that have not
+/// changed.
 pub fn width(s: &str) -> usize {
-    cells(s).iter().map(|c| c.cols).sum()
+    let mut cols = 0usize;
+    for_each_cell(s, |c| cols += c.cols);
+    cols
 }
 
 /// Columns one character claims. Zero, one or two.
