@@ -1549,6 +1549,19 @@ pub struct App {
     /// confined, and a head that guesses that wrong asks nothing at exactly the
     /// coordinate worth asking at.
     mode_confirm: Option<String>,
+    /// **The new-todo card: title and detail, the composer being the field** — leticl's
+    /// `*todo-draft*`, and the shape `mode_confirm` already keeps one screen over.
+    ///
+    /// `(title, detail, typing_the_detail)`. **The composer is the field being typed and this holds
+    /// the OTHER one**, so the field under the cursor is never a keystroke behind — leticl's
+    /// `%todo-draft-focus` records the one it is leaving for exactly that reason. `None` when no
+    /// card is up.
+    ///
+    /// **A keyboard owner, like the password field and the `allow-all` card**, because a half-typed
+    /// prompt left under a card whose Enter adds an item is the shape that costs somebody a message:
+    /// `key` returns before the composer sees anything while this is `Some`, and every key that is
+    /// not `Tab`/`Enter`/`Esc` is the editor's.
+    todo_draft: Option<(String, String, bool)>,
     /// **The quit card**, opened by the second Ctrl+C instead of leaving at
     /// once. Two answers, because `Ctrl+C Ctrl+C` had one meaning and an
     /// operator often wants the other: leave the head and let the daemon keep
@@ -2475,6 +2488,7 @@ impl App {
             picker: false,
             pick: None,
             mode_confirm: None,
+            todo_draft: None,
             quit_card: false,
             quit_sel: 0,
             mode_sel: 0,
@@ -4895,6 +4909,81 @@ impl App {
         // key is the password's: characters and pastes go into the buffer, Enter
         // sends it, Esc or Ctrl+C refuses. Nothing reaches the composer, the
         // ladder or the scrollback, so a password cannot land in a prompt.
+        // **The new-todo card owns the keyboard**, ahead of the composer and behind nothing else
+        // that is modal. Three keys are its own; everything else is the composer's, so the title and
+        // the description are typed, edited and pasted with the keys the operator already has.
+        if self.todo_draft.is_some() {
+            match k {
+                Key::Tab => {
+                    let (t, d) = {
+                        let (t, d, detail) = self.todo_draft.as_ref().expect("checked above");
+                        (t.clone(), d.clone())
+                    };
+                    // The composer's text goes into the field being LEFT, and the field being
+                    // entered comes out — leticl's `%todo-draft-focus`, one order.
+                    let (mut t, mut d) = (t, d);
+                    if self.todo_draft.as_ref().is_some_and(|(_, _, detail)| *detail) {
+                        d = self.input().to_string();
+                    } else {
+                        t = self.input().to_string();
+                    }
+                    let now_detail = !self.todo_draft.as_ref().is_some_and(|(_, _, detail)| *detail);
+                    self.todo_draft = Some((t, d, now_detail));
+                    let shown = if now_detail {
+                        self.todo_draft.as_ref().map(|(_, d, _)| d.clone())
+                    } else {
+                        self.todo_draft.as_ref().map(|(t, _, _)| t.clone())
+                    }
+                    .unwrap_or_default();
+                    self.set_composer(&shown);
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Enter => {
+                    let title = if self.todo_draft.as_ref().is_some_and(|(_, _, detail)| *detail) {
+                        self.todo_draft
+                            .as_ref()
+                            .map(|(t, _, _)| t.clone())
+                            .unwrap_or_default()
+                    } else {
+                        self.input().to_string()
+                    };
+                    let detail = if self.todo_draft.as_ref().is_some_and(|(_, _, detail)| *detail) {
+                        self.input().to_string()
+                    } else {
+                        self.todo_draft
+                            .as_ref()
+                            .map(|(_, d, _)| d.clone())
+                            .unwrap_or_default()
+                    };
+                    // **A title is required and the card stays up without one** — the only field
+                    // rule, and saying so beats storing a row of nothing.
+                    if title.trim().is_empty() {
+                        self.say("a todo item needs a title — type one, or esc to cancel");
+                        self.redraw = true;
+                        return None;
+                    }
+                    let mut text = title.trim().to_string();
+                    if !detail.trim().is_empty() {
+                        text.push_str(" — ");
+                        text.push_str(detail.trim());
+                    }
+                    self.todo_draft = None;
+                    self.set_composer("");
+                    // The add goes through the same door `/todo TEXT` uses, so a card and a typed
+                    // line cannot become different acts.
+                    return self.todo_command(&text);
+                }
+                Key::Esc | Key::CtrlC => {
+                    self.todo_draft = None;
+                    self.set_composer("");
+                    self.say("nothing added");
+                    self.redraw = true;
+                    return None;
+                }
+                _ => {}
+            }
+        }
         if let Some(ask) = &self.secret {
             let req_id = ask.req_id.clone();
             match k {
@@ -5694,6 +5783,27 @@ impl App {
         // vendoring pins, the `Deps:` that says what blocks it — and the pane
         // showed the first line only, so an item trailed off mid-sentence. Arrows
         // move, Enter acts: the same two the jobs and subagent panes use.
+        // **`/todos` and Enter opens the new-todo card.** Up and Down still belong to the repo's
+        // half below (the model's and the operator's rows are not stops — nothing acts on them), so
+        // the one key that adds is Enter, which is what the `[+]` control says it is. leticl's
+        // cursor lands on its `[+]` row and takes it with Enter; a card needs no cursor here
+        // because there is exactly one control on the line.
+        // **And it must not take Enter from the repo's half below**, which unfolds a row's body —
+        // there are two things on this screen Enter could mean and the repo's cursor is the older
+        // one. The card is opened when the repo's list has NO cursor to move, which is a transcript
+        // with no `TODO.md` beside it: the one case where Enter would otherwise do nothing at all.
+        let repo_has_cursor = self
+            .repo_todos
+            .as_ref()
+            .is_some_and(|rows| rows.iter().any(|r| r.item));
+        if self.todos_pane
+            && matches!(k, Key::Enter)
+            && self.editor.text().is_empty()
+            && !repo_has_cursor
+        {
+            self.open_todo_card();
+            return None;
+        }
         if self.todos_pane
             && let Some(rows) = &self.repo_todos
         {
@@ -6298,6 +6408,65 @@ impl App {
     /// The line the screen shows while `mode_confirm` is set. Spells out the three
     /// classes the point stops asking about, because "are you sure" is a question
     /// nobody can answer.
+    /// **The new-todo card**: the two fields, which one is being typed, and the three keys.
+    ///
+    /// leticl's `todo-card-lines`, and the shape is deliberate — *"the card is the modal and the
+    /// composer is the field"*, which is this head's one text widget, so the title and the
+    /// description are edited with every key the operator already has.
+    ///
+    /// **The last line says whose the row will be**, because that is the whole difference the
+    /// feature turns on and the place a reader will look for it: an item added here is the
+    /// OPERATOR's, the model is shown it and reminded of it, and the model cannot remove it.
+    fn todo_card_lines(&self, w: usize) -> Vec<String> {
+        let Some((title, detail, typing_detail)) = &self.todo_draft else {
+            return Vec::new();
+        };
+        let p = self.cfg.palette();
+        // The field under the cursor is drawn from the COMPOSER, the other from the draft — so the
+        // row being typed is never a keystroke behind. leticl's `%todo-draft-focus` for the same
+        // reason.
+        let live = self.input();
+        let (shown_title, shown_detail) = if *typing_detail {
+            (title.as_str(), live)
+        } else {
+            (live, detail.as_str())
+        };
+        let field = |name: &str, key: &str, value: &str, active: bool| {
+            let head = dim(&self.cfg, &format!("  {key:<7} "));
+            let body = if value.is_empty() {
+                dim(&self.cfg, "(empty)")
+            } else if active {
+                p.paint(Role::Strong, &without_control_lines(value))
+            } else {
+                p.paint(Role::Faint, &without_control_lines(value))
+            };
+            format!("{head}{body}")
+        };
+        let mut out = vec![colour(&self.cfg, sgr::BOLD, "adding a todo item")];
+        out.push(String::new());
+        out.push(field("title", "title", shown_title, !*typing_detail));
+        out.push(field("detail", "detail", shown_detail, *typing_detail));
+        out.push(String::new());
+        for (k, why) in [
+            ("tab", "moves between the fields"),
+            ("enter", "adds it to the session's plan, marked as yours"),
+            ("esc", "cancels, and adds nothing"),
+        ] {
+            out.push(format!(
+                "{}{}",
+                dim(&self.cfg, &format!("  {k:<7}")),
+                p.paint(Role::Plain, why)
+            ));
+        }
+        out.push(String::new());
+        out.push(dim(
+            &self.cfg,
+            "  the model sees these and is reminded of them; it can mark one done, and cannot \
+             remove yours",
+        ));
+        out.into_iter().map(|l| trim_to(&l, w)).collect()
+    }
+
     fn mode_confirm_line(&self) -> Option<String> {
         self.mode_confirm.as_ref().map(|_| {
             "allow-all: privilege escalation, deletes outside the project and \
@@ -7562,6 +7731,25 @@ impl App {
             .collect()
     }
 
+    /// **Open the new-todo card**, and put the composer where the card expects it.
+    ///
+    /// **The composer is the field**, so it is emptied and handed to the card: a half-typed prompt
+    /// left under a card whose Enter adds an item is the shape that costs somebody a message, which
+    /// is the same reason `mode_confirm` takes the keyboard. leticl's `%todo-draft-open`.
+    fn open_todo_card(&mut self) {
+        if self.session_id.is_empty() {
+            self.say("not attached to a session yet");
+            return;
+        }
+        self.set_composer("");
+        self.todo_draft = Some((String::new(), String::new(), false));
+        self.say(
+            "adding a todo item — title, then tab for the description; enter adds it to the \
+             session's plan as yours, esc cancels",
+        );
+        self.redraw = true;
+    }
+
     /// **`/todo …` — the operator's own rows.** The verb's three forms, and each one sends the
     /// whole list:
     ///
@@ -7622,8 +7810,11 @@ impl App {
                 });
                 self.say(&format!("added to your list — {} row(s)", mine.len()));
             }
+            // **Bare `/todo` opens the card**, which is the shape `/mode` and `/models` keep: a
+            // setting or an act with more than one part is CHOSEN from a card rather than typed
+            // blind. The three forms are still there and the card's hint line says where.
             _ => {
-                self.say("/todo TEXT adds one · /todo done N marks that row complete · /todo rm N takes it off");
+                self.open_todo_card();
                 return None;
             }
         }
@@ -8318,6 +8509,9 @@ impl App {
         {
             (Some(ask), _) => (self.secret_lines(ask, w), Vec::new()),
             (None, Some(d)) => self.decision_card(d, w),
+            // **The new-todo card rides in the ask card's slot too**, and ahead of the quit card:
+            // it is the newest question and the one the keyboard belongs to while it is up.
+            (None, None) if self.todo_draft.is_some() => (self.todo_card_lines(w), Vec::new()),
             // The mode card rides in the ask card's slot: a compact card at
             // the bottom of the screen with the transcript still visible above
             // it, which is where everything else that wants a choice sits.
@@ -11303,10 +11497,13 @@ impl App {
         // **The add control, in the items' own mark column and BOLD**, so it reads as a control
         // rather than as a line of the list. leticl's operator, of its plain first cut: *"it looks
         // like a regular text."* The typed door is `/todo TEXT`; this is the one a reader finds.
+        // **The control opens the CARD, and the verb is the typed door to the same act.** Both end
+        // in `todo_command`, so a card and a line cannot become different things — leticl's `[+]`
+        // row is the one its cursor lands on, and the typed form is what a script uses.
         out.push(format!(
             "    {} {}",
             colour(&self.cfg, sgr::BOLD, "[+]"),
-            colour(&self.cfg, sgr::BOLD, "add todo item — /todo TEXT")
+            colour(&self.cfg, sgr::BOLD, "add todo item — enter here, or /todo TEXT")
         ));
         if self.todos.is_empty() {
             out.push(dim(
@@ -22627,6 +22824,94 @@ mod tests {
         );
     }
 
+    /// **The new-todo card: title, Tab for the detail, Enter adds it as yours, Esc cancels** —
+    /// leticl's `todo-card-lines`, and the shape its `%todo-draft-*` keys keep.
+    ///
+    /// **The composer is the field.** Tab stores what was typed into the field being left and puts
+    /// the other one in the composer, so the field under the cursor is never a keystroke behind —
+    /// and everything else is the editor's, so the title and the detail are typed, pasted and
+    /// undone with the keys the operator already has.
+    ///
+    /// **A title is required and the card stays up without one**, which is the only field rule: a
+    /// row of nothing is not what the reader meant, and saying so beats storing it.
+    #[test]
+    fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
+        use letibot_sessionlog::event::TodoBy;
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        assert_eq!(a.command("todo"), None, "bare /todo opens the card");
+        assert!(a.todo_draft.is_some());
+        // The card is drawn with its three keys, which is how a reader learns Tab exists.
+        let card = a.screen(100, 30).join("\n");
+        assert!(card.contains("adding a todo item"), "{card}");
+        assert!(card.contains("moves between the fields"), "{card}");
+
+        // **A title alone.** Type it and press Enter.
+        typed(&mut a, "ship the parity row");
+        assert!(matches!(a.key(Key::Enter), Some(Action::SetOperatorTodos(_))));
+        assert!(a.todo_draft.is_none(), "the card came down");
+        assert_eq!(a.input(), "", "and the composer is empty again");
+
+        // **An empty title is refused and the card STAYS UP**, which is the one field rule.
+        a.command("todo");
+        assert!(matches!(a.key(Key::Enter), None));
+        assert!(
+            a.todo_draft.is_some(),
+            "the card came down on an empty title"
+        );
+        assert!(
+            a.notice.as_deref().unwrap_or("").contains("needs a title"),
+            "{:?}",
+            a.notice
+        );
+
+        // **Tab moves to the detail and back, keeping both.** The composer carries the focused
+        // field; the draft carries the other.
+        typed(&mut a, "and the cache too");
+        a.key(Key::Tab);
+        assert_eq!(
+            a.input(),
+            "",
+            "the detail field is empty when it is entered"
+        );
+        typed(&mut a, "the note the model needs");
+        a.key(Key::Tab);
+        assert_eq!(
+            a.input(),
+            "and the cache too",
+            "Tab came back to the title, with what was typed into it"
+        );
+
+        // **Enter adds both, tagged as the operator's.**
+        let act = a.key(Key::Enter);
+        match act {
+            Some(Action::SetOperatorTodos(items)) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].by, TodoBy::Operator);
+                assert!(
+                    items[0].content.contains("and the cache too")
+                        && items[0].content.contains("the note the model needs"),
+                    "the detail was lost: {:?}",
+                    items[0].content
+                );
+            }
+            other => panic!("expected the add, got {other:?}"),
+        }
+
+        // **Esc cancels and adds nothing** — the card asks, and a question has to be able to be
+        // answered no.
+        a.command("todo");
+        typed(&mut a, "never mind");
+        assert_eq!(a.key(Key::Esc), None);
+        assert!(a.todo_draft.is_none(), "esc did not close the card");
+        assert_eq!(a.input(), "", "and took the words with it");
+        assert!(
+            a.notice.as_deref().unwrap_or("").contains("nothing added"),
+            "{:?}",
+            a.notice
+        );
+    }
+
     /// **The operator can add a row of their own, and it goes to the daemon as their half.**
     ///
     /// The gap this closes, measured before writing it: **`TodoBy::Operator` was constructible
@@ -22704,11 +22989,12 @@ mod tests {
             }
             other => panic!("expected a removal, got {other:?}"),
         }
-        // **A bare `/todo` says what the three forms are** rather than adding an empty row.
+        // **A bare `/todo` opens the CARD** — the shape `/mode` and `/models` keep, where an act
+        // with more than one part is chosen from a card rather than typed blind.
         assert_eq!(a.command("todo"), None);
         assert!(
-            a.notice.as_deref().unwrap_or("").contains("adds one"),
-            "bare /todo does not teach its own forms: {:?}",
+            a.todo_draft.is_some(),
+            "bare /todo did not open the card: {:?}",
             a.notice
         );
     }
