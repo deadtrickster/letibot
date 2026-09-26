@@ -1655,6 +1655,25 @@ pub struct App {
     /// unfolded. The same two acts the jobs and subagent panes keep separate —
     /// arrows move, enter acts — because both of those got them today and a
     /// third spelling would be a third thing to learn.
+    /// **The cursor, as an index into [`App::todos_stops`]** — one list, so the arrows, the click,
+    /// the drawn mark and the Enter key cannot disagree about which row the cursor is on. leticl's
+    /// `head-picker-sel`, and the reason the slot's type is untouched: a list changing under the
+    /// cursor shifts the index, and what it lands on is still a row.
+    todos_sel: usize,
+    /// **Where each stop was DRAWN, parallel to [`App::todos_stops`]** — the pane's third value in
+    /// leticl's `todos-lines`, recorded as the rows go out and never recomputed.
+    ///
+    /// This is not a cache of arithmetic that could be done at the call site; the arithmetic is the
+    /// defect. leticl's docstring: *"the second is an `aref` of the third — never arithmetic over
+    /// one of the three lists this draws from, which is what put the pane four lines above the row
+    /// it was scrolling to."* Two of the operator's reports came from exactly that, and it is also
+    /// what makes a click possible at all: a click has a screen row and nothing else, and the only
+    /// honest answer to *which stop is on this row* is the one the pane wrote down while drawing.
+    todos_stop_rows: Vec<usize>,
+    /// **The screen row the pane's own first body row goes to** — the session header, when the
+    /// frame is tall enough to have one. Recorded rather than assumed because a click's `y` is in
+    /// absolute screen coordinates and the header above the pane is not part of it.
+    todos_pane_top: usize,
     repo_sel: usize,
     repo_open: bool,
     /// **How far the open pane is scrolled**, in rows hidden above it.
@@ -1693,7 +1712,6 @@ pub struct App {
     /// one where the other was meant scrolled to the wrong place and left the
     /// cursor off screen — recorded at draw time rather than derived, because
     /// the header's height depends on how many todos the model has written.
-    repo_first_row: usize,
     /// **How far into an unfolded row's payload the reader has paged.**
     ///
     /// A tool result is a *logical* string — a `read` of a large file, a build log — that
@@ -2209,6 +2227,21 @@ fn take_window(segs: &[Seg<'_>], start: usize, end: usize) -> Vec<String> {
     out
 }
 
+/// **One row of the todos pane the cursor may land on** — see [`App::todos_stops`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TodoStop {
+    /// The `[+] add todo item` control, at the head of the list.
+    Add,
+    /// **One of the operator's own rows, BY ITS WORDS.** There is no id on the wire —
+    /// `TodoEntry` is `content`, `status`, `by`, and the operator has ruled out a bump for one — so
+    /// the words are the identity, which is the same key `/todo done N` uses. A row renamed is a
+    /// different row, and that is the honest reading of a list with no ids.
+    Mine(String),
+    /// A row of the workspace's `TODO.md`, by index into `repo_todos` — the file's own order IS
+    /// its identity, because the pane re-reads the file.
+    Repo(usize),
+}
+
 /// **The two words an echo can carry** (R16). Constants because both the renderer and
 /// the tests name them, and a mark that is spelled twice is a mark that can be spelled
 /// differently.
@@ -2506,13 +2539,15 @@ impl App {
             todos: Vec::new(),
             repo_todos: None,
             repo_todos_at: None,
+            todos_sel: 0,
+            todos_stop_rows: Vec::new(),
+            todos_pane_top: 0,
             repo_sel: 0,
             repo_open: false,
             slash_out: None,
             pane_scroll: 0,
             pane_len: 0,
             pane_room: 0,
-            repo_first_row: 0,
             payload_page: 0,
             payload_sel: None,
             spent_micros: 0,
@@ -5783,92 +5818,95 @@ impl App {
         // vendoring pins, the `Deps:` that says what blocks it — and the pane
         // showed the first line only, so an item trailed off mid-sentence. Arrows
         // move, Enter acts: the same two the jobs and subagent panes use.
-        // **`/todos` and Enter opens the new-todo card.** Up and Down still belong to the repo's
-        // half below (the model's and the operator's rows are not stops — nothing acts on them), so
-        // the one key that adds is Enter, which is what the `[+]` control says it is. leticl's
-        // cursor lands on its `[+]` row and takes it with Enter; a card needs no cursor here
-        // because there is exactly one control on the line.
-        // **And it must not take Enter from the repo's half below**, which unfolds a row's body —
-        // there are two things on this screen Enter could mean and the repo's cursor is the older
-        // one. The card is opened when the repo's list has NO cursor to move, which is a transcript
-        // with no `TODO.md` beside it: the one case where Enter would otherwise do nothing at all.
-        let repo_has_cursor = self
-            .repo_todos
-            .as_ref()
-            .is_some_and(|rows| rows.iter().any(|r| r.item));
-        if self.todos_pane
-            && matches!(k, Key::Enter)
-            && self.editor.text().is_empty()
-            && !repo_has_cursor
-        {
-            self.open_todo_card();
-            return None;
-        }
-        if self.todos_pane
-            && let Some(rows) = &self.repo_todos
-        {
-            // Headings roll up the rows beneath them and have nothing to unfold,
-            // so the cursor only stops on items.
-            let stops: Vec<usize> = rows
-                .iter()
-                .enumerate()
-                .filter(|(_, r)| r.item)
-                .map(|(i, _)| i)
-                .collect();
-            if !stops.is_empty() {
-                let at = stops.iter().position(|i| *i >= self.repo_sel).unwrap_or(0);
-                match k {
-                    Key::Up => {
-                        self.repo_sel = stops[at.checked_sub(1).unwrap_or(stops.len() - 1)];
-                        self.repo_open = false;
-                        // An arrow that walks the cursor past the bottom of the
-                        // window otherwise reads as a key that does nothing.
-                        self.scroll_into_view(self.repo_first_row + self.repo_sel);
-                        self.redraw = true;
-                        return None;
-                    }
-                    Key::Down => {
-                        self.repo_sel = stops[(at + 1) % stops.len()];
-                        self.repo_open = false;
-                        self.scroll_into_view(self.repo_first_row + self.repo_sel);
-                        self.redraw = true;
-                        return None;
-                    }
-                    // **Tab as well as Enter**, because the hand is already
-                    // there: the operator, after using it, *"i also feel like I
-                    // want Tab to expand the todo row"*. Tab completes a
-                    // `/command` while one is being typed, and the composer is
-                    // empty here — the same condition Enter already carries, so
-                    // the two never disagree about whose key it is.
-                    Key::Enter | Key::Tab if self.editor.text().is_empty() => {
-                        self.repo_sel = stops[at];
-                        self.repo_open = !self.repo_open;
-                        // An item unfolding below the fold should show what it
-                        // unfolded, so the body is scrolled to rather than
-                        // appearing off-screen.
-                        if self.repo_open {
-                            self.scroll_into_view(
-                                self.repo_first_row
-                                    + self.repo_sel
-                                    + rows[self.repo_sel].body.len(),
-                            );
-                        }
-                        self.redraw = true;
-                        return None;
-                    }
-                    _ => {}
+        // **ONE ENUMERATION, AND EVERY KEY READS IT** — leticl's `todos-stops`, whose docstring is
+        // the operator's two reports: *"arrows dont go here"* and *"mouse doesnt click"*. Both were
+        // the same defect, a cursor whose position came from one list and whose row came from
+        // another. The stops are the add control, the operator's own items, and the repo's items —
+        // and NOT the model's rows, which no key acts on.
+        //
+        // **A key this block does not name FALLS THROUGH**, which is what keeps the pane from
+        // eating the composer: `Tab` is the completion key while a `/command` is half-typed (the
+        // guard below is the same empty-composer one the card uses), and every ordinary character
+        // is the operator's to type. The first cut of this block ended in an unconditional
+        // `return None` and the pane swallowed the whole keyboard — a `▸` that looked right with
+        // nothing behind it, which is a worse defect than the one it replaced.
+        if self.todos_pane {
+            let stops = self.todos_stops();
+            let n = stops.len();
+            let at = self.todos_sel.min(n.saturating_sub(1));
+            match k {
+                Key::Up => {
+                    self.todos_sel = if at == 0 { n - 1 } else { at - 1 };
+                    self.todos_sel = self.todos_sel.min(n - 1);
+                    self.sync_repo_from_stop(&stops);
+                    self.scroll_into_view(self.todos_row_of());
+                    self.redraw = true;
+                    return None;
                 }
+                Key::Down => {
+                    self.todos_sel = (at + 1) % n;
+                    self.sync_repo_from_stop(&stops);
+                    self.scroll_into_view(self.todos_row_of());
+                    self.redraw = true;
+                    return None;
+                }
+                // **Enter acts on what the cursor is ON**, which is the whole point of one
+                // enumeration: the add control opens the card, one of your rows is marked done,
+                // and a repo item unfolds. Tab stays the repo's unfold, because the hand is
+                // already there for it and the composer is empty here.
+                // **A click moves the cursor, and Enter still does the act** — the same two
+                // acts, kept two, that the pickers here already keep (*"select and confirm stay
+                // two acts"*). Straight off the recorded rows, so the row the pointer is on is
+                // the row the pane drew there.
+                //
+                // **A click into the blank space moves nothing**, and so does one on a row that
+                // is not a stop at all — one of the model's rows, or a repo heading. There is no
+                // key that would act on it, which is the same reason it is not a stop.
+                Key::Click { y, .. } => {
+                    if let Some(sel) = self.todo_stop_at_row(y) {
+                        self.todos_sel = sel;
+                        self.sync_repo_from_stop(&stops);
+                        self.redraw = true;
+                    }
+                    return None;
+                }
+                Key::Enter | Key::Tab if self.editor.text().is_empty() => match &stops[at] {
+                    TodoStop::Add => {
+                        self.open_todo_card();
+                        return None;
+                    }
+                    // **Marking done is the model's act too and it is the operator's own row**:
+                    // the daemon's `set_operator_states` is its own door and `/todo done N` is the
+                    // typed one. Here it is the same act under the cursor. A completed row can be
+                    // reopened, because a cursor that can only go one way is a cursor you cannot
+                    // correct.
+                    TodoStop::Mine(content) => {
+                        let content = content.clone();
+                        let mut mine = self.operator_todos();
+                        if let Some(t) = mine.iter_mut().find(|t| t.content == content) {
+                            t.status = if t.status
+                                == letibot_sessionlog::event::TodoStatus::Completed
+                            {
+                                letibot_sessionlog::event::TodoStatus::Pending
+                            } else {
+                                letibot_sessionlog::event::TodoStatus::Completed
+                            };
+                        }
+                        self.say("toggled");
+                        return Some(Action::SetOperatorTodos(mine));
+                    }
+                    TodoStop::Repo(i) => {
+                        self.repo_sel = *i;
+                        self.repo_open = !self.repo_open;
+                        self.scroll_into_view(self.todos_row_of());
+                        self.redraw = true;
+                        return None;
+                    }
+                },
+                _ => {}
             }
         }
 
-        // **An open jobs pane owns Up and Down, and Enter reads the job's output.**
-        //
-        // The pane already drew `N out` for every row; until now that count was
-        // the whole answer, and the bytes it counted reachable only by asking the
-        // model to call `job_output`. Enter reads the row the operator is looking
-        // at, **into a pane** — this is what the previous `/job ID` got wrong: its
-        // reply is a warning on the session log, so the pane closed and the output
-        // scrolled past in the conversation. See the `ReadJobOutput` action.
         if self.jobs_pane && !self.jobs.is_empty() {
             let n = self.jobs.len();
             match k {
@@ -5924,7 +5962,6 @@ impl App {
                 _ => {}
             }
         }
-
         // **Up with an empty composer recalls the queued line.**
         //
         // The echo above the composer is the operator's own words, held only
@@ -7845,6 +7882,81 @@ impl App {
         self.todos_pane.then_some(Action::ListTodos)
     }
 
+    /// **EVERY ROW OF THE TODOS PANE THE CURSOR MAY LAND ON, in the order the pane draws them** —
+    /// leticl's `todos-stops`, and the ONE enumeration everything about the cursor reads.
+    ///
+    /// Its docstring is the operator's two reports, and both were the same defect: R44's first cut
+    /// spread this over a `-1` sentinel and the repo's own stop indices, and then *"arrows dont go
+    /// here"* — the cursor moving to a row whose line the pane computed from another list's
+    /// arithmetic — and *"mouse doesnt click"* — a click on the add row computing a negative index,
+    /// thrown away. **Two enumerations was the defect.**
+    ///
+    /// Three kinds, and the tag carries IDENTITY rather than position: a position is a fact about
+    /// the list when it was DRAWN, and a list changes between a draw and a keypress (a `TodosUpdated`
+    /// arriving, a row removed), so every action would land on whatever took its neighbour's place.
+    ///
+    /// **The model's rows are NOT stops**, which is the R44 boundary and not an omission: no key
+    /// acts on one — the model may move its own row's status and the operator may not — and a cursor
+    /// that stops where no key acts is a cursor the operator presses keys into and nothing happens.
+    /// They are skipped the way the repo's headings are.
+    fn todos_stops(&self) -> Vec<TodoStop> {
+        let mut out = vec![TodoStop::Add];
+        for t in self.todos.iter().filter(|t| {
+            t.by == letibot_sessionlog::event::TodoBy::Operator
+        }) {
+            out.push(TodoStop::Mine(t.content.clone()));
+        }
+        if let Some(rows) = &self.repo_todos {
+            for (i, r) in rows.iter().enumerate() {
+                if r.item {
+                    out.push(TodoStop::Repo(i));
+                }
+            }
+        }
+        out
+    }
+
+    /// **The pane row the stop at the cursor was DRAWN on**, read out of
+    /// [`App::todos_stop_rows`] — the record the pane wrote while drawing, and not arithmetic over
+    /// the lists it drew from. leticl's `todos-lines` second value, an `aref` of the third.
+    ///
+    /// The clamp is the one thing here that is not a read: a list can change under the cursor — a
+    /// `TodosUpdated` arriving, a row removed, another workspace — and a key pressed against a
+    /// shorter list must land on a row rather than on an index that no longer exists.
+    fn todos_row_of(&self) -> usize {
+        let at = self.todos_sel.min(self.todos_stop_rows.len().saturating_sub(1));
+        self.todos_stop_rows.get(at).copied().unwrap_or(0)
+    }
+
+    /// **The stop drawn on SCREEN ROW `y`, or nothing** — leticl's `todo-stop-at-line`, and the
+    /// answer to the operator's other report on this pane, *"mouse doesnt click"*.
+    ///
+    /// Read from the rows the last draw recorded, so a click and the drawing cannot disagree about
+    /// where a row is. That disagreement is the whole of the old defect: letibot's pane took no
+    /// click at all, and leticl's took one that computed the add row as a negative index and threw
+    /// it away — the add row being the first selectable row and `line - header` making it negative.
+    ///
+    /// Guarded on the WINDOW: a row above the pane's top or below its last drawn row is not a row
+    /// anybody is looking at, and a click into the blank space under a short list moves nothing.
+    fn todo_stop_at_row(&self, y: u16) -> Option<usize> {
+        let y = usize::from(y).checked_sub(self.todos_pane_top)?;
+        if y >= self.pane_room {
+            return None;
+        }
+        let pane_row = y + self.pane_scroll;
+        self.todos_stop_rows.iter().position(|r| *r == pane_row)
+    }
+
+    /// **The repo cursor follows the stop cursor**, for the repo's own keys — the unfold and the
+    /// body it shows read `repo_sel`, and a second cursor that did not follow would be the two
+    /// enumerations this whole change removed.
+    fn sync_repo_from_stop(&mut self, stops: &[TodoStop]) {
+        let at = self.todos_sel.min(stops.len().saturating_sub(1));
+        if let Some(TodoStop::Repo(i)) = stops.get(at) {
+            self.repo_sel = *i;
+        }
+    }
+
     /// The same, for the subagent tree — `/subagents` and `ctrl-g`.
     ///
     /// No bootstrap read: the tree is folded from durable `Subagent` events, which a
@@ -8838,6 +8950,10 @@ impl App {
             self.picker_rows_drawn = rows.len();
             rows
         } else if self.todos_pane {
+            // **Where the pane's own first row goes on the screen**, which is what a click's `y`
+            // has to be measured against: the session header sits above it when the frame is tall
+            // enough for one, and it is not a row of this pane.
+            self.todos_pane_top = usize::from(header.is_some());
             // One `stat` before the draw: the file is edited while this pane is
             // open, which is the case the open-time read could not see.
             self.refresh_repo_todos();
@@ -11511,6 +11627,9 @@ impl App {
     }
 
     fn todos_lines(&mut self, w: usize) -> Vec<String> {
+        // **The rows the stops land on, taken as they go out.** Built local and assigned at the
+        // end because the loops below hold `&self.todos` and `&self.repo_todos` while they record.
+        let mut stop_rows: Vec<usize> = Vec::new();
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "todos")];
         out.push(String::new());
         // **ONE LIST, WITH THE AUTHOR ON EVERY ROW** — R51 item 18: *"the author tag on every row
@@ -11532,16 +11651,32 @@ impl App {
         // prevent, and it is the same defect one step earlier than the one that drew the operator's
         // rows under the model's heading.
         out.push(dim(&self.cfg, "  this session — the plan, and who wrote each line:"));
+        // **The cursor, from the same enumeration the keys read** — see [`App::todos_stops`]. The
+        // mark and the key that acts are two readings of one index, which is what leticl's
+        // `todos-stops` exists for: two enumerations was the defect that produced *"arrows dont go
+        // here"* and *"mouse doesnt click"*.
+        let stops = self.todos_stops();
+        let cursor = self.todos_sel.min(stops.len().saturating_sub(1));
+        let marked = |want: &TodoStop| {
+            stops.get(cursor).is_some_and(|it| it == want)
+        };
         // **The add control, in the items' own mark column and BOLD**, so it reads as a control
         // rather than as a line of the list. leticl's operator, of its plain first cut: *"it looks
         // like a regular text."* The typed door is `/todo TEXT`; this is the one a reader finds.
         // **The control opens the CARD, and the verb is the typed door to the same act.** Both end
         // in `todo_command`, so a card and a line cannot become different things — leticl's `[+]`
         // row is the one its cursor lands on, and the typed form is what a script uses.
+        let on_add = marked(&TodoStop::Add);
+        stop_rows.push(out.len());
         out.push(format!(
-            "    {} {}",
+            "  {} {} {}",
+            if on_add { "▸" } else { " " },
             colour(&self.cfg, sgr::BOLD, "[+]"),
-            colour(&self.cfg, sgr::BOLD, "add todo item — enter here, or /todo TEXT")
+            colour(
+                &self.cfg,
+                sgr::BOLD,
+                "add todo item — enter opens the card, or /todo TEXT"
+            )
         ));
         if self.todos.is_empty() {
             out.push(dim(
@@ -11567,8 +11702,16 @@ impl App {
                 "    ".to_string()
             };
             let who = if is_mine { "you" } else { "model" };
+            // **The mark is on the operator's rows only.** The model's rows are not stops — no key
+            // acts on one — so a cursor that stopped there would be a cursor the operator presses
+            // keys into and nothing happens. See [`App::todos_stops`].
+            let cursor_here = is_mine && marked(&TodoStop::Mine(t.content.clone()));
+            if is_mine {
+                stop_rows.push(out.len());
+            }
             out.push(format!(
-                "    {number}{} {}  {}",
+                "  {} {number}{} {}  {}",
+                if cursor_here { "▸" } else { " " },
                 mark.painted(&self.cfg),
                 without_control_lines(&t.content),
                 // The tag is FAINT: it is the aside on the row and the content is what is read.
@@ -11589,7 +11732,6 @@ impl App {
             &self.cfg,
             "  the repo's TODO.md — the operator's queue, read-only here:",
         ));
-        self.repo_first_row = out.len();
         match &self.repo_todos {
             None => out.push(dim(
                 &self.cfg,
@@ -11602,7 +11744,17 @@ impl App {
                 // Only the items take a cursor: a heading is a roll-up of the
                 // rows under it and there is nothing to unfold on one.
                 for (i, r) in lines.iter().enumerate() {
-                    let here = r.item && i == self.repo_sel;
+                    // **From the ONE enumeration, not from `repo_sel`** — which is the shadow the
+                    // stop cursor writes through `sync_repo_from_stop`, and reading it here is what
+                    // left a `▸` on a repo row while the cursor was up on the add control. Two
+                    // cursors drawn from two facts was the defect; there is one fact.
+                    let here = r.item && marked(&TodoStop::Repo(i));
+                    // **A row's stop is its FIRST line**, so the body of an unfolded item does not
+                    // move the cursor's target — recorded before the row draws, because the row
+                    // renders to as many lines as its body needs.
+                    if r.item {
+                        stop_rows.push(out.len());
+                    }
                     let pad = " ".repeat(r.indent.saturating_sub(2));
                     let cursor = if here { "▸ " } else { "  " };
                     let open = here && self.repo_open;
@@ -11630,10 +11782,19 @@ impl App {
                 }
             }
         }
+        self.todos_stop_rows = stop_rows;
         out.push(String::new());
         out.push(dim(
             &self.cfg,
             "  the file itself is in the workspace; this pane never writes it.",
+        ));
+        // **The keys, said where they are used.** The cursor walks three kinds of row now, and
+        // what Enter does depends on which one it is on — a hint that named only the unfold was
+        // written when the cursor never left the repo's items.
+        out.push(dim(
+            &self.cfg,
+            "  ↑↓ moves (or click a row) · enter on [+] adds, on your row toggles it, on a repo \
+             item unfolds · esc closes",
         ));
         out.into_iter().map(|l| trim_to(&l, w)).collect()
     }
@@ -15132,7 +15293,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         (
             "ctrl-p",
-            "the todos pane: the model's plan, and the repo's TODO.md read-only — ↑↓ moves, enter or tab unfolds an item, pgup/pgdn scrolls",
+            "the todos pane: the model's plan, and the repo's TODO.md read-only — ↑↓ moves (or click a row), enter acts on the row under the cursor, pgup/pgdn scrolls",
         ),
         (
             "/new [title]",
@@ -22875,6 +23036,119 @@ mod tests {
         assert!(screen.contains("Here is the summary."), "{screen}");
     }
 
+    /// **A CLICK ON THE PANE MOVES THE CURSOR TO THE ROW IT IS ON.**
+    ///
+    /// The operator's second report about this pane, in leticl's `todos-stops` docstring: *"mouse
+    /// doesnt click"*. letibot had no click arm for this pane at all — the picker and the mode card
+    /// had one and the todos pane had none — and leticl's own first cut had one that computed the
+    /// add row as a negative index and threw the click away.
+    ///
+    /// What makes it work is the row the pane RECORDED as it drew, not arithmetic at the click's
+    /// end: a click has a screen row and nothing else, and a second computation of where a row went
+    /// is the defect both reports came from.
+    #[test]
+    fn a_click_on_the_todos_pane_puts_the_cursor_on_the_row_it_is_on() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-todo-click-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(
+            dir.join("TODO.md"),
+            "## Phase 0\n\n- [x] **T1** first item\n- [ ] **T2** second item\n",
+        )
+        .expect("write");
+        let mut a = app();
+        a.wiring.workspace = dir.display().to_string();
+        a.key(Key::CtrlP);
+
+        // The screen's own rows, which is what a click's `y` names. No session is attached, so
+        // there is no header above the pane and row N of the screen is row N of the pane.
+        let row_of = |screen: &[String], what: &str| {
+            u16::try_from(
+                screen
+                    .iter()
+                    .position(|l| l.contains(what))
+                    .unwrap_or_else(|| panic!("no row with {what:?} in:\n{}", screen.join("\n"))),
+            )
+            .expect("fits")
+        };
+        // **The screen is an argument and not a capture** — a closure over the frame the test
+        // happened to take first is a test that passes and fails for reasons nothing to do with
+        // the click, which is how this one first read as a broken click.
+        let marked = |screen: &[String], what: &str| {
+            screen
+                .iter()
+                .find(|l| l.contains('▸'))
+                .is_some_and(|l| l.contains(what))
+        };
+        let screen = a.screen(110, 40);
+        assert!(
+            marked(&screen, "[+] add todo item"),
+            "starts on the control"
+        );
+
+        // A click on the second item's row moves the cursor to it, and stops there: select and
+        // confirm stay two acts, as they do in the pickers.
+        a.key(Key::Click {
+            x: 6,
+            y: row_of(&screen, "T2 second item"),
+        });
+        let screen = a.screen(110, 40);
+        assert!(
+            marked(&screen, "T2 second item"),
+            "the click moved the mark:\n{}",
+            screen.join("\n")
+        );
+        assert_eq!(a.repo_sel, 2, "and the repo cursor followed");
+        assert_eq!(a.key(Key::Enter), None);
+        let screen = a.screen(110, 40);
+        assert!(
+            marked(&screen, "T2 second item"),
+            "the click did not confirm:\n{}",
+            screen.join("\n")
+        );
+
+        // A click on the add control — **the row `line - header` used to make negative** — lands
+        // on it, which is the whole of the operator's report.
+        a.key(Key::Click {
+            x: 6,
+            y: row_of(&screen, "[+] add todo item"),
+        });
+        let screen = a.screen(110, 40);
+        assert!(
+            marked(&screen, "[+] add todo item"),
+            "the control takes a click:\n{}",
+            screen.join("\n")
+        );
+
+        // A click on the `## Phase 0` heading moves nothing: it is drawn and is not a stop, and no
+        // key would act on it.
+        a.key(Key::Click {
+            x: 6,
+            y: row_of(&screen, "Phase 0"),
+        });
+        let screen = a.screen(110, 40);
+        assert!(
+            marked(&screen, "[+] add todo item"),
+            "a heading is not a stop: a click there moves nothing:\n{}",
+            screen.join("\n")
+        );
+
+        // And a click into the blank space below the list moves nothing either — the guard is the
+        // WINDOW, not the list.
+        let below = row_of(&screen, "this pane never writes it");
+        a.key(Key::Click { x: 6, y: below });
+        let screen = a.screen(110, 40);
+        assert!(
+            marked(&screen, "[+] add todo item"),
+            "blank space below the rows moves nothing:\n{}",
+            screen.join("\n")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_todos_pane_shows_both_sources_and_says_which_is_which() {
         let mut a = app();
@@ -23493,6 +23767,12 @@ mod tests {
         a.wiring.workspace = dir.display().to_string();
         a.key(Key::CtrlP);
         assert!(!a.screen(110, 30).join("\n").contains("the body line"));
+        // **The cursor starts on the ADD CONTROL**, which is the head of `todos_stops` and
+        // leticl's own starting position — so one Down is what puts it on the first repo item. The
+        // row under the cursor is the row Enter and Tab act on, which is the whole point of one
+        // enumeration; before this change the cursor had nowhere else to be and these keys were
+        // reading a different list from the one the pane drew.
+        a.key(Key::Down);
         a.key(Key::Tab);
         assert!(
             a.screen(110, 30).join("\n").contains("the body line"),
@@ -23577,10 +23857,32 @@ mod tests {
             "folded hides it: {screen}"
         );
 
-        // The cursor starts on the first item, and Enter unfolds it.
+        // **The cursor starts on the `[+]` control**, which is the head of the one enumeration —
+        // leticl's `todos-stops` — and NOT on the first item. It was on the first item while the
+        // cursor's position came from an index into the repo's rows; the operator's two reports,
+        // *"arrows dont go here"* and *"mouse doesnt click"*, were both that one defect, because
+        // the pane drew the mark from one list and the keys acted on another. There is one list.
+        let screen = a.screen(110, 40).join("\n");
+        let on = |s: &str, what: &str| {
+            s.lines()
+                .find(|l| l.contains('▸'))
+                .is_some_and(|l| l.contains(what))
+        };
+        assert!(on(&screen, "[+] add todo item"), "starts on the control: {screen}");
+        // The model's rows and your own are not stops either, so the arrows never park on a row
+        // where no key acts — the same reason the repo's headings are skipped.
+        assert!(
+            !screen.contains("▸ T1"),
+            "the cursor is not on an item yet: {screen}"
+        );
+
+        // One Down is what reaches the first item, and Enter unfolds it.
+        a.key(Key::Down);
+        let screen = a.screen(110, 40).join("\n");
+        assert!(on(&screen, "T1 vendor the deps"), "down reached T1: {screen}");
         assert_eq!(a.key(Key::Enter), None);
         let screen = a.screen(110, 40).join("\n");
-        assert!(screen.contains("▸"), "the cursor is drawn: {screen}");
+        assert!(on(&screen, "T1 vendor the deps"), "Enter does not move the cursor: {screen}");
         assert!(
             screen.contains("scripts/bootstrap.sh (yason 0c84b29)."),
             "{screen}"
@@ -23601,13 +23903,26 @@ mod tests {
             !screen.contains("bootstrap.sh"),
             "moving off an item folds it: {screen}"
         );
+        assert!(
+            on(&screen, "T2 no body at all"),
+            "the arrow moved on to T2: {screen}"
+        );
 
-        // Down wraps past the last item rather than stopping, and never lands on
-        // a heading — there is nothing to unfold on one.
+        // Down past the last item wraps — and the head of the list is the `[+]` control, because
+        // that is where the enumeration starts. Up from the control wraps to the LAST item, so it
+        // never lands on the `## Phase 0` heading, which has nothing to unfold.
         a.key(Key::Down);
+        let screen = a.screen(110, 40).join("\n");
+        assert!(on(&screen, "[+] add todo item"), "wrapped to the control: {screen}");
+        a.key(Key::Up);
+        let screen = a.screen(110, 40).join("\n");
+        assert!(
+            on(&screen, "T2 no body at all"),
+            "up from the control wraps to the last ITEM, not to the heading: {screen}"
+        );
         assert_eq!(
-            a.repo_sel, 1,
-            "wrapped to the first ITEM, not to the heading"
+            a.repo_sel, 2,
+            "and the repo cursor follows, so the two cannot disagree"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
