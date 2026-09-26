@@ -64,6 +64,19 @@ pub struct SessionLog {
     head_seq: u64,
     /// How many events have fallen off the back. Present and zero, always.
     dropped: u64,
+    /// **A scratch buffer for measuring an event's serialised size.**
+    ///
+    /// `append` needs the byte length of the event as JSON — it is the unit the retention bounds
+    /// are kept in — and it used to get it from `serde_json::to_string(&env)`, which builds the
+    /// whole JSON as a `String` and throws it away. That is once per event, and one event is one
+    /// token on the wire path, so it was a full re-serialisation of every event purely to count
+    /// its characters.
+    ///
+    /// A `Vec<u8>` on the log rather than a local, so its capacity survives from event to event:
+    /// `to_writer` into it and take `.len()`. The bytes were never read before and still are not —
+    /// what is wanted is the length, and the encoding work is unavoidable because the length *is*
+    /// the encoded length. What is avoidable is allocating the string.
+    size_scratch: Vec<u8>,
 }
 
 impl SessionLog {
@@ -75,6 +88,7 @@ impl SessionLog {
             bytes: 0,
             head_seq: 0,
             dropped: 0,
+            size_scratch: Vec::new(),
         }
     }
 
@@ -123,7 +137,15 @@ impl SessionLog {
         };
         // Serialised size is what the *gap* bound is measured in, so measuring the
         // retention bound the same way keeps one unit in the type.
-        let bytes = serde_json::to_string(&env).map(|s| s.len()).unwrap_or(0);
+        //
+        // **Into the scratch buffer, not into a new `String`.** `to_string` built the whole JSON
+        // once per event and dropped it; `to_writer` into a reused buffer is the same encode and
+        // the same length with no allocation after the first few events have sized it. `clear()`
+        // keeps the capacity, which is what makes the steady state free.
+        self.size_scratch.clear();
+        let bytes = serde_json::to_writer(&mut self.size_scratch, &env)
+            .map(|()| self.size_scratch.len())
+            .unwrap_or(0);
         self.ring.push_back(Retained {
             env: env.clone(),
             bytes,

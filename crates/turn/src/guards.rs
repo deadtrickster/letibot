@@ -50,7 +50,14 @@ impl GuardSet {
             .unwrap_or(0);
         GuardSet {
             guards: guards.to_vec(),
-            recent: Vec::new(),
+            // **The bound is known here and the buffer used to ignore it.** `max_window` is the
+            // growth this window is allowed to reach — the widest repetition guard, `window *
+            // times` — and `recent` is pushed to once per token. `Vec::new()` therefore
+            // reallocated its way up through every doubling to that bound, from the first token of
+            // every turn. Reserving it once costs the same memory the window would reach anyway,
+            // and nothing at all when no repetition guard is configured (`max_window` is 0 and
+            // `with_capacity(0)` does not allocate).
+            recent: Vec::with_capacity(max_window),
             run_token: None,
             run_len: 0,
             reasoning_tokens: 0,

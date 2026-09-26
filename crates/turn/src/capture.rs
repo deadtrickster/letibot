@@ -126,6 +126,18 @@ impl CaptureSession {
     ///
     /// Called unconditionally: the window has to already hold the frames *before*
     /// the offender by the time the offender is recognised.
+    ///
+    /// **And that is why the window is a ring that REUSES its strings.** This is called once per
+    /// SSE frame — one frame per token on this server — for a window that holds three, and a
+    /// capture almost never fires: `push_back(payload.to_string())` paid a fresh `String` for every
+    /// token of every turn so that a window nobody reads could hold a copy of it. The entry leaving
+    /// the window has exactly the storage the arriving one needs, so it is emptied and refilled
+    /// instead of freed and re-allocated. Steady state allocates nothing.
+    ///
+    /// The window's *contents* are unchanged — same three most recent frames, in order — and that
+    /// is the whole risk of a change like this: a ring that reuses storage is a ring that can hand
+    /// a caller a buffer that has since been overwritten. Nothing here hands out the storage;
+    /// [`CaptureSession::arm`] is the only reader and it copies what it keeps.
     pub fn observe(&mut self, payload: &str) {
         if let Some(a) = &mut self.armed {
             if a.after.len() < TRAIL {
@@ -136,9 +148,15 @@ impl CaptureSession {
         // `LEAD + 1`: the newest entry is a candidate offender, and `arm` takes it
         // back out. Sizing the window at `LEAD` would leave one predecessor.
         if self.lead.len() == LEAD + 1 {
-            self.lead.pop_front();
+            // The evicted slot is the one being refilled, so its buffer is taken, emptied and put
+            // back rather than replaced.
+            let mut reused = self.lead.pop_front().expect("len is LEAD + 1");
+            reused.clear();
+            reused.push_str(payload);
+            self.lead.push_back(reused);
+        } else {
+            self.lead.push_back(payload.to_string());
         }
-        self.lead.push_back(payload.to_string());
         self.index += 1;
     }
 
