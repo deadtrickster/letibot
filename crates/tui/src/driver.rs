@@ -521,6 +521,14 @@ impl Link {
                     Action::WithdrawPrompts => {
                         self.client.withdraw_prompts(app.seq)?;
                     }
+                    // **The operator's half of the board, on its way to the daemon.** The head
+                    // sends the WHOLE list: the daemon files it in the operator's half by the
+                    // `by` tag on each row, persists it, and publishes it to every head. There is
+                    // no per-row frame and no delta, so a head cannot accumulate a difference
+                    // between its copy and the store.
+                    Action::SetOperatorTodos(items) => {
+                        self.client.set_operator_todos(app.seq, items)?;
+                    }
                     Action::Interrupt(reason) => {
                         self.client.interrupt(app.seq, &reason)?;
                     }

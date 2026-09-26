@@ -277,6 +277,31 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// **The operator's half of the todo board, replaced wholesale.**
+    ///
+    /// A head owns these rows — they are its own list — so it sends the WHOLE thing on every
+    /// change rather than a delta: a delta protocol for a list of tens of items would be a second
+    /// source of truth about them, which is the mistake this tree keeps deleting.
+    ///
+    /// **And the head is the only thing that can send it.** The daemon stores the rows, serves
+    /// them to every head and hands them to the model as part of one union — but it cannot invent
+    /// one, because the words are the operator's. Every row here carries
+    /// [`letibot_sessionlog::event::TodoBy::Operator`], which is what makes the daemon file it in
+    /// the operator's half instead of the model's.
+    pub fn set_operator_todos(
+        &mut self,
+        expected_seq: u64,
+        items: Vec<crate::event::TodoEntry>,
+    ) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::SetOperatorTodos {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+            items,
+        })?;
+        Ok(client_request_id)
+    }
+
     /// This session's background jobs, as the daemon's process table has them.
     /// The head renders what comes back; it does not decide what is in it.
     pub fn list_jobs(&mut self) -> Result<(), ClientError> {

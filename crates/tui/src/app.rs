@@ -359,6 +359,15 @@ pub enum Action {
     ListSessions,
     /// Ask for this session's todo list — the pane's bootstrap read.
     ListTodos,
+    /// **The operator's half of the board, replaced wholesale** — R51 item 18's write half, and
+    /// the frame that had no sender until now.
+    ///
+    /// The daemon stores and serves these rows and hands them to the model as part of one union;
+    /// what it cannot do is invent one, because the words are the operator's. So the head owns them
+    /// and sends the whole list on every change, which is the shape `TodoBoard::set_operator`
+    /// documents: *"a delta protocol for a list of tens of items would be a second source of truth
+    /// about them."*
+    SetOperatorTodos(Vec<letibot_sessionlog::event::TodoEntry>),
     /// Ask the daemon for its job table. The head renders the answer; it does
     /// not decide what is in it.
     ListJobs,
@@ -2250,6 +2259,10 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     // both heads read — that is a cross-tree change and is filed rather than half-done
     // here, but **listing what this head implements is this head's half of it.**
     ("todos", "open or close the todos pane (ctrl-p)"),
+    (
+        "todo",
+        "TEXT adds one of YOUR rows · done N · rm N — the pane numbers your half",
+    ),
     ("subagents", "open or close the subagent tree (ctrl-g)"),
     (
         "peek",
@@ -7115,6 +7128,9 @@ impl App {
             // The chords stay, because they are faster; both spellings end in the same
             // function, so they cannot drift.
             "todos" => self.toggle_todos(),
+            _ if verb_arg(cmd, "todo").is_some() => {
+                return self.todo_command(verb_arg(cmd, "todo").unwrap_or(""));
+            }
             "subagents" => {
                 self.toggle_subagents();
                 None
@@ -7532,6 +7548,86 @@ impl App {
         t.calls
             .iter()
             .any(|c| !matches!(c.state, CallState::Finished { .. }))
+    }
+
+    /// **The operator's rows, out of the union the daemon serves.** The head keeps no second
+    /// list: the daemon persists them, every head sees them, and this is the one place that says
+    /// which half of that list the operator wrote. Sending is the whole list, so a divergence
+    /// between a head's copy and the store is impossible to accumulate.
+    fn operator_todos(&self) -> Vec<letibot_sessionlog::event::TodoEntry> {
+        self.todos
+            .iter()
+            .filter(|t| t.by == letibot_sessionlog::event::TodoBy::Operator)
+            .cloned()
+            .collect()
+    }
+
+    /// **`/todo …` — the operator's own rows.** The verb's three forms, and each one sends the
+    /// whole list:
+    ///
+    /// ```text
+    /// /todo finish the parity row        add it, at the end
+    /// /todo done 2                       mark the second of MY rows complete
+    /// /todo rm 2                         take it off the board
+    /// ```
+    ///
+    /// **Numbered over the operator's rows and not the union**, because the model's rows are not
+    /// the operator's to edit — that is the same rule `/rename` and `/compact` keep about acting on
+    /// the session you are in. The count is the one the pane prints for that half.
+    ///
+    /// **Marked complete rather than deleted** by `done`, which is the difference the daemon's own
+    /// `set_operator_states` draws: a finished row is a record of work, and only `rm` takes one off
+    /// the board. The model may move a row's STATUS (by quoting its words) and may not remove it,
+    /// which is the operator's ruling recorded on `TodoBoard`.
+    fn todo_command(&mut self, rest: &str) -> Option<Action> {
+        let rest = rest.trim();
+        if self.session_id.is_empty() {
+            self.say("not attached to a session yet");
+            return None;
+        }
+        let mut mine = self.operator_todos();
+        // `done N` and `rm N` — a number is what the pane prints beside each of these rows.
+        let (verb, arg) = match rest.split_once(char::is_whitespace) {
+            Some((v, a)) => (v, a.trim()),
+            None => (rest, ""),
+        };
+        match (verb, arg) {
+            ("done" | "rm", n) if !n.is_empty() => {
+                let Ok(at) = n.parse::<usize>() else {
+                    self.say(&format!("`{n}` is not a row number — `/todo` lists yours"));
+                    return None;
+                };
+                if at < 1 || at > mine.len() {
+                    self.say(&format!(
+                        "there is no row {at} of yours — you have {}",
+                        mine.len()
+                    ));
+                    return None;
+                }
+                if verb == "rm" {
+                    mine.remove(at - 1);
+                    self.say(&format!("row {at} is off the board"));
+                } else {
+                    mine[at - 1].status = letibot_sessionlog::event::TodoStatus::Completed;
+                    self.say(&format!("row {at} is done"));
+                }
+            }
+            // Anything else is the text of a new row — including a line that begins with a number,
+            // or with `done` and no argument, because those are sentences somebody could type.
+            _ if !rest.is_empty() => {
+                mine.push(letibot_sessionlog::event::TodoEntry {
+                    content: rest.to_string(),
+                    status: letibot_sessionlog::event::TodoStatus::Pending,
+                    by: letibot_sessionlog::event::TodoBy::Operator,
+                });
+                self.say(&format!("added to your list — {} row(s)", mine.len()));
+            }
+            _ => {
+                self.say("/todo TEXT adds one · /todo done N marks that row complete · /todo rm N takes it off");
+                return None;
+            }
+        }
+        Some(Action::SetOperatorTodos(mine))
     }
 
     /// **`/todos` and `ctrl-p`, as one action.**
@@ -11234,13 +11330,25 @@ impl App {
         // a row's state (by quoting its words — there is no id on the wire, and the operator has
         // ruled out a bump for one); it may not remove the row, because membership and order are
         // the head's while status is the daemon's.
-        half(
-            &mut out,
-            "  yours — the rows you wrote:",
-            "    none: everything here is the model's, or has not arrived yet. Your own rows \
-             come from this head's store and reach the daemon on attach and on every change.",
-            &theirs,
-        );
+        // **NUMBERED, so `/todo done N` and `/todo rm N` name the row the reader can count to.**
+        // The numbers are over THIS half and not the union — the model's rows are not the
+        // operator's to edit, and a number printed over the union would index a list that starts
+        // with somebody else's rows.
+        out.push(dim(&self.cfg, "  yours — the rows you wrote, by number:"));
+        if theirs.is_empty() {
+            out.push(dim(
+                &self.cfg,
+                "    none yet — `/todo TEXT` adds one, and the daemon keeps it for the session.",
+            ));
+        }
+        for (n, t) in theirs.iter().enumerate() {
+            out.push(format!(
+                "    {} {:>2}  {}",
+                mark_of(t).painted(&self.cfg),
+                n + 1,
+                without_control_lines(&t.content)
+            ));
+        }
         out.push(String::new());
         out.push(dim(
             &self.cfg,
@@ -22509,6 +22617,92 @@ mod tests {
         assert!(
             screen.contains("/") && screen.contains("["),
             "headings carry a [done/total] cookie: {screen}"
+        );
+    }
+
+    /// **The operator can add a row of their own, and it goes to the daemon as their half.**
+    ///
+    /// The gap this closes, measured before writing it: **`TodoBy::Operator` was constructible
+    /// only in tests.** The daemon stores and serves the operator's rows, the pane splits them out,
+    /// and nothing in the tree could CREATE one — `ClientFrame::SetOperatorTodos` had no sender at
+    /// all, though the protocol's own doc describes a head sending one. So the operator's half of
+    /// the board was unreachable, and *"you dont support persistent todos and leticl does"* was
+    /// exactly right.
+    #[test]
+    fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
+        use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        // A row the MODEL wrote, so the numbering can be shown to be over the operator's half only.
+        a.apply(ServerFrame::Event(env(1, SessionEvent::TodosUpdated {
+            todos: vec![TodoEntry {
+                content: "the model's own row".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+            }],
+        })));
+        let mine = |a: &App| a.operator_todos();
+
+        // **Adding one sends the WHOLE list, tagged as the operator's.** There is no per-row frame.
+        let act = a.command("todo ship the parity row");
+        match &act {
+            Some(Action::SetOperatorTodos(items)) => {
+                assert_eq!(items.len(), 1, "the whole list is one row: {items:?}");
+                assert_eq!(items[0].content, "ship the parity row");
+                assert_eq!(items[0].by, TodoBy::Operator, "filed in the operator's half");
+                assert_eq!(items[0].status, TodoStatus::Pending);
+            }
+            other => panic!("expected a SetOperatorTodos, got {other:?}"),
+        }
+        // The daemon takes it and publishes the union back — which is how the head learns its own
+        // list: it keeps no second copy.
+        a.apply(ServerFrame::Event(env(2, SessionEvent::TodosUpdated {
+            todos: vec![
+                TodoEntry {
+                    content: "the model's own row".into(),
+                    status: TodoStatus::Pending,
+                    by: TodoBy::Model,
+                },
+                TodoEntry {
+                    content: "ship the parity row".into(),
+                    status: TodoStatus::Pending,
+                    by: TodoBy::Operator,
+                },
+            ],
+        })));
+        assert_eq!(mine(&a).len(), 1, "the head sees its own row back");
+
+        // **`done 1` marks the FIRST OF THE OPERATOR'S ROWS** — not the first of the union, which
+        // is the model's. A number over the union would edit a row that is not theirs to edit.
+        match a.command("todo done 1") {
+            Some(Action::SetOperatorTodos(items)) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].content, "ship the parity row");
+                assert_eq!(items[0].status, TodoStatus::Completed);
+            }
+            other => panic!("expected completion, got {other:?}"),
+        }
+        // **A number out of range is REFUSED by name**, not clamped onto a neighbour.
+        assert_eq!(a.command("todo done 9"), None);
+        assert!(
+            a.notice.as_deref().unwrap_or("").contains("no row 9"),
+            "the refusal does not name the row: {:?}",
+            a.notice
+        );
+        // **`rm 1` takes it off**, which is the operator's own act and not the model's — the model
+        // may move a row's status and may not remove it.
+        match a.command("todo rm 1") {
+            Some(Action::SetOperatorTodos(items)) => {
+                assert!(items.is_empty(), "the row is gone: {items:?}");
+            }
+            other => panic!("expected a removal, got {other:?}"),
+        }
+        // **A bare `/todo` says what the three forms are** rather than adding an empty row.
+        assert_eq!(a.command("todo"), None);
+        assert!(
+            a.notice.as_deref().unwrap_or("").contains("adds one"),
+            "bare /todo does not teach its own forms: {:?}",
+            a.notice
         );
     }
 
