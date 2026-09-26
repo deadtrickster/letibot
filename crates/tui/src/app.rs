@@ -14067,7 +14067,15 @@ fn live_tail_covered(
     rung: Verbosity,
     bound: &std::collections::HashMap<String, String>,
 ) -> bool {
-    !rung.hides_the_working()
+    // **`rung.hides_the_working()`, NOT `!`** — the term was inverted, and that is the whole of
+    // the two-marker defect. Read against the docstring above: *true when the last row is
+    // invisible, because then the stretch it sits in runs to the end and `unseen_run_at` has
+    // already folded the tail into its counts.* A row can only be invisible at a rung that hides
+    // the working, so the guard has to be the positive one — as written it was false in exactly
+    // the case the function exists for, so it answered `false` always, every caller took the
+    // live work for a run of its own, and one turn's work was drawn by two markers: the walk's and
+    // the live pane's.
+    rung.hides_the_working()
         && items
             .last()
             .is_some_and(|it| !row_drawn_at(rung, bound, it))
@@ -32455,8 +32463,8 @@ mod tests {
     /// So a frame that re-walks the run's row glues a second marker onto the line the first one is
     /// already in. This renders the same state twice, which is the smallest thing that can catch it.
     #[test]
-    #[ignore = "REPRODUCES the two-marker duplicate: 2 markers on 2 lines for one run, which the \
-                fold fix (see the note on `newest_unseen_run`) closes; enabled when it lands"]
+    #[ignore = "STILL RED: the same two-marker race as the test above, seen as two markers on \
+                two lines rather than one. One fix closes both."]
     fn a_marker_is_glued_to_a_line_once_however_many_frames_draw_it() {
         let mut a = app();
         a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
@@ -32509,7 +32517,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "REPRODUCES A LIVE DEFECT — the fix needs the live-edge rule, see the note below"]
+    #[ignore = "STILL RED after `live_tail_covered` was fixed: this fixture's last row is the \
+                operator's VISIBLE one, so the tail is genuinely not covered and the live work is \
+                its own run. leticl's `live-here` puts the marker on the newest VISIBLE row and \
+                folds the run's counts into it; that is the remaining step."]
     fn the_work_in_flight_is_counted_by_one_marker_not_two() {
         let mut a = app();
         a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
