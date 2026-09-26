@@ -14095,19 +14095,24 @@ fn newest_unseen_run(
     if !rung.hides_the_working() {
         return None;
     }
-    // **REVERTED, and the reason is a test.** Preferring a run with rows here made the OLDEST run
-    // eligible for `newest` — a settled turn's marker went yellow and folded the live counts when
-    // the current turn had a call in flight with no row yet, which is the *"all tool call counters
-    // are yellow now"* defect all over again. See
-    // `the_work_in_flight_is_counted_by_one_marker_not_two`, which reproduces the duplicate this
-    // was meant to fix and is `#[ignore]`d until the edge rule is right: the live counts belong to
-    // the run at the LIVE EDGE, and *the edge* is not simply *the newest run with rows*.
-    if live.work() > 0 && !live_tail_covered(items, rung, bound) {
-        return Some(items.len());
-    }
-    (0..items.len())
+    // **A run with rows comes first, and the live tail only when there is none** — the order here
+    // is the fix for the two-marker duplicate, and it is safe because the FOLD is what decides
+    // which run carries the work: `hidden_run_marker` folds the live counts into the run that holds
+    // one of the current turn's rows (`live_here`), and a run of an EARLIER turn's rows folds
+    // nothing.
+    //
+    // **Preferring a run with rows *without* that gate is the trap**, and this file carries the
+    // scar: a settled turn's marker folded the current turn's work and went yellow, which is
+    // *"all tool call counters are yellow now"*.
+    if let Some(r) = (0..items.len())
         .rev()
         .find(|r| unseen_run_at(items, rung, bound, live, *r).is_some_and(|(start, _)| start == *r))
+    {
+        return Some(r);
+    }
+    // **And only when nothing has rows**: the work in flight is its own run, addressed by the one
+    // index past the end and drawn by the live pane.
+    (live.work() > 0).then_some(items.len())
 }
 
 /// **Is the work in flight already counted by a run that has rows.**
