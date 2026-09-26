@@ -9271,6 +9271,10 @@ impl App {
             // renders newest first, so the prose this marker continues has not been reached
             // yet when the row is built. See [`hidden_run_marker`].
             let marker = unseen.filter(|(start, _)| *start == k).map(|(start, end)| {
+                // **Does this run hold one of the TURN's rows** — the `live_here` question. A run
+                // made only of an earlier turn's rows is history, and folding the in-flight work
+                // into it is the defect `marker_carries_live` already records.
+                let live_here = (start..end).any(|r| in_flight.contains(&self.items[r].item_id));
                 hidden_run_marker(
                     &self.items,
                     start,
@@ -9279,6 +9283,7 @@ impl App {
                     &cfg,
                     newest_run == Some(start),
                     live,
+                    live_here,
                 )
             });
             let (class, rows) = match unseen {
@@ -10112,6 +10117,8 @@ impl App {
                     let tight = unseen.is_some() && joinable;
                     let (class, rows) = match unseen {
                         Some((start, end)) if start == *hist_upto => {
+                            let live_here =
+                                (start..end).any(|r| in_flight.contains(items[r].item_id.as_str()));
                             let marker = hidden_run_marker(
                                 items,
                                 start,
@@ -10120,6 +10127,7 @@ impl App {
                                 &cfg,
                                 newest_run == Some(start),
                                 live,
+                                live_here,
                             );
                             // **Glued to the sentence it continues**, when there is one: the
                             // last drawn row is [`RowClass::Speech`] — the class this file
@@ -10263,6 +10271,29 @@ impl App {
         {
             self.hist_lines[at] = original;
         }
+        // **Has the walk already carried the in-flight counts?** The walk folds them into the run
+        // the current turn is working in — the `live_here` question — and if it has, a marker here
+        // would be a SECOND one for one turn's work: `[1 tool call]` from the walk and
+        // `[1 thinking line]` from the pane, which is the duplicate caught in a tmux sample of the
+        // live head. Asked here, before the destructure below lends `items` out.
+        let walk_carried_live = live.work() > 0
+            && (0..self.items.len())
+                .rev()
+                .find_map(|k| {
+                    let (s0, e0) = unseen_run_at(
+                        &self.items,
+                        self.verbosity,
+                        &self.bound_prompts,
+                        live,
+                        k,
+                    )?;
+                    (s0 == k).then_some((s0, e0))
+                })
+                .is_some_and(|(s0, e0)| {
+                    (s0..e0).any(|r| self.turn.as_ref().is_some_and(|t| {
+                        t.appended.iter().any(|id| *id == self.items[r].item_id)
+                    }))
+                });
         let live_joins = live.work() > 0
             && !superseded
             && self.verbosity.hides_the_working()
@@ -10464,7 +10495,14 @@ impl App {
             //
             // Drawn where the work is: right after the prose that introduced it, which is where
             // the counts belong and where the reader is looking.
-            if !superseded && rung.hides_the_working() && live.work() > 0 && !live_joins {
+            // **And only when no RUN has already carried it** — see `walk_carried_live`, computed
+            // above from the same fact the fold uses, so the two cannot disagree.
+            if !superseded
+                && rung.hides_the_working()
+                && live.work() > 0
+                && !live_joins
+                && !walk_carried_live
+            {
                 let painted =
                     Marker::new(
                         live.calls,
@@ -14547,6 +14585,9 @@ fn hidden_run_marker(
     cfg: &RenderConfig,
     newest: bool,
     live: LiveWork,
+    // **Does this run hold a row of the current turn** — leticl's `live-here`, and the fact that
+    // decides whether the in-flight work is these counts' continuation. See the fold below.
+    live_here: bool,
 ) -> Marker {
     let mut calls = 0usize;
     let mut think_lines = 0usize;
@@ -14580,8 +14621,19 @@ fn hidden_run_marker(
     // a previous round, or a previous turn — and stays plain. The second of the three wrong cuts
     // was exactly this question asked of the turn instead of the marker, which lit every run
     // behind it.
-    let carries_live = end == items.len() && marker_carries_live(live);
-    if end == items.len() {
+    // **Fold when this run holds a row of the CURRENT TURN**, which is the fact the gate was
+    // standing in for. `end == items.len()` said *this stretch reaches the live edge*, and that is
+    // true only while nothing visible has arrived after it — so a row the reader can see landing
+    // after the run (the operator's own message, say) turned the fold OFF, and the same work was
+    // then drawn twice: the run's counts in one marker and the live work in another.
+    //
+    // **And `newest` alone is the wrong widening** — that is the trap this file already records.
+    // The newest run with hidden rows can be the PREVIOUS turn's, and folding the live work into it
+    // is *"all tool call counters are yellow now"*. The discriminating fact is the turn: the live
+    // work belongs to the run the current turn is working in, so the run has to hold one of the
+    // turn's own rows.
+    let carries_live = live_here && marker_carries_live(live);
+    if live_here {
         calls += live.calls;
         think_lines += live.think_lines;
     }
@@ -32463,8 +32515,6 @@ mod tests {
     /// So a frame that re-walks the run's row glues a second marker onto the line the first one is
     /// already in. This renders the same state twice, which is the smallest thing that can catch it.
     #[test]
-    #[ignore = "STILL RED: the same two-marker race as the test above, seen as two markers on \
-                two lines rather than one. One fix closes both."]
     fn a_marker_is_glued_to_a_line_once_however_many_frames_draw_it() {
         let mut a = app();
         a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
@@ -32517,10 +32567,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "STILL RED after `live_tail_covered` was fixed: this fixture's last row is the \
-                operator's VISIBLE one, so the tail is genuinely not covered and the live work is \
-                its own run. leticl's `live-here` puts the marker on the newest VISIBLE row and \
-                folds the run's counts into it; that is the remaining step."]
     fn the_work_in_flight_is_counted_by_one_marker_not_two() {
         let mut a = app();
         a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
