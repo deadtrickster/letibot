@@ -11281,74 +11281,74 @@ impl App {
     fn todos_lines(&mut self, w: usize) -> Vec<String> {
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "todos")];
         out.push(String::new());
-        // **ONE LIST ON THE WIRE, TWO AUTHORS ON THE SCREEN** — R51 item 18, and this is the half
-        // that was wrong.
+        // **ONE LIST, WITH THE AUTHOR ON EVERY ROW** — R51 item 18: *"the author tag on every row
+        // is the requirement (R44)"*. leticl draws it this way and its `todos-lines` gives the
+        // shape, with the add control at the head of the session's list because that is where an
+        // addition goes:
         //
-        // `TodoBoard::snapshot` is the UNION — the model's rows first, then the operator's —
-        // because that is what *"the existing getter should return mine and yours"* asks for, and
-        // it is what the model must see. A pane that draws the union under one heading therefore
-        // shows the operator's rows **as the model's plan**: the defect leticl measured and handed
-        // back, which on its head rendered the same row twice with two different authors.
+        // ```text
+        //   this session — the plan, and who wrote each line:
+        //   [+] add todo item
+        //     [ ] check the logs  — you
+        //     [x] a model item  — model
+        // ```
         //
-        // So each half is drawn once, under its own heading, by the `by` tag the wire already
-        // carries. **The order is the daemon's own** — model first, then the operator's, which is
-        // the order `snapshot` builds — so the screen does not re-sort a list it does not own.
-        let (mine, theirs): (Vec<_>, Vec<_>) = self
-            .todos
-            .iter()
-            .partition(|t| t.by == letibot_sessionlog::event::TodoBy::Model);
-        let mark_of = |t: &letibot_sessionlog::event::TodoEntry| match t.status {
-            letibot_sessionlog::event::TodoStatus::Pending => TodoMark::Open,
-            letibot_sessionlog::event::TodoStatus::InProgress => TodoMark::Doing,
-            letibot_sessionlog::event::TodoStatus::Completed => TodoMark::Done,
-        };
-        let mut half = |out: &mut Vec<String>, heading: &str, none: &str, rows: &[&letibot_sessionlog::event::TodoEntry]| {
-            let cfg = &self.cfg;
-            out.push(dim(cfg, heading));
-            if rows.is_empty() {
-                out.push(dim(cfg, none));
-            }
-            for t in rows {
-                out.push(format!(
-                    "    {} {}",
-                    mark_of(t).painted(cfg),
-                    without_control_lines(&t.content)
-                ));
-            }
-        };
-        // The model's half, and **its own sentence when it is empty** — which is the common case
-        // for a session whose plan the operator has taken over, and not the same statement as *your
-        // rows are missing*.
-        half(
-            &mut out,
-            "  the model's plan, live:",
-            "    none written yet. The model writes them with todo_write.",
-            &mine,
-        );
-        out.push(String::new());
-        // **The operator's half is NOT read-only, and saying so is the point.** The model may move
-        // a row's state (by quoting its words — there is no id on the wire, and the operator has
-        // ruled out a bump for one); it may not remove the row, because membership and order are
-        // the head's while status is the daemon's.
-        // **NUMBERED, so `/todo done N` and `/todo rm N` name the row the reader can count to.**
-        // The numbers are over THIS half and not the union — the model's rows are not the
-        // operator's to edit, and a number printed over the union would index a list that starts
-        // with somebody else's rows.
-        out.push(dim(&self.cfg, "  yours — the rows you wrote, by number:"));
-        if theirs.is_empty() {
+        // **Two headed sections was the earlier reading and it is wrong** — not because a section
+        // is a bad shape, but because the TAG is the fact and a heading is an inference from which
+        // section a row is in. `TodoBoard::snapshot` is one union with a `by` on each row; a screen
+        // that re-derives authorship from where a row was drawn is the drift this field exists to
+        // prevent, and it is the same defect one step earlier than the one that drew the operator's
+        // rows under the model's heading.
+        out.push(dim(&self.cfg, "  this session — the plan, and who wrote each line:"));
+        // **The add control, in the items' own mark column and BOLD**, so it reads as a control
+        // rather than as a line of the list. leticl's operator, of its plain first cut: *"it looks
+        // like a regular text."* The typed door is `/todo TEXT`; this is the one a reader finds.
+        out.push(format!(
+            "    {} {}",
+            colour(&self.cfg, sgr::BOLD, "[+]"),
+            colour(&self.cfg, sgr::BOLD, "add todo item — /todo TEXT")
+        ));
+        if self.todos.is_empty() {
             out.push(dim(
                 &self.cfg,
-                "    none yet — `/todo TEXT` adds one, and the daemon keeps it for the session.",
+                "    none yet. The model writes them with todo_write; `/todo TEXT` adds yours.",
             ));
         }
-        for (n, t) in theirs.iter().enumerate() {
+        // **The operator's rows numbered, so `/todo done N` and `/todo rm N` name the row the
+        // reader can count to** — over the operator's half and not the union, since the model's
+        // rows are not theirs to edit.
+        let mut mine_at = 0usize;
+        for t in &self.todos {
+            let mark = match t.status {
+                letibot_sessionlog::event::TodoStatus::Pending => TodoMark::Open,
+                letibot_sessionlog::event::TodoStatus::InProgress => TodoMark::Doing,
+                letibot_sessionlog::event::TodoStatus::Completed => TodoMark::Done,
+            };
+            let is_mine = t.by == letibot_sessionlog::event::TodoBy::Operator;
+            let number = if is_mine {
+                mine_at += 1;
+                format!("{mine_at:>2}  ")
+            } else {
+                "    ".to_string()
+            };
+            let who = if is_mine { "you" } else { "model" };
             out.push(format!(
-                "    {} {:>2}  {}",
-                mark_of(t).painted(&self.cfg),
-                n + 1,
-                without_control_lines(&t.content)
+                "    {number}{} {}  {}",
+                mark.painted(&self.cfg),
+                without_control_lines(&t.content),
+                // The tag is FAINT: it is the aside on the row and the content is what is read.
+                dim(&self.cfg, &format!("— {who}")),
             ));
         }
+        out.push(String::new());
+        // **What the model may and may not do with these**, from the daemon's own rules: it may
+        // move a row's STATUS (by quoting its words — there is no id on the wire) and may not
+        // REMOVE one, because membership and order are the head's while status is the daemon's.
+        out.push(dim(
+            &self.cfg,
+            "  the model sees these and is reminded of them; it can mark one done, and cannot \
+             remove yours",
+        ));
         out.push(String::new());
         out.push(dim(
             &self.cfg,
@@ -22232,7 +22232,14 @@ mod tests {
         assert_eq!(a.key(Key::CtrlP), Some(Action::ListTodos));
         let screen = a.screen(100, 30).join("\n");
         assert!(screen.contains("todos"), "{screen}");
-        assert!(screen.contains("the model's plan"), "{screen}");
+        assert!(
+            screen.contains("add todo item"),
+            "the pane's add control is not drawn: {screen}"
+        );
+        assert!(
+            screen.contains("who wrote each line"),
+            "the pane does not name the list's authorship: {screen}"
+        );
         assert!(screen.contains("read-only"), "{screen}");
         // And Esc is "go back", before the composer sees it.
         a.key(Key::Esc);
@@ -22755,23 +22762,25 @@ mod tests {
                 "`{content}` is drawn more than once: {screen}"
             );
         }
-        // **And each under its own author.** The operator's row must not be inside the model's
-        // plan — which is where it was, because the union went under one heading.
-        let model_head = screen
-            .find("the model's plan")
-            .expect("the model's half is headed");
-        let yours_head = screen
-            .find("yours")
-            .expect("the operator's half is headed");
-        let tool = screen.find("seat the tool").unwrap();
-        let push = screen.find("push leticl to github").unwrap();
+        // **And each row wears its OWN author as a tag** — R51 item 18: *"the author tag on every
+        // row is the requirement (R44)."* A heading was the earlier reading; a tag is the fact,
+        // and a pane that re-derives authorship from which section a row landed in is the drift
+        // the `by` field exists to prevent.
+        let tool = screen
+            .lines()
+            .find(|l| l.contains("seat the tool"))
+            .expect("the model's row is on the screen");
         assert!(
-            model_head < tool && tool < yours_head,
-            "the model's row is not under the model's heading: {screen}"
+            tool.contains("— model"),
+            "the model's row does not name its author: {tool:?}"
         );
+        let push = screen
+            .lines()
+            .find(|l| l.contains("push leticl to github"))
+            .expect("the operator's row is on the screen");
         assert!(
-            yours_head < push,
-            "the operator's row is not under its own heading — it is wearing the model's: {screen}"
+            push.contains("— you"),
+            "the operator's row does not name its author: {push:?}"
         );
     }
 
@@ -22802,13 +22811,15 @@ mod tests {
         )));
         a.todos_pane = true;
         let screen = a.screen(110, 40).join("\n");
+        // **One list now, so there is one empty sentence** — and the operator's row is drawn with
+        // its author beside it.
         assert!(
-            screen.contains("none written yet"),
-            "the model's half does not say it is empty: {screen}"
+            screen.contains("todos") && screen.contains("my own row"),
+            "the operator's row is not drawn: {screen}"
         );
         assert!(
-            screen.contains("my own row"),
-            "and the operator's row is still drawn: {screen}"
+            screen.contains("my own row  — you"),
+            "the row does not wear its author's tag: {screen}"
         );
     }
 
