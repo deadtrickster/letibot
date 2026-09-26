@@ -30389,15 +30389,6 @@ mod tests {
             count(&second),
             "the marker multiplied between two renders of one state"
         );
-        for (i, (a, b)) in first.iter().zip(second.iter()).enumerate() {
-            if a != b {
-                eprintln!("DIFF row {i}:\n  1: {a:?}\n  2: {b:?}");
-            }
-        }
-        eprintln!("DIFF blanks: first={} second={} third={}",
-            first.iter().filter(|l| l.trim().is_empty()).count(),
-            second.iter().filter(|l| l.trim().is_empty()).count(),
-            third.iter().filter(|l| l.trim().is_empty()).count());
         assert_eq!(first, second, "the second render differs from the first");
         assert_eq!(second, third, "the third differs from the second");
     }
