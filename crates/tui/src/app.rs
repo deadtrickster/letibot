@@ -30322,6 +30322,48 @@ mod tests {
             b.mode_sel, 5,
             "the answer snapped the reader's cursor back to where it would have been"
         );
+
+        // **And the rows can be another SESSION's, not merely absent.** `self.settings` is only
+        // ever assigned by a settings frame — a switch does not clear it — so a picker opened
+        // between a switch and that session's answer seeds from the session the reader just left.
+        // The symptom is the same one and so is the fix: the re-seed runs on the frame, so the
+        // card corrects itself the moment the right rows land.
+        let mut c = app();
+        c.apply(hello(
+            "s1",
+            vec![brief("s1", "one", false)],
+            Hub::new("s1").snapshot(),
+        ));
+        c.apply(answer());
+        assert_eq!(c.mode_sel, 0, "the premise: no picker is open yet");
+        // The reader moves to another session, which sits at `read-only`.
+        c.apply(hello(
+            "s2",
+            vec![brief("s2", "two", false)],
+            Hub::new("s2").snapshot(),
+        ));
+        c.command("mode");
+        assert_eq!(
+            c.mode_sel, 4,
+            "the premise: the card opened on the session that was just LEFT, because its rows \
+             are the only ones the head has"
+        );
+        // That session's rows land, and the card corrects itself.
+        c.apply(mode_settings("read-only", &["read-only", "always-ask", "writes allowed", "automode", "automode-edits", "allow-all"]));
+        assert_eq!(
+            c.mode_sel, 0,
+            "the card kept the previous session's mode after the new rows arrived"
+        );
+        let screen = c.screen(110, 30).join("\n");
+        let marked = screen
+            .lines()
+            .find(|l| l.contains('\u{2190}'))
+            .map(str::trim)
+            .expect("a row is marked as current");
+        assert!(
+            marked.contains("read-only"),
+            "the card marks the wrong session's mode: {marked:?}"
+        );
     }
 
     /// **A name that is a prefix of another does not seed on the shorter one** — the boundary
