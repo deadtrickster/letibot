@@ -13736,6 +13736,13 @@ fn newest_unseen_run(
     if !rung.hides_the_working() {
         return None;
     }
+    // **REVERTED, and the reason is a test.** Preferring a run with rows here made the OLDEST run
+    // eligible for `newest` — a settled turn's marker went yellow and folded the live counts when
+    // the current turn had a call in flight with no row yet, which is the *"all tool call counters
+    // are yellow now"* defect all over again. See
+    // `the_work_in_flight_is_counted_by_one_marker_not_two`, which reproduces the duplicate this
+    // was meant to fix and is `#[ignore]`d until the edge rule is right: the live counts belong to
+    // the run at the LIVE EDGE, and *the edge* is not simply *the newest run with rows*.
     if live.work() > 0 && !live_tail_covered(items, rung, bound) {
         return Some(items.len());
     }
@@ -31844,6 +31851,183 @@ mod tests {
                 (0, "B".into(), Some("A".into())),
                 (1, "C".into(), None)
             ]
+        );
+    }
+
+    /// **ONE marker for the work, not one per kind of work.**
+    ///
+    /// Caught in a tmux sample of the live head, 2026-09-26, at second resolution:
+    ///
+    /// ```text
+    /// ...a call finished, its result row landed, and the next round is THINKING...
+    ///
+    /// [1 tool call] · ctrl-t opens it          <- the walk's marker for the hidden run
+    ///
+    ///   [1 thinking line] · ctrl-t opens it    <- the PANE's marker, a second one
+    ///     Responding · 3m10s
+    /// ```
+    ///
+    /// The operator: *"[] statistics is broken essentially - print tools and thinking separately, and
+    /// when it is just thinking doesnt advance the counter - [] disappears and then - when it is
+    /// thinking without response it prints it right above Responding."*
+    ///
+    /// **Two markers, because two things draw one.** The walk draws a marker for a hidden RUN; the
+    /// live pane draws a marker for the work IN FLIGHT; and the function whose entire job is to say
+    /// *the walk has already counted this* — `live_tail_covered` — answers **false** in exactly the
+    /// case it exists for. Its docstring: *"true when the transcript's last row is invisible, because
+    /// then the stretch it sits in runs to the end and `unseen_run_at` has already folded the tail
+    /// into its counts."* Its body: `!rung.hides_the_working() && …` — so when the rung DOES hide
+    /// the working (the only case where a run exists at all) the first term is false and the
+    /// function can never return true.
+    ///
+    /// The state below is the sampled one: a round whose call has finished with its result row
+    /// landed (so the walk has a run to count), and thinking streaming with no call outstanding.
+    #[test]
+    #[ignore = "REPRODUCES A LIVE DEFECT — the fix needs the live-edge rule, see the note below"]
+    fn the_work_in_flight_is_counted_by_one_marker_not_two() {
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.verbosity = Verbosity::Conversation;
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        // The prose that introduced the call, and the call itself.
+        a.apply(ServerFrame::Event(env(2, testing::appended("s.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(3, SessionEvent::TranscriptContent {
+            item_id: "s.0".into(),
+            item: Box::new(TranscriptItem::Assistant {
+                text: "Running the tests:".into(),
+                tool_calls: Vec::new(), truncated: false,
+            }),
+        })));
+        a.apply(ServerFrame::Event(env(4, testing::proposed_on("t1", "c1", "bash", "\"cargo test\""))));
+        // **The call FINISHES and its result row lands** — that row is what the walk counts, and it
+        // is hidden under this rung. This is the half the marker is for.
+        a.apply(ServerFrame::Event(env(5, SessionEvent::ToolFinished {
+            turn_id: "t1".into(), call_id: "c1".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload_digest: "d".into(), inline_bytes: 1, full_bytes: 1,
+            spill: None, repairs: 0, edit: None,
+        })));
+        a.apply(ServerFrame::Event(env(6, testing::appended("s.1", "tool_result"))));
+        a.apply(ServerFrame::Event(env(7, SessionEvent::TranscriptContent {
+            item_id: "s.1".into(),
+            item: Box::new(TranscriptItem::ToolResult {
+                call_id: "c1".into(), name: "bash".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "test result: ok".into(), edit: None, origin: None,
+            }),
+        })));
+        // **AND THE OPERATOR'S OWN MESSAGE IS THE LAST ROW** — which is the half that matters, and
+        // the operator named it: *"again it happens when we have my queued messages."* The pane's
+        // marker only joins the sentence above it when that sentence is the MODEL's prose; an
+        // operator row is not, so the pane must draw its marker on its own line — and that is the
+        // second marker, beside the walk's.
+        a.apply(ServerFrame::Event(env(8, testing::appended("s.2", "user"))));
+        a.apply(ServerFrame::Event(env(9, SessionEvent::TranscriptContent {
+            item_id: "s.2".into(),
+            item: Box::new(TranscriptItem::User {
+                speaker: Default::default(),
+                parts: vec![UserPart::Text { text: "and what about the cache?".into() }],
+            }),
+        })));
+        // **And the next round is THINKING** — no call outstanding, reasoning streaming.
+        a.apply(ServerFrame::Event(env(10, testing::reasoning("t1", "the counts are only"))));
+
+        let live = a.live_work_now();
+        assert_eq!(live.calls, 0, "the premise: no call is outstanding");
+        assert!(live.think_lines > 0, "the premise: thinking is streaming");
+
+        let screen = a.screen(100, 30);
+        let text = screen.join("\n");
+        let markers = text.matches("ctrl-t opens it").count();
+        assert_eq!(
+            markers, 1,
+            "the work in flight is drawn by {markers} markers — the walk's and the pane's, for one \
+             run:\n{text}"
+        );
+        // **And the one marker carries BOTH numbers**, which is the operator's *"when it is just
+        // thinking doesnt advance the counter"*: the run's finished call and the thinking still
+        // arriving, in the same brackets.
+        //
+        // Asserted as the two counts rather than as one exact spelling, because WHICH rung of the
+        // ladder a marker wears is a function of the room the line had — see
+        // `the_marker_steps_down_its_ladders_instead_of_growing` for the ladder itself. What must
+        // not vary is that both facts are there and there is one marker.
+        assert!(
+            text.contains("1 tool") && text.contains("1 thinking"),
+            "the single marker does not carry both counts:\n{text}"
+        );
+    }
+
+    /// **THE REPLY MUST NOT BE DRAWN ABOVE THE QUEUED MESSAGE IT ANSWERS.**
+    ///
+    /// The operator, twice — once on a real screen and once naming it exactly: *"a message was
+    /// queued to harnessd, delivered to model, reply started streaming above the queued message and
+    /// then some tick goes off and queued message dequeued and rendered rightfully above the reply.
+    /// pure ui desync."* And again today: *"when i see your response to my queued message just
+    /// before that message is dequeued."*
+    ///
+    /// **The ordering the head must draw**, whatever tick it is on:
+    ///
+    /// ```text
+    /// the operator's words          <- queued, bound to the row the daemon announced
+    /// the model's reply             <- streaming, or committed
+    /// ```
+    ///
+    /// The window that makes it hard is the one between the daemon taking the prompt and the row's
+    /// body arriving: `TranscriptAppended` carries an id and a kind and no text, so the head draws
+    /// that row from its own echo (`App::bound_prompts`) and must NOT also draw the echo at the
+    /// tail. Two rows for one message, in two different places, is the desync.
+    #[test]
+    fn the_reply_is_never_drawn_above_the_queued_message_it_answers() {
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.verbosity = Verbosity::Conversation;
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        // Prose so the turn has a live pane with a sentence of its own.
+        a.apply(ServerFrame::Event(env(2, testing::appended("s.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(3, SessionEvent::TranscriptContent {
+            item_id: "s.0".into(),
+            item: Box::new(TranscriptItem::Assistant {
+                text: "Working on it:".into(),
+                tool_calls: Vec::new(), truncated: false,
+            }),
+        })));
+        // The operator queues a message, which is what puts the echo on screen.
+        typed(&mut a, "and what about the cache?");
+        assert!(a.key(Key::Enter).is_some(), "the line was sent");
+        // The prompt is in the hub now — a turn behind it — so the echo is the only place it exists.
+        assert!(
+            a.screen(100, 30).join("\n").contains("queued ·"),
+            "the premise: the echo is drawn while the prompt is queued"
+        );
+
+        // **The step boundary: the daemon takes it and announces the user row.** No body yet — the
+        // announcement carries an id and a kind and nothing else, which is the R2 window.
+        a.apply(ServerFrame::Event(env(4, testing::appended("s.1", "user"))));
+
+        // **And the model starts answering it.** The reply is a delta on the live pane.
+        a.apply(ServerFrame::Event(env(5, testing::delta("t1", "the cache is keyed on bytes"))));
+        let screen = a.screen(100, 30);
+        let text = screen.join("\n");
+
+        // The words are on the screen ONCE, and they are the operator's row.
+        assert_eq!(
+            text.matches("and what about the cache?").count(),
+            1,
+            "the queued message is drawn twice — once as the row and once at the tail:\n{text}"
+        );
+        // **And the reply is BELOW them**, which is the operator's actual complaint.
+        let words = screen
+            .iter()
+            .position(|l| l.contains("and what about the cache?"))
+            .expect("the operator's row is on the screen");
+        let reply = screen
+            .iter()
+            .position(|l| l.contains("the cache is keyed on bytes"))
+            .unwrap_or_else(|| panic!("the reply is not on the screen:\n{text}"));
+        assert!(
+            reply > words,
+            "THE REPLY IS ABOVE THE MESSAGE IT ANSWERS — row {reply} vs {words}:\n{text}"
         );
     }
 
