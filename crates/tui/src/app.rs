@@ -13901,8 +13901,24 @@ fn row_hidden_at(rung: Verbosity, it: Option<&SnapshotItem>) -> bool {
 /// arrive, the row does not.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct LiveWork {
-    /// Calls proposed or running with no settled result row yet.
+    /// Calls proposed or running with no settled result row yet — **the NUMBER the marker carries**.
     calls: usize,
+    /// **Calls still EXECUTING — the number the YELLOW is on.** Two different facts, and conflating
+    /// them is what stuck a counter yellow:
+    ///
+    /// * `calls` counts what the marker says it has to count: a call leaves this number at the
+    ///   moment its result row starts being counted, which is when the row's BODY lands. That is
+    ///   also what keeps the number from going DOWN — *"2 tool calls dropping to 1 and then
+    ///   changing back to 2"*, the operator's own measurement of the first version.
+    /// * `running` is *is a call executing right now*. A call that has FINISHED while its row is
+    ///   still a frame away keeps the number and must lose the colour, because the yellow says
+    ///   *happening* and nothing is.
+    ///
+    /// leticl keeps both and says exactly why: *"The colour is a different fact — is a call still
+    /// executing — and that is `:running`, which `marker-rising-p` reads. A finished call whose row
+    /// is still in flight keeps the number and drops the yellow, which is what the screen should
+    /// say about it."*
+    running: usize,
     /// Display lines of reasoning streamed this turn and not yet a row.
     think_lines: usize,
 }
@@ -14234,17 +14250,33 @@ fn live_work(turn: Option<&TurnPane>, cfg: &RenderConfig, superseded: bool) -> L
     if superseded {
         return LiveWork::default();
     }
-    let calls = t
+    // **The calls the transcript has NOT taken over yet** — `settled_calls` is the count of them
+    // that a result row has already claimed, and it advances when the row's BODY lands, not when
+    // the call finishes. That distinction is the whole reason this is not a filter on the call's
+    // own state, and leticl measured what the filter costs: *"counting the UNFINISHED calls here
+    // handed over at `tool_finished` instead, which arrives BEFORE the row, so for that window the
+    // call was in neither half. The operator watched it: '2 (in yellow) tool calls dropping to 1
+    // (in yellow) tool calls and then changing back to 2 (in white) tool calls.'* **A number that
+    // is a count of work done cannot go down**, and it did.
+    let calls = t.calls.len().saturating_sub(t.settled_calls);
+    // **Executing, and `Proposed` is not executing yet.** A call the model has written but the
+    // daemon has not started is work the marker counts and is not work that is happening — the
+    // screen has a `◐ Running` card for the second and would show `proposed` for the first.
+    let running = t
         .calls
         .iter()
-        .filter(|c| !matches!(c.state, CallState::Finished { .. }))
+        .filter(|c| matches!(c.state, CallState::Running))
         .count();
     let think_lines = if t.reasoning.is_empty() {
         0
     } else {
         reasoning_display_lines(t.reasoning.raw(), cfg.width)
     };
-    LiveWork { calls, think_lines }
+    LiveWork {
+        calls,
+        running,
+        think_lines,
+    }
 }
 
 /// **The counts, as the two halves that can be painted differently** — R51 item 7.
@@ -14449,7 +14481,11 @@ impl Counts {
 /// records for the tense, and closing it needs the daemon to publish *the prompt is over* as its own
 /// fact. Neither head has that.
 fn marker_carries_live(live: LiveWork) -> bool {
-    live.calls > 0
+    // **`running`, not `calls`** — this is the stuck yellow. See [`LiveWork::running`]: the count
+    // of calls with no result row is the NUMBER the marker carries, and only a call that is still
+    // executing lights it. A call that finished a frame ago keeps its number and loses the colour,
+    // which is what the screen should say about it.
+    live.running > 0
 }
 
 /// **The marker: the two counts, and nothing else** — R37 AMENDED, final shape.
@@ -32983,14 +33019,32 @@ mod tests {
             10,
             testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
         )));
-        a.apply(ServerFrame::Event(env(11, testing::turn_finished("t1"))));
+        // **And the daemon STARTS it**, which is what makes it executing rather than merely
+        // proposed. This is the distinction the colour turns on: a call the model has written and
+        // the daemon has not begun is work the marker COUNTS and is not work that is happening, so
+        // the number is there and the yellow is not.
+        a.apply(ServerFrame::Event(env(
+            11,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(12, testing::turn_finished("t1"))));
         a.verbosity = Verbosity::Conversation;
         a.invalidate_history();
 
-        // The premise: one call in flight, so the marker that carries it is the one to colour.
+        // The premise: one call EXECUTING, so the marker that carries it is the one to colour.
         assert!(
             marker_carries_live(a.live_work_now()),
-            "the premise: a call is in flight"
+            "the premise: a call is executing"
+        );
+        assert_eq!(
+            a.live_work_now().calls,
+            a.live_work_now().running,
+            "and it is the only call, so the number and the colour agree here"
         );
         let screen = a.screen(120, 30).join("\n");
         assert!(
@@ -33020,6 +33074,75 @@ mod tests {
     /// The styled thing is the CALLS count, so a marker carrying only thinking lines has nothing to
     /// colour even while the model is plainly working. This is the case that would tempt a reader to
     /// colour the brackets or the whole marker, and the operator ruled against both.
+    /// **A call that has FINISHED keeps its number and loses the yellow** — the stuck counter.
+    ///
+    /// The operator: *"one of your yellow tool calls stuck at yellow."* leticl has the rule and its
+    /// words are the diagnosis: *"`:calls` is now the calls with no result row yet, which includes a
+    /// call that has FINISHED and whose row is a frame away. That one keeps the number (it is still
+    /// work the marker counts) and must not keep the colour — the yellow says EXECUTING, and nothing
+    /// is."*
+    ///
+    /// **The two facts come apart in a one-frame window**, which is why this is a test about a
+    /// window rather than about a state: `ToolFinished` arrives, and the row that takes the call over
+    /// is announced and filled on later frames. In between, the count must hold — a number that is a
+    /// count of work done cannot go down — and the colour must go.
+    #[test]
+    fn a_finished_call_keeps_its_number_and_loses_the_yellow() {
+        let mut a = app();
+        // Asserted on the ESCAPES, so the palette has to be on — the words are the same either way
+        // and the register is the whole of what is being tested.
+        a.cfg.color = true;
+        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.verbosity = Verbosity::Conversation;
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(2, testing::appended("s.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(3, SessionEvent::TranscriptContent {
+            item_id: "s.0".into(),
+            item: Box::new(TranscriptItem::Assistant {
+                text: "Running the tests:".into(),
+                tool_calls: Vec::new(), truncated: false,
+            }),
+        })));
+        a.apply(ServerFrame::Event(env(4, testing::proposed_on("t1", "c1", "bash", "\"cargo test\""))));
+        a.apply(ServerFrame::Event(env(5, SessionEvent::ToolStarted {
+            turn_id: "t1".into(), call_id: "c1".into(), name: "bash".into(),
+            access: Default::default(),
+        })));
+
+        // While it runs, the number is there and the colour is on.
+        assert_eq!(a.live_work_now().calls, 1, "the premise: one call to count");
+        assert!(marker_carries_live(a.live_work_now()), "the premise: executing");
+        let running = a.screen(100, 30).join("\n");
+        assert!(
+            running.contains("\x1b[33m1\x1b[0m tool call"),
+            "the executing count is not pending:\n{running}"
+        );
+
+        // **It finishes, and the row has not landed.** The number holds; the colour goes.
+        a.apply(ServerFrame::Event(env(6, SessionEvent::ToolFinished {
+            turn_id: "t1".into(), call_id: "c1".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload_digest: "d".into(), inline_bytes: 1, full_bytes: 1,
+            spill: None, repairs: 0, edit: None,
+        })));
+        let live = a.live_work_now();
+        assert_eq!(live.calls, 1, "the number went down with the call's finish");
+        assert_eq!(live.running, 0, "and nothing is executing");
+        assert!(
+            !marker_carries_live(live),
+            "a finished call is still lighting the yellow — the stuck counter"
+        );
+        let settled = a.screen(100, 30).join("\n");
+        assert!(
+            !settled.contains("\x1b[33m1\x1b[0m tool call"),
+            "the counter is still yellow with nothing executing:\n{settled}"
+        );
+        assert!(
+            settled.contains("1 tool call"),
+            "and the number left with the colour:\n{settled}"
+        );
+    }
+
     #[test]
     fn a_marker_of_thinking_alone_goes_pending_nowhere() {
         let mut a = app();
