@@ -2296,6 +2296,55 @@ enum RetiredWrite {
     Replace,
 }
 
+/// **Which of a daemon row's `choices` its `value` names** — the reading both the picker's cursor
+/// and the card's `← now` are made of.
+///
+/// A row's `value` is not always a choice verbatim. The daemon spells it as a name **plus whatever
+/// qualifies it**:
+///
+/// ```text
+/// value   "writes allowed"                     choice  "writes allowed"
+/// value   "allow-all (this box, consented)"     choice  "allow-all"
+/// value   "local (qwen-3.8-27b)"               choice  "local"
+/// value   "deepseek/deepseek-flash --key …"    choice  "deepseek/deepseek-flash"
+/// ```
+///
+/// # The rule, and the two ways of getting it wrong
+///
+/// **The value itself; failing that, the longest choice the value begins with at a boundary.**
+///
+/// * **Not the value's first word — that was the defect, and the whole-value comparison is the
+///   branch that fixed it.** A NAME CAN ITSELF CONTAIN A SPACE (`Mode::WRITES_ALLOWED` is
+///   `writes allowed`), so taking the first word turns it into `writes`, which names no choice,
+///   and both readers fall back together to row 0. Measured on the real wire row: `writes allowed`
+///   gave no cursor and no `← now` while every other named mode gave both.
+///
+///   **The daemon's own parser is why nobody noticed.** `Mode::parse` folds `_` and spaces to `-`
+///   on *both* sides, so `writes-allowed` and `writes allowed` both select that point — the head's
+///   fixture said the hyphenated one and agreed with itself while the wire said the other.
+/// * **A boundary, so one name is not read as a prefix of another.** `automode-edits` begins with
+///   `automode`, so a bare prefix match would seed on the shorter row. This branch is for the
+///   QUALIFIED values the daemon writes — `allow-all (this box, consented)`, `local (qwen-3.8-27b)`
+///   — where the qualifier follows a space and the name itself has none, which is why the old
+///   first-word rule happened to survive them.
+/// A whitespace boundary and not a list of separators: the daemon writes `name (note)` and
+/// `name --flag`, and inventing a grammar for the qualifier would be a rule about a spelling this
+/// head does not own. If a future row qualifies a name with something that is not whitespace-
+/// separated, it shows up here as *no choice named* — which renders as no `← now`, the honest
+/// answer, rather than as a mark on the wrong row.
+fn named_choice<'a>(value: &str, choices: &'a [String]) -> Option<&'a str> {
+    choices
+        .iter()
+        .filter(|c| {
+            value.len() > c.len()
+                && value.starts_with(c.as_str())
+                && value[c.len()..].starts_with(char::is_whitespace)
+        })
+        .chain(choices.iter().filter(|c| value == c.as_str()))
+        .max_by_key(|c| c.len())
+        .map(String::as_str)
+}
+
 impl App {
     pub fn new(cfg: RenderConfig) -> Self {
         App {
@@ -6258,11 +6307,15 @@ impl App {
                     "unified".into()
                 }
             }
-            _ => self
-                .pick_row()
-                .and_then(|r| r.value.split_whitespace().next())
-                .unwrap_or("")
-                .to_string(),
+            _ => {
+                let Some(r) = self.pick_row() else {
+                    return String::new();
+                };
+                match named_choice(&r.value, &r.choices) {
+                    Some(c) => c.to_string(),
+                    None => r.value.clone(),
+                }
+            }
         }
     }
 
@@ -6416,13 +6469,28 @@ impl App {
         None
     }
 
-    /// The mode this session runs under, as the row's first word spells it —
-    /// the same read the config pane's mode row cycles from.
+
+    /// The mode this session runs under, **as one of the daemon's own names** — see
+    /// [`named_choice`], which is the whole of the reading.
+    ///
+    /// It used to be `value.split_whitespace().next()`, and that is wrong for a name that
+    /// contains a space: `Mode::WRITES_ALLOWED` is spelled `writes allowed`, so the first word is
+    /// `writes`, which names no choice. Both things that read this — the picker's cursor and the
+    /// card's `← now` — then failed together, which is the operator's report exactly: *"permission
+    /// mode menu no longer highlights the current mode when opened"*.
     fn mode_current(&self) -> String {
-        self.mode_row()
-            .and_then(|r| r.value.split_whitespace().next())
-            .unwrap_or("")
-            .to_string()
+        let Some(r) = self.mode_row() else {
+            return String::new();
+        };
+        match named_choice(&r.value, &r.choices) {
+            Some(c) => c.to_string(),
+            // **No row to mark, and the value is returned as it stands.** A current value that
+            // names none of the choices is a real state — a daemon that lists fewer modes than it
+            // accepts — and the honest render is no `← now` anywhere rather than one on the wrong
+            // row. Returning the first word here is what made that case indistinguishable from a
+            // name the head had failed to read.
+            None => r.value.clone(),
+        }
     }
 
     /// Take Tab on a `/`-prefixed line.
@@ -10842,8 +10910,21 @@ impl App {
                             self.say("this daemon does not send the mode list; use `/mode NAME`");
                             return None;
                         }
-                        let cur = row.value.split_whitespace().next().unwrap_or("");
-                        let at = row.choices.iter().position(|n| n == cur).unwrap_or(0);
+                        // **The same reading the card makes**, or the cycle starts from the wrong
+                        // place: this took the value's first word, so at `writes allowed` it found
+                        // no row (`writes` is not a mode) and wrapped to the FIRST one — the pane's
+                        // mode row cycled to `always-ask` from a point in the middle of the list.
+                        // Found by fixing the card and watching this test fail beside it; the two
+                        // are one defect and they were three readers apart.
+                        let cur = match named_choice(&row.value, &row.choices) {
+                            Some(c) => c.to_string(),
+                            None => row.value.clone(),
+                        };
+                        let at = row
+                            .choices
+                            .iter()
+                            .position(|n| *n == cur)
+                            .unwrap_or(0);
                         let next = row.choices[(at + 1) % row.choices.len()].clone();
                         self.say(&format!("mode → {next} (asking the daemon)"));
                         self.mode_action(next)
@@ -14400,7 +14481,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         (
             "/mode",
-            "move this project to a point: read-only, always-ask, writes-allowed, automode, automode-edits, allow-all (next session)",
+            "move this project to a point: read-only, always-ask, writes allowed, automode, automode-edits, allow-all (next session)",
         ),
         (
             "/supervise",
@@ -21618,14 +21699,14 @@ mod tests {
             rows: vec![
                 letibot_sessionlog::protocol::SettingRow {
                     key: "mode".into(),
-                    value: "writes-allowed".into(),
+                    value: "writes allowed".into(),
                     source: "project store (modes.tsv)".into(),
                     editable: "/mode NAME".into(),
                     // The daemon's own list, which is what the pane cycles.
                     choices: [
                         "read-only",
                         "always-ask",
-                        "writes-allowed",
+                        "writes allowed",
                         "automode",
                         "automode-edits",
                         "allow-all",
@@ -21646,7 +21727,7 @@ mod tests {
             ],
         });
         let screen = a.screen(120, 30).join("\n");
-        assert!(screen.contains("writes-allowed"), "{screen}");
+        assert!(screen.contains("writes allowed"), "{screen}");
         assert!(screen.contains("20.0s"), "{screen}");
         // **The rung is a row too**, and it points at the verb rather than cycling (R38).
         assert!(
@@ -21658,7 +21739,7 @@ mod tests {
         for _ in 0..5 {
             a.key(Key::Down);
         }
-        // The next name after `writes-allowed` in the DAEMON's list — the head
+        // The next name after `writes allowed` in the DAEMON's list — the head
         // has no list of its own any more.
         assert_eq!(
             a.key(Key::Enter),
@@ -30055,14 +30136,109 @@ mod tests {
         assert!(a.pick.is_none(), "esc closes it");
     }
 
+    /// **`Mode::NAMED`'s names verbatim, spaces and all.** This said `writes-allowed` for a long
+    /// time — a hyphen the name has never had — and that is how a defect where the CURRENT MODE's
+    /// name contains a space passed a suite that looked like it covered the card: the fixture's
+    /// list agreed with the code's assumption instead of with the daemon's bytes.
     const MODES: &[&str] = &[
         "read-only",
         "always-ask",
-        "writes-allowed",
+        "writes allowed",
         "automode",
         "automode-edits",
         "allow-all",
     ];
+
+    /// **The real wire row, for every mode the daemon names** — and the one that had no
+    /// highlight at all.
+    ///
+    /// The operator: *"permission mode menu no longer highlights the current mode when opened"*.
+    /// The cause was one word: `Mode::WRITES_ALLOWED` is spelled **`writes allowed`**, with a
+    /// space, and both readers of the current mode took `value.split_whitespace().next()` — so
+    /// `writes` named no choice, the cursor fell back to row 0, and `← now` was drawn nowhere.
+    /// Every other named mode was fine, which is why it looked like a bug about one screen
+    /// rather than about one name.
+    ///
+    /// **These are the bytes the daemon actually sends**, read off `Config::settings` on this box
+    /// rather than retyped: `choices` is `Mode::NAMED`'s names verbatim, and one of them contains a
+    /// space. The fixture this file used before said `writes-allowed` — a hyphen that no mode has
+    /// ever had — which is exactly why the defect survived a suite that looked like it covered
+    /// this.
+    #[test]
+    fn every_named_mode_opens_with_its_own_row_highlighted() {
+        const CHOICES: &str = r#"["read-only","always-ask","writes allowed","automode","automode-edits","allow-all"]"#;
+        let choices: Vec<String> = serde_json::from_str(CHOICES).unwrap();
+        // `(value, the row it must land on)`. The last is the consented spelling of `allow-all`,
+        // whose value carries a parenthesised note — the other shape of *not a choice verbatim*.
+        for (value, at) in [
+            ("read-only", 0usize),
+            ("always-ask", 1),
+            ("writes allowed", 2),
+            ("automode", 3),
+            ("automode-edits", 4),
+            ("allow-all", 5),
+            ("allow-all (this box, consented)", 5),
+        ] {
+            let mut a = app();
+            a.apply(hello(
+                "s",
+                vec![brief("s", "one", false)],
+                Hub::new("s").snapshot(),
+            ));
+            a.apply(ServerFrame::Settings {
+                rows: vec![letibot_sessionlog::protocol::SettingRow {
+                    key: "mode".into(),
+                    value: value.into(),
+                    source: "project store (modes.tsv)".into(),
+                    editable: "/mode NAME".into(),
+                    choices: choices.clone(),
+                    tools: Vec::new(),
+                }],
+            });
+            a.command("mode");
+            assert_eq!(
+                a.mode_sel, at,
+                "`{value}` opened with the cursor on the wrong row"
+            );
+            let screen = a.screen(110, 30);
+            let row = screen
+                .iter()
+                .find(|l| l.contains('\u{25b8}') && l.contains("  "))
+                .expect("a marked row");
+            // **The two facts together, on ONE row** — where am I, and what does Enter take. The
+            // defect broke both, and asserting either alone would have passed for one of them.
+            assert!(
+                row.contains('\u{2190}') && row.contains("now"),
+                "`{value}` is not marked as the current mode: {row:?}"
+            );
+            assert_eq!(
+                screen.iter().filter(|l| l.contains('\u{2190}')).count(),
+                1,
+                "`{value}` marked more than one row as current"
+            );
+        }
+    }
+
+    /// **A name that is a prefix of another does not seed on the shorter one** — the boundary
+    /// half of [`named_choice`].
+    ///
+    /// `automode-edits` begins with `automode`, so a bare prefix match would open the card with
+    /// the cursor on `automode` — a plausible-looking wrong answer, and the reason the search is
+    /// for the LONGEST name followed by a boundary rather than a `starts_with`.
+    #[test]
+    fn a_mode_whose_name_extends_another_does_not_seed_on_the_shorter_one() {
+        let choices: Vec<String> = vec!["automode".into(), "automode-edits".into()];
+        assert_eq!(named_choice("automode-edits", &choices), Some("automode-edits"));
+        assert_eq!(named_choice("automode", &choices), Some("automode"));
+        // And the qualifier is still read through: the consented spelling of the shorter name.
+        assert_eq!(
+            named_choice("automode (this box, consented)", &choices),
+            Some("automode")
+        );
+        // A value that names nothing is nothing — the render then marks no row at all, which is
+        // the honest answer for a current value the daemon did not offer as a choice.
+        assert_eq!(named_choice("something-else", &choices), None);
+    }
 
     #[test]
     fn bare_mode_opens_the_picker_seeded_to_the_current_mode() {
@@ -30133,7 +30309,7 @@ mod tests {
         let row = a
             .screen(110, 24)
             .into_iter()
-            .find(|l| l.contains("writes-allowed") && l.contains('▸'))
+            .find(|l| l.contains("writes allowed") && l.contains('▸'))
             .unwrap();
         assert!(row.contains('▸'), "the mark moved with the arrows: {row}");
         // Up wraps past the top; Up again wraps in from the bottom.
@@ -30175,7 +30351,7 @@ mod tests {
         let row = a
             .screen(110, 24)
             .into_iter()
-            .find(|l| l.contains("writes-allowed") && l.contains('▸'))
+            .find(|l| l.contains("writes allowed") && l.contains('▸'))
             .unwrap();
         assert!(
             row.contains('▸'),
