@@ -1556,6 +1556,21 @@ pub struct App {
     /// already under, so Enter on an untouched list is a no-op rather than a
     /// surprise — the same rule the session picker's cursor follows.
     mode_sel: usize,
+    /// **Whether the open picker has been positioned by what it actually lists** — R51's
+    /// neighbour, and leticl's `*pick-unseeded*` (its `head.lisp`, which records the operator's
+    /// report of this exact symptom: *"mode selectors has selection on the first not on the
+    /// current again"*).
+    ///
+    /// A picker's cursor is seeded from the rows the head holds. **`/mode` and `/models` open the
+    /// card and ask for fresh rows in the same breath**, so on a head whose rows have not landed
+    /// yet the seed reads an empty list, `position` answers nothing, and the cursor sits on row 0
+    /// — while `← now` marks the real current row further down. It works on the second open,
+    /// which is why the report is *again* rather than a permanent break, and why a test that sets
+    /// the rows up first never sees it.
+    ///
+    /// Cleared by anything the READER does to the cursor, so an answer landing while they are
+    /// arrowing cannot snap it back — a worse defect than the one it fixes.
+    pick_unseeded: bool,
     /// How many choice rows the mode card actually drew on the last screen —
     /// zero unless the whole card fit, because a click is only trusted for a
     /// list the frame proved was all on screen. A partially drawn card is
@@ -2431,6 +2446,7 @@ impl App {
             quit_card: false,
             quit_sel: 0,
             mode_sel: 0,
+            pick_unseeded: false,
             mode_rows_drawn: 0,
             mode_first_row: 0,
             todos_pane: false,
@@ -3211,6 +3227,17 @@ impl App {
                 // Stamped, so the header can tell whether a turn has named a model
                 // since. See `model_from_settings_at`.
                 self.model_from_settings_at = self.seq;
+                // **A PICKER THAT OPENED BEFORE ITS OWN LIST ARRIVED SEEDS NOW** — see
+                // [`App::pick_unseeded`]. `/mode` and `/models` send the ask and draw the card in
+                // the same breath, so on a head whose rows have not landed the cursor goes to row
+                // 0 and the current row is marked further down with the cursor somewhere else.
+                //
+                // **Only while the cursor is still untouched.** A frame landing mid-arrow must not
+                // snap the reader back to where they started, which is the reason this was not
+                // re-seeded at all before; the flag is what tells the two cases apart.
+                if self.pick.is_some() && self.pick_unseeded {
+                    self.seed_pick();
+                }
                 self.redraw = true;
                 Disposition::Control
             }
@@ -5521,11 +5548,16 @@ impl App {
                     } else {
                         self.mode_sel - 1
                     };
+                    // **The reader has taken the cursor**, so a settings answer landing from
+                    // here on must not move it — see [`App::pick_unseeded`]. A worse defect
+                    // than the one the re-seed fixes: a cursor that jumps while they arrow.
+                    self.pick_unseeded = false;
                     self.redraw = true;
                     return None;
                 }
                 Key::Down if n > 0 => {
                     self.mode_sel = (self.mode_sel + 1) % n;
+                    self.pick_unseeded = false;
                     self.redraw = true;
                     return None;
                 }
@@ -5558,6 +5590,8 @@ impl App {
                     let row = usize::from(y).saturating_sub(self.mode_first_row);
                     if n > 0 && row < self.mode_rows_drawn {
                         self.mode_sel = row.min(n - 1);
+                        // A click is the reader's too, for the reason the arrows are.
+                        self.pick_unseeded = false;
                         self.redraw = true;
                     }
                     return None;
@@ -6493,6 +6527,21 @@ impl App {
         }
     }
 
+    /// **Put the open picker's cursor on the row that answers now**, and remember that nothing
+    /// has touched it yet — see [`App::pick_unseeded`].
+    ///
+    /// One function for the four cards, because they seed identically now that
+    /// [`App::pick_current`] reads a row's value through [`named_choice`]: the mode, the model,
+    /// the rung and the diff style all pick whichever of their values the current one names.
+    /// They used to seed at four call sites with two spellings of the same rule, which is the
+    /// shape this file keeps deleting.
+    fn seed_pick(&mut self) {
+        let values = self.pick_values();
+        let now = self.pick_current();
+        self.mode_sel = values.iter().position(|(n, _)| *n == now).unwrap_or(0);
+        self.pick_unseeded = true;
+    }
+
     /// Take Tab on a `/`-prefixed line.
     ///
     /// A fresh prefix starts a cycle at its first match; a further Tab walks
@@ -6892,11 +6941,7 @@ impl App {
                 self.pick = Some(Pick::Mode);
                 self.picker = false;
                 self.config_pane = false;
-                self.mode_sel = self
-                    .mode_choices()
-                    .iter()
-                    .position(|n| *n == self.mode_current())
-                    .unwrap_or(0);
+                self.seed_pick();
                 self.redraw = true;
                 return Some(Action::Settings);
             }
@@ -6991,10 +7036,7 @@ impl App {
                     self.pick = Some(Pick::Verbosity);
                     self.picker = false;
                     self.config_pane = false;
-                    self.mode_sel = VERBOSITY_VALUES
-                        .iter()
-                        .position(|(v, _)| *v == self.verbosity.as_str())
-                        .unwrap_or(0);
+                    self.seed_pick();
                     self.redraw = true;
                     return None;
                 }
@@ -7008,10 +7050,7 @@ impl App {
                     self.pick = Some(Pick::Diff);
                     self.picker = false;
                     self.config_pane = false;
-                    self.mode_sel = DIFF_VALUES
-                        .iter()
-                        .position(|(v, _)| *v == if self.diff_split { "split" } else { "unified" })
-                        .unwrap_or(0);
+                    self.seed_pick();
                     self.redraw = true;
                     return None;
                 }
@@ -7164,11 +7203,7 @@ impl App {
                     self.config_pane = false;
                     // Seeded to what answers now, so Enter on an untouched list
                     // is a no-op — the same courtesy the mode picker pays.
-                    self.mode_sel = self
-                        .pick_values()
-                        .iter()
-                        .position(|(n, _)| *n == self.pick_current())
-                        .unwrap_or(0);
+                    self.seed_pick();
                     self.redraw = true;
                     // **`Settings`, not the `models` verb.** Asking the daemon to
                     // refresh is right — a session whose model moved in another
@@ -30217,6 +30252,76 @@ mod tests {
                 "`{value}` marked more than one row as current"
             );
         }
+    }
+
+    /// **A picker that opened before its own list arrived seeds when the list does** — the second
+    /// cause of the operator's report, and the one leticl had already fixed on its side.
+    ///
+    /// `/mode` and `/models` draw the card AND send the ask in the same breath, so a head whose
+    /// rows have not landed seeds from an empty list: `position` answers nothing, the fallback is
+    /// `0`, and the cursor sits on the first row while `← now` marks the real current one further
+    /// down. leticl's `head.lisp` records the operator hitting exactly this — *"mode selectors has
+    /// selection on the first not on the current again"* — and its word *again* is the tell: it
+    /// works on the SECOND open, settings being known by then, so a test that sets the rows up
+    /// first never sees it. This one does not set them up first.
+    ///
+    /// **And the reader's own cursor is not snapped back.** leticl reconciles the two with a
+    /// one-way flag, and this asserts both halves: an untouched cursor follows the answer, a moved
+    /// one does not.
+    #[test]
+    fn a_picker_that_opened_before_its_rows_landed_seeds_when_they_do() {
+        const CHOICES: &str = r#"["read-only","always-ask","writes allowed","automode","automode-edits","allow-all"]"#;
+        let choices: Vec<String> = serde_json::from_str(CHOICES).unwrap();
+        let answer = move || {
+            ServerFrame::Settings {
+                rows: vec![letibot_sessionlog::protocol::SettingRow {
+                    key: "mode".into(),
+                    value: "automode-edits".into(),
+                    source: "project store (modes.tsv)".into(),
+                    editable: "/mode NAME".into(),
+                    choices: choices.clone(),
+                    tools: Vec::new(),
+                }],
+            }
+        };
+        // The head has heard nothing yet — the ask is out, the answer is not.
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.command("mode");
+        assert_eq!(a.mode_sel, 0, "the premise: nothing to seed on yet");
+        a.apply(answer());
+        assert_eq!(
+            a.mode_sel, 4,
+            "the rows landed and the cursor did not go to the mode the session is under"
+        );
+
+        // **The cursor the reader moved is left alone.** Two Downs is a choice they made, and an
+        // answer landing a moment later must not undo it.
+        //
+        // The rows have to be present for there to be anything to move THROUGH — with no choices
+        // the card has no rows and the arrows are refused, which is the first half's premise and
+        // not this one's.
+        let mut b = app();
+        b.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        b.apply(answer());
+        b.command("mode");
+        assert_eq!(b.mode_sel, 4, "the premise: seeded on the current mode");
+        b.key(Key::Down);
+        assert_eq!(b.mode_sel, 5, "the premise: the reader has moved it");
+        // A fresh answer — the one `/mode` itself asked for — arriving after that.
+        b.apply(answer());
+        assert_eq!(
+            b.mode_sel, 5,
+            "the answer snapped the reader's cursor back to where it would have been"
+        );
     }
 
     /// **A name that is a prefix of another does not seed on the shorter one** — the boundary
