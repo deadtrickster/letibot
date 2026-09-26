@@ -35,6 +35,8 @@ use letibot_sessionlog::view::{
 };
 use letibot_transcript::{TranscriptItem, UserPart};
 
+use std::borrow::Cow;
+
 use letibot_ui::editor::{Editor, Reaction};
 use letibot_ui::style::{Painter, Role};
 use letibot_ui::{card, diff::DiffConfig, progress, sidediff, width};
@@ -1730,6 +1732,23 @@ pub struct App {
     /// what time it is, and then it says nothing about stalls rather than guessing.
     now_ms: u64,
     last_event_at: u64,
+    /// **The live marker's join, as the pair that lets it be UNDONE.**
+    ///
+    /// The marker is glued to the end of the sentence that introduces the work — *"…the last
+    /// two: [1 tool call] · ctrl-t opens it"* — by appending to a line in `hist_lines`, which is
+    /// the cache of RENDERED rows. **A cached row that a derived overlay mutates is a row that
+    /// cannot be recomputed**, and appending on every frame is what it did: the operator's screen
+    /// showed the same marker three times on one line, because three frames had each added one and
+    /// nothing invalidated the cache in between — no event had arrived, which is exactly what
+    /// makes a settled frame cheap to draw.
+    ///
+    /// So the join is a SET rather than an APPEND. This holds the line's text *before* the marker
+    /// was glued and the marker that was glued to it, and each frame restores the original first.
+    /// `None` while nothing is joined, which is every frame with no work in flight.
+    ///
+    /// **Found by asserting that two renders of one state are the same frame** — see
+    /// `two_renders_of_one_state_are_the_same_frame`, the property this field exists to keep.
+    live_join: Option<(String, String)>,
     /// The model this session is talking to, kept past the end of a turn.
     ///
     /// It lives on `TurnPane` because that is where the event carries it, and the
@@ -2476,6 +2495,7 @@ impl App {
             redraw: false,
             now_ms: 0,
             last_event_at: 0,
+            live_join: None,
             body_len: 0,
             attaching: false,
             link: Link::Attached,
@@ -9940,6 +9960,19 @@ impl App {
         // Without this the counts stood a blank line under the sentence that introduced them,
         // which is a row rather than a continuation — the same defect the operator reported
         // for their own message, in the one place the walk could not reach it.
+        // **Last frame's join is UNDONE first**, so this is a set and not an append — see
+        // [`App::live_join`] for what appending cost. The search is by the marker's own text
+        // rather than by an index, because the cache may have been truncated and rebuilt since;
+        // a line that no longer carries the marker needs no undo, and one that does is the line
+        // this put it on.
+        if let Some((original, marker)) = self.live_join.take()
+            && let Some(at) = self
+                .hist_lines
+                .iter()
+                .rposition(|l| l.trim_end().ends_with(&format!(" {marker}")))
+        {
+            self.hist_lines[at] = original;
+        }
         let live_joins = live.work() > 0
             && !superseded
             && self.verbosity.hides_the_working()
@@ -9959,9 +9992,12 @@ impl App {
                 Marker::new(live.calls, live.think_lines, true, marker_carries_live(live))
                     .painted(&self.cfg);
             if let Some(at) = self.hist_lines.iter().rposition(|l| !l.trim().is_empty()) {
-                let joined = format!("{} {painted}", self.hist_lines[at].trim_end());
+                let original = self.hist_lines[at].trim_end().to_string();
+                let joined = format!("{original} {painted}");
                 if visible_width(&joined) <= self.cfg.width {
                     self.hist_lines[at] = joined;
+                    // Remembered, so the next frame restores the line before deciding again.
+                    self.live_join = Some((original, painted));
                 }
             }
         }
@@ -13230,16 +13266,22 @@ fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
 ///
 /// Cut at the first sentence end, then hard-capped: a "sentence" written without a
 /// full stop is still not a paragraph a status line should carry.
-fn first_sentence(basis: &str) -> String {
+/// **Borrows when the first sentence is already in the input**, which it usually is.
+///
+/// A `String` return meant a copy of a slice of the caller's own string — the whole sentence, for
+/// a function whose job is to point at part of one. It is called per tool row drawn, and the
+/// `Owned` branch is only the over-long case (past `CAP`), where the truncation genuinely has to
+/// build something new.
+fn first_sentence(basis: &str) -> Cow<'_, str> {
     let line = basis.lines().next().unwrap_or("").trim();
     let end = line.find(". ").map(|i| i + 1).unwrap_or(line.len());
     let s = &line[..end];
     const CAP: usize = 140;
     if s.chars().count() <= CAP {
-        return s.to_string();
+        return Cow::Borrowed(s);
     }
     let cut: String = s.chars().take(CAP).collect();
-    format!("{}…", cut.trim_end())
+    Cow::Owned(format!("{}…", cut.trim_end()))
 }
 
 /// A result envelope's marker line: `<<<TOOL_ERROR 5ebfdef6>>>`, `<<<END_OK …>>>`.
@@ -15985,7 +16027,9 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // are the same string: the escape becomes one space, which is what keeps the
             // column arithmetic honest (`without_control`'s whole argument).
             let text = without_control_lines(text);
-            let text = text.as_str();
+            // A `Cow`, and the borrow is what the change bought: this used to force the
+            // allocation even when the sanitiser had nothing to do.
+            let text: &str = &text;
             // A settled row: `Thought`, with no duration. The head can compute one
             // for a *live* turn from the delta timestamps, and a transcript row
             // carries no timestamps at all — see `crates/ui/DESIGN.md` §4.4.
@@ -16017,7 +16061,9 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // control byte becomes a space, which keeps every column count the same and
             // is the same trade `without_control`'s doc records for tool payloads.
             let text = without_control_lines(text);
-            let text = text.as_str();
+            // A `Cow`, and the borrow is what the change bought: this used to force the
+            // allocation even when the sanitiser had nothing to do.
+            let text: &str = &text;
             let mut md = IncrementalMarkdown::new();
             md.push(text);
             let mut cache = BlockCache::new();
@@ -16293,7 +16339,11 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // tail. Never folded, never truncated, and in the outcome's own role:
             // a call that abstained or was refused said *why*, and that sentence
             // is the whole content of the row.
-            let why = outcome_why(outcome).map(|w| without_control_lines(&w));
+            // **Owned, and it has to be**: `w` is this closure's own temporary, so a borrowed
+            // `Cow` would be a reference to a value that dies at the end of the closure. This is
+            // the one place in the head where the sanitiser's fast path cannot be taken, and the
+            // compiler is what found it.
+            let why = outcome_why(outcome).map(|w| without_control_lines(&w).into_owned());
             // **A reason that is a DOCUMENT is not a sentence.**
             //
             // This printed the reason in full, unfoldable, on the argument that a
@@ -16326,8 +16376,8 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 // appearing verbatim below is not a coincidence.
                 let first = why.lines().next().unwrap_or("").trim();
                 let echoed = first.len() >= 40 && lines.iter().any(|l| l.contains(first));
-                let shown = if tools.is_open() && !echoed {
-                    why.clone()
+                let shown: Cow<'_, str> = if tools.is_open() && !echoed {
+                    Cow::Borrowed(why)
                 } else {
                     let gist = first_sentence(why);
                     why_folded = gist.len() < why.len();
@@ -30290,6 +30340,66 @@ mod tests {
                 "`{value}` marked more than one row as current"
             );
         }
+    }
+
+
+    /// **Rendering the same state twice must produce the same frame** — the invariant that
+    /// catches a render path that mutates the state it is drawing.
+    ///
+    /// The operator's report: *"empty space increases"*. A frame is a pure function of the head's
+    /// state on a given tick; if drawing twice with no event in between differs, the draw is
+    /// writing back into what it reads, and every later frame inherits it.
+    #[test]
+    fn two_renders_of_one_state_are_the_same_frame() {
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        // **The operator's own rung**, which is what makes the marker live at all: the counts are
+        // drawn only where the working is hidden.
+        a.verbosity = Verbosity::Conversation;
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        // Prose committed as a row, so the marker has a sentence to continue, and then a call in
+        // flight — the shape the counts exist for.
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::appended("s.0", "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "Now the last two.".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
+        )));
+        let first = a.screen(120, 30);
+        let second = a.screen(120, 30);
+        let third = a.screen(120, 30);
+        // What the operator sees: the marker's text, counted. Three renders of one state must not
+        // give three markers on the line.
+        let count = |frame: &[String]| frame.join("\n").matches("ctrl-t opens it").count();
+        assert_eq!(
+            count(&first),
+            count(&second),
+            "the marker multiplied between two renders of one state"
+        );
+        for (i, (a, b)) in first.iter().zip(second.iter()).enumerate() {
+            if a != b {
+                eprintln!("DIFF row {i}:\n  1: {a:?}\n  2: {b:?}");
+            }
+        }
+        eprintln!("DIFF blanks: first={} second={} third={}",
+            first.iter().filter(|l| l.trim().is_empty()).count(),
+            second.iter().filter(|l| l.trim().is_empty()).count(),
+            third.iter().filter(|l| l.trim().is_empty()).count());
+        assert_eq!(first, second, "the second render differs from the first");
+        assert_eq!(second, third, "the third differs from the second");
     }
 
     /// **A picker that opened before its own list arrived seeds when the list does** — the second

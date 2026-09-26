@@ -120,6 +120,10 @@ pub struct Body {
     reader: BufReader<TcpStream>,
     framing: Framing,
     done: bool,
+    /// **The chunk-size line, kept between chunks.** `read_line` appends to a `String`, so a fresh
+    /// one per chunk was an allocation per chunk for a line of four hex digits. Cleared, not
+    /// replaced: the capacity survives, and a chunked body is one chunk per TCP read.
+    size_line: String,
 }
 
 enum Framing {
@@ -129,15 +133,24 @@ enum Framing {
 }
 
 impl Body {
-    /// Read the next chunk of decoded body bytes, or `None` at end of body.
-    fn next_bytes(&mut self) -> Result<Option<Vec<u8>>, HttpError> {
+    /// Read the next chunk of decoded body bytes **into `buf`**, or `false` at end of body.
+    ///
+    /// # Why the caller brings the buffer
+    ///
+    /// This returned a fresh `Vec<u8>` per chunk, and BOTH callers immediately copied it into a
+    /// buffer of their own and dropped it — `read_to_string` extends into its output, and
+    /// `for_each_frame` extends into its pending frame. So every chunk of every response was
+    /// allocated, filled, copied and freed. The caller's buffer is the one that is actually
+    /// wanted, and `resize` into it reuses its capacity when the next chunk is no larger.
+    fn next_bytes(&mut self, buf: &mut Vec<u8>) -> Result<bool, HttpError> {
+        buf.clear();
         if self.done {
-            return Ok(None);
+            return Ok(false);
         }
         match self.framing {
             Framing::Chunked => {
-                let mut size_line = String::new();
-                if self.reader.read_line(&mut size_line)? == 0 {
+                self.size_line.clear();
+                if self.reader.read_line(&mut self.size_line)? == 0 {
                     self.done = true;
                     return Err(HttpError::Malformed(
                         "connection closed mid-chunk: the server went away before the \
@@ -147,29 +160,32 @@ impl Body {
                     ));
                 }
                 let size =
-                    usize::from_str_radix(size_line.trim().split(';').next().unwrap_or(""), 16)
-                        .map_err(|_| HttpError::Malformed(format!("chunk size {size_line:?}")))?;
+                    usize::from_str_radix(self.size_line.trim().split(';').next().unwrap_or(""), 16)
+                        .map_err(|_| {
+                            HttpError::Malformed(format!("chunk size {:?}", self.size_line))
+                        })?;
                 if size == 0 {
                     self.done = true;
-                    return Ok(None);
+                    return Ok(false);
                 }
-                let mut buf = vec![0u8; size];
-                self.reader.read_exact(&mut buf)?;
+                // `resize` and not `vec![0u8; size]`: the buffer keeps its capacity across chunks,
+                // so this is an allocation only when a chunk is larger than any before it.
+                buf.resize(size, 0);
+                self.reader.read_exact(buf)?;
                 let mut crlf = [0u8; 2];
                 self.reader.read_exact(&mut crlf)?;
-                Ok(Some(buf))
+                Ok(true)
             }
             Framing::Length(n) => {
-                let mut buf = vec![0u8; n];
-                self.reader.read_exact(&mut buf)?;
+                buf.resize(n, 0);
+                self.reader.read_exact(buf)?;
                 self.done = true;
-                Ok(Some(buf))
+                Ok(true)
             }
             Framing::UntilClose => {
-                let mut buf = Vec::new();
-                self.reader.read_to_end(&mut buf)?;
+                self.reader.read_to_end(buf)?;
                 self.done = true;
-                Ok(Some(buf))
+                Ok(true)
             }
         }
     }
@@ -177,8 +193,9 @@ impl Body {
     /// Consume the whole body as text.
     pub fn read_to_string(mut self) -> Result<String, HttpError> {
         let mut out = Vec::new();
-        while let Some(b) = self.next_bytes()? {
-            out.extend_from_slice(&b);
+        let mut chunk = Vec::new();
+        while self.next_bytes(&mut chunk)? {
+            out.extend_from_slice(&chunk);
         }
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
@@ -213,15 +230,27 @@ impl Body {
         F: FnMut(SseFrame) -> Result<Flow, HttpError>,
     {
         let mut pending = Vec::<u8>::new();
-        while let Some(bytes) = self.next_bytes()? {
-            pending.extend_from_slice(&bytes);
+        let mut chunk = Vec::new();
+        while self.next_bytes(&mut chunk)? {
+            pending.extend_from_slice(&chunk);
             // SSE frames are terminated by a blank line. A chunk boundary is not a
             // frame boundary — assuming it is works right up until a long tool-call
             // argument spans two TCP segments.
             while let Some(pos) = find(&pending, b"\n\n") {
-                let raw = pending.drain(..pos + 2).collect::<Vec<u8>>();
-                let raw = String::from_utf8_lossy(&raw);
+                // **Parsed from a slice of `pending`, not from a copy of it.** This was
+                // `drain(..pos + 2).collect::<Vec<u8>>()` — a `Vec` allocated and freed per SSE
+                // frame, and a frame is a token — purely so the bytes could be borrowed as a whole
+                // string. Borrowing the slice directly is the same reading without the copy; the
+                // drain still happens, just after the parse rather than as part of it.
+                //
+                // **What is deliberately NOT avoided: the `data:` line's `String` below.** A frame
+                // outlives this borrow — `on_frame` is called after the drain and may keep it — so
+                // the line has to be owned. Making `SseFrame` borrow would remove that allocation
+                // too, at the cost of a lifetime parameter on a public type with two consumers, and
+                // it would then need a `Vec<&str>` for the lines, which allocates as well. So the
+                // trade is a wash and the API stays.
                 let mut frame = SseFrame::default();
+                let raw = String::from_utf8_lossy(&pending[..pos]);
                 for line in raw.lines() {
                     if let Some(v) = line.strip_prefix("data:") {
                         frame.data.push(v.trim_start().to_string());
@@ -234,6 +263,11 @@ impl Body {
                     // in it, and it is still handed over: a reader that wants to
                     // know the connection is alive reads the empty frame.
                 }
+                // The borrow of `pending` ends with `raw` and the frame's own strings, so the
+                // drain is free to take it mutably — and it must come after the parse, which is
+                // the whole point of borrowing rather than copying.
+                drop(raw);
+                pending.drain(..pos + 2);
                 if on_frame(frame)? == Flow::Stop {
                     return Ok(());
                 }
@@ -427,6 +461,7 @@ fn read_response(mut reader: BufReader<TcpStream>) -> Result<Body, HttpError> {
         reader,
         framing,
         done: false,
+        size_line: String::new(),
     };
 
     if !(200..300).contains(&code) {

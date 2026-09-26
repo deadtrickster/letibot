@@ -437,13 +437,13 @@ impl Card {
                 // The reason beats the state: "proposed" says what it is, and the
                 // note says why nothing is happening yet, which is the question the
                 // operator actually has while looking at it.
-                Some(n) => tail.push(crate::text::without_control_lines(n)),
+                Some(n) => tail.push(crate::text::without_control_lines(n).into_owned()),
                 None => tail.push("proposed".into()),
             },
             Phase::Running { elapsed_ms, note } => {
                 tail.push(crate::progress::duration(*elapsed_ms));
                 if let Some(n) = note {
-                    tail.push(crate::text::without_control_lines(n));
+                    tail.push(crate::text::without_control_lines(n).into_owned());
                 }
             }
             Phase::Finished {
@@ -456,7 +456,7 @@ impl Card {
                 if !matches!(outcome, Outcome::Ok) {
                     tail.push(outcome.word().to_string());
                     if let Some(r) = outcome.reason() {
-                        tail.push(crate::text::without_control_lines(r));
+                        tail.push(crate::text::without_control_lines(r).into_owned());
                     }
                 }
             }
@@ -464,7 +464,7 @@ impl Card {
                 if !matches!(outcome, Outcome::Ok) {
                     tail.push(outcome.word().to_string());
                     if let Some(r) = outcome.reason() {
-                        tail.push(crate::text::without_control_lines(r));
+                        tail.push(crate::text::without_control_lines(r).into_owned());
                     }
                 }
             }

@@ -39,8 +39,26 @@
 //! block gone. That mistake is invisible on a one-line fixture and destroys every long
 //! message, so the two cases are two named functions rather than one and a `.map`.
 
+use std::borrow::Cow;
 use std::iter::Peekable;
 use std::str::Chars;
+
+/// **Is there anything in here for the sanitiser to do?**
+///
+/// The one predicate the whole module turns on, and it is exact rather than conservative: the
+/// slow path below only ever *changes* a string when it meets a character that is a control
+/// character — `ESC` and the C1 introducers are C0/C1 and so are `char::is_control`, and the
+/// fallback arm replaces exactly the ones that are. So a string with no control character
+/// anywhere comes out of [`without_control`] byte-for-byte identical, and asking this first is
+/// free of any risk of skipping work that was needed.
+///
+/// **Whitespace is not a control character** and must not be treated as one: a tab *is* control
+/// (and becomes a space), but `\n` and `\r` reaching [`without_control`] are the documented
+/// document-destroying mistake that function's own doc warns about — the caller that means lines
+/// is [`without_control_lines`], which splits first.
+fn clean(s: &str) -> bool {
+    !s.chars().any(char::is_control)
+}
 
 /// One line, with any escape sequence **wholly removed** and any other control byte
 /// replaced by a space.
@@ -84,11 +102,31 @@ pub fn without_control(line: &str) -> String {
 ///
 /// See [`without_control`] for what the single-line version does to a document. A
 /// trailing newline is structure too, so the split-and-rejoin keeps it.
-pub fn without_control_lines(s: &str) -> String {
-    s.split('\n')
-        .map(without_control)
-        .collect::<Vec<_>>()
-        .join("\n")
+///
+/// # Why this borrows when it can, and it usually can
+///
+/// **This is called once per model DELTA** — one per token — on the text and reasoning channels
+/// (`tui/src/app.rs:4059`, `:4081`), and a token of ordinary prose has no control character in it.
+/// Building a `String` for every one of those meant an allocation and a copy per token, on the hot
+/// path, for a transformation that had nothing to do. `Cow::Borrowed` makes the common case a
+/// comparison and no allocation at all, and the guarantee is unchanged: the returned text is
+/// still safe to put on a terminal, because anything that needed changing still goes through
+/// [`without_control`].
+///
+/// The `Owned` branch is the same split-and-rejoin as before. It is taken when ANY line has a
+/// control character — a conservative test on the whole document, so a message with one escape
+/// sequence in it pays for all its lines. That is the right trade for a hot path whose input is
+/// almost always clean, and being wrong about which branch costs time rather than correctness.
+pub fn without_control_lines(s: &str) -> Cow<'_, str> {
+    if clean(s) {
+        return Cow::Borrowed(s);
+    }
+    Cow::Owned(
+        s.split('\n')
+            .map(without_control)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 /// The parameters and the final byte of a `CSI` sequence, with the introducer already
