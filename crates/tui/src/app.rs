@@ -1059,11 +1059,22 @@ struct TurnPane {
     /// recorded session must show the same elapsed time as the one that watched it.
     started_ms: u64,
     last_ms: u64,
-    /// Characters of visible answer so far. The fallback count: a head shows it
-    /// only while the server's own token counter has not spoken, which is the
-    /// `messages` backend's turns — that seam carries no token count — and logs
-    /// recorded before `TokensGenerated` existed.
-    out_chars: usize,
+    /// **Characters that have ARRIVED this turn** — the whole stream, on every channel, and not
+    /// the answer's prose alone.
+    ///
+    /// The fallback count: a head shows it only while the server's own token counter has not
+    /// spoken, which is the `messages` backend's turns — that seam carries no token count — and
+    /// logs recorded before `TokensGenerated` existed.
+    ///
+    /// **It counted the answer alone, and that made the fallback useless exactly where it is
+    /// load-bearing.** MEASURED on the deepseek (`messages`) backend, 2026-09-27: the row read
+    /// `⠹ Responding · 2m34s · 145 chars` for minutes while the header's own count for a single
+    /// 15-second window of the same turn was **2826 output tokens** — the round was reasoning and
+    /// tool calls, and *neither* was in this number. The operator drew the only conclusion the row
+    /// allowed: *"still thinking glued to Responding"*, on a turn that was working the whole time.
+    /// A counter on a row whose job is *tell a hang from a working model* has to count what
+    /// arrives, not the one channel it can name.
+    arrived_chars: usize,
     /// The server's own generation counter, as the last `TokensGenerated`
     /// reported it. Zero until the first frame that advanced it arrives.
     ///
@@ -3845,7 +3856,7 @@ impl App {
                 // renders it twice — measured on a second head attached to a
                 // finished turn, where the whole reply appeared above itself.
                 appended: t.appended,
-                out_chars: t.text.chars().count(),
+                arrived_chars: t.text.chars().count(),
                 // The counter a head that joined mid-turn has missed: the snapshot
                 // carries the latest one, and the live frames carry the rest.
                 tokens: t.tokens,
@@ -4137,9 +4148,9 @@ impl App {
                         // control byte that reaches it is frozen into the stable half
                         // and cannot be removed later without re-lexing. The trade is
                         // `without_control`'s own — one space per control byte, so the
-                        // character count `out_chars` keeps is unchanged.
+                        // character count `arrived_chars` keeps is unchanged.
                         let text = without_control_lines(&text);
-                        t.out_chars += text.chars().count();
+                        t.arrived_chars += text.chars().count();
                         t.text.push(&text);
                         Disposition::Rendered
                     }
@@ -4159,8 +4170,12 @@ impl App {
                         t.think_last_ms = ts;
                         // The same rule as the answer above, for the same reason: reasoning is
                         // the model's own text and it reaches the glass through the markdown
-                        // renderer.
-                        t.reasoning.push(&without_control_lines(&text));
+                        // renderer. **And it counts**, for the reason the field gives: on a
+                        // `messages` backend this is the channel that streams from the first
+                        // second, and it was the one the row's number could not see.
+                        let text = without_control_lines(&text);
+                        t.arrived_chars += text.chars().count();
+                        t.reasoning.push(&text);
                         if self.verbosity >= Verbosity::Normal {
                             Disposition::Rendered
                         } else {
@@ -4173,6 +4188,11 @@ impl App {
                     // through `ctrl-x`, so it is sanitised where it is drawn
                     // (`raw_call_lines`) rather than here.
                     DeltaTarget::ToolCall => {
+                        // **The other channel that arrives and that the row could not see**, and
+                        // the one an agentic round is *made of*: a call's arguments come as deltas,
+                        // and on the backend that produced the measurement above the row sat at a
+                        // frozen number while thousands of tokens of exactly this went by.
+                        t.arrived_chars += text.chars().count();
                         t.raw_call.push_str(&text);
                         t.writing_call = true;
                         Disposition::Rendered
@@ -12933,12 +12953,17 @@ impl App {
         // backend turn, whose seam carries no token count, or a log recorded
         // before `TokensGenerated` existed. Nothing yet is no field at all: a
         // zero is a zero field wearing a measurement's clothes.
+        //
+        // **On the backend where this fallback is the only number, it has to be the whole
+        // stream.** MEASURED 2026-09-27 on deepseek: `Responding · 2m34s · 145 chars` while the
+        // header counted 2826 output tokens in fifteen seconds of the same turn. One channel is
+        // not liveness — see `TurnPane::arrived_chars`.
         let count = if t.tokens > 0 {
             Some(format!(" · {} tok", progress::thousands(t.tokens)))
-        } else if t.out_chars > 0 {
+        } else if t.arrived_chars > 0 {
             Some(format!(
                 " · {} chars",
-                progress::thousands(t.out_chars as u64)
+                progress::thousands(t.arrived_chars as u64)
             ))
         } else {
             None
@@ -25167,6 +25192,97 @@ mod tests {
         for w in [24usize, 40, 60, 80, 120, 200] {
             assert!(line_width(&a.turn_status(w)) <= w, "w={w}");
         }
+    }
+
+    /// **A turn that only thinks and writes calls still moves its own row.**
+    ///
+    /// MEASURED LIVE on the deepseek (`messages`) backend, 2026-09-27, and this test is that
+    /// measurement written down. The operator's screen read
+    ///
+    /// ```text
+    ///   ⠹ Responding · 2m19s · 145 chars
+    ///   ⠼ Responding · 2m34s · 145 chars      header: 15.1s · 2826 out · 188 tok/s
+    /// ```
+    ///
+    /// — the number frozen for two and a half minutes across a window in which the turn produced
+    /// 2826 output tokens. Their report: *"still thinking glued to Responding"*. The turn was
+    /// working the entire time; the row was counting the answer's prose and nothing else, which is
+    /// the one channel an agentic round does not use.
+    ///
+    /// The `messages` backend sends deltas for the answer, for the reasoning and for the
+    /// tool-call markup, and **no** token counter at all — so this fallback is the only number the
+    /// row has there, and a fallback that misses two channels of three is not a conservative
+    /// estimate, it is a stopped clock on the screen whose whole job is to say the work is going.
+    #[test]
+    fn a_turn_that_only_thinks_and_writes_calls_still_moves_its_own_row() {
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        // The count of characters the row is carrying, read the way a reader reads it.
+        let chars = |a: &App| -> u64 {
+            a.turn_status(160)
+                .split('·')
+                .find_map(|p| p.trim().strip_suffix(" chars"))
+                .and_then(|d| d.replace(',', "").parse().ok())
+                .unwrap_or(0)
+        };
+        // Nothing has arrived: no field at all, rather than a zero wearing a measurement's clothes.
+        assert!(a.turn_status(160).contains("Responding"), "{}", a.turn_status(160));
+        assert_eq!(chars(&a), 0, "nothing has arrived yet: {}", a.turn_status(160));
+
+        // The reasoning, which is the first thing a `messages` backend streams and the first thing
+        // the row could not see.
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::Delta {
+                turn_id: "t1".into(),
+                target: DeltaTarget::Reasoning,
+                text: "check the caller before the callee".into(),
+            },
+        )));
+        let after_think = chars(&a);
+        assert!(
+            after_think > 0,
+            "the streamed thinking is the liveness on this backend: {:?}",
+            a.turn_status(160)
+        );
+
+        // And the tool-call markup — the channel an agentic round is made of, and the other one the
+        // row used to miss.
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::Delta {
+                turn_id: "t1".into(),
+                target: DeltaTarget::ToolCall,
+                text: "{\"command\":\"cargo test\"}".into(),
+            },
+        )));
+        assert!(
+            chars(&a) > after_think,
+            "writing the call moves the row too: {:?}",
+            a.turn_status(160)
+        );
+
+        // The answer channel counts as it always did.
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::Delta {
+                turn_id: "t1".into(),
+                target: DeltaTarget::Text,
+                text: "here is the answer".into(),
+            },
+        )));
+        assert!(chars(&a) > after_think, "{:?}", a.turn_status(160));
+
+        // **One row, at every width** — and the count survives on it, which is the thing the
+        // marker's own history warns about: this row was once a legend on the composer's border,
+        // where it put `Responding` at the left edge and clipped the number it was carrying.
+        // It is a row of its own now and it is allowed to grow; the frame trims it, so what is
+        // pinned here is that it stays ONE row and that a sane width carries the whole of it.
+        for w in [24usize, 40, 60, 80, 120, 200] {
+            assert!(!a.turn_status(w).contains('\n'), "one row at w={w}");
+        }
+        assert!(a.turn_status(80).contains("chars"), "{:?}", a.turn_status(80));
     }
 
     #[test]
