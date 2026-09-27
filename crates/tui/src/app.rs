@@ -6027,6 +6027,59 @@ impl App {
             return None;
         }
 
+        // **Parked in the scrollback, the arrows belong to the scrollback — and the composer
+        // does not get them.**
+        //
+        // The intent was already written down two arms above (*"parked in the scrollback, Up
+        // still scrolls"*) and it was never true. The composer is asked FIRST, and an empty
+        // composer hands Up straight to the editor's `recall(true)`: that walks readline history
+        // and answers `Changed`, so the transcript's own fallback below was reached only by the
+        // keys the editor had no use for.
+        //
+        // MEASURED in the operator's own window, 2026-09-27, on a head that had been up for
+        // hours — the three lines are the banner, then three presses of the key it names:
+        //
+        // ```text
+        //   ── holding your place · 138 line(s) below … ↓ to the bottom or esc follows again
+        //   Down ×3   ·  139 line(s) below                      ← the number did not move
+        //   Up        ·  composer: "on this letibot head scrolll is …"
+        //   Down ×3   ·  composer: "yeah scrol…"
+        // ```
+        //
+        // Four presses of the keys the banner advertises, and the reader was no closer to the
+        // bottom while an old prompt had appeared in the box. Their report: *"no way to scroll
+        // back to the bottom, stuck at holding"*. It was not stuck — the arrows were being spent
+        // on history, and a head with a long session had hundreds of entries to spend them on.
+        //
+        // **And ↓ is the whole of the way back, in one press.** A key that moves one line cannot
+        // out-run a stream that adds lines faster, so *"↓ to the bottom"* was unreachable by
+        // design as well as by the ordering: three ↓'s against a generating turn moved the count
+        // by nothing measurable. The reference does not move one line either — `%normal-key`'s
+        // `:down` sets the scroll to ZERO when the reader is parked: *"parked in the scrollback,
+        // ↓ follows the stream again — it is what the banner says it does; only then does it move
+        // inside the prompt"*. So this arm does what this head's banner already promised, and
+        // what `esc` does beside it.
+        //
+        // **Esc is the way back to the composer**, which is the other key the banner names, and
+        // the reason taking ↑ is safe: a reader who wants their draft's arrows back has an
+        // advertised key for it rather than a hunt.
+        if !self.following() && self.todo_draft.is_none() {
+            match k {
+                Key::Up => {
+                    self.scroll_up(1);
+                    self.redraw = true;
+                    return None;
+                }
+                Key::Down => {
+                    self.anchor = None;
+                    self.scroll = 0;
+                    self.redraw = true;
+                    return None;
+                }
+                _ => {}
+            }
+        }
+
         let now = self.now_ms;
         let cols = self.composer_cols();
         let reaction = match k {
@@ -25200,6 +25253,89 @@ mod tests {
         for w in [24usize, 40, 60, 80, 120, 200] {
             assert!(line_width(&a.turn_status(w)) <= w, "w={w}");
         }
+    }
+
+    /// **Parked in the scrollback, the arrows are the scrollback's, and `↓` is the bottom.**
+    ///
+    /// The operator, 2026-09-27, after hours in one head: *"on this letibot head scrolll is
+    /// broken - no way to scroll back to the bottom, stuck at holding"*. Measured in their
+    /// window: three presses of `↓` moved the banner's count by nothing while the stream added
+    /// lines underneath, and one press of `↑` put an old prompt — *"on this letibot head
+    /// scrolll is broken…"* — into the composer.
+    ///
+    /// So this test has **history in the editor**, because history is what ate the keys: without
+    /// it the defect does not reproduce, which is why it survived to a head that had been up for
+    /// hours and not one that had just started.
+    #[test]
+    fn parked_in_the_scrollback_the_arrows_are_the_scrollbacks_and_down_is_the_bottom() {
+        let mut a = app();
+        for i in 0..40u64 {
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "assistant"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("s.{i}"), &format!("row {i} says a thing")),
+            )));
+        }
+        a.screen(100, 30);
+
+        // Two prompts, submitted, so the composer has a history to walk.
+        for line in ["the first prompt", "the second prompt"] {
+            for c in line.chars() {
+                a.key(Key::Char(c));
+            }
+            a.key(Key::Enter);
+        }
+        assert!(
+            a.editor.text().is_empty(),
+            "a submit leaves the composer empty: {:?}",
+            a.editor.text()
+        );
+
+        // Park the way a wheel does, and check the banner this is all about.
+        a.key(Key::WheelUp);
+        let screen = a.screen(100, 30);
+        assert!(!a.following(), "the wheel left the stream");
+        assert!(
+            screen.iter().any(|l| l.contains("holding your place")),
+            "the banner is up: {screen:#?}"
+        );
+
+        // **↑ scrolls the transcript and does NOT walk history.** The composer is where a
+        // recalled prompt appeared, so it is what the assertion is about.
+        let top = a.view_top;
+        a.key(Key::Up);
+        assert!(
+            a.editor.text().is_empty(),
+            "↑ put the composer's history in the box: {:?}",
+            a.editor.text()
+        );
+        a.screen(100, 30);
+        assert!(!a.following(), "↑ returned the reader to the stream");
+        assert!(a.view_top <= top, "↑ did not move the view up");
+
+        // **↓ is the bottom in ONE press**, which is what the banner says and what a key moving
+        // one line can never be against a stream that adds lines faster.
+        a.key(Key::Down);
+        assert!(a.following(), "↓ did not return the reader to the stream");
+        let screen = a.screen(100, 30);
+        assert!(
+            !screen.iter().any(|l| l.contains("holding your place")),
+            "the banner is still up after ↓: {screen:#?}"
+        );
+
+        // **And with the reader following, ↑ is not this arm's at all** — the arm is about the
+        // parked STATE and not about the key, so everything the head already did with ↑ still
+        // happens. Here that is the take-back two arms above: the prompts this test submitted are
+        // still queued, and ↑ hands them back for editing rather than scrolling anything.
+        a.key(Key::Up);
+        assert_eq!(
+            a.editor.text(),
+            "the first prompt\nthe second prompt",
+            "↑ while following must still be the head's own key"
+        );
     }
 
     /// **A turn that only thinks and writes calls still moves its own row.**
