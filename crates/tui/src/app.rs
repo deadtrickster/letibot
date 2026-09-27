@@ -10495,6 +10495,9 @@ impl App {
                 Marker::new(
                     live.calls,
                     live.think_lines,
+                    // **No events: this marker stands for work with no row yet**, and an event is
+                    // a row the rung DID hide. See [`COUNT_RUNGS`].
+                    0,
                     true,
                     marker_carries_live(live),
                     marker_room(self.cfg.width),
@@ -10689,6 +10692,8 @@ impl App {
                     Marker::new(
                         live.calls,
                         live.think_lines,
+                        // No events — see the sibling call above.
+                        0,
                         true,
                         marker_carries_live(live),
                         marker_room(cfg.width),
@@ -14540,6 +14545,12 @@ struct Counts {
     calls: Option<(String, String)>,
     /// `2 thinking lines`. Never coloured; a thought is not work that is still happening.
     think: Option<(String, String)>,
+    /// **`2 head events`** — the fallback that keeps `[]` off the screen. See [`COUNT_RUNGS`].
+    ///
+    /// leticl's own word for it (*"head event"*), and never coloured: these are not work that is
+    /// happening, they are the rows the rung hid that neither of the other two numbers could
+    /// describe.
+    events: Option<(String, String)>,
 }
 
 /// **The widest room a marker may claim from the sentence it continues**, leading space included.
@@ -14580,6 +14591,17 @@ fn marker_room(cols: usize) -> usize {
 /// -> 't' and so on"*. This is what pays for a marker that has outgrown its room: **growth is paid
 /// in words, not in layout**, which is the other half of [`MARKER_ROOM_MAX`]'s argument.
 ///
+/// **Three clauses, and the third is why `[]` can never be drawn.** A run can hide rows that are
+/// neither a call nor a thought — a system update, a segment mark — and counting neither left the
+/// marker with an empty body: `[]`, on the line whose whole job is to be the fact the rung was
+/// hiding. leticl's fallback says it exactly: *"a run neither count can describe … falls back to
+/// their count, because `[]` is not a marker."* Its `%hidden-run-counts` ends `(t (incf events))`
+/// where this file had `_ => {}`.
+///
+/// The events clause is drawn **only when both of the other two are zero** — leticl branches
+/// there and nowhere else — so a run of calls says `[2 tool calls]` and does not mention the
+/// system row beside it.
+///
 /// The two clauses step down TOGETHER — leticl's rung is a triple for that reason, and its words are
 /// *"a marker reading `[2 tools, 3 thinking lines]` is one rung's word beside another's, and the
 /// operator's ladder is about the marker and not about the clauses in it"*.
@@ -14587,17 +14609,26 @@ fn marker_room(cols: usize) -> usize {
 /// format string — `~d tool call~:p` and then `~dt` — so the compressed form is genuinely tighter
 /// rather than one space shorter: `[11t, 246l]`, not `[11 t, 246 l]`. The space belongs to the
 /// rung for the same reason the seam's dot belongs to the seam.
-const COUNT_RUNGS: [(&str, &str, &str, &str); 4] = [
-    // (calls one, calls many, thinking one, thinking many)
+const COUNT_RUNGS: [(&str, &str, &str, &str, &str, &str); 4] = [
+    // (calls one, calls many, thinking one, thinking many, events one, events many)
     (
         " tool call",
         " tool calls",
         " thinking line",
         " thinking lines",
+        " head event",
+        " head events",
     ),
-    (" tool", " tools", " thinking", " thinking"),
-    (" call", " calls", " line", " lines"),
-    ("t", "t", "l", "l"),
+    (
+        " tool",
+        " tools",
+        " thinking",
+        " thinking",
+        " event",
+        " events",
+    ),
+    (" call", " calls", " line", " lines", " event", " events"),
+    ("t", "t", "l", "l", "e", "e"),
 ];
 
 /// **Whether the marker names its own key. OFF, and that is the operator's ruling.**
@@ -14650,12 +14681,12 @@ const MARKER_LADDER: [(usize, usize); 6] = [(0, 0), (1, 0), (2, 0), (3, 0), (3, 
 
 impl Counts {
     fn of(calls: usize, think_lines: usize) -> Counts {
-        Counts::at_rung(calls, think_lines, 0)
+        Counts::at_rung(calls, think_lines, 0, 0)
     }
 
     /// **The counts spelled at one rung of the ladder** — see [`COUNT_RUNGS`].
-    fn at_rung(calls: usize, think_lines: usize, rung: usize) -> Counts {
-        let (c1, cn, t1, tn) = COUNT_RUNGS[rung.min(COUNT_RUNGS.len() - 1)];
+    fn at_rung(calls: usize, think_lines: usize, events: usize, rung: usize) -> Counts {
+        let (c1, cn, t1, tn, e1, en) = COUNT_RUNGS[rung.min(COUNT_RUNGS.len() - 1)];
         // The number, then the suffix — which is where the space lives, and why the last rung has
         // none. See [`COUNT_RUNGS`].
         // The number and its noun, apart. See [`Counts`].
@@ -14665,6 +14696,21 @@ impl Counts {
         Counts {
             calls: (calls > 0).then(|| count(calls, c1, cn)),
             think: (think_lines > 0).then(|| count(think_lines, t1, tn)),
+            events: (events > 0).then(|| count(events, e1, en)),
+        }
+    }
+
+    /// **The clauses this marker draws, in order** — the two counts, or the fallback when neither
+    /// of them can describe the run. See [`COUNT_RUNGS`]: leticl branches exactly here, drawing the
+    /// events clause only when the other two are empty.
+    fn clauses(&self) -> Vec<&(String, String)> {
+        if self.calls.is_none() && self.think.is_none() {
+            self.events.iter().collect()
+        } else {
+            [self.calls.as_ref(), self.think.as_ref()]
+                .into_iter()
+                .flatten()
+                .collect()
         }
     }
 
@@ -14672,9 +14718,9 @@ impl Counts {
     /// than the registers. Never for drawing: a caller that painted this would be painting the
     /// brackets and the thinking count along with the number.
     fn plain(&self) -> String {
-        let words: Vec<String> = [self.calls.as_ref(), self.think.as_ref()]
+        let words: Vec<String> = self
+            .clauses()
             .into_iter()
-            .flatten()
             .map(|(n, noun)| format!("{n}{noun}"))
             .collect();
         format!("[{}]", words.join(", "))
@@ -14778,19 +14824,26 @@ impl Marker {
     /// The counts come first and the seam last — [`MARKER_LADDER`] records why — so a marker that
     /// has outgrown its room loses `opens it` before it loses `tool calls`, and a count that gains
     /// a digit costs a word rather than a line.
-    fn new(calls: usize, think_lines: usize, newest: bool, live: bool, room: usize) -> Marker {
+    fn new(
+        calls: usize,
+        think_lines: usize,
+        events: usize,
+        newest: bool,
+        live: bool,
+        room: usize,
+    ) -> Marker {
         let limit = room.saturating_sub(1).max(1);
         let mut chosen = MARKER_LADDER[0];
         for (count_rung, seam_rung) in MARKER_LADDER {
             chosen = (count_rung, seam_rung);
-            let counts = Counts::at_rung(calls, think_lines, count_rung);
+            let counts = Counts::at_rung(calls, think_lines, events, count_rung);
             let seam = marker_seam_rung(newest, seam_rung);
             if visible_width(&format!("{}{seam}", counts.plain())) <= limit {
                 break;
             }
         }
         Marker {
-            counts: Counts::at_rung(calls, think_lines, chosen.0),
+            counts: Counts::at_rung(calls, think_lines, events, chosen.0),
             seam: marker_seam_rung(newest, chosen.1),
             live,
         }
@@ -14841,10 +14894,22 @@ fn marker_painted(cfg: &RenderConfig, counts: &Counts, seam: &str, live: bool) -
         .as_ref()
         .map(|(n, noun)| format!("{n}{noun}"))
         .unwrap_or_default();
-    let body: Vec<&str> = [calls.as_str(), think.as_str()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect();
+    // **The fallback is a branch and not a third element.** The events clause is drawn only when
+    // the run is one neither count describes — see [`COUNT_RUNGS`] — so a run of calls must not
+    // grow a `, 1 head event` beside it. Written as leticl writes it: `parts`, or the fallback.
+    let events = counts
+        .events
+        .as_ref()
+        .map(|(n, noun)| format!("{n}{noun}"))
+        .unwrap_or_default();
+    let body: Vec<&str> = if calls.is_empty() && think.is_empty() {
+        vec![events.as_str()]
+    } else {
+        vec![calls.as_str(), think.as_str()]
+    }
+    .into_iter()
+    .filter(|s| !s.is_empty())
+    .collect();
     format!("[{}]{}", body.join(", "), p.paint(Role::Faint, seam))
 }
 
@@ -14862,6 +14927,7 @@ fn hidden_run_marker(
 ) -> Marker {
     let mut calls = 0usize;
     let mut think_lines = 0usize;
+    let mut events = 0usize;
     // **Per row, and only the rows this rung actually hides.** The guard has to be on the row
     // being counted and not on the run's first one: a run normally *starts* at an assistant
     // row with no prose — which is invisible and is NOT hidden (`keeps` keeps `Assistant`) —
@@ -14876,10 +14942,13 @@ fn hidden_run_marker(
             Some(letibot_transcript::TranscriptItem::Reasoning { text, .. }) => {
                 think_lines += reasoning_display_lines(text, cfg.width);
             }
-            // A hidden row of any other kind — a system update, a segment mark — is counted
-            // by nothing, because the two counts are the two kinds the rung hides in bulk and
-            // a third would be a number about a row nobody classified.
-            _ => {}
+            // **A hidden row of any other kind — a system update, a segment mark — is an EVENT.**
+            // It used to be counted by nothing, on the argument that *a third would be a number
+            // about a row nobody classified*. That argument is what drew `[]`: a run of nothing
+            // but these has no calls and no thinking lines, so the marker had no body at all, on
+            // the one line whose whole job is to be the fact the rung was hiding. See
+            // [`COUNT_RUNGS`] for leticl's fallback and its word for the number.
+            _ => events += 1,
         }
     }
     // **And the work in flight, when this run is the one it belongs to.** A stretch that
@@ -14908,7 +14977,7 @@ fn hidden_run_marker(
         calls += live.calls;
         think_lines += live.think_lines;
     }
-    Marker::new(calls, think_lines, newest, carries_live, marker_room(cfg.width))
+    Marker::new(calls, think_lines, events, newest, carries_live, marker_room(cfg.width))
 }
 
 /// The fold's own header, which is also where its key is advertised.
@@ -34384,7 +34453,7 @@ mod tests {
 
         // (2) The counts, at each rung, for a call count that forces the question.
         let at = |rung: usize| {
-            let c = Counts::at_rung(11, 246, rung);
+            let c = Counts::at_rung(11, 246, 0, rung);
             format!("{}{}", c.plain(), marker_seam_rung(true, 0))
         };
         assert_eq!(at(0), "[11 tool calls, 246 thinking lines]");
@@ -34399,7 +34468,7 @@ mod tests {
         // **And the whole thing steps down to fit a room**, which is the property and not the
         // spelling: every rung is narrower than the one before, and the last one always fits.
         let widths: Vec<usize> = (0..=3)
-            .map(|r| visible_width(&Counts::at_rung(11, 246, r).plain()))
+            .map(|r| visible_width(&Counts::at_rung(11, 246, 0, r).plain()))
             .collect();
         assert!(
             widths.windows(2).all(|w| w[0] > w[1]),
@@ -34422,17 +34491,17 @@ mod tests {
         // 1, where with the seam it had to reach rung 3 to make room for ` · ctrl-t`. That is the
         // seam's cost, paid in the reader's words, and it is why removing it is worth more than a
         // tidy line.
-        let short = Marker::new(11, 246, true, false, 26);
+        let short = Marker::new(11, 246, 0, true, false, 26);
         assert_eq!(short.counts.plain(), "[11 tools, 246 thinking]");
         assert_eq!(short.seam, "", "the seam is off by ruling");
         // A room too small even for that drops the seam ENTIRELY, and the counts stay: the counts
         // are the fact the line exists to carry, and the seam is the head talking about its own
         // keys — which is the whole of the ladder's order.
-        let counts_only = Marker::new(11, 246, true, false, 16);
+        let counts_only = Marker::new(11, 246, 0, true, false, 16);
         assert_eq!(counts_only.seam, "", "the seam is off by ruling");
         assert_eq!(counts_only.counts.plain(), "[11t, 246l]");
         // And a room with space keeps the whole thing spelled out.
-        let roomy = Marker::new(11, 246, true, false, 56);
+        let roomy = Marker::new(11, 246, 0, true, false, 56);
         assert_eq!(roomy.seam, "", "the seam is off by ruling");
         assert_eq!(roomy.counts.plain(), "[11 tool calls, 246 thinking lines]");
     }
@@ -34816,6 +34885,119 @@ mod tests {
     /// `--nocapture` to see it: the paragraph is the evidence and the three positions are the
     /// claim.
     #[test]
+    /// **A run of hidden rows neither count can describe says `[1 head event]`, never `[]`.**
+    ///
+    /// R53 §1.5, and it is a defect this head could put on the screen: the counts walked a run
+    /// counting `ToolResult` and `Reasoning` and nothing else (`_ => {}`), while the rung also
+    /// hides `System` and `SegmentMark`. A run made only of those had no calls and no thinking
+    /// lines, so its marker had no body — `[]`, on the line whose whole job is to be the fact the
+    /// rung was hiding.
+    ///
+    /// leticl's fallback is the answer and its wording is the one used: *"a run neither count can
+    /// describe … falls back to their count, because `[]` is not a marker"* — `%hidden-run-counts`
+    /// ends `(t (incf events))`. The clause is drawn **only** when the other two are empty, which
+    /// the second half of this test pins: a run of real calls must not grow a `, 1 head event`.
+    #[test]
+    fn a_run_of_rows_no_count_describes_says_what_it_is_rather_than_nothing() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.verbosity = Verbosity::Conversation;
+        // A system row, which the rung hides and neither count can describe.
+        a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "system"))));
+        a.record_item(
+            "s.0",
+            TranscriptItem::System {
+                text: "the model was reconfigured".into(),
+                origin: letibot_transcript::SystemOrigin::Update,
+            },
+        );
+        let screen = a.screen(100, 24).join("\n");
+        assert!(
+            !screen.contains("[]"),
+            "an empty marker is not a marker: {screen}"
+        );
+        assert!(
+            screen.contains("[1 head event]"),
+            "the run says what it is: {screen}"
+        );
+
+        // **And it steps down the ladder like the other clauses**, so a narrow frame does not get
+        // a marker wider than its room.
+        let mut narrow = app();
+        narrow.cfg.width = 40;
+        narrow.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        narrow.verbosity = Verbosity::Conversation;
+        narrow.apply(ServerFrame::Event(env(1, testing::appended("s.0", "system"))));
+        narrow.record_item(
+            "s.0",
+            TranscriptItem::System {
+                text: "the model was reconfigured".into(),
+                origin: letibot_transcript::SystemOrigin::Update,
+            },
+        );
+        let narrow_screen = narrow.screen(40, 24).join("\n");
+        assert!(
+            !narrow_screen.contains("[]"),
+            "and still not empty when the room is tight: {narrow_screen}"
+        );
+
+        // **The fallback is a branch, not a third clause.** A run of calls describes itself, so
+        // the system row beside it is not mentioned — leticl draws `parts`, or the fallback.
+        let mut with_calls = app();
+        with_calls.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        with_calls.verbosity = Verbosity::Conversation;
+        for (seq, id, item) in [
+            (
+                1u64,
+                "s.0",
+                TranscriptItem::System {
+                    text: "the model was reconfigured".into(),
+                    origin: letibot_transcript::SystemOrigin::Update,
+                },
+            ),
+            (
+                2,
+                "s.1",
+                TranscriptItem::ToolResult {
+                    call_id: "c0".into(),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "SOMETHING LONG ENOUGH TO HIDE".into(),
+                    edit: None,
+                    origin: None,
+                },
+            ),
+        ] {
+            let kind = match &item {
+                TranscriptItem::System { .. } => "system",
+                _ => "tool_result",
+            };
+            with_calls.apply(ServerFrame::Event(env(seq, testing::appended(id, kind))));
+            with_calls.record_item(id, item);
+        }
+        let screen = with_calls.screen(100, 24).join("\n");
+        assert!(
+            screen.contains("1 tool call"),
+            "a run of calls describes itself: {screen}"
+        );
+        assert!(
+            !screen.contains("head event"),
+            "and does not mention the row beside it: {screen}"
+        );
+    }
+
     fn the_marker_reads_as_one_paragraph() {
         let mut a = app();
         a.apply(hello(
