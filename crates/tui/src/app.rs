@@ -1040,6 +1040,34 @@ struct TurnPane {
     /// survives. Without this the answer is on the screen twice, once in the wrong
     /// order, which is what the first run of `--demo` showed.
     appended: Vec<String>,
+    /// **Every row this TURN has produced, across all of its rounds** — and the difference from
+    /// [`TurnPane::appended`] is the whole of a defect the operator caught twice.
+    ///
+    /// `appended` is per ROUND, because the daemon re-emits `TurnStarted` for every round of one
+    /// prompt (`run_turn_steered` does `turn_seq += 1` inside the round loop) and each one builds a
+    /// fresh `TurnPane`. That is right for what `appended` is used for — which rows the live pane is
+    /// still drawing, and whether the turn has been superseded — and it was silently wrong for the
+    /// one question asked with it: *does this run hold a row of the current turn.*
+    ///
+    /// Their screen, and their question:
+    ///
+    /// ```text
+    ///   ▌ their message
+    ///                    ← blank
+    ///   [2 tool calls, 28 thinking lines]      ← the walk's marker, on the run of committed rows
+    ///   [8 thinking lines]                     ← the pane's marker, for the same turn
+    ///   ⠇ Responding · 1m42s
+    /// ```
+    ///
+    /// *"ok, still not here - [2 tool calls] empty line [N thinking lines]. why not [2 tool calls, N
+    /// thinking lines] on a single row?"* **Because round 3 forgot what rounds 1 and 2 did.** The run
+    /// of committed rows stopped reading as this turn's, so `live_here` and `walk_carried_live` both
+    /// answered *no*, the in-flight reasoning was not folded into the run, and the pane drew it
+    /// beside the run instead — two markers, and two different thinking counts.
+    ///
+    /// One turn is one `began_ms` (stamped once per prompt and carried on every round's
+    /// `TurnStarted`), so that is what this is carried on. Cleared when the turn changes.
+    turn_rows: Vec<String>,
     /// How many of `calls` the transcript has already taken over.
     ///
     /// A round's tool-result rows are appended **in call order**, after every call
@@ -3833,6 +3861,12 @@ impl App {
                 // renders it twice — measured on a second head attached to a
                 // finished turn, where the whole reply appeared above itself.
                 appended: t.appended,
+                // **`turn_rows` is deliberately NOT here, because it is not on the wire.** A head
+                // that attaches mid-turn gets the current round's `appended` from the snapshot and
+                // starts with no history of the turn's earlier rounds, so for the window between
+                // attaching and the next `TurnStarted` it can draw the duplicate this field exists
+                // to prevent. Said rather than hidden: closing it needs a daemon field, and the
+                // window is one attach rather than every round.
                 ..TurnPane::default()
             };
             // The snapshot carries the accumulated text **once**. Everything after
@@ -4069,12 +4103,28 @@ impl App {
                 // earlier at attach. See `model_from_turn_at`.
                 self.model_from_turn_at = self.seq;
                 let started = began_ms.unwrap_or(ts);
+                // **A new ROUND of the same turn keeps the rows the turn has already produced.** See
+                // [`TurnPane::turn_rows`]: `began_ms` is stamped once per prompt and every round
+                // carries it, which is the only thing on the wire that distinguishes *the next round
+                // of this prompt* from *a new prompt* — `turn_id` is per round and everything else
+                // in the event is per round too.
+                let same_turn = began_ms
+                    .is_some_and(|b| self.turn.as_ref().is_some_and(|t| t.started_ms == b));
+                let turn_rows = if same_turn {
+                    self.turn
+                        .as_ref()
+                        .map(|t| t.turn_rows.clone())
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 self.turn = Some(TurnPane {
                     turn_id,
                     model,
                     state: Some(TurnState::Running),
                     started_ms: started,
                     last_ms: started,
+                    turn_rows,
                     ..TurnPane::default()
                 });
                 // A new turn takes the pane away from the previous one, so the
@@ -4547,6 +4597,7 @@ impl App {
                 let mut carried_decision: Option<letibot_sessionlog::view::SettledDecision> = None;
                 if let Some(t) = self.turn.as_mut() {
                     t.appended.push(item_id.clone());
+                    t.turn_rows.push(item_id.clone());
                     if kind == "tool_result" {
                         let c = t.calls.get(t.settled_calls);
                         carried = c
@@ -9332,6 +9383,15 @@ impl App {
             .as_ref()
             .map(|t| t.appended.iter().cloned().collect())
             .unwrap_or_default();
+        // **And the turn's rows, for the one question that is about the TURN.** `in_flight` is
+        // this round's — what the live pane is still drawing — while `live_here` asks whether a run
+        // belongs to the turn at all. Two sets because they are two questions, and asking the second
+        // with the first is the defect [`TurnPane::turn_rows`] records.
+        let turn_rows: std::collections::HashSet<String> = self
+            .turn
+            .as_ref()
+            .map(|t| t.turn_rows.iter().cloned().collect())
+            .unwrap_or_default();
         // (row, class, lines, tight) for each row, newest first as they are built. The row
         // index rides along for R36: the block these are assembled into is PREPENDED to the
         // history, so every span already in `spans` shifts by its length and the new ones
@@ -9456,7 +9516,8 @@ impl App {
                 // **Does this run hold one of the TURN's rows** — the `live_here` question. A run
                 // made only of an earlier turn's rows is history, and folding the in-flight work
                 // into it is the defect `marker_carries_live` already records.
-                let live_here = (start..end).any(|r| in_flight.contains(&self.items[r].item_id));
+                let live_here =
+                    (start..end).any(|r| turn_rows.contains(&self.items[r].item_id));
                 hidden_run_marker(
                     &self.items,
                     start,
@@ -10125,6 +10186,13 @@ impl App {
                 .map(|t| t.appended.iter().map(String::as_str).collect())
                 .unwrap_or_default()
         };
+        // And the turn's rows — see the sibling set in `fill_backward_until`, and
+        // [`TurnPane::turn_rows`] for the defect this distinction is.
+        let turn_rows: std::collections::HashSet<&str> = self
+            .turn
+            .as_ref()
+            .map(|t| t.turn_rows.iter().map(String::as_str).collect())
+            .unwrap_or_default();
         // **The turn's in-flight work, read before the walk's disjoint borrow.** The
         // destructure below deliberately leaves `turn` out (the pane later needs it whole),
         // so this is the one place the walk can see it — and it must, because a call in
@@ -10299,8 +10367,8 @@ impl App {
                     let tight = unseen.is_some() && joinable;
                     let (class, rows) = match unseen {
                         Some((start, end)) if start == *hist_upto => {
-                            let live_here =
-                                (start..end).any(|r| in_flight.contains(items[r].item_id.as_str()));
+                            let live_here = (start..end)
+                                .any(|r| turn_rows.contains(items[r].item_id.as_str()));
                             let marker = hidden_run_marker(
                                 items,
                                 start,
@@ -10482,7 +10550,7 @@ impl App {
                 })
                 .is_some_and(|(s0, e0)| {
                     (s0..e0).any(|r| self.turn.as_ref().is_some_and(|t| {
-                        t.appended.iter().any(|id| *id == self.items[r].item_id)
+                        t.turn_rows.iter().any(|id| *id == self.items[r].item_id)
                     }))
                 });
         if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
@@ -10502,8 +10570,19 @@ impl App {
                 self.turn.as_ref().map(|t| t.appended.clone()).unwrap_or_default(),
             );
         }
+        // **And not when the walk has already carried the counts** — the same guard the standalone
+        // push below carries, and its absence here is what the pair was. The two paths are two
+        // ways of drawing ONE marker, so a guard on one of them is a guard on neither: with the
+        // walk's marker already on the screen, this joined a second copy to the end of the line it
+        // was on, and the operator's screen read
+        //
+        //   `let me check that for you: [2 tool calls, 2 thinking lines] [2 thinking lines]`
+        //
+        // — one line, two markers, and their report of the same shape (*"[1 tool call] [1 tool
+        // call]"*).
         let live_joins = live.work() > 0
             && !superseded
+            && !walk_carried_live
             && self.verbosity.hides_the_working()
             && self
                 .spans
@@ -10728,7 +10807,13 @@ impl App {
                 if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
                     eprintln!("MARKER pane draws: {painted}");
                 }
-                segs.push(Seg::Owned(vec![format!("{}{painted}", " ".repeat(ind))]));
+                // **Not indented, and that is the operator's own report** — *"plus current thinking
+                // lines while counting are indented by 1 or 2 cells"*. This marker and the walk's are
+                // the same kind of row and now the same row; the walk's is flush with the prose it
+                // continues (`hist_lines`), so this one is flush too. The reasoning block below is
+                // indented because it is the model's *text*, set in under its rail; a count of rows
+                // is punctuation on the sentence, not a quotation under it.
+                segs.push(Seg::Owned(vec![painted]));
                 // **And the air every other block in this pane already carries.** The reasoning
                 // block ends with a blank, and so does the streaming answer — whose comment gives
                 // the reason: *"without it the last line of a running decode touches the top
@@ -35048,11 +35133,29 @@ mod tests {
     /// underneath: the walk's run stops reaching the end, the guard reads *not carried*, and the
     /// pane draws its own copy beside the one already on the screen.
     ///
-    /// **This test is the split, not the merge**: the turn's own tool call is proposed (so the live
-    /// work is one call with no row yet) *and* the round's rows are landing in the transcript (so
-    /// the walk has a run of its own). One turn, one number.
+    /// **And the state that actually splits them is a ROUND BOUNDARY.** The operator's screen:
+    ///
+    /// ```text
+    ///   ▌ their message
+    ///                    ← blank
+    ///   [2 tool calls]
+    ///                    ← blank
+    ///   [N thinking lines]
+    /// ```
+    ///
+    /// — two markers, and their question is the right one: *"why not `[2 tool calls, N thinking
+    /// lines]` on a single row?"*
+    ///
+    /// **Because round 2 starts with an empty `appended`.** A `TurnStarted` builds a fresh
+    /// `TurnPane`, so `appended` — *which rows this turn produced* — is emptied every round, while
+    /// the run on screen still holds the PREVIOUS round's two result rows. `live_here` asks
+    /// whether the run holds a row of `appended`, and the answer is now no: the run is the last
+    /// thing in the transcript, it is this turn's work, and the head has forgotten it. So the walk
+    /// draws `[2 tool calls]` with nothing folded in, `walk_carried_live` reads false for the same
+    /// reason, and the pane draws its own copy of the reasoning as `[N thinking lines]` — for one
+    /// turn.
     #[test]
-    fn one_turns_work_is_counted_once_even_while_its_rows_are_landing() {
+    fn a_new_round_does_not_forget_the_rows_the_turn_already_produced() {
         let mut a = app();
         a.verbosity = Verbosity::Conversation;
         a.apply(hello(
@@ -35073,46 +35176,64 @@ mod tests {
                 truncated: false,
             },
         );
-        // **The turn starts, and proposes a call** — one call in flight, no result row yet.
-        a.apply(ServerFrame::Event(env(2, testing::turn_started("t1"))));
+        // **ROUND 1.** The turn starts and proposes two calls; both run; both results land as
+        // rows. `appended` now holds the narration and the two results — this turn's rows.
+        let round = |id: &str| SessionEvent::TurnStarted {
+            turn_id: id.into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            // **The one field that says these rounds are one turn.** The shared
+            // `testing::turn_started` leaves it `None`, which is *nobody measured it* — and with
+            // `None` this test proved nothing: the reverted fix left it green, because the carry it
+            // is meant to exercise is keyed on this.
+            began_ms: Some(1_000),
+        };
+        a.apply(ServerFrame::Event(env_at(2, 1_000, round("r1"))));
+        for (seq, id) in [(3u64, "s.1"), (4, "s.2")] {
+            a.apply(ServerFrame::Event(env(seq, testing::appended(id, "tool_result"))));
+            a.record_item(
+                id,
+                TranscriptItem::ToolResult {
+                    call_id: format!("c{seq}"),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "SOMETHING LONG ENOUGH TO HIDE THE ROW".into(),
+                    edit: None,
+                    origin: None,
+                },
+            );
+        }
+
+        // **ROUND 2, same turn.** The daemon stamps every round of one prompt with the same
+        // `began_ms`, which is the only thing on the wire that says these two `TurnStarted`s are
+        // one turn — every other field, `turn_id` included, is per ROUND.
+        a.apply(ServerFrame::Event(env_at(5, 1_000, round("r2"))));
+        // And this round's work so far is thinking, with no result row yet: the pane's own count.
         a.apply(ServerFrame::Event(env(
-            3,
-            SessionEvent::ToolCallProposed {
-                turn_id: "t1".into(),
-                call_id: "c1".into(),
-                name: "read".into(),
-                args_digest: "d".into(),
-                target: "crates/tui/src/app.rs".into(),
+            6,
+            SessionEvent::Delta {
+                turn_id: "r2".into(),
+                target: DeltaTarget::Reasoning,
+                text: "the first call told me it is in the reader, so let me check the caller\n\
+                       and the place it is constructed before I touch anything at all".into(),
             },
         )));
-        // **And a row of this turn's own round lands**, which is what makes the walk's run stop
-        // reaching the end of the transcript while the work is still in flight.
-        a.apply(ServerFrame::Event(env(4, testing::appended("s.1", "tool_result"))));
-        a.record_item(
-            "s.1",
-            TranscriptItem::ToolResult {
-                call_id: "c0".into(),
-                name: "read".into(),
-                outcome: letibot_transcript::ToolOutcome::Ok,
-                payload: "SOMETHING LONG ENOUGH TO HIDE THE ROW".into(),
-                edit: None,
-                origin: None,
-            },
-        );
 
         let screen = a.screen(100, 30).join("\n");
-        let markers: Vec<&str> = screen
-            .lines()
-            .filter(|l| l.contains("tool call") || l.contains("thinking line"))
-            .collect();
-        assert_eq!(
-            markers.len(),
-            1,
-            "one turn's work drawn by one marker, not two that later merge: {screen}"
+        // **Counted as MARKERS, not as lines.** The first version of this test counted lines that
+        // contained a count, and it passed against the reverted fix — because the two markers were
+        // drawn *on one line*: `let me check that for you: [2 tool calls] [2 thinking lines]`. One
+        // line, two markers, and a line counter cannot tell that from one. What the operator has
+        // seen both ways is the pair, so the discriminator is the pair's own shape.
+        assert!(
+            screen.contains("2 tool calls, 2 thinking lines"),
+            "one turn's work is ONE marker carrying both halves — the operator's own question: \
+             *why not [2 tool calls, N thinking lines] on a single row?* — got: {screen}"
         );
         assert!(
-            markers[0].contains("1 tool call"),
-            "and it is the live count: {markers:?}"
+            !screen.contains("] ["),
+            "and not two markers side by side, which is the pair they caught as `[1 tool call] \
+             [1 tool call]`: {screen}"
         );
     }
 

@@ -142,8 +142,18 @@ pub fn render_split(old: &[&str], new: &[&str], sc: &SplitConfig) -> Vec<String>
 
 /// The row geometry, computed once per render.
 struct Geometry {
-    /// Visible width of one panel, separator included in nothing.
+    /// Visible width of the LEFT panel, separator included in nothing.
+    ///
+    /// **The two panels are not the same width, and that is the correction** (R53 §1.3). One
+    /// `(width - SEP_W) / 2` was used for both, so an odd remainder was **thrown away**: at width
+    /// 100 the row came to 99 columns, with two 48-column panels where there was room for a 49th
+    /// on the right. The visible cost is that a 49-column line — the longest line a full-width
+    /// half can hold — wrapped on this head and fitted on leticl, which gives the remainder to the
+    /// right panel (`src/sidediff.lisp:291-292`, `:331`, `:339-341`).
     panel_w: usize,
+    /// Visible width of the RIGHT panel: what the left one took, and the remainder after the
+    /// separator. Equal on an even split; one column wider when the division is odd.
+    panel_w_right: usize,
     /// Visible width of the code part of a cell.
     body_w: usize,
     /// Digits in the largest line number either panel can show.
@@ -152,7 +162,13 @@ struct Geometry {
 
 impl Geometry {
     fn of(sc: &SplitConfig, old: &[&str], new: &[&str]) -> Geometry {
-        let panel_w = sc.cfg.width.saturating_sub(SEP_W) / 2;
+        // **The remainder goes to the RIGHT panel**, which is leticl's arithmetic and the whole of
+        // this correction: `available = width - SEP_W`, `left = available / 2`, `right = available -
+        // left`. The two therefore sum with the separator to exactly the width asked for — 48 + 3 +
+        // 49 = 100 — where the old pair of 48s summed to 99.
+        let available = sc.cfg.width.saturating_sub(SEP_W);
+        let panel_w = available / 2;
+        let panel_w_right = available - panel_w;
         let numw = if sc.cfg.line_numbers {
             (sc.before_start + old.len())
                 .max(sc.after_start + new.len())
@@ -168,6 +184,7 @@ impl Geometry {
         let body_w = panel_w.saturating_sub(gutter_w).max(MIN_BODY);
         Geometry {
             panel_w,
+            panel_w_right,
             body_w,
             numw,
         }
@@ -315,8 +332,8 @@ fn render_pair(
             sc.after_start + h.line,
         )
     });
-    let left_lines = side_lines(left, sc, g);
-    let right_lines = side_lines(right, sc, g);
+    let left_lines = side_lines(left, sc, g, g.panel_w);
+    let right_lines = side_lines(right, sc, g, g.panel_w_right);
 
     let rows = left_lines.len().max(right_lines.len());
     let mut out = Vec::with_capacity(rows);
@@ -327,9 +344,11 @@ fn render_pair(
         // read as content that is there twice.
         let l = left_lines.get(k).map(String::as_str).unwrap_or("");
         let r = right_lines.get(k).map(String::as_str).unwrap_or("");
+        // **Each half pads to its OWN width.** Using the left width for both is what lost the
+        // remainder column; see [`Geometry::panel_w_right`].
         s.push_str(&pad_to(l, g.panel_w));
         s.push_str(&sc.cfg.palette.paint(Role::Faint, SEP));
-        s.push_str(&pad_to(r, g.panel_w));
+        s.push_str(&pad_to(r, g.panel_w_right));
         out.push(s);
     }
     out
@@ -357,6 +376,11 @@ fn side_lines(
     half: Option<(&Half, &str, &[Role], usize)>,
     sc: &SplitConfig,
     g: &Geometry,
+    // **This side's own width**, which is not always `g.panel_w`: the two panels differ by one
+    // column when the division is odd. Padding the right cell to the LEFT panel's width left a
+    // column of untinted space after its reset — the tint stopped one short of the panel and the
+    // separator's clean slate started a character late. See [`Geometry::panel_w_right`].
+    panel_w: usize,
 ) -> Vec<String> {
     let p = sc.cfg.palette;
     let Some((h, text, classes, num)) = half else {
@@ -419,8 +443,8 @@ fn side_lines(
             cell.push_str(&format!("{gutter}{sign} {body}"));
             if tinted {
                 let vis = width::width(&cell);
-                if vis < g.panel_w {
-                    cell.push_str(&" ".repeat(g.panel_w - vis));
+                if vis < panel_w {
+                    cell.push_str(&" ".repeat(panel_w - vis));
                 }
                 cell.push_str(crate::width::RESET);
             }
