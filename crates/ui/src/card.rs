@@ -268,6 +268,15 @@ impl Outcome {
     }
 }
 
+/// **The fewest columns a running call's subject may keep**, while the tail keeps its own.
+///
+/// leticl's `(max 8 (- cols fixed …))` — *"a subject squeezed below a few columns says nothing"* —
+/// and a floor rather than a fare share on purpose: the row is allowed to run long and be trimmed
+/// by the frame, because the trim takes the tail's END (a note, a reason) and the clock sits at
+/// the tail's HEAD. If the subject ate into the tail instead, the number that says the call is
+/// alive would be what disappeared.
+const MIN_SUBJECT: usize = 8;
+
 /// Where a block is in its life.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
@@ -443,29 +452,19 @@ impl Card {
             Phase::Running { .. } => ('◐', Role::Pending),
             Phase::Finished { outcome, .. } | Phase::Replayed { outcome } => ('●', outcome.role()),
         };
+        // **The head is built first and the SUBJECT is filled in last** — R53 §1.5, and it is
+        // leticl's own rule: *"the tail is measured first and the subject is given what is left…
+        // the tail does not shrink — it is the fact, and half of `· 12.4s` is not a duration."*
+        //
+        // The order used to be the other way round: the subject was written into the row at full
+        // length and the tail appended, so when the two did not fit the WHOLE row was truncated —
+        // and the clock, which is the one number that says this call is alive, went with it. The
+        // operator's own report, in R53's words: a running call rendered as
+        // `◐ Running "cd /tmp && (sleep 6; …) & …"` with no `· 12.4s` anywhere on it.
         let mut s = String::new();
         s.push_str(&p.paint(mark_role, &mark.to_string()));
         s.push(' ');
         s.push_str(&p.paint(Role::Strong, self.verb.label(running)));
-        if !self.target.is_empty() {
-            s.push(' ');
-            // **§3.1: a card is text this head did not author.** Target, call id, note
-            // and outcome reason all come from a tool call or from the daemon, and this
-            // row is written to the terminal verbatim. The sanitiser lives in
-            // `crate::text` because **this crate had none** — the falsification test in
-            // `letibot-tui` found a tool-progress note reaching a card's tail raw, which
-            // is exactly the hole a per-head helper leaves.
-            s.push_str(&p.paint(
-                Role::Plain,
-                &crate::text::without_control_lines(&self.target),
-            ));
-        }
-        if cfg.show_id {
-            s.push_str(&p.paint(
-                Role::Faint,
-                &format!(" ({})", crate::text::without_control_lines(&self.call_id)),
-            ));
-        }
 
         // The right-hand side: state, timing, disclosure.
         let mut tail: Vec<String> = Vec::new();
@@ -526,14 +525,54 @@ impl Card {
             _ => Role::Faint,
         };
         let joined = p.paint(role, &format!(" · {}", tail.join(" · ")));
-        // The target is the part worth keeping when the terminal is narrow, so
-        // the tail is dropped whole rather than truncated into an ambiguity.
-        if width::width(&s) + width::width(&joined) <= cfg.width {
-            s.push_str(&joined);
-            s
+        // The call id, kept beside the subject because it is the same kind of fact — and measured
+        // before the subject, for the same reason the tail is.
+        let id_str = if cfg.show_id {
+            p.paint(
+                Role::Faint,
+                &format!(" ({})", crate::text::without_control_lines(&self.call_id)),
+            )
         } else {
-            width::truncate(&s, cfg.width)
+            String::new()
+        };
+
+        // **What the subject may have: everything the tail and the id have not claimed.** The floor
+        // is leticl's `(max 8 …)`: a subject squeezed below a few columns says nothing, and letting
+        // the row run long instead means the frame's own trim takes the tail's END — the note —
+        // while the clock at its head survives. What must never give way is the tail's beginning.
+        if !self.target.is_empty() {
+            // **§3.1: a card is text this head did not author.** Target, call id, note
+            // and outcome reason all come from a tool call or from the daemon, and this
+            // row is written to the terminal verbatim. The sanitiser lives in
+            // `crate::text` because **this crate had none** — the falsification test in
+            // `letibot-tui` found a tool-progress note reaching a card's tail raw, which
+            // is exactly the hole a per-head helper leaves.
+            let target = crate::text::without_control_lines(&self.target);
+            let spare = cfg
+                .width
+                .saturating_sub(width::width(&s) + width::width(&joined) + width::width(&id_str) + 1);
+            // A subject that fits whole keeps its own length; one that does not is cut with an
+            // ellipsis, which is what `width::truncate` does.
+            let room = spare.max(MIN_SUBJECT);
+            // **A path is cut from the left and anything else from the right** — the rule
+            // `letibot-tui`'s `shorten_subject` already applies to the transcript row, kept the
+            // same here so one call does not read two ways on two rows. A glob or a quoted
+            // sentence is not a path however many separators it contains: measured there, cutting
+            // `**/*.{md,json,toml,yaml,yml} 40` from the left loses the fact that it is a glob.
+            let not_a_path = target.contains(['*', '?', '{', '[', '"']);
+            let shown = if target.contains('/') && !not_a_path {
+                width::ellipsise_left(&target, room)
+            } else {
+                width::truncate(&target, room)
+            };
+            s.push(' ');
+            s.push_str(&p.paint(Role::Plain, &shown));
         }
+        s.push_str(&id_str);
+        s.push_str(&joined);
+        // One last guard for the case the floor above creates — a tail longer than any subject
+        // could leave room for — and it takes the END, so the clock survives it.
+        width::truncate(&s, cfg.width)
     }
 
     /// The whole card.
@@ -826,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_terminal_keeps_the_path_and_drops_the_tail() {
+    fn a_narrow_terminal_keeps_the_clock_and_the_paths_own_name() {
         let c = Card::new("read", "call_00000007")
             .target("crates/sessionlog/src/protocol.rs")
             .phase(Phase::Finished {
@@ -839,8 +878,26 @@ mod tests {
             assert!(width::width(&h) <= w, "{w}: {h:?}");
         }
         let narrow = c.header(&CardConfig { width: 44, ..cfg() });
+        // **The path keeps the half that identifies it, and the tail keeps its place.**
+        //
+        // This test used to assert the opposite of the second half — *the tail is dropped whole*,
+        // `!narrow.contains("1.2s")` — and that was the rule until R53 §1.5. A tail dropped whole
+        // takes the CLOCK with it, and the clock is the one number that says a running call is
+        // alive: the operator's own screen showed `◐ Running "cd /tmp && (sleep 6; …) & …"` with
+        // no `· 12.4s` on it anywhere. leticl's rule is the one kept now — *"the tail does not
+        // shrink — it is the fact, and half of `· 12.4s` is not a duration. What gives way is the
+        // SUBJECT."* And the subject gives way from the LEFT, because a path is recognised by
+        // where it ends: `…/src/protocol.rs` names the file, `crates/sessionlog/src/protoco…`
+        // names only the tree.
         assert!(narrow.contains("protocol.rs"), "{narrow}");
-        assert!(!narrow.contains("1.2s"), "{narrow}");
+        assert!(
+            narrow.contains("1.2s"),
+            "the clock is not the thing to drop: {narrow}"
+        );
+        assert!(
+            narrow.contains('…'),
+            "and the cut is disclosed where it happened: {narrow}"
+        );
     }
 
     #[test]
@@ -921,12 +978,21 @@ mod tests {
             "a 227-column card used {} columns — the daemon's old cut is still the limit",
             width::width(&wide)
         );
-        // The cut is disclosed where it happened, at both widths.
-        assert!(wide.ends_with('…'), "the wide cut is not disclosed: {wide}");
-        assert!(
-            narrow.ends_with('…'),
-            "the narrow cut is not disclosed: {narrow}"
-        );
+        // **The cut is disclosed where it happened, which is now the SUBJECT's left edge.** It
+        // used to be the row's right edge, because the whole row was truncated from the right —
+        // and that is the shape that ate the tail. See
+        // `a_narrow_terminal_keeps_the_clock_and_the_paths_own_name` for the rule and leticl's
+        // words for it.
+        for (w, h) in [(227usize, &wide), (80, &narrow)] {
+            assert!(
+                h.contains('…'),
+                "the {w}-column cut is not disclosed: {h:?}"
+            );
+            assert!(
+                h.contains("900ms"),
+                "the {w}-column row lost its clock: {h:?}"
+            );
+        }
 
         // **And a target that fits is shown whole and marked not at all** — a card that put a
         // `…` on a complete command would be telling the reader something was cut when nothing

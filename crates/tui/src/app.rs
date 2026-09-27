@@ -1805,6 +1805,16 @@ pub struct App {
     /// **Found by asserting that two renders of one state are the same frame** — see
     /// `two_renders_of_one_state_are_the_same_frame`, the property this field exists to keep.
     live_join: Option<(String, String)>,
+    /// **What the rendered history's marker was built FROM** — compared against the live work, so a
+    /// change invalidates the row that carries it. See the guard in `body_window` for the
+    /// measurement: a marker baked into `hist_lines` does not move until something invalidates that
+    /// cache, and nothing did.
+    ///
+    /// **All three fields of `LiveWork`, and `running` is the one that is easy to leave out** — it
+    /// is not a count and it is the colour. `(calls, think_lines)` was the first version and it
+    /// fixed the counts while the yellow stayed dead; `marker_carries_live` is `running > 0`, so any
+    /// change in that pair alone has to invalidate too.
+    marker_counts: (usize, usize, usize),
     /// The model this session is talking to, kept past the end of a turn.
     ///
     /// It lives on `TurnPane` because that is where the event carries it, and the
@@ -2574,6 +2584,7 @@ impl App {
             now_ms: 0,
             last_event_at: 0,
             live_join: None,
+            marker_counts: (0, 0, 0),
             body_len: 0,
             attaching: false,
             link: Link::Attached,
@@ -10093,6 +10104,15 @@ impl App {
         self.anchor.is_none()
     }
 
+    /// **The row of the run the live work belongs to** — what a change in the counts invalidates.
+    ///
+    /// `newest_unseen_run` is the walk's own answer to *which run is this work part of*, and the
+    /// invalidation has to agree with it or the count would be rebuilt on one row while the marker
+    /// was drawn on another.
+    fn newest_run_row(&self, live: &LiveWork) -> Option<usize> {
+        newest_unseen_run(&self.items, self.verbosity, &self.bound_prompts, *live)
+    }
+
     /// The visible `room` lines of the body, and nothing else built.
     fn body_window(&mut self, room: usize) -> Vec<String> {
         let cfg = self.cfg.clone();
@@ -10187,6 +10207,48 @@ impl App {
         // was interrupted in the middle of from vanishing off the screen entirely:
         // nothing is drawing it, so the assistant row draws it, and says it never
         // came back.
+        let live = live_work(self.turn.as_ref(), &self.cfg, superseded);
+        // **A CHANGE IN THE LIVE COUNTS PUTS THEM IN A CACHED ROW, SO IT INVALIDATES THAT ROW.**
+        //
+        // The walk bakes its marker — the counts and all — into `hist_lines`, which is the cache of
+        // RENDERED rows, and that cache is only rebuilt from the row something changed at. Nothing
+        // in it moves when the live counts move, because the counts are not rows: a reasoning delta
+        // arrives, `live.think_lines` goes up, and every line of the walk is served unchanged from
+        // the cache with the number it was rendered with.
+        //
+        // The operator, watching it: *"you started replying with `[1 tool call]`. then response
+        // line appeared and then that `[1 tool call]` became `[1 tool call, 52 thinking lines]` —
+        // so unlike in leticl thinking count is not live and backfilled after the first
+        // non-thinking line."* Every word of that is this: the number is **backfilled**, and what
+        // fills it is the arrival of a ROW — the first non-thinking line — which invalidates the
+        // cache and re-renders the marker with whatever the counts had become.
+        //
+        // The pane's own marker is not affected, and that is why the two halves looked different:
+        // it is pushed fresh every frame from the same `live`. This is the fix for the other half.
+        //
+        // Cheap and targeted: the counts change at most once per delta, and what is invalidated is
+        // one run — the one the live work belongs to — not the transcript.
+        // **`running` is in the key and must be: it is the YELLOW.** `marker_carries_live` is
+        // `live.running > 0`, so a call that starts or stops executing changes what the marker
+        // paints without changing either count. Left out, the invalidation above missed exactly the
+        // case the operator reported next: *"i didnt see yellow toolcalls for a while. maybe the
+        // same problem"* — and it was. The plain marker was in the cache, the call started running,
+        // the counts did not move, and the yellow had nothing to rebuild it.
+        let counts_now = (live.calls, live.think_lines, live.running);
+        if counts_now != self.marker_counts {
+            self.marker_counts = counts_now;
+            if let Some(row) = self.newest_run_row(&live)
+                && !self.items.is_empty()
+            {
+                // **Clamped, because the run the live work belongs to may have no row yet.**
+                // `newest_unseen_run` answers `items.len()` for the work in flight with nothing
+                // committed under it — the one index past the end, which is its own spelling of
+                // *there is no row* — and that is not a row to hand to `round_head`.
+                let row = row.min(self.items.len() - 1);
+                let from = self.round_head(row);
+                self.invalidate_history_from(from);
+            }
+        }
         let in_flight: std::collections::HashSet<&str> = if superseded {
             std::collections::HashSet::new()
         } else {
@@ -10206,7 +10268,6 @@ impl App {
         // destructure below deliberately leaves `turn` out (the pane later needs it whole),
         // so this is the one place the walk can see it — and it must, because a call in
         // flight is not a row and the counts have to carry it.
-        let live = live_work(self.turn.as_ref(), &self.cfg, superseded);
         {
             let App {
                 hist_lines,
@@ -35176,6 +35237,191 @@ mod tests {
     /// So this pins the count against the deltas rather than against the end state: each reasoning
     /// chunk that arrives must be able to move it, with no answer text anywhere in the fixture.
     #[test]
+    /// **The count baked into the rendered history moves with the stream** — the operator's
+    /// backfill, reproduced.
+    ///
+    /// Their report: *"you started replying with `[1 tool call]`. then response line appeared and
+    /// then that `[1 tool call]` became `[1 tool call, 52 thinking lines]` — so unlike in leticl
+    /// thinking count is not live and backfilled after the first non-thinking line."*
+    ///
+    /// **Backfilled is the word for it, and the cause is the cache.** The walk bakes its marker
+    /// into `hist_lines` — the cache of RENDERED rows — and that cache is only rebuilt from the row
+    /// something changed at. A reasoning delta changes no row, so every frame served the line with
+    /// the number it had been rendered with; what finally filled it in was a ROW landing, which
+    /// invalidated from there and re-rendered the marker.
+    ///
+    /// So this drives exactly that: a turn whose work is inside a run of hidden rows, a frame
+    /// drawn, more reasoning, another frame — and the number on the row must have moved **without
+    /// any row arriving**.
+    #[test]
+    /// **The yellow arrives when the call starts running, not when some row lands.**
+    ///
+    /// The operator, right after the backfill: *"and btw - i didnt see yellow toolcalls for a
+    /// while. maybe the same problem"* — and it was. `marker_carries_live` is `live.running > 0`
+    /// while the counts are `live.calls` and `live.think_lines`, so a call that STARTS executing
+    /// changes what the marker paints without changing either number. The invalidation keyed on
+    /// the numbers alone, so the plain marker stayed in the cache and the yellow had nothing to
+    /// rebuild it — the same cached-row defect as the backfilled count, in the half that is a
+    /// colour rather than a digit.
+    ///
+    /// The fixture draws a frame with the work PROPOSED (no yellow), then starts the call, and
+    /// asserts the colour on the next frame with no row in between.
+    #[test]
+    fn the_yellow_arrives_when_the_call_starts_not_when_a_row_lands() {
+        let mut a = app();
+        // **Colour on, or the assertions below test nothing** — `app()` is `Palette::None`, where
+        // every register paints the same empty string. The sibling yellow test does the same.
+        a.cfg.color = true;
+        a.verbosity = Verbosity::Conversation;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "assistant"))));
+        a.record_item(
+            "s.0",
+            TranscriptItem::Assistant {
+                text: "let me check:".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        );
+        a.apply(ServerFrame::Event(env_at(2, 1_000, SessionEvent::TurnStarted {
+            turn_id: "r1".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        })));
+        // **A run of hidden rows of THIS turn**, so the WALK draws the marker and `live_here` is
+        // true for it. The sibling test explains why the pane's own marker would make this pass
+        // without the fix; the ordering here explains the other half — a row that landed before
+        // the turn started is not the turn's row, and the walk's marker would then be plain for a
+        // reason that has nothing to do with the cache.
+        a.apply(ServerFrame::Event(env(3, testing::appended("s.1", "tool_result"))));
+        a.record_item(
+            "s.1",
+            TranscriptItem::ToolResult {
+                call_id: "c0".into(),
+                name: "read".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "SOMETHING LONG ENOUGH TO HIDE THE ROW".into(),
+                edit: None,
+                origin: None,
+            },
+        );
+        // **Proposed, so the call is counted and not executing.** `marker_carries_live` asks for
+        // `running`, and a proposal is not running.
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::ToolCallProposed {
+                turn_id: "r1".into(),
+                call_id: "c1".into(),
+                name: "read".into(),
+                args_digest: "d".into(),
+                target: "crates/tui/src/app.rs".into(),
+            },
+        )));
+        // **The marker's own digits, not the colour's mere presence** — the spinner and the
+        // composer's edge are painted yellow too, so `contains("\u{1b}[33m")` passed on them and
+        // said nothing about the count. This is the shape the sibling yellow test uses.
+        const PENDING: &str = "\u{1b}[33m1\u{1b}[0m tool call";
+        let screen = a.screen(120, 30).join("\n");
+        assert!(
+            !screen.contains(PENDING),
+            "a proposed call is not executing, so the count is not pending: {screen:?}"
+        );
+        // **And it starts.** One event, no row — the colour must be there on the next frame.
+        a.apply(ServerFrame::Event(env(
+            5,
+            SessionEvent::ToolStarted {
+                turn_id: "r1".into(),
+                call_id: "c1".into(),
+                name: "read".into(),
+                access: "read".into(),
+            },
+        )));
+        let screen = a.screen(120, 30).join("\n");
+        assert!(
+            screen.contains(PENDING),
+            "the call is executing and the count is not pending — the plain marker is still in \
+             the cache: {screen:?}"
+        );
+    }
+
+    fn the_marker_in_the_rendered_history_is_not_a_backfilled_count() {
+        let mut a = app();
+        a.verbosity = Verbosity::Conversation;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "assistant"))));
+        a.record_item(
+            "s.0",
+            TranscriptItem::Assistant {
+                text: "let me check:".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        );
+        // A prop that needs no model: a proposed call, so `live.calls > 0` and a marker is drawn.
+        a.apply(ServerFrame::Event(env_at(2, 1_000, SessionEvent::TurnStarted {
+            turn_id: "r1".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        })));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::ToolCallProposed {
+                turn_id: "r1".into(),
+                call_id: "c1".into(),
+                name: "read".into(),
+                args_digest: "d".into(),
+                target: "crates/tui/src/app.rs".into(),
+            },
+        )));
+        // The count as a reader reads it, off the whole screen.
+        let shown = |a: &mut App| -> usize {
+            a.screen(100, 24)
+                .join("\n")
+                .lines()
+                .find_map(|l| {
+                    let (_, rest) = l.split_once('[')?;
+                    let body = rest.split(']').next()?;
+                    body.split(", ").find_map(|p| {
+                        p.trim()
+                            .strip_suffix(" thinking lines")
+                            .or_else(|| p.trim().strip_suffix(" thinking line"))
+                            .and_then(|n| n.trim().parse().ok())
+                    })
+                })
+                .unwrap_or(0)
+        };
+        assert_eq!(shown(&mut a), 0, "nothing has streamed yet");
+        // **Three frames, three chunks, and no row in between** — the number must climb on each.
+        let mut last = 0;
+        for i in 0..3 {
+            a.apply(ServerFrame::Event(env(
+                4 + i,
+                SessionEvent::Delta {
+                    turn_id: "r1".into(),
+                    target: DeltaTarget::Reasoning,
+                    text: "x".repeat(400),
+                },
+            )));
+            let now = shown(&mut a);
+            assert!(
+                now > last,
+                "the count was not rebuilt on frame {i}: {last} → {now} — a count baked into \
+                 the rendered history is a backfilled count"
+            );
+            last = now;
+        }
+    }
+
     fn the_thinking_count_moves_while_the_thinking_streams() {
         let mut a = app();
         a.verbosity = Verbosity::Conversation;

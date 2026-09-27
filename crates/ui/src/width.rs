@@ -387,6 +387,61 @@ pub fn truncate(s: &str, cols: usize) -> String {
     out
 }
 
+/// **Shorten `s` to `cols` columns by eating its LEFT, keeping the end** — the pair to
+/// [`truncate`], and the one to reach for on a path.
+///
+/// A path is recognised by where it ends: `…/src/protocol.rs` names the file, while
+/// `crates/sessionlog/src/protoco…` names only the tree it is in — and on a screen where every
+/// row is a file in the same tree, the second leaves every row looking alike. This is
+/// `letibot-tui`'s `shorten_subject`/`ellipsise_left` pair lifted where a card can reach it:
+/// the live tool card needs it for the same reason the transcript row did, and a second copy
+/// in that crate would be the drift this tree keeps finding.
+///
+/// **The cut lands at a separator when one is available**, so the result reads as a path
+/// rather than as a word with a piece missing: `…/tui/src/app.rs`, not `…ui/src/app.rs`.
+pub fn ellipsise_left(s: &str, cols: usize) -> String {
+    if width(s) <= cols {
+        return s.to_string();
+    }
+    if cols < 2 {
+        return String::new();
+    }
+    let keep = cols - 1;
+    let cs = cells(s);
+    // Walk the cells from the END, keeping whole characters until the budget is spent.
+    let mut used = 0usize;
+    let mut start = cs.len();
+    for (i, c) in cs.iter().enumerate().rev() {
+        if used + c.cols > keep {
+            start = i + 1;
+            break;
+        }
+        used += c.cols;
+        start = i;
+    }
+    // **Then forward to the next separator, if the cut landed inside a name AND one is close.**
+    // The reader gets a whole component back rather than most of one — but the nudge is BOUNDED,
+    // and that bound is a measurement: unbounded, it walked to the next `/` however far away it
+    // was, so a command with a long argument between separators lost everything up to it. Measured
+    // on a 227-column card whose target was `cd /opt/secure_auth && gcc … -Wl,-rpath,/opt/…`: the
+    // whole command was cut to its last fifty columns, and both a 227-wide and an 80-wide card
+    // rendered the identical row. Six columns is enough to finish a short component and too few to
+    // eat an argument.
+    const NUDGE: usize = 6;
+    if start < cs.len() && !cs[start].text.starts_with('/') {
+        match cs[start..].iter().position(|c| c.text.starts_with('/')) {
+            Some(next) if next <= NUDGE => start += next,
+            _ => {}
+        }
+    }
+    let mut out = String::from("…");
+    for c in &cs[start..] {
+        out.push_str(c.esc);
+        out.push_str(c.text);
+    }
+    out
+}
+
 /// Pad to exactly `cols` columns with spaces, truncating if too long.
 pub fn fit(s: &str, cols: usize) -> String {
     let w = width(s);
