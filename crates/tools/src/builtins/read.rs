@@ -106,6 +106,34 @@ impl Tool for Read {
             ctx.progress(format!("{path}: {} bytes", bytes.len()));
         }
 
+        // **A picture is read as a picture** — the operator's ruling: *"read is read there is nothing
+        // to settle"*, *"reading an image is no different to reading a rust file."* So this is not a
+        // branch in the permission model, the gate, or the verb: one path arrives here and the only
+        // thing that differs is what comes back.
+        //
+        // It has to be HERE, above the decode, because everything below is lossy text: without this
+        // an image came back as a wall of U+FFFD with a note saying the file was not valid UTF-8,
+        // which is true and useless — the model reads a picture of a screenshot as noise and
+        // concludes it has no vision. That is the report this whole change answers.
+        if let Some(m) = crate::media::Media::of(path, &bytes) {
+            // The far end is the authority on what it can read, and the sentence below is what it
+            // gets: a description, and the fact that the bytes are attached. `summary` is the same
+            // string a head draws, so the row and the model are told the same thing.
+            return Invocation {
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: format!(
+                    "{path} — {}\nThe image is attached to this result. Look at it and answer \
+                     from what is in it; if the attachment did not arrive, say so rather than \
+                     guessing at the contents.",
+                    m.summary()
+                ),
+                notes: Vec::new(),
+                edit: None,
+                needs_in_view: Vec::new(),
+                media: Some(m),
+            };
+        }
+
         let (text, lossy) = text_of(&bytes);
         let lines: Vec<&str> = text.lines().collect();
         let total = lines.len();
@@ -368,6 +396,81 @@ mod tests {
         eprintln!("no-limit note: {n2}");
         assert!(!n2.contains("at most"), "{n2}");
         assert!(n2.contains("offset=201"), "{n2}");
+    }
+
+    /// **A picture comes back as a picture** — the operator's ruling, as a measurement.
+    ///
+    /// *"read is read there is nothing to settle"*, *"reading an image is no different to reading a
+    /// rust file"*. So this is the same `read`, the same verb, the same permission — and what
+    /// differs is only what comes back: a media channel carrying the bytes, and a payload that says
+    /// what was read instead of a wall of U+FFFD.
+    ///
+    /// **What failed before this.** The decode below turned the file into lossy text and said
+    /// *"not valid UTF-8; undecodable bytes are shown as U+FFFD"* — true, and the reason a model on
+    /// this stack concluded it had no vision and said so out loud.
+    #[test]
+    fn an_image_read_returns_the_bytes_and_a_sentence_rather_than_lossy_text() {
+        let mut h = crate::testing::harness();
+        // A PNG header with real dimensions; the bytes need not decode (see `media`'s tests).
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&640u32.to_be_bytes());
+        png.extend_from_slice(&480u32.to_be_bytes());
+        png.extend_from_slice(&[8, 2, 0, 0, 0, 0, 0, 0, 0]);
+        std::fs::write(h.root().join("shot.png"), &png).expect("fixture write");
+
+        let got = h.call("read", r#"{"path":"shot.png"}"#);
+        let media = got
+            .media
+            .as_ref()
+            .expect("the image did not reach the result at all");
+        assert_eq!(media.mime, "image/png");
+        assert_eq!((media.width, media.height), (Some(640), Some(480)));
+        assert!(
+            media.data_ref.starts_with("data:image/png;base64,"),
+            "the model server takes a data: URI and refuses a bare path: {}",
+            &media.data_ref[..40.min(media.data_ref.len())]
+        );
+        // **The payload is the sentence, not the bytes** — opencode's second channel. A payload
+        // that inlined the base64 would put a megabyte through every renderer and every scrollback.
+        assert!(got.payload.contains("shot.png"), "{}", got.payload);
+        assert!(got.payload.contains("640×480"), "{}", got.payload);
+        assert!(
+            !got.payload.contains("U+FFFD"),
+            "the image was decoded as text: {}",
+            got.payload
+        );
+        assert!(
+            got.payload.len() < 400,
+            "the payload is carrying the bytes: {} chars",
+            got.payload.len()
+        );
+        // And the sentence the model needs to be able to say it did not arrive (R54 §7).
+        assert!(
+            got.payload.contains("attached"),
+            "the payload does not tell the model the image is attached: {}",
+            got.payload
+        );
+    }
+
+    /// **A text file is untouched by any of that** — the control for the test above, and the
+    /// operator's own rule read the other way: the same call, and only the image differs.
+    #[test]
+    fn a_text_file_still_comes_back_as_its_own_lines_with_no_media() {
+        let mut h = crate::testing::harness();
+        h.write_file("notes.txt", "first line\nsecond line\n");
+        let got = h.call("read", r#"{"path":"notes.txt"}"#);
+        assert!(got.media.is_none(), "a text file claimed a media channel");
+        assert!(got.payload.contains("first line"), "{}", got.payload);
+        // And a binary file that is NOT an image keeps the behaviour it had: lossy text with a
+        // note. Refusing it wholesale is opencode's rule and a separate ruling; this records which
+        // one is in force so the difference is a decision rather than a drift.
+        let mut junk = vec![0u8, 159, 146, 150];
+        junk.extend_from_slice(&[0xff; 64]);
+        std::fs::write(h.root().join("blob.bin"), &junk).expect("fixture write");
+        let bin = h.call("read", r#"{"path":"blob.bin"}"#);
+        assert!(bin.media.is_none(), "a non-image claimed a media channel");
     }
 
     #[test]

@@ -64,6 +64,15 @@ pub struct Invocation {
     /// system could do was print a note telling the model that "whoever opened the
     /// session" would have to grant it — with nothing able to ask that person.
     pub needs_in_view: Vec<std::path::PathBuf>,
+    /// **Bytes this call read that are not text** — an image, today; nothing else claims it.
+    ///
+    /// The second structured channel beside [`Invocation::edit`], and its docstring's argument —
+    /// *the row is the durable artifact, so the fact lives on the row* — is the reason it is a field
+    /// rather than an event. Where it DIFFERS is what earns it its own paragraph: `edit` is
+    /// display-only and this one exists to be SENT (see [`crate::media`]).
+    ///
+    /// `None` for every tool that read no picture, which is every call but one.
+    pub media: Option<crate::media::Media>,
 }
 
 impl Invocation {
@@ -74,6 +83,7 @@ impl Invocation {
             notes: Vec::new(),
             edit: None,
             needs_in_view: Vec::new(),
+            media: None,
         }
     }
 
@@ -87,6 +97,7 @@ impl Invocation {
             notes: Vec::new(),
             edit: None,
             needs_in_view: Vec::new(),
+            media: None,
         }
     }
 
@@ -99,6 +110,7 @@ impl Invocation {
             notes: Vec::new(),
             edit: None,
             needs_in_view: Vec::new(),
+            media: None,
         }
     }
 
@@ -112,6 +124,7 @@ impl Invocation {
             notes: Vec::new(),
             edit: None,
             needs_in_view: Vec::new(),
+            media: None,
         }
     }
 
@@ -130,6 +143,7 @@ impl Invocation {
             notes: Vec::new(),
             edit: None,
             needs_in_view: Vec::new(),
+            media: None,
         }
     }
 
@@ -159,6 +173,7 @@ impl Invocation {
             notes: Vec::new(),
             edit: None,
             needs_in_view: Vec::new(),
+            media: None,
         }
     }
 
@@ -1693,6 +1708,13 @@ impl ToolRuntime {
             // model's, and clause 5 bounds what goes into the prompt. A head that
             // was handed half a file could not draw a diff at all.
             edit: invocation.edit,
+            // **Carried through untouched, and deliberately NOT spilled or truncated.** The spill
+            // path above exists to bound what goes into the PROMPT — a hundred thousand lines of
+            // `cargo test` output — and an image is not that: it is bounded by its own format, the
+            // model server resizes past 4.19 MP rather than refusing (measured; see
+            // `crate::media`), and a truncated base64 is not a smaller picture, it is a corrupt one.
+            // So this rides the same rule `edit` does above, for the opposite reason.
+            media: invocation.media,
         };
         sink.emit(finished_event(turn_id, &result));
         result
@@ -2081,6 +2103,7 @@ mod tests {
             repairs: Vec::new(),
             notes: Vec::new(),
             spill: None,
+            media: None,
             edit: Some(crate::edit::FileEdit {
                 path: "f".into(),
                 before: before.clone(),

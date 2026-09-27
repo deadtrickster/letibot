@@ -99,6 +99,7 @@ pub mod exec;
 pub mod files;
 pub mod firecode;
 pub mod grant;
+pub mod media;
 pub mod head_run;
 pub mod intent;
 pub mod mode;

@@ -641,6 +641,7 @@ fn wait_on_job(
             notes: vec![],
             edit: None,
             needs_in_view: Vec::new(),
+        media: None,
         },
         Waited::NeverStarted { .. } => Invocation::failed(
             format!("`{id}` was running a moment ago and the wait could not observe it"),
@@ -724,6 +725,7 @@ fn wait_on_scope(
             notes: vec![],
             edit: None,
             needs_in_view: Vec::new(),
+        media: None,
         },
         // The seat brief's rule as an outcome: only count absence after presence.
         Ok(Waited::NeverStarted {

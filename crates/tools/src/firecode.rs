@@ -816,7 +816,13 @@ fn shell_quote(s: &str) -> String {
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-fn encode_base64(bytes: &[u8]) -> String {
+/// **Shared with `crate::media`**, which needs the same encoder for an image's `data:` URI.
+///
+/// `pub(crate)` rather than a second copy: this tree's whole ledger of defects tonight is one fact
+/// written twice, and a base64 alphabet is exactly the kind of fact that can be spelled right in one
+/// place and wrong in another. The decoder stays private — the only caller is the far side of a
+/// `firecode` read.
+pub(crate) fn encode_base64(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b = [

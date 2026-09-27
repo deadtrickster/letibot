@@ -42,6 +42,15 @@ pub struct ToolResult {
     /// becomes prompt bytes. The model gets the confirmation in `payload`; the
     /// head gets the file. See [`crate::edit::FileEdit`].
     pub edit: Option<crate::edit::FileEdit>,
+    /// **Bytes this call read that are not text** — see [`crate::media`], and
+    /// [`crate::runtime::Invocation::media`] for why the channel exists.
+    ///
+    /// **Unlike `edit`, this one DOES become prompt bytes.** `edit`'s docstring above says it never
+    /// does, and that is the one place the two channels differ: a diff is for a head to draw, and an
+    /// image is for the model to look at, so a renderer that dropped this would be dropping the whole
+    /// point of the call. The payload carries the *sentence* about it, which is what a text-only
+    /// reader gets.
+    pub media: Option<crate::media::Media>,
 }
 
 impl ToolResult {
@@ -55,6 +64,7 @@ impl ToolResult {
             notes: Vec::new(),
             spill: None,
             edit: None,
+            media: None,
         }
     }
 
