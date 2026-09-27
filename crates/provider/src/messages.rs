@@ -38,18 +38,41 @@ pub fn convert(system: &str, items: &[TranscriptItem]) -> Vec<Value> {
                 out.push(json!({"role": "system", "content": text}));
             }
             TranscriptItem::User { parts, .. } => {
-                let text = parts
-                    .iter()
-                    .map(|p| match p {
-                        UserPart::Text { text } => text.clone(),
-                        UserPart::Image { media_type, .. } => {
-                            format!("[an image ({media_type}) was attached here and is not sent to this provider]")
-                        }
-                        UserPart::FileRef { path, .. } => format!("[file: {path}]"),
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                out.push(json!({"role": "user", "content": text}));
+                // **An image part is SENT, not described.**
+                //
+                // This arm used to render every image as *"[an image (image/png) was attached here
+                // and is not sent to this provider]"* — a sentence that was true only because
+                // nothing in the tree could produce an image part. The moment `read` could, the
+                // sentence became the defect it described: a model told a picture exists and given
+                // no picture is a model that answers as though the picture were uninteresting,
+                // which is the failure R54 §7's third clause is about.
+                //
+                // The shape is opencode's and the OpenAI-compatible one: a content ARRAY of typed
+                // parts, the image as `{"type":"image_url","image_url":{"url":"data:…"}}`. A
+                // text-only message keeps the plain string, so nothing about an ordinary turn
+                // changes — which matters beyond tidiness: these bytes are the prompt prefix, and
+                // an array where a string was would re-prefill every cached turn.
+                let mut content: Vec<Value> = Vec::new();
+                for p in parts {
+                    match p {
+                        UserPart::Text { text } => content.push(json!({"type": "text", "text": text})),
+                        UserPart::Image { data_ref, .. } => content.push(
+                            json!({"type": "image_url", "image_url": {"url": data_ref}}),
+                        ),
+                        UserPart::FileRef { path, .. } => content.push(json!({"type": "text", "text": path})),
+                    }
+                }
+                let only_text = content.iter().all(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"));
+                if only_text {
+                    let text = content
+                        .iter()
+                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    out.push(json!({"role": "user", "content": text}));
+                } else {
+                    out.push(json!({"role": "user", "content": Value::Array(content)}));
+                }
             }
             TranscriptItem::Reasoning { .. } | TranscriptItem::SegmentMark { .. } => {}
             TranscriptItem::Assistant {
@@ -84,6 +107,7 @@ pub fn convert(system: &str, items: &[TranscriptItem]) -> Vec<Value> {
                 payload,
                 // Display-only; the prompt never sees it.
                 edit: _,
+                media,
                 ..
             } => {
                 let content = match outcome {
@@ -91,6 +115,30 @@ pub fn convert(system: &str, items: &[TranscriptItem]) -> Vec<Value> {
                     other => format!("[{name}: {}]\n{payload}", outcome_word(other)),
                 };
                 out.push(json!({"role": "tool", "tool_call_id": call_id, "content": content}));
+                // **And when the call read a picture, the picture follows as its own message.**
+                //
+                // This is opencode's shape for a provider that does not take media inside a tool
+                // result — its `DEFAULT FALSE` — and the text is its own prompt
+                // (`SYNTHETIC_ATTACHMENT_PROMPT`, *"Attached media from tool result:"*) because a
+                // user message carrying a picture and no words is a message with nothing to
+                // interpret.
+                //
+                // **Why the fallback and not the tool message here.** The local `llama-server` DOES
+                // take media in a tool result — MEASURED, and the model named a green square
+                // `Green` — so the dialect renderers use that directly. A `messages` provider is the
+                // case opencode answers per provider, and the honest default is the one that works
+                // everywhere: an ordinary user message is the one shape every vision API accepts.
+                // When a provider is measured to take tool-result media, this is the arm to branch
+                // on, and the branch is one `if`.
+                if let Some(m) = media {
+                    out.push(json!({
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Attached media from tool result:"},
+                            {"type": "image_url", "image_url": {"url": m.data_ref}},
+                        ]
+                    }));
+                }
             }
         }
     }
@@ -279,6 +327,115 @@ mod tests {
         let m2 = convert("sys", &items[1..2]);
         assert_eq!(m2[0]["role"], "system");
         assert_eq!(m2.len(), 2);
+    }
+
+    /// **A picture a call read comes out as a picture** — the far end of R54, on this backend.
+    ///
+    /// The local `llama-server` takes media inside a *tool* message (measured: it named a green
+    /// square `Green`), and the dialect renderers use that directly. A `messages` provider is the
+    /// case opencode answers per provider with `DEFAULT FALSE`, so this arm takes the fallback every
+    /// vision API accepts: the tool result carries its text, and the image follows as an ordinary
+    /// user message whose text is opencode's own prompt.
+    #[test]
+    fn a_tool_result_with_an_image_puts_the_image_on_the_wire() {
+        let uri = "data:image/png;base64,iVBORw0KGgo=";
+        // **The row that proposed it**, because `pair_tool_calls` drops an orphan tool result by
+        // design — the fixture needs the shape the wire actually has.
+        let proposed = TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "c1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            }],
+            truncated: false,
+        };
+        let items = vec![proposed, TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "read".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "shot.png — image image/png 2×2 · 1 KiB".into(),
+            edit: None,
+            origin: None,
+            media: Some(letibot_transcript::media::Media {
+                mime: "image/png".into(),
+                bytes: 11,
+                width: Some(2),
+                height: Some(2),
+                data_ref: uri.into(),
+            }),
+        }];
+        let m = convert("be terse", &items);
+        let tool = m.iter().find(|x| x["role"] == "tool").expect("the tool result");
+        assert_eq!(tool["content"], "shot.png — image image/png 2×2 · 1 KiB");
+        let att = m
+            .iter()
+            .find(|x| x["role"] == "user")
+            .expect("the attachment did not reach the wire at all");
+        assert_eq!(att["content"][0]["text"], "Attached media from tool result:");
+        assert_eq!(att["content"][1]["type"], "image_url");
+        assert_eq!(att["content"][1]["image_url"]["url"], uri);
+    }
+
+    /// **And a result with no image is unchanged, string content and all.**
+    ///
+    /// The bytes here are the prompt PREFIX: a plain tool result that started coming out as a
+    /// content ARRAY would re-prefill every cached turn in the conversation.
+    #[test]
+    fn a_tool_result_without_an_image_sends_no_attachment_and_keeps_its_string() {
+        // **The row that proposed it**, because `pair_tool_calls` drops an orphan tool result by
+        // design — the fixture needs the shape the wire actually has.
+        let proposed = TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "c1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            }],
+            truncated: false,
+        };
+        let items = vec![proposed, TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "bash".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "ok".into(),
+            edit: None,
+            origin: None,
+            media: None,
+        }];
+        let m = convert("be terse", &items);
+        assert_eq!(m.iter().filter(|x| x["role"] == "user").count(), 0, "{m:?}");
+        assert!(
+            m.iter().find(|x| x["role"] == "tool").unwrap()["content"].is_string(),
+            "a text result changed shape: {m:?}"
+        );
+    }
+
+    /// **A user row carrying an image sends it** — the arm that used to render
+    /// *"not sent to this provider"*.
+    #[test]
+    fn a_user_row_carrying_an_image_sends_the_image_not_a_sentence_about_it() {
+        let uri = "data:image/png;base64,iVBORw0KGgo=";
+        let items = vec![TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![
+                UserPart::Text {
+                    text: "what is this?".into(),
+                },
+                UserPart::Image {
+                    media_type: "image/png".into(),
+                    data_ref: uri.into(),
+                },
+            ],
+        }];
+        let m = convert("be terse", &items);
+        let user = m.iter().find(|x| x["role"] == "user").expect("the user message");
+        assert_eq!(user["content"][0]["text"], "what is this?");
+        assert_eq!(user["content"][1]["image_url"]["url"], uri);
+        assert!(
+            !m.iter().any(|x| x.to_string().contains("not sent to this provider")),
+            "the placeholder is still on the wire: {m:?}"
+        );
     }
 
     #[test]
