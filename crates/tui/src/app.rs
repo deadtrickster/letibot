@@ -1265,6 +1265,31 @@ pub struct App {
     /// question — see `turn_footer` for what the footer kept.
     last_timings: Option<Timings>,
     items: Vec<SnapshotItem>,
+    /// The rendered transcript — every row, as the bytes that reach the terminal.
+    ///
+    /// # ONCE A ROW IS RENDERED, NOTHING ABOUT IT CHANGES ON ITS OWN
+    ///
+    /// Ruled by the operator, 2026-09-27, in their own words: *"once something is rendered nothing
+    /// left to it except tool calls / thinking lines count shouldn't ever change by itself, without
+    /// say me toggling verbosity."*
+    ///
+    /// Two things may change a rendered row, and nothing else:
+    ///
+    ///  * **the counts clause of the live marker** — `[2 tool calls, 31 thinking lines]` while the
+    ///    work it stands for is still happening. That is the one piece of a row that is a fact about
+    ///    NOW rather than about what happened, and it is why [`App::marker_counts`] exists;
+    ///  * **a verbosity toggle**, which is the reader asking for a different rendering of the same
+    ///    conversation — every row may change then, and it is the only case where that is true.
+    ///
+    /// Everything else in here is a record. A row that quietly re-renders — a mark that changes as
+    /// a fact settles, a line that grows, a count that appears late — is a defect, not a refresh:
+    /// the reader's memory of what they just read is part of the interface. Every defect this head
+    /// has had in this area has that shape, and three of them are recorded in this file: a marker
+    /// whose counts were *backfilled* by the next row landing, a yellow that only arrived when a row
+    /// did, and an echo that kept saying `queued` after its row had landed.
+    ///
+    /// So the rule for a change to any row: **can the operator see it happen, and did they ask for
+    /// it.** The counts and the rung are the whole of the yes.
     hist_lines: Vec<String>,
     hist_upto: usize,
     /// The first item index represented in `hist_lines`.
@@ -8843,7 +8868,19 @@ impl App {
         let mut hint = true;
         let mut show_notice = notice.is_some();
         let mut show_stuck = stuck.is_some();
-        let mut show_status = !status.is_empty();
+        // **The row is RESERVED, not conditional.** The operator: *"keep the line reserved for
+        // `Responding...` always free, or we have these ugly jumps"* — and the jump is the whole
+        // reason. The row exists only while a turn does, so the moment one starts or ends, every
+        // row of the transcript above it moves by one: the thing a reader is reading while a turn
+        // begins is exactly the thing that gets shoved. A reserved line costs one row of screen on
+        // an idle session and buys a frame that does not move.
+        //
+        // So it is always counted in the height and always drawn, empty when there is nothing to
+        // say. The three rows below stay conditional, because each of them is *news* — a notice
+        // being read, a disclosure, a typing aid — and a reserved line for news is the furniture
+        // this head keeps deleting. This one is not news: the turn's own row is where the reader's
+        // eye is, every turn.
+        let mut show_status = true;
         let mut show_completions = completions.is_some();
         let mut boxed = true;
         // **The content viewport, and R20's one rule about it.** The loop used to shrink the
@@ -35502,6 +35539,172 @@ mod tests {
     /// are the assertion: after the row is announced and before its body arrives, the surface must
     /// not still be saying `queued` about words the model has already been given.
     #[test]
+    /// **The turn's own row is reserved, so a turn starting does not move the screen.**
+    ///
+    /// The operator: *"keep the line reserved for `Responding...` always free, or we have these ugly
+    /// jumps"*. The row exists only while a turn does, so without the reservation every row above
+    /// it — the transcript a reader is reading — moves by one the moment a turn begins, and moves
+    /// back when it ends.
+    ///
+    /// **What is pinned is the MOVE, not the row.** Asserting *the row is always there* would pass
+    /// on a frame that reserved it in the wrong place; what the reader feels is the shove, so the
+    /// test compares the rows that are not the status line across the turn boundary.
+    #[test]
+    /// **A delta changes the counts and nothing else** — the operator's rule for the rendered
+    /// history, as a measurement.
+    ///
+    /// Their words: *"once something is rendered nothing left to it except tool calls / thinking
+    /// lines count shouldn't ever change by itself, without say me toggling verbosity."* So this
+    /// renders a frame, streams one reasoning chunk, renders again, and compares **line by line**:
+    /// every line but one must be byte-identical, and the one that differs must be the marker.
+    ///
+    /// **What it would catch.** A mark that changes as a fact settles, a line that grows, a count
+    /// that appears late — each of them shows up here as a second differing line, which is the
+    /// assertion's whole point. The three defects this window has had (the backfilled count, the
+    /// yellow that needed a row, the echo that kept saying `queued`) were all *one row changing
+    /// without being asked*, and each would fail this.
+    ///
+    /// Not asserted here: the verbosity toggle, which is the one case where every row may change.
+    #[test]
+    fn a_delta_changes_the_counts_and_nothing_else_in_the_rendered_history() {
+        let mut a = app();
+        a.verbosity = Verbosity::Conversation;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        for i in 0..8u64 {
+            let (id, text) = (format!("s.{i}"), format!("settled row {i} of the conversation"));
+            a.apply(ServerFrame::Event(env_at(
+                i + 1,
+                1_000,
+                testing::appended(&id, "assistant"),
+            )));
+            a.record_item(
+                &id,
+                TranscriptItem::Assistant {
+                    text,
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            );
+        }
+        a.apply(ServerFrame::Event(env_at(9, 1_000, SessionEvent::TurnStarted {
+            turn_id: "r1".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        })));
+        a.apply(ServerFrame::Event(env(
+            10,
+            SessionEvent::ToolCallProposed {
+                turn_id: "r1".into(),
+                call_id: "c1".into(),
+                name: "read".into(),
+                args_digest: "d".into(),
+                target: "crates/tui/src/app.rs".into(),
+            },
+        )));
+        let before = a.screen(100, 30);
+        a.apply(ServerFrame::Event(env(
+            11,
+            SessionEvent::Delta {
+                turn_id: "r1".into(),
+                target: DeltaTarget::Reasoning,
+                text: "x".repeat(300),
+            },
+        )));
+        let after = a.screen(100, 30);
+
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "the frame changed height on a delta: {} lines → {}",
+            before.len(),
+            after.len()
+        );
+        let differing: Vec<usize> = (0..before.len())
+            .filter(|i| before[*i] != after[*i])
+            .collect();
+        assert_eq!(
+            differing.len(),
+            1,
+            "a delta changed {} lines and the rule allows one — the marker's counts. \
+             \nbefore:\n{}\nafter:\n{}",
+            differing.len(),
+            before.join("\n"),
+            after.join("\n")
+        );
+        let at = differing[0];
+        assert!(
+            after[at].contains("tool call") && after[at].contains("thinking line"),
+            "the line that changed is not the marker: {:?} → {:?}",
+            before[at],
+            after[at]
+        );
+    }
+
+    fn a_turn_starting_does_not_shove_the_transcript_up_a_row() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // **Enough rows to FILL the screen, which is what makes the shove visible.** The transcript
+        // is bottom-anchored once it overflows: a chrome row appearing takes its space from the
+        // transcript, every content row slides up by one, and that is the move the reader feels.
+        // The first version of this test used three rows, they sat at the top, and it passed against
+        // the reverted fix — the fixture could not express the defect.
+        for i in 0..30u64 {
+            let (seq, id, text) = (
+                i * 2 + 1,
+                format!("s.{i}"),
+                format!("row {i} of the transcript"),
+            );
+            a.apply(ServerFrame::Event(env(seq, testing::appended(&id, "assistant"))));
+            a.record_item(
+                &id,
+                TranscriptItem::Assistant {
+                    text,
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            );
+        }
+        // **Idle first**, which is the frame the row has to be reserved in: nothing is running, so
+        // the status text is empty and only the reservation puts a row there.
+        let idle = a.screen(100, 24);
+        assert!(
+            idle.iter().any(|l| l.contains("row 29 of the transcript")),
+            "the newest row is on the screen: {idle:#?}"
+        );
+        assert!(
+            !idle.iter().any(|l| l.contains("row 0 of the transcript")),
+            "and the oldest has scrolled off, so the view is bottom-anchored: {idle:#?}"
+        );
+        let row_of = |v: &[String], what: &str| v.iter().position(|l| l.contains(what));
+
+        // **And a turn starts**, which is the moment the shove happened.
+        a.apply(ServerFrame::Event(env_at(7, 1_000, testing::turn_started("t1"))));
+        let running = a.screen(100, 24);
+        assert!(
+            running.iter().any(|l| l.contains("Responding")),
+            "the turn's row is drawn while it runs: {running:#?}"
+        );
+        for what in ["row 25 of the transcript", "row 29 of the transcript"] {
+            assert_eq!(
+                row_of(&idle, what),
+                row_of(&running, what),
+                "{what:?} moved when the turn started — the reserved row is what stops this: \
+                 \nidle:\n{}\nrunning:\n{}",
+                idle.join("\n"),
+                running.join("\n")
+            );
+        }
+    }
+
     fn a_prompt_stops_claiming_to_be_queued_when_its_row_is_announced() {
         let mut a = app();
         a.apply(hello(
