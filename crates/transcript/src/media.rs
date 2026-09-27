@@ -115,6 +115,28 @@ impl Media {
         })
     }
 
+    /// **What this image costs the prompt, in vision tokens** — or `None` when the header did not
+    /// give a size.
+    ///
+    /// MEASURED against the local `llama-server`, 2026-09-27: **one token per 1024 pixels**, on a
+    /// 32×32 patch grid, capped at **4096**. 2048×2048 (4.19 MP) is the last size that is not
+    /// downscaled — 2048², 2304² and 4096² all cost exactly 4151 prompt tokens, which is 4096 plus
+    /// the framing.
+    ///
+    /// **Why this lives on the type rather than in the caller.** The number is needed by exactly one
+    /// thing today — the token accounting for a row that carries media — and that accounting is
+    /// currently WRONG: `plan_tail` sums the ledger's per-row token counts, and the ledger renders
+    /// the *payload*, which is a twenty-token sentence about the picture. So a compacted tail
+    /// "planned to fit the budget" can be two orders of magnitude over it. See
+    /// `docs/compaction.md` §8, which files the fix and this arithmetic with it.
+    ///
+    /// `None` for an unparsed header rather than a guess: R54 §5's rule — *absent is not 0x0* — is
+    /// the same rule here, and a zero would count a picture as free.
+    pub fn vision_tokens(&self) -> Option<u64> {
+        let (w, h) = (self.width?, self.height?);
+        Some((u64::from(w) * u64::from(h) / 1024).min(4096))
+    }
+
     /// The one line a head draws in place of the bytes.
     ///
     /// Text, carrying no data at all — opencode's second channel: *"output: 'Image read
@@ -285,6 +307,38 @@ mod tests {
         j.extend_from_slice(&800u16.to_be_bytes()); // width
         let m = Media::of("a.jpg", &j).expect("a jpeg");
         assert_eq!((m.width, m.height), (Some(800), Some(600)));
+    }
+
+    /// **The vision cost is the measured one**, at the sizes the server was actually asked.
+    ///
+    /// The numbers are from `docs/leticode.md`'s table — one token per 1024 pixels, capped at 4096 —
+    /// and the point of pinning them here is that the accounting defect filed in
+    /// `docs/compaction.md` §8 needs a number to be fixed with, not a paragraph.
+    #[test]
+    fn the_vision_cost_is_one_token_per_kilopixel_capped_at_4096() {
+        let at = |w, h| {
+            Media {
+                mime: "image/png".into(),
+                bytes: 0,
+                width: Some(w),
+                height: Some(h),
+                data_ref: String::new(),
+            }
+            .vision_tokens()
+        };
+        assert_eq!(at(64, 64), Some(4), "4 kilopixels");
+        assert_eq!(at(1024, 1024), Some(1024), "1.05 MP");
+        assert_eq!(at(2048, 2048), Some(4096), "4.19 MP is exactly the cap");
+        assert_eq!(at(4096, 4096), Some(4096), "and above it the server RESIZES, so it stays 4096");
+        // Absent rather than zero — see the method's own note.
+        let no_size = Media {
+            mime: "image/gif".into(),
+            bytes: 0,
+            width: None,
+            height: None,
+            data_ref: String::new(),
+        };
+        assert_eq!(no_size.vision_tokens(), None);
     }
 
     #[test]

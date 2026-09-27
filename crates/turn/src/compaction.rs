@@ -181,8 +181,11 @@ they did, facts and assumptions, numbers still needed — or \"(none)\"\n\
 - file or directory path: why it matters, or \"(none)\"\n\
 Rules: terse bullets, not prose paragraphs. Drop tool output bodies and reasoning. \
 Preserve exact file paths, symbols, commands, error strings, URLs and identifiers \
-where you know them. Do not call tools. Do not write about this record or about the \
-conversation being shortened. Answer with the record and nothing else.";
+where you know them. If you read or were sent an IMAGE, say so and say what was in it \
+— the picture itself does not survive this record and cannot be looked at again, so \
+what you saw is the only thing that can be carried. Do not call tools. Do not write \
+about this record or about the conversation being shortened. Answer with the record \
+and nothing else.";
 
 /// The sections [`SUMMARY_INSTRUCTION`] promises, in order.
 ///
@@ -1216,6 +1219,16 @@ mod the_tail_and_the_template {
         assert!(
             SUMMARY_INSTRUCTION.contains("anything you do not carry into it is lost"),
             "the loss is stated to the model rather than left to be assumed"
+        );
+        // **An image is the one fact the record cannot leave behind.** Everything else in a
+        // conversation can be looked at again — a path re-read, a command re-run, an error
+        // reproduced. A picture is bytes the summary replaces, so what the model SAW is the whole of
+        // what survives, and an instruction that did not ask for it would lose it silently. See
+        // `docs/compaction.md` §8, where the two open halves (the token accounting, and the fact
+        // that a tail image stays for the life of the session) are written down.
+        assert!(
+            SUMMARY_INSTRUCTION.contains("If you read or were sent an IMAGE, say so"),
+            "the record is not asked to carry what an image showed, and the image does not survive it"
         );
         assert!(
             SUMMARY_INSTRUCTION.contains("Do not call tools"),

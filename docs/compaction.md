@@ -317,3 +317,47 @@ ruling and building are different acts, and this document records the ruling.
   turn.
 - **Nothing here is scheduled.** §10 as written is a summarisation design; this is the
   argument for replacing it, not the replacement.
+
+## 8. Images, and the flag R54 raised
+
+R54 part two ends with a question it deliberately did not answer: *"compaction. An image in the
+transcript is re-sent on every prompt rebuild. opencode strips media on compaction and has a recovery
+message for the provider refusing it. R24 and R27 are yours. Say what you conclude; do not silently
+keep images forever."* Three parts, and the middle one is the one that matters.
+
+**1. Images before the tail leave the prompt by construction — and that IS `stripMedia`.** The
+compacted base is the summary plus the verbatim tail. A row before the tail is REPLACED by the
+summary, so its `data_ref` is no longer in the transcript and never re-sent. No code, and the
+property is stronger than opencode's: theirs strips media out of parts that stay, this one replaces
+the parts whole.
+
+**2. Images inside the verbatim tail are kept, and must be.** The tail's entire value is that it is
+byte-identical to what the server already prefilled — the cached strategy rests on it. Stripping an
+image from the tail would buy a smaller prompt with a cold prefill, which is the trade this design
+exists to refuse. So the two heads want different things here, and this is a place where letibot
+should not copy: opencode strips media in the tail as well.
+
+**3. Two things are missing, and the first is a defect the moment images ship on the local path.**
+
+**The accounting.** `plan_tail` sums `item_tokens`, and that is *"the tokens the ledger rendered for
+that row"* — the TEXT. An image's payload is a sentence (`shot.png — image image/png 640×480 · 12
+KiB`, about twenty tokens) while the picture costs **4151 tokens** on the wire. MEASURED: one vision
+token per 1024 pixels, capped at 4096. So a tail *"planned to fit the budget"* can be two orders of
+magnitude over it, and the wall check under-reports by the same amount for every image in the
+resident history. **Not fixed, filed, because it is a change to token accounting and belongs with
+the local-path work:** the number is already on the row — `Media { width, height }` gives the vision
+cost as `min(w*h/1024, 4096)` without asking any server, which is the same arithmetic the server
+performs.
+
+**The record has to say what was read.** `SUMMARY_INSTRUCTION` asks for the facts and said nothing
+about pictures, so a model that read one would drop it — and unlike a path, a command or an error
+string, a picture CANNOT be re-derived from the summary. It is the one fact in the conversation that
+is gone for good once the row is replaced. The instruction now carries a rule for it; the test
+beside the other section rules holds it to that.
+
+**And one thing this does NOT settle, said rather than implied.** A picture in the verbatim tail
+stays for as long as the session does — it is re-sent on every rebuild, base64 and all, which is the
+cost the `Media` field's docstring names. opencode's answer to that is a recovery instruction for
+when a provider refuses oversize media. This tree has no such path yet, and until it does, the
+honest statement is the one in `crates/transcript/src/lib.rs`: an image lives for the life of the
+session.
