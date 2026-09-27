@@ -4170,6 +4170,15 @@ impl App {
                     return Disposition::Filtered;
                 };
                 if t.turn_id != turn_id {
+                    if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
+                        eprintln!(
+                            "MARKER delta REFUSED: pane={:?} delta={:?} target={:?} bytes={}",
+                            t.turn_id,
+                            turn_id,
+                            target,
+                            text.len()
+                        );
+                    }
                     return Disposition::Filtered;
                 }
                 match target {
@@ -10561,11 +10570,13 @@ impl App {
                 })
                 .collect();
             eprintln!(
-                "MARKER walk_carried_live={walk_carried_live} live(calls={}, running={}, \
-                 think={}) runs={runs:?} items={} appended={:?}",
+                "MARKER walk_carried_live={walk_carried_live} pane_turn={:?} \
+                 live(calls={}, running={}, think={}) runs={} items={} appended={:?}",
+                self.turn.as_ref().map(|t| t.turn_id.clone()),
                 live.calls,
                 live.running,
                 live.think_lines,
+                runs.len(),
                 self.items.len(),
                 self.turn.as_ref().map(|t| t.appended.clone()).unwrap_or_default(),
             );
