@@ -10458,6 +10458,15 @@ impl App {
         // would be a SECOND one for one turn's work: `[1 tool call]` from the walk and
         // `[1 thinking line]` from the pane, which is the duplicate caught in a tmux sample of the
         // live head. Asked here, before the destructure below lends `items` out.
+        //
+        // **`LETIBOT_MARKER_DEBUG=1` prints the decision this guard makes.** The operator has
+        // twice caught a turn's work drawn by two markers — *"just saw = [1 tool call] [1 tool
+        // call] that later merge to [2 tool calls]"* — and neither state could be rebuilt from the
+        // code: a test written for the closest one passes, which means the state is one of the
+        // combinations nobody has described yet. So the two facts are printed at the moment of the
+        // decision, and the next occurrence says which one it was instead of inviting a third
+        // guess. The same technique the marker-doubling hunt used (`scripts/headwatch.sh` and the
+        // captured frames in `docs/evidence/`), applied to the predicate rather than to the screen.
         let walk_carried_live = live.work() > 0
             && (0..self.items.len())
                 .rev()
@@ -10476,6 +10485,23 @@ impl App {
                         t.appended.iter().any(|id| *id == self.items[r].item_id)
                     }))
                 });
+        if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
+            let runs: Vec<(usize, usize)> = (0..self.items.len())
+                .filter_map(|k| {
+                    unseen_run_at(&self.items, self.verbosity, &self.bound_prompts, live, k)
+                        .filter(|(s0, _)| *s0 == k)
+                })
+                .collect();
+            eprintln!(
+                "MARKER walk_carried_live={walk_carried_live} live(calls={}, running={}, \
+                 think={}) runs={runs:?} items={} appended={:?}",
+                live.calls,
+                live.running,
+                live.think_lines,
+                self.items.len(),
+                self.turn.as_ref().map(|t| t.appended.clone()).unwrap_or_default(),
+            );
+        }
         let live_joins = live.work() > 0
             && !superseded
             && self.verbosity.hides_the_working()
@@ -10699,7 +10725,24 @@ impl App {
                         marker_room(cfg.width),
                     )
                     .painted(&cfg);
+                if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
+                    eprintln!("MARKER pane draws: {painted}");
+                }
                 segs.push(Seg::Owned(vec![format!("{}{painted}", " ".repeat(ind))]));
+                // **And the air every other block in this pane already carries.** The reasoning
+                // block ends with a blank, and so does the streaming answer — whose comment gives
+                // the reason: *"without it the last line of a running decode touches the top
+                // border of the composer."* The counts had none, so they sat on whatever came
+                // next: the `Responding` row when no text had arrived yet, and the model's own
+                // first line when it had.
+                //
+                // The operator, twice: *"«Responding…» status line appears and [XX Thinking lines]
+                // appeared then right above «Responding» without an empty line"*, and *"this also
+                // sometimes happened when you replied while the turn goes."* One blank fixes both,
+                // and it is the same blank the walk's marker already has — inside `hist_lines`,
+                // where the frame's own `gap` separates it from what follows. The pane's marker
+                // is the same fact with no gap under it, so it brings its own.
+                segs.push(Seg::Owned(vec![String::new()]));
             }
             if !superseded && !reasoning.is_empty() && !rung.hides_the_working() {
                 // Narrower by the rail and by the step it is set in. Getting this
@@ -34985,6 +35028,92 @@ mod tests {
                 "the card's reason is the row's reason, for {outcome:?}"
             );
         }
+    }
+
+    /// **One turn's work is counted once, even while its own counts are still moving.**
+    ///
+    /// The operator, watching a live turn: *"just saw = [1 tool call] [1 tool call] that later
+    /// merge to [2 tool calls]"*. Two markers for one turn, which then became one — so the reader
+    /// was shown a number that was wrong and then corrected, on the line whose whole job is to be
+    /// the fact.
+    ///
+    /// **The mechanism is the design and the probe is the defect.** Only ONE marker may carry the
+    /// in-flight counts, and this file says so three times — `walk_carried_live` beside it, the
+    /// duplicate caught in an earlier tmux sample, and the two-marker screen. Every one of those
+    /// guards asks *has a run ALREADY carried it*, and that question is answered from the walk,
+    /// which folds the live work into a run only while that run is still the last thing in the
+    /// transcript (`end == items.len()`, or a run holding a row of this turn). The live pane's own
+    /// marker joins the prose the tail walk rendered, and it is drawn when no run carried the
+    /// counts — so the two will disagree for exactly as long as a round's rows are being committed
+    /// underneath: the walk's run stops reaching the end, the guard reads *not carried*, and the
+    /// pane draws its own copy beside the one already on the screen.
+    ///
+    /// **This test is the split, not the merge**: the turn's own tool call is proposed (so the live
+    /// work is one call with no row yet) *and* the round's rows are landing in the transcript (so
+    /// the walk has a run of its own). One turn, one number.
+    #[test]
+    fn one_turns_work_is_counted_once_even_while_its_rows_are_landing() {
+        let mut a = app();
+        a.verbosity = Verbosity::Conversation;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // The prose that introduces the work — this is what the pane's marker joins.
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("s.0", "assistant"),
+        )));
+        a.record_item(
+            "s.0",
+            TranscriptItem::Assistant {
+                text: "let me check that for you:".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        );
+        // **The turn starts, and proposes a call** — one call in flight, no result row yet.
+        a.apply(ServerFrame::Event(env(2, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::ToolCallProposed {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "read".into(),
+                args_digest: "d".into(),
+                target: "crates/tui/src/app.rs".into(),
+            },
+        )));
+        // **And a row of this turn's own round lands**, which is what makes the walk's run stop
+        // reaching the end of the transcript while the work is still in flight.
+        a.apply(ServerFrame::Event(env(4, testing::appended("s.1", "tool_result"))));
+        a.record_item(
+            "s.1",
+            TranscriptItem::ToolResult {
+                call_id: "c0".into(),
+                name: "read".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "SOMETHING LONG ENOUGH TO HIDE THE ROW".into(),
+                edit: None,
+                origin: None,
+            },
+        );
+
+        let screen = a.screen(100, 30).join("\n");
+        let markers: Vec<&str> = screen
+            .lines()
+            .filter(|l| l.contains("tool call") || l.contains("thinking line"))
+            .collect();
+        assert_eq!(
+            markers.len(),
+            1,
+            "one turn's work drawn by one marker, not two that later merge: {screen}"
+        );
+        assert!(
+            markers[0].contains("1 tool call"),
+            "and it is the live count: {markers:?}"
+        );
     }
 
     fn a_run_of_rows_no_count_describes_says_what_it_is_rather_than_nothing() {
