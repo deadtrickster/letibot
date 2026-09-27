@@ -1733,6 +1733,16 @@ impl ToolRuntime {
             payload: result.render(),
             edit: bounded_edit(result),
             origin: None,
+            // **Carried whole, and the difference from `bounded_edit` one line up is the design.**
+            // An edit excerpt is bounded because a head only has to DRAW it — three lines of context
+            // are enough to see what changed. An image is SENT, and a bounded image is not a smaller
+            // picture: it is a truncated `data:` URI, which the server refuses or renders as
+            // garbage. The bound that applies to media is the file's own format plus the server's
+            // own limit (measured: it resizes past 4.19 MP and never refuses), and a head that
+            // imposed a second one would be discarding what the far end would have taken — the
+            // failure the operator named, where an attachment dropped by the head looks exactly
+            // like a picture the model ignored.
+            media: result.media.clone(),
         }
     }
 }

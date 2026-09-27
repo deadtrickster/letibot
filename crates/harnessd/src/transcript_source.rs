@@ -439,6 +439,7 @@ mod tests {
             payload: "nothing ran".into(),
             edit: None,
             origin: None,
+            media: None,
         });
         assert!(t.contains("denied"), "{t}");
         assert!(t.contains("r9"), "{t}");

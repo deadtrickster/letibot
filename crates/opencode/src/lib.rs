@@ -702,6 +702,13 @@ fn interpret(
                     payload,
                     edit: None,
                     origin: None,
+                    // **An imported row carries no media, and that is a fact about the importer
+                    // rather than a gap left by accident.** opencode stores an attachment as a file
+                    // part whose content is on disk under its own `storage/`, and this importer
+                    // reads the message log — so an imported conversation shows the sentence a
+                    // reader can see and not the picture, which is the same rule every other
+                    // un-imported field on this row follows.
+                    media: None,
                 },
                 report,
                 sink,

@@ -822,29 +822,13 @@ const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 /// written twice, and a base64 alphabet is exactly the kind of fact that can be spelled right in one
 /// place and wrong in another. The decoder stays private — the only caller is the far side of a
 /// `firecode` read.
-pub(crate) fn encode_base64(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        out.push(B64[(n >> 18) as usize & 63] as char);
-        out.push(B64[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            B64[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            B64[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
+/// **Delegates to the one alphabet in the tree** — `letibot_transcript::media::encode_base64`.
+///
+/// It was a second copy until the image channel needed the same encoder, and a base64 alphabet is
+/// exactly the kind of fact that gets spelled right in one place and subtly wrong in another. The
+/// decoder below stays here: its only caller is the far side of a `firecode` read.
+fn encode_base64(bytes: &[u8]) -> String {
+    letibot_transcript::media::encode_base64(bytes)
 }
 
 fn decode_base64(text: &[u8]) -> Result<Vec<u8>, String> {

@@ -45,6 +45,7 @@ fn a_row_with_a_body(
             payload: body.into(),
             edit: None,
             origin: None,
+            media: None,
         },
     );
 }

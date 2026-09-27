@@ -19794,6 +19794,7 @@ mod tests {
                         payload: "MAGIC-TOOL-PAYLOAD".into(),
                         edit: None,
                         origin: None,
+                        media: None,
                     }),
                 },
             ),
@@ -20005,6 +20006,7 @@ mod tests {
                         payload: "tool payload".into(),
                         edit: None,
                         origin: None,
+                        media: None,
                     }),
                 },
             )));
@@ -20244,6 +20246,7 @@ mod tests {
                         .join("\n"),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));
@@ -22951,6 +22954,7 @@ mod tests {
                     payload: "done".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));
@@ -23393,6 +23397,7 @@ mod tests {
                             payload: "line one\nline two".into(),
                             edit: None,
                             origin: None,
+                            media: None,
                         }),
                     },
                 ),
@@ -23467,6 +23472,7 @@ mod tests {
                         payload,
                         edit: None,
                         origin: None,
+                        media: None,
                     }),
                 },
             )],
@@ -26540,6 +26546,7 @@ mod tests {
                         payload: format!("$ ls{HOSTILE}\nfile.rs"),
                         edit: None,
                         origin: None,
+                        media: None,
                     },
                 ),
             ),
@@ -26556,6 +26563,7 @@ mod tests {
                         payload: "$ false".into(),
                         edit: None,
                         origin: None,
+                        media: None,
                     },
                 ),
             ),
@@ -26585,6 +26593,7 @@ mod tests {
                         payload: "1 replacement".into(),
                         edit: None,
                         origin: None,
+                        media: None,
                     },
                 ),
             ),
@@ -26754,6 +26763,7 @@ mod tests {
                     payload: format!("$ ls\n{EVIL}\nfile.rs"),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             ),
             (
@@ -26767,6 +26777,7 @@ mod tests {
                     payload: "$ false".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             ),
             (
@@ -26790,6 +26801,7 @@ mod tests {
                     payload: "1 replacement".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             ),
         ];
@@ -27121,6 +27133,7 @@ mod tests {
                     payload,
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));
@@ -27173,6 +27186,7 @@ mod tests {
                         payload: payload.clone(),
                         edit: None,
                         origin: None,
+                        media: None,
                     }),
                 },
             )));
@@ -27569,6 +27583,7 @@ mod tests {
                     payload: payload.into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));
@@ -29306,6 +29321,7 @@ mod tests {
                         payload: payload.into(),
                         edit: None,
                         origin: None,
+                        media: None,
                     }),
                 },
             )));
@@ -29427,6 +29443,7 @@ mod tests {
                     payload: "# rano TODO\n".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));
@@ -29515,6 +29532,7 @@ mod tests {
                     payload: "# rano TODO\n".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));
@@ -29788,6 +29806,7 @@ mod tests {
                     payload: "# rano TODO\n".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));
@@ -29836,6 +29855,7 @@ mod tests {
                     payload: "one\ntwo\nthree\n".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));
@@ -29929,6 +29949,7 @@ mod tests {
                     payload: "a\nb\n".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));
@@ -29970,6 +29991,7 @@ mod tests {
                         payload: "x\n".repeat(n),
                         edit: None,
                         origin: None,
+                        media: None,
                     }),
                 },
             )));
@@ -30024,6 +30046,7 @@ mod tests {
                     payload: "a\nb\nc\n".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));
@@ -31025,6 +31048,7 @@ mod tests {
                     payload: "hello\n".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));
@@ -32762,6 +32786,7 @@ mod tests {
                         payload: format!("CONTENTS-{i}"),
                         edit: None,
                         origin: None,
+                        media: None,
                     }),
                 },
             )));
@@ -32912,6 +32937,7 @@ mod tests {
                     payload: format!("output {i}"),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             );
         }
@@ -32951,6 +32977,7 @@ mod tests {
                     payload: format!("output {i}"),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             );
         }
@@ -33036,6 +33063,7 @@ mod tests {
                     payload: "output".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 },
             );
         }
@@ -33079,6 +33107,7 @@ mod tests {
                         payload: format!("output {i}"),
                         edit: None,
                         origin: None,
+                        media: None,
                     }),
                 },
             )));
@@ -33664,6 +33693,7 @@ mod tests {
                     call_id: format!("c{n}"), name: "bash".into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: format!("result {n}"), edit: None, origin: None,
+                    media: None,
                 }),
             })));
             // …and the next call is proposed, which is the live work of the next round.
@@ -33712,6 +33742,7 @@ mod tests {
                 call_id: "c1".into(), name: "bash".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
                 payload: "test result: ok".into(), edit: None, origin: None,
+                media: None,
             }),
         })));
         // **AND THE OPERATOR'S OWN MESSAGE IS THE LAST ROW** — which is the half that matters, and
@@ -34069,6 +34100,7 @@ mod tests {
                         payload: "settled".into(),
                         edit: None,
                         origin: None,
+                        media: None,
                     }),
                 },
             )));
@@ -34539,6 +34571,7 @@ mod tests {
                     payload: "output".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 },
             ),
         ] {
@@ -34639,6 +34672,7 @@ mod tests {
                         payload: format!("output {i}"),
                         edit: None,
                         origin: None,
+                        media: None,
                     }),
                 },
             )));
@@ -34773,6 +34807,7 @@ mod tests {
                         payload: format!("output {i}"),
                         edit: None,
                         origin: None,
+                        media: None,
                     }),
                 },
             )));
@@ -34979,6 +35014,7 @@ mod tests {
                         payload: format!("output {i}"),
                         edit: None,
                         origin: None,
+                        media: None,
                     }),
                 },
             )));
@@ -35062,6 +35098,7 @@ mod tests {
                     payload: "CONTENTS".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));
@@ -35505,6 +35542,7 @@ mod tests {
                 payload: "SOMETHING LONG ENOUGH TO HIDE THE ROW".into(),
                 edit: None,
                 origin: None,
+                media: None,
             },
         );
         // **Proposed, so the call is counted and not executing.** `marker_carries_live` asks for
@@ -36054,6 +36092,7 @@ mod tests {
                     payload: "SOMETHING LONG ENOUGH TO HIDE THE ROW".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 },
             );
         }
@@ -36170,6 +36209,7 @@ mod tests {
                     payload: "SOMETHING LONG ENOUGH TO HIDE".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 },
             ),
         ] {
@@ -36224,6 +36264,7 @@ mod tests {
                     payload: "SOMETHING LONG ENOUGH TO HIDE".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 },
             ),
             (
@@ -37008,6 +37049,7 @@ mod tests {
                 // only carrier here, which is the point of this test.
                 edit: None,
                 origin: None,
+                media: None,
             },
         );
         hub.publish(testing::turn_finished("t1"));
@@ -37053,6 +37095,7 @@ mod tests {
                 payload: "done".into(),
                 edit: Some(edit_excerpt()),
                 origin: None,
+                media: None,
             },
         );
 
@@ -37239,6 +37282,7 @@ mod tests {
                     payload: "a.rs: 1 replacement(s). lines 1-3\n\n     1| fn a() {\n     2|     x();\n     3| }\n".into(),
                     edit: None,
                     origin: None,
+                    media: None,
                 }),
             },
         )));

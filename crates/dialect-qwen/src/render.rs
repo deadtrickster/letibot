@@ -710,6 +710,7 @@ mod tests {
                 payload: "alpha".into(),
                 edit: None,
                 origin: None,
+                media: None,
             },
             TranscriptItem::ToolResult {
                 call_id: "c2".into(),
@@ -720,6 +721,7 @@ mod tests {
                 payload: String::new(),
                 edit: None,
                 origin: None,
+                media: None,
             },
             TranscriptItem::Reasoning {
                 text: "They differ.".into(),

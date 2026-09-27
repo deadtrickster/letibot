@@ -40,6 +40,7 @@ fn tool_result(name: &str, payload: &str) -> TranscriptItem {
         payload: payload.into(),
         edit: None,
         origin: None,
+        media: None,
     }
 }
 

@@ -906,6 +906,7 @@ mod tests {
                 payload: "the payload".into(),
                 edit: None,
                 origin: None,
+                media: None,
             }),
             "the payload"
         );
@@ -1042,6 +1043,7 @@ mod tests {
                 payload: "y".repeat(10_000),
                 edit: None,
                 origin: None,
+                media: None,
             },
         );
         assert_eq!(

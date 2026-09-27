@@ -69,6 +69,7 @@ fn result(id: &str) -> TranscriptItem {
         payload: format!("contents of {id}"),
         edit: None,
         origin: None,
+        media: None,
     }
 }
 fn system(t: &str) -> TranscriptItem {

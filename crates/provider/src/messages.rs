@@ -258,6 +258,7 @@ mod tests {
                 payload: "nothing".into(),
                 edit: None,
                 origin: None,
+                media: None,
             },
         ];
         let m = convert("be terse", &items);
@@ -328,6 +329,7 @@ mod pairing_tests {
             payload: "done".into(),
             edit: None,
             origin: None,
+            media: None,
         }
     }
 

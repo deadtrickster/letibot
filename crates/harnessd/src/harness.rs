@@ -2997,6 +2997,7 @@ impl<'a> Harness<'a> {
             origin: Some(letibot_transcript::CallOrigin::Operator {
                 who: who.to_string(),
             }),
+            media: None,
         };
         self.append_imported(&[item])
     }
@@ -5618,8 +5619,7 @@ impl<'a> Harness<'a> {
                 // string the model will actually get to read. Digesting anything
                 // else would measure novelty the model never saw.
                 if let TranscriptItem::ToolResult {
-                    outcome, payload, ..
-                } = &item
+                    outcome, payload, .. } = &item
                 {
                     progress.observe(call, outcome, payload);
                     // Backgrounding is the operator reaching for the floor; see the

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// **Text a head did not author, made safe for a terminal** (§3.1) — here because both
 /// sides of the log/wire boundary need it and neither can see the other.
+pub mod media;
 pub mod sanitize;
 
 /// **Who asked for a tool call** — R24 part two, decision 1.
@@ -200,6 +201,23 @@ pub enum TranscriptItem {
         /// is kept only because the three fields around it have one.
         #[serde(default)]
         origin: Option<CallOrigin>,
+        /// **Bytes this call read that are not text** — an image, today; see
+        /// [`crate::ToolOutcome`]'s sibling in `letibot_tools::media` for the argument.
+        ///
+        /// It lives on the row for the reason `edit` does and one more: the row is the durable
+        /// artifact a prompt is rebuilt FROM, and an image that reached the model once and not on
+        /// the next round would be a picture the model saw and then forgot — the failure that looks
+        /// like a model ignoring a picture rather than a head dropping it.
+        ///
+        /// **The data URI is stored inline and that is a real cost, stated here rather than
+        /// discovered.** Base64 is 4/3 of the file, it rides every JSONL line and every store write,
+        /// and it is re-sent on every prompt rebuild — which is exactly opencode's situation and why
+        /// it strips media on compaction (`compaction.ts`, `stripMedia`). R24/R27 own what this tree
+        /// does about that; this field is what makes the question askable.
+        ///
+        /// Absent on every row written before it existed, and on every call that read no picture.
+        #[serde(default)]
+        media: Option<media::Media>,
     },
     /// A zero-width delimiter. **Renders to nothing.**
     ///
@@ -531,6 +549,7 @@ mod tests {
                 after: "fn a() {\n    x();".into(),
             }),
             origin: None,
+            media: None,
         };
         let json = serde_json::to_string(&item).unwrap();
         let back: TranscriptItem = serde_json::from_str(&json).unwrap();
@@ -551,6 +570,7 @@ mod tests {
             payload: "done".into(),
             edit: None,
             origin: None,
+            media: None,
         };
         let json = serde_json::to_string(&item).unwrap();
         let old = json.replace(",\"edit\":null", "");
@@ -579,6 +599,7 @@ mod tests {
             payload: "the page".into(),
             edit: None,
             origin: Some(CallOrigin::Operator { who: "dead".into() }),
+            media: None,
         };
         let json = serde_json::to_string(&mine).unwrap();
         assert!(
