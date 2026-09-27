@@ -9581,14 +9581,15 @@ impl App {
                         // A bound row keeps the echo's mark: whether the snapshot that put
                         // this row here carried the words is the head's history, and the same
                         // string is `queued` in one session and `unconfirmed` in another.
-                        echo_mark: match self
+                        // **A bound row is being drawn, so its mark is never `queued`** — see
+                        // [`App::echo_mark`]. This was `_ => QUEUED`, which is the mark the operator
+                        // kept seeing under a reply that was already streaming.
+                        echo_mark: self
                             .bound_prompts
                             .get(&self.items[k].item_id)
                             .map(String::as_str)
-                        {
-                            Some(t) if self.unconfirmed.iter().any(|u| u == t) => UNCONFIRMED,
-                            _ => QUEUED,
-                        },
+                            .map(|t| echo_mark(&self.unconfirmed, t, true))
+                            .unwrap_or(QUEUED),
                         echo_open: self.echo_open,
                         // See the forward walk: an open run IS the rung lifted for its rows.
                         rung: if open_run {
@@ -10497,13 +10498,15 @@ impl App {
                                 bound: bound_prompts
                                     .get(&items[*hist_upto].item_id)
                                     .map(String::as_str),
-                                echo_mark: match bound_prompts
+                                // **A bound row is being drawn, so its mark is never `queued`** —
+                                // see [`echo_mark`]. This was the same `_ => QUEUED` as its sibling
+                                // walk above, and it is the one that drew the operator's own line:
+                                // *"my message | your line | and only then unqueued."*
+                                echo_mark: bound_prompts
                                     .get(&items[*hist_upto].item_id)
                                     .map(String::as_str)
-                                {
-                                    Some(t) if unconfirmed.iter().any(|u| u == t) => UNCONFIRMED,
-                                    _ => QUEUED,
-                                },
+                                    .map(|t| echo_mark(unconfirmed, t, true))
+                                    .unwrap_or(QUEUED),
                                 echo_open,
                                 // **An open run lifts the rung for its own rows**, which is
                                 // what "it opens" means: the reader sees the very rows the
@@ -10809,10 +10812,32 @@ impl App {
                 // the moment an entry grew, and asking under the ENTRY's would too. See
                 // [`unclaimed_prompts`] for why that would be two statements about one fact.
                 let key = claimed_by.as_deref().unwrap_or(&self.pending_prompts[i]);
-                let mark = if unconfirmed.iter().any(|u| u == key) {
-                    UNCONFIRMED
-                } else {
-                    QUEUED
+                // **`queued` is not true once the row is on screen, and the mark is about the row.**
+                //
+                // R2: *"nothing the model says in reply may reach the screen before the prompt that
+                // caused it"* — and the two reach the head on channels with different latencies.
+                // The reply streams (`Delta` carries its text); the prompt's row is announced in a
+                // frame that carries NO text and its body follows later. So for as long as the body
+                // is in flight, the answer to a prompt was on the screen above an echo still
+                // labelled `queued` — the state lagging the fact, in the operator's words:
+                // *"my message | your line | and only then unqueued."*
+                //
+                // `claimed_by` is the answer: a row is drawing these words, so the words are not in
+                // a queue any more, they are on the screen this reader is looking at. What the head
+                // still owes is the BODY — whether the row's own text will match what was bound —
+                // and that is exactly what `unconfirmed` says. So the remainder of a claimed entry
+                // takes that mark, and the two are one statement rather than two: *queued* (nothing
+                // has it), *unconfirmed* (a row has it and the body is still coming), unmarked (it
+                // landed).
+                // **A remainder of a claimed entry is not the same question as the walk's row.**
+                // The walk draws a row that HAS landed, so it carries no claim. This draws the part
+                // of the entry no row is drawing yet, and the daemon still owes it — but it is owed
+                // *as part of an entry a row already covers*, so whether it lands with that row's
+                // body or needs one of its own is exactly what the head cannot say. That is
+                // `unconfirmed`'s own definition, so that is the mark.
+                let mark = match claimed_by {
+                    Some(_) => UNCONFIRMED,
+                    None => echo_mark(&unconfirmed, key, false),
                 };
                 owned.extend(queued_lines(&drawn, &cfg, mark, open));
             }
@@ -16232,6 +16257,44 @@ fn fold_cells(text: &str) -> Option<String> {
 /// conversation" and until the boundary it is not; the tag is what says what is
 /// true instead, in [`Role::Pending`], the colour the spinner already uses for
 /// something in flight.
+/// **The mark on an echo: `queued` only while nothing is drawing it.**
+///
+/// R2, and the operator's own order: *"my message | your line | and only then unqueued."* The reply
+/// streams (`Delta` carries its text) while the prompt's row is announced in a frame that carries
+/// **no** text, its body following later — so a surface that waits for the body to stop saying
+/// `queued` is showing the answer to a question it has not drawn yet.
+///
+/// **`unconfirmed` is the honest word for that window, and it is not a weakening.** The words are on
+/// the screen — a row is drawing them — and what the head still owes is the BODY: whether the row's
+/// own text will match what was bound. So the three states stay three: `queued` (nothing has it),
+/// `unconfirmed` (a row has it and the body is coming), unmarked (it landed).
+///
+/// **One function because this was two spellings and they disagreed.** The tail asked
+/// `claimed_by.is_some() || unconfirmed` while the WALK drew every bound row as `QUEUED` outright,
+/// so fixing one left the other drawing the stale mark — and it was the row's own line the operator
+/// saw under a streaming reply. MEASURED in
+/// `a_prompt_stops_claiming_to_be_queued_when_its_row_is_announced`.
+///
+/// `drawn` is *is something on this screen drawing these words*: true for the walk, which is
+/// drawing the row itself, and `claimed_by.is_some()` for the tail, which is drawing a remainder of
+/// it. Free-standing rather than a method because the tail computes it inside the frame's borrow,
+/// where only the cloned `unconfirmed` is in hand.
+fn echo_mark(unconfirmed: &[String], text: &str, drawn: bool) -> &'static str {
+    // The snapshot's doubt outranks everything: the head cannot tell *still coming* from
+    // *replaced*, so it keeps saying so.
+    if unconfirmed.iter().any(|u| u == text) {
+        return UNCONFIRMED;
+    }
+    // **A row is drawing these words, so there is nothing left to claim.** `queued` would be
+    // false, and `unconfirmed` belongs to the snapshot case above rather than to this one — the
+    // head knows exactly what is happening here. The row has landed; its body is still coming, and
+    // that is what a row looks like while it is filling in.
+    if drawn {
+        return "";
+    }
+    QUEUED
+}
+
 fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: bool) -> Vec<String> {
     // Folded here as well as in `user_block`, and it has to be the same text going
     // in: the pending row is removed when the transcript's user item MATCHES it, so
@@ -16268,6 +16331,27 @@ fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: bool) -> Vec<S
     //
     // The key is `/t`, which is this head's *unfold the long rows* verb — one key for
     // one idea, rather than a third fold chord. See `App::echo_open`.
+    // **A row that has landed carries no mark**, and then this draws the shape the settled row
+    // has — bar and text, no label. Without this the empty mark rendered as a bare ` · ` between
+    // the bar and the words, which is a mark saying nothing in the place a mark goes.
+    if mark.is_empty() {
+        let head_w = w.saturating_sub(2);
+        let mut lines = wrap(text, head_w.max(8));
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        return lines
+            .into_iter()
+            .enumerate()
+            .map(|(i, l)| {
+                if i == 0 {
+                    format!("{bar} {l}")
+                } else {
+                    format!("  {l}")
+                }
+            })
+            .collect();
+    }
     if !open && lines.len() > 1 {
         let seam = format!("  … +{} lines · /t opens it", lines.len() - 1);
         let room = head_w.saturating_sub(visible_width(&seam));
@@ -19254,7 +19338,7 @@ mod tests {
         let before = a.screen(100, 24);
         let before_text = before.join("\n");
         assert!(
-            before_text.contains("queued · Q2 the message queued mid-turn"),
+            before_text.contains("▌ queued · Q2 the message queued mid-turn"),
             "{before_text}"
         );
         let echo = before
@@ -19274,10 +19358,35 @@ mod tests {
         // The daemon appends the row at its step boundary and announces it.
         a.apply(ServerFrame::Event(env(3, testing::appended("s.9", "user"))));
         let after = a.screen(100, 24);
+        let after_text = after.join("\n");
+        assert!(
+            after_text.contains("▌ Q2 the message queued mid-turn"),
+            "the row is drawn in the echo's place, from the words the head already had: \
+             {after_text}"
+        );
+        // **And it no longer claims to be queued.** This assertion used to be `before == after` —
+        // *not one row changes across the announcement* — and that was true only while the bound
+        // row wore the same `queued` mark as the echo, which is the very thing R2 forbids: the
+        // daemon had the words and the model could already be answering them. The rows beneath do
+        // not move; the mark does, because the row has landed. The operator's own order, which is
+        // what this test now pins: *"my message | your line | and only then unqueued."*
+        assert!(
+            // The MARK, not the word: this fixture's own message text contains *queued*, so a
+            // bare `contains("queued")` would pass on the words and say nothing about the label.
+            !after_text.contains("▌ queued · ") && !after_text.contains("▌ unconfirmed · "),
+            "the announced row still carries a queued claim: {after_text}"
+        );
+        // The rows that are not the echo are identical, row for row.
+        let strip = |v: &[String]| -> Vec<String> {
+            v.iter()
+                .map(|l| l.replace("▌ queued · ", "▌ ").replace("▌ unconfirmed · ", "▌ "))
+                .collect()
+        };
         assert_eq!(
-            before, after,
-            "**NOT ONE ROW CHANGES across the announcement** — that is the whole of *pure ui
- desync*: the frame before it and the frame after it are the same frame"
+            strip(&before),
+            strip(&after),
+            "**not one row MOVES across the announcement** — same words, same place; what changed \
+             is the mark, and the mark is the news"
         );
     }
 
@@ -19456,8 +19565,16 @@ mod tests {
             Some("second")
         );
         let screen = a.screen(100, 24).join("\n");
-        assert_eq!(screen.matches("queued · first").count(), 1, "{screen}");
-        assert_eq!(screen.matches("queued · second").count(), 1, "{screen}");
+        // **Both rows are on the screen and neither claims to be queued** — they were announced, so
+        // what the head owes is their bodies, not their rows. See [`echo_mark`]. The assertion this
+        // replaces counted `queued · first` and `queued · second`, which was true only while a bound
+        // row wore the echo's own mark.
+        assert_eq!(screen.matches("▌ first").count(), 1, "{screen}");
+        assert_eq!(screen.matches("▌ second").count(), 1, "{screen}");
+        assert!(
+            !screen.contains("▌ queued · "),
+            "an announced row still claims to be queued: {screen}"
+        );
         assert!(
             screen.find("first").unwrap() < screen.find("second").unwrap(),
             "the rows are drawn in the order they were announced: {screen}"
@@ -33291,17 +33408,33 @@ mod tests {
         let screen = a.screen(100, 30).join("\n");
         // **The claim, and it is the whole of this item.** The bound row draws `A`; the tail must
         // draw only what that does not — not the whole entry a second time.
+        //
+        // **The bound row carries no mark and the remainder does** — see the tail's own comment
+        // for why those are two questions rather than one spelling. This assertion used to count
+        // `queued · A`, which was true only while a landed row wore the echo's mark: the defect
+        // R2 names, visible here as `A` reading `queued` under a reply that was already streaming.
         assert_eq!(
-            screen.matches("queued · A").count(),
+            screen.matches("▌ A").count(),
             1,
             "`A` is on the screen more than once: {screen:?}"
         );
-        // And the remainder is drawn as ONE block — the coalescing item 14 requires — so `B` and
-        // `C` are together in one queued row and not one row each.
         assert_eq!(
-            screen.matches("queued · B").count(),
+            screen.matches("▌ unconfirmed · B").count(),
             1,
-            "the leftover is drawn once: {screen:?}"
+            "the leftover of a claimed entry is drawn once, hedged: {screen:?}"
+        );
+        // And the remainder is drawn as ONE block — the coalescing item 14 requires — so `B` and
+        // `C` are together in one row and not one row each. R33's shape: the elided headline and
+        // its seam, which is what says there is more under it.
+        assert_eq!(
+            screen.matches("… +1 lines · /t opens it").count(),
+            1,
+            "the remainder is not one elided block: {screen:?}"
+        );
+        assert_eq!(
+            screen.matches("▌").count(),
+            2,
+            "one bar for the row and one for the remainder, and no third: {screen:?}"
         );
     }
 
@@ -35346,6 +35479,63 @@ mod tests {
             screen.contains(PENDING),
             "the call is executing and the count is not pending — the plain marker is still in \
              the cache: {screen:?}"
+        );
+    }
+
+    /// **Nothing the model says reaches the screen before the prompt that caused it** — R2.
+    ///
+    /// The operator, twice in one session: *"i also saw my queued message go up before being
+    /// dequeued"* and then, with the order written out: *"my message | your line | and only then
+    /// unqueued"*. Which is a claim about THREE events, and only one of them is the head's:
+    ///
+    ///   1. their prompt goes to the daemon and the echo says `queued`;
+    ///   2. the answer streams — `Delta`, which carries its text;
+    ///   3. the prompt's row is announced — `TranscriptAppended`, which carries NO text — and its
+    ///      body follows later on `TranscriptContent`.
+    ///
+    /// The model's reply streams while the prompt's row is still only announced, so a head that
+    /// waits for the BODY to stop saying `queued` is showing the answer to a question it has not
+    /// drawn yet. R2's fix is optimistic binding: on the body-less `user` row, bind the oldest
+    /// pending echo to it and draw the row from that text.
+    ///
+    /// **What this test measures is the mark, because that is what the operator saw.** Their words
+    /// are the assertion: after the row is announced and before its body arrives, the surface must
+    /// not still be saying `queued` about words the model has already been given.
+    #[test]
+    fn a_prompt_stops_claiming_to_be_queued_when_its_row_is_announced() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.session_id = "s".into();
+
+        // 1. They send it, and the head echoes it locally. `submit` is the real door.
+        a.set_composer("the retry budget needs a bump");
+        let _ = a.key(Key::Enter);
+        assert!(
+            !a.pending_prompts.is_empty(),
+            "the echo is not queued at all, so this test measures nothing"
+        );
+        let before = a.screen(100, 30).join("\n");
+        assert!(before.contains("queued"), "the echo says it is queued: {before}");
+
+        // 2. **The daemon announces the row — no body yet**, which is the moment the model has the
+        //    words and the transcript can draw them.
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("s.9", "user"),
+        )));
+        let after = a.screen(100, 30).join("\n");
+        assert!(
+            after.contains("the retry budget needs a bump"),
+            "the announced row is not drawn from the echo it was bound to: {after}"
+        );
+        assert!(
+            !after.contains("queued"),
+            "the prompt still claims to be queued after the model has been given it — which is \
+             how the answer appears above a question the screen has not drawn: {after}"
         );
     }
 
