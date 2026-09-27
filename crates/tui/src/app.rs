@@ -1081,6 +1081,20 @@ struct TurnPane {
     /// wall the operator was looking at: eight `● Read …` rows above eight
     /// `▸ Read … · ok · N lines` rows, no added fact between them.
     settled_calls: usize,
+    /// **How much of `reasoning` has already landed as a row** — bytes of `reasoning.raw()`.
+    ///
+    /// The mark `settled_calls` is for calls, and it is here for the reason that one exists: work
+    /// the transcript has taken over must not be counted a second time by the live pane.
+    ///
+    /// **Its absence is a count that went DOWN**, which is impossible from the arithmetic —
+    /// `reasoning_display_lines` is `ceil(width / cols)` summed, so adding text can only add lines.
+    /// The operator saw it happen: *"lol, just saw how thinking lines count went from 22 to 15."*
+    /// What the number was counting was the reasoning *plus* the rows that reasoning had already
+    /// become; the round boundary rebuilds the pane — empty `reasoning`, mark at zero — and the
+    /// inflation vanished with it. A count of work done fell, which is the same defect leticl
+    /// measured on the calls side: *"2 (in yellow) tool calls dropping to 1 (in yellow) tool calls
+    /// and then changing back to 2 (in white) tool calls."*
+    reasoned_upto: usize,
     /// The `ts` of `TurnStarted`, and of the last event seen for this turn. The
     /// difference is how long the turn has been going, taken from the log's own
     /// clock rather than from a wall clock in the head — a head that reads a
@@ -8174,6 +8188,15 @@ impl App {
     /// Attach content to a transcript row, from whatever route the daemon offers.
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
         let prose = matches!(item, TranscriptItem::Assistant { .. });
+        // **A reasoning row takes over the reasoning it carries** — the mark advances to the end
+        // of what has arrived, so the live count is only ever the part no row holds. See
+        // [`TurnPane::reasoned_upto`]: without this the count includes landed reasoning twice, and
+        // the round boundary then makes it fall.
+        if matches!(item, TranscriptItem::Reasoning { .. })
+            && let Some(t) = self.turn.as_mut()
+        {
+            t.reasoned_upto = t.reasoning.raw().len();
+        }
         // **Content ends the binding, either way.** Confirmed: the row renders from
         // its real body and the echo retires by text below. Contradicted: the row was
         // never this head's prompt — a steering notice, a §5.7 salvage notice,
@@ -14769,10 +14792,14 @@ fn live_work(turn: Option<&TurnPane>, cfg: &RenderConfig, superseded: bool) -> L
         .iter()
         .filter(|c| matches!(c.state, CallState::Running))
         .count();
-    let think_lines = if t.reasoning.is_empty() {
+    // **Only the reasoning no row has taken over** — `reasoned_upto` is the mark, and the slice is
+    // what is left of the stream. `get` rather than an index so a mark from a longer text (a
+    // rebuilt pane, a replay) cannot panic; an impossible mark reads as *nothing unlanded*.
+    let unlanded = t.reasoning.raw().get(t.reasoned_upto..).unwrap_or("");
+    let think_lines = if unlanded.is_empty() {
         0
     } else {
-        reasoning_display_lines(t.reasoning.raw(), cfg.width)
+        reasoning_display_lines(unlanded, cfg.width)
     };
     LiveWork {
         calls,
@@ -35566,6 +35593,107 @@ mod tests {
     ///
     /// Not asserted here: the verbosity toggle, which is the one case where every row may change.
     #[test]
+    /// **The thinking count never falls** — including when its reasoning lands as a row.
+    ///
+    /// The operator: *"lol, just saw how thinking lines count went from 22 to 15."* The arithmetic
+    /// cannot produce that: `reasoning_display_lines` sums `ceil(width / cols)`, so text arriving can
+    /// only add lines. What the number was counting was the reasoning **plus the rows that reasoning
+    /// had already become**, and the round boundary — which rebuilds the pane, empty — took the
+    /// inflation away. A count of work done fell, which is the defect leticl measured on the calls
+    /// side, quoted in `LiveWork`'s own doc.
+    ///
+    /// So this drives the whole life of one piece of reasoning: streamed, then landed as a row, then
+    /// a new round. The count must climb and then hold — never fall.
+    #[test]
+    fn the_thinking_count_never_falls_not_even_when_its_reasoning_lands() {
+        let mut a = app();
+        a.verbosity = Verbosity::Conversation;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "assistant"))));
+        a.record_item(
+            "s.0",
+            TranscriptItem::Assistant {
+                text: "let me think:".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        );
+        a.apply(ServerFrame::Event(env_at(2, 1_000, SessionEvent::TurnStarted {
+            turn_id: "r1".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        })));
+        let shown = |a: &mut App| -> usize {
+            a.screen(100, 30)
+                .join("\n")
+                .lines()
+                .find_map(|l| {
+                    let (_, rest) = l.split_once('[')?;
+                    let body = rest.split(']').next()?;
+                    body.split(", ").find_map(|p| {
+                        p.trim()
+                            .strip_suffix(" thinking lines")
+                            .or_else(|| p.trim().strip_suffix(" thinking line"))
+                            .and_then(|n| n.trim().parse().ok())
+                    })
+                })
+                .unwrap_or(0)
+        };
+        // Stream four paragraphs, watching each frame.
+        let mut last = 0;
+        for i in 0..4u64 {
+            a.apply(ServerFrame::Event(env(
+                3 + i,
+                SessionEvent::Delta {
+                    turn_id: "r1".into(),
+                    target: DeltaTarget::Reasoning,
+                    text: "y".repeat(300),
+                },
+            )));
+            let now = shown(&mut a);
+            assert!(now >= last, "the count fell while streaming: {last} → {now}");
+            last = now;
+        }
+        assert!(last > 0, "the stream was never counted at all");
+
+        // **And its row lands.** The transcript now holds the reasoning, so the live part must stop
+        // counting it — while the TOTAL, which is row plus live, must not move.
+        a.apply(ServerFrame::Event(env(20, testing::appended("s.1", "reasoning"))));
+        a.record_item(
+            "s.1",
+            TranscriptItem::Reasoning {
+                text: "y".repeat(1200),
+                field: letibot_transcript::ReasoningField::ReasoningContent,
+                truncated: false,
+            },
+        );
+        let after_landing = shown(&mut a);
+        assert!(
+            after_landing >= last,
+            "the count fell when its reasoning landed as a row — it was counting the same work \
+             twice: {last} → {after_landing}"
+        );
+
+        // **And the next round rebuilds the pane**, which is when the inflated number collapsed:
+        // the committed row still counts, and nothing else disappears with the pane.
+        a.apply(ServerFrame::Event(env_at(21, 1_000, SessionEvent::TurnStarted {
+            turn_id: "r2".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        })));
+        let next_round = shown(&mut a);
+        assert!(
+            next_round >= last,
+            "the count fell at the round boundary: {last} → {next_round}"
+        );
+    }
+
     fn a_delta_changes_the_counts_and_nothing_else_in_the_rendered_history() {
         let mut a = app();
         a.verbosity = Verbosity::Conversation;
