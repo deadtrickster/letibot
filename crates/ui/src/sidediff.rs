@@ -281,11 +281,29 @@ fn render_pair(
     sc: &SplitConfig,
     g: &Geometry,
 ) -> Vec<String> {
+    // **BOTH LOOKUPS ARE GUARDED, and they were not.** The line list was bounds-checked and fell
+    // back to `""`; the class grid beside it was a bare index — two lookups on one `h.line` in one
+    // expression, with the guard on only the first. Whoever wrote the guard on `old` knew `h.line`
+    // could exceed the excerpt; the grid did not get the same care.
+    //
+    // **The grid really can be shorter, and by more than a little.** `class_grid` returns
+    // `vec![Vec::new(); lines.len()]` for an unknown language — the right length — but otherwise
+    // returns what `rano`'s highlighter gives it, and that has **two early returns of
+    // `Vec::new()`**: a parser that will not take the language, and a query that will not compile
+    // against it. Zero rows, so the panic is at index `0` — the first line of the first hunk, not
+    // some deep edge of a long file.
+    //
+    // **Latent rather than live, said honestly rather than at its most alarming.** Neither early
+    // return fires on this box today: both heads render split diffs and neither has crashed. Both
+    // conditions are build-level facts, cached per language, so they arrive as a grammar-version
+    // regression — which is exactly what a `cargo update` of a tree-sitter grammar produces, on a
+    // path that renders while the operator watches. leticl bounds-checks the same access and pads a
+    // short grid, so it degrades to plain text where this panicked.
     let left = pair.left.as_ref().map(|h| {
         (
             h,
             old.get(h.line).copied().unwrap_or(""),
-            old_classes[h.line].as_slice(),
+            old_classes.get(h.line).map(Vec::as_slice).unwrap_or(&[]),
             sc.before_start + h.line,
         )
     });
@@ -293,7 +311,7 @@ fn render_pair(
         (
             h,
             new.get(h.line).copied().unwrap_or(""),
-            new_classes[h.line].as_slice(),
+            new_classes.get(h.line).map(Vec::as_slice).unwrap_or(&[]),
             sc.after_start + h.line,
         )
     });
@@ -576,6 +594,48 @@ mod tests {
         rows.iter()
             .map(|r| r.replace('\x1b', "").replace("[0m", "").replace("[2m", ""))
             .collect()
+    }
+
+    /// **A class grid shorter than the excerpt renders plain instead of panicking** — R53 §1.3.
+    ///
+    /// The line list was bounds-checked and the grid beside it was a bare index, two lookups on
+    /// one `h.line` in one expression with the guard on only the first. `rano` returns an EMPTY
+    /// grid — zero rows, not fewer — when a parser will not take the language or a query will not
+    /// compile against it, so the panic was at index `0`: the first line of the first hunk.
+    ///
+    /// Driven at `render_pair` rather than through a real language because that is where the
+    /// length assumption lived, and because the condition it guards is a build-level fact about
+    /// `rano` that a test cannot induce. The grid below is the exact shape the two early returns
+    /// produce: the right length for a healthy file, zero for this one.
+    #[test]
+    fn a_grid_shorter_than_the_lines_renders_plain_rather_than_panicking() {
+        let cfg = sc(100, Palette::None, 0, 0);
+        let old = vec!["fn main() {}", "let x = 1;"];
+        let new = vec!["fn main() {}", "let x = 2;"];
+        let g = Geometry::of(&cfg, &old, &new);
+        let pair = Pair {
+            left: Some(Half {
+                line: 1,
+                sign: '-',
+                role: Role::Failure,
+            }),
+            right: Some(Half {
+                line: 1,
+                sign: '+',
+                role: Role::Success,
+            }),
+        };
+        // **The empty grid `rano` returns**, for both sides: zero rows against two lines.
+        let rows = render_pair(&pair, &old, &new, &[], &[], &cfg, &g);
+        let text = plain(&rows).join("\n");
+        assert!(text.contains("let x = 1;"), "the left text still draws: {text}");
+        assert!(text.contains("let x = 2;"), "the right text still draws: {text}");
+        // And a grid one row SHORT, which is the other shape of the same edge.
+        let short = vec![Vec::new()];
+        let rows = render_pair(&pair, &old, &new, &short, &short, &cfg, &g);
+        let text = plain(&rows).join("\n");
+        assert!(text.contains("let x = 1;"), "{text}");
+        assert!(text.contains("let x = 2;"), "{text}");
     }
 
     #[test]
