@@ -15562,23 +15562,42 @@ fn display_outcome(o: &letibot_transcript::ToolOutcome) -> card::Outcome {
         // keeps the distinction for exactly that reason.
         O::Abstained { reason } => card::Outcome::Abstained(reason.clone()),
         O::Failed { reason } => card::Outcome::Failed(reason.clone()),
-        O::Denied { req_id } => card::Outcome::Denied(format!("denied, {req_id}")),
-        O::Timeout => card::Outcome::Failed("timed out".into()),
-        // Not a failure of the tool and not a success either; it never ran. The
-        // word is kept in the reason rather than mapped onto one that would read
-        // as something else.
-        O::NotRun { why } => card::Outcome::Failed(format!("not run — {why}")),
+        O::Denied { req_id } => card::Outcome::Denied(format!("the call was denied ({req_id})")),
+        // **Lossless, and it used to collapse three outcomes into `Failed` with a sentence in the
+        // reason** — which is how the word changed as a row landed: the live card said
+        // `failed · timed out` and the settled row said `timeout`, for one call. See
+        // [`card::Outcome::word`]. The reason is the SENTENCE, and it is this head's: the card owns
+        // the word and the head owns what it says about it.
+        O::Timeout => card::Outcome::Timeout,
+        O::NotRun { why } => card::Outcome::NotRun(why.clone()),
         // Not `Failed`, which would put a retry in front of the operator for a
         // command that is still working, and not `Ok`, which would read as a
         // finish. The handle is in the reason because the handle is what makes
         // it reachable.
+        // **One sentence, carrying both halves the two spellings had apart.** The card said *in the
+        // background as `j4` after 0.4s* — and `ran_for_ms`' own docstring says why that number is
+        // there: *"the number that makes a promotion legible rather than mysterious."* The
+        // transcript said *as `j4` — /job j4 out*, and `next`' own docstring says why THAT is
+        // there: *"the call that gets its output, ready to make. 'Errors carry the fix', applied to
+        // something that is not an error."* Neither is decoration, so the one sentence keeps both,
+        // in the transcript's shape because that is the one the operator has been reading here.
         O::Backgrounded {
-            handle, ran_for_ms, ..
+            handle,
+            ran_for_ms,
+            next,
+            ..
         } => card::Outcome::Backgrounded(format!(
-            "in the background as `{handle}` after {:.1}s",
+            "as `{handle}` after {:.1}s — {next}",
             *ran_for_ms as f64 / 1000.0
         )),
     }
+}
+
+/// **How a call ended, in one word** — and there is no longer a second spelling of this in the
+/// head. See [`card::Outcome::word`] for the two that agreed on nothing but the word `failed`, and
+/// for why the card is the side that moved.
+fn outcome_word(o: &letibot_transcript::ToolOutcome) -> &str {
+    display_outcome(o).word()
 }
 
 /// **The register a settled call's row is drawn in** — R51 item 9.
@@ -15847,39 +15866,17 @@ fn call_card(
     })
 }
 
-/// How a call ended, in one word.
-///
-/// Split from its reason on purpose. The two used to be one string on the card's
-/// header, and a header is trimmed from the right — so a `not run` whose reason
-/// ran to a hundred and forty characters pushed **the word itself** off the end
-/// of the line and the row read `▸ ask_code "Give an overview of the crate…`,
-/// with no sign anywhere on it that the call had not run. A reason is prose and
-/// belongs on a line that wraps; the word is the fact and must not be able to
-/// vanish.
-fn outcome_word(o: &letibot_transcript::ToolOutcome) -> &'static str {
-    use letibot_transcript::ToolOutcome as O;
-    match o {
-        O::Ok => "ok",
-        // §8.2: abstention is not a flavour of success and must not read like one.
-        O::Abstained { .. } => "ABSTAINED",
-        O::Failed { .. } => "failed",
-        O::Denied { .. } => "REFUSED",
-        O::Timeout => "timeout",
-        O::NotRun { .. } => "not run",
-        O::Backgrounded { .. } => "STILL RUNNING",
-    }
-}
-
 /// Why it ended that way, when there is a why. Goes in the body, where it wraps.
+///
+/// **Through [`display_outcome`] and then the card**, so this row's reason and the live card's are
+/// one string for one call. It was a second list of sentences, and it disagreed with the card's on
+/// two of the seven outcomes: `denied, req_1` against `the call was denied (req_1)`, and the
+/// backgrounded sentence, where each spelling carried a fact the other dropped — see
+/// `display_outcome`, which now builds one sentence out of both rather than picking a winner. Where
+/// the two simply disagreed about phrasing, the transcript's is kept: it is the one the operator has
+/// been reading on this row all along, and the card is the newer surface.
 fn outcome_why(o: &letibot_transcript::ToolOutcome) -> Option<String> {
-    use letibot_transcript::ToolOutcome as O;
-    match o {
-        O::Ok | O::Timeout => None,
-        O::Abstained { reason } | O::Failed { reason } => Some(reason.clone()),
-        O::Denied { req_id } => Some(format!("the call was denied ({req_id})")),
-        O::NotRun { why } => Some(why.clone()),
-        O::Backgrounded { handle, next, .. } => Some(format!("as `{handle}` — {next}")),
-    }
+    display_outcome(o).reason().map(str::to_string)
 }
 
 /// The user's own message: an accent bar, a raised block, and the time it was sent.
@@ -34898,6 +34895,98 @@ mod tests {
     /// ends `(t (incf events))`. The clause is drawn **only** when the other two are empty, which
     /// the second half of this test pins: a run of real calls must not grow a `, 1 head event`.
     #[test]
+    /// **One call, one word, live or settled** — R53 §1.5, and the second spelling this tree kept.
+    ///
+    /// The live card's word came from `card::Outcome`, the settled transcript row's from a function
+    /// in this file, and they disagreed. MEASURED on the same call before the fix:
+    ///
+    /// ```text
+    ///   live       refused            failed · timed out        failed · not run — {why}
+    ///   settled    REFUSED            timeout                   not run
+    /// ```
+    ///
+    /// — the word changed as the row landed, twice into a different word and once only in case.
+    /// leticl paid for this once already (`bceef58`: *"the two spellings disagreed about `not_run`
+    /// and about backgrounded"*), and its docstring for its own `%outcome-word` names this head's
+    /// spelling as the reference. So the card moved, and this test is the table that says so: one
+    /// place decides, and it is pinned for every outcome rather than for the three that were wrong.
+    ///
+    /// **What would fail it.** Putting the word back in either renderer — a `timeout` that reads
+    /// `failed`, a `refused` in lower case, a `not run` collapsed into `Failed`. The table has to be
+    /// edited, which is the point: the words are a vocabulary and not a coincidence.
+    #[test]
+    fn one_call_reads_the_same_word_whatever_row_draws_it() {
+        use letibot_transcript::ToolOutcome as O;
+        let cases: Vec<(O, &str, Option<&str>)> = vec![
+            (O::Ok, "ok", None),
+            (
+                O::Abstained {
+                    reason: "no answer in the corpus".into(),
+                },
+                "ABSTAINED",
+                Some("no answer in the corpus"),
+            ),
+            (
+                O::Failed {
+                    reason: "exit 101".into(),
+                },
+                "failed",
+                Some("exit 101"),
+            ),
+            (
+                O::Denied {
+                    req_id: "req_1".into(),
+                },
+                "REFUSED",
+                Some("the call was denied (req_1)"),
+            ),
+            (O::Timeout, "timeout", None),
+            (
+                O::NotRun {
+                    why: "the turn was interrupted".into(),
+                },
+                "not run",
+                Some("the turn was interrupted"),
+            ),
+            (
+                O::Backgrounded {
+                    handle: "j4".into(),
+                    ran_for_ms: 400,
+                    how: letibot_transcript::Backgrounding::Operator {
+                        identity: "dead".into(),
+                    },
+                    next: "`/job j4 out` to read it".into(),
+                },
+                "STILL RUNNING",
+                Some("as `j4` after 0.4s — `/job j4 out` to read it"),
+            ),
+        ];
+        for (outcome, word, why) in cases {
+            // The live card's word, which is the card's own one list.
+            assert_eq!(
+                display_outcome(&outcome).word(),
+                word,
+                "the live card's word for {outcome:?}"
+            );
+            // The settled row's, which now asks the same place.
+            assert_eq!(
+                outcome_word(&outcome),
+                word,
+                "the settled row's word for {outcome:?}"
+            );
+            assert_eq!(
+                outcome_why(&outcome).as_deref(),
+                why,
+                "and the reason behind it, for {outcome:?}"
+            );
+            assert_eq!(
+                display_outcome(&outcome).reason(),
+                why,
+                "the card's reason is the row's reason, for {outcome:?}"
+            );
+        }
+    }
+
     fn a_run_of_rows_no_count_describes_says_what_it_is_rather_than_nothing() {
         let mut a = app();
         a.apply(hello(

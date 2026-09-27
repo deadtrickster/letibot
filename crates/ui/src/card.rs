@@ -171,6 +171,14 @@ pub enum Outcome {
     Denied(String),
     /// The turn was interrupted while this call was in flight.
     Interrupted,
+    /// **The call ran out of its own time and was killed.** Its own variant because the word is
+    /// its own: `failed · timed out` is a sentence about a `failed`, and a reader cannot tell it
+    /// from a command that ran and returned an error — the two want different next moves.
+    Timeout,
+    /// **The call never ran, and the daemon said why.** Not a `Failed`: nothing was attempted, and
+    /// a retry is not obviously the answer until the `why` has been read. Carries the `why`, which
+    /// is prose and belongs where prose wraps.
+    NotRun(String),
     /// **Still running, in the background, and reachable.** Carries the handle.
     ///
     /// Its own variant for the same reason `Abstained` is one: a backgrounded
@@ -205,27 +213,56 @@ impl Outcome {
             // Attention, never Failure: something is happening and the operator
             // may want to look, but nothing has gone wrong.
             Outcome::Backgrounded(_) => Role::Attention,
+            // Both are `Failure`, which is what they were drawn as before they had their own
+            // variants: a call that timed out or never ran is not work that is happening.
+            Outcome::Timeout | Outcome::NotRun(_) => Role::Failure,
         }
     }
 
-    fn word(&self) -> &str {
+    /// **The word this outcome prints — the ONE list, and it is `pub` for that reason.**
+    ///
+    /// A head's settled transcript row draws the same fact this card's header draws, and it was
+    /// doing it with a second function of its own. The two disagreed, and the disagreement is the
+    /// one leticl's `bceef58` records from the other side: *"it used to be spelled again here, and
+    /// the two spellings disagreed about `not_run` and about backgrounded."* MEASURED here before
+    /// this change, on the same call, live and settled:
+    ///
+    /// ```text
+    ///   live       refused            failed · timed out        failed · not run — {why}
+    ///   settled    REFUSED            timeout                   not run
+    /// ```
+    ///
+    /// — the word changed as the row landed, twice into a different word and once only in case.
+    ///
+    /// **leticl's reading is the one kept**, and its docstring says why: *"the word the row prints
+    /// for an outcome name — `outcome_word`"* — it took this head's transcript spelling as the
+    /// reference, shouted `REFUSED` and all. So the card is the side that changes, and from here
+    /// both renderers ask this one function.
+    ///
+    /// Shouted where §8.2 requires it: abstention is not a flavour of success, and a refusal is not
+    /// a flavour of failure — the two ends of that rule.
+    pub fn word(&self) -> &'static str {
         match self {
             Outcome::Ok => "ok",
-            // Shouted, deliberately: §8.2.
             Outcome::Abstained(_) => "ABSTAINED",
             Outcome::Failed(_) => "failed",
-            Outcome::Denied(_) => "refused",
+            Outcome::Denied(_) => "REFUSED",
             Outcome::Interrupted => "interrupted",
+            Outcome::Timeout => "timeout",
+            Outcome::NotRun(_) => "not run",
             Outcome::Backgrounded(_) => "STILL RUNNING",
         }
     }
 
-    fn reason(&self) -> Option<&str> {
+    /// **The why, or nothing** — the other half of [`Outcome::word`], one list for the same
+    /// reason. The caller supplies the sentences: this returns what the outcome was handed.
+    pub fn reason(&self) -> Option<&str> {
         match self {
-            Outcome::Ok | Outcome::Interrupted => None,
+            Outcome::Ok | Outcome::Interrupted | Outcome::Timeout => None,
             Outcome::Abstained(r)
             | Outcome::Failed(r)
             | Outcome::Denied(r)
+            | Outcome::NotRun(r)
             | Outcome::Backgrounded(r) => Some(r),
         }
     }
