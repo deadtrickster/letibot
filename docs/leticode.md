@@ -62,6 +62,40 @@ serenedash-style dashboard over the pieces that are new.
 | `lsp` | LSP | run a language server, read diagnostics/hover/definition for the file at hand | spawning + talking LSP, one server per language |
 | `skill` | skill | a named, loadable prompt/capability; list them, load one into context | almost none — a registry + a list/load tool |
 
+## Reading an image
+
+`read` reads a picture as a picture. Same tool, same verb, same gate, same permission, same path —
+the only thing that differs is what comes back: an image part with the file's bytes, and a text
+payload that describes it. The ruling is the operator's, 2026-09-27: *"lets just do it opencode
+way"*, *"read is read there is nothing to settle"*, *"reading an image is no different to reading a
+rust file."*
+
+**Measured against the local `llama-server`** (`qwen-3.8-27b`, `--mmproj`), because the numbers are
+what a future change has to argue with rather than guess about:
+
+| what was measured | result |
+|---|---|
+| an image in a `user` message | the model named a red square `Red` |
+| an image in a **`tool`-role** message | the model named a green square `Green` — **media inside a tool result works here** |
+| `data:image/png;base64,…` as the URL | works |
+| a bare **path** as the URL | **`HTTP 400 · Failed to load image or audio file`** — the server fetches the URL, so a `data:` URI is required |
+| an image above **4.19 MP (2048×2048)** | **resized, never refused**: 2048² and 4096² both cost exactly 4151 prompt tokens, one token per 1024 pixels |
+| a 16.8 MB request body | accepted; no byte limit was found up to there |
+
+**So there is no size cap on the read path.** A head that imposed one would be discarding what the
+server would have taken, and an attachment dropped by the head looks exactly like a picture the
+model ignored.
+
+**And the sentence that makes it work.** If a message says an image is attached and the model has no
+image, the attachment did not arrive — say that, rather than answering as though the picture were
+merely uninteresting. A model that answers around a missing picture is indistinguishable from one
+that saw it and had nothing to say about it, and only one of those is worth acting on.
+
+**Open, and named rather than left to be discovered: compaction.** An image in the transcript is
+re-sent on every prompt rebuild and stored inline as base64 (4/3 of the file). opencode strips media
+on compaction and carries a dedicated recovery instruction for a provider that refuses oversize
+media. R24/R27 own what this tree does; until then an image lives for the life of the session.
+
 ## The dashboard
 
 A serenedash-style terminal TUI (the same palette / row grid / boxed panels /
