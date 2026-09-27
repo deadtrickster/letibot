@@ -12989,6 +12989,16 @@ impl App {
         // which is the worst of the three possible answers: not the wrong tense, but no line —
         // indistinguishable from a head that has stopped, on the one screen whose whole job is to
         // say the work is still going (R51 item 3).
+        //
+        // **AND THE WORD IS `Responding` FOR THE WHOLE TURN — including the wait on a call, and
+        // including the silence before the first token.** Ruled by the operator, 2026-09-27:
+        // *"responding spans entire turn"*. So the tense is deliberately not the state name: a
+        // head that said *waiting on a call* here would be naming the daemon's machinery instead
+        // of the answer's arrival, and the turn IS the wait. What says *which* call is running is
+        // the transcript's own row (`[3 tool calls, 51 thinking lines]`) and the call's card, not
+        // this line. **This was proposed as a defect twice and refused twice**; the row's job is
+        // to say the turn is alive, and `TurnPane::arrived_chars` is what makes its number move
+        // while the model is emitting.
         let t = match self.turn.as_ref() {
             Some(t) if self.turn_busy() => t,
             _ => return String::new(),
