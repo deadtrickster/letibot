@@ -667,6 +667,16 @@ fn run() -> Result<i32, String> {
         },
     };
 
+    // **The image marker, read off the server for the same reason the window is.**
+    //
+    // It is a per-instance random value published on `/props`, so `None` means *this endpoint takes
+    // no images* — a metered provider, or a local server without `mtmd`. Nothing is assumed: the
+    // model's own vision tokens are the wrong answer and are refused by the server, which is the
+    // measurement `serving::served_media_marker` records.
+    if cfg.provider.is_none() {
+        cfg.media_marker = letibot_turn::serving::served_media_marker(&cfg.endpoint);
+    }
+
     // **The wall, read off the server rather than assumed.** Only for a local
     // endpoint: a metered provider has no `/props`, and its window stays `None`
     // unless the operator states it, because a guessed window would either

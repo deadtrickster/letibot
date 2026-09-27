@@ -234,6 +234,17 @@ pub struct Config {
     /// `--context-window`, and `None` when nothing said: a metered provider has
     /// no `/props`, and a window that is not known must not be invented.
     pub context_window: Option<u64>,
+    /// **The token an image goes where it sits**, read from `/props` at startup
+    /// (`serving::served_media_marker`), and `None` when the endpoint says nothing —
+    /// every metered provider, and any local server without `mtmd`.
+    ///
+    /// **Fetched rather than known, because the server randomises it.** MEASURED 2026-09-27: the live
+    /// value is `<__media_d2QxA7RJNGYqiEAoAPVLPCHm6CPADiRe__>`, it changes with the process unless
+    /// `LLAMA_MEDIA_MARKER` pins it, and the model's OWN vision tokens
+    /// (`<|vision_start|><|image_pad|><|vision_end|>`) are answered `Failed to tokenize prompt`. So
+    /// this is a fact about the running server, like `n_ctx` and `total_slots`, and `None` here means
+    /// **no images on this endpoint** — disclosed, never guessed at.
+    pub media_marker: Option<String>,
     /// Compact automatically when a turn leaves less than [`Config::headroom`]
     /// of the window free. On by default where the window is known.
     ///
@@ -921,6 +932,7 @@ impl Config {
             web_search: default_web_search(),
             web_fetch: false,
             context_window: None,
+            media_marker: None,
             auto_compact: true,
             placement: letibot_tools::builtins::task::Placement::Host,
             vm_args: Vec::new(),

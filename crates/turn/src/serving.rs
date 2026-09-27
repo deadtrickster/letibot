@@ -74,6 +74,33 @@ pub fn served_ctx(endpoint: &Endpoint) -> Option<u64> {
     digits.parse().ok().filter(|n| *n > 0)
 }
 
+/// **The token a multimodal prompt must place where its image goes**, from `/props`.
+///
+/// # Why this is fetched and not known
+///
+/// llama.cpp's `mtmd` splits a prompt on a **media marker** and substitutes the image's embeddings
+/// at each occurrence. MEASURED on this box, 2026-09-27, and the measurement is the whole reason this
+/// function exists: the marker is **randomised per server instance** —
+///
+/// ```text
+/// /props → media_marker: "<__media_d2QxA7RJNGYqiEAoAPVLPCHm6CPADiRe__>"
+/// ```
+//
+/// — unless `LLAMA_MEDIA_MARKER` is set, and it is **not** any of the model's own tokens. Passing
+/// the qwen template's `<|vision_start|><|image_pad|><|vision_end|>` — which is what the Jinja
+/// template emits, and what this tree's dialect renderers already write — is answered
+/// `HTTP 400 · Failed to tokenize prompt`. So the marker is a fact about the running server, exactly
+/// like `n_ctx` and `total_slots`, and a head that hardcoded one would work against one process and
+/// fail against the next.
+///
+/// `None` when the endpoint does not say: every metered provider, and any local server old enough
+/// not to have `mtmd`. `None` means **no images on this endpoint**, which the caller discloses
+/// rather than guessing at a marker.
+pub fn served_media_marker(endpoint: &Endpoint) -> Option<String> {
+    let body = http::get(endpoint, "/props").ok()?.read_to_string().ok()?;
+    field(&body, "\"media_marker\"").filter(|m| !m.is_empty())
+}
+
 /// **How many sequences this server decodes at once**, from `/props`.
 ///
 /// llama.cpp's slots are its batching unit: N slots means N sequences are
@@ -172,6 +199,28 @@ mod tests {
             "qwen-3.8-flash-next"
         ));
         assert!(matches("glm-5.3-flash", "glm-5.3-flash"));
+    }
+
+    /// **The media marker is read out of a `/props` body, and its absence is an answer.**
+    ///
+    /// The value is the server's own and it is randomised per process — MEASURED 2026-09-27:
+    /// `<__media_d2QxA7RJNGYqiEAoAPVLPCHm6CPADiRe__>`. A test cannot pin the live string, so it
+    /// pins the two things that decide behaviour: a server that states one is read correctly (the
+    /// brackets and underscores survive, and the key is not confused with a longer one), and a
+    /// server that states none is `None` rather than an empty marker that would silently place
+    /// nothing where the picture should be.
+    #[test]
+    fn the_media_marker_is_read_out_of_a_props_body_or_absent() {
+        let live = r#"{"modalities":{"vision":true},"media_marker":"<__media_d2QxA7RJNGYqiEAoAPVLPCHm6CPADiRe__>","n_ctx":262144}"#;
+        assert_eq!(
+            field(live, "\"media_marker\"").as_deref(),
+            Some("<__media_d2QxA7RJNGYqiEAoAPVLPCHm6CPADiRe__>")
+        );
+        // An endpoint with no marker at all — a metered provider, or a server without `mtmd`.
+        let visionless = r#"{"modalities":{"vision":false},"n_ctx":8192}"#;
+        assert_eq!(field(visionless, "\"media_marker\""), None);
+        // An empty marker is no marker: mtmd refuses it, so a caller must not treat it as one.
+        assert_eq!(field(r#"{"media_marker":""}"#, "\"media_marker\""), None);
     }
 
     #[test]
