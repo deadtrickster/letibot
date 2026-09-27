@@ -43,18 +43,27 @@ number is the clock; the wall-clock is the one thing in here that is not evidenc
  8     ⠇ 8m16s  — no count at all     ⠏ 8m16s · 1716 chars
  9     ⠙ 8m21s  — no count at all     ⠹ 8m21s  — none yet
 10     ⠴ 8m26s · 160 chars            ⠴ 8m26s · 2129 chars
+11     ⠧ 8m31s  — no count at all     ⠧ 8m31s  — none yet
+12     ⠏ 8m36s  — no count at all     ⠋ 8m36s  — none yet
+13     ⠹ 8m41s  — no count at all     ⠹ 8m41s  — none yet
 ```
 
 Three things fall out of it.
 
-**The old row was silent more often than not.** Five of the ten samples have no count at all —
-samples 3, 5, 6, 8, 9 — because those rounds were writing tool calls, and a tool call is not prose.
-A row with nothing on it but a spinning glyph and a climbing clock is exactly what *glued* looks
-like, and the operator was reading a correct rendering of an uninformative number.
+**The old row was silent more often than not.** **Eight of the thirteen** samples carry no count
+at all — 3, 5, 6, 8, 9, 11, 12, 13 — because those rounds were writing tool calls, and a tool call is
+not prose. The new row is silent in five (5, 9, 11, 12, 13). A row with nothing on it but a
+spinning glyph and a climbing clock is exactly what *glued* looks like, and the operator was
+reading a correct rendering of an uninformative number.
 
-**Where both spoke, they differ by 20–400×.** 217 against 7119; 15 against 1989. The old number was
-not a conservative estimate of the work — it was a different quantity, and the smallest of the
-three channels.
+**Where both spoke, they differ by 13–133×.** 2129 against 160; 7119 against 217; 1989 against 15;
+2638 against 130; 6384 against 107. The old number was not a conservative estimate of the work — it
+was a different quantity, and the smallest of the three channels.
+
+**The last three samples are silent on BOTH heads** — 11, 12, 13, fifteen seconds and more with
+nothing on any channel. That is a model pausing, not a fix failing, and it is why the fix cannot
+claim the row always has a number: what it claims is that the number is the whole stream while the
+stream is arriving.
 
 **The count *falls*, and that is the engine's shape, not a bug.** `run_turn_steered` runs inside
 the daemon's round loop and does `turn_seq += 1`, so `TurnStarted` fires once per **round** while
