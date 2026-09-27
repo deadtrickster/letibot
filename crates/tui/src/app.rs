@@ -1059,8 +1059,16 @@ struct TurnPane {
     /// recorded session must show the same elapsed time as the one that watched it.
     started_ms: u64,
     last_ms: u64,
-    /// **Characters that have ARRIVED this turn** — the whole stream, on every channel, and not
-    /// the answer's prose alone.
+    /// **Characters that have ARRIVED since this pane was made** — the whole stream, on every
+    /// channel, and not the answer's prose alone.
+    ///
+    /// One round's worth, and the reason is the engine's own shape rather than a choice here:
+    /// `run_turn_steered` runs inside the daemon's round loop, so it emits `TurnStarted` once per
+    /// ROUND (`turn_seq += 1`) while `began_ms` is stamped by the caller with the whole turn's
+    /// start. A fresh pane is therefore built per round — zeroing this counter and keeping the
+    /// duration — which is why the live sample shows the number *falling* between rounds
+    /// (`6384 → 2638 → 809 → 1989` chars) under a duration that only ever climbs. The duration is
+    /// the turn's; this is the round's; and both are what their rows say they are.
     ///
     /// The fallback count: a head shows it only while the server's own token counter has not
     /// spoken, which is the `messages` backend's turns — that seam carries no token count — and

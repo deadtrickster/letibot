@@ -1,0 +1,30 @@
+1H:1M:1S
+  ⠙ Responding · 7m41s · 107 chars
+  ⠙ Responding · 7m41s · 6384 chars
+2H:2M:2S
+  ⠼ Responding · 7m46s · 130 chars
+  ⠸ Responding · 7m46s · 2638 chars
+3H:3M:3S
+  ⠦ Responding · 7m51s
+  ⠦ Responding · 7m51s · 809 chars
+4H:4M:4S
+  ⠇ Responding · 7m56s · 15 chars
+  ⠏ Responding · 7m56s · 1989 chars
+5H:5M:5S
+  ⠙ Responding · 8m01s
+  ⠙ Responding · 8m01s
+6H:6M:6S
+  ⠸ Responding · 8m06s
+  ⠼ Responding · 8m06s · 2876 chars
+7H:7M:7S
+  ⠦ Responding · 8m11s · 217 chars
+  ⠧ Responding · 8m11s · 7119 chars
+8H:8M:8S
+  ⠇ Responding · 8m16s
+  ⠏ Responding · 8m16s · 1716 chars
+9H:9M:9S
+  ⠙ Responding · 8m21s
+  ⠹ Responding · 8m21s
+10H:10M:10S
+  ⠴ Responding · 8m26s · 160 chars
+  ⠴ Responding · 8m26s · 2129 chars
