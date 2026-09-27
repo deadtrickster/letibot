@@ -35155,6 +35155,82 @@ mod tests {
     /// reason, and the pane draws its own copy of the reasoning as `[N thinking lines]` — for one
     /// turn.
     #[test]
+    /// **The thinking count moves as the thinking streams, not when the answer starts.**
+    ///
+    /// The operator: *"thinking counter is not realtime. it updated and shown once your proper
+    /// reply lines appear."* A count of the working that only appears once the working is over is
+    /// the same defect as the yellow that only lit on settle — the row's whole job is to say the
+    /// turn is alive *now*.
+    ///
+    /// So this pins the count against the deltas rather than against the end state: each reasoning
+    /// chunk that arrives must be able to move it, with no answer text anywhere in the fixture.
+    #[test]
+    fn the_thinking_count_moves_while_the_thinking_streams() {
+        let mut a = app();
+        a.verbosity = Verbosity::Conversation;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "assistant"))));
+        a.record_item(
+            "s.0",
+            TranscriptItem::Assistant {
+                text: "let me look:".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        );
+        a.apply(ServerFrame::Event(env_at(2, 1_000, SessionEvent::TurnStarted {
+            turn_id: "r1".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        })));
+
+        // **The count, read off the marker itself** — the same arithmetic `live_work` does, taken
+        // from the row a reader is looking at rather than from the field behind it.
+        let shown = |a: &mut App| -> usize {
+            let screen = a.screen(100, 24).join("\n");
+            screen
+                .lines()
+                .find_map(|l| {
+                    let (_, rest) = l.split_once('[')?;
+                    let body = rest.split(']').next()?;
+                    body.split(", ")
+                        .find_map(|p| p.trim().strip_suffix(" thinking line"))
+                        .or_else(|| body.split(", ").find_map(|p| p.trim().strip_suffix(" thinking lines")))
+                        .and_then(|n| n.trim().parse().ok())
+                })
+                .unwrap_or(0)
+        };
+
+        // Nothing yet.
+        assert_eq!(shown(&mut a), 0, "no thinking has arrived");
+        // **And it grows with the stream**, a paragraph at a time — long enough that the wrapped
+        // count must change, and with NO answer text at all.
+        let mut last = 0;
+        for i in 0..6 {
+            let chunk = "x".repeat(200);
+            a.apply(ServerFrame::Event(env(
+                3 + i,
+                SessionEvent::Delta {
+                    turn_id: "r1".into(),
+                    target: DeltaTarget::Reasoning,
+                    text: chunk,
+                },
+            )));
+            let now = shown(&mut a);
+            assert!(
+                now > last,
+                "the count did not move on chunk {i}: {last} → {now}"
+            );
+            last = now;
+        }
+        assert!(last >= 6, "and it is the stream's own size: {last}");
+    }
+
     fn a_new_round_does_not_forget_the_rows_the_turn_already_produced() {
         let mut a = app();
         a.verbosity = Verbosity::Conversation;
