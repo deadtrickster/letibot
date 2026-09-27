@@ -1,5 +1,13 @@
 # The turn row that could not say the work was going — 2026-09-27
 
+> **SUPERSEDED THE SAME DAY, AND KEPT FOR THE MEASUREMENT RATHER THAN THE FIX.** The operator ruled
+> on the row itself: *"i dont care about those chars"* / *"just dont show me them"*. The count this
+> document is about — `· 18.0k chars` — **is no longer drawn at all**, and neither is the server's
+> `· 1,234 tok`; what says the turn is alive is the spinner and the clock. Everything below stands
+> as the record of what the number WAS doing while it was there, and of the two heads' agreement
+> that a live row must move — the fix measured here is the reason the removal was safe to make
+> without a second look.
+
 The operator, of a turn that was working the whole time: **"still thinkking glued to Responding"**.
 
 They were reading this row, on the deepseek (`messages`) backend:

@@ -1059,37 +1059,6 @@ struct TurnPane {
     /// recorded session must show the same elapsed time as the one that watched it.
     started_ms: u64,
     last_ms: u64,
-    /// **Characters that have ARRIVED since this pane was made** — the whole stream, on every
-    /// channel, and not the answer's prose alone.
-    ///
-    /// One round's worth, and the reason is the engine's own shape rather than a choice here:
-    /// `run_turn_steered` runs inside the daemon's round loop, so it emits `TurnStarted` once per
-    /// ROUND (`turn_seq += 1`) while `began_ms` is stamped by the caller with the whole turn's
-    /// start. A fresh pane is therefore built per round — zeroing this counter and keeping the
-    /// duration — which is why the live sample shows the number *falling* between rounds
-    /// (`6384 → 2638 → 809 → 1989` chars) under a duration that only ever climbs. The duration is
-    /// the turn's; this is the round's; and both are what their rows say they are.
-    ///
-    /// The fallback count: a head shows it only while the server's own token counter has not
-    /// spoken, which is the `messages` backend's turns — that seam carries no token count — and
-    /// logs recorded before `TokensGenerated` existed.
-    ///
-    /// **It counted the answer alone, and that made the fallback useless exactly where it is
-    /// load-bearing.** MEASURED on the deepseek (`messages`) backend, 2026-09-27: the row read
-    /// `⠹ Responding · 2m34s · 145 chars` for minutes while the header's own count for a single
-    /// 15-second window of the same turn was **2826 output tokens** — the round was reasoning and
-    /// tool calls, and *neither* was in this number. The operator drew the only conclusion the row
-    /// allowed: *"still thinking glued to Responding"*, on a turn that was working the whole time.
-    /// A counter on a row whose job is *tell a hang from a working model* has to count what
-    /// arrives, not the one channel it can name.
-    arrived_chars: usize,
-    /// The server's own generation counter, as the last `TokensGenerated`
-    /// reported it. Zero until the first frame that advanced it arrives.
-    ///
-    /// This is the number that tells a hang from a model that is still emitting:
-    /// it moves on every frame, on every channel — including the tool-call markup
-    /// no default view renders — while a dead connection moves nothing.
-    tokens: u64,
     /// The `ts` of the first and last `Delta { target: Reasoning }`.
     ///
     /// `card::reasoning` renders `Thought for 4.2s`, and this is where the 4.2
@@ -3864,10 +3833,6 @@ impl App {
                 // renders it twice — measured on a second head attached to a
                 // finished turn, where the whole reply appeared above itself.
                 appended: t.appended,
-                arrived_chars: t.text.chars().count(),
-                // The counter a head that joined mid-turn has missed: the snapshot
-                // carries the latest one, and the live frames carry the rest.
-                tokens: t.tokens,
                 ..TurnPane::default()
             };
             // The snapshot carries the accumulated text **once**. Everything after
@@ -3976,7 +3941,21 @@ impl App {
             // admitted; a head that does not — this one, until the chord lands — must not
             // swallow it silently, or *"the event never came"* and *"this head drops it"* look
             // the same, and the second is the one a reader would never find.
-            SessionEvent::OperatorCallAllowed { .. } => Disposition::Control,
+            //
+            // **`Filtered` and NOT `Control`, and the difference is the whole of R53 §1.2.** The
+            // paragraph above asks for "counted, not ignored" and the code answered `Control`,
+            // whose own definition is *"Not an event: a Hello, a Resync, a command reply"* — so the
+            // arm contradicted the variant's documentation and its own comment at the same time.
+            // `Filtered` is the counted one and says so. MEASURED consequence before the fix: the
+            // `filtered` figure on `Ack` (and on `/status`) differed by one per occurrence between
+            // the two heads, and letibot's stated protection against *"the event never came"*
+            // reading exactly like *"this head drops it"* was not in force on the one event whose
+            // comment argues for it. **No test caught it because nothing asserts the count for
+            // this event, and the comment reads as the specification** — a reader checking the
+            // file found an argument for the correct behaviour sitting on top of the incorrect
+            // one, which is the same failure mode as a docstring describing colours over a
+            // function that returns a plain string.
+            SessionEvent::OperatorCallAllowed { .. } => Disposition::Filtered,
             SessionEvent::JobSettled {
                 job,
                 state,
@@ -4124,10 +4103,12 @@ impl App {
                 if t.turn_id != turn_id {
                     return Disposition::Filtered;
                 }
-                t.tokens = tokens.max(t.tokens);
-                // Shown on the status line, not in the transcript. It counts as
-                // rendered because the counter it moves is on the screen, and it
-                // counts as liveness for the stuck line the same way a delta does.
+                // **The counter it used to move is no longer drawn** — see `turn_status`: the
+                // operator does not want the number to read. The event still counts as
+                // `Rendered`, because it is a frame in which the turn is plainly alive: the
+                // spinner beside the clock moves on it, and that is the row's whole business
+                // now. It also counts as liveness for the stuck line, the same way a delta does.
+                let _ = tokens;
                 Disposition::Rendered
             }
             SessionEvent::Delta {
@@ -4158,7 +4139,6 @@ impl App {
                         // `without_control`'s own — one space per control byte, so the
                         // character count `arrived_chars` keeps is unchanged.
                         let text = without_control_lines(&text);
-                        t.arrived_chars += text.chars().count();
                         t.text.push(&text);
                         Disposition::Rendered
                     }
@@ -4182,7 +4162,6 @@ impl App {
                         // `messages` backend this is the channel that streams from the first
                         // second, and it was the one the row's number could not see.
                         let text = without_control_lines(&text);
-                        t.arrived_chars += text.chars().count();
                         t.reasoning.push(&text);
                         if self.verbosity >= Verbosity::Normal {
                             Disposition::Rendered
@@ -4200,7 +4179,6 @@ impl App {
                         // the one an agentic round is *made of*: a call's arguments come as deltas,
                         // and on the backend that produced the measurement above the row sat at a
                         // frozen number while thousands of tokens of exactly this went by.
-                        t.arrived_chars += text.chars().count();
                         t.raw_call.push_str(&text);
                         t.writing_call = true;
                         Disposition::Rendered
@@ -4659,7 +4637,14 @@ impl App {
                 // frame exists to avoid.
                 self.screen_requests.push(req_id);
                 self.redraw = true;
-                Disposition::Control
+                // **And `Filtered` here too, for the same reason R53 gives one paragraph over.**
+                // This is a `SessionEvent` — session content, read, and deliberately not drawn as
+                // a row of its own, because the answer IS the rows this head draws. `Control`'s
+                // definition is *"Not an event"*, and its own docstring above says the same thing
+                // about this arm that `OperatorCallAllowed`'s says about its: a reader would never
+                // find the difference. The two are changed together because they are one defect
+                // spelled at two arms.
+                Disposition::Filtered
             }
             SessionEvent::SecretRequested {
                 req_id,
@@ -13019,27 +13004,19 @@ impl App {
         };
         let p = self.cfg.palette();
         let spin = p.paint(Role::Pending, &progress::spinner(self.now_ms).to_string());
-        // The count, in the dim register: the server's own token counter when it
-        // has spoken, and the character count where it has not — a `messages`
-        // backend turn, whose seam carries no token count, or a log recorded
-        // before `TokensGenerated` existed. Nothing yet is no field at all: a
-        // zero is a zero field wearing a measurement's clothes.
+        // **NO COUNT ON THIS ROW.** Ruled by the operator, 2026-09-27: *"i dont care about those
+        // chars"* / *"just dont show me them"*. It carried `· 18.0k chars` (the whole stream since
+        // the last round began) or `· 2,826 tok` when the server's own counter had spoken, and
+        // three days of argument went into which number was honest — the character count missing
+        // the reasoning and tool-call channels, and then, once fixed, still being a number nobody
+        // reads. **A row whose job is to say the turn is alive does not need a volume**: what
+        // says it is the spinner and the clock, and a figure that the reader has to interpret is
+        // the row asking to be studied rather than glanced at.
         //
-        // **On the backend where this fallback is the only number, it has to be the whole
-        // stream.** MEASURED 2026-09-27 on deepseek: `Responding · 2m34s · 145 chars` while the
-        // header counted 2826 output tokens in fifteen seconds of the same turn. One channel is
-        // not liveness — see `TurnPane::arrived_chars`.
-        let count = if t.tokens > 0 {
-            Some(format!(" · {} tok", progress::thousands(t.tokens)))
-        } else if t.arrived_chars > 0 {
-            Some(format!(
-                " · {} chars",
-                progress::thousands(t.arrived_chars as u64)
-            ))
-        } else {
-            None
-        };
-        let count = count.map(|c| p.paint(Role::Faint, &c));
+        // The plumbing is gone with it — `TurnPane::tokens` and `TurnPane::arrived_chars` were
+        // written by three arms of the delta fold and read by nothing else, so the increments go
+        // too. `TokensGenerated` is still *counted* as a rendered event (it moves the spinner's
+        // clock, which is the row's whole business now).
         match &t.progress {
             Some(pp) if pp.total > 0 && pp.processed < pp.total => {
                 let pf = progress::Prefill {
@@ -13053,22 +13030,18 @@ impl App {
                     progress::prefill_line(&pf, w.saturating_sub(6), p),
                 )
             }
-            // Generation running — prefill finished, or never reported at all,
-            // which is the `messages` backend's turns. The prompt's size and
-            // cache are on the header — live prefill numbers win there, and they
-            // win for the whole turn, not only while prefill runs — so this
-            // carries only what it alone knows: how much has arrived. One compact
-            // string, because it is drawn on ONE row: it used to `split_row` into a
-            // justified full-width line, and then to be a legend on the border,
-            // where it put `Responding` at the left edge and clipped the count it
-            // was carrying. A row of its own is what lets it grow a sentence.
-            _ => {
-                let mut s = p.paint(Role::Pending, &format!("{spin} Responding{since}"));
-                if let Some(c) = count {
-                    s.push_str(&c);
-                }
-                s
-            }
+            // Generation running — prefill finished, or never reported at all, which is the
+            // `messages` backend's turns. **The spinner, the word and the clock; nothing else.**
+            // It is one row of its own (it used to be a legend on the composer's border, where it
+            // put `Responding` at the left edge and clipped whatever it was carrying), and what
+            // it carries now is deliberately the least a reader has to interpret: the glyph that
+            // moves, the word that spans the turn, and how long the turn has been going.
+            //
+            // The prompt's size and cache are on the header, and the run's counts are on the
+            // transcript's own marker (`[2 tool calls, 265 thinking lines]`). This row does not
+            // repeat either — the operator's ruling is that it says the work is alive, and a
+            // number it repeats from somewhere else is the row asking to be studied.
+            _ => p.paint(Role::Pending, &format!("{spin} Responding{since}")),
         }
     }
 
@@ -25265,6 +25238,51 @@ mod tests {
         }
     }
 
+    /// **The two events a head answers without drawing are COUNTED, not `Control`** — R53 §1.2.
+    ///
+    /// Both are `SessionEvent`s, so both are session content: read, deliberately not drawn as a
+    /// row of their own, and counted. `Control` is documented as *"Not an event: a Hello, a
+    /// Resync, a command reply"*, which is what a head sends *about the connection* rather than
+    /// what the session did.
+    ///
+    /// **Why this test exists rather than only the fix.** R53's own words: *"nothing asserts the
+    /// count for these two events, and the comment reads as the specification, so a reader
+    /// checking the file finds an argument for the correct behaviour sitting on top of the
+    /// incorrect one."* That is the failure mode this file already has one instance of — a
+    /// docstring describing three colours over a function that returns a plain string — and the
+    /// protection is not a better comment, it is an assertion that fails when the word changes.
+    #[test]
+    fn the_two_events_a_head_answers_without_drawing_are_counted_not_control() {
+        let mut a = app();
+        assert_eq!(
+            a.apply(ServerFrame::Event(env(
+                1,
+                SessionEvent::OperatorCallAllowed {
+                    call_id: "oc1".into(),
+                    name: "bash".into(),
+                    who: "dead".into(),
+                    arguments: "\"true\"".into(),
+                },
+            ))),
+            Disposition::Filtered,
+            "an admitted operator call is read and not drawn — it must count, or \"the event \
+             never came\" and \"this head drops it\" look the same"
+        );
+        assert_eq!(
+            a.apply(ServerFrame::Event(env(
+                2,
+                SessionEvent::ScreenRequested {
+                    req_id: "r1".into(),
+                },
+            ))),
+            Disposition::Filtered,
+            "a screen request is answered by the frame, not by a row — and it is still counted"
+        );
+        // And the queue the answer rides on is untouched by the disposition: the ask is still
+        // there for the driver to answer after the paint.
+        assert_eq!(a.screen_requests, vec!["r1".to_string()]);
+    }
+
     /// **Parked in the scrollback, the arrows are the scrollback's, and `↓` is the bottom.**
     ///
     /// The operator, 2026-09-27, after hours in one head: *"on this letibot head scrolll is
@@ -25348,7 +25366,7 @@ mod tests {
         );
     }
 
-    /// **A turn that only thinks and writes calls still moves its own row.**
+    /// **A turn that only thinks and writes calls still draws its row, and the row still moves.**
     ///
     /// MEASURED LIVE on the deepseek (`messages`) backend, 2026-09-27, and this test is that
     /// measurement written down. The operator's screen read
@@ -25359,33 +25377,37 @@ mod tests {
     /// ```
     ///
     /// — the number frozen for two and a half minutes across a window in which the turn produced
-    /// 2826 output tokens. Their report: *"still thinking glued to Responding"*. The turn was
-    /// working the entire time; the row was counting the answer's prose and nothing else, which is
-    /// the one channel an agentic round does not use.
+    /// 2826 output tokens. Their report: *"still thinking glued to Responding"*.
     ///
-    /// The `messages` backend sends deltas for the answer, for the reasoning and for the
-    /// tool-call markup, and **no** token counter at all — so this fallback is the only number the
-    /// row has there, and a fallback that misses two channels of three is not a conservative
-    /// estimate, it is a stopped clock on the screen whose whole job is to say the work is going.
+    /// **Two answers came out of that, and this test pins the second.** The first was to make the
+    /// number count every channel instead of the answer's prose alone — that landed in `2aada71`
+    /// and was measured against the previous build (`107 chars` against `6384` on the same turn at
+    /// the same instant, `docs/evidence/turn-row-liveness-2026-09-27/`). The second is the
+    /// operator's ruling on what the row is for: *"i dont care about those chars"* / *"just dont
+    /// show me them"* — so **the number is gone entirely**, and what says the turn is alive is the
+    /// spinner and the clock, which move on the head's own clock whether or not any event arrives.
+    ///
+    /// So the assertions below are that a turn made only of reasoning and tool-call deltas is still
+    /// drawn, still says `Responding`, carries no figure, and moves with nothing arriving — the
+    /// four things that have to hold together for that row to be honest on a backend that sends no
+    /// token counter at all.
     #[test]
-    fn a_turn_that_only_thinks_and_writes_calls_still_moves_its_own_row() {
+    fn a_turn_that_only_thinks_and_writes_calls_still_draws_its_row() {
         let mut a = app();
         a.clock(1_000);
-        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        // The count of characters the row is carrying, read the way a reader reads it.
-        let chars = |a: &App| -> u64 {
-            a.turn_status(160)
-                .split('·')
-                .find_map(|p| p.trim().strip_suffix(" chars"))
-                .and_then(|d| d.replace(',', "").parse().ok())
-                .unwrap_or(0)
-        };
-        // Nothing has arrived: no field at all, rather than a zero wearing a measurement's clothes.
-        assert!(a.turn_status(160).contains("Responding"), "{}", a.turn_status(160));
-        assert_eq!(chars(&a), 0, "nothing has arrived yet: {}", a.turn_status(160));
+        // **Stamped, so the clock has something to count from.** `started_ms` comes from the
+        // envelope's `ts` when the prompt's own `began_ms` is absent, and a turn with 0 there is
+        // the snapshot case — the row says *"started before this head attached"* and has no
+        // duration to move, which is honest but not what is under test.
+        a.apply(ServerFrame::Event(env_at(
+            1,
+            1_000,
+            testing::turn_started("t1"),
+        )));
+        assert!(a.turn_status(160).contains("Responding"));
+        assert!(!a.turn_status(160).contains("chars"));
 
-        // The reasoning, which is the first thing a `messages` backend streams and the first thing
-        // the row could not see.
+        // The reasoning — the first thing a `messages` backend streams.
         a.apply(ServerFrame::Event(env(
             2,
             SessionEvent::Delta {
@@ -25394,15 +25416,7 @@ mod tests {
                 text: "check the caller before the callee".into(),
             },
         )));
-        let after_think = chars(&a);
-        assert!(
-            after_think > 0,
-            "the streamed thinking is the liveness on this backend: {:?}",
-            a.turn_status(160)
-        );
-
-        // And the tool-call markup — the channel an agentic round is made of, and the other one the
-        // row used to miss.
+        // The tool-call markup — the channel an agentic round is made of.
         a.apply(ServerFrame::Event(env(
             3,
             SessionEvent::Delta {
@@ -25411,13 +25425,7 @@ mod tests {
                 text: "{\"command\":\"cargo test\"}".into(),
             },
         )));
-        assert!(
-            chars(&a) > after_think,
-            "writing the call moves the row too: {:?}",
-            a.turn_status(160)
-        );
-
-        // The answer channel counts as it always did.
+        // And the answer, for the ordinary case.
         a.apply(ServerFrame::Event(env(
             4,
             SessionEvent::Delta {
@@ -25426,17 +25434,29 @@ mod tests {
                 text: "here is the answer".into(),
             },
         )));
-        assert!(chars(&a) > after_think, "{:?}", a.turn_status(160));
+        let line = a.turn_status(160);
+        assert!(line.contains("Responding"), "{line}");
+        assert!(!line.contains("chars"), "the count is not drawn: {line}");
+        assert!(!line.contains(" tok"), "nor the server's: {line}");
 
-        // **One row, at every width** — and the count survives on it, which is the thing the
-        // marker's own history warns about: this row was once a legend on the composer's border,
-        // where it put `Responding` at the left edge and clipped the number it was carrying.
-        // It is a row of its own now and it is allowed to grow; the frame trims it, so what is
-        // pinned here is that it stays ONE row and that a sane width carries the whole of it.
+        // **And it is alive on the clock, with no event at all in between** — which is the whole of
+        // what replaced the number: a spinner and a duration that move because the head reads its
+        // own clock, rather than because something arrived.
+        let glyph = |s: &str| s.chars().find(|c| "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".contains(*c));
+        let first = a.turn_status(160);
+        a.clock(4_000);
+        let later = a.turn_status(160);
+        assert_ne!(
+            glyph(&first),
+            glyph(&later),
+            "the glyph moves with no event: {first} → {later}"
+        );
+        assert!(later.contains("3.0s"), "and the clock with it: {later}");
+        // One row, at every width — the property its history warns about, because it was once a
+        // legend on the composer's border where the edge truncated it.
         for w in [24usize, 40, 60, 80, 120, 200] {
             assert!(!a.turn_status(w).contains('\n'), "one row at w={w}");
         }
-        assert!(a.turn_status(80).contains("chars"), "{:?}", a.turn_status(80));
     }
 
     #[test]
@@ -30980,32 +31000,32 @@ mod tests {
             },
         )));
         let line = a.turn_status(120);
-        // Nothing has arrived yet, and `0 chars` is a zero field wearing a
-        // measurement's clothes: absent, not zero.
-        assert!(!line.contains("chars"), "{line}");
-        assert!(!line.contains("prompt"), "{line}");
-        assert!(!line.contains("cached"), "{line}");
-        // The header is where those numbers live instead.
+        // The header is where those numbers live.
         let header = a.header_line(200);
         assert!(header.contains("41.2k ctx"), "{header}");
         assert!(header.contains("92% cached"), "{header}");
-        // Once something has arrived, the count is the one fact this line alone
-        // knows — and it is the delta's own count, not a running estimate.
+        // **And this row repeats none of them, and carries no figure of its own** — the operator's
+        // ruling of 2026-09-27 is that the row says the turn is alive and nothing more: *"i dont
+        // care about those chars"*. The assertions are kept for the fields that were here
+        // (`5 chars` after a delta, `42 tok` from the server's counter) precisely because those
+        // are the ones a future change might put back.
         a.apply(ServerFrame::Event(env(3, testing::delta("t1", "hello"))));
+        a.apply(ServerFrame::Event(env(4, testing::tokens_generated("t1", 42))));
         let line = a.turn_status(120);
-        assert!(line.contains("5 chars"), "{line}");
-        // One compact string for the border to pin right — never a justified
-        // full-width line, which as a legend put `Responding` at the left edge
-        // and clipped the count it was carrying.
+        assert!(!line.contains("chars"), "{line}");
+        assert!(!line.contains(" tok"), "{line}");
+        assert!(!line.contains("prompt"), "{line}");
+        assert!(!line.contains("cached"), "{line}");
         assert!(!line.contains("  "), "no justification padding: {line}");
     }
 
     #[test]
-    fn the_token_counter_rides_the_status_line_and_wins_over_the_char_count() {
-        // The server's own counter is the liveness fact: it moves on every
-        // frame, on every channel — including the tool-call markup no default
-        // view renders — while a dead connection moves nothing. That is the
-        // difference between a hang and a model that is still emitting.
+    fn no_counter_rides_the_status_line_and_a_dead_one_never_did() {
+        // **This test used to be called `…wins_over_the_char_count`, and the question it settled
+        // is gone.** Both counters were removed from the row on 2026-09-27 — the operator's ruling,
+        // *"i dont care about those chars"* — so what is worth pinning now is the absence: neither
+        // the server's counter nor the character fallback reaches this row, through every event
+        // that used to put one there.
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         a.apply(ServerFrame::Event(env(
@@ -31020,44 +31040,50 @@ mod tests {
                 },
             },
         )));
-        // Nothing yet: no count at all, the same rule the char count obeys.
         let line = a.turn_status(120);
         assert!(!line.contains("tok"), "{line}");
         assert!(!line.contains("chars"), "{line}");
-        // The counter arrives and is the number shown.
-        a.apply(ServerFrame::Event(env(
-            3,
-            testing::tokens_generated("t1", 1234),
-        )));
+        // The counter arrives — and is not drawn, though it still counts as a frame the turn is
+        // alive on, which is why `TokensGenerated` is still `Rendered` in the fold.
+        assert_eq!(
+            a.apply(ServerFrame::Event(env(
+                3,
+                testing::tokens_generated("t1", 1234),
+            ))),
+            Disposition::Rendered,
+            "a generated-token frame is still a frame in which the row is alive"
+        );
         let line = a.turn_status(120);
-        assert!(line.contains("1234 tok"), "{line}");
-        // Text arrives too: the token count still wins, because it is the
-        // measurement and the characters are the fallback.
+        assert!(!line.contains("1234"), "{line}");
+        // And text arriving moves nothing onto this row either.
         a.apply(ServerFrame::Event(env(4, testing::delta("t1", "hello"))));
         let line = a.turn_status(120);
-        assert!(line.contains("1234 tok"), "{line}");
+        assert!(!line.contains("tok"), "{line}");
         assert!(!line.contains("chars"), "{line}");
-        // A count for another turn does not move it.
-        a.apply(ServerFrame::Event(env(
-            5,
-            testing::tokens_generated("t2", 9),
-        )));
-        let line = a.turn_status(120);
-        assert!(line.contains("1234 tok"), "{line}");
+        // What it DOES carry, whatever arrives: the word, the clock, the spinner.
+        assert!(line.contains("Responding"), "{line}");
+        assert!(line.contains('·'), "{line}");
     }
 
     #[test]
-    fn a_head_that_joins_mid_turn_gets_the_counter_it_missed() {
-        // The live frames carry the increments; the snapshot carries the count
-        // a late head never saw, so its status line starts where the turn is,
-        // not at zero.
+    fn a_head_that_joins_mid_turn_draws_the_turn_it_missed() {
+        // The live frames carry the increments; the snapshot carries what a late head never saw.
+        // **What it owes that head now is the ROW**, not a count: the counter was removed from the
+        // display on 2026-09-27, and the fact a joiner still needs is that a turn is running and
+        // how long it has been (which the snapshot cannot measure, so it says so rather than
+        // inventing one).
         let hub = Hub::new("s");
         hub.publish(testing::turn_started("t1"));
         hub.publish(testing::tokens_generated("t1", 42));
         let mut a = app();
         a.apply(hello("s", vec![], hub.snapshot()));
         let line = a.turn_status(120);
-        assert!(line.contains("42 tok"), "{line}");
+        assert!(line.contains("Responding"), "{line}");
+        assert!(
+            line.contains("started before this head attached"),
+            "a snapshot measured no duration, and says so: {line}"
+        );
+        assert!(!line.contains("42"), "the counter is not on this row: {line}");
     }
 
     #[test]
