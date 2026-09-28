@@ -91,6 +91,53 @@ image, the attachment did not arrive — say that, rather than answering as thou
 merely uninteresting. A model that answers around a missing picture is indistinguishable from one
 that saw it and had nothing to say about it, and only one of those is worth acting on.
 
+### What an image turn costs the cache — measured
+
+**A LOCAL-ONLY question.** leticl runs remote deepseek-flash, which never sends token ids, so none of
+this applies to it and nothing here should be ported to its side: *"the whole design of sending token
+ids exists on the assumption that it would be"* free, and that assumption is what was tested.
+
+The question was whether an image turn is a cold prefill, because llama.cpp takes images only when
+`prompt` is an object carrying a `prompt_string` — the server tokenizes it — while letibot's whole
+design is that *the harness* renders and tokenizes and sends ids. If the two tokenizations differ,
+every cached turn in the conversation dies at the first boundary.
+
+**They do not differ, and the reason is the framing.** Tokenized as one string versus item by item:
+
+| how the prompt was joined | per-item | one string | shared prefix |
+|---|---|---|---|
+| bare text, no framing | 110 | 107 | **40** |
+| framed by `<|im_start|>`/`<|im_end|>` — what a renderer actually emits | 125 | 125 | **125** |
+
+Bare text diverges at the first boundary because BPE merges across it (`cache. And` is not
+`cache.` + `And`). Control tokens are atomic, so a framed prompt has no such adjacency and the two
+tokenizations are identical. **The string path is free, provided the renderer frames its items** —
+which is a property of the renderer and not of this decision.
+
+**Caching, measured on the live server (slots pinned; unpinned requests bounce between slots and
+each has its own cache, which made the first run unreadable):**
+
+| request | prompt_n | cache_n |
+|---|---|---|
+| token ids, cold | 88 | 0 |
+| token ids again (control) | 4 | 84 |
+| `multimodal_data` prompt with a 512×512 image | 4 | 342 / 346 |
+| the same image prompt again | 4 | 342 / 346 |
+| **token ids after an image turn** | 4 | **84** — identical to its own warm control |
+
+The image costs **258 prompt tokens** at 512×512 (256 at one token per 1024 px, plus 2 framing),
+consistent with the table above. And the last row is the one that mattered: **an image turn does not
+poison the cache for the ledger's ordinary path.**
+
+**One case was cold and it is not resolved.** The *first* image turn against a prefix built by
+token-ids requests returned `cache_n = 0`. The suspicion is `process_mtmd_prompt`'s hardcoded
+`add_special = true` (`server-common.cpp:966-975`), which would prepend BOS to a prompt whose cached
+counterpart has none — one token of difference, and a prefix match of zero. **Not confirmed:** the
+server keeps a large persistent prompt cache (`--cache-ram 57344`, `--cache-disk 512000`), so
+"cold" is hard to produce deliberately and I could not isolate it. What it would cost is one cold
+prefill when the first image arrives, and the check is cheap for whoever builds the wire: tokenize
+the ledger's prompt both ways and compare the first token.
+
 **Open, and named rather than left to be discovered: compaction.** An image in the transcript is
 re-sent on every prompt rebuild and stored inline as base64 (4/3 of the file). opencode strips media
 on compaction and carries a dedicated recovery instruction for a provider that refuses oversize
