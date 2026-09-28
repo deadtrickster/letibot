@@ -93,6 +93,26 @@ pub struct Media {
     pub height: Option<u32>,
     /// `data:image/png;base64,…` — the form the model server takes, verbatim.
     pub data_ref: String,
+    /// **Whether a model was actually given these bytes.**
+    ///
+    /// leticl's argument, and it is the reason the field exists rather than the count being left to
+    /// the reader: *"an attachment that the daemon dropped and one the model ignored look identical
+    /// on a transcript that does not say which, and only one of them is the operator's mistake to
+    /// correct."* The payload's own sentence tells the MODEL the image is attached; nothing told the
+    /// READER whether it arrived.
+    ///
+    /// `false` is the honest default and it is a fact rather than a guess: **no row that predates
+    /// this field can carry a `Media` at all**, because `UserPart::Image` had no producer until
+    /// 2026-09-27 — the tree could carry a picture in its types and could not make one. So for every
+    /// row written before it, `false` is true.
+    ///
+    /// Set by whoever sends it, which is the engine and only the engine: it builds the request, so
+    /// it is the only place that knows whether the bytes went out. Two ways they do not — the
+    /// endpoint has no media marker (a metered provider, or a server without `mtmd`), or the
+    /// renderer's markers and the attachments disagreed and the engine refused to send pictures it
+    /// could not place.
+    #[serde(default)]
+    pub delivered: bool,
 }
 
 impl Media {
@@ -112,6 +132,8 @@ impl Media {
             width,
             height,
             data_ref: format!("data:{mime};base64,{}", encode_base64(bytes)),
+            // Not delivered yet: nobody has sent it. See the field.
+            delivered: false,
         })
     }
 
@@ -298,6 +320,27 @@ pub fn media_in_order(items: &[crate::TranscriptItem]) -> Vec<String> {
     out
 }
 
+/// **Mark every picture in these rows as having reached a model.**
+///
+/// Called by the engine and nothing else, because the engine is the only thing that knows: it builds
+/// the request, so it is the only place that can say whether the bytes went out. See
+/// [`Media::delivered`] for why the flag exists and why `false` is the honest default.
+///
+/// **A tool result's media and a user row's image part are the same fact with two carriers**, and
+/// this marks the first only — the type that carries a `Media`. A user row's image is a
+/// `UserPart::Image`, which has no `Media` to mark, so a head attaching a picture has no
+/// `delivered` report today. Said rather than implied: that is the half still missing, and it is a
+/// shape problem (the part carries a ref, not a `Media`) rather than an oversight.
+pub fn mark_delivered(items: &mut [crate::TranscriptItem]) {
+    for item in items {
+        if let crate::TranscriptItem::ToolResult { media, .. } = item
+            && let Some(m) = media
+        {
+            m.delivered = true;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,6 +429,7 @@ mod tests {
                 width: Some(w),
                 height: Some(h),
                 data_ref: String::new(),
+                delivered: false,
             }
             .vision_tokens()
         };
@@ -400,8 +444,55 @@ mod tests {
             width: None,
             height: None,
             data_ref: String::new(),
+            delivered: false,
         };
         assert_eq!(no_size.vision_tokens(), None);
+    }
+
+    /// **`delivered` starts false, and one call flips it — the two states it has.**
+    ///
+    /// leticl's argument is why it exists: *"an attachment that the daemon dropped and one the model
+    /// ignored look identical on a transcript that does not say which."* And `false` is a fact rather
+    /// than a guess for every row that predates the field, because no such row can carry a `Media` at
+    /// all — `UserPart::Image` had no producer until 2026-09-27.
+    #[test]
+    fn an_image_is_not_delivered_until_something_sends_it() {
+        let m = Media::of("a.png", &png_header(2, 2)).expect("a png");
+        assert!(!m.delivered, "a picture nothing has sent is not delivered");
+
+        let mut items = vec![
+            crate::TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "read".into(),
+                outcome: crate::ToolOutcome::Ok,
+                payload: "shot.png".into(),
+                edit: None,
+                origin: None,
+                media: Some(m),
+            },
+            crate::TranscriptItem::ToolResult {
+                call_id: "c2".into(),
+                name: "read".into(),
+                outcome: crate::ToolOutcome::Ok,
+                payload: "fn main() {}".into(),
+                edit: None,
+                origin: None,
+                media: None,
+            },
+        ];
+        mark_delivered(&mut items);
+        let crate::TranscriptItem::ToolResult { media, .. } = &items[0] else {
+            panic!("the fixture is a tool result")
+        };
+        assert!(
+            media.as_ref().is_some_and(|m| m.delivered),
+            "the picture rode a request and the row does not say so"
+        );
+        // And a row with no media is untouched — the walk does not invent one.
+        let crate::TranscriptItem::ToolResult { media, .. } = &items[1] else {
+            panic!("the fixture is a tool result")
+        };
+        assert!(media.is_none());
     }
 
     #[test]

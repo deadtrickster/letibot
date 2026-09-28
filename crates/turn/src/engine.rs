@@ -670,6 +670,12 @@ impl TurnEngine<'_> {
                 );
                 return None;
             }
+            // **And the row is told the bytes went out.** One place knows this — here — because
+            // here is where the request is built. See `Media::delivered` for the argument; the short
+            // of it is that a picture the daemon dropped and one the model ignored read identically
+            // on a transcript that does not say which, and only one of those is the operator's to
+            // fix.
+            letibot_transcript::media::mark_delivered(&mut session.items);
             Some((string, media))
         });
         let (outcome, guard_trip) = self.stream_turn(

@@ -621,6 +621,7 @@ mod tests {
             width: Some(2),
             height: Some(2),
             data_ref: "data:image/png;base64,AAAA".into(),
+            delivered: false,
         };
         // A tool result that read a picture — the `read` path.
         let read_one = TranscriptItem::ToolResult {
@@ -699,6 +700,7 @@ mod tests {
                 width: Some(2),
                 height: Some(2),
                 data_ref: "data:image/png;base64,AAAA".into(),
+                delivered: false,
             }),
         }];
         let spans = QwenRenderer::new().render(&prefix("s", &[]), &items);

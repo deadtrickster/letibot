@@ -363,6 +363,7 @@ mod tests {
                 width: Some(2),
                 height: Some(2),
                 data_ref: uri.into(),
+                delivered: false,
             }),
         }];
         let m = convert("be terse", &items);
