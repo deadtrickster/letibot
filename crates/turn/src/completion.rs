@@ -26,12 +26,48 @@ use serde_json::Value;
 
 use letibot_tokencore::TokenId;
 
+/// **The prompt, in one of the two shapes llama.cpp takes.**
+///
+/// # Why there are two, and why the second is not a second design
+///
+/// An image changes the shape of the request and nothing else about it. `/completion` honours
+/// `multimodal_data` **only** when `prompt` is a JSON object carrying a `prompt_string`
+/// (`server-common.cpp:1000-1030`) — there is no token-array-plus-images path, because the server
+/// has to tokenize the string itself in order to substitute the image's embeddings at the media
+/// marker. So a turn with a picture in it travels as text, and every other turn travels as ids.
+///
+/// **That costs nothing in cache, and it was measured rather than assumed.** MEASURED 2026-09-27 on
+/// the live server (`docs/leticode.md`): a prompt framed by `<|im_start|>`/`<|im_end|>` tokenizes
+/// identically as one string and item by item — 125 = 125, shared prefix 125 — because control
+/// tokens are atomic and BPE has no boundary to merge across. Bare unframed text is the one shape
+/// that diverges (110 vs 107, shared prefix 40) and no renderer here can produce it. The measurement
+/// also shows an image turn does not poison the cache for the turns that follow: token ids sent
+/// after an image turn cached 84 of 88, identical to its own warm control.
+///
+/// `#[serde(untagged)]` so `Ids` serialises as the bare array it always was — **byte-identical, and
+/// that is a requirement rather than a nicety**: the request body is the same bytes on every turn of
+/// a conversation, and a shape change would be a second thing to keep in step with the prefix.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum Prompt {
+    /// Token ids. Not a string: the harness owns rendering and tokenization, and a
+    /// string here would hand both back to a jinja renderer nobody controls.
+    Ids(Vec<TokenId>),
+    /// **A prompt with a picture in it**, as the text a server tokenizes itself.
+    ///
+    /// `prompt_string` carries the server's own media marker (`/props` → `media_marker`, a
+    /// per-process random value) where each image sits; `multimodal_data` carries the matching
+    /// base64 payloads **without** their `data:` prefix, in the same order.
+    WithMedia {
+        prompt_string: String,
+        multimodal_data: Vec<String>,
+    },
+}
+
 /// The body of a `/completion` call, exactly as §5.6 specifies it.
 #[derive(Debug, Clone, Serialize)]
 pub struct CompletionRequest {
-    /// Token ids. Not a string: the harness owns rendering and tokenization, and a
-    /// string here would hand both back to a jinja renderer nobody controls.
-    pub prompt: Vec<TokenId>,
+    pub prompt: Prompt,
     pub cache_prompt: bool,
     pub return_progress: bool,
     pub timings_per_token: bool,
@@ -60,7 +96,29 @@ impl CompletionRequest {
     /// loudly when the process starts rather than never.
     pub fn new(prompt: Vec<TokenId>, sampling: Value) -> Self {
         CompletionRequest {
-            prompt,
+            prompt: Prompt::Ids(prompt),
+            cache_prompt: true,
+            return_progress: true,
+            timings_per_token: true,
+            return_tokens: true,
+            stream: true,
+            sampling,
+        }
+    }
+
+    /// **The same request, for a turn that carries a picture.**
+    ///
+    /// `marker` is the server's own, read from `/props` at startup — never a dialect's vision
+    /// tokens, which the server answers with `Failed to tokenize prompt` (measured). `media` are the
+    /// base64 payloads in the order their markers appear, which is what
+    /// [`letibot_transcript::media::media_in_order`] produces and what
+    /// `letibot_dialect::media_spans` counts a renderer's markers against.
+    pub fn with_media(prompt_string: String, media: Vec<String>, sampling: Value) -> Self {
+        CompletionRequest {
+            prompt: Prompt::WithMedia {
+                prompt_string,
+                multimodal_data: media,
+            },
             cache_prompt: true,
             return_progress: true,
             timings_per_token: true,

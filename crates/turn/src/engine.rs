@@ -246,6 +246,17 @@ pub struct TurnEngine<'a> {
     pub model: String,
     pub sampling: Value,
     pub salvage: SalvageBudget,
+    /// **The server's own media marker**, from `/props` at startup, or `None` for an endpoint that
+    /// takes no images — a metered provider, or a local server without `mtmd`.
+    ///
+    /// `None` is a real answer and not a failure, and it is the honest one for most endpoints: a
+    /// prompt carrying an image is then sent **without** the image, and the payload's own sentence
+    /// says so (*"the image is attached to this result"*). That is a picture the model was told about
+    /// and not given, which is why `delivered` exists on the row to make the difference visible.
+    ///
+    /// Never a dialect's vision tokens: the server answers those with `Failed to tokenize prompt`
+    /// (measured — see `serving::served_media_marker`).
+    pub media_marker: Option<String>,
     /// Where a refused frame and its neighbours are written (T23). On by default;
     /// see [`FrameCapture`] for why the default is on rather than off.
     pub frame_capture: FrameCapture,
@@ -344,6 +355,8 @@ impl<'a> TurnEngine<'a> {
             model: model.into(),
             sampling,
             salvage: SalvageBudget::default(),
+            // Set by whoever knows the endpoint's `/props`; `None` means no images. See the field.
+            media_marker: None,
             frame_capture: FrameCapture::default(),
             // Every turn reasons unless one asks not to; see `without_reasoning`.
             suppress_reasoning: false,
@@ -366,6 +379,54 @@ impl<'a> TurnEngine<'a> {
     /// The subset this engine halts on itself, because the server will not.
     pub fn client_stop_ids(&self) -> &[TokenId] {
         &self.client_stop_ids
+    }
+
+    /// **The prompt as the text a server tokenizes itself**, with `marker` where each image sits.
+    ///
+    /// `None` when the prompt places no image at all, which is every turn but the few that read one.
+    ///
+    /// # Why this walks the ids rather than re-rendering
+    ///
+    /// The ledger's token region *is* the render, tokenized. Re-rendering would be a second walk of
+    /// the same fact — the shape of every defect this tree has had today — and the two could drift
+    /// the moment a renderer changed. So this reads the very ids about to be submitted and replaces
+    /// the three image tokens with the server's single marker, which cannot describe a different
+    /// prompt from the one the ids describe because it is built out of them.
+    ///
+    /// MEASURED, and the reason the string form is affordable at all (`docs/leticode.md`): a prompt
+    /// framed by control tokens tokenizes identically as text and as ids, so the server's
+    /// tokenization and the ledger's agree token for token.
+    ///
+    /// The return is the string and **how many markers it placed**, so a caller can hold that
+    /// against the attachments it has and refuse to send pictures it cannot place.
+    fn prompt_as_text(&self, tokens: &[TokenId], marker: &str) -> Option<(String, usize)> {
+        let decoder = self.decoder();
+        let mut out = String::new();
+        let mut run: Vec<TokenId> = Vec::new();
+        let mut images = 0usize;
+        let mut flush = |run: &mut Vec<TokenId>, out: &mut String| {
+            if !run.is_empty() {
+                out.push_str(&decoder.decode(run));
+                run.clear();
+            }
+        };
+        for &id in tokens {
+            match decoder.control_role(id) {
+                // One image is ONE marker: the server emits the three tokens itself once it has the
+                // picture, so the opening role places the marker and the other two are swallowed.
+                Some(ControlRole::ImageOpen) => {
+                    flush(&mut run, &mut out);
+                    out.push_str(marker);
+                    images += 1;
+                }
+                Some(ControlRole::Image) | Some(ControlRole::ImageClose) => {
+                    flush(&mut run, &mut out);
+                }
+                _ => run.push(id),
+            }
+        }
+        flush(&mut run, &mut out);
+        (images > 0).then_some((out, images))
     }
 
     fn decoder(&self) -> VocabDecoder<'_> {
@@ -588,9 +649,33 @@ impl TurnEngine<'_> {
         // of T12: the lead already opened the block, so the model reasons from
         // token one while every head is told it is assistant text.
         let opens_in_reasoning = items::lead_opens_reasoning(&lead, &self.decoder());
+        // **And the same prompt as TEXT, when it carries a picture.** Built from the ids that are
+        // about to be submitted rather than from a second render, so the two cannot describe two
+        // different prompts — and the media is taken in item order, which is the order the markers
+        // appear, because the server substitutes the pictures at the markers in sequence.
+        let multimodal = self.media_marker.as_deref().and_then(|marker| {
+            let (string, images) = self.prompt_as_text(&prompt, marker)?;
+            let media = letibot_transcript::media::media_in_order(&session.items);
+            if images != media.len() {
+                // **Fail safe, and loudly.** A mismatch means the renderer placed a different number
+                // of images than the transcript holds — the one failure that would substitute a
+                // picture into the wrong place, which is worse than substituting none. The ids path
+                // is taken instead: the model is told about an image and not given it, which the
+                // row's own sentence already says, and the `delivered` report is where a reader
+                // sees it. The line below is the only trace, and it is meant to be read.
+                eprintln!(
+                    "turn: {images} image marker(s) against {} attachment(s) — sending no images \
+                     rather than the wrong ones",
+                    media.len()
+                );
+                return None;
+            }
+            Some((string, media))
+        });
         let (outcome, guard_trip) = self.stream_turn(
             &turn_id,
             prompt.clone(),
+            multimodal,
             opens_in_reasoning,
             sink,
             steering,
@@ -1367,12 +1452,24 @@ impl TurnEngine<'_> {
         &self,
         turn_id: &str,
         prompt: Vec<TokenId>,
+        // The string form, when this prompt carries an image: `(prompt_string, base64 payloads)`.
+        // Built by the caller because the spans it comes from are the caller's, and passed here
+        // rather than recomputed so the ids and the string cannot describe two different prompts.
+        multimodal: Option<(String, Vec<String>)>,
         opens_in_reasoning: bool,
         sink: &mut dyn EventSink,
         steering: &mut dyn SteeringSource,
         pending: &mut Pending,
     ) -> Result<(StreamOutcome, Option<Trip>), TurnFailure> {
-        let request = CompletionRequest::new(prompt, self.sampling.clone());
+        // **A turn with a picture in it travels as text** — see [`Prompt`]: llama.cpp honours
+        // `multimodal_data` only for a `prompt_string`, so the server tokenizes it. `multimodal` is
+        // `None` for every turn that carries no image, which is almost all of them.
+        let request = match multimodal {
+            Some((prompt_string, media)) => {
+                CompletionRequest::with_media(prompt_string, media, self.sampling.clone())
+            }
+            None => CompletionRequest::new(prompt, self.sampling.clone()),
+        };
         let body = http::post_json(&self.endpoint, "/completion", &request.to_json())?;
 
         let mut acc = IdAccumulator::new();

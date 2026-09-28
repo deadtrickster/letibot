@@ -311,7 +311,10 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
         }
 
         TranscriptItem::ToolResult {
-            outcome, payload, ..
+            outcome,
+            payload,
+            media,
+            ..
         } => {
             close_turn(st);
             if !st.prev_was_tool_result {
@@ -324,6 +327,16 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
             // here wraps the model's result twice — see `outcome_envelope`.
             let _ = outcome;
             text(out, payload.clone());
+            // **And the picture, where the reading happened** — the same arm the qwen renderer
+            // gained, and for the same reason: a tool result that read an image carries it, and
+            // without this the bytes reached the transcript and stopped there. GLM's own three
+            // tokens, because this dialect spells them `<|begin_of_image|>`/`<|image|>`/
+            // `<|end_of_image|>` and `ControlRole` is what the string form collapses.
+            if media.is_some() {
+                ctl(out, &tk::BEGIN_OF_IMAGE);
+                ctl(out, &tk::IMAGE);
+                ctl(out, &tk::END_OF_IMAGE);
+            }
             ctl(out, &tk::TOOL_RESPONSE_CLOSE);
         }
     }

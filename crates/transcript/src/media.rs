@@ -115,6 +115,21 @@ impl Media {
         })
     }
 
+    /// **The base64 a multimodal request carries** — the payload WITHOUT the `data:` prefix.
+    ///
+    /// `data_ref` is `data:image/png;base64,AAA…` because that is what the OpenAI-compatible image
+    /// URL takes. llama.cpp's `multimodal_data` is the opposite: `base64_decode(entry)` on each
+    /// element (`server-common.cpp:1015`), so the prefix would be decoded as image bytes and the
+    /// file would fail to load. Two shapes for one fact, and the prefix is the whole difference —
+    /// which is exactly the kind of thing that fails as `Failed to load image or audio file` with
+    /// nothing pointing at the colon.
+    ///
+    /// Returns the whole string when there is no prefix: a `data_ref` that is already bare is
+    /// carried through rather than mangled.
+    pub fn wire_base64(&self) -> &str {
+        wire_payload(&self.data_ref)
+    }
+
     /// **What this image costs the prompt, in vision tokens** — or `None` when the header did not
     /// give a size.
     ///
@@ -233,6 +248,54 @@ fn jpeg_size(bytes: &[u8]) -> (Option<u32>, Option<u32>) {
         i += 2 + len.max(2);
     }
     (None, None)
+}
+
+/// **The `data:` prefix off a reference**, or the reference unchanged when it has none.
+///
+/// One rule, two carriers: [`Media::wire_base64`] is this applied to a `Media`, and a user row's
+/// image part holds its own `data_ref` — so a second spelling of *strip the prefix* is a second
+/// chance to get it wrong in the one failure mode that has no symptom except
+/// `Failed to load image or audio file`.
+pub fn wire_payload(data_ref: &str) -> &str {
+    data_ref
+        .split_once(";base64,")
+        .map(|(_, b)| b)
+        .unwrap_or(data_ref)
+}
+
+/// **Every image in a transcript, in the order a prompt places them, ready for the wire.**
+///
+/// The other half of a multimodal request: a server substitutes the pictures in `multimodal_data` at
+/// the markers **in the order they appear**, so this list and the renderer's markers have to be the
+/// same sequence. `letibot-dialect`'s `media_spans` counts the markers a span sequence places, and a
+/// test in `letibot-turn` holds the two to each other over a fixture that carries media — because
+/// two walks of one fact is precisely how this tree has been bitten, and here the failure would be a
+/// picture substituted into the wrong place, which is worse than a missing one.
+///
+/// **Returned as the wire wants it** — base64 with no `data:` prefix — so no caller has a chance to
+/// pass the prefixed form to `multimodal_data`.
+///
+/// Both carriers are covered: a tool result's `media` (what `read` returns) and a user row's image
+/// part (what a head attaches). A row with neither contributes nothing, which is every row of every
+/// conversation with no pictures in it.
+pub fn media_in_order(items: &[crate::TranscriptItem]) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            crate::TranscriptItem::ToolResult {
+                media: Some(m), ..
+            } => out.push(m.wire_base64().to_string()),
+            crate::TranscriptItem::User { parts, .. } => {
+                for p in parts {
+                    if let crate::UserPart::Image { data_ref, .. } = p {
+                        out.push(wire_payload(data_ref).to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 #[cfg(test)]

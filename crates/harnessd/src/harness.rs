@@ -1073,6 +1073,19 @@ pub fn engine_for<'a>(parts: &'a Parts, cfg: &Config) -> Result<TurnEngine<'a>, 
         cfg.sampling.clone(),
     )
     .map_err(|e| HarnessError::Setup(format!("the dialect does not fit this vocabulary: {e}")))
+    .map(|mut e| {
+        // **The endpoint's media marker, from `/props`.** `None` for a metered provider or a server
+        // without `mtmd`, and then a prompt carrying an image is sent without it — the honest
+        // outcome, and the one `delivered` exists to make visible.
+        //
+        // Set here and at `Harness::open`'s own construction, which is the same seven arguments two
+        // lines apart. That duplication is the shape of most of this tree's defects and it is not
+        // introduced here; the two sites are named rather than silently left to drift, and
+        // collapsing them is a cleanup for its own change because `open` maps the failure to a
+        // longer message than this one does.
+        e.media_marker = cfg.media_marker.clone();
+        e
+    })
 }
 
 /// The tool names in a rendered schema list.
@@ -2255,7 +2268,7 @@ impl<'a> Harness<'a> {
                 delivering.as_ref().is_some_and(|w| w.delivering(job))
             }));
 
-        let engine = TurnEngine::new(
+        let mut engine = TurnEngine::new(
             &parts.vocab,
             parts.wiring.renderer.as_ref(),
             parts.wiring.parser.as_ref(),
@@ -2275,6 +2288,8 @@ impl<'a> Harness<'a> {
                  it is raised now because at runtime it is silent."
             ))
         })?;
+        // And this endpoint's media marker — see `engine_for`, whose construction this duplicates.
+        engine.media_marker = cfg.media_marker.clone();
 
         let prefix = StablePrefix {
             system: cfg.system.clone(),

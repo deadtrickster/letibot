@@ -416,6 +416,61 @@ pub fn spans_to_string(spans: &[RenderSpan]) -> String {
     s
 }
 
+/// **The same spans as the STRING a server tokenizes itself** — for a prompt that carries media.
+///
+/// # Why a string, and why it is not a second rendering
+///
+/// llama.cpp takes images only when `prompt` is an object carrying a `prompt_string`
+/// (`server-common.cpp:1000-1030`): the server tokenizes that string and substitutes the image's
+/// embeddings at the **media marker**, which is a per-process random value published on `/props`.
+/// There is no token-array-plus-images path. So a prompt with an image in it has to travel as text.
+///
+/// **That is safe for the cache, and it was measured rather than assumed** — `docs/leticode.md`,
+/// 2026-09-27: a framed prompt tokenizes identically as one string and item by item (125 = 125,
+/// shared prefix 125), because control tokens are atomic and BPE has no boundary to merge across.
+/// Bare unframed text is the one shape that diverges (110 vs 107, shared prefix 40), and it is not
+/// a shape this renderer can produce. **The property is therefore this file's to keep**: a renderer
+/// that emitted bare text where a boundary belongs would make the string path cost a cold prefill.
+///
+/// # One image is ONE marker
+///
+/// The three image tokens a dialect emits — `ImageOpen`, `Image`, `ImageClose` — are what the
+/// *model's* template writes and what the server emits itself once it has the picture. In the
+/// string form the server wants the marker ONCE per image, so the opening role places it and the
+/// other two are swallowed. A dialect that emitted only `Image`, with no open/close, would place no
+/// marker; that is a bug in the dialect rather than a case to handle here, and
+/// `crate::CONTROL_TOKENS`' own rule — *a control token that is emitted must be resolvable* —
+/// already points at it.
+pub fn spans_to_string_with_media(spans: &[RenderSpan], marker: &str) -> String {
+    let mut s = String::new();
+    for span in spans {
+        match span {
+            RenderSpan::Text(t) => s.push_str(t),
+            RenderSpan::Control(c) => match c.role {
+                ControlRole::ImageOpen => s.push_str(marker),
+                ControlRole::Image | ControlRole::ImageClose => {}
+                _ => s.push_str(&c.literal),
+            },
+        }
+    }
+    s
+}
+
+/// **How many images a span sequence places** — one per `ImageOpen`.
+///
+/// The engine pairs this with
+/// [`letibot_transcript::media::media_in_order`](https://docs.rs) when it builds a multimodal
+/// request: the server substitutes the pictures in the order the markers appear, so the two lists
+/// must be the same length and the same order. They are two walks of one fact, which this tree has
+/// been bitten by before, so the count is a function here and a test in `letibot-turn` holds the
+/// renderer to it rather than an argument in a comment.
+pub fn media_spans(spans: &[RenderSpan]) -> usize {
+    spans
+        .iter()
+        .filter(|s| matches!(s, RenderSpan::Control(c) if c.role == ControlRole::ImageOpen))
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

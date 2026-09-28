@@ -357,7 +357,10 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
             }
 
             TranscriptItem::ToolResult {
-                outcome, payload, ..
+                outcome,
+                payload,
+                media,
+                ..
             } => {
                 close_assistant(st, out);
                 ctl(out, &tk::IM_START);
@@ -369,6 +372,21 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
                 // when the harness produced it. See `outcome_envelope`.
                 let _ = outcome;
                 data(out, trim(payload));
+                // **And the picture, where the reading happened.** A tool result that read an image
+                // carries it in `media`, and until this arm existed the bytes reached the transcript
+                // and stopped there: the model was told *"the image is attached to this result"* and
+                // given no image, which is indistinguishable from a model that looked and had
+                // nothing to say.
+                //
+                // Placed after the payload rather than before, because the payload is the sentence
+                // that says WHAT was read and the picture is the thing itself — the same order the
+                // operator's own `read` output has, and the same order the two-sided `delivered`
+                // report describes.
+                if media.is_some() {
+                    ctl(out, &tk::VISION_START);
+                    ctl(out, &tk::IMAGE_PAD);
+                    ctl(out, &tk::VISION_END);
+                }
                 lit(out, "\n");
                 ctl(out, &tk::TOOL_RESPONSE_CLOSE);
                 ctl(out, &tk::IM_END);
@@ -579,6 +597,126 @@ mod tests {
             system: system.into(),
             tools_json: tools_json(tools),
         }
+    }
+
+    /// **Every image the transcript holds is placed, exactly once** — the two walks held together.
+    ///
+    /// A multimodal request is two lists that have to line up: the markers a renderer places, and the
+    /// base64 payloads the request carries. The server substitutes the pictures **at the markers, in
+    /// order**, so a mismatch puts a picture where it does not belong — worse than sending none.
+    ///
+    /// They are two walks of one fact, which is this tree's recurring shape, so the count is the
+    /// assertion rather than an argument in a comment: `media_spans` counts the renderer's markers
+    /// and `media_in_order` collects what the items carry, and the engine refuses to send pictures
+    /// when they disagree. This is what makes that refusal a never-taken branch rather than a
+    /// hopeful one.
+    #[test]
+    fn every_image_the_transcript_holds_is_placed_exactly_once() {
+        use letibot_dialect::media_spans;
+        use letibot_transcript::media::{Media, media_in_order};
+
+        let png = Media {
+            mime: "image/png".into(),
+            bytes: 11,
+            width: Some(2),
+            height: Some(2),
+            data_ref: "data:image/png;base64,AAAA".into(),
+        };
+        // A tool result that read a picture — the `read` path.
+        let read_one = TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "read".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: "shot.png — image image/png 2×2 · 1 KiB".into(),
+            edit: None,
+            origin: None,
+            media: Some(png.clone()),
+        };
+        // And a result that read a file, which is every other call.
+        let read_text = TranscriptItem::ToolResult {
+            call_id: "c2".into(),
+            name: "read".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: "fn main() {}".into(),
+            edit: None,
+            origin: None,
+            media: None,
+        };
+        // **A user row carrying two images** — the head-attached path, and the case a single-image
+        // fixture cannot catch: the second marker is the one a `once` bug would drop.
+        let attached = TranscriptItem::User {
+            speaker: Default::default(),
+            parts: vec![
+                UserPart::Text {
+                    text: "what are these?".into(),
+                },
+                UserPart::Image {
+                    media_type: "image/png".into(),
+                    data_ref: "data:image/png;base64,BBBB".into(),
+                },
+                UserPart::Image {
+                    media_type: "image/png".into(),
+                    data_ref: "data:image/png;base64,CCCC".into(),
+                },
+            ],
+        };
+        for items in [
+            vec![read_one.clone(), read_text.clone()],
+            vec![attached.clone()],
+            vec![attached.clone(), read_one.clone()],
+            vec![read_text.clone()],
+        ] {
+            let spans = QwenRenderer::new().render(&prefix("s", &[]), &items);
+            let carried = media_in_order(&items);
+            assert_eq!(
+                media_spans(&spans),
+                carried.len(),
+                "the renderer placed a different number of images than the transcript holds: \
+                 {items:?}"
+            );
+        }
+    }
+
+    /// **And the string form collapses the three tokens into ONE marker.**
+    ///
+    /// The server wants its marker once per image and emits the model's three vision tokens itself,
+    /// so `spans_to_string_with_media` places the marker at the opening role and swallows the other
+    /// two. Pinned because the failure is silent: three markers where one belongs would ask the
+    /// server for three pictures and be given the one it has.
+    #[test]
+    fn the_string_form_places_one_marker_per_image_not_three() {
+        use letibot_dialect::{media_spans, spans_to_string_with_media};
+        let items = vec![TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "read".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: "shot.png".into(),
+            edit: None,
+            origin: None,
+            media: Some(letibot_transcript::media::Media {
+                mime: "image/png".into(),
+                bytes: 11,
+                width: Some(2),
+                height: Some(2),
+                data_ref: "data:image/png;base64,AAAA".into(),
+            }),
+        }];
+        let spans = QwenRenderer::new().render(&prefix("s", &[]), &items);
+        assert_eq!(media_spans(&spans), 1, "one image");
+        let text = spans_to_string_with_media(&spans, "<__media__>");
+        assert_eq!(
+            text.matches("<__media__>").count(),
+            1,
+            "one marker per image: {text}"
+        );
+        // The model's own vision tokens are gone from the string form, because the server writes
+        // them itself once it has the picture.
+        assert!(!text.contains("<|vision_start|>"), "{text}");
+        assert!(!text.contains("<|image_pad|>"), "{text}");
+        // And the picture sits where the reading happened: after the payload that describes it.
+        let payload = text.find("shot.png").expect("the payload is there");
+        let marker = text.find("<__media__>").expect("the marker is there");
+        assert!(payload < marker, "the marker is before its own payload: {text}");
     }
 
     #[test]
