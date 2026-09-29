@@ -697,5 +697,27 @@ mod tests {
         // A file that does not parse is an error, never an empty ruleset.
         std::fs::write(&path, "{not json").unwrap();
         assert!(load_file(&path).is_err());
+
+        // **Appending the SAME rule twice is ONE rule, not two.** Probed before it was asserted:
+        // `*Always allow*` on a command already allowed is the ordinary way this lands twice, and
+        // the property that saves it is that a JSON object is keyed — `insert` replaces. Without it
+        // the file grows a duplicate pattern per answer and which of the two wins is decided by
+        // source order, which is precisely the defect that hid `symbolic-ref` in two arms of the
+        // gate's own classifier.
+        let dir2 = crate::backend::tempdir::TempDir::new();
+        let p2 = dir2.path().join("permission.json");
+        append_to_file(&p2, &Rule::new("bash", "cargo run*", Action::Allow)).unwrap();
+        append_to_file(&p2, &Rule::new("bash", "cargo run*", Action::Allow)).unwrap();
+        let text = std::fs::read_to_string(&p2).unwrap();
+        assert_eq!(
+            text.matches("cargo run*").count(),
+            1,
+            "the same pattern was written twice: {text}"
+        );
+        // And the same pattern with a DIFFERENT action replaces rather than doubling, so the last
+        // answer wins — which is the precedence the reader already implements.
+        append_to_file(&p2, &Rule::new("bash", "cargo run*", Action::Deny)).unwrap();
+        let back = load_file(&p2).unwrap();
+        assert_eq!(evaluate_bash("cargo run --bin x", &[&back]), Action::Deny);
     }
 }
