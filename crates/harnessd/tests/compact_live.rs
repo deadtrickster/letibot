@@ -25,6 +25,8 @@
 //! The serving preflight (`letibot-turn`'s `serving.rs`) is the gate: against any
 //! other model it refuses by name before a token is sent.
 
+use std::sync::OnceLock;
+
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::hub::Hub;
@@ -44,12 +46,59 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg
 }
 
+/// **Is the box actually serving the model this test renders for?**
+///
+/// The docstring above states this as a property — *"the serving preflight is the gate: against any
+/// other model it refuses by name before a token is sent"* — and it was **not true of this file**.
+/// The guard existed in three sibling live tests and not here, so this one asserted that the GLM
+/// *vocabulary file* exists and then went looking for a GLM *server*: it rendered GLM token ids,
+/// sent them to whatever was on 8080, and spent **51 minutes** (measured: 3057.70s) discovering
+/// that the ids mean something else under another vocabulary. The failure it produced —
+/// `262194 tokens exceeds the available context size 262144` — names the qwen server's window, not
+/// anything about compaction, which is why it read as a parked mystery.
+///
+/// So the docstring's claim is now enforced rather than asserted. `live_qwen.rs` has the same
+/// function for its own model, and this is that shape with GLM's name in it: refuse by name, in
+/// seconds, and say `THIS IS NOT A PASS` so a skip is never read as a green.
+fn glm_is_served() -> bool {
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        let want = std::env::var("LETIBOT_MODEL_ALIAS").unwrap_or_else(|_| "glm-5.3-flash".into());
+        let endpoint = config(&std::path::PathBuf::from("/tmp"), "preflight").endpoint;
+        match letibot_turn::serving::served_model(&endpoint) {
+            Ok(served) if letibot_turn::serving::matches(&served, &want) => true,
+            Ok(served) => {
+                eprintln!(
+                    "SKIPPED: {} is serving `{served}`, and this test renders the GLM dialect for \
+                     `{want}` — the control tokens would not resolve, so nothing was run and THIS \
+                     IS NOT A PASS. Start {want}, or set LETIBOT_MODEL_ALIAS.",
+                    endpoint.authority()
+                );
+                false
+            }
+            Err(e) => {
+                eprintln!(
+                    "SKIPPED: could not ask {}/props ({e}), so nothing was run and THIS IS NOT A \
+                     PASS.",
+                    endpoint.authority()
+                );
+                false
+            }
+        }
+    })
+}
+
 #[test]
 fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
     assert!(
         std::path::Path::new(GLM_GGUF).is_file(),
         "no GLM vocabulary GGUF at {GLM_GGUF}"
     );
+    // **The precondition the file's docstring already stated**, checked instead of assumed: a
+    // vocabulary on disk is not a model on the endpoint, and only the second one can answer this.
+    if !glm_is_served() {
+        return;
+    }
     let dir = TempDir::new("harnessd-compact-live");
     let path = dir.path().join("sessions.db");
     let cfg = config(&path, "compact-live");
