@@ -215,6 +215,12 @@ impl<'a> Sessions<'a> {
         let harness = Harness::open_with_registry(parts, cfg, hub, None, tool, registry.clone())?;
         sessions.open.insert(id.clone(), harness);
         sessions.declare_flowy_monitor(&id, cond);
+        // **AND THE DAEMON'S OWN FIRST SESSION ARMS ITS CLOCK TOO.** This constructor inserts into
+        // `open` directly and never goes through `Sessions::open`, so the arming added there does not
+        // reach it — and this is the session a plain `letibot --continue` resumes, which makes it the
+        // COMMON case rather than a corner. Same rule as there: the board was just rebuilt from the
+        // store, so an unfinished plan is the model's own outstanding work and is worth one check.
+        sessions.rearm_todo_nag(&id);
         Ok(sessions)
     }
 
@@ -756,6 +762,24 @@ impl<'a> Sessions<'a> {
                     }
                 }
                 self.publish_title(session_id);
+                // **A RESUMED SESSION ARMS ITS OWN CLOCK, because nothing else will.**
+                //
+                // `nag_due` is in-memory and the only other arming point used to be the end of a
+                // turn — so a daemon that came back with an unfinished plan sat there for ever: no
+                // turn had ended yet, so no deadline existed, so the idle worker had nothing to wake
+                // for. The operator, watching exactly this on a resumed session: *"so when I bring
+                // session back it will not fire right now - this is exactly what i see with rano"*.
+                //
+                // **It is safe because the plan was RESTORED, not invented.** `Harness::open`
+                // rebuilds the todo board from the store (`store.todos(session_id)`), so the rows
+                // this arms on are the plan the model was working from — the ones it wrote before
+                // the restart. A session with a finished or empty plan arms nothing, which is the
+                // ordinary case and still costs no wake.
+                //
+                // The nag is a real turn, so this is a session that will speak once, unprompted, a
+                // minute after it is reopened with work outstanding. That is the intent: it is the
+                // replacement for a model's memory that did not survive the restart either.
+                self.rearm_todo_nag(session_id);
                 Ok(true)
             }
             Err(e) => {
@@ -1795,6 +1819,18 @@ impl<'a> Sessions<'a> {
                     h.set_operator_todos(converted);
                 }
                 let _ = n;
+                // **ARMING HERE IS THE WHOLE POINT OF A ROW THE OPERATOR ADDS.** The idle clock used
+                // to start in exactly one place — the end of a turn (`after_turn`) — so a row added
+                // to an IDLE session had no clock at all and was never checked: the model is quiet,
+                // the operator has just said what they want done, and nothing ever reminds it. The
+                // operator found it the direct way: *"my todos will be reminded to a model?"*, and
+                // on a resumed session, *"this is exactly what i see with rano"*.
+                //
+                // It is the same arm the turn end makes, deliberately: a board that MOVED is a board
+                // worth checking, and `rearm_todo_nag` already decides — an unchanged plan is not
+                // re-armed, so a head that re-pushes the same rows (any add, any delete, every
+                // HELLO) does not become a metronome.
+                self.rearm_todo_nag(session_id);
                 Outcome::Ignored
             }
             CommandKind::WithdrawPrompts => Outcome::Ignored,

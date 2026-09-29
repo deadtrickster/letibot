@@ -135,3 +135,166 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
+
+// =====================================================================
+// The idle clock: who starts it, and the two paths that did not.
+// =====================================================================
+//
+// **The operator, twice.** First on the feature: *"at which point my todos will be
+// reminded to a model?"* — then on the gap, with the evidence in front of them:
+// *"so when I bring session back it will not fire right now - this is exactly what i
+// see with rano"*.
+//
+// They were right, and the cause is one line of provenance: `Sessions::rearm_todo_nag`
+// is the ONLY writer of `nag_due`, and it had exactly one caller — the end of
+// `after_turn`, whose own comment says *"Every turn ends here, so this is where the
+// idle clock starts."* So the clock counted from a TURN BOUNDARY and nothing else,
+// which left two paths with no clock at all:
+//
+//   · a row the OPERATOR adds to an IDLE session — the model is quiet, the operator
+//     has just said what they want done, and nothing ever reminds it;
+//   · a session REOPENED with an unfinished plan — `nag_due` is in-memory, so a
+//     daemon that came back had nothing armed and the idle worker had nothing to wake
+//     for. This is the rano case exactly.
+//
+// Both now arm. What is asserted here is that a DEADLINE EXISTS after each, which is
+// the whole of the fix: whether it then fires is `deliver_due_nags`' business and is
+// the same code the turn-end path has always used.
+
+use letibot_harnessd::sessions::Outcome;
+use letibot_harnessd::Sessions;
+use letibot_sessionlog::event::{TodoBy as WireTodoBy, TodoEntry, TodoStatus as WireTodoStatus};
+use letibot_sessionlog::hub::{CommandKind, QueuedCommand};
+use letibot_sessionlog::registry::Registry;
+
+/// A store holding one session with an unfinished plan. The session row first —
+/// the todo row carries a foreign key to it.
+fn a_session_with_an_open_plan(tag: &str) -> (TempDir, std::path::PathBuf, String) {
+    let dir = TempDir::new(tag);
+    let path = dir.path().join("sessions.db");
+    let session_id = format!("nag-{tag}");
+    let s = Store::open(&path).expect("seeding");
+    s.put_session(&SessionRecord {
+        id: session_id.clone(),
+        title: Some("the nag session".into()),
+        model_id: "m".into(),
+        dialect_sha: "sha".into(),
+        workspace_root: "/tmp".into(),
+        owner: "dead".into(),
+        role: None,
+        approvers: vec![],
+        parent_session_id: None,
+    })
+    .expect("the session row");
+    s.put_todos(
+        &session_id,
+        &[TodoItem {
+            content: "finish the migration".into(),
+            status: TodoStatus::InProgress,
+            by: TodoBy::Model,
+        }],
+    )
+    .expect("the todo row");
+    (dir, path, session_id)
+}
+
+#[test]
+fn a_session_reopened_with_an_open_plan_arms_its_idle_clock() {
+    let (_dir, path, session_id) = a_session_with_an_open_plan("rearm-open");
+    let cfg = config(&path, &session_id);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let registry = Registry::new();
+    registry
+        .create(&session_id, "", Sessions::wiring(&cfg))
+        .expect("the session is in the registry");
+    let sessions = Sessions::open_first(&parts, cfg.clone(), registry).expect("the session opens");
+
+    assert!(
+        sessions.next_nag_at().is_some(),
+        "**a reopened session with outstanding work has a deadline** — before this, the only \
+         arming point was the end of a turn, so a daemon that came back sat for ever with an \
+         unfinished plan and nothing to wake the idle worker for. The operator's own case: \
+         *\"this is exactly what i see with rano\"*."
+    );
+}
+
+#[test]
+fn a_reopened_session_with_a_finished_plan_arms_nothing() {
+    let (_dir, path, session_id) = a_session_with_an_open_plan("rearm-done");
+    // Every row completed: a plan with nothing open is not a plan to nag about.
+    Store::open(&path)
+        .expect("the store")
+        .put_todos(
+            &session_id,
+            &[TodoItem {
+                content: "finish the migration".into(),
+                status: TodoStatus::Completed,
+                by: TodoBy::Model,
+            }],
+        )
+        .expect("the todo row");
+    let cfg = config(&path, &session_id);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let registry = Registry::new();
+    registry
+        .create(&session_id, "", Sessions::wiring(&cfg))
+        .expect("the session is in the registry");
+    let sessions = Sessions::open_first(&parts, cfg.clone(), registry).expect("the session opens");
+
+    assert!(
+        sessions.next_nag_at().is_none(),
+        "**and a finished plan still costs no wake** — the arming is `nag_should_arm`'s \
+         decision, not a consequence of reopening, so the common case is unchanged"
+    );
+}
+
+#[test]
+fn a_row_the_operator_adds_to_an_idle_session_arms_the_clock() {
+    let (_dir, path, session_id) = a_session_with_an_open_plan("rearm-set");
+    // Start from a FINISHED plan so the open itself arms nothing, and the only
+    // thing that can arm is the operator's own row.
+    Store::open(&path)
+        .expect("the store")
+        .put_todos(&session_id, &[])
+        .expect("clearing the plan");
+    let cfg = config(&path, &session_id);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let registry = Registry::new();
+    registry
+        .create(&session_id, "", Sessions::wiring(&cfg))
+        .expect("the session is in the registry");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
+    assert!(
+        sessions.next_nag_at().is_none(),
+        "nothing to check yet, so nothing is armed"
+    );
+
+    // The head pushes a row — the same command `push-operator-todos` puts on the queue
+    // when the operator adds one.
+    let cmd = QueuedCommand {
+        head_id: "test-head".into(),
+        identity: "dead".into(),
+        client_request_id: "req-1".into(),
+        at_seq: 0,
+        kind: CommandKind::SetOperatorTodos {
+            items: vec![TodoEntry {
+                content: "add the migration notes".into(),
+                status: WireTodoStatus::Pending,
+                by: WireTodoBy::Operator,
+            }],
+        },
+    };
+    let outcome = sessions.dispatch(&session_id, &cmd);
+    assert!(
+        matches!(outcome, Outcome::Ignored),
+        "the operator's own list is not a tool call and is not gated"
+    );
+
+    assert!(
+        sessions.next_nag_at().is_some(),
+        "**a row the operator adds to a quiet session starts the clock** — this is the \
+         other half of the same gap: before, `SetOperatorTodos` set the board and nothing \
+         else, so work the operator had just asked for was never mentioned again"
+    );
+}
