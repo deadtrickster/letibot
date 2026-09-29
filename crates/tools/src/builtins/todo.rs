@@ -532,6 +532,94 @@ fn render(todos: &[TodoItem]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// **REPLACING THE HALF WIPES STATE THE OTHER AUTHOR SET ON IT — the hazard the file-migration
+    /// design has to answer before anything else.**
+    ///
+    /// The proposed shape is *"you literally migrate the whole todo, starting from the top level"*:
+    /// `TODO.md` becomes the operator's half, re-read when a watcher notices the file change, and
+    /// sent as `SetOperatorTodos`. That frame calls `set_operator`, which **replaces** the half.
+    ///
+    /// But the model's only way to dispose of the operator's rows is `set_operator_states`, which
+    /// moves STATE and deliberately cannot change membership. So the two writes disagree about what
+    /// the half IS: the model changes one row's status, and the next whole-file migration sends the
+    /// FILE's statuses and takes that mark away.
+    ///
+    /// MEASURED here rather than argued. The order is the one a session would actually see:
+    /// migrate, work, mark done, file touched, migrate again.
+    #[test]
+    fn a_whole_file_migration_would_wipe_the_state_the_model_set() {
+        let b = TodoBoard::new(Vec::new());
+
+        // 1. The file migrates whole — the operator's half, as `TODO.md` has it.
+        let from_file = || {
+            vec![
+                TodoItem {
+                    content: "T1 vendor the deps".into(),
+                    status: TodoStatus::Pending,
+                    by: TodoBy::Operator,
+                },
+                TodoItem {
+                    content: "T2 wire the pane".into(),
+                    status: TodoStatus::Pending,
+                    by: TodoBy::Operator,
+                },
+            ]
+        };
+        b.set_operator(from_file());
+
+        // 2. The model does T1 and marks it — the mechanism that already exists for exactly this.
+        let changed = b
+            .set_operator_states(&[("T1 vendor the deps".into(), TodoStatus::Completed)])
+            .expect("the model marks the operator's row done");
+        assert_eq!(changed, 1);
+        assert_eq!(
+            b.operator_snapshot()[0].status,
+            TodoStatus::Completed,
+            "the premise: the model's mark is on the board"
+        );
+
+        // 3. **The operator touches a line** — any line, even T2's, even a comment — and the watcher
+        //    re-migrates the whole file, because a whole-file migration is what removes the
+        //    line-level problem. The file still says `[ ]` for T1, because the model's work was
+        //    never written back to it.
+        b.set_operator(from_file());
+
+        // **The assertion is that the wipe HAPPENED** — this test holds the hazard still while the
+        // design answers it, so it fails the day `set_operator` learns to preserve state, and that
+        // failure is the signal to rewrite it as the positive.
+        assert_eq!(
+            b.operator_snapshot()[0].status,
+            TodoStatus::Pending,
+            "the model's mark survived a whole-file migration, so the hazard this records is gone \
+             — rewrite this test as the positive"
+        );
+    }
+
+    /// And the tag question, measured: **a tag in the tail survives both paths to the model**, so
+    /// `TodoEntry` needs nothing for it — provided the model is told the whole tree.
+    ///
+    /// `content` is printed VERBATIM by `render` (that is what makes the words quotable back, which
+    /// `set_operator_states` depends on), and the nag's only edit is `trim`, which removes
+    /// whitespace and not a trailing word. So a line's tail rides the wire as part of the row.
+    #[test]
+    fn a_tag_in_the_lines_tail_reaches_the_model_with_no_field_for_it() {
+        let b = TodoBoard::new(vec![TodoItem {
+            content: "T1 vendor the deps  #model".into(),
+            status: TodoStatus::Pending,
+            by: TodoBy::Operator,
+        }]);
+        let all = b.snapshot();
+        // The renderer the model reads.
+        let rendered = render(&all);
+        assert!(
+            rendered.contains("#model"),
+            "the tag did not survive into what the model is told: {rendered}"
+        );
+        // And the nag, whose only edit is a trim.
+        let nag = unfinished_plan(&all).expect("one row is open");
+        assert!(nag.contains("#model"), "the tag did not survive the nag: {nag}");
+    }
+
     use super::*;
     use crate::backend::HostBackend;
     use crate::backend::tempdir::TempDir;
