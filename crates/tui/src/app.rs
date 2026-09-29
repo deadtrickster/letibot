@@ -23987,6 +23987,64 @@ mod tests {
     ///
     /// a duplicate AND a false author, from one row on the board. This asserts the two halves of
     /// the fix: each row once, and each under the heading of the half that owns it.
+    /// **`by: Operator` does NOT mean "came from the file"** — and the design that assumes it would
+    /// delete the operator's own rows.
+    ///
+    /// The rule being proposed is that the file IS the operator's half, so a `by: Operator` row's
+    /// state lives in `TODO.md` and a re-migration cannot lose anything. **The rule has an exception,
+    /// and it is destructive**: this head can put a `by: Operator` row on the board with no line in
+    /// the file behind it. `SetOperatorTodos` is a whole-half write from the head — `/todo TEXT`, the
+    /// `[+]` card, and the pane's own toggle all go through it — and none of those three is a file
+    /// edit.
+    ///
+    /// So under a whole-file migration the next re-read **replaces the operator's half with the
+    /// file's rows**, and the rows this test adds are not replaced-with-different-state: they are
+    /// *gone*. The state-level wipe that `a_whole_file_migration_would_wipe_the_state_the_model_set`
+    /// records is the milder version of the same defect.
+    ///
+    /// **What this pins is the fact that decides the wire.** Either the operator's own rows stop
+    /// being session-scoped — every one of them comes from the file, so `/todo TEXT` and the toggle
+    /// write the file and the session half retires — or a row has to say which origin it came from,
+    /// and that is a field. Both are honest; inferring origin from `by` is neither.
+    #[test]
+    fn the_operators_own_rows_are_not_in_the_file_so_by_operator_is_not_file_sourced() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-todo-origin-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(
+            dir.join("TODO.md"),
+            "## Phase 0\n\n- [ ] T1 lifted from the file\n",
+        )
+        .expect("write");
+        use letibot_sessionlog::event::TodoBy;
+        let mut a = app();
+        a.wiring.workspace = dir.display().to_string();
+        a.session_id = "s1".into();
+
+        // The operator adds one the way they actually do, and it is filed as theirs.
+        match a.command("todo something only this session knows about") {
+            Some(Action::SetOperatorTodos(items)) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].by, TodoBy::Operator, "it IS the operator's row");
+                // **And it is not in the file**, which is the exception.
+                let on_disk = std::fs::read_to_string(dir.join("TODO.md")).expect("read");
+                assert!(
+                    !on_disk.contains("something only this session knows about"),
+                    "the head is supposed to keep no file copy of its own rows: {on_disk}"
+                );
+                assert!(
+                    on_disk.contains("T1 lifted from the file"),
+                    "and the file is where the file's row lives: {on_disk}"
+                );
+            }
+            other => panic!("expected a SetOperatorTodos, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_todo_row_is_drawn_once_under_the_author_that_wrote_it() {
         use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
