@@ -5959,6 +5959,26 @@ mod tests {
                 "a program that can execute",
             ),
             ("cd /w && rm -f src/lib.rs", "a deletion"),
+            // **A verb that had to be MEASURED to be here.** `git symbolic-ref` reads a ref, so it
+            // sat in layer A's read arm — and it was ALSO in the write arm, where the match could
+            // never reach it. Source order decided the classification: this call came back
+            // `intents ["inspect"]`, `reads_only` true, so `judged_access` narrowed it to
+            // `Access::Read` and `Mode::disposition` admits a read at every point. The operator
+            // was never asked, and nothing on any screen said so, because what the
+            // misclassification suppressed was a PROMPT.
+            //
+            // It is a write: `git symbolic-ref HEAD refs/heads/other` sets `.git/HEAD` to
+            // `refs/heads/other` (measured against a scratch repo), and the man-page scrape in
+            // `docs/evidence/man-scrape/` says so in as many words — *"This subcommand can delete
+            // symbolic refs that existed before"* — while `FLAG_RULES` already carried `Destroy`
+            // for its `-d` spelling. Two signals and neither reached the base arm.
+            //
+            // Here rather than only in `intent.rs`, because THIS is where the consequence is: the
+            // class must be the vehicle's and `asked` must be 1.
+            (
+                "git symbolic-ref HEAD refs/heads/other",
+                "a ref being moved",
+            ),
         ] {
             let (mut g, asked) = gate();
             let args = json!({"command": cmd});

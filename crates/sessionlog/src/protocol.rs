@@ -1461,7 +1461,6 @@ mod tests {
                 | ClientFrame::Stop { .. }
                 | ClientFrame::Switch { .. }
                 | ClientFrame::SetOperatorTodos { .. }
-                | ClientFrame::SetOperatorTodos { .. }
                 | ClientFrame::WithdrawPrompts { .. } => {}
             }
         }

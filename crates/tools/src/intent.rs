@@ -1693,7 +1693,7 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
                 "status" | "log" | "diff" | "show" | "blame" | "describe" | "rev-parse"
                 | "shortlog" | "ls-files" | "grep" | "whatchanged" | "reflog" | "merge-base"
                 | "rev-list" | "merge-tree" | "ls-tree" | "cat-file" | "diff-tree" | "name-rev"
-                | "count-objects" | "for-each-ref" | "show-ref" | "symbolic-ref" | "var"
+                | "count-objects" | "for-each-ref" | "show-ref" | "var"
                 | "version" | "help" | "check-ignore" | "ls-remote" | "fsck" => vec![Inspect],
                 // A new repository, on the operator's disk: a write, not a mystery.
                 "init" => vec![WriteFile],
@@ -1708,6 +1708,18 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
                 // it pointed at. Both are the repository losing a reachable history,
                 // so this is the same pair `reset` and `branch` already carry, and
                 // `FLAG_RULES` adds `Destroy` for the spellings that delete.
+                //
+                // **`symbolic-ref` IS this arm and was also in the read arm above**, and the
+                // match took the read because it came first — so which classification won was
+                // decided by source ORDER, a fact no reader of either list can see. The compiler
+                // said so, as `unreachable pattern`, and a warning is not a decision: a
+                // `git symbolic-ref HEAD refs/heads/other` MOVES HEAD (measured) and was read as
+                // `inspect`, which made `reads_only` true, which narrowed the shell call to a read
+                // in `judged_access`, which `Mode::disposition` admits at every point including
+                // `always-ask`. Nobody was asked and nothing was shown, because what the
+                // misclassification suppressed was a PROMPT — and a prompt that does not happen
+                // leaves no mark on any screen. See
+                // `moving_a_ref_is_not_a_read_and_deleting_it_agrees`.
                 "update-ref" | "update-index" | "symbolic-ref" | "write-tree"
                 | "commit-tree" | "hash-object" | "mktree" | "mktag" | "replace"
                 | "prune" | "prune-packed" | "gc" | "repack" | "pack-refs"
@@ -5751,6 +5763,86 @@ mod tests {
 
     fn has_exec(cmd: &str) -> bool {
         b(cmd).intents.contains(&Intent::ExecuteCode)
+    }
+
+    /// **A ref that can be moved is not a read — and its pair says so.**
+    ///
+    /// `symbolic-ref` was in the read arm ABOVE and the write arm BELOW, and the match takes the
+    /// first, so the read won. **Which one won was decided by source order** — a fact no reader of
+    /// either list can see — and the compiler said so as `unreachable pattern`, which is a warning
+    /// rather than a decision.
+    ///
+    /// The consequence is the reason this test exists rather than a comment: `reads_only()` came
+    /// back true, `judged_access` narrowed the shell call to a READ, and `Mode::disposition` admits
+    /// a read unasked at every point — clause 4, including `always-ask`. So `git symbolic-ref HEAD
+    /// refs/heads/other`, which MOVES HEAD (measured against a scratch repo: `.git/HEAD` went from
+    /// `refs/heads/master` to `refs/heads/other`), was admitted with nobody asked.
+    ///
+    /// **Nobody would have seen it.** What the misclassification suppressed was a PROMPT, and a
+    /// prompt that does not happen leaves no mark on any screen — no row, no counter, no note. It
+    /// was found by auditing this registry against a proposal, not by a report of a failure, because
+    /// there was no failure to report.
+    ///
+    /// # The assertion is the PAIR, not the new answer
+    ///
+    /// Setting a ref and deleting one are the same side of the line, and `update-ref` already
+    /// carries that pair (`FLAG_RULES` adds `Destroy` for the deleting spelling). A test that pinned
+    /// only `symbolic-ref`'s new reading would pass again the day somebody put the name back in the
+    /// read arm — so the pair is asserted twice, once per verb, and a genuine reader is asserted
+    /// beside them so an emptied read arm cannot look like a fix.
+    #[test]
+    fn moving_a_ref_is_not_a_read_and_deleting_it_agrees() {
+        // The two verbs that move a ref, spelled the two ways each.
+        for (verb, set, del) in [
+            (
+                "symbolic-ref",
+                "git symbolic-ref HEAD refs/heads/other",
+                "git symbolic-ref -d refs/heads/other",
+            ),
+            (
+                "update-ref",
+                "git update-ref refs/heads/x abc123",
+                "git update-ref -d refs/heads/x",
+            ),
+        ] {
+            let moving = b(set);
+            let deleting = b(del);
+            assert!(
+                !moving.reads_only(),
+                "`{set}` is judged a read, so it is admitted unasked at every tier: {:?}",
+                moving.intents
+            );
+            assert!(
+                moving.intents.contains(&Intent::WriteFile),
+                "`{set}` does not carry a write: {:?}",
+                moving.intents
+            );
+            assert!(
+                !deleting.reads_only(),
+                "`{del}` is judged a read: {:?}",
+                deleting.intents
+            );
+            assert!(
+                deleting.intents.contains(&Intent::Destroy),
+                "`{del}` does not carry the destroy its own spelling means: {:?}",
+                deleting.intents
+            );
+            // **And the pair agrees**, which is the assertion that survives somebody editing one
+            // arm: a ref moved and a ref deleted are the same side of `reads_only`.
+            assert_eq!(
+                moving.reads_only(),
+                deleting.reads_only(),
+                "{verb}: setting and deleting a ref disagree about whether this is a read"
+            );
+        }
+
+        // **And the arm still has its readers.** Emptying the read arm would make every assertion
+        // above pass and would be a worse bug than the one being fixed, so the names that ARE reads
+        // are pinned here beside it.
+        for cmd in ["git show-ref", "git for-each-ref", "git rev-parse HEAD"] {
+            let x = b(cmd);
+            assert!(x.reads_only(), "`{cmd}` stopped being a read: {:?}", x.intents);
+        }
     }
 
     #[test]
