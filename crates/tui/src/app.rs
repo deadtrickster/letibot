@@ -12086,7 +12086,11 @@ impl App {
         out.push(String::new());
         out.push(dim(
             &self.cfg,
-            "  the repo's TODO.md — the operator's queue, read-only here:",
+            // **Not "the operator's queue".** *Queued* is this head's word for a PROMPT the daemon
+            // owes a row for — `pub const QUEUED`, and the echo mark on every line the operator has
+            // sent and not seen land. Reusing it here says the opposite of what is true: these rows
+            // are not waiting for the model, they are what the project intends.
+            "  the repo's TODO.md — what the project intends; not the model's plan:",
         ));
         match &self.repo_todos {
             None => out.push(dim(
@@ -12142,7 +12146,19 @@ impl App {
         out.push(String::new());
         out.push(dim(
             &self.cfg,
-            "  the file itself is in the workspace; this pane never writes it.",
+            // **The one sentence that stops the two sections being one list.** The operator's
+            // ruling, 2026-09-29: *"host specific todo is actionable but shared todo.md items are
+            // promotable."* So the difference between the halves above and the rows here is not
+            // which file they came out of — it is that the model is never told about these. The
+            // sentence above the section says what the model IS reminded of; without this one, a
+            // reader has to infer the negative, and the two sections look alike enough to invite
+            // the wrong inference.
+            //
+            // **Nothing here is promotable yet on this head**, and that is why the sentence names
+            // no key: R29's rule is that a disclosure carries the act that undoes it, and a pane
+            // that promised a gesture it does not bind would be the failure the rule prevents.
+            "  the file itself is in the workspace; this pane never writes it, and the model is \
+             never told about it — nothing here is a task it has been given.",
         ));
         // **The keys, said where they are used.** The cursor walks three kinds of row now, and
         // what Enter does depends on which one it is on — a hint that named only the unfold was
@@ -23219,7 +23235,15 @@ mod tests {
             screen.contains("who wrote each line"),
             "the pane does not name the list's authorship: {screen}"
         );
-        assert!(screen.contains("read-only"), "{screen}");
+        // **The fact, not the word.** This asserted `read-only`, which was the old repo heading's
+        // wording; the heading now says what that section IS (`what the project intends; not the
+        // model's plan`, after the operator's two-lists ruling) and the sentence that carries the
+        // read-only fact is the one under the list. Pinning the WORD is what made a wording change
+        // look like a behaviour change.
+        assert!(
+            screen.contains("this pane never writes it"),
+            "the pane does not say it leaves the file alone: {screen}"
+        );
         // And Esc is "go back", before the composer sees it.
         a.key(Key::Esc);
         assert!(!a.todos_pane);
@@ -23569,6 +23593,58 @@ mod tests {
     /// end: a click has a screen row and nothing else, and a second computation of where a row went
     /// is the defect both reports came from.
     #[test]
+    /// **The pane says which of its two lists the model is told about** — the operator's ruling,
+    /// 2026-09-29: *"host specific todo is actionable but shared todo.md items are promotable."*
+    ///
+    /// Two sections that look alike and differ in whether the model ever hears about them is the
+    /// conflation this pins. It is a **sentence**, which is why it needs a test at all: prose that
+    /// nothing checks is prose that drifts, and this tree's recurring defect is exactly a true
+    /// sentence that stopped being true (see `messages.rs`'s *"not sent to this provider"*).
+    ///
+    /// Three assertions, and the second is the one that is easy to lose:
+    ///
+    ///   * the repo section says the model is never told about it;
+    ///   * the session section says the model IS reminded of it, so the negative above is scoped
+    ///     rather than a blanket claim about the whole pane;
+    ///   * and the repo heading does **not** call the file a *queue* — `queued` is this head's word
+    ///     for a prompt the daemon owes a row for (`pub const QUEUED`), so that word in this spot
+    ///     says the opposite of what is true.
+    #[test]
+    fn the_pane_says_which_of_its_two_lists_the_model_is_told_about() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-todo-two-lists-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        std::fs::write(
+            dir.join("TODO.md"),
+            "## Phase 0\n\n- [ ] T1 something the project intends\n",
+        )
+        .expect("write");
+        let mut a = app();
+        a.wiring.workspace = dir.display().to_string();
+        a.key(Key::CtrlP);
+        let screen = a.screen(140, 40).join("\n");
+        assert!(
+            screen.contains("the model is never told about it"),
+            "the pane does not say the repo's list is outside what the model hears: {screen}"
+        );
+        assert!(
+            screen.contains("the model sees these and is reminded of them"),
+            "and it does not say the session's list IS what the model hears: {screen}"
+        );
+        assert!(
+            !screen.contains("the operator's queue"),
+            "the repo's TODO.md is called a queue, which in this head means a prompt waiting for \
+             the model: {screen}"
+        );
+        // The heading still names the file, so the sentence above is not the only thing telling a
+        // reader which list they are looking at.
+        assert!(screen.contains("the repo's TODO.md"), "{screen}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn a_click_on_the_todos_pane_puts_the_cursor_on_the_row_it_is_on() {
         let dir = std::env::temp_dir().join(format!(
             "letibot-todo-click-{}-{:?}",

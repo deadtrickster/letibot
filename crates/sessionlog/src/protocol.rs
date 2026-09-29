@@ -732,7 +732,7 @@ pub enum ClientFrame {
         expected_seq: u64,
         reason: String,
     },
-    /// A head asked to move the running command to the background (Ctrl+B). The
+    /// A head asked to move the running command to the background (Ctrl+O). The
     /// daemon's exec backend honours it mid-turn; between turns it is announced as
     /// idle.
     Promote {
