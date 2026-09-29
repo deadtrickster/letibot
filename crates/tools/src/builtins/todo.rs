@@ -585,6 +585,96 @@ mod tests {
         assert!(after.iter().any(|t| t.content == "the operator's"));
     }
 
+    /// **The union is TWO BLOCKS, not an interleaving** — and with hierarchy coming, that is the
+    /// fact the whole shape turns on.
+    ///
+    /// `snapshot` is a clone-then-`extend`: every model row precedes every operator row, always,
+    /// because nothing merges the two vectors. So the halves cannot interleave by depth, which means
+    /// **"replace my half" stays a well-defined edit**: the model's wholesale write cannot move,
+    /// delete or re-parent a row of the operator's, and the operator's half is a suffix of the
+    /// union rather than a scatter through it.
+    ///
+    /// # And the hazard that comes with it, which is why this is asserted and not assumed
+    ///
+    /// Depth is POSITIONAL — that is what makes it markdown's model and rano's, and it is the right
+    /// choice. But positional depth over a concatenation means a row's apparent parent is *the row
+    /// before it in the union*, and at the seam that row belongs to somebody else. An operator row at
+    /// depth 1 sitting after a model row at depth 0 renders as a child of it, and **the model's next
+    /// write can change that parent without touching a single operator row**: a wholesale replace
+    /// changes the last model row and the operator's subtree is silently re-hung under whatever took
+    /// its place. That is the same failure as a flattened subtree — data that reads as a statement
+    /// nobody made — one level up, and it is silent.
+    ///
+    /// **The rule that removes it is one line and it is asserted here**: each half is its own tree,
+    /// so the first row of each BLOCK is depth 0. The seam is a boundary, not a parent. When depth
+    /// lands, a writer that indents the first row of a half must be refused where the board is built
+    /// rather than coped with where it is drawn — see the operator's own instruction on the shape:
+    /// *"the depth invariant enforced where the board is built, not where it is drawn. A renderer
+    /// that copes with a gap hides a writer that made one."*
+    ///
+    /// Today there is no depth, so the assertion is the shape it will have to satisfy: the blocks are
+    /// contiguous and their order is fixed.
+    #[test]
+    fn the_union_is_two_contiguous_blocks_so_a_half_is_a_suffix_not_a_scatter() {
+        let b = TodoBoard::new(vec![
+            TodoItem {
+                content: "m1".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+            },
+            TodoItem {
+                content: "m2".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+            },
+        ]);
+        b.set_operator(vec![
+            TodoItem {
+                content: "o1".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+            },
+            TodoItem {
+                content: "o2".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+            },
+        ]);
+
+        let all = b.snapshot();
+        let authors: Vec<TodoBy> = all.iter().map(|t| t.by).collect();
+        assert_eq!(
+            authors,
+            vec![
+                TodoBy::Model,
+                TodoBy::Model,
+                TodoBy::Operator,
+                TodoBy::Operator
+            ],
+            "the union interleaved the halves, so `replace` is no longer a half-edit: {all:?}"
+        );
+
+        // **And a wholesale replace cannot reorder what it does not own.** The model rewrites its
+        // own rows — fewer of them here — and the operator's block is still the tail, in the same
+        // order, with the same contents.
+        b.replace(vec![TodoItem {
+            content: "m1 rewritten".into(),
+            status: TodoStatus::Pending,
+            by: TodoBy::Model,
+        }]);
+        let after = b.snapshot();
+        assert_eq!(
+            after.iter().map(|t| t.content.as_str()).collect::<Vec<_>>(),
+            vec!["m1 rewritten", "o1", "o2"],
+            "the model's replace moved the operator's rows: {after:?}"
+        );
+        assert_eq!(
+            after.iter().filter(|t| t.by == TodoBy::Operator).count(),
+            2,
+            "and none of them went with it"
+        );
+    }
+
     /// The tool behind a real runtime, because the call goes through the gate on
     /// its way past — and `Access::Session` must pass it unattended, which this
     /// doubles as a check of.
