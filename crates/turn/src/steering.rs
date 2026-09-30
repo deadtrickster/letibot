@@ -201,6 +201,28 @@ impl Pending {
         // and an interrupt is not something the operator withdraws by editing a
         // line anyway.
         if let Some(u) = self.urgent.take() {
+            // **AND THE SOURCE IS STILL DRAINED, WHICH IS A BUG FIX AND NOT A TIDY-UP.**
+            //
+            // MEASURED on the operator's own head: they typed a prompt behind a long tool call and
+            // pressed `esc esc`. The interrupt became a held urgent, and from that moment THIS EARLY
+            // RETURN was taken on every poll — so `source.try_next()` was never reached again, the
+            // hub's queue was never drained, and **their prompt could not be absorbed at all.** The
+            // head held the echo and drew `queued` for the rest of the session (verified: the string
+            // appears in no item of 2,579, because it never landed). The interrupt and the queue are
+            // not two independent features; they share this one slot, and an interrupt took the
+            // queue out of the picture — *"interrupts and queue do not play well together"*.
+            //
+            // The docstring's own promise is the requirement it was breaking: *"the one after is
+            // still in the source and will be absorbed at the next boundary."* With a held urgent
+            // there was no drain at the next boundary.
+            //
+            // **The held one still goes first**, because it was taken out of the source first and an
+            // interrupt is not something a later message reorders. A NEW urgent found while draining
+            // is held for the next call rather than dropped, and everything after it stays in the
+            // source, exactly as the loop above always left it.
+            if let Some(found) = self.drain(source) {
+                self.urgent = Some(found);
+            }
             return Some(u);
         }
         if source.try_withdraw() {
@@ -231,6 +253,16 @@ impl Pending {
             // shape rather than to this rule.
             self.queued.retain(|m| !m.from_operator);
         }
+        self.drain(source)
+    }
+
+    /// **Drain the source once**: queue every non-urgent message, and RETURN the first urgent one
+    /// without queueing it — everything after that urgent stays in the source, which is what the
+    /// loop's `return` has always done.
+    ///
+    /// Extracted so the held-urgent path above can use the SAME rule. It was a `while` loop inlined
+    /// in `absorb`, and the early return meant one of the two callers of that rule did not run it.
+    fn drain(&mut self, source: &mut dyn SteeringSource) -> Option<SteeringMessage> {
         while let Some(m) = source.try_next() {
             if m.urgent {
                 return Some(m);
@@ -305,6 +337,64 @@ mod tests {
             panic!()
         };
         assert_eq!(text, "the spec changed - RFC 2812 rather than 1459");
+    }
+
+    /// **A HELD URGENT MUST NOT STARVE THE SOURCE — and MEASURED, on the operator's own head, it
+    /// did.** They typed a prompt behind a long tool call and pressed `esc esc`. The interrupt became
+    /// a held urgent, and from then on `absorb` returned it from its early return on every poll, so
+    /// `source.try_next()` was never reached again: the hub's queue was never drained and their
+    /// prompt could not be absorbed AT ALL. The head held the echo and drew `queued` for the rest of
+    /// the session — confirmed by searching every item in the transcript for the string, which
+    /// appears in none of 2,579, because it never landed.
+    ///
+    /// This test is the promise the docstring already made: *"the one after is still in the source
+    /// and will be absorbed at the next boundary."* With a held urgent there was no drain at the next
+    /// boundary, which is the bug.
+    #[test]
+    fn a_held_urgent_does_not_starve_the_source() {
+        let mut src = Fixed(vec![
+            SteeringMessage::urgent("ABORT"),
+            SteeringMessage::operator("my prompt behind a long call"),
+        ]);
+        let mut pending = Pending::new();
+
+        // the greedy poll before a generation: the urgent is taken and HELD, because there is no
+        // generation here to act on yet
+        let u = pending.absorb(&mut src).expect("the urgent one comes back");
+        assert_eq!(u.text, "ABORT");
+        pending.hold_urgent(u);
+
+        // **THE NEXT POLL MUST STILL REACH THE SOURCE.** It returns the held urgent (it came first),
+        // and it drains what is behind it — which is the operator's prompt.
+        let again = pending.absorb(&mut src).expect("the held one is still returned");
+        assert_eq!(again.text, "ABORT", "the held urgent still goes first");
+        assert_eq!(
+            pending.len(),
+            1,
+            "**and the operator's prompt was absorbed rather than stranded**: there is nothing left \
+             in the source either"
+        );
+        assert!(src.0.is_empty(), "the source is drained: {:?}", src.0);
+        let items = pending.take_items();
+        assert_eq!(items.len(), 1, "one held message, ready for the boundary");
+    }
+
+    /// And a SECOND urgent found while draining is held rather than dropped, so fixing the
+    /// starvation cannot lose an interrupt instead.
+    #[test]
+    fn an_urgent_found_while_draining_is_held_not_dropped() {
+        let mut src = Fixed(vec![
+            SteeringMessage::urgent("FIRST"),
+            SteeringMessage::urgent("SECOND"),
+        ]);
+        let mut pending = Pending::new();
+        let first = pending.absorb(&mut src).expect("the first");
+        pending.hold_urgent(first);
+
+        let again = pending.absorb(&mut src).expect("the held one");
+        assert_eq!(again.text, "FIRST", "the earlier one goes first");
+        let third = pending.absorb(&mut src).expect("**the second was not lost**");
+        assert_eq!(third.text, "SECOND");
     }
 
     #[test]

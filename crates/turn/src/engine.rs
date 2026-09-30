@@ -1108,7 +1108,15 @@ impl TurnEngine<'_> {
         // §5.8's step boundary: the generation is complete, so anything that
         // arrived during it — whether the stream loop saw it or it landed after —
         // goes in now, as a plain user append.
-        pending.absorb(steering);
+        // **A HELD URGENT IS HELD, NOT DROPPED — the same two lines the greedy poll above uses.**
+        // `absorb` returns an urgent rather than queueing it, and this site ignored the return, so an
+        // interrupt that arrived when there was no generation to stop was DISCARDED here. `Pending`
+        // says what that costs: *"Dropping it would turn an interrupt into silence, which is the
+        // worst thing this type could do."* MEASURED as silence, on the operator's head: four presses
+        // of `esc esc`, four `interrupt_idle` warnings, and no interrupt ever reached the engine.
+        if let Some(u) = pending.absorb(steering) {
+            pending.hold_urgent(u);
+        }
         let steering_items = pending.take_items();
         if !steering_items.is_empty() {
             session.append_items(self, &steering_items, sink)?;
@@ -1387,7 +1395,15 @@ impl TurnEngine<'_> {
             metrics: Box::new(metrics.clone()),
         });
 
-        pending.absorb(steering);
+        // **A HELD URGENT IS HELD, NOT DROPPED — the same two lines the greedy poll above uses.**
+        // `absorb` returns an urgent rather than queueing it, and this site ignored the return, so an
+        // interrupt that arrived when there was no generation to stop was DISCARDED here. `Pending`
+        // says what that costs: *"Dropping it would turn an interrupt into silence, which is the
+        // worst thing this type could do."* MEASURED as silence, on the operator's head: four presses
+        // of `esc esc`, four `interrupt_idle` warnings, and no interrupt ever reached the engine.
+        if let Some(u) = pending.absorb(steering) {
+            pending.hold_urgent(u);
+        }
         let steering_items = pending.take_items();
         if !steering_items.is_empty() {
             session.append_items(self, &steering_items, sink)?;

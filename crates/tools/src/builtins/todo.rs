@@ -389,6 +389,46 @@ impl Tool for TodoWriteTool {
         };
         let mut items = Vec::with_capacity(list.len());
         for (i, t) in list.iter().enumerate() {
+            // **AN UNKNOWN FIELD IN AN ENTRY IS REFUSED BY NAME, AND THIS IS THE ONE THAT COST A
+            // TURN. MEASURED, verbatim, from the transcript of a real session:**
+            //
+            //   {"todos": [{"content": "plain quoting — marked complete on the operator's
+            //               instruction; origin unrecoverable",
+            //               "operator": "mark that todo item as complete. no idea where it came from",
+            //               "status": "completed"}]}
+            //
+            // `operator` is a **TOP-LEVEL** argument of this tool and the model put it one level too
+            // deep. Every field this function reads was valid, so the call SUCCEEDED: the entry went
+            // into the model's own half and **the operator's row was never touched**. The model then
+            // spent two more calls and a paragraph of its reply working out why the row would not
+            // close — *"the mark didn't take, and I can't make it"* — and the operator watched a
+            // duplicate appear in their pane.
+            //
+            // **That is the same defect this crate refuses everywhere else**: a tool that ignores a
+            // field rather than saying it does not know it turns a wrong write into a silent one, and
+            // the model has no way to tell *nothing happened* from *it worked and you cannot see it*.
+            // The schema already says exactly two fields; this is where that is enforced.
+            if let Some(obj) = t.as_object() {
+                for key in obj.keys() {
+                    if !matches!(key.as_str(), "content" | "status") {
+                        return Invocation::failed(
+                            format!("entry {} has an unknown field `{key}`", i + 1),
+                            if key == "operator" {
+                                "**`operator` is a TOP-LEVEL argument, not a field of a `todos` \
+                                 entry**: send it BESIDE `todos`, as {\"todos\": […], \"operator\": \
+                                 [{\"content\": \"<the row's own words, quoted exactly>\", \
+                                 \"status\": \"completed\"}]}. Left inside an entry it is ignored, \
+                                 and being ignored is what makes it look like the row changed when \
+                                 it did not."
+                            } else {
+                                "a `todos` entry has exactly `content` and `status` — the whole list \
+                                 is replaced on every call, so an unknown field is refused rather \
+                                 than ignored."
+                            },
+                        );
+                    }
+                }
+            }
             let Some(content) = t.get("content").and_then(|v| v.as_str()) else {
                 return Invocation::failed(
                     format!("entry {} has no content", i + 1),
@@ -796,7 +836,104 @@ mod tests {
     /// The words are the name — there is no id on the wire, and the operator ruled out a bump — so
     /// this also pins what happens when the name does not fit: **refused, with the candidates
     /// named**, and NOTHING written.
+        /// **THE CALL THAT MADE A DUPLICATE ROW IN THE OPERATOR'S PANE, byte for byte from the
+    /// transcript of a real session.**
+    ///
+    /// The model put `operator` one level too deep — inside a `todos` entry instead of beside it.
+    /// Every field this function read was valid, so the call SUCCEEDED: the entry landed in the
+    /// model's own half and the operator's row was never touched. The model then spent two more calls
+    /// and a paragraph of its reply on why the row would not close — *"the mark didn't take, and I
+    /// can't make it"* — while the operator watched a second row appear where they expected their own
+    /// to change. **Ignoring a field is what made a wrong write silent**, which is the defect this
+    /// refuses.
     #[test]
+    fn an_operator_block_inside_a_todos_entry_is_refused_by_name() {
+        let (mut rt, board) = runtime();
+        board.set_operator(vec![TodoItem {
+            content: "plain quoting".into(),
+            status: TodoStatus::Pending,
+            by: TodoBy::Operator,
+        }]);
+        let mut sink = RecordingToolSink::new();
+
+        let r = rt.invoke(
+            "t1",
+            &call(
+                r#"{"todos": [{"content": "plain quoting — marked complete; origin unrecoverable",
+                                "operator": "mark that todo item as complete. no idea where it came from",
+                                "status": "completed"}]}"#,
+            ),
+            &mut sink,
+        );
+
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "**the call is refused, not half-obeyed**: {:?}",
+            r.outcome
+        );
+        // **THE REFUSAL NAMES THE FIELD AND SAYS WHERE IT BELONGS** — a message that only said
+        // "unknown field" would leave the model to guess, and it already guessed once.
+        let said = format!("{} {:?}", r.payload, r.outcome);
+        assert!(
+            said.contains("operator"),
+            "the refusal names the field it did not understand: {said}"
+        );
+        assert!(
+            said.contains("TOP-LEVEL"),
+            "**and says where it belongs**, because one level too deep is exactly the mistake: {said}"
+        );
+        // **AND NOTHING MOVED** — not their row, and not the model's list either, which is the
+        // half-applied call the operator-rows-before-todos ordering exists to prevent.
+        assert!(
+            board
+                .operator_snapshot()
+                .iter()
+                .all(|t| t.status == TodoStatus::Pending),
+            "the operator's row is untouched: {:?}",
+            board.operator_snapshot()
+        );
+        assert!(
+            !board.snapshot().iter().any(|t| t.content.starts_with("plain quoting —")),
+            "**and no duplicate row of the model's either** — which is what the operator saw: {:?}",
+            board.snapshot()
+        );
+    }
+
+    /// And the SAME argument, sent where it belongs, still works — the refusal is about the shape,
+    /// not about the model touching the operator's rows at all.
+    #[test]
+    fn an_unknown_field_other_than_operator_is_refused_too() {
+        let (mut rt, board) = runtime();
+        board.set_operator(vec![TodoItem {
+            content: "a row".into(),
+            status: TodoStatus::Pending,
+            by: TodoBy::Operator,
+        }]);
+        let mut sink = RecordingToolSink::new();
+        let r = rt.invoke(
+            "t1",
+            &call(r#"{"todos": [{"content": "a step", "status": "pending", "depth": 2}]}"#),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "a field the schema does not name is refused rather than ignored: {:?}",
+            r.outcome
+        );
+        assert!(
+            format!("{} {:?}", r.payload, r.outcome).contains("depth"),
+            "and it is named"
+        );
+        // `snapshot()` is the UNION of both halves, so the operator's own row is legitimately in
+        // it; what must not be there is anything of the MODEL's.
+        assert!(
+            board.snapshot().iter().all(|t| t.by == TodoBy::Operator),
+            "nothing of the model's was written: {:?}",
+            board.snapshot()
+        );
+    }
+
+#[test]
     fn a_row_the_operator_wrote_is_moved_by_its_own_words() {
         let (mut rt, board) = runtime();
         board.set_operator(vec![
