@@ -3319,7 +3319,154 @@ impl<'a> Harness<'a> {
     /// daemon start. Nothing is written here: config is the operator's file to edit,
     /// and a harness that rewrote it behind them would make a one-off override
     /// permanent without being asked.
-    pub fn attach_oracle(&mut self, endpoint: Endpoint) -> Result<String, String> {
+    
+    /// **Close out tool calls no round owns any more, and look in the logs to say why.**
+    ///
+    /// MEASURED, on the operator's own head: a `grep` was dispatched, its executor thread and its
+    /// process both vanished, and the call sat `running` in the head for eight minutes while
+    /// `esc esc` did nothing — because the interrupt stops GENERATION and generation had long since
+    /// ended. Nothing in this daemon looked. There were three callers of `Job::settle` and every one
+    /// of them was the thing that was already gone.
+    ///
+    /// # Why this is a CHECK and not a timeout
+    ///
+    /// The round loop is SYNCHRONOUS: a turn calls `runtime.invoke` and blocks until the tool
+    /// answers, so while a round is in flight **this function cannot run at all** — it runs on the
+    /// worker thread, which is the thread the round is holding. So if it is running, no round owns
+    /// any call, and a call with no result in the transcript is a call nothing will ever answer.
+    ///
+    /// That is the whole of the liveness test, and it needs no clock, no thread introspection and no
+    /// new bookkeeping: **the fact that we are here is the fact that the executor is gone.** A
+    /// timeout would have to guess a duration that is generous to `cargo build` and still quick for
+    /// a lie; this cannot be wrong about a call that is legitimately in flight, because a
+    /// legitimately-in-flight call is one this cannot run alongside.
+    ///
+    /// # And it reads the log, because "failed" is not a diagnosis
+    ///
+    /// The operator: *"if it is dead let it look into the logs."* The stored transcript is the
+    /// durable record, and the rows around the stall are what a reader needs — what the run was
+    /// doing, which call went unanswered, and what came before it. So the payload carries the tail
+    /// of the session's own stored transcript, newest last, and the warning names the call.
+    ///
+    /// A `NotRun` outcome rather than `Failed`, deliberately: nothing ran and nothing failed. F5's
+    /// rule — *a component's "I did not do this" must not be reported as a success* — cuts the other
+    /// way here too, and the honest word for a call whose executor disappeared is that it did not
+    /// run.
+    pub fn sweep_abandoned_calls(&mut self) -> usize {
+        // **THE DECISION IS A FREE FUNCTION**, so it can be tested without a daemon, a model or a
+        // socket. What is left here is the plumbing: read the log, build the rows, append them.
+        let abandoned = abandoned_calls(self.session.items.as_slice());
+        if abandoned.is_empty() {
+            return 0;
+        }
+
+        let tail = self.stored_tail(12);
+        let mut settled = 0;
+        let mut results: Vec<TranscriptItem> = Vec::new();
+        for (call_id, name) in abandoned {
+            let payload = format!(
+                "**no result — the executor is gone.**\n\n{}                 \n\nThe call was dispatched and nothing ever answered it. The daemon's tool thread \
+                 and the call's process were both gone by the time this was noticed, and the round \
+                 had already ended, so there was nothing left to interrupt.\n\n{}",
+                format!("`{name}` (call `{call_id}`)"),
+                tail,
+            );
+            results.push(TranscriptItem::ToolResult {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                outcome: letibot_transcript::ToolOutcome::NotRun {
+                    why: format!(
+                        "the executor for `{name}` disappeared before it answered; nothing ran"
+                    ),
+                },
+                payload,
+                edit: None,
+                origin: None,
+                media: None,
+            });
+            if let Some(hub) = self.hub.clone().into() {
+                let _ = hub;
+            }
+            settled += 1;
+        }
+        if settled > 0 {
+            let _ = self.append_results(results);
+        }
+        settled
+    }
+
+    /// The last `n` rows of this session's STORED transcript, as compact text.
+    ///
+    /// The durable record rather than the in-memory one: the store is what survives a restart, and
+    /// it is where a reader would go looking afterwards. `None` when there is no store or no
+    /// transcript — said as itself rather than as an empty tail, because "I could not look" and
+    /// "there was nothing there" are different facts (`DISCLOSURE`).
+    fn stored_tail(&self, n: usize) -> String {
+        let Some(store) = self.store.as_ref() else {
+            return "The store is not open, so the logs could not be read.".into();
+        };
+        let loaded = match store.load_transcript(&self.transcript_id) {
+            Ok(l) => l,
+            Err(e) => return format!("The logs could not be read: {e}"),
+        };
+        let items = &loaded.items;
+        let start = items.len().saturating_sub(n);
+        let mut out = String::from("the last rows of this session's own log:\n");
+        for (item, _, _) in &items[start..] {
+            let line = match item {
+                TranscriptItem::User { parts, .. } => {
+                    let text: String = parts
+                        .iter()
+                        .map(|p| match p {
+                            UserPart::Text { text } => text.clone(),
+                            _ => "[non-text part]".into(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!("  user: {}", one_line(&text, 90))
+                }
+                TranscriptItem::Assistant { text, tool_calls, .. } => {
+                    if text.trim().is_empty() && !tool_calls.is_empty() {
+                        format!(
+                            "  assistant: (no prose) -> {} call(s): {}",
+                            tool_calls.len(),
+                            tool_calls
+                                .iter()
+                                .map(|c| c.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    } else {
+                        format!("  assistant: {}", one_line(text, 90))
+                    }
+                }
+                TranscriptItem::ToolResult { name, outcome, payload, .. } => format!(
+                    "  {name} -> {outcome:?}: {}",
+                    one_line(payload, 70)
+                ),
+                TranscriptItem::System { text, .. } => format!("  system: {}", one_line(text, 80)),
+                // **The two that carry no facts about the RUN.** Reasoning is the model thinking
+                // and a segment mark is the head's own boundary between runs; a log tail looking
+                // for *what happened to this call* names neither, and inventing a rendering for
+                // them here would put two rows of the model's thoughts into a sentence about a
+                // missing result.
+                TranscriptItem::Reasoning { .. } | TranscriptItem::SegmentMark { .. } => continue,
+            };
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Append rows the way the round loop does, so a swept call lands like any other.
+    fn append_results(&mut self, results: Vec<TranscriptItem>) -> Result<(), HarnessError> {
+        let mut sink = CapturingSink::new(self.hub.clone());
+        self.session.append_items(&self.engine, &results, &mut sink)?;
+        self.reconcile(&mut sink, &results);
+        Ok(())
+    }
+
+pub fn attach_oracle(&mut self, endpoint: Endpoint) -> Result<String, String> {
         self.cfg.oracle = Some(endpoint.clone());
         let advisor = model_adjudicator(&self.cfg, "`/supervise`", Some(self.hub.clone()))
             .map_err(|e| e.to_string())?;
@@ -7729,6 +7876,111 @@ mod endpoint_retry {
     /// The exception is the whole point: a credential the server rejected is
     /// rejected identically every time, so a minute of backoff buys nothing and
     /// buries the real cause under six notices.
+    /// **THE SWEEP'S JUDGEMENT, and the defect it exists for, in the operator's words: *"look at the
+    /// window number 11 - stuck at the tool and i cant interrupt it"*.**
+    ///
+    /// MEASURED on that daemon: a `grep` was dispatched, its executor thread and its process both
+    /// vanished, and the call sat `running` in the head for eight minutes. `esc esc` was dead
+    /// because the interrupt stops GENERATION and generation had already ended — there was no token
+    /// to stop and no boundary to reach. Nothing in the daemon looked, because settlement had three
+    /// callers and every one of them was the thread that was gone.
+    mod abandoned_call_sweep {
+        use super::*;
+        use crate::harness::abandoned_calls;
+        use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
+
+        fn assistant(call_id: &str, name: &str) -> TranscriptItem {
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: call_id.into(),
+                    name: name.into(),
+                    arguments: "{}".into(),
+                }],
+                truncated: false,
+            }
+        }
+
+        fn result_for(call_id: &str) -> TranscriptItem {
+            TranscriptItem::ToolResult {
+                call_id: call_id.into(),
+                name: "grep".into(),
+                outcome: ToolOutcome::Ok,
+                payload: "ok".into(),
+                edit: None,
+                origin: None,
+                media: None,
+            }
+        }
+
+        /// The case that cost the operator eight minutes: asked, never answered.
+        #[test]
+        fn a_call_with_no_result_is_abandoned() {
+            let items = vec![assistant("c1", "grep")];
+            assert_eq!(
+                abandoned_calls(&items),
+                vec![("c1".to_string(), "grep".to_string())],
+                "a call nothing answered is the whole of what this looks for"
+            );
+        }
+
+        /// **And the case it must NOT touch.** An answered call is the ordinary one, and a sweep
+        /// that flagged it would rewrite every finished round in the transcript.
+        #[test]
+        fn an_answered_call_is_not() {
+            let items = vec![assistant("c1", "grep"), result_for("c1")];
+            assert!(
+                abandoned_calls(&items).is_empty(),
+                "the result answers the call"
+            );
+        }
+
+        /// **BY ID, not by position and not by name.** Two calls to the same tool are two calls, and
+        /// answering the first must not discharge the second — the mistake a name-keyed check makes
+        /// silently, because both rows read `grep`.
+        #[test]
+        fn answering_one_call_does_not_discharge_another_of_the_same_tool() {
+            let items = vec![
+                assistant("c1", "grep"),
+                result_for("c1"),
+                assistant("c2", "grep"),
+            ];
+            assert_eq!(
+                abandoned_calls(&items),
+                vec![("c2".to_string(), "grep".to_string())],
+                "the second grep is still unanswered"
+            );
+        }
+
+        /// The set difference and not a count: a call asked twice and answered once IS answered.
+        #[test]
+        fn a_call_asked_twice_and_answered_once_is_answered() {
+            let items = vec![
+                assistant("c1", "grep"),
+                assistant("c1", "grep"),
+                result_for("c1"),
+            ];
+            assert!(abandoned_calls(&items).is_empty());
+        }
+
+        /// A transcript with no tool calls at all — the common case — costs nothing and says nothing.
+        #[test]
+        fn a_conversation_with_no_calls_is_abandoned_by_nothing() {
+            let items = vec![
+                TranscriptItem::User {
+                    parts: vec![UserPart::Text { text: "hi".into() }],
+                    speaker: Default::default(),
+                },
+                TranscriptItem::Assistant {
+                    text: "hello".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            ];
+            assert!(abandoned_calls(&items).is_empty());
+        }
+    }
+
     #[test]
     fn a_credential_the_server_refuses_is_not_retried() {
         assert!(http_retry_after(&status(401), 0, MAX_HTTP_RETRIES).is_none());
@@ -7879,3 +8131,43 @@ mod endpoint_retry {
         );
     }
 }
+
+/// One line, at most `n` characters, with the newlines folded — a log row inside a sentence.
+fn one_line(s: &str, n: usize) -> String {
+    let flat: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= n {
+        flat
+    } else {
+        let cut: String = flat.chars().take(n).collect();
+        format!("{cut}…")
+    }
+}
+
+/// **Calls an assistant row asked for that no row ever answered** — `(call_id, name)`, in the order
+/// they were asked.
+///
+/// The whole of the sweep's judgement, kept apart from the plumbing so it can be tested on its own.
+/// It reads ONE transcript, which is why it is right here and not a per-call guess: an assistant row
+/// that names a call is the request, a `ToolResult` row with that id is the answer, and a call
+/// between the two is one nothing will ever answer.
+pub fn abandoned_calls(items: &[TranscriptItem]) -> Vec<(String, String)> {
+    let mut asked: Vec<(String, String)> = Vec::new();
+    let mut answered: Vec<String> = Vec::new();
+    for item in items {
+        match item {
+            TranscriptItem::Assistant { tool_calls, .. } => {
+                for c in tool_calls {
+                    asked.push((c.id.clone(), c.name.clone()));
+                }
+            }
+            TranscriptItem::ToolResult { call_id, .. } => answered.push(call_id.clone()),
+            _ => {}
+        }
+    }
+    // A call asked for TWICE and answered once is answered: the set difference, not a count.
+    asked
+        .into_iter()
+        .filter(|(id, _)| !answered.iter().any(|a| a == id))
+        .collect()
+}
+

@@ -149,6 +149,8 @@ pub struct Sessions<'a> {
     /// When each session's idle plan-check comes due, or absent for a session with
     /// nothing to check. See [`Sessions::rearm_todo_nag`].
     nag_due: HashMap<String, Instant>,
+    /// When to next look for a tool call nothing will answer. See `arm_sweep`.
+    sweep_at: Option<Instant>,
     /// The plan notice each session was last NAGGED with.
     ///
     /// **This is what makes it once per idle period rather than every minute.** A check that
@@ -208,6 +210,7 @@ impl<'a> Sessions<'a> {
             seated: HashMap::new(),
             fabric_seen: HashMap::new(),
             nag_due: HashMap::new(),
+            sweep_at: None,
             nagged: HashMap::new(),
         };
         let (tool, cond) = sessions.seat_tool(&id);
@@ -1105,8 +1108,32 @@ impl<'a> Sessions<'a> {
     ///
     /// NIL when no session has one armed — which is the common case, and the one that lets the
     /// worker sleep until there is real work rather than waking every minute on behalf of nothing.
+    /// The next moment this daemon has something to do that is not work arriving: a check to
+    /// deliver, or a **sweep for a tool call nothing will answer**.
+    ///
+    /// The sweep needs its own deadline and cannot rely on a nag, and that is not a detail: the
+    /// worker sleeps until this returns, so a session with no check armed and no commands would
+    /// never be swept at all — and the stall this exists for happens while a command is RUNNING,
+    /// which is exactly when nothing else is due. Armed after every turn (see `arm_sweep`), so a
+    /// turn that ends with a call nobody answered is looked at a moment later.
     pub fn next_nag_at(&self) -> Option<Instant> {
-        self.nag_due.values().min().copied()
+        match (self.nag_due.values().min().copied(), self.sweep_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, b) => b,
+        }
+    }
+
+    /// Ask for a sweep a moment from now, so the idle arm gets a chance to look.
+    ///
+    /// A short grace rather than none: `dispatch` returns when the turn is over, and a sweep in the
+    /// same instant would be looking at a transcript whose last append may not be published yet.
+    pub fn arm_sweep(&mut self, after: std::time::Duration) {
+        let at = Instant::now() + after;
+        self.sweep_at = Some(match self.sweep_at {
+            Some(prev) => prev.min(at),
+            None => at,
+        });
     }
 
     /// Send every check whose deadline has passed, and answer how many ran.
@@ -1114,6 +1141,31 @@ impl<'a> Sessions<'a> {
     /// A check is a TURN — the model reads the plan and can act on it — so it goes through the
     /// same tail every other turn does (`after_turn`), which is what re-arms or stands the clock
     /// down afterwards.
+    /// **Sweep every session for a tool call nothing will ever answer.**
+    ///
+    /// Called from the daemon's own idle arm, which is the same place the todo check is delivered —
+    /// and here that placement is not tidiness, it is the whole liveness test. The round loop is
+    /// SYNCHRONOUS: a turn blocks inside `runtime.invoke` until the tool answers, so while a round
+    /// is in flight this cannot run at all, because the worker is the thread the round is holding.
+    /// **The fact that we are here is the fact that no round owns a call**, which is exactly the
+    /// condition under which a call with no result is a call nobody will answer. No clock, no
+    /// thread introspection, no new bookkeeping.
+    ///
+    /// MEASURED, or this would not exist: a `grep` whose executor thread and process had both
+    /// vanished left the operator's head showing `running` for eight minutes, with `esc esc` dead
+    /// because the interrupt stops GENERATION and generation had already ended.
+    pub fn sweep_abandoned_calls(&mut self) -> usize {
+        self.sweep_at = None;
+        let ids: Vec<String> = self.open.keys().cloned().collect();
+        let mut settled = 0;
+        for id in ids {
+            if let Some(h) = self.open.get_mut(&id) {
+                settled += h.sweep_abandoned_calls();
+            }
+        }
+        settled
+    }
+
     pub fn deliver_due_nags(&mut self) -> usize {
         let now = Instant::now();
         let due: Vec<String> = self

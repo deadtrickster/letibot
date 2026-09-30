@@ -165,6 +165,14 @@ impl Daemon {
                 // while there is work, and a session with no check armed passes `None`, so this arm
                 // is only reachable when a check is actually due.
                 WorkOrIdle::Idle => {
+                    // **A call nothing will answer is closed out HERE**, on the idle pass, and the
+                    // placement is the liveness test: the round loop is synchronous, so a round in
+                    // flight would be holding this very thread and this line could not run. See
+                    // `Sessions::sweep_abandoned_calls`.
+                    let swept = sessions.sweep_abandoned_calls();
+                    if swept > 0 {
+                        eprintln!("  swept {swept} abandoned tool call(s)");
+                    }
                     let ran = sessions.deliver_due_nags();
                     if ran > 0 {
                         eprintln!("  todo check -> {ran} session(s)");
@@ -207,6 +215,13 @@ impl Daemon {
                         }
                     }
                     Work::Command(session_id, cmd) => {
+                        // **ARM THE SWEEP BEFORE THE TURN RUNS.** A turn can end with a tool call
+                        // nothing answered — the executor thread and its process can both vanish —
+                        // and the mechanism that closes such a call out can only run on an idle
+                        // pass. Without this deadline the worker would sleep until the next command
+                        // and the stranded call would sit in the head exactly as it did for the
+                        // operator: eight minutes of a spinner with `esc esc` dead.
+                        sessions.arm_sweep(std::time::Duration::from_secs(2));
                         let outcome = sessions.dispatch(&session_id, &cmd);
                         on_reply(&session_id, &cmd, outcome);
                     }
