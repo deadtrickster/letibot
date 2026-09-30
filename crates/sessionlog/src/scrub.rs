@@ -245,7 +245,8 @@ impl StoredProjection {
             _ => {
                 debug_assert!(
                     !is_interactive(&env.event)
-                        || matches!(env.event, SessionEvent::DecisionRequested { .. }),
+                        || matches!(env.event, SessionEvent::DecisionRequested {
+                            .. }),
                     "BUG: an interactive event reached the stored projection unhandled. \
                      `is_interactive` and `keep` must classify the same set."
                 );
@@ -400,7 +401,8 @@ mod tests {
                 SessionEvent::PromptProgress { .. }
                     | SessionEvent::TokensGenerated { .. }
                     | SessionEvent::ToolProgress { .. }
-                    | SessionEvent::DecisionRequested { .. }
+                    | SessionEvent::DecisionRequested {
+                        .. }
                     | SessionEvent::JobOutput { .. }
             );
             assert_eq!(interactive, expected, "{}", e.kind());
@@ -411,6 +413,7 @@ mod tests {
     fn a_decision_that_timed_out_is_settled_and_is_not_re_asked() {
         let mut log = SessionLog::new("s", LogBounds::default());
         log.append(SessionEvent::DecisionRequested {
+            write_targets: Vec::new(),
             req_id: "r2".into(),
             kind: "exec".into(),
             call_id: None,

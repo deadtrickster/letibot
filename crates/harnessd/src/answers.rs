@@ -408,6 +408,28 @@ fn pose(req: &AdjudicationRequest, deadline_ms: u64) -> SessionEvent {
         summary: req.summary.clone(),
         target: req.target.clone(),
         detail: req.baseline.clone(),
+        // **R35's severed wire, joined.** The classifier found these and they stopped there; the
+        // card is where a person reads them. Taken off the request's own `reading` — the same
+        // `Baseline` the tier and the intents come from — so the card and layer A's line cannot
+        // disagree about what this call writes.
+        //
+        // **The MODEL is not told.** `brief()` is what a model sees and this does not touch it: the
+        // model wrote the script, so the paths are not news to it, and §11.7's exclusion stands. The
+        // operator is the reader this is for, which is also the cheaper claim — one head drawing
+        // what the daemon already knew, and nothing disclosed to a model that did not ask.
+        write_targets: req
+            .reading
+            .as_ref()
+            .map(|b| {
+                b.write_targets
+                    .iter()
+                    .map(|w| letibot_sessionlog::event::WriteTarget {
+                        path: w.path().to_string(),
+                        unresolved: !w.resolved(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         options: req.options.iter().map(wire_option).collect(),
         // A permission has no plain-text choices. `ask_user_question` fills these,
         // and it goes through the same seam.

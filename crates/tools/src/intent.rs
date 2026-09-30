@@ -2767,6 +2767,23 @@ pub struct Baseline {
     /// regions for such an action; the regions themselves are unchanged and still
     /// drive the tier rules that consume them.
     pub path_decided: bool,
+    /// **Every path this call opens for writing** — R35's field, and the reason it exists here
+    /// rather than only inside the classifier: the tier question and the card question are
+    /// different, and this is the one the OPERATOR reads.
+    ///
+    /// **It does NOT change the tier.** A detected write already inserts `Intent::WriteFile` and
+    /// already resolves regions — that is the gate's decision and it is unchanged. What was missing
+    /// is that the *names* reached nobody: `write_targets` was computed at the one call site in
+    /// `of_command_with`, used for those two judgements, and dropped. So a `bash` call running a
+    /// script that rewrites a file drew a card that did not say which file, while the classifier
+    /// upstairs knew — which is the operator's *"it cant catch those pesky python edits"*: it can,
+    /// and nothing showed them.
+    ///
+    /// Empty means **no write was FOUND**, which is not the same as *this writes nothing* — a body
+    /// the scanner could not read yields `Runtime` rather than silence, so the honest reading of an
+    /// empty list is *no write the scanner could place*, and a card that says more than that is
+    /// claiming a negative it cannot support.
+    pub write_targets: Vec<WriteTarget>,
 }
 
 impl Baseline {
@@ -2871,6 +2888,7 @@ impl Baseline {
     ) -> Baseline {
         let n = shell::normalise(command);
         let mut b = Baseline {
+            write_targets: Vec::new(),
             command: None,
             intents: BTreeSet::new(),
             regions: BTreeSet::new(),
@@ -3168,7 +3186,21 @@ impl Baseline {
         surfaces: bool,
         env: &Surroundings,
     ) -> Baseline {
+        // **Collected ONCE, at the top, because the loop below consumes it.** The names are needed
+        // twice — for the card, and for the region scan that decides whether one of them is a secret
+        // store — and `impl IntoIterator` can only be walked once.
+        let paths: Vec<&str> = paths.into_iter().collect();
+        // **A path-only call writes what it names** — the same field the command arm fills, and
+        // `of_paths` is the arm a `write`/`edit` tool's own call goes through. So the card for an
+        // edit gets its target from the same place a script's card gets its list, which is the
+        // one-drawing rule the other head's renderer states: *"a reader comparing two cards must not
+        // have to know which mechanism produced them."*
+        let named: Vec<WriteTarget> = paths
+            .iter()
+            .map(|p| WriteTarget::Literal((*p).to_string()))
+            .collect();
         let mut b = Baseline {
+            write_targets: if writes { named } else { Vec::new() },
             command: None,
             intents: BTreeSet::new(),
             regions: BTreeSet::new(),
@@ -3185,7 +3217,7 @@ impl Baseline {
         } else {
             Intent::ReadFile
         });
-        for p in paths {
+        for p in paths.iter().copied() {
             let r = env.region_of(p);
             b.scoped.push(ScopedIntent {
                 intent: if writes {
@@ -3925,6 +3957,10 @@ impl Baseline {
         if !writes.is_empty() {
             self.intents.insert(Intent::WriteFile);
         }
+        // **And the names are KEPT**, for the card. This is the whole of R35's severed wire: the
+        // detection was always right and nothing downstream could see it. Cloned rather than
+        // consumed because the loop below borrows it for the region scan.
+        self.write_targets = writes.clone();
         for w in &writes {
             match w {
                 WriteTarget::Literal(path) => {
@@ -4134,12 +4170,40 @@ enum WriteForm {
 const WRITE_METHODS: &[&str] = &["write_text", "write_bytes", "writelines"];
 
 /// What a write call's target turned out to be.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum WriteTarget {
+///
+/// **A path a call opens for writing** — R35, and the one fact the classifier computed from the
+/// first day and threw away.
+///
+/// Public and serde-able because it is going on the card's wire: `write_targets` is an array of
+/// `{path, unresolved}` on the decision frame, which is the shape the other head's renderer was
+/// written against (R35's wire section) and has never had a value to draw.
+///
+/// **`Runtime` is not `Literal("")`, and the difference is the requirement's own sentence.** A path
+/// the scanner cannot place — `open(sys.argv[1], 'w')`, `pathlib.Path.home() / name` — is exactly the
+/// case a person most needs to see, and folding it into *no write* would throw away the one fact
+/// they cannot get any other way. So the two survive as two, and the wire carries them as one entry
+/// with a flag rather than as a string with a sentinel in it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WriteTarget {
     /// The path, as a literal the classifier can place.
     Literal(String),
     /// A path built at run time — the call's own text, so the finding can name it.
     Runtime(String),
+}
+
+impl WriteTarget {
+    /// The path this names, or the text that names a path it could not resolve.
+    pub fn path(&self) -> &str {
+        match self {
+            WriteTarget::Literal(p) | WriteTarget::Runtime(p) => p,
+        }
+    }
+
+    /// **Could the classifier place it?** `false` draws in the attention register rather than the
+    /// path register — a sentence that looks like a path is a sentence that gets skimmed past.
+    pub fn resolved(&self) -> bool {
+        matches!(self, WriteTarget::Literal(_))
+    }
 }
 
 const FILE_CALLS: &[&str] = &[
@@ -7561,6 +7625,82 @@ open(p,'w').write(s)
             got,
             vec![WriteTarget::Literal("src/syntax.rs".into())],
             "{got:?}"
+        );
+    }
+
+    /// **The scan's result survives into the Baseline** — R35's severed wire, as a measurement.
+    ///
+    /// `write_targets` was computed at one call site, used to insert `Intent::WriteFile` and to
+    /// resolve regions, and **dropped**. So the classification was always right and the NAMES reached
+    /// nobody: a `bash` call running a script that rewrites a file drew a card that did not say which
+    /// file, while the classifier upstairs knew. The operator, on exactly that: *"it cant catch those
+    /// pesky python edits"* — it can, and nothing showed them.
+    ///
+    /// Three assertions, and the third is the one that keeps the tier honest:
+    ///
+    ///   * the operator's own card shape yields the path on the BASELINE, not only in the scanner;
+    ///   * a path the scanner cannot place survives as `Runtime` rather than as an empty list, so
+    ///     *unresolved* is not rendered as *writes nothing*;
+    ///   * **the tier is unchanged by any of it.** The detection already did its gate work
+    ///     (`Intent::WriteFile`), and a card that showed more must not gate more — that would be a
+    ///     scanner inferring an authority, which is a separate ruling with its own measurement.
+    #[test]
+    fn the_write_targets_reach_the_baseline_and_do_not_move_the_tier() {
+        let env = env();
+        let body = "\
+from pathlib import Path
+p = Path('src/syntax.rs')
+open(p,'w').write('x')
+";
+        let script = ScriptSource {
+            path: "edit.py".into(),
+            body: crate::runtime::ScriptBody::Read(body.into()),
+        };
+        // The script is handed IN, which is how a heredoc body reaches the classifier.
+        let b = Baseline::of_command_with("python3 edit.py", &env, std::slice::from_ref(&script));
+        assert!(
+            b.write_targets.iter().any(|w| w.path() == "src/syntax.rs"),
+            "the path the script writes did not reach the card: {:?}",
+            b.write_targets
+        );
+        assert!(b.intents.contains(&Intent::WriteFile), "and the intent is what it was");
+
+        // **Unresolved is not absent**, and the difference is the requirement's own sentence: a write
+        // whose target could not be read is the case a person most needs to see.
+        let unresolved = "\
+import sys, pathlib
+out = pathlib.Path.home() / sys.argv[1]
+open(out, 'w').write('x')
+";
+        let s2 = ScriptSource {
+            path: "edit2.py".into(),
+            body: crate::runtime::ScriptBody::Read(unresolved.into()),
+        };
+        let b2 = Baseline::of_command_with("python3 edit2.py", &env, std::slice::from_ref(&s2));
+        assert!(
+            !b2.write_targets.is_empty(),
+            "a write whose path could not be placed was dropped entirely, which is the one fact a \
+             reader cannot get any other way: {:?}",
+            b2.write_targets
+        );
+        assert!(
+            b2.write_targets.iter().any(|w| !w.resolved()),
+            "every target claimed to be resolved: {:?}",
+            b2.write_targets
+        );
+
+        // **And none of it moves the tier.** Two runs of the same command, one with a readable script
+        // and one whose script writes nothing, land on the same tier — the card is the only thing
+        // that changed.
+        let quiet = ScriptSource {
+            path: "read.py".into(),
+            body: crate::runtime::ScriptBody::Read("print(1)\n".into()),
+        };
+        let b3 = Baseline::of_command_with("python3 read.py", &env, std::slice::from_ref(&quiet));
+        assert!(b3.write_targets.is_empty(), "{:?}", b3.write_targets);
+        assert_eq!(
+            b.tier, b3.tier,
+            "a detected write changed the TIER, which is a gate decision and not a card one"
         );
     }
 

@@ -83,6 +83,7 @@ pub fn proposed_on(turn_id: &str, call_id: &str, name: &str, target: &str) -> Se
 
 pub fn requested(req_id: &str, summary: &str) -> SessionEvent {
     SessionEvent::DecisionRequested {
+        write_targets: Vec::new(),
         req_id: req_id.into(),
         // §11.6's `kind`: which of the two vocabularies settles it. Not the access
         // class — `exec` was here and reads as one, and a permission over `exec` is
@@ -120,6 +121,7 @@ pub fn requested(req_id: &str, summary: &str) -> SessionEvent {
 /// adjudication ladder, and the one line saying what the model is stuck on (T25/D10).
 pub fn asked(req_id: &str, text: &str, choices: &[&str], because: &str) -> SessionEvent {
     SessionEvent::DecisionRequested {
+        write_targets: Vec::new(),
         req_id: req_id.into(),
         kind: "question".into(),
         call_id: Some("c1".into()),

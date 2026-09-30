@@ -102,6 +102,33 @@ pub enum TodoBy {
     Operator,
 }
 
+/// **A path a gated action opens for writing** — R35's field, and the shape the other head's
+/// renderer was written against before there was ever a value for it.
+///
+/// ```text
+/// write_targets: [{"path": "src/syntax.rs", "unresolved": false},
+///                 {"path": "Path.home() / name", "unresolved": true}]
+/// ```
+///
+/// **`unresolved` is not `path: ""`, and the difference is the requirement's own sentence.** A write
+/// whose target could not be read — `open(sys.argv[1], 'w')`, a path built at run time — is *"the one
+/// the operator most needs to see"*: it is the fact a person cannot get any other way, and a head
+/// that folded it into *no write* would be throwing it away. So it is a flag on an entry rather than
+/// an absent entry, and the renderer draws it in the attention register because a sentence that looks
+/// like a path is a sentence that gets skimmed past.
+///
+/// **An EMPTY list is not a claim that the call writes nothing** — it is the honest reading of *no
+/// write the scanner could place*, which is why a script it could not read yields an entry here
+/// rather than silence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriteTarget {
+    /// The path, or the text that names a path the classifier could not place.
+    pub path: String,
+    /// **Could the classifier place it?** `true` draws in the attention register.
+    #[serde(default)]
+    pub unresolved: bool,
+}
+
 /// One line of a session's todo list, on the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TodoEntry {
@@ -808,6 +835,31 @@ pub enum SessionEvent {
         /// about `bash`.
         #[serde(default)]
         target: String,
+        /// **What this action would WRITE, by path** — R35, and the field that was computed,
+        /// renderable on the other head, and reaching nobody.
+        ///
+        /// The classifier has found these since the day it was written: `write_targets` resolves an
+        /// assigned name, `open(p, 'w')`, a mode spelling, and a method whose receiver is the path —
+        /// built from the operator's own card (*"`p = Path(\"src/syntax.rs\")` …
+        /// `open(p,'w').write(s)`"*). What was missing is that the names stopped inside the
+        /// classifier: a `bash` call running a script that rewrites a file drew a card that did not
+        /// say which file, and the operator's report is exactly that — *"it cant catch those pesky
+        /// python edits"*. It can. Nothing showed them.
+        ///
+        /// **Empty means no write was FOUND**, which is not *this writes nothing* — see
+        /// [`WriteTarget`]. A card that said *writes nothing* on an empty list would be claiming a
+        /// negative the scanner cannot support, which is R35's own subject one layer over.
+        ///
+        /// **Display-only, and it does NOT gate.** A detected write already inserts
+        /// `Intent::WriteFile` and already resolves regions — that is the gate's decision and it is
+        /// unchanged by this field existing. So an operator seeing more does not mean anything being
+        /// admitted more, and that is deliberate rather than incidental: changing a TIER on a
+        /// scanner's inference is a separate ruling with its own measurement.
+        ///
+        /// `#[serde(default)]` so a log recorded before it replays: an old row has no targets, and a
+        /// head drawing none is what every head drew before this.
+        #[serde(default)]
+        write_targets: Vec<WriteTarget>,
         /// Layer A's deterministic reading — verdict, intents, regions, tier.
         ///
         /// Evidence, not the question. It belongs under the question in the dim

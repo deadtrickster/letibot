@@ -4459,6 +4459,7 @@ impl App {
                 access,
                 summary,
                 target,
+                write_targets,
                 detail,
                 options,
                 choices,
@@ -4466,6 +4467,7 @@ impl App {
                 advice,
                 deadline,
                 on_timeout,
+                            ..
             } => {
                 self.open.retain(|d| d.req_id != req_id);
                 // A fresh question starts at the top of its ladder rather than
@@ -4474,6 +4476,7 @@ impl App {
                 self.sel = 0;
                 self.open.push(OpenDecision {
                     req_id,
+                    write_targets,
                     kind,
                     call_id,
                     access,
@@ -12876,6 +12879,72 @@ impl App {
                 out.push(colour(&self.cfg, sgr::BOLD, &l));
             }
         }
+        // **AND THE FILES THIS ACTION WOULD WRITE** — R35, and the one fact the classifier has
+        // computed since the day it was written and nothing ever showed.
+        //
+        // The operator: *"it cant catch those pesky python edits"*. It can. `write_targets` resolves
+        // an assigned name (`p = Path("src/syntax.rs")` … `open(p,'w').write(s)` — their own card is
+        // that shape), a mode spelling, and a method whose receiver is the path; it inserted
+        // `Intent::WriteFile`, resolved the regions, and **stopped there**. A `bash` call running a
+        // script that rewrites a file drew a card that did not name the file.
+        //
+        // **At the place and in the style the single `target` already has** — indented four, bold —
+        // which is the other head's rule for it and the reason is checkable rather than stylistic: a
+        // reader comparing an `edit` card and a script card must not have to know which mechanism
+        // produced them.
+        //
+        // **The count goes ABOVE the names**, because the names are content and content elides to
+        // the card's viewport while the number must not: a window that hides three of five paths
+        // still says five. One path gets no header, which is what keeps an `edit` card from growing
+        // a line.
+        //
+        // **An unresolved path is drawn in the attention register**, never as a path. A write whose
+        // target could not be read — `open(sys.argv[1], 'w')`, `Path.home() / name` — is the case a
+        // person most needs to see, and a sentence that looks like a path is a sentence that gets
+        // skimmed past.
+        //
+        // **Nothing is drawn when the list is empty.** Empty means *no write the scanner could
+        // place*, and a card that printed *writes nothing* would be claiming a negative the
+        // classifier cannot support. It is also what every head drew before this field existed, so
+        // an old log replays unchanged.
+        if !d.write_targets.is_empty() {
+            let unresolved = d.write_targets.iter().filter(|t| t.unresolved).count();
+            if d.write_targets.len() > 1 {
+                out.push(colour(
+                    &self.cfg,
+                    sgr::DIM,
+                    &format!("    {} files:", d.write_targets.len()),
+                ));
+            }
+            for t in &d.write_targets {
+                if t.unresolved {
+                    out.push(colour(
+                        &self.cfg,
+                        sgr::YELLOW,
+                        &format!("    {}", t.path),
+                    ));
+                } else {
+                    out.push(colour(&self.cfg, sgr::BOLD, &format!("    {}", t.path)));
+                }
+            }
+            // The count of unresolved ones is a SENTENCE, not a header of its own: one says *a write
+            // whose target could not be read* and two say *2 writes whose targets could not be read*,
+            // which is a number a reader cannot misplace.
+            if unresolved > 0 {
+                out.push(colour(
+                    &self.cfg,
+                    sgr::YELLOW,
+                    &format!(
+                        "    {} whose target could not be read",
+                        if unresolved == 1 {
+                            "a write".to_string()
+                        } else {
+                            format!("{unresolved} writes")
+                        }
+                    ),
+                ));
+            }
+        }
         if !d.detail.is_empty() {
             for l in wrap(&format!("  {}", d.detail), w) {
                 out.push(colour(&self.cfg, sgr::DIM, &l));
@@ -18073,6 +18142,7 @@ mod tests {
             access: String::new(),
             summary: "edit a file".into(),
             target: String::new(),
+            write_targets: Vec::new(),
             detail: String::new(),
             options: kinds
                 .iter()
@@ -19949,6 +20019,7 @@ mod tests {
         a.apply(ServerFrame::Event(env(
             5,
             SessionEvent::DecisionRequested {
+                write_targets: Vec::new(),
                 req_id: "r1".into(),
                 kind: "permission".into(),
                 call_id: Some("c1".into()),
@@ -22792,6 +22863,7 @@ mod tests {
         a.apply(ServerFrame::Event(env(
             2,
             SessionEvent::DecisionRequested {
+                write_targets: Vec::new(),
                 req_id: "r1".into(),
                 kind: "permission".into(),
                 call_id: Some("c1".into()),
@@ -30404,6 +30476,7 @@ mod tests {
         a.apply(ServerFrame::Event(env(
             1,
             SessionEvent::DecisionRequested {
+                write_targets: Vec::new(),
                 req_id: d.req_id.clone(),
                 kind: d.kind.clone(),
                 call_id: None,
@@ -30617,6 +30690,7 @@ mod tests {
         a.apply(ServerFrame::Event(env(
             2,
             SessionEvent::DecisionRequested {
+                write_targets: Vec::new(),
                 req_id: d.req_id.clone(),
                 kind: d.kind.clone(),
                 call_id: None,
@@ -30950,6 +31024,84 @@ mod tests {
     /// snapshot's deadline subtracts from `now_ms` with no constant between the two. The
     /// assertion is that a card from a snapshot reads the same number a live one does, at
     /// the daemon's real 300 s budget.
+    /// **The card names the files the action would write** — R35's severed wire, joined.
+    ///
+    /// The operator: *"it cant catch those pesky python edits"*. It can — `write_targets` has
+    /// resolved assigned names, modes and receiver-paths since it was written, built from their own
+    /// card shape — and nothing showed them. A `bash` call running a script that rewrites a file drew
+    /// a card that did not name the file.
+    ///
+    /// Three assertions, and the second and third are the ones that keep it honest:
+    ///
+    ///   * the paths are ON the card, in the target's own register and place;
+    ///   * **an unresolved path is drawn differently from a resolved one** — a write whose target
+    ///     could not be read is the case a person most needs to see, and drawing it as a path is
+    ///     drawing it as something to skim past;
+    ///   * **an empty list draws NOTHING.** *No write the scanner could place* is not *writes
+    ///     nothing*, and a card claiming the second would be asserting a negative the classifier
+    ///     cannot support — which is R35's own subject one layer over.
+    #[test]
+    fn the_card_names_the_files_the_action_would_write() {
+        use letibot_sessionlog::event::{OptionKind, WriteTarget};
+
+        let mut a = app();
+        // The operator's own case: a script that rewrites one file, approved as an exec.
+        let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        d.access = "exec".into();
+        d.target = "python3 edit.py".into();
+        d.write_targets = vec![WriteTarget {
+            path: "src/syntax.rs".into(),
+            unresolved: false,
+        }];
+        let one = a.decision_lines(&d, 200).join("\n");
+        assert!(
+            one.contains("src/syntax.rs"),
+            "the file the script writes is not on the card: {one}"
+        );
+        // One path gets NO header, which is what keeps an `edit` card from growing a line.
+        assert!(!one.contains("1 files:"), "a single file grew a count: {one}");
+
+        // **Several, and the count goes above the names** so a viewport cannot hide it: a window that
+        // shows two of five still says five.
+        d.write_targets = vec![
+            WriteTarget { path: "a.rs".into(), unresolved: false },
+            WriteTarget { path: "b.rs".into(), unresolved: false },
+            WriteTarget { path: "c.rs".into(), unresolved: false },
+            WriteTarget { path: "d.rs".into(), unresolved: false },
+            WriteTarget { path: "e.rs".into(), unresolved: false },
+        ];
+        let many = a.decision_lines(&d, 200).join("\n");
+        assert!(many.contains("5 files:"), "no count for five: {many}");
+        let count_at = many.find("5 files:").unwrap();
+        let first_path = many.find("a.rs").unwrap();
+        assert!(count_at < first_path, "the count is below the names: {many}");
+
+        // **An unresolved target is not drawn as a path.** `Path.home() / name` is the case the
+        // requirement calls the one a person most needs to see.
+        d.write_targets = vec![
+            WriteTarget { path: "src/syntax.rs".into(), unresolved: false },
+            WriteTarget { path: "Path.home() / argv[1]".into(), unresolved: true },
+        ];
+        let mixed = a.decision_lines(&d, 200).join("\n");
+        assert!(
+            mixed.contains("Path.home() / argv[1]"),
+            "the unresolved target is not named at all: {mixed}"
+        );
+        assert!(
+            mixed.contains("a write whose target could not be read"),
+            "an unresolved target is drawn as though it were a path: {mixed}"
+        );
+
+        // **And an empty list says nothing.** This is the assertion that keeps *empty* from meaning
+        // *writes nothing*.
+        d.write_targets = Vec::new();
+        let none = a.decision_lines(&d, 200).join("\n");
+        assert!(
+            !none.contains("files:") && !none.contains("could not be read"),
+            "an empty list drew a claim about writing nothing: {none}"
+        );
+    }
+
     #[test]
     fn a_deadline_arriving_in_a_snapshot_reads_the_same_as_one_arriving_live() {
         use letibot_sessionlog::event::OptionKind;

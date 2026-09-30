@@ -1543,7 +1543,8 @@ mod tests {
         assert!(
             !b.backlog
                 .iter()
-                .any(|e| matches!(e.event, SessionEvent::DecisionRequested { .. })),
+                .any(|e| matches!(e.event, SessionEvent::DecisionRequested {
+                    .. })),
             "a resumed head must not be re-asked a settled question"
         );
         assert_eq!(b.scrubbed.settled_decisions, 1);

@@ -95,6 +95,16 @@ pub struct OpenDecision {
     /// `summary`.
     #[serde(default)]
     pub target: String,
+    /// **The paths this action would write** — R35, verbatim from the event that carried them.
+    ///
+    /// Held on the view rather than re-derived, for `advice`'s reason one field over: a head that
+    /// recomputed what the classifier found would be rendering a guess about a decision it did not
+    /// make, and the two would drift the first time the scanner improved.
+    ///
+    /// **Empty is not *writes nothing*** — see [`crate::event::WriteTarget`]. It is *no write the
+    /// scanner could place*, and a card that said more than that would be claiming a negative the
+    /// classifier cannot support.
+    pub write_targets: Vec<crate::event::WriteTarget>,
     /// Layer A's reading, for the dim line under the question.
     #[serde(default)]
     pub detail: String,
@@ -466,6 +476,7 @@ impl SessionView {
             }
             SessionEvent::DecisionRequested {
                 req_id,
+                write_targets,
                 kind,
                 call_id,
                 access,
@@ -478,9 +489,11 @@ impl SessionView {
                 advice,
                 deadline,
                 on_timeout,
+                            ..
             } => {
                 self.open.retain(|d| &d.req_id != req_id);
                 self.open.push(OpenDecision {
+                    write_targets: write_targets.clone(),
                     req_id: req_id.clone(),
                     kind: kind.clone(),
                     call_id: call_id.clone(),
