@@ -696,6 +696,24 @@ pub enum ClientFrame {
     SetOperatorTodos {
         client_request_id: String,
         expected_seq: u64,
+        /// **Absent means the empty half, and that is not a loose reading — it is the only one that
+        /// works.** A head that has no operator rows has an empty list, and the other head's encoder
+        /// writes *"a JSON object, OMITTING every key whose value is NIL"* — which is deliberate
+        /// there and argued at length (`src/json.lisp`): NIL is both `false` and `nothing` in Lisp,
+        /// and eliding is the spelling every serde shape accepts.
+        ///
+        /// **A bare required `Vec` is the one shape that accepts NEITHER missing nor null**, and
+        /// that is what this was: an operator whose todo list was empty sent
+        /// `{"frame":"set_operator_todos","client_request_id":"leticl-1","expected_seq":4537}`,
+        /// the daemon refused it as `missing field items`, and **the head was disconnected** —
+        /// repeatedly, on every connect, so the session looked like a daemon that would not start.
+        /// MEASURED from the live log, and the two neighbouring cases are named in that encoder's own
+        /// docstring (`Mode.consented`, `ReseatSession.summarise`, both fixed by hand on the head's
+        /// side): *"a hazard fixed three times by hand is a pattern, not an accident."*
+        ///
+        /// So it is fixed on the side that can fix it once. An absent `items` is an empty half, which
+        /// is what the head meant, and a head that CAN send the key is unaffected.
+        #[serde(default)]
         items: Vec<crate::event::TodoEntry>,
     },
     /// **Stop the daemon**, not just this head.
@@ -837,6 +855,15 @@ pub enum ClientFrame {
         cols: usize,
         rows_n: usize,
         /// One string per row, escape codes included.
+        ///
+        /// **[`items`]: same shape, same hazard, found by the sweep rather than by a report.**
+        /// A screen with no rows is degenerate but it is not impossible — and a head whose encoder
+        /// omits NIL would send this frame with no `rows` at all, which was `missing field \`rows\``
+        /// and a dropped connection. A frame that answers *what are you looking at* with nothing is
+        /// still an answer; refusing it costs the head its socket.
+        ///
+        /// See `SetOperatorTodos::items` for the full argument, including why no version bump.
+        #[serde(default)]
         rows: Vec<String>,
     },
     /// Answer an open **permission**: grant or deny, by option id.
@@ -1546,6 +1573,89 @@ mod tests {
     /// summarising one it used to get. That is the safe direction (it costs a
     /// prefill, not a conversation), and it is a decision, so it is asserted
     /// rather than left to `#[serde(default)]`'s reputation.
+    /// **A frame with no `items` is an EMPTY HALF, not a malformed frame.**
+    ///
+    /// MEASURED from the live log before this existed: an operator whose todo list was empty sent
+    /// `{"frame":"set_operator_todos","client_request_id":"leticl-1","expected_seq":4537}` — no
+    /// `items` at all, because the sending head's encoder omits every key whose value is NIL and an
+    /// empty list is NIL. `items` was a bare required field, so the daemon answered
+    /// `malformed frame (missing field \`items\`)` and **dropped the head connection**, on every
+    /// connect. From the operator's side that is a daemon that will not start.
+    ///
+    /// **An absent list and an empty list are the same statement** — *I have no rows* — which is what
+    /// makes `#[serde(default)]` the honest reading rather than a tolerance. The head sends its half
+    /// WHOLE on every change (its own docstring: *"the whole list and not a delta"*), so a frame with
+    /// nothing to say about rows says nothing, and the half is empty.
+    ///
+    /// No version bump: accepting a key that used to be required is strictly more permissive, and the
+    /// frame-list check's own message says the added-defaulted-field case is the one that "needs no
+    /// bump".
+    /// **The two other collection fields on a client frame, checked rather than assumed.**
+    ///
+    /// The `items` defect is not "a required field" — it is *a field the sending head can omit and
+    /// the daemon treats as fatal*. That head's encoder drops every NIL, so any collection it can
+    /// send empty is the same hazard, and `Secret.secret` and `Screen.rows` are the only other two on
+    /// this enum.
+    ///
+    /// `Option<T>` is safe by serde's own rule — a missing key deserialises to `None` — which is the
+    /// claim this asserts rather than trusting, because a head that REFUSES a password sends no
+    /// `secret` and being disconnected for a refusal would be a spectacular bug.
+    #[test]
+    fn a_secret_refusal_and_an_empty_screen_do_not_take_the_socket_with_them() {
+        let refusal: ClientFrame = serde_json::from_str(
+            r#"{"frame":"secret","client_request_id":"r1","expected_seq":1,"req_id":"q1"}"#,
+        )
+        .expect("a refused password sends no secret at all");
+        let ClientFrame::Secret { secret, .. } = refusal else {
+            panic!("not a secret frame")
+        };
+        assert_eq!(secret, None, "an absent secret is a refusal, not an error");
+
+        // And the screen's rows: the same shape as `items`, so it carries the same default.
+        let empty: ClientFrame = serde_json::from_str(
+            r#"{"frame":"screen","client_request_id":"r2","expected_seq":2,"req_id":"q2",
+                 "cols":80,"rows_n":0}"#,
+        )
+        .expect("a screen with no rows must not be fatal");
+        let ClientFrame::Screen { rows, rows_n, .. } = empty else {
+            panic!("not a screen frame")
+        };
+        assert!(rows.is_empty(), "{rows:?}");
+        assert_eq!(rows_n, 0);
+    }
+
+    #[test]
+    fn a_set_operator_todos_frame_without_items_is_an_empty_half_not_a_malformed_frame() {
+        let f: ClientFrame = serde_json::from_str(
+            r#"{"frame":"set_operator_todos","client_request_id":"leticl-1","expected_seq":4537}"#,
+        )
+        .expect("the frame an empty half sends must parse");
+        let ClientFrame::SetOperatorTodos {
+            expected_seq,
+            items,
+            ..
+        } = f
+        else {
+            panic!("not a set_operator_todos: {f:?}");
+        };
+        assert_eq!(expected_seq, 4537, "the rest of the frame still reads");
+        assert!(items.is_empty(), "an absent list is an empty half: {items:?}");
+
+        // And the spelling WITH items is unaffected — the two neighbours this could break are a
+        // full half and a one-row half, so both are asserted here rather than assumed.
+        let full: ClientFrame = serde_json::from_str(
+            r#"{"frame":"set_operator_todos","client_request_id":"r2","expected_seq":9,
+                 "items":[{"content":"push leticl to github","status":"pending","by":"operator"}]}"#,
+        )
+        .expect("a full half still parses");
+        let ClientFrame::SetOperatorTodos { items, .. } = full else {
+            panic!("not a set_operator_todos");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].content, "push leticl to github");
+        assert_eq!(items[0].by, crate::event::TodoBy::Operator);
+    }
+
     #[test]
     fn a_reseat_frame_without_the_field_is_the_lossless_kind() {
         let f: ClientFrame = serde_json::from_str(
