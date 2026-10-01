@@ -76,6 +76,20 @@
 
 set -eu
 
+# **THE ARCHIVE'S CONTENTS, IN ONE PLACE.**
+#
+# This list was written in six separate `for` loops and one `expected=` line, which
+# is the shape that drifts: five of them agree and the sixth is found by a user.
+# It is named here, the packager uses it, and **`install.sh` must agree with it** —
+# `scripts/check-dist-names.sh` asserts that, because the installer and the assets
+# do NOT come from the same ref (the script is served from `main`, the archive from
+# `releases/latest`) and this list is the only thing holding them together.
+#
+# ORDER IS NOT A CONTRACT — every reader sorts. The SET is.
+ARCHIVE_BINARIES="harnessd letibot-tui letibot-askpass"
+ARCHIVE_LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
+ARCHIVE="$ARCHIVE_BINARIES $ARCHIVE_LIBRARIES"
+
 triple="${1:-}"
 if [ -z "$triple" ]; then
     echo "usage: make-dist.sh <target-triple> [outdir]" >&2
@@ -100,14 +114,14 @@ if [ -z "$bin" ]; then
     exit 1
 fi
 
-for want in harnessd letibot-tui letibot-askpass; do
+for want in $ARCHIVE_BINARIES; do
     [ -x "$bin/$want" ] || { echo "make-dist: $bin/$want is missing or not executable" >&2; exit 1; }
 done
 
 # The libraries are a hard requirement, not a best effort: a package that names
 # them but does not carry them installs cleanly and then fails to start, which is
 # the failure shape this whole script exists to keep off a user's machine.
-for so in libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
+for so in $ARCHIVE_LIBRARIES; do
     if [ ! -f "$lib/$so" ]; then
         echo "make-dist: $lib/$so not found." >&2
         echo "  harnessd links it and needs it in the package. Set LETIBOT_LLAMA_LIB" >&2
@@ -126,10 +140,10 @@ name="letibot-$triple.tar.gz"
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT INT TERM
 
-for want in harnessd letibot-tui letibot-askpass; do
+for want in $ARCHIVE_BINARIES; do
     cp "$bin/$want" "$stage/$want"
 done
-for so in libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
+for so in $ARCHIVE_LIBRARIES; do
     # `-L`: these are symlinks in a llama.cpp build tree (libllama.so.0 →
     # libllama.so.0.4.0) and an archive holding a dangling symlink extracts to
     # nothing. The real file is what has to travel.
@@ -164,7 +178,7 @@ chmod 755 "$stage"/*
 # release script that rewrote somebody's llama.cpp checkout would be a worse bug
 # than the one it fixes, and `patchelf` is only needed when the libraries were built
 # without `$ORIGIN` in the first place.
-for so in libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
+for so in $ARCHIVE_LIBRARIES; do
     [ -f "$stage/$so" ] || continue
     # **Both spellings, and the empty case is NOT a pass.** `RPATH` is the older tag
     # and a library may carry either; matching only `RUNPATH` would read an `RPATH`-only
@@ -327,14 +341,35 @@ if [ -n "$system_libs" ]; then
             *) unlisted="$unlisted $need" ;;
         esac
     done
+    # **And the reverse: a name install.sh refuses over that nothing needs.**
+    #
+    # leticl landed this half on its side (`8491411`) and the reason is the same: one
+    # direction catches a library that was forgotten, the other catches a REFUSAL
+    # that outlived its library. A stale entry is worse than noise — it turns a user
+    # away from an install that would have worked, with a package name for something
+    # they already have. Refusing both ways is what makes the two lists impossible to
+    # drift apart rather than merely unlikely to.
     echo "make-dist: host-provided libraries: $(printf '%s ' $candidates)"
     echo "make-dist: install.sh names:          $(printf '%s ' $install_sh_host)"
+    stale=''
+    for named in $install_sh_host; do
+        case " $candidates " in
+            *" $named "*) ;;
+            *) stale="$stale $named" ;;
+        esac
+    done
     if [ -n "$unlisted" ]; then
         echo "make-dist: these are needed at run time and install.sh does not check for them:$unlisted" >&2
         echo "  They come from the host, so a machine without them installs cleanly and" >&2
         echo "  then dies at exec. Either add them to HOST_LIBS in install.sh (with the" >&2
         echo "  package name for the fix), or add them to \`always\` above if every glibc" >&2
         echo "  system has them by definition." >&2
+        exit 1
+    fi
+    if [ -n "$stale" ]; then
+        echo "make-dist: install.sh refuses over libraries nothing here needs:$stale" >&2
+        echo "  A stale name turns a user away from an install that would have worked," >&2
+        echo "  quoting a package they already have. Remove it from HOST_LIBS." >&2
         exit 1
     fi
 fi
@@ -349,8 +384,7 @@ COPYFILE_DISABLE=1 tar -czf "$outdir/$name" -C "$stage" .
 # file at the root, the three binaries executable, and no extra entries — a stray
 # file riding along into a release is a thing that only shows up on a user's disk.
 listing=$(tar -tzf "$outdir/$name" | sed 's|^\./||' | grep -v '^$' | sort)
-expected=$(printf '%s\n' harnessd letibot-tui letibot-askpass \
-    libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0 | sort)
+expected=$(printf '%s\n' $ARCHIVE | sort)
 if [ "$listing" != "$expected" ]; then
     echo "make-dist: $name does not hold what it should." >&2
     echo "--- expected:" >&2

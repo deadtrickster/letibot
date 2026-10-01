@@ -70,19 +70,72 @@ if [ -n "$gap" ]; then
     echo "  Those installs fall back to a source build, which is by design." >&2
 fi
 
-# **The contents of the archive are the other half of the contract**, and they are
-# read from `make-dist.sh` so the two cannot drift: it names what it puts in, and
-# this asserts the installer expects exactly that.
-made=$(grep -oE '\b(harnessd|letibot-tui|letibot-askpass|libllama\.so\.0|libggml\.so\.0|libggml-cpu\.so\.0|libggml-base\.so\.0)\b' \
-    "$repo/scripts/make-dist.sh" | sort -u)
-for want in harnessd letibot-tui letibot-askpass libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
-    case " $(printf '%s ' $made) " in
-        *" $want "*) ;;
-        *) echo "check-dist-names: make-dist.sh never names $want" >&2; exit 1 ;;
+# **THE INSTALLER AND THE ARCHIVE MUST NAME EXACTLY THE SAME FILES.**
+#
+# This is the contract that nothing was holding, and the skew it leaves is silent on
+# our side and total on the user's. The install script is served from `main`:
+#
+#     curl -fsSL https://raw.githubusercontent.com/.../main/install.sh | sh
+#
+# while the archive comes from `releases/latest`:
+#
+#     https://github.com/$REPO/releases/latest/download/$name
+#
+# **Two different refs.** MEASURED 2026-10-01: `releases/latest` was `v0.1.1`, SIX
+# commits behind `main`. It happened to work because the only thing that changed in
+# those six commits was `install.sh` itself — the moment it names a file the
+# published archive does not hold, every person running the one-liner gets a script
+# that wants a binary `releases/latest` has never contained, instantly and with no
+# cache in between. Not a regression CI would find: the release that breaks is one
+# already published and never rebuilt.
+#
+# So the two lists are read from their own files and compared as SETS, both ways:
+#
+#   install.sh    BINARIES + LIBRARIES   what the installer copies
+#   make-dist.sh  ARCHIVE                what the packager builds
+#
+# Read from the files rather than restated here, because a checker that carries its
+# own copy of the list is a third place to drift — which is what this replaces.
+install_files=""
+for var in BINARIES LIBRARIES; do
+    v=$(sed -n "s/^$var=\"\(.*\)\"$/\1/p" "$repo/install.sh" | head -1)
+    [ -n "$v" ] || { echo "check-dist-names: install.sh has no $var line." >&2; exit 1; }
+    install_files="$install_files $v"
+done
+packaged=$(sed -n 's/^ARCHIVE_BINARIES="\(.*\)"$/\1/p;s/^ARCHIVE_LIBRARIES="\(.*\)"$/\1/p' \
+    "$repo/scripts/make-dist.sh")
+[ -n "$packaged" ] || { echo "check-dist-names: make-dist.sh has no ARCHIVE_* declaration." >&2; exit 1; }
+
+missing_from_archive=""   # install.sh wants it; the packager does not make it
+missing_from_installer="" # the packager makes it; install.sh does not copy it
+for f in $install_files; do
+    case " $(printf '%s ' $packaged) " in
+        *" $f "*) ;;
+        *) missing_from_archive="$missing_from_archive $f" ;;
     esac
 done
+for f in $packaged; do
+    case " $(printf '%s ' $install_files) " in
+        *" $f "*) ;;
+        *) missing_from_installer="$missing_from_installer $f" ;;
+    esac
+done
+if [ -n "$missing_from_archive" ]; then
+    echo "check-dist-names: install.sh copies files the packager does not build:$missing_from_archive" >&2
+    echo "  Those installs fail at copy time, or worse: the one-liner is served from" >&2
+    echo "  main while the asset comes from releases/latest, so a user gets the" >&2
+    echo "  mismatch with no tag between them. Add them to ARCHIVE_* in make-dist.sh" >&2
+    echo "  (and to the release's asset if the archive is already published)." >&2
+    exit 1
+fi
+if [ -n "$missing_from_installer" ]; then
+    echo "check-dist-names: the packager builds files install.sh never copies:$missing_from_installer" >&2
+    echo "  They ship in the archive and are not installed, which is a size cost and," >&2
+    echo "  for a binary, a file nothing runs." >&2
+    exit 1
+fi
 
-echo "check-dist-names: $(printf '%s ' $built | wc -w) triple(s) built, all asked for by install.sh; $(printf '%s ' $made | wc -w) file(s) in the package"
+echo "check-dist-names: $(printf '%s ' $built | wc -w) triple(s) built, all asked for by install.sh; install.sh and the archive agree on $(printf '%s ' $packaged | wc -w) file(s)"
 
 # **The two workflows must build against the SAME llama.cpp.**
 #

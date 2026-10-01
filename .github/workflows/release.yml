@@ -205,16 +205,33 @@ jobs:
 
       # The same extraction the installer does, run once here so a bad archive is
       # caught at publish time rather than by the first user.
+      # **Read from the TAGGED `install.sh`, not from a list written here.**
+      #
+      # This step used to carry its own copy of the file names, which is the drift
+      # shape this repository keeps meeting: the installer says one thing, the
+      # publish step says another, and the disagreement is found by whoever runs the
+      # one-liner. Reading `install.sh`'s own `BINARIES`/`LIBRARIES` makes it the
+      # SAME contract `check-dist-names.sh` asserted before the build, now checked
+      # against the bytes that actually came out.
+      #
+      # The script and the asset do not come from the same ref — the script is served
+      # from `main`, the archive from `releases/latest` — so the only thing tying a
+      # user's install to a release's contents is that both name the same files.
       - name: Every asset must extract to what install.sh expects
         run: |
           set -eu
+          bins=$(sed -n 's/^BINARIES="\(.*\)"$/\1/p' install.sh | head -1)
+          libs=$(sed -n 's/^LIBRARIES="\(.*\)"$/\1/p' install.sh | head -1)
+          [ -n "$bins" ] || { echo "::error::install.sh at this tag has no BINARIES line"; exit 1; }
+          [ -n "$libs" ] || { echo "::error::install.sh at this tag has no LIBRARIES line"; exit 1; }
+          echo "install.sh at $GITHUB_REF_NAME wants: $bins $libs"
           for f in dist/*.tar.gz; do
             d=$(mktemp -d)
             tar -xzf "$f" -C "$d"
-            for want in harnessd letibot-tui letibot-askpass libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
-              [ -f "$d/$want" ] || { echo "::error::$f is missing $want"; exit 1; }
+            for want in $bins $libs; do
+              [ -f "$d/$want" ] || { echo "::error::$f is missing $want, which install.sh copies"; exit 1; }
             done
-            for want in harnessd letibot-tui letibot-askpass; do
+            for want in $bins; do
               [ -x "$d/$want" ] || { echo "::error::$f: $want is not executable"; exit 1; }
             done
             rm -rf "$d"
