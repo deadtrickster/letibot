@@ -36,7 +36,48 @@
 
 set -euo pipefail
 
-BIN="${LETIBOT_BIN:-/home/dead/Projects/letibot/letibot/target/release}"
+# Where the binaries are: **beside this launcher, unless told otherwise.**
+#
+# The default used to be an absolute path into the operator's build tree
+# (`/home/dead/Projects/letibot/letibot/target/release`), which resolves on exactly
+# one machine — and that is why nothing caught it. On that box it works, the
+# `~/bin/letibot` symlink hides it, and every check passes. Installed anywhere else
+# the launcher starts, looks for `letibot-tui` in a directory that does not exist,
+# and reports the head missing while it sits RIGHT BESIDE THE LAUNCHER.
+#
+# Same shape as leticl's `native/hl`: a default that happens to be right in one
+# place, whose failure exists only on boxes nobody tests on. Its workflow comment
+# names the general case better than this one can — *"a comment about a dependency
+# is a claim with a lifetime"* — and a default is a claim that never expires.
+#
+# It resolves its OWN location, THROUGH SYMLINKS, because the operator reaches it as
+# `~/bin/letibot` -> `scripts/letibot` and `dirname "$0"` alone would answer `~/bin`.
+# Then it takes the first candidate that actually holds the binaries, so both layouts
+# work with no special case:
+#
+#   * beside the launcher  — the INSTALLED layout, which is what install.sh makes;
+#   * ../../target/release — the SOURCE-TREE layout, which is where this file lives
+#     before it is installed, and where the operator runs it from today.
+#
+# `LETIBOT_BIN` is authoritative when set and is never second-guessed: leticl's
+# install is built on it, and a wrong value should be NAMED rather than routed
+# around.
+if [ -n "${LETIBOT_BIN:-}" ]; then
+  BIN="$LETIBOT_BIN"
+else
+  _self="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+  _dir="$(cd -- "$(dirname -- "$_self")" 2>/dev/null && pwd -P)" || _dir="$(dirname -- "$_self")"
+  BIN=""
+  for _cand in "$_dir" "$_dir/../target/release"; do
+    if [ -x "$_cand/harnessd" ]; then
+      BIN="$_cand"
+      break
+    fi
+  done
+  # Nothing found: keep the FIRST candidate, so the message below names the place a
+  # reader would expect to look — beside the launcher.
+  [ -n "$BIN" ] || BIN="$_dir"
+fi
 # THE HEAD IS A SEAT'S CHOICE. Everything above the head — finding or starting the
 # folder's daemon, the seat's defaults, --continue, --new — is this launcher's, and
 # another head (leticl, the Common Lisp one) wants all of it and only draws
@@ -961,7 +1002,11 @@ case "${1:-}" in
     NEW_TITLE="${1:-}"; [ $# -gt 0 ] && shift || true ;;
 esac
 
-[ -x "$BIN/harnessd" ] || die "no harnessd at $BIN — run: cargo build --release"
+[ -x "$BIN/harnessd" ] || die "no harnessd at $BIN
+  This launcher looks beside itself and in ../../target/release, unless LETIBOT_BIN
+  says otherwise. From a source checkout that means: cargo build --release.
+  From an install the binaries should be beside this script, so re-install, or
+  point LETIBOT_BIN at the directory holding them."
 
 curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1 \
   || die "nothing serving on $ENDPOINT. Start the model first (systemctl --user start qwen-flash-next)."

@@ -50,15 +50,29 @@ The runtime does not try to be clever about the model. It tries to be *legible* 
 curl -fsSL https://raw.githubusercontent.com/deadtrickster/letibot/main/install.sh | sh
 ```
 
-That puts seven files in `~/.local/bin` (set `LETIBOT_INSTALL_DIR` to change it): the daemon
-`harnessd`, the head `letibot-tui`, `letibot-askpass`, and the four llama.cpp libraries the daemon
-links — `libllama.so.0`, `libggml.so.0`, `libggml-cpu.so.0` and `libggml-base.so.0`. The libraries
-sit **beside the binaries** because that is what `$ORIGIN` resolves, so an install needs no
-`LD_LIBRARY_PATH` and no llama.cpp checkout of its own. Published for
-`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`; other platforms take the source path.
+That puts **eight files** in `~/.local/bin` (set `LETIBOT_INSTALL_DIR` to change it): the launcher
+`letibot`, the daemon `harnessd`, the head `letibot-tui`, `letibot-askpass`, and the four llama.cpp
+libraries the daemon links — `libllama.so.0`, `libggml.so.0`, `libggml-cpu.so.0` and
+`libggml-base.so.0`. The libraries sit **beside the binaries** because that is what `$ORIGIN`
+resolves, so an install needs no `LD_LIBRARY_PATH` and no llama.cpp checkout of its own. Published
+for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`; other platforms take the source path.
 
-**It does not install a model server.** letibot talks to an OpenAI-shaped endpoint: a llama.cpp
-`llama-server` on `127.0.0.1:8080` by default, or a cloud provider (`--provider deepseek|glm|grok`).
+### What you do NOT get, so the next step is not a surprise
+
+**A model.** The install is a harness, a head and the libraries they link. Nothing answers a turn
+until a model is reachable, and a fresh box reaches this point and stops here — the gap is a model
+rather than a package, and no amount of installing closes it.
+
+**A running chat.** `letibot` brings up a daemon and attaches the head; with no model behind it, the
+first thing you see is a connection error rather than a conversation. Start one first:
+
+```sh
+llama-server -m MODEL.gguf --port 8080      # or: --provider deepseek|glm|grok
+```
+
+**An older release may not carry the launcher.** It joined the archive after `v0.1.1`, so an install
+from that release says so and points at the head directly instead of telling you to run a command it
+did not install.
 
 ### What has to be on the machine already
 

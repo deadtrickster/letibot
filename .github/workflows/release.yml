@@ -171,7 +171,7 @@ jobs:
           d=$(mktemp -d)
           tar -xzf dist/letibot-${{ matrix.triple }}.tar.gz -C "$d"
           n=$(ls -1 "$d" | wc -l)
-          test "$n" -eq 7 || { echo "::error::archive holds $n entries, expected 7"; ls -la "$d"; exit 1; }
+          test "$n" -eq 8 || { echo "::error::archive holds $n entries, expected 8"; ls -la "$d"; exit 1; }
           ( cd "$d" && env -u LD_LIBRARY_PATH ./harnessd --version )
           ( cd "$d" && env -u LD_LIBRARY_PATH ./letibot-tui --version )
 

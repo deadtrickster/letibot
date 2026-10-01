@@ -423,7 +423,7 @@ jobs:
           d=$(mktemp -d)
           tar -xzf dist/letibot-x86_64-unknown-linux-gnu.tar.gz -C "$d"
           n=$(ls -1 "$d" | wc -l)
-          test "$n" -eq 7 || { echo "::error::archive holds $n entries, expected 7"; ls -la "$d"; exit 1; }
+          test "$n" -eq 8 || { echo "::error::archive holds $n entries, expected 8"; ls -la "$d"; exit 1; }
           for want in harnessd letibot-tui letibot-askpass; do
             test -x "$d/$want" || { echo "::error::$want is not executable in the archive"; exit 1; }
           done
@@ -432,6 +432,33 @@ jobs:
           # the point is that `$ORIGIN` is doing the work.
           ( cd "$d" && env -u LD_LIBRARY_PATH ./harnessd --version )
           ( cd "$d" && env -u LD_LIBRARY_PATH ./letibot-tui --version )
+          # **And the LAUNCHER, run from the package — the check that would have
+          # caught an absolute default.** Its `BIN` used to be
+          # `/home/dead/Projects/letibot/letibot/target/release`: correct on exactly
+          # one machine, invisible everywhere it was tested, and a `command not
+          # found`-shaped failure for everyone else. On a runner that path does not
+          # exist, so the two shapes below are what it produces — exit 127 with
+          # `env: … No such file or directory`, or the launcher's own
+          # `no harnessd at …`.
+          #
+          # `--sessions` is the verb that reaches `$BIN/harnessd` and then EXITS.
+          # Bare `letibot` would start a daemon, which is the last thing CI should
+          # do.
+          out=$( cd "$d" && env -u LD_LIBRARY_PATH HOME="$(mktemp -d)" ./letibot --sessions 2>&1 ) || rc=$?
+          rc=${rc:-0}
+          echo "letibot --sessions -> exit $rc"
+          test "$rc" != 127 || {
+            echo "::error::the launcher could not exec the binaries beside it (exit 127):"
+            printf '%s\n' "$out"
+            exit 1
+          }
+          case "$out" in
+            *"no harnessd at"*)
+              echo "::error::the launcher resolved BIN somewhere other than its own directory:"
+              printf '%s\n' "$out"
+              exit 1 ;;
+          esac
+          echo "the launcher finds the binaries it shipped beside"
 
       # The installer is the documented way in, so it is tested rather than assumed.
       # It finds this checkout and builds it, so the build is already warm.

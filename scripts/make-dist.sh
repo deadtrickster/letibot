@@ -86,7 +86,22 @@ set -eu
 # `releases/latest`) and this list is the only thing holding them together.
 #
 # ORDER IS NOT A CONTRACT — every reader sorts. The SET is.
-ARCHIVE_BINARIES="harnessd letibot-tui letibot-askpass"
+# **The launcher is IN the archive, and that is a decision rather than a detail.**
+#
+# `install.sh`'s last line tells the user to run `letibot`, so an archive without it
+# installs cleanly and then answers `command not found` to the one command the
+# installer named. MEASURED by the operator on the real one-liner: seven files
+# landed, `harnessd 0.1.1` and `letibot-tui 0.1.1` printed, and no launcher.
+#
+# Shipping it HERE rather than fetching it separately (which is what leticl does,
+# with `LETIBOT_LAUNCHER_REF`) keeps ONE delivery mechanism on ONE ref: the script
+# and the binaries come from the same tag, so a launcher cannot describe a build it
+# did not ship with. A third ref would be a third thing to keep in step, which is
+# the skew this repository just spent a commit closing.
+#
+# It is a REPOSITORY file, not a build artifact, so it is staged from `scripts/`
+# rather than from `target/release` — see the copy loop below.
+ARCHIVE_BINARIES="harnessd letibot-tui letibot-askpass letibot"
 ARCHIVE_LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
 ARCHIVE="$ARCHIVE_BINARIES $ARCHIVE_LIBRARIES"
 
@@ -115,7 +130,11 @@ if [ -z "$bin" ]; then
 fi
 
 for want in $ARCHIVE_BINARIES; do
-    [ -x "$bin/$want" ] || { echo "make-dist: $bin/$want is missing or not executable" >&2; exit 1; }
+    if [ -x "$bin/$want" ] || [ -x "$repo/scripts/$want" ]; then
+        continue
+    fi
+    echo "make-dist: no $want in $bin or $repo/scripts/" >&2
+    exit 1
 done
 
 # The libraries are a hard requirement, not a best effort: a package that names
@@ -141,7 +160,31 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT INT TERM
 
 for want in $ARCHIVE_BINARIES; do
-    cp "$bin/$want" "$stage/$want"
+    # The launcher is a repository script; everything else is a build product. One
+    # list, two sources, because two lists is how the two drift.
+    if [ -f "$repo/scripts/$want" ]; then
+        cp "$repo/scripts/$want" "$stage/$want"
+    else
+        cp "$bin/$want" "$stage/$want"
+    fi
+    # **`letibot` must be a SCRIPT, and this is the check because the name collides.**
+    # `cargo build --release` also produces `target/release/letibot` — the multicall —
+    # so the fallback above can quietly stage a compiled binary under the launcher's
+    # name. MEASURED on a real source install, where that is exactly what happened and
+    # `letibot --sessions` answered "no such role: --sessions". A file that exists and
+    # is the wrong THING is worse than one that is missing: only the missing one gets
+    # noticed.
+    if [ "$want" = "letibot" ]; then
+        if head -c 2 "$stage/$want" 2>/dev/null | grep -q '^#!'; then
+            :
+        else
+            echo "make-dist: $stage/$want is not a script — it is the multicall binary." >&2
+            echo "  That name belongs to the launcher; the multicall will take it when" >&2
+            echo "  the launcher is a role of it, and until then the two cannot both" >&2
+            echo "  be called \`letibot\`." >&2
+            exit 1
+        fi
+    fi
 done
 for so in $ARCHIVE_LIBRARIES; do
     # `-L`: these are symlinks in a llama.cpp build tree (libllama.so.0 →

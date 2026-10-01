@@ -64,7 +64,15 @@ VERSION="${LETIBOT_VERSION:-}"
 # The three binaries and the FOUR libraries, as `scripts/make-dist.sh` packages
 # them. `scripts/check-dist-names.sh` holds this list, the workflow and the
 # packaging script to each other, so a rename in one place fails in CI.
-BINARIES="harnessd letibot-tui letibot-askpass"
+# **`letibot` is last and it is the one the closing line names**, so an archive
+# without it installs cleanly and then answers `command not found` to the command
+# this script told the user to type. MEASURED by the operator on the real one-liner:
+# seven files landed, both binaries printed their versions, and the launcher was not
+# among them — while `scripts/letibot` had been tracked for hours.
+#
+# It ships in the archive with everything else (see `make-dist.sh`, which decides
+# that) so the script and the binaries come from ONE ref.
+BINARIES="harnessd letibot-tui letibot-askpass letibot"
 LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
 
 # **THE LIBRARIES THE BINARIES NEED *FROM THE HOST*, and why this list is three.**
@@ -280,10 +288,25 @@ main() {
     # from an asset — a build leaves them in the llama.cpp tree, not beside the
     # binaries.
     libs_from=""
+    # **Where `letibot` comes from, and it is NOT `$from` in a source install.**
+    #
+    # `cargo build --release` also produces `target/release/letibot` — the multicall
+    # binary — so `$from/letibot` in a source install is the Rust binary rather than
+    # the shell launcher. MEASURED on a real source install: the binary landed under
+    # the launcher's name and `letibot --sessions` answered *"no such role:
+    # --sessions"*, because the multicall cannot be the launcher yet.
+    #
+    # So the checkout's `scripts/` is searched first, and what is found there must be
+    # a SCRIPT. That check is the point: an ELF at this name is the multicall, and
+    # installing it silently replaces the command a person types with one that does
+    # not answer. A file that exists and is the wrong THING is worse than a file that
+    # is missing, because only the second one is noticed.
+    launcher_from=""
 
     if src=$(local_checkout); then
         from=$(build_from_source "$src")
         libs_from="${LETIBOT_LLAMA_LIB:-}"
+        launcher_from="$src/scripts"
     else
         if [ -z "${LETIBOT_FROM_SOURCE:-}" ]; then
             from=$(try_prebuilt "$tmp") || from=""
@@ -315,15 +338,47 @@ main() {
             fi
             from=$(build_from_source "$tmp/letibot")
             libs_from="${LETIBOT_LLAMA_LIB:-}"
+            launcher_from="$tmp/letibot/scripts"
         fi
     fi
 
     mkdir -p "$INSTALL_DIR" || die "cannot create $INSTALL_DIR"
+    # **`letibot` may be absent, and that is a RELEASE being old rather than an
+    # archive being broken.** The launcher joined the archive after `v0.1.1` was
+    # published, and `releases/latest` is whatever it is — so a user installing today
+    # from that release gets everything except this file. Installing the rest and
+    # saying so is the honest answer; refusing the whole install would leave them
+    # with nothing and no way to get it.
+    #
+    # Every OTHER name is required, because those are the files `harnessd` needs.
+    have_launcher=1
     for want in $BINARIES; do
-        [ -f "$from/$want" ] || die "$from/$want is missing"
+        src_file="$from/$want"
+        if [ "$want" = "letibot" ]; then
+            # The checkout's copy wins in a source install; the archive is the only
+            # source otherwise. Then the resolved file must be a SCRIPT — see
+            # `launcher_from` above for why an ELF here is the failure to avoid.
+            if [ -n "$launcher_from" ] && [ -f "$launcher_from/$want" ]; then
+                src_file="$launcher_from/$want"
+            fi
+            if [ ! -f "$src_file" ]; then
+                have_launcher=0
+                continue
+            fi
+            if head -c 2 "$src_file" 2>/dev/null | grep -q '^#!'; then
+                :
+            else
+                die "$src_file is not a script, and \`letibot\` must be one.
+  That file is a compiled binary — most likely the multicall at
+  target/release/letibot, which does not implement the launcher yet. Install the
+  release asset, or run this from a checkout whose scripts/letibot is present."
+            fi
+        else
+            [ -f "$src_file" ] || die "$src_file is missing"
+        fi
         # cp+chmod rather than install(1): `install` is in GNU and BSD but not in
         # POSIX, and the difference is not worth a portability question here.
-        cp "$from/$want" "$INSTALL_DIR/$want" || die "cannot write $INSTALL_DIR/$want"
+        cp "$src_file" "$INSTALL_DIR/$want" || die "cannot write $INSTALL_DIR/$want"
         chmod 755 "$INSTALL_DIR/$want"
     done
     for so in $LIBRARIES; do
@@ -366,11 +421,30 @@ main() {
     esac
 
     say ""
-    say "Next: you need a model server. letibot talks to an OpenAI-compatible"
-    say "endpoint — a llama.cpp llama-server by default, on 127.0.0.1:8080:"
+    # **What is installed is a harness and a head, NOT a working chat.** Both need a
+    # model behind them, and saying so here is the difference between a user who
+    # knows what the next step is and one who types `letibot` and reads a connection
+    # error. The operator measured the same gap from the other side on
+    # `debian:stable-slim`: the install lands, and the first thing that stops you is
+    # a model rather than a package.
+    say "What you have now: a daemon, a head, and the libraries they link. They do"
+    say "not include a MODEL — nothing will answer a turn until one is reachable."
+    say ""
+    say "Point them at one with a llama.cpp llama-server on 127.0.0.1:8080:"
     say "  llama-server -m MODEL.gguf --port 8080"
-    say "or a cloud provider instead (letibot --provider deepseek|glm|grok)."
-    say "Then run:  letibot"
+    say "or use a cloud provider instead (--provider deepseek|glm|grok)."
+    say ""
+    if [ "$have_launcher" = 1 ]; then
+        say "Then run:  letibot"
+    else
+        # The closing line must name something that IS there. An archive built
+        # before the launcher joined it installs everything else, and telling the
+        # user to run a command this release does not carry is the exact defect
+        # this branch exists to stop repeating.
+        say "This release predates the \`letibot\` launcher, so it was not installed."
+        say "Run the head directly for now, or install a release that has it:"
+        say "  $INSTALL_DIR/letibot-tui"
+    fi
 }
 
 main "$@"
