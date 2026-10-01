@@ -36,14 +36,23 @@ fn main() {
     //
     // It must be HERE and not in `letibot-tokencore`: the module docstring above
     // says why, and it is worth not learning twice — `rustc-link-arg` applies to
-    // the emitting package's own targets and to nothing downstream. `letibot-tui`
-    // needs no rpath at all, because it does not link llama (measured: `ldd` has no
-    // `libllama` line), and neither does `letibot-askpass`.
+    // the emitting package's own targets and to nothing downstream.
     //
-    // The libraries a package must carry are small and measured: `libllama.so.0`
-    // 4.7 MB, `libggml.so.0` 0.1 MB, `libggml-base.so.0` 0.9 MB. `libggml-cuda.so`
-    // is not in any `DT_NEEDED` set — ggml dlopens its backends — so a CPU-only
-    // package tokenises without it.
+    // **`letibot-tui` DOES need one too, and this comment used to say it did not.**
+    // It said "measured: `ldd` has no `libllama` line" — true on x86_64, false on
+    // aarch64, where the same commit's binary failed at exec with
+    // `libllama.so.0: cannot open shared object file` while harnessd started fine
+    // (release dry-run 36840931628). `crates/tui/build.rs` now bakes the same rpath
+    // and carries the account of what is and is not established about why.
+    //
+    // `letibot-askpass` needs none of its own: it is a binary target of THIS
+    // package, so the two lines below already apply to it.
+    //
+    // The libraries a package must carry are measured from the transitive closure
+    // of a `$ORIGIN`-only build, and there are FOUR — `libllama.so.0`,
+    // `libggml.so.0`, `libggml-cpu.so.0`, `libggml-base.so.0`. An earlier version
+    // of this comment named three and stopped one level short. `libggml-cuda.so` is
+    // not in the set for a CPU build, because CUDA is off and it is 68 MB.
     println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
 }
