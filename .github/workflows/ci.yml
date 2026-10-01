@@ -358,24 +358,69 @@ jobs:
             *"not inside a letibot session"*) ;;
             *) echo "::error::letibot-askpass said something unexpected: $out"; exit 1 ;;
           esac
-          # Every other role must answer as itself, proving the argv[0] dispatch
-          # reached the right arm rather than just some arm.
+          # **Each role needs its OWN probe, and this step learned that the hard way.**
           #
-          # **`--version`, not a bare name, and that is deliberate.** A bare
-          # `./harnessd` on a machine with no daemon STARTS ONE — which is the last
-          # thing CI should do, and it would hang here the moment that role is wired.
-          # `--version` terminates and names the role, so it stays correct as each
-          # role lands. Every role this step names must therefore answer `--version`
-          # when it is wired; a role that cannot is a role that cannot be smoke-tested,
-          # and that is worth knowing at wiring time rather than here.
-          for n in harnessd letibot-tui letibot-m1 letibot-render letibot-render-qwen; do
-            out=$(cd "$d" && timeout 20 "./$n" --version 2>&1 || true)
-            case "$out" in
-              *"$n"*) ;;
-              *) echo "::error::$n did not answer as itself to --version: $out"; exit 1 ;;
+          # It used `--version` for all of them, on the reasoning that a role which
+          # cannot answer it is a role that cannot be smoke-tested. MEASURED: that is
+          # wrong, and CI said so —
+          #
+          #   ##[error]letibot-render did not answer as itself to --version:
+          #   reading fixture --version: No such file or directory (os error 2)
+          #
+          # `letibot-render` has no flags at all: a bare argument is a FIXTURE PATH.
+          # The roles genuinely differ in what "run and exit" means, so the table is per
+          # role and each entry is safe — nothing here starts a daemon or attaches a
+          # head:
+          #
+          #   harnessd            --version   (or the daemon STARTS)
+          #   letibot-tui         --version   (or the head ATTACHES)
+          #   letibot-m1          --help      (a usage error: exit 2, names itself)
+          #   letibot-render      (no args)   (usage: exit 2, names itself)
+          #   letibot-render-qwen (no args)   (same)
+          #
+          # `tui` is reached by `--version` and `harnessd` by `--version` for the same
+          # reason: both would otherwise START something, which is the last thing CI
+          # should do. And every probe must NAME ITS ROLE, which is what proves the
+          # argv[0] dispatch reached the right arm rather than just some arm.
+          # **The assertion is that the role RAN, and each row proves it the way that
+          # role can.** Requiring the invoked name in the output was the first idea and
+          # it is wrong for two of the five: `letibot-render --dialect nope` answers
+          # "unknown dialect \"nope\"" — a correct refusal that names no role — while
+          # `--help` names it and exits 0. So the name is required only where the role
+          # actually prints it, and the fallback is a distinctive string from that
+          # role's own vocabulary.
+          #
+          # What every row has in common is the thing being tested: the process STARTED
+          # (no 126/127 — the loader found the libraries beside it), and it answered as
+          # a renderer/daemon/head rather than as a dispatcher that did not know the
+          # name.
+          probe() { # probe NAME EXPECTED ARGS...
+            n="$1"; want="$2"; shift 2
+            out=$(cd "$d" && timeout 20 "./$n" "$@" 2>&1) || rc=$?
+            rc=${rc:-0}
+            case "$rc" in
+              126|127) echo "::error::$n did not LOAD (exit $rc): $out"; exit 1 ;;
             esac
-          done
-          echo "every installed name reached its own role"
+            case "$out" in
+              *"$want"*) ;;
+              *) echo "::error::$n did not answer as a $n ($*): $out"; exit 1 ;;
+            esac
+          }
+          # Each of these was RUN against the real binary before being written here,
+          # because the first version of the table was reasoned about and wrong in two
+          # of five rows:
+          #
+          #   letibot-render with no args      -> prints `[]` and exits 0, naming nothing
+          #   letibot-render-qwen with no args -> usage, exit 2, names itself
+          #
+          # so `render` is reached by `--dialect nope` (exit 2, "unknown dialect") while
+          # its sibling is not.
+          probe harnessd          harnessd 0.1.1 --version
+          probe letibot-tui       letibot-tui 0.1.1 --version
+          probe letibot-m1        letibot-m1 --help
+          probe letibot-render    unknown   --dialect nope
+          probe letibot-render-qwen  letibot-render-qwen
+          echo "every installed name reached its own role, each by a probe that suits it"
 
 
       # **The host-runtime check, asserted both ways.** This is the check that
