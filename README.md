@@ -44,6 +44,36 @@ The runtime does not try to be clever about the model. It tries to be *legible* 
 | `letibot-tui` | The terminal head. |
 | `letibot-harnessd` | The daemon that assembles the parts into a working harness. |
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/deadtrickster/letibot/main/install.sh | sh
+```
+
+That puts seven files in `~/.local/bin` (set `LETIBOT_INSTALL_DIR` to change it): the daemon
+`harnessd`, the head `letibot-tui`, `letibot-askpass`, and the four llama.cpp libraries the daemon
+links — `libllama.so.0`, `libggml.so.0`, `libggml-cpu.so.0` and `libggml-base.so.0`. The libraries
+sit **beside the binaries** because that is what `$ORIGIN` resolves, so an install needs no
+`LD_LIBRARY_PATH` and no llama.cpp checkout of its own. Published for
+`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`; other platforms take the source path.
+
+**It does not install a model server.** letibot talks to an OpenAI-shaped endpoint: a llama.cpp
+`llama-server` on `127.0.0.1:8080` by default, or a cloud provider (`--provider deepseek|glm|grok`).
+
+### What the one-liner itself needs
+
+`curl` to fetch the script, and `tar` to unpack the asset. **`wget` is not a substitute** — and on a
+box with neither `curl` nor a toolchain, install `curl` first (`apt-get install -y curl`,
+`apk add curl`, `dnf install curl`). This is the bootstrap limit rather than something the script
+can work around: there is no way to download an installer without a downloader.
+
+Without `curl`, `install.sh` falls back to building from source — which needs **more**, not less:
+`git`, Rust, a C compiler, and a **built llama.cpp checkout**, because `harnessd` links the tokenizer
+and that is not optional. Point it at one with `LETIBOT_LLAMA_DIR` (holding `include/llama.h`) and
+`LETIBOT_LLAMA_LIB` (holding `libllama.so.0`).
+
+`LETIBOT_VERSION` picks a tag (e.g. `v0.1.1`); `LETIBOT_FROM_SOURCE` forces the source path.
+
 ## Build and run
 
 ```sh

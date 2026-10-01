@@ -180,6 +180,23 @@ main() {
             from=$(try_prebuilt "$tmp") || from=""
         fi
         if [ -z "$from" ]; then
+            # **Name `curl` FIRST, because it is the absence that actually explains
+            # this.** MEASURED on a minimal box (no curl, no wget, no git, no tar),
+            # where the message used to be "no git found: needed to fetch the source".
+            # That is true and misleading: the asset path returns quietly when curl
+            # is missing, so by the time control reaches here the user is being told
+            # to install git — the tool they cannot fetch either — while the one tool
+            # whose absence turned a one-step install into a source build is unnamed.
+            #
+            # `wget` is not a substitute and this says so, because it is the first
+            # thing a person on a minimal image tries.
+            need curl || die "no curl found, and there is no prebuilt install without it.
+  curl downloads the release asset; wget is not a substitute.
+    Debian/Ubuntu   apt-get install -y curl
+    Alpine          apk add curl
+    Fedora/RHEL     dnf install curl
+  Or build from source, which needs git, Rust, a C compiler AND a built
+  llama.cpp checkout — more, not less. See the README's Install section."
             need git || die "no git found: needed to fetch the source (or run this from a checkout)"
             warn "Fetching $REPO..."
             if [ -n "$VERSION" ]; then
