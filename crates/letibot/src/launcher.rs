@@ -1018,3 +1018,384 @@ mod stop_tests {
         let _ = child.wait();
     }
 }
+
+// --- the seat, as the launcher's own flags describe it ---------------------------
+
+/// **What the operator asked this session to be** — the launcher's flags, parsed.
+///
+/// A "seat" is the launcher's word for the role, the mode, the grants and the provider
+/// that a daemon is started with. **The seat is fixed when the daemon STARTS**, which is
+/// why this parses them apart from the verbs: `--status` does not need them, and
+/// `--attach` cannot change them — it can only warn that the flags it was given will not
+/// take effect against a daemon already running. That warning is its own piece; this is
+/// the parse.
+///
+/// The field set and every default come from `scripts/letibot`'s flag arms, and the
+/// messages are the shell's own wording — a person who knows this launcher should not be
+/// able to tell which one refused.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Seat {
+    /// `--read-only` is role `orchestrator`; the default role is `coder`.
+    pub role: String,
+    /// The adjustments `--read-only` clears. Kept as the shell's single opaque string,
+    /// because it is forwarded verbatim to the daemon.
+    pub adj: String,
+    /// `--mode`, whose six names the shell lists in its own refusal.
+    pub mode: String,
+    /// `--bash` / `--no-bash`. **On by default**, for every seat that can carry a shell —
+    /// the operator's *"i dont think having coder that cant do tests is a…"* is why, and
+    /// `--no-bash` is the opt-out.
+    pub bash: bool,
+    pub supervise: bool,
+    pub oracle: String,
+    pub oracle_budget: String,
+    /// `--provider`, and whether it was set — an explicit provider means the launcher
+    /// does not know the model, which is a different state from the config's default.
+    pub provider: Option<String>,
+    pub web_search: String,
+    pub web_fetch: bool,
+    /// The dialect the daemon renders for. The presets set it; there is no `--dialect`
+    /// flag of the launcher's own.
+    pub dialect: String,
+    /// The vocab the daemon binds token ids against, which every preset also names — it
+    /// is the model's own GGUF and cannot be derived from the dialect.
+    pub vocab: String,
+    pub model: String,
+    /// Everything forwarded to the daemon with no interpretation here: `--vm`,
+    /// `--vm-arg`, `--provider`, `--web-search`, `--web-fetch`. harnessd owns the meaning.
+    pub extra: Vec<String>,
+}
+
+/// The modes `--mode` accepts, as the shell lists them in its refusal. Named once so the
+/// message and the validation cannot disagree.
+/// The operator's home, as the shell uses it: `$HOME`, and `~` as a fallback rather than
+/// an empty string — a path beginning `"/models/…"` would be silently wrong.
+pub fn home() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| "~".into())
+}
+
+pub const MODES: &[&str] = &[
+    "read-only",
+    "always-ask",
+    "writes-allowed",
+    "automode",
+    "automode-edits",
+    "allow-all",
+];
+
+/// Parse the launcher's seat flags from `args`, or refuse by name.
+///
+/// **A flag that needs a value and has none is a refusal, not a default.** The shell says
+/// `--mode NAME   (read-only, always-ask, …)` — the requirement and the accepted set in
+/// one line — and that shape is kept because it is what a person can act on.
+///
+/// Unknown arguments are NOT refused here: the launcher also takes a bare prompt and its
+/// verbs, and deciding which is which belongs to the caller. This consumes what it
+/// recognises and hands back the rest.
+pub fn parse_seat(args: &[String]) -> Result<(Seat, Vec<String>), String> {
+    let mut seat = Seat {
+        // The shell's defaults, read off its own initialisers.
+        role: "coder".into(),
+        bash: true,
+        ..Default::default()
+    };
+    let mut rest = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        // `need` is the shell's `next()?`: a flag that wants a value gets the next
+        // argument or the refusal.
+        let mut need = |what: &str| -> Result<String, String> {
+            args.get(i + 1)
+                .cloned()
+                .ok_or_else(|| format!("{what} needs a value"))
+        };
+        match a {
+            "--read-only" => {
+                seat.role = "orchestrator".into();
+                seat.adj = String::new();
+                i += 1;
+            }
+            "--writes" => {
+                seat.mode = "writes-allowed".into();
+                i += 1;
+            }
+            "--ask" => {
+                seat.mode = "always-ask".into();
+                i += 1;
+            }
+            "--mode" => {
+                let v = need(
+                    "--mode NAME   (read-only, always-ask, writes-allowed,                               automode, automode-edits, allow-all)",
+                )?;
+                if !MODES.contains(&v.as_str()) {
+                    return Err(format!("--mode {v}: not one of {}", MODES.join(", ")));
+                }
+                seat.mode = v;
+                i += 2;
+            }
+            "--bash" => {
+                seat.bash = true;
+                i += 1;
+            }
+            "--no-bash" => {
+                seat.bash = false;
+                i += 1;
+            }
+            "--supervise" => {
+                seat.supervise = true;
+                i += 1;
+            }
+            "--oracle" => {
+                seat.oracle = need(
+                    "--oracle HOST:PORT   the guard model for --mode                                     supervised / automode",
+                )?;
+                i += 2;
+            }
+            "--oracle-budget-ms" => {
+                seat.oracle_budget = need(
+                    "--oracle-budget-ms N   how long the gate waits                                            before failing closed",
+                )?;
+                i += 2;
+            }
+            "--vm" => {
+                seat.extra.push("--where".into());
+                seat.extra.push("firecode".into());
+                i += 1;
+            }
+            "--vm-arg" => {
+                seat.extra.push("--vm-arg".into());
+                seat.extra.push(need("--vm-arg ARG")?);
+                i += 2;
+            }
+            "--provider" => {
+                let v = need("--provider NAME   (deepseek, glm, grok)")?;
+                seat.extra.push("--provider".into());
+                seat.extra.push(v.clone());
+                seat.provider = Some(v);
+                i += 2;
+            }
+            "--web-search" => {
+                let v = need("--web-search NAME   (brave)")?;
+                seat.extra.push("--web-search".into());
+                seat.extra.push(v.clone());
+                seat.web_search = v;
+                i += 2;
+            }
+            "--web-fetch" => {
+                seat.web_fetch = true;
+                seat.extra.push("--web-fetch".into());
+                i += 1;
+            }
+            "--no-web-fetch" => {
+                seat.web_fetch = false;
+                i += 1;
+            }
+            "--effort" => {
+                // **Forwarded, not stored.** The shell puts it in `EXTRA_ARGS`, because
+                // the daemon owns what an effort level means.
+                let v = need("--effort LEVEL   (low, high, max)")?;
+                seat.extra.push("--effort".into());
+                seat.extra.push(v);
+                i += 2;
+            }
+            "--brave-key" => {
+                seat.extra.push("--brave-key".into());
+                seat.extra.push(need("--brave-key KEY")?);
+                i += 2;
+            }
+            "--model" => {
+                seat.model = need("--model NAME")?;
+                i += 2;
+            }
+            // **The three presets, and each names a dialect, a model AND a vocab.**
+            // MEASURED against the shell: my first version of these three arms was a
+            // guess, and all three were wrong — `--glm` sets the model and the vocab too,
+            // and the vocab cannot be derived from the dialect because it is the model's
+            // own GGUF. The paths are the shell's, `$HOME` and all.
+            "--glm" => {
+                seat.dialect = "glm".into();
+                seat.model = "glm-5.3-flash".into();
+                seat.vocab = format!(
+                    "{home}/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf",
+                    home = home()
+                );
+                i += 1;
+            }
+            "--flash" => {
+                seat.dialect = "qwen".into();
+                seat.model = "qwen-3.8-flash-next".into();
+                seat.vocab = format!(
+                    "{home}/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf",
+                    home = home()
+                );
+                i += 1;
+            }
+            "--dense" => {
+                seat.dialect = "qwen".into();
+                seat.model = "qwen-3.8-27b".into();
+                seat.vocab = format!("{home}/models/Qwen3.8-27B-UD-Q6_K_XL.gguf", home = home());
+                i += 1;
+            }
+            _ => {
+                rest.push(args[i].clone());
+                i += 1;
+            }
+        }
+    }
+    Ok((seat, rest))
+}
+
+#[cfg(test)]
+mod seat_tests {
+    use super::*;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// **The shell's defaults**, read off its own initialisers: role `coder`, shell ON.
+    ///
+    /// The shell is on by default for every seat that can carry one, and the reason is
+    /// the operator's own: a coder that cannot run a test is not one. `--no-bash` is the
+    /// opt-out, so a parse that defaulted it off would take a working session away.
+    #[test]
+    fn the_defaults_are_the_shells() {
+        let (seat, rest) = parse_seat(&[]).expect("no flags is not an error");
+        assert_eq!(seat.role, "coder");
+        assert!(seat.bash, "the shell is ON unless --no-bash says otherwise");
+        assert!(rest.is_empty());
+    }
+
+    /// `--read-only` is role `orchestrator` AND clears the adjustments — both halves,
+    /// because the shell does both in one arm.
+    #[test]
+    fn read_only_is_a_role_and_clears_the_adjustments() {
+        let (seat, _) = parse_seat(&v(&["--read-only"])).unwrap();
+        assert_eq!(seat.role, "orchestrator");
+        assert!(seat.adj.is_empty());
+
+        let (seat2, _) = parse_seat(&v(&["--no-bash", "--read-only"])).unwrap();
+        assert_eq!(seat2.role, "orchestrator");
+        assert!(!seat2.bash, "--read-only must not turn the shell back on");
+    }
+
+    /// **A mode outside the six is refused, and the refusal lists them.** The shell's
+    /// message names all six, which is the difference between a refusal and a puzzle.
+    #[test]
+    fn a_mode_outside_the_accepted_set_is_refused_by_name() {
+        let (seat, _) = parse_seat(&v(&["--mode", "automode"])).unwrap();
+        assert_eq!(seat.mode, "automode");
+
+        let e = parse_seat(&v(&["--mode", "yolo"])).unwrap_err();
+        assert!(e.contains("yolo"), "{e}");
+        for m in MODES {
+            assert!(e.contains(m), "the refusal must list {m}: {e}");
+        }
+    }
+
+    /// A flag that needs a value and has none refuses. This is the shape that took a
+    /// session down silently in another tree: a swallowed `--provider` left the daemon
+    /// answering with the config's default and no word about why.
+    #[test]
+    fn a_flag_with_no_value_refuses_rather_than_defaulting() {
+        for flag in ["--mode", "--oracle", "--provider", "--model", "--effort"] {
+            let e = parse_seat(&v(&[flag])).unwrap_err();
+            assert!(e.contains("needs a value"), "{flag}: {e}");
+        }
+    }
+
+    /// **The passthrough is verbatim, and that is the contract with the daemon.** The
+    /// shell forwards these with no interpretation — *"harnessd owns the meaning"* — so
+    /// the order and the values must arrive as typed.
+    #[test]
+    fn the_forwarded_flags_are_passed_through_verbatim() {
+        let (seat, _) = parse_seat(&v(&[
+            "--provider",
+            "deepseek",
+            "--vm",
+            "--vm-arg",
+            "--timeout 60",
+            "--web-search",
+            "brave",
+        ]))
+        .unwrap();
+        assert_eq!(seat.provider.as_deref(), Some("deepseek"));
+        assert_eq!(
+            seat.extra,
+            v(&[
+                "--provider",
+                "deepseek",
+                "--where",
+                "firecode",
+                "--vm-arg",
+                "--timeout 60",
+                "--web-search",
+                "brave"
+            ]),
+            "`--vm` becomes `--where firecode`, and everything else rides as typed"
+        );
+    }
+
+    /// **The three presets, pinned to the shell's own values.**
+    ///
+    /// MEASURED, and it is why this test exists: my first three arms were guesses and all
+    /// three were wrong. `--glm` does not just mean "dialect glm" — it names a model and
+    /// the model's own vocab GGUF, and the vocab cannot be derived from the dialect.
+    #[test]
+    fn the_presets_carry_a_dialect_a_model_and_a_vocab() {
+        let (glm, _) = parse_seat(&v(&["--glm"])).unwrap();
+        assert_eq!(glm.dialect, "glm");
+        assert_eq!(glm.model, "glm-5.3-flash");
+        assert!(
+            glm.vocab
+                .ends_with("models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf"),
+            "{}",
+            glm.vocab
+        );
+
+        let (flash, _) = parse_seat(&v(&["--flash"])).unwrap();
+        assert_eq!(
+            (flash.dialect.as_str(), flash.model.as_str()),
+            ("qwen", "qwen-3.8-flash-next")
+        );
+        assert!(
+            flash.vocab.contains("qwen3.8-flash-next"),
+            "{}",
+            flash.vocab
+        );
+
+        let (dense, _) = parse_seat(&v(&["--dense"])).unwrap();
+        assert_eq!(
+            (dense.dialect.as_str(), dense.model.as_str()),
+            ("qwen", "qwen-3.8-27b")
+        );
+        assert!(
+            dense.vocab.ends_with("Qwen3.8-27B-UD-Q6_K_XL.gguf"),
+            "{}",
+            dense.vocab
+        );
+
+        // And every path is absolute: a relative one would be resolved against whatever
+        // directory the launcher happened to be started from.
+        for v in [&glm.vocab, &flash.vocab, &dense.vocab] {
+            assert!(v.starts_with('/'), "not absolute: {v}");
+        }
+    }
+
+    /// `--effort` is FORWARDED, not interpreted: the daemon owns what a level means.
+    #[test]
+    fn effort_is_forwarded_like_the_other_daemon_flags() {
+        let (seat, _) = parse_seat(&v(&["--effort", "low"])).unwrap();
+        assert_eq!(seat.extra, v(&["--effort", "low"]));
+    }
+
+    /// **Anything it does not recognise comes back, rather than being refused.** The
+    /// launcher also takes verbs and a bare one-shot prompt, and deciding which of those
+    /// an argument is belongs to the caller.
+    #[test]
+    fn unrecognised_arguments_are_returned_not_refused() {
+        let (_, rest) = parse_seat(&v(&["--bash", "--stop", "fix the tests"])).unwrap();
+        assert_eq!(rest, v(&["--stop", "fix the tests"]));
+    }
+}
