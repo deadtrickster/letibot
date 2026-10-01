@@ -402,19 +402,31 @@ fn a_head_prompts_over_the_socket_and_sees_the_turn() {
     );
 }
 
-/// **A message queued while the head was running is a prompt, not a footnote.**
+/// **A message already waiting joins THIS round rather than costing another.**
 ///
-/// The engine drains the steering queue at the step boundary — after
-/// `TurnFinished` — and until now the loop returned there: the queued message was
-/// appended as a user item and answered by nobody, and the operator had to send
-/// it again (*"message was queued when you stopped and it didnt restart you,
-/// while it went out o the queue"*). Here the queue is seeded BEFORE the turn,
-/// which is the deterministic form of "typed while you were working": round one
-/// answers the first prompt, the boundary absorbs the queued one, and the loop
-/// must go round again to answer it. Two short generations, under the same lock
-/// as the rest of this file.
+/// This test used to be called `a_message_queued_mid_turn_is_answered_not_just_appended`
+/// and asserted `rounds == 2` — written 2026-09-17, when a message seeded before the turn
+/// could only be absorbed at the step boundary. **The greedy poll changed that on
+/// 2026-09-20** (`cb4e056`, and the rule it cites is the operator's own: *"basically it
+/// should be a little bit greedy with my messages"*): a message waiting when the round
+/// begins is now taken BEFORE the prompt is spent, so it goes into this round's prompt
+/// and the answer comes back in the same round. Measured 2026-10-01 on the old
+/// assertion: `rounds: 1`, and the transcript read
+///
+///   user: "Reply with exactly the word: one"
+///   user: "This message was queued while you were working... two"
+///   assistant: "\n\ntwo"
+///
+/// — the queued message ANSWERED, which is the whole point, and no second round, which
+/// the old count took for a failure. So the test was stale rather than the loop broken;
+/// it now asserts the behaviour it actually drives, and
+/// `a_message_that_arrives_mid_turn_is_answered_in_the_next_round` below covers the
+/// boundary path this one no longer reaches.
+///
+/// Word-matched loosely — the model is told to reply with one word and usually does, and
+/// demanding byte-exactness would pin the model rather than the loop.
 #[test]
-fn a_message_queued_mid_turn_is_answered_not_just_appended() {
+fn a_message_already_waiting_joins_this_round_rather_than_costing_another() {
     use letibot_sessionlog::hub::CommandKind;
     use letibot_sessionlog::protocol::{Caps, ServerFrame};
     use letibot_transcript::{TranscriptItem, UserPart};
@@ -422,11 +434,9 @@ fn a_message_queued_mid_turn_is_answered_not_just_appended() {
     let _lock = serial();
     let Some(cfg) = config() else { return };
     let parts = own_modes(Parts::load(&cfg).expect("the vocabulary must load"));
-    let hub = Hub::new("steering-continue-test");
+    let hub = Hub::new("steering-greedy-test");
     let head = hub.attach("tui", "test", Caps::default(), 0);
-    // Seeded before the turn: the running turn's steering source drains it at the
-    // first step boundary, which is the deterministic form of the operator typing
-    // while the head was running.
+    // Seeded before the turn: waiting when the round begins, which is the greedy case.
     let frame = hub.submit(
         &head.head_id,
         "queued-1",
@@ -446,17 +456,15 @@ fn a_message_queued_mid_turn_is_answered_not_just_appended() {
         .submit("Reply with exactly the word: one")
         .expect("the loop must close");
 
-    // Two rounds: the first prompt answered, the boundary absorbed the queued
-    // message, and the loop went round again instead of returning.
+    // ONE round: the words were already there, so they went into this prompt rather
+    // than waiting for a boundary that would have cost another generation.
     assert_eq!(
-        reply.rounds, 2,
-        "the queued message must cost a round; the reply was {reply:?}"
+        reply.rounds, 1,
+        "a message already waiting must not cost an extra round; the reply was {reply:?}"
     );
 
-    // And the transcript says the order: first prompt, its answer, the queued
-    // message, the answer to it. Word-matched loosely — the model is told to
-    // reply with exactly one word and usually does, and a test that demanded
-    // byte-exactness would be pinning the model rather than the loop.
+    // And both prompts are in the transcript, with the queued one ahead of anything the
+    // model said — the engine's `steering_before`, appended before generation.
     let rows: Vec<String> = h
         .items()
         .iter()
@@ -473,21 +481,132 @@ fn a_message_queued_mid_turn_is_answered_not_just_appended() {
         .iter()
         .position(|r| r.starts_with("user: Reply with exactly"))
         .expect("the first prompt is in the transcript");
-    let answer_one = rows
-        .iter()
-        .position(|r| r.starts_with("assistant:") && r.to_lowercase().contains("one"))
-        .expect("the first prompt was answered");
     let queued = rows
         .iter()
         .position(|r| r.starts_with("user: This message was queued"))
         .expect("the queued message is in the transcript");
+    let answered = rows
+        .iter()
+        .position(|r| r.starts_with("assistant:") && !r.trim_end().ends_with("assistant:"))
+        .expect("the round was answered");
     assert!(
-        first < answer_one && answer_one < queued,
-        "the queued message must arrive after the first answer: {rows:?}"
+        first < queued && queued < answered,
+        "the queued words must be in the prompt ahead of the answer: {rows:?}"
+    );
+}
+
+/// **A message that arrives WHILE the model is generating is answered in the next round.**
+///
+/// This is the case the test above used to claim and no longer reaches. The greedy poll
+/// takes what is waiting when the round BEGINS; a message that lands after the prompt has
+/// gone out is absorbed by the stream loop and injected at the step boundary, which
+/// `TurnOk::steering_applied` reports — and the harness must go round again rather than
+/// return with the message appended and unanswered. That was the operator's complaint
+/// verbatim: *"message was queued when you stopped and it didnt restart you, while it went
+/// out o the queue"*.
+///
+/// # Why this needs a thread, and why that is the honest form
+///
+/// The distinction IS the timing: seeding before the turn exercises the greedy path and
+/// asserting the boundary path from it would be asserting something the code does not do.
+/// So the message is submitted from another thread once generation has provably begun —
+/// `Hub::retained` showing a `Delta` means the prompt was already built and sent, which is
+/// strictly after the greedy poll. The first prompt asks for a LONG answer so the window
+/// between "generating" and "finished" is seconds wide rather than milliseconds; a
+/// one-word reply would race the submit, which would be a flaky test passing for the
+/// wrong reason.
+#[test]
+fn a_message_that_arrives_mid_turn_is_answered_in_the_next_round() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use letibot_sessionlog::event::SessionEvent;
+    use letibot_sessionlog::hub::CommandKind;
+    use letibot_sessionlog::protocol::{Caps, ServerFrame};
+    use letibot_transcript::{TranscriptItem, UserPart};
+
+    let _lock = serial();
+    let Some(cfg) = config() else { return };
+    let parts = own_modes(Parts::load(&cfg).expect("the vocabulary must load"));
+    let hub = Hub::new("steering-midturn-test");
+    let head = hub.attach("tui", "test", Caps::default(), 0);
+    let head_id = head.head_id.clone();
+
+    let hub_for_thread: Arc<Hub> = hub.clone();
+    let queued = std::thread::spawn(move || {
+        // Wait until the prompt has gone out. A Delta is proof: the round is past the
+        // greedy poll, so this message can only be absorbed at the boundary.
+        let deadline = Instant::now() + Duration::from_secs(180);
+        let mut saw_delta = false;
+        while Instant::now() < deadline && !saw_delta {
+            saw_delta = hub_for_thread
+                .retained()
+                .iter()
+                .any(|e| matches!(e.event, SessionEvent::Delta { .. }));
+            if !saw_delta {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        let frame = hub_for_thread.submit(
+            &head_id,
+            "queued-1",
+            0,
+            CommandKind::Prompt {
+                text: "Reply with exactly the word: two".into(),
+            },
+        );
+        (saw_delta, matches!(frame, ServerFrame::Accepted { .. }))
+    });
+
+    let mut h = Harness::open(&parts, cfg, hub).expect("the session opens");
+    // Long enough that the thread's submit lands well inside the generation.
+    let reply = h
+        .submit("Count slowly from 1 to 60, one number per line, and then say the word: one")
+        .expect("the loop must close");
+
+    let (saw_delta, accepted) = queued.join().expect("the submitting thread");
+    assert!(
+        saw_delta,
+        "the message never landed mid-turn, so this test proved nothing about the boundary"
+    );
+    assert!(accepted, "the queued command was refused");
+
+    // TWO rounds: the first answered, the boundary absorbed the queued words, and the
+    // loop went round again instead of returning.
+    assert_eq!(
+        reply.rounds, 2,
+        "a message that arrived mid-turn must cost a round; the reply was {reply:?}"
+    );
+
+    // And the order says the queued words came after the first answer, not before it —
+    // which is the difference between this path and the greedy one above.
+    let rows: Vec<String> = h
+        .items()
+        .iter()
+        .filter_map(|i| match i {
+            TranscriptItem::User { parts, .. } => match &parts[0] {
+                UserPart::Text { text } => Some(format!("user: {text}")),
+                _ => None,
+            },
+            TranscriptItem::Assistant { text, .. } => Some(format!("assistant: {text}")),
+            _ => None,
+        })
+        .collect();
+    let first_answer = rows
+        .iter()
+        .position(|r| r.starts_with("assistant:"))
+        .expect("the first prompt was answered");
+    let queued_at = rows
+        .iter()
+        .position(|r| r.starts_with("user: Reply with exactly the word: two"))
+        .expect("the queued message is in the transcript");
+    assert!(
+        first_answer < queued_at,
+        "the queued words must arrive AFTER the first answer on this path: {rows:?}"
     );
     assert!(
         rows.iter()
-            .skip(queued + 1)
+            .skip(queued_at + 1)
             .any(|r| r.starts_with("assistant:") && r.to_lowercase().contains("two")),
         "the queued message was appended but never answered: {rows:?}"
     );
