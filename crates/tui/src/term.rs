@@ -501,7 +501,14 @@ pub fn paint(
     prev_cursor: Option<(usize, usize)>,
 ) -> (String, Vec<String>) {
     let mut next = Vec::new();
-    let s = paint_full(shown, lines, &mut next, cursor, prev_cursor, shown.is_empty());
+    let s = paint_full(
+        shown,
+        lines,
+        &mut next,
+        cursor,
+        prev_cursor,
+        shown.is_empty(),
+    );
     (s, next)
 }
 
@@ -1073,7 +1080,8 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         let mut shown = Vec::new();
-        let first; let next;
+        let first;
+        let next;
         {
             let mut scratch = Vec::new();
             first = paint_full(&shown, &a, &mut scratch, None, None, true);

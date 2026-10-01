@@ -4158,8 +4158,8 @@ impl App {
                 // carries it, which is the only thing on the wire that distinguishes *the next round
                 // of this prompt* from *a new prompt* — `turn_id` is per round and everything else
                 // in the event is per round too.
-                let same_turn = began_ms
-                    .is_some_and(|b| self.turn.as_ref().is_some_and(|t| t.started_ms == b));
+                let same_turn =
+                    began_ms.is_some_and(|b| self.turn.as_ref().is_some_and(|t| t.started_ms == b));
                 let turn_rows = if same_turn {
                     self.turn
                         .as_ref()
@@ -4433,7 +4433,10 @@ impl App {
                 //
                 // Asked BEFORE the outcome is moved into the call's own state, because this is the
                 // last read of it in this arm.
-                if matches!(outcome, letibot_transcript::ToolOutcome::Backgrounded { .. }) {
+                if matches!(
+                    outcome,
+                    letibot_transcript::ToolOutcome::Backgrounded { .. }
+                ) {
                     self.queued.push(Action::ListJobs);
                 }
                 if let Some(t) = self.turn.as_mut()
@@ -4467,7 +4470,7 @@ impl App {
                 advice,
                 deadline,
                 on_timeout,
-                            ..
+                ..
             } => {
                 self.open.retain(|d| d.req_id != req_id);
                 // A fresh question starts at the top of its ladder rather than
@@ -5083,12 +5086,19 @@ impl App {
                     // The composer's text goes into the field being LEFT, and the field being
                     // entered comes out — leticl's `%todo-draft-focus`, one order.
                     let (mut t, mut d) = (t, d);
-                    if self.todo_draft.as_ref().is_some_and(|(_, _, detail)| *detail) {
+                    if self
+                        .todo_draft
+                        .as_ref()
+                        .is_some_and(|(_, _, detail)| *detail)
+                    {
                         d = self.input().to_string();
                     } else {
                         t = self.input().to_string();
                     }
-                    let now_detail = !self.todo_draft.as_ref().is_some_and(|(_, _, detail)| *detail);
+                    let now_detail = !self
+                        .todo_draft
+                        .as_ref()
+                        .is_some_and(|(_, _, detail)| *detail);
                     self.todo_draft = Some((t, d, now_detail));
                     let shown = if now_detail {
                         self.todo_draft.as_ref().map(|(_, d, _)| d.clone())
@@ -5101,7 +5111,11 @@ impl App {
                     return None;
                 }
                 Key::Enter => {
-                    let title = if self.todo_draft.as_ref().is_some_and(|(_, _, detail)| *detail) {
+                    let title = if self
+                        .todo_draft
+                        .as_ref()
+                        .is_some_and(|(_, _, detail)| *detail)
+                    {
                         self.todo_draft
                             .as_ref()
                             .map(|(t, _, _)| t.clone())
@@ -5109,7 +5123,11 @@ impl App {
                     } else {
                         self.input().to_string()
                     };
-                    let detail = if self.todo_draft.as_ref().is_some_and(|(_, _, detail)| *detail) {
+                    let detail = if self
+                        .todo_draft
+                        .as_ref()
+                        .is_some_and(|(_, _, detail)| *detail)
+                    {
                         self.input().to_string()
                     } else {
                         self.todo_draft
@@ -6010,13 +6028,12 @@ impl App {
                         let content = content.clone();
                         let mut mine = self.operator_todos();
                         if let Some(t) = mine.iter_mut().find(|t| t.content == content) {
-                            t.status = if t.status
-                                == letibot_sessionlog::event::TodoStatus::Completed
-                            {
-                                letibot_sessionlog::event::TodoStatus::Pending
-                            } else {
-                                letibot_sessionlog::event::TodoStatus::Completed
-                            };
+                            t.status =
+                                if t.status == letibot_sessionlog::event::TodoStatus::Completed {
+                                    letibot_sessionlog::event::TodoStatus::Pending
+                                } else {
+                                    letibot_sessionlog::event::TodoStatus::Completed
+                                };
                         }
                         self.say("toggled");
                         return Some(Action::SetOperatorTodos(mine));
@@ -6920,7 +6937,6 @@ impl App {
         ));
         None
     }
-
 
     /// The mode this session runs under, **as one of the daemon's own names** — see
     /// [`named_choice`], which is the whole of the reading.
@@ -7857,12 +7873,7 @@ impl App {
             .iter()
             .filter(|it| it.item.is_none())
             .filter_map(|it| self.bound_prompts.get(&it.item_id))
-            .map(|text| {
-                (
-                    text.clone(),
-                    text.split('\n').map(str::to_string).collect(),
-                )
-            })
+            .map(|text| (text.clone(), text.split('\n').map(str::to_string).collect()))
             .collect()
     }
 
@@ -8080,9 +8091,11 @@ impl App {
     /// They are skipped the way the repo's headings are.
     fn todos_stops(&self) -> Vec<TodoStop> {
         let mut out = vec![TodoStop::Add];
-        for t in self.todos.iter().filter(|t| {
-            t.by == letibot_sessionlog::event::TodoBy::Operator
-        }) {
+        for t in self
+            .todos
+            .iter()
+            .filter(|t| t.by == letibot_sessionlog::event::TodoBy::Operator)
+        {
             out.push(TodoStop::Mine(t.content.clone()));
         }
         if let Some(rows) = &self.repo_todos {
@@ -8103,7 +8116,9 @@ impl App {
     /// `TodosUpdated` arriving, a row removed, another workspace — and a key pressed against a
     /// shorter list must land on a row rather than on an index that no longer exists.
     fn todos_row_of(&self) -> usize {
-        let at = self.todos_sel.min(self.todos_stop_rows.len().saturating_sub(1));
+        let at = self
+            .todos_sel
+            .min(self.todos_stop_rows.len().saturating_sub(1));
         self.todos_stop_rows.get(at).copied().unwrap_or(0)
     }
 
@@ -9599,8 +9614,7 @@ impl App {
                 // **Does this run hold one of the TURN's rows** — the `live_here` question. A run
                 // made only of an earlier turn's rows is history, and folding the in-flight work
                 // into it is the defect `marker_carries_live` already records.
-                let live_here =
-                    (start..end).any(|r| turn_rows.contains(&self.items[r].item_id));
+                let live_here = (start..end).any(|r| turn_rows.contains(&self.items[r].item_id));
                 hidden_run_marker(
                     &self.items,
                     start,
@@ -10501,8 +10515,8 @@ impl App {
                     let tight = unseen.is_some() && joinable;
                     let (class, rows) = match unseen {
                         Some((start, end)) if start == *hist_upto => {
-                            let live_here = (start..end)
-                                .any(|r| turn_rows.contains(items[r].item_id.as_str()));
+                            let live_here =
+                                (start..end).any(|r| turn_rows.contains(items[r].item_id.as_str()));
                             let marker = hidden_run_marker(
                                 items,
                                 start,
@@ -10675,19 +10689,16 @@ impl App {
             && (0..self.items.len())
                 .rev()
                 .find_map(|k| {
-                    let (s0, e0) = unseen_run_at(
-                        &self.items,
-                        self.verbosity,
-                        &self.bound_prompts,
-                        live,
-                        k,
-                    )?;
+                    let (s0, e0) =
+                        unseen_run_at(&self.items, self.verbosity, &self.bound_prompts, live, k)?;
                     (s0 == k).then_some((s0, e0))
                 })
                 .is_some_and(|(s0, e0)| {
-                    (s0..e0).any(|r| self.turn.as_ref().is_some_and(|t| {
-                        t.turn_rows.iter().any(|id| *id == self.items[r].item_id)
-                    }))
+                    (s0..e0).any(|r| {
+                        self.turn.as_ref().is_some_and(|t| {
+                            t.turn_rows.iter().any(|id| *id == self.items[r].item_id)
+                        })
+                    })
                 });
         if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
             let runs: Vec<(usize, usize)> = (0..self.items.len())
@@ -10705,7 +10716,10 @@ impl App {
                 live.think_lines,
                 runs.len(),
                 self.items.len(),
-                self.turn.as_ref().map(|t| t.appended.clone()).unwrap_or_default(),
+                self.turn
+                    .as_ref()
+                    .map(|t| t.appended.clone())
+                    .unwrap_or_default(),
             );
         }
         // **And not when the walk has already carried the counts** — the same guard the standalone
@@ -10734,18 +10748,17 @@ impl App {
                     )
                 });
         if live_joins {
-            let painted =
-                Marker::new(
-                    live.calls,
-                    live.think_lines,
-                    // **No events: this marker stands for work with no row yet**, and an event is
-                    // a row the rung DID hide. See [`COUNT_RUNGS`].
-                    0,
-                    true,
-                    marker_carries_live(live),
-                    marker_room(self.cfg.width),
-                )
-                .painted(&self.cfg);
+            let painted = Marker::new(
+                live.calls,
+                live.think_lines,
+                // **No events: this marker stands for work with no row yet**, and an event is
+                // a row the rung DID hide. See [`COUNT_RUNGS`].
+                0,
+                true,
+                marker_carries_live(live),
+                marker_room(self.cfg.width),
+            )
+            .painted(&self.cfg);
             if let Some(at) = self.hist_lines.iter().rposition(|l| !l.trim().is_empty()) {
                 let original = self.hist_lines[at].trim_end().to_string();
                 let joined = format!("{original} {painted}");
@@ -10867,7 +10880,9 @@ impl App {
             // R51 item 15. Computed once for the whole queue rather than asked per entry,
             // because a claim is spent: two entries that read the same must not both claim
             // the one line a row is drawing.
-            for (i, drawn, claimed_by) in unclaimed_prompts(&self.pending_prompts, &echoes_on_screen) {
+            for (i, drawn, claimed_by) in
+                unclaimed_prompts(&self.pending_prompts, &echoes_on_screen)
+            {
                 // **The mark follows the words this row is drawing.** A remainder is drawing what
                 // the row above does not — the same prompt — so it asks `unconfirmed` under the
                 // text that claimed it, which is the text the row itself asked under. Asking
@@ -10953,17 +10968,16 @@ impl App {
                 && !live_joins
                 && !walk_carried_live
             {
-                let painted =
-                    Marker::new(
-                        live.calls,
-                        live.think_lines,
-                        // No events — see the sibling call above.
-                        0,
-                        true,
-                        marker_carries_live(live),
-                        marker_room(cfg.width),
-                    )
-                    .painted(&cfg);
+                let painted = Marker::new(
+                    live.calls,
+                    live.think_lines,
+                    // No events — see the sibling call above.
+                    0,
+                    true,
+                    marker_carries_live(live),
+                    marker_room(cfg.width),
+                )
+                .painted(&cfg);
                 if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
                     eprintln!("MARKER pane draws: {painted}");
                 }
@@ -11875,11 +11889,7 @@ impl App {
                             Some(c) => c.to_string(),
                             None => row.value.clone(),
                         };
-                        let at = row
-                            .choices
-                            .iter()
-                            .position(|n| *n == cur)
-                            .unwrap_or(0);
+                        let at = row.choices.iter().position(|n| *n == cur).unwrap_or(0);
                         let next = row.choices[(at + 1) % row.choices.len()].clone();
                         self.say(&format!("mode → {next} (asking the daemon)"));
                         self.mode_action(next)
@@ -12040,16 +12050,17 @@ impl App {
         // that re-derives authorship from where a row was drawn is the drift this field exists to
         // prevent, and it is the same defect one step earlier than the one that drew the operator's
         // rows under the model's heading.
-        out.push(dim(&self.cfg, "  this session — the plan, and who wrote each line:"));
+        out.push(dim(
+            &self.cfg,
+            "  this session — the plan, and who wrote each line:",
+        ));
         // **The cursor, from the same enumeration the keys read** — see [`App::todos_stops`]. The
         // mark and the key that acts are two readings of one index, which is what leticl's
         // `todos-stops` exists for: two enumerations was the defect that produced *"arrows dont go
         // here"* and *"mouse doesnt click"*.
         let stops = self.todos_stops();
         let cursor = self.todos_sel.min(stops.len().saturating_sub(1));
-        let marked = |want: &TodoStop| {
-            stops.get(cursor).is_some_and(|it| it == want)
-        };
+        let marked = |want: &TodoStop| stops.get(cursor).is_some_and(|it| it == want);
         // **The add control, in the items' own mark column and BOLD**, so it reads as a control
         // rather than as a line of the list. leticl's operator, of its plain first cut: *"it looks
         // like a regular text."* The typed door is `/todo TEXT`; this is the one a reader finds.
@@ -12471,7 +12482,10 @@ impl App {
         if running == 0 {
             return None;
         }
-        let mut out = format!("{running} job{} running", if running == 1 { "" } else { "s" });
+        let mut out = format!(
+            "{running} job{} running",
+            if running == 1 { "" } else { "s" }
+        );
         let to_a_file = self
             .jobs
             .iter()
@@ -12949,11 +12963,7 @@ impl App {
             }
             for t in &d.write_targets {
                 if t.unresolved {
-                    out.push(colour(
-                        &self.cfg,
-                        sgr::YELLOW,
-                        &format!("    {}", t.path),
-                    ));
+                    out.push(colour(&self.cfg, sgr::YELLOW, &format!("    {}", t.path)));
                 } else {
                     out.push(colour(&self.cfg, sgr::BOLD, &format!("    {}", t.path)));
                 }
@@ -13498,7 +13508,6 @@ impl App {
         }
         None
     }
-
 }
 
 /// **The six disclosure counters, as one comparable value** — R51 item 17.
@@ -15382,7 +15391,14 @@ fn hidden_run_marker(
         calls += live.calls;
         think_lines += live.think_lines;
     }
-    Marker::new(calls, think_lines, events, newest, carries_live, marker_room(cfg.width))
+    Marker::new(
+        calls,
+        think_lines,
+        events,
+        newest,
+        carries_live,
+        marker_room(cfg.width),
+    )
 }
 
 /// The fold's own header, which is also where its key is advertised.
@@ -16654,7 +16670,10 @@ fn strip_landed(
 /// one fact. **The claiming text is returned so the remainder can carry the mark its own row
 /// carries** — the row in the transcript's own place is the senior drawing, and the tail's
 /// remainder is its tail.
-fn unclaimed_prompts(pending: &[String], bound: &[(String, Vec<String>)]) -> Vec<(usize, String, Option<String>)> {
+fn unclaimed_prompts(
+    pending: &[String],
+    bound: &[(String, Vec<String>)],
+) -> Vec<(usize, String, Option<String>)> {
     if pending.is_empty() {
         return Vec::new();
     }
@@ -19560,7 +19579,10 @@ mod tests {
         // The rows that are not the echo are identical, row for row.
         let strip = |v: &[String]| -> Vec<String> {
             v.iter()
-                .map(|l| l.replace("▌ queued · ", "▌ ").replace("▌ unconfirmed · ", "▌ "))
+                .map(|l| {
+                    l.replace("▌ queued · ", "▌ ")
+                        .replace("▌ unconfirmed · ", "▌ ")
+                })
                 .collect()
         };
         assert_eq!(
@@ -23914,7 +23936,11 @@ mod tests {
     fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
         use letibot_sessionlog::event::TodoBy;
         let mut a = app();
-        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         assert_eq!(a.command("todo"), None, "bare /todo opens the card");
         assert!(a.todo_draft.is_some());
         // The card is drawn with its three keys, which is how a reader learns Tab exists.
@@ -23924,7 +23950,10 @@ mod tests {
 
         // **A title alone.** Type it and press Enter.
         typed(&mut a, "ship the parity row");
-        assert!(matches!(a.key(Key::Enter), Some(Action::SetOperatorTodos(_))));
+        assert!(matches!(
+            a.key(Key::Enter),
+            Some(Action::SetOperatorTodos(_))
+        ));
         assert!(a.todo_draft.is_none(), "the card came down");
         assert_eq!(a.input(), "", "and the composer is empty again");
 
@@ -24000,15 +24029,22 @@ mod tests {
     fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
         use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
         let mut a = app();
-        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         // A row the MODEL wrote, so the numbering can be shown to be over the operator's half only.
-        a.apply(ServerFrame::Event(env(1, SessionEvent::TodosUpdated {
-            todos: vec![TodoEntry {
-                content: "the model's own row".into(),
-                status: TodoStatus::Pending,
-                by: TodoBy::Model,
-            }],
-        })));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TodosUpdated {
+                todos: vec![TodoEntry {
+                    content: "the model's own row".into(),
+                    status: TodoStatus::Pending,
+                    by: TodoBy::Model,
+                }],
+            },
+        )));
         let mine = |a: &App| a.operator_todos();
 
         // **Adding one sends the WHOLE list, tagged as the operator's.** There is no per-row frame.
@@ -24017,27 +24053,34 @@ mod tests {
             Some(Action::SetOperatorTodos(items)) => {
                 assert_eq!(items.len(), 1, "the whole list is one row: {items:?}");
                 assert_eq!(items[0].content, "ship the parity row");
-                assert_eq!(items[0].by, TodoBy::Operator, "filed in the operator's half");
+                assert_eq!(
+                    items[0].by,
+                    TodoBy::Operator,
+                    "filed in the operator's half"
+                );
                 assert_eq!(items[0].status, TodoStatus::Pending);
             }
             other => panic!("expected a SetOperatorTodos, got {other:?}"),
         }
         // The daemon takes it and publishes the union back — which is how the head learns its own
         // list: it keeps no second copy.
-        a.apply(ServerFrame::Event(env(2, SessionEvent::TodosUpdated {
-            todos: vec![
-                TodoEntry {
-                    content: "the model's own row".into(),
-                    status: TodoStatus::Pending,
-                    by: TodoBy::Model,
-                },
-                TodoEntry {
-                    content: "ship the parity row".into(),
-                    status: TodoStatus::Pending,
-                    by: TodoBy::Operator,
-                },
-            ],
-        })));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TodosUpdated {
+                todos: vec![
+                    TodoEntry {
+                        content: "the model's own row".into(),
+                        status: TodoStatus::Pending,
+                        by: TodoBy::Model,
+                    },
+                    TodoEntry {
+                        content: "ship the parity row".into(),
+                        status: TodoStatus::Pending,
+                        by: TodoBy::Operator,
+                    },
+                ],
+            },
+        )));
         assert_eq!(mine(&a).len(), 1, "the head sees its own row back");
 
         // **`done 1` marks the FIRST OF THE OPERATOR'S ROWS** — not the first of the union, which
@@ -24627,7 +24670,10 @@ mod tests {
                 .find(|l| l.contains('▸'))
                 .is_some_and(|l| l.contains(what))
         };
-        assert!(on(&screen, "[+] add todo item"), "starts on the control: {screen}");
+        assert!(
+            on(&screen, "[+] add todo item"),
+            "starts on the control: {screen}"
+        );
         // The model's rows and your own are not stops either, so the arrows never park on a row
         // where no key acts — the same reason the repo's headings are skipped.
         assert!(
@@ -24638,10 +24684,16 @@ mod tests {
         // One Down is what reaches the first item, and Enter unfolds it.
         a.key(Key::Down);
         let screen = a.screen(110, 40).join("\n");
-        assert!(on(&screen, "T1 vendor the deps"), "down reached T1: {screen}");
+        assert!(
+            on(&screen, "T1 vendor the deps"),
+            "down reached T1: {screen}"
+        );
         assert_eq!(a.key(Key::Enter), None);
         let screen = a.screen(110, 40).join("\n");
-        assert!(on(&screen, "T1 vendor the deps"), "Enter does not move the cursor: {screen}");
+        assert!(
+            on(&screen, "T1 vendor the deps"),
+            "Enter does not move the cursor: {screen}"
+        );
         assert!(
             screen.contains("scripts/bootstrap.sh (yason 0c84b29)."),
             "{screen}"
@@ -24672,7 +24724,10 @@ mod tests {
         // never lands on the `## Phase 0` heading, which has nothing to unfold.
         a.key(Key::Down);
         let screen = a.screen(110, 40).join("\n");
-        assert!(on(&screen, "[+] add todo item"), "wrapped to the control: {screen}");
+        assert!(
+            on(&screen, "[+] add todo item"),
+            "wrapped to the control: {screen}"
+        );
         a.key(Key::Up);
         let screen = a.screen(110, 40).join("\n");
         assert!(
@@ -25659,7 +25714,10 @@ mod tests {
         a.apply(ServerFrame::Event(env(3, testing::turn_finished("t1"))));
         a.clock(5_000);
         let line = a.turn_status(120);
-        assert!(line.contains("Responding"), "the row is still drawn: {line:?}");
+        assert!(
+            line.contains("Responding"),
+            "the row is still drawn: {line:?}"
+        );
         assert!(
             line.contains("4.0s"),
             "and it counts from the prompt, through the call: {line:?}"
@@ -25681,7 +25739,10 @@ mod tests {
                 edit: None,
             },
         )));
-        assert!(!a.turn_busy(), "the call finished and nothing is generating");
+        assert!(
+            !a.turn_busy(),
+            "the call finished and nothing is generating"
+        );
         assert!(
             a.turn_status(120).is_empty(),
             "the row stands down with the work"
@@ -27793,11 +27854,9 @@ mod tests {
         };
         let inner = &line[open + 1..open + 1 + close];
         inner.starts_with(|c: char| c.is_ascii_digit())
-            && [
-                "tool", "call", "thinking", "line", "calls", "lines",
-            ]
-            .iter()
-            .any(|w| inner.contains(w))
+            && ["tool", "call", "thinking", "line", "calls", "lines"]
+                .iter()
+                .any(|w| inner.contains(w))
     }
 
     fn a_result_row(a: &mut App, seq: u64, id: &str, payload: &str) {
@@ -31090,28 +31149,55 @@ mod tests {
             "the file the script writes is not on the card: {one}"
         );
         // One path gets NO header, which is what keeps an `edit` card from growing a line.
-        assert!(!one.contains("1 files:"), "a single file grew a count: {one}");
+        assert!(
+            !one.contains("1 files:"),
+            "a single file grew a count: {one}"
+        );
 
         // **Several, and the count goes above the names** so a viewport cannot hide it: a window that
         // shows two of five still says five.
         d.write_targets = vec![
-            WriteTarget { path: "a.rs".into(), unresolved: false },
-            WriteTarget { path: "b.rs".into(), unresolved: false },
-            WriteTarget { path: "c.rs".into(), unresolved: false },
-            WriteTarget { path: "d.rs".into(), unresolved: false },
-            WriteTarget { path: "e.rs".into(), unresolved: false },
+            WriteTarget {
+                path: "a.rs".into(),
+                unresolved: false,
+            },
+            WriteTarget {
+                path: "b.rs".into(),
+                unresolved: false,
+            },
+            WriteTarget {
+                path: "c.rs".into(),
+                unresolved: false,
+            },
+            WriteTarget {
+                path: "d.rs".into(),
+                unresolved: false,
+            },
+            WriteTarget {
+                path: "e.rs".into(),
+                unresolved: false,
+            },
         ];
         let many = a.decision_lines(&d, 200).join("\n");
         assert!(many.contains("5 files:"), "no count for five: {many}");
         let count_at = many.find("5 files:").unwrap();
         let first_path = many.find("a.rs").unwrap();
-        assert!(count_at < first_path, "the count is below the names: {many}");
+        assert!(
+            count_at < first_path,
+            "the count is below the names: {many}"
+        );
 
         // **An unresolved target is not drawn as a path.** `Path.home() / name` is the case the
         // requirement calls the one a person most needs to see.
         d.write_targets = vec![
-            WriteTarget { path: "src/syntax.rs".into(), unresolved: false },
-            WriteTarget { path: "Path.home() / argv[1]".into(), unresolved: true },
+            WriteTarget {
+                path: "src/syntax.rs".into(),
+                unresolved: false,
+            },
+            WriteTarget {
+                path: "Path.home() / argv[1]".into(),
+                unresolved: true,
+            },
         ];
         let mixed = a.decision_lines(&d, 200).join("\n");
         assert!(
@@ -31595,7 +31681,10 @@ mod tests {
             "the header is not in the quiet register at all: {head:?}"
         );
         // The name is still *there* — this is a register change and not a deletion of the row.
-        assert!(head.contains("one"), "the session name went with the bar: {head:?}");
+        assert!(
+            head.contains("one"),
+            "the session name went with the bar: {head:?}"
+        );
     }
 
     #[test]
@@ -31890,7 +31979,10 @@ mod tests {
         // (`5 chars` after a delta, `42 tok` from the server's counter) precisely because those
         // are the ones a future change might put back.
         a.apply(ServerFrame::Event(env(3, testing::delta("t1", "hello"))));
-        a.apply(ServerFrame::Event(env(4, testing::tokens_generated("t1", 42))));
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::tokens_generated("t1", 42),
+        )));
         let line = a.turn_status(120);
         assert!(!line.contains("chars"), "{line}");
         assert!(!line.contains(" tok"), "{line}");
@@ -31963,7 +32055,10 @@ mod tests {
             line.contains("started before this head attached"),
             "a snapshot measured no duration, and says so: {line}"
         );
-        assert!(!line.contains("42"), "the counter is not on this row: {line}");
+        assert!(
+            !line.contains("42"),
+            "the counter is not on this row: {line}"
+        );
     }
 
     #[test]
@@ -32001,7 +32096,10 @@ mod tests {
             .expect("the turn's status is on the screen");
         let row = &screen[at];
         assert!(!row.contains('╰'), "not inlaid in the bottom edge: {row}");
-        assert!(!row.contains('╭'), "not inlaid in the top edge either: {row}");
+        assert!(
+            !row.contains('╭'),
+            "not inlaid in the top edge either: {row}"
+        );
         // The row above it is the box's top edge, so `Responding` sits ON the composer.
         let below = &screen[at + 1];
         assert!(
@@ -32633,7 +32731,6 @@ mod tests {
         }
     }
 
-
     /// **Rendering the same state twice must produce the same frame** — the invariant that
     /// catches a render path that mutates the state it is drawing.
     ///
@@ -32643,7 +32740,11 @@ mod tests {
     #[test]
     fn two_renders_of_one_state_are_the_same_frame() {
         let mut a = app();
-        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         // **The operator's own rung**, which is what makes the marker live at all: the counts are
         // drawn only where the working is hidden.
         a.verbosity = Verbosity::Conversation;
@@ -32702,17 +32803,15 @@ mod tests {
     fn a_picker_that_opened_before_its_rows_landed_seeds_when_they_do() {
         const CHOICES: &str = r#"["read-only","always-ask","writes allowed","automode","automode-edits","allow-all"]"#;
         let choices: Vec<String> = serde_json::from_str(CHOICES).unwrap();
-        let answer = move || {
-            ServerFrame::Settings {
-                rows: vec![letibot_sessionlog::protocol::SettingRow {
-                    key: "mode".into(),
-                    value: "automode-edits".into(),
-                    source: "project store (modes.tsv)".into(),
-                    editable: "/mode NAME".into(),
-                    choices: choices.clone(),
-                    tools: Vec::new(),
-                }],
-            }
+        let answer = move || ServerFrame::Settings {
+            rows: vec![letibot_sessionlog::protocol::SettingRow {
+                key: "mode".into(),
+                value: "automode-edits".into(),
+                source: "project store (modes.tsv)".into(),
+                editable: "/mode NAME".into(),
+                choices: choices.clone(),
+                tools: Vec::new(),
+            }],
         };
         // The head has heard nothing yet — the ask is out, the answer is not.
         let mut a = app();
@@ -32779,7 +32878,17 @@ mod tests {
              are the only ones the head has"
         );
         // That session's rows land, and the card corrects itself.
-        c.apply(mode_settings("read-only", &["read-only", "always-ask", "writes allowed", "automode", "automode-edits", "allow-all"]));
+        c.apply(mode_settings(
+            "read-only",
+            &[
+                "read-only",
+                "always-ask",
+                "writes allowed",
+                "automode",
+                "automode-edits",
+                "allow-all",
+            ],
+        ));
         assert_eq!(
             c.mode_sel, 0,
             "the card kept the previous session's mode after the new rows arrived"
@@ -32805,7 +32914,10 @@ mod tests {
     #[test]
     fn a_mode_whose_name_extends_another_does_not_seed_on_the_shorter_one() {
         let choices: Vec<String> = vec!["automode".into(), "automode-edits".into()];
-        assert_eq!(named_choice("automode-edits", &choices), Some("automode-edits"));
+        assert_eq!(
+            named_choice("automode-edits", &choices),
+            Some("automode-edits")
+        );
         assert_eq!(named_choice("automode", &choices), Some("automode"));
         // And the qualifier is still read through: the consented spelling of the shorter name.
         assert_eq!(
@@ -34018,10 +34130,7 @@ mod tests {
         // And an entry the rows say nothing about is drawn whole, beside one they do.
         assert_eq!(
             unclaimed_prompts(&[entry("A\nB"), entry("C")], &[drawing("A")]),
-            vec![
-                (0, "B".into(), Some("A".into())),
-                (1, "C".into(), None)
-            ]
+            vec![(0, "B".into(), Some("A".into())), (1, "C".into(), None)]
         );
     }
 
@@ -34070,45 +34179,76 @@ mod tests {
     #[test]
     fn a_marker_is_glued_to_a_line_once_however_many_frames_draw_it() {
         let mut a = app();
-        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         a.verbosity = Verbosity::Conversation;
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(2, testing::appended("s.0", "assistant"))));
-        a.apply(ServerFrame::Event(env(3, SessionEvent::TranscriptContent {
-            item_id: "s.0".into(),
-            item: Box::new(TranscriptItem::Assistant {
-                text: "Running the tests:".into(),
-                tool_calls: Vec::new(), truncated: false,
-            }),
-        })));
-        a.apply(ServerFrame::Event(env(4, testing::proposed_on("t1", "c1", "bash", "\"cargo test\""))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::appended("s.0", "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "Running the tests:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
+        )));
         // **CONSECUTIVE CALLS, which is the shape the operator named** — *"sometimes on consequtive
         // tool calls and things"*. Each round: a call finishes with its result row, and the next is
         // proposed, so between two renders the run grows and the marker's text changes.
         for n in 0..4u64 {
             let seq = 10 + n * 8;
-            a.apply(ServerFrame::Event(env(seq, SessionEvent::ToolFinished {
-                turn_id: "t1".into(),
-                call_id: format!("c{n}"),
-                outcome: letibot_transcript::ToolOutcome::Ok,
-                payload_digest: "d".into(), inline_bytes: 1, full_bytes: 1,
-                spill: None, repairs: 0, edit: None,
-            })));
-            let rid = format!("s.{}", 10 + n);
-            a.apply(ServerFrame::Event(env(seq + 1, testing::appended(&rid, "tool_result"))));
-            a.apply(ServerFrame::Event(env(seq + 2, SessionEvent::TranscriptContent {
-                item_id: rid,
-                item: Box::new(TranscriptItem::ToolResult {
-                    call_id: format!("c{n}"), name: "bash".into(),
+            a.apply(ServerFrame::Event(env(
+                seq,
+                SessionEvent::ToolFinished {
+                    turn_id: "t1".into(),
+                    call_id: format!("c{n}"),
                     outcome: letibot_transcript::ToolOutcome::Ok,
-                    payload: format!("result {n}"), edit: None, origin: None,
-                    media: None,
-                }),
-            })));
+                    payload_digest: "d".into(),
+                    inline_bytes: 1,
+                    full_bytes: 1,
+                    spill: None,
+                    repairs: 0,
+                    edit: None,
+                },
+            )));
+            let rid = format!("s.{}", 10 + n);
+            a.apply(ServerFrame::Event(env(
+                seq + 1,
+                testing::appended(&rid, "tool_result"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                seq + 2,
+                SessionEvent::TranscriptContent {
+                    item_id: rid,
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: format!("c{n}"),
+                        name: "bash".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: format!("result {n}"),
+                        edit: None,
+                        origin: None,
+                        media: None,
+                    }),
+                },
+            )));
             // …and the next call is proposed, which is the live work of the next round.
-            a.apply(ServerFrame::Event(env(seq + 3, testing::proposed_on(
-                "t1", &format!("c{}", n + 1), "bash", "\"cargo test\"",
-            ))));
+            a.apply(ServerFrame::Event(env(
+                seq + 3,
+                testing::proposed_on("t1", &format!("c{}", n + 1), "bash", "\"cargo test\""),
+            )));
             let screen = a.screen(100, 30).join("\n");
             assert_eq!(
                 markers(&screen),
@@ -34123,52 +34263,91 @@ mod tests {
     #[test]
     fn the_work_in_flight_is_counted_by_one_marker_not_two() {
         let mut a = app();
-        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         a.verbosity = Verbosity::Conversation;
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         // The prose that introduced the call, and the call itself.
-        a.apply(ServerFrame::Event(env(2, testing::appended("s.0", "assistant"))));
-        a.apply(ServerFrame::Event(env(3, SessionEvent::TranscriptContent {
-            item_id: "s.0".into(),
-            item: Box::new(TranscriptItem::Assistant {
-                text: "Running the tests:".into(),
-                tool_calls: Vec::new(), truncated: false,
-            }),
-        })));
-        a.apply(ServerFrame::Event(env(4, testing::proposed_on("t1", "c1", "bash", "\"cargo test\""))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::appended("s.0", "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "Running the tests:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
+        )));
         // **The call FINISHES and its result row lands** — that row is what the walk counts, and it
         // is hidden under this rung. This is the half the marker is for.
-        a.apply(ServerFrame::Event(env(5, SessionEvent::ToolFinished {
-            turn_id: "t1".into(), call_id: "c1".into(),
-            outcome: letibot_transcript::ToolOutcome::Ok,
-            payload_digest: "d".into(), inline_bytes: 1, full_bytes: 1,
-            spill: None, repairs: 0, edit: None,
-        })));
-        a.apply(ServerFrame::Event(env(6, testing::appended("s.1", "tool_result"))));
-        a.apply(ServerFrame::Event(env(7, SessionEvent::TranscriptContent {
-            item_id: "s.1".into(),
-            item: Box::new(TranscriptItem::ToolResult {
-                call_id: "c1".into(), name: "bash".into(),
+        a.apply(ServerFrame::Event(env(
+            5,
+            SessionEvent::ToolFinished {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
-                payload: "test result: ok".into(), edit: None, origin: None,
-                media: None,
-            }),
-        })));
+                payload_digest: "d".into(),
+                inline_bytes: 1,
+                full_bytes: 1,
+                spill: None,
+                repairs: 0,
+                edit: None,
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            6,
+            testing::appended("s.1", "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            7,
+            SessionEvent::TranscriptContent {
+                item_id: "s.1".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "c1".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "test result: ok".into(),
+                    edit: None,
+                    origin: None,
+                    media: None,
+                }),
+            },
+        )));
         // **AND THE OPERATOR'S OWN MESSAGE IS THE LAST ROW** — which is the half that matters, and
         // the operator named it: *"again it happens when we have my queued messages."* The pane's
         // marker only joins the sentence above it when that sentence is the MODEL's prose; an
         // operator row is not, so the pane must draw its marker on its own line — and that is the
         // second marker, beside the walk's.
         a.apply(ServerFrame::Event(env(8, testing::appended("s.2", "user"))));
-        a.apply(ServerFrame::Event(env(9, SessionEvent::TranscriptContent {
-            item_id: "s.2".into(),
-            item: Box::new(TranscriptItem::User {
-                speaker: Default::default(),
-                parts: vec![UserPart::Text { text: "and what about the cache?".into() }],
-            }),
-        })));
+        a.apply(ServerFrame::Event(env(
+            9,
+            SessionEvent::TranscriptContent {
+                item_id: "s.2".into(),
+                item: Box::new(TranscriptItem::User {
+                    speaker: Default::default(),
+                    parts: vec![UserPart::Text {
+                        text: "and what about the cache?".into(),
+                    }],
+                }),
+            },
+        )));
         // **And the next round is THINKING** — no call outstanding, reasoning streaming.
-        a.apply(ServerFrame::Event(env(10, testing::reasoning("t1", "the counts are only"))));
+        a.apply(ServerFrame::Event(env(
+            10,
+            testing::reasoning("t1", "the counts are only"),
+        )));
 
         let live = a.live_work_now();
         assert_eq!(live.calls, 0, "the premise: no call is outstanding");
@@ -34218,18 +34397,29 @@ mod tests {
     #[test]
     fn the_reply_is_never_drawn_above_the_queued_message_it_answers() {
         let mut a = app();
-        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         a.verbosity = Verbosity::Conversation;
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         // Prose so the turn has a live pane with a sentence of its own.
-        a.apply(ServerFrame::Event(env(2, testing::appended("s.0", "assistant"))));
-        a.apply(ServerFrame::Event(env(3, SessionEvent::TranscriptContent {
-            item_id: "s.0".into(),
-            item: Box::new(TranscriptItem::Assistant {
-                text: "Working on it:".into(),
-                tool_calls: Vec::new(), truncated: false,
-            }),
-        })));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::appended("s.0", "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "Working on it:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
         // The operator queues a message, which is what puts the echo on screen.
         typed(&mut a, "and what about the cache?");
         assert!(a.key(Key::Enter).is_some(), "the line was sent");
@@ -34244,7 +34434,10 @@ mod tests {
         a.apply(ServerFrame::Event(env(4, testing::appended("s.1", "user"))));
 
         // **And the model starts answering it.** The reply is a delta on the live pane.
-        a.apply(ServerFrame::Event(env(5, testing::delta("t1", "the cache is keyed on bytes"))));
+        a.apply(ServerFrame::Event(env(
+            5,
+            testing::delta("t1", "the cache is keyed on bytes"),
+        )));
         let screen = a.screen(100, 30);
         let text = screen.join("\n");
 
@@ -34414,7 +34607,10 @@ mod tests {
         // draft and not about the key being dead.
         c.key(Key::Up);
         assert_eq!(c.input(), "a queued line", "the premise: the recall works");
-        assert!(c.pending_prompts.is_empty(), "the premise: and it takes it back");
+        assert!(
+            c.pending_prompts.is_empty(),
+            "the premise: and it takes it back"
+        );
         // Now with a draft: readline's own history, and the queue is not touched.
         //
         // **The draft is not lost, and that is the editor's contract rather than this head's** —
@@ -34612,26 +34808,48 @@ mod tests {
         // Asserted on the ESCAPES, so the palette has to be on — the words are the same either way
         // and the register is the whole of what is being tested.
         a.cfg.color = true;
-        a.apply(hello("s", vec![brief("s", "one", false)], Hub::new("s").snapshot()));
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
         a.verbosity = Verbosity::Conversation;
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-        a.apply(ServerFrame::Event(env(2, testing::appended("s.0", "assistant"))));
-        a.apply(ServerFrame::Event(env(3, SessionEvent::TranscriptContent {
-            item_id: "s.0".into(),
-            item: Box::new(TranscriptItem::Assistant {
-                text: "Running the tests:".into(),
-                tool_calls: Vec::new(), truncated: false,
-            }),
-        })));
-        a.apply(ServerFrame::Event(env(4, testing::proposed_on("t1", "c1", "bash", "\"cargo test\""))));
-        a.apply(ServerFrame::Event(env(5, SessionEvent::ToolStarted {
-            turn_id: "t1".into(), call_id: "c1".into(), name: "bash".into(),
-            access: Default::default(),
-        })));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::appended("s.0", "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "Running the tests:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
+        )));
+        a.apply(ServerFrame::Event(env(
+            5,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
 
         // While it runs, the number is there and the colour is on.
         assert_eq!(a.live_work_now().calls, 1, "the premise: one call to count");
-        assert!(marker_carries_live(a.live_work_now()), "the premise: executing");
+        assert!(
+            marker_carries_live(a.live_work_now()),
+            "the premise: executing"
+        );
         let running = a.screen(100, 30).join("\n");
         assert!(
             running.contains("\x1b[33m1\x1b[0m tool call"),
@@ -34639,12 +34857,20 @@ mod tests {
         );
 
         // **It finishes, and the row has not landed.** The number holds; the colour goes.
-        a.apply(ServerFrame::Event(env(6, SessionEvent::ToolFinished {
-            turn_id: "t1".into(), call_id: "c1".into(),
-            outcome: letibot_transcript::ToolOutcome::Ok,
-            payload_digest: "d".into(), inline_bytes: 1, full_bytes: 1,
-            spill: None, repairs: 0, edit: None,
-        })));
+        a.apply(ServerFrame::Event(env(
+            6,
+            SessionEvent::ToolFinished {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload_digest: "d".into(),
+                inline_bytes: 1,
+                full_bytes: 1,
+                spill: None,
+                repairs: 0,
+                edit: None,
+            },
+        )));
         let live = a.live_work_now();
         assert_eq!(live.calls, 1, "the number went down with the call's finish");
         assert_eq!(live.running, 0, "and nothing is executing");
@@ -34721,7 +34947,11 @@ mod tests {
                 id: id.into(),
                 command: "cargo build".into(),
                 how: "asked".into(),
-                state: if running { "running".into() } else { "exited 0".into() },
+                state: if running {
+                    "running".into()
+                } else {
+                    "exited 0".into()
+                },
                 running,
                 never_ran: false,
                 redirect: redirect.map(str::to_string),
@@ -35151,8 +35381,7 @@ mod tests {
             .find(|l| l.contains("first the helpers:"))
             .expect("the prose is on the screen");
         assert!(
-            line.trim_end()
-                .ends_with("helpers: [1 tool call]"),
+            line.trim_end().ends_with("helpers: [1 tool call]"),
             "the model's sentence did not take the counts: {line:?}"
         );
     }
@@ -35250,12 +35479,11 @@ mod tests {
             // 210 columns: *"there is no need to have the line break here because the whole tail
             // fits. you didnt try the 'tool calls' -> 'tools' -> 't' progressing. so I complain
             // about line wrapping here."*
-            let on_the_sentence = screen
-                .lines()
-                .any(|l| l.contains(": [3 tool calls]"));
-            let sentence_full = screen
-                .lines()
-                .any(|l| l.trim_end().ends_with(':') && visible_width(l) + 1 + visible_width("[3 tool calls]") > width);
+            let on_the_sentence = screen.lines().any(|l| l.contains(": [3 tool calls]"));
+            let sentence_full = screen.lines().any(|l| {
+                l.trim_end().ends_with(':')
+                    && visible_width(l) + 1 + visible_width("[3 tool calls]") > width
+            });
             assert!(
                 on_the_sentence || sentence_full,
                 "the counts are neither on the sentence that points at them nor on their own line \
@@ -35320,7 +35548,10 @@ mod tests {
         );
 
         // (3) The seam is spent BEFORE the counts reach their last rung — the ladder's shape.
-        assert_eq!(MARKER_LADDER, [(0, 0), (1, 0), (2, 0), (3, 0), (3, 1), (3, 2)]);
+        assert_eq!(
+            MARKER_LADDER,
+            [(0, 0), (1, 0), (2, 0), (3, 0), (3, 1), (3, 2)]
+        );
         // …and a marker is BUILT through it, which is where the order matters: the ladder stops at
         // the first rung that fits, so a room that admits `[11t, 246l] · ctrl-t` keeps the short
         // chord rather than dropping it.
@@ -35451,8 +35682,7 @@ mod tests {
             .find(|l| l.contains("First the helpers:"))
             .unwrap_or_else(|| panic!("the narration is not on the screen:\n{screen}"));
         assert!(
-            line.trim_end()
-                .ends_with("helpers: [8 tool calls]"),
+            line.trim_end().ends_with("helpers: [8 tool calls]"),
             "the marker did not join the sentence above it:\n{screen}"
         );
     }
@@ -35921,7 +36151,10 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("s.0", "assistant"),
+        )));
         a.record_item(
             "s.0",
             TranscriptItem::Assistant {
@@ -35930,18 +36163,25 @@ mod tests {
                 truncated: false,
             },
         );
-        a.apply(ServerFrame::Event(env_at(2, 1_000, SessionEvent::TurnStarted {
-            turn_id: "r1".into(),
-            model: "qwen3-next-80b".into(),
-            ledger_head: "0000".into(),
-            began_ms: Some(1_000),
-        })));
+        a.apply(ServerFrame::Event(env_at(
+            2,
+            1_000,
+            SessionEvent::TurnStarted {
+                turn_id: "r1".into(),
+                model: "qwen3-next-80b".into(),
+                ledger_head: "0000".into(),
+                began_ms: Some(1_000),
+            },
+        )));
         // **A run of hidden rows of THIS turn**, so the WALK draws the marker and `live_here` is
         // true for it. The sibling test explains why the pane's own marker would make this pass
         // without the fix; the ordering here explains the other half — a row that landed before
         // the turn started is not the turn's row, and the walk's marker would then be plain for a
         // reason that has nothing to do with the cache.
-        a.apply(ServerFrame::Event(env(3, testing::appended("s.1", "tool_result"))));
+        a.apply(ServerFrame::Event(env(
+            3,
+            testing::appended("s.1", "tool_result"),
+        )));
         a.record_item(
             "s.1",
             TranscriptItem::ToolResult {
@@ -36060,7 +36300,10 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("s.0", "assistant"),
+        )));
         a.record_item(
             "s.0",
             TranscriptItem::Assistant {
@@ -36069,12 +36312,16 @@ mod tests {
                 truncated: false,
             },
         );
-        a.apply(ServerFrame::Event(env_at(2, 1_000, SessionEvent::TurnStarted {
-            turn_id: "r1".into(),
-            model: "qwen3-next-80b".into(),
-            ledger_head: "0000".into(),
-            began_ms: Some(1_000),
-        })));
+        a.apply(ServerFrame::Event(env_at(
+            2,
+            1_000,
+            SessionEvent::TurnStarted {
+                turn_id: "r1".into(),
+                model: "qwen3-next-80b".into(),
+                ledger_head: "0000".into(),
+                began_ms: Some(1_000),
+            },
+        )));
         let shown = |a: &mut App| -> usize {
             a.screen(100, 30)
                 .join("\n")
@@ -36103,14 +36350,20 @@ mod tests {
                 },
             )));
             let now = shown(&mut a);
-            assert!(now >= last, "the count fell while streaming: {last} → {now}");
+            assert!(
+                now >= last,
+                "the count fell while streaming: {last} → {now}"
+            );
             last = now;
         }
         assert!(last > 0, "the stream was never counted at all");
 
         // **And its row lands.** The transcript now holds the reasoning, so the live part must stop
         // counting it — while the TOTAL, which is row plus live, must not move.
-        a.apply(ServerFrame::Event(env(20, testing::appended("s.1", "reasoning"))));
+        a.apply(ServerFrame::Event(env(
+            20,
+            testing::appended("s.1", "reasoning"),
+        )));
         a.record_item(
             "s.1",
             TranscriptItem::Reasoning {
@@ -36128,12 +36381,16 @@ mod tests {
 
         // **And the next round rebuilds the pane**, which is when the inflated number collapsed:
         // the committed row still counts, and nothing else disappears with the pane.
-        a.apply(ServerFrame::Event(env_at(21, 1_000, SessionEvent::TurnStarted {
-            turn_id: "r2".into(),
-            model: "qwen3-next-80b".into(),
-            ledger_head: "0000".into(),
-            began_ms: Some(1_000),
-        })));
+        a.apply(ServerFrame::Event(env_at(
+            21,
+            1_000,
+            SessionEvent::TurnStarted {
+                turn_id: "r2".into(),
+                model: "qwen3-next-80b".into(),
+                ledger_head: "0000".into(),
+                began_ms: Some(1_000),
+            },
+        )));
         let next_round = shown(&mut a);
         assert!(
             next_round >= last,
@@ -36150,7 +36407,10 @@ mod tests {
             Hub::new("s").snapshot(),
         ));
         for i in 0..8u64 {
-            let (id, text) = (format!("s.{i}"), format!("settled row {i} of the conversation"));
+            let (id, text) = (
+                format!("s.{i}"),
+                format!("settled row {i} of the conversation"),
+            );
             a.apply(ServerFrame::Event(env_at(
                 i + 1,
                 1_000,
@@ -36165,12 +36425,16 @@ mod tests {
                 },
             );
         }
-        a.apply(ServerFrame::Event(env_at(9, 1_000, SessionEvent::TurnStarted {
-            turn_id: "r1".into(),
-            model: "qwen3-next-80b".into(),
-            ledger_head: "0000".into(),
-            began_ms: Some(1_000),
-        })));
+        a.apply(ServerFrame::Event(env_at(
+            9,
+            1_000,
+            SessionEvent::TurnStarted {
+                turn_id: "r1".into(),
+                model: "qwen3-next-80b".into(),
+                ledger_head: "0000".into(),
+                began_ms: Some(1_000),
+            },
+        )));
         a.apply(ServerFrame::Event(env(
             10,
             SessionEvent::ToolCallProposed {
@@ -36238,7 +36502,10 @@ mod tests {
                 format!("s.{i}"),
                 format!("row {i} of the transcript"),
             );
-            a.apply(ServerFrame::Event(env(seq, testing::appended(&id, "assistant"))));
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::appended(&id, "assistant"),
+            )));
             a.record_item(
                 &id,
                 TranscriptItem::Assistant {
@@ -36262,7 +36529,11 @@ mod tests {
         let row_of = |v: &[String], what: &str| v.iter().position(|l| l.contains(what));
 
         // **And a turn starts**, which is the moment the shove happened.
-        a.apply(ServerFrame::Event(env_at(7, 1_000, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env_at(
+            7,
+            1_000,
+            testing::turn_started("t1"),
+        )));
         let running = a.screen(100, 24);
         assert!(
             running.iter().any(|l| l.contains("Responding")),
@@ -36297,14 +36568,14 @@ mod tests {
             "the echo is not queued at all, so this test measures nothing"
         );
         let before = a.screen(100, 30).join("\n");
-        assert!(before.contains("queued"), "the echo says it is queued: {before}");
+        assert!(
+            before.contains("queued"),
+            "the echo says it is queued: {before}"
+        );
 
         // 2. **The daemon announces the row — no body yet**, which is the moment the model has the
         //    words and the transcript can draw them.
-        a.apply(ServerFrame::Event(env(
-            1,
-            testing::appended("s.9", "user"),
-        )));
+        a.apply(ServerFrame::Event(env(1, testing::appended("s.9", "user"))));
         let after = a.screen(100, 30).join("\n");
         assert!(
             after.contains("the retry budget needs a bump"),
@@ -36325,7 +36596,10 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("s.0", "assistant"),
+        )));
         a.record_item(
             "s.0",
             TranscriptItem::Assistant {
@@ -36335,12 +36609,16 @@ mod tests {
             },
         );
         // A prop that needs no model: a proposed call, so `live.calls > 0` and a marker is drawn.
-        a.apply(ServerFrame::Event(env_at(2, 1_000, SessionEvent::TurnStarted {
-            turn_id: "r1".into(),
-            model: "qwen3-next-80b".into(),
-            ledger_head: "0000".into(),
-            began_ms: Some(1_000),
-        })));
+        a.apply(ServerFrame::Event(env_at(
+            2,
+            1_000,
+            SessionEvent::TurnStarted {
+                turn_id: "r1".into(),
+                model: "qwen3-next-80b".into(),
+                ledger_head: "0000".into(),
+                began_ms: Some(1_000),
+            },
+        )));
         a.apply(ServerFrame::Event(env(
             3,
             SessionEvent::ToolCallProposed {
@@ -36398,7 +36676,10 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "assistant"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("s.0", "assistant"),
+        )));
         a.record_item(
             "s.0",
             TranscriptItem::Assistant {
@@ -36407,12 +36688,16 @@ mod tests {
                 truncated: false,
             },
         );
-        a.apply(ServerFrame::Event(env_at(2, 1_000, SessionEvent::TurnStarted {
-            turn_id: "r1".into(),
-            model: "qwen3-next-80b".into(),
-            ledger_head: "0000".into(),
-            began_ms: Some(1_000),
-        })));
+        a.apply(ServerFrame::Event(env_at(
+            2,
+            1_000,
+            SessionEvent::TurnStarted {
+                turn_id: "r1".into(),
+                model: "qwen3-next-80b".into(),
+                ledger_head: "0000".into(),
+                began_ms: Some(1_000),
+            },
+        )));
 
         // **The count, read off the marker itself** — the same arithmetic `live_work` does, taken
         // from the row a reader is looking at rather than from the field behind it.
@@ -36425,7 +36710,10 @@ mod tests {
                     let body = rest.split(']').next()?;
                     body.split(", ")
                         .find_map(|p| p.trim().strip_suffix(" thinking line"))
-                        .or_else(|| body.split(", ").find_map(|p| p.trim().strip_suffix(" thinking lines")))
+                        .or_else(|| {
+                            body.split(", ")
+                                .find_map(|p| p.trim().strip_suffix(" thinking lines"))
+                        })
                         .and_then(|n| n.trim().parse().ok())
                 })
                 .unwrap_or(0)
@@ -36491,7 +36779,10 @@ mod tests {
         };
         a.apply(ServerFrame::Event(env_at(2, 1_000, round("r1"))));
         for (seq, id) in [(3u64, "s.1"), (4, "s.2")] {
-            a.apply(ServerFrame::Event(env(seq, testing::appended(id, "tool_result"))));
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::appended(id, "tool_result"),
+            )));
             a.record_item(
                 id,
                 TranscriptItem::ToolResult {
@@ -36517,7 +36808,8 @@ mod tests {
                 turn_id: "r2".into(),
                 target: DeltaTarget::Reasoning,
                 text: "the first call told me it is in the reader, so let me check the caller\n\
-                       and the place it is constructed before I touch anything at all".into(),
+                       and the place it is constructed before I touch anything at all"
+                    .into(),
             },
         )));
 
@@ -36548,7 +36840,10 @@ mod tests {
         ));
         a.verbosity = Verbosity::Conversation;
         // A system row, which the rung hides and neither count can describe.
-        a.apply(ServerFrame::Event(env(1, testing::appended("s.0", "system"))));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("s.0", "system"),
+        )));
         a.record_item(
             "s.0",
             TranscriptItem::System {
@@ -36576,7 +36871,10 @@ mod tests {
             Hub::new("s").snapshot(),
         ));
         narrow.verbosity = Verbosity::Conversation;
-        narrow.apply(ServerFrame::Event(env(1, testing::appended("s.0", "system"))));
+        narrow.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("s.0", "system"),
+        )));
         narrow.record_item(
             "s.0",
             TranscriptItem::System {

@@ -1695,7 +1695,10 @@ mod a_fence_is_coloured_only_if_it_names_a_language {
         let out = render_block(&quoted[0], &cfg()).join("\n");
         // The outer fence is bare, so its rule carries no label (item 12) — and the point of the
         // assertion is that the inner fence was NOT interpreted, which `┌─ rust` would prove.
-        assert!(!out.contains("┌─ rust"), "the inner fence was interpreted: {out:?}");
+        assert!(
+            !out.contains("┌─ rust"),
+            "the inner fence was interpreted: {out:?}"
+        );
         // Not one byte of the demonstration was eaten.
         for line in ["```rust", "let a = 1;", "```"] {
             assert!(out.contains(line), "{line:?} is missing from {out:?}");

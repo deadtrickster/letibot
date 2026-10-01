@@ -3177,7 +3177,9 @@ impl<'a> Harness<'a> {
         let mut cursor = store.parent_of(&self.transcript_id).ok().flatten();
         while room > 0 {
             let Some(id) = cursor.take() else { break };
-            let Ok(t) = store.load_transcript(&id) else { break };
+            let Ok(t) = store.load_transcript(&id) else {
+                break;
+            };
             let n = t.items.len();
             let take = n.min(room);
             chunks.push(
@@ -3207,7 +3209,8 @@ impl<'a> Harness<'a> {
                     .get(i)
                     .map(|item| (row.item_id.clone(), item.clone(), row.h_k))
             });
-        let rows: Vec<(String, TranscriptItem, [u8; 32])> = before.into_iter().chain(current).collect();
+        let rows: Vec<(String, TranscriptItem, [u8; 32])> =
+            before.into_iter().chain(current).collect();
         let total = rows.len() as u64;
         for (i, (item_id, item, h_k)) in rows.iter().enumerate() {
             // **ONE PROGRESS TICK PER ROW IS A FLOOD, AND THE FLOOD IS WHAT BREAKS THE BAR.**
@@ -3319,7 +3322,7 @@ impl<'a> Harness<'a> {
     /// daemon start. Nothing is written here: config is the operator's file to edit,
     /// and a harness that rewrote it behind them would make a one-off override
     /// permanent without being asked.
-    
+
     /// **Close out tool calls no round owns any more, and look in the logs to say why.**
     ///
     /// MEASURED, on the operator's own head: a `grep` was dispatched, its executor thread and its
@@ -3425,7 +3428,9 @@ impl<'a> Harness<'a> {
                         .join(" ");
                     format!("  user: {}", one_line(&text, 90))
                 }
-                TranscriptItem::Assistant { text, tool_calls, .. } => {
+                TranscriptItem::Assistant {
+                    text, tool_calls, ..
+                } => {
                     if text.trim().is_empty() && !tool_calls.is_empty() {
                         format!(
                             "  assistant: (no prose) -> {} call(s): {}",
@@ -3440,10 +3445,12 @@ impl<'a> Harness<'a> {
                         format!("  assistant: {}", one_line(text, 90))
                     }
                 }
-                TranscriptItem::ToolResult { name, outcome, payload, .. } => format!(
-                    "  {name} -> {outcome:?}: {}",
-                    one_line(payload, 70)
-                ),
+                TranscriptItem::ToolResult {
+                    name,
+                    outcome,
+                    payload,
+                    ..
+                } => format!("  {name} -> {outcome:?}: {}", one_line(payload, 70)),
                 TranscriptItem::System { text, .. } => format!("  system: {}", one_line(text, 80)),
                 // **The two that carry no facts about the RUN.** Reasoning is the model thinking
                 // and a segment mark is the head's own boundary between runs; a log tail looking
@@ -3461,12 +3468,13 @@ impl<'a> Harness<'a> {
     /// Append rows the way the round loop does, so a swept call lands like any other.
     fn append_results(&mut self, results: Vec<TranscriptItem>) -> Result<(), HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
-        self.session.append_items(&self.engine, &results, &mut sink)?;
+        self.session
+            .append_items(&self.engine, &results, &mut sink)?;
         self.reconcile(&mut sink, &results);
         Ok(())
     }
 
-pub fn attach_oracle(&mut self, endpoint: Endpoint) -> Result<String, String> {
+    pub fn attach_oracle(&mut self, endpoint: Endpoint) -> Result<String, String> {
         self.cfg.oracle = Some(endpoint.clone());
         let advisor = model_adjudicator(&self.cfg, "`/supervise`", Some(self.hub.clone()))
             .map_err(|e| e.to_string())?;
@@ -5781,7 +5789,8 @@ pub fn attach_oracle(&mut self, endpoint: Endpoint) -> Result<String, String> {
                 // string the model will actually get to read. Digesting anything
                 // else would measure novelty the model never saw.
                 if let TranscriptItem::ToolResult {
-                    outcome, payload, .. } = &item
+                    outcome, payload, ..
+                } = &item
                 {
                     progress.observe(call, outcome, payload);
                     // Backgrounding is the operator reaching for the floor; see the
@@ -8170,4 +8179,3 @@ pub fn abandoned_calls(items: &[TranscriptItem]) -> Vec<(String, String)> {
         .filter(|(id, _)| !answered.iter().any(|a| a == id))
         .collect()
 }
-
