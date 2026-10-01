@@ -1430,3 +1430,416 @@ mod seat_tests {
         assert_eq!(rest, v(&["--stop", "fix the tests"]));
     }
 }
+
+// --- the dispatch: what an invocation asks for ------------------------------------
+//
+// The shell decides this in THREE passes, and the split is not incidental — each pass
+// refuses something the next cannot see:
+//
+//   1. `--help` anywhere before the prompt is the flag list, and `exit 0`. It has to
+//      come first because it is the only answer that must work when every later check
+//      would refuse.
+//   2. An unknown `--flag` is refused BY NAME, before anything is looked up. **Measured
+//      2026-09-13, and this is why the pass exists**: `--help` used to match no flag, so
+//      it fell through to the one-shot path and ran `harnessd --prompt "--help"` — the
+//      banner printed, the vocabulary loaded (the multi-second hang), and GLM answered
+//      the prompt `--help`. A typo in a flag name bought you a model call.
+//   3. [`parse_seat`], which consumes the flags it knows and returns at the first thing
+//      that is not one. Its leftovers are the verb or the prompt.
+//
+// Folding these together would make the first two unreachable: `parse_seat` returns
+// unknowns rather than refusing them (deliberately — see its own test), so the "refuse by
+// name" behaviour only exists in the pass that runs before it.
+
+/// The flags that take a value, so the argument AFTER one is not a flag whatever it
+/// looks like. `--vm-arg --mem` hands `--mem` to firecode.
+///
+/// The shell keeps this list twice, in two adjacent loops, and it is the same list — so
+/// it is one `const` here rather than two chances to forget an entry.
+pub const VALUE_FLAGS: &[&str] = &[
+    "--vm-arg",
+    "--provider",
+    "--model",
+    "--mode",
+    "--session",
+    "-s",
+    "--rename",
+    "--delete",
+    "--web-search",
+    "--brave-key",
+    "--oracle",
+    "--oracle-budget-ms",
+];
+
+/// Every flag the launcher accepts, verbatim from the shell's own list.
+///
+/// **The verbs are in here too** (`--stop`, `--attach`, `--sessions`…), because this list
+/// answers "is this an unknown flag", not "is this a flag the option loop consumes". A
+/// verb is a perfectly good argument that the option loop leaves behind for the dispatch.
+pub const KNOWN_FLAGS: &[&str] = &[
+    "--help",
+    "-h",
+    "help",
+    "--read-only",
+    "--writes",
+    "--bash",
+    "--no-bash",
+    "--ask",
+    "--supervise",
+    "--glm",
+    "--flash",
+    "--dense",
+    "--attach",
+    "--daemons",
+    "--all",
+    "--sessions",
+    "--list",
+    "--stop",
+    "--status",
+    "--continue",
+    "-c",
+    "--new",
+    "-n",
+    "--session",
+    "-s",
+    "--rename",
+    "--delete",
+    "--mode",
+    "--force",
+    "--vm",
+    "--vm-arg",
+    "--provider",
+    "--model",
+    "--web-search",
+    "--brave-key",
+    "--oracle",
+    "--oracle-budget-ms",
+    "--ls",
+    "--list-all",
+];
+
+/// What an invocation of `letibot` asks the launcher to do.
+///
+/// One variant per arm of the shell's dispatch, so "is every verb represented" is a
+/// question the compiler answers rather than a reviewer counting `case` labels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    /// `--help`: the flag list, exit 0.
+    Help,
+    /// `--sessions` / `--list`: the store's sessions, straight from the daemon binary.
+    Sessions,
+    /// `--rename ID [TITLE]`, where an empty title clears the name.
+    Rename { id: String, title: String },
+    /// `--delete ID`.
+    Delete { id: String },
+    /// `--ls` / `--list-all`: every folder's daemon, numbered, with what is live inside.
+    ListAll,
+    /// `--daemons`: the records, each checked against a live listener.
+    Daemons,
+    /// `--status`: this folder's daemon, and the local model server as a separate fact.
+    Status,
+    /// `--stop [N|DIR|--all]`, with `--force` to interrupt in-flight turns first.
+    Stop {
+        all: bool,
+        force: bool,
+        target: String,
+    },
+    /// `--attach [N|DIR]`: connect only, starting nothing.
+    Attach { target: String },
+    /// `--continue`: reopen the newest session in THIS workspace.
+    Continue,
+    /// `--session ID`.
+    Resume { id: String },
+    /// `--new [TITLE]`.
+    New { title: String },
+    /// The plain invocation. `one_shot` is non-empty when a bare prompt followed, which
+    /// means no daemon is started and no head is opened.
+    Bring { one_shot: Vec<String> },
+}
+
+/// Whether `a` is a flag the launcher knows.
+pub fn known_flag(a: &str) -> bool {
+    KNOWN_FLAGS.contains(&a)
+}
+
+/// Whether the argument AFTER `a` is a value rather than a flag.
+pub fn takes_value(a: &str) -> bool {
+    VALUE_FLAGS.contains(&a)
+}
+
+/// **Decide what an invocation asks for, refusing by name what cannot be answered.**
+///
+/// The three passes the shell runs, in its order, and the order is the contract:
+/// `--help` first (it must answer when nothing else can), then the unknown-flag refusal,
+/// then [`parse_seat`] and whatever it leaves behind.
+///
+/// Returns the [`Seat`] alongside the [`Action`], because the seat flags are consumed by
+/// the same pass that finds the verb — `letibot --bash --stop` is a stop, and the `--bash`
+/// has already been read into the seat that `--stop` will ignore.
+pub fn decide(args: &[String]) -> Result<(Seat, Action), String> {
+    // Pass 1: `--help` anywhere before the prompt.
+    //
+    // **No value-skipping here, and that is the shell's behaviour rather than an
+    // oversight**: `letibot --vm-arg --help` prints the flag list instead of passing
+    // `--help` to firecode, because this pass predates the value-flag list. Kept as it is
+    // so the ported launcher answers identically; changing it would be a behaviour change
+    // smuggled in as a cleanup.
+    for a in args {
+        match a.as_str() {
+            "--help" | "-h" | "help" => return Ok((Seat::default(), Action::Help)),
+            _ if a.starts_with("--") => {}
+            // The prompt starts here; nothing after it is a flag.
+            _ => break,
+        }
+    }
+
+    // Pass 2: an unknown flag is refused by name, before anything is looked up.
+    //
+    // `skip` is the shell's own: a value-taking flag consumes the argument after it, so a
+    // value that looks like a flag (`--vm-arg --mem`) is not refused as an unknown one.
+    let mut skip = false;
+    for a in args {
+        if skip {
+            skip = false;
+            continue;
+        }
+        if takes_value(a) {
+            skip = true;
+        }
+        if known_flag(a) {
+            continue;
+        }
+        if a.starts_with("--") {
+            return Err(format!(
+                "unknown flag: {a}\n         ('letibot --help' lists the flags; a bare prompt needs no flag)"
+            ));
+        }
+        // Not a flag: the prompt, and nothing past it is checked.
+        break;
+    }
+
+    // `--force` only means something with `--stop`. Said rather than silently ignored:
+    // a flag that does nothing is a flag the operator cannot trust.
+    let force = args.iter().any(|a| a == "--force");
+
+    // Pass 3: the option loop, and its leftovers.
+    let (seat, rest) = parse_seat(args)?;
+
+    let first = rest.first().map(String::as_str).unwrap_or("");
+    if force && first != "--stop" {
+        return Err("--force only means something with --stop".into());
+    }
+
+    let action = match first {
+        "--sessions" | "--list" => Action::Sessions,
+        "--rename" => Action::Rename {
+            id: rest.get(1).cloned().unwrap_or_default(),
+            title: rest.get(2).cloned().unwrap_or_default(),
+        },
+        "--delete" => Action::Delete {
+            id: rest.get(1).cloned().unwrap_or_default(),
+        },
+        "--ls" | "--list-all" => Action::ListAll,
+        "--daemons" => Action::Daemons,
+        "--status" => Action::Status,
+        "--stop" => {
+            // `--all` and `--force` are not targets; anything else there is.
+            let target = rest
+                .iter()
+                .skip(1)
+                .find(|a| *a != "--all" && *a != "--force" && !a.starts_with("--"))
+                .cloned()
+                .unwrap_or_default();
+            Action::Stop {
+                all: rest.iter().any(|a| a == "--all"),
+                force,
+                target,
+            }
+        }
+        "--attach" => Action::Attach {
+            target: rest.get(1).cloned().unwrap_or_default(),
+        },
+        "--continue" | "-c" => Action::Continue,
+        "--new" | "-n" => Action::New {
+            title: rest.get(1).cloned().unwrap_or_default(),
+        },
+        _ if first == "--session" || first == "-s" => Action::Resume {
+            id: rest.get(1).cloned().unwrap_or_default(),
+        },
+        // Nothing recognised here: the plain invocation, with whatever followed as a
+        // one-shot prompt.
+        _ => Action::Bring {
+            one_shot: rest.clone(),
+        },
+    };
+
+    Ok((seat, action))
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn act(items: &[&str]) -> Action {
+        decide(&v(items)).unwrap().1
+    }
+
+    /// The pass that must answer when nothing else can.
+    #[test]
+    fn help_is_recognised_first_and_anywhere_before_the_prompt() {
+        assert_eq!(act(&["--help"]), Action::Help);
+        assert_eq!(act(&["-h"]), Action::Help);
+        assert_eq!(act(&["help"]), Action::Help);
+        // After other flags, still help.
+        assert_eq!(act(&["--glm", "--help"]), Action::Help);
+        // But NOT after the prompt has started: `letibot fix --help` is a question whose
+        // text is "fix --help", not a request for the flag list.
+        assert_eq!(
+            act(&["fix", "--help"]),
+            Action::Bring {
+                one_shot: v(&["fix", "--help"])
+            }
+        );
+    }
+
+    /// **The incident this pass exists for**, measured 2026-09-13: a typo in a flag name
+    /// used to be answered by the model as a one-shot prompt, because `--help` matched no
+    /// flag and the unknown flag was not refused.
+    #[test]
+    fn an_unknown_flag_is_refused_by_name_rather_than_run_as_a_prompt() {
+        let e = decide(&v(&["--hlep"])).unwrap_err();
+        assert!(e.contains("unknown flag: --hlep"), "{e}");
+        // And the refusal names where the list is.
+        assert!(e.contains("--help"), "{e}");
+    }
+
+    /// A value that merely LOOKS like a flag is a value. `--vm-arg --mem` hands `--mem`
+    /// to firecode, so it must not be read as an unknown flag.
+    #[test]
+    fn a_value_that_looks_like_a_flag_is_not_refused() {
+        assert!(decide(&v(&["--vm-arg", "--mem"])).is_ok());
+        assert!(decide(&v(&["--provider", "--weird"])).is_ok());
+    }
+
+    /// `--force` with anything but `--stop` is a mistake, and a flag that does nothing is
+    /// a flag the operator cannot trust.
+    #[test]
+    fn force_without_stop_is_refused() {
+        let e = decide(&v(&["--force"])).unwrap_err();
+        assert!(
+            e.contains("--force only means something with --stop"),
+            "{e}"
+        );
+        assert!(decide(&v(&["--stop", "--force"])).is_ok());
+    }
+
+    /// The verbs, one per arm.
+    #[test]
+    fn every_verb_reaches_its_own_action() {
+        assert_eq!(act(&["--sessions"]), Action::Sessions);
+        assert_eq!(act(&["--list"]), Action::Sessions);
+        assert_eq!(act(&["--daemons"]), Action::Daemons);
+        assert_eq!(act(&["--status"]), Action::Status);
+        assert_eq!(act(&["--ls"]), Action::ListAll);
+        assert_eq!(act(&["--list-all"]), Action::ListAll);
+        assert_eq!(act(&["--continue"]), Action::Continue);
+        assert_eq!(act(&["-c"]), Action::Continue);
+    }
+
+    /// `--stop` takes a target, and `--all`/`--force` are not targets.
+    #[test]
+    fn stop_distinguishes_its_target_from_its_modifiers() {
+        assert_eq!(
+            act(&["--stop"]),
+            Action::Stop {
+                all: false,
+                force: false,
+                target: String::new()
+            }
+        );
+        assert_eq!(
+            act(&["--stop", "2"]),
+            Action::Stop {
+                all: false,
+                force: false,
+                target: "2".into()
+            }
+        );
+        assert_eq!(
+            act(&["--stop", "--all"]),
+            Action::Stop {
+                all: true,
+                force: false,
+                target: String::new()
+            }
+        );
+        assert_eq!(
+            act(&["--stop", "--force"]),
+            Action::Stop {
+                all: false,
+                force: true,
+                target: String::new()
+            }
+        );
+        // A target AND a modifier.
+        assert_eq!(
+            act(&["--stop", "build", "--force"]),
+            Action::Stop {
+                all: false,
+                force: true,
+                target: "build".into()
+            }
+        );
+    }
+
+    /// `--rename ID [TITLE]`: without a title the name is cleared, which is a thing the
+    /// verb does rather than an error.
+    #[test]
+    fn rename_takes_an_id_and_an_optional_title() {
+        assert_eq!(
+            act(&["--rename", "abc"]),
+            Action::Rename {
+                id: "abc".into(),
+                title: String::new()
+            }
+        );
+        assert_eq!(
+            act(&["--rename", "abc", "a new name"]),
+            Action::Rename {
+                id: "abc".into(),
+                title: "a new name".into()
+            }
+        );
+    }
+
+    /// A bare prompt is the one-shot path, and it carries every word of the prompt.
+    #[test]
+    fn a_bare_prompt_comes_back_whole() {
+        assert_eq!(
+            act(&["what does this error mean?"]),
+            Action::Bring {
+                one_shot: v(&["what does this error mean?"])
+            }
+        );
+    }
+
+    /// The seat flags are consumed by the same pass that finds the verb, so a verb with
+    /// flags still reaches its arm.
+    #[test]
+    fn the_verb_is_found_after_the_seat_flags_are_consumed() {
+        let (seat, action) = decide(&v(&["--bash", "--stop"])).unwrap();
+        assert!(seat.bash);
+        assert_eq!(
+            action,
+            Action::Stop {
+                all: false,
+                force: false,
+                target: String::new()
+            }
+        );
+    }
+}
