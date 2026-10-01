@@ -20,6 +20,11 @@ members = [
     "crates/code",
     "crates/harnessd",
     "crates/opencode",
+    # **The one binary, last, because it depends on the roles' crates.** Everything
+    # above is a library or a role's own executable; this is the multicall that will
+    # absorb them. It sits at the bottom of the list so the direction of the
+    # dependency is legible — `letibot` reaches in, nothing reaches out.
+    "crates/letibot",
 ]
 
 [workspace.package]

@@ -1,0 +1,20 @@
+[package]
+name = "letibot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# **THE ONE BINARY.** Every role letibot can play is a mode of this executable, so an
+# install puts down ONE file plus its libraries instead of one per role. The roles that
+# something *else* invokes — `sudo` runs the askpass helper, the fidelity gate runs the
+# renderers — are reached by argv[0] through a symlink of the role's own name, because
+# neither of those callers knows about subcommands. See `src/main.rs`.
+[[bin]]
+name = "letibot"
+path = "src/main.rs"
+
+[dependencies]
+# The askpass role's whole surface: attach to the daemon and carry one question.
+letibot-sessionlog.workspace = true

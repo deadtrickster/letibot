@@ -963,6 +963,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "letibot"
+version = "0.1.1"
+dependencies = [
+ "letibot-sessionlog",
+]
+
+[[package]]
 name = "letibot-backend"
 version = "0.1.1"
 dependencies = [
