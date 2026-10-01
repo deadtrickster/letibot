@@ -1431,6 +1431,101 @@ mod seat_tests {
     }
 }
 
+// --- targeting another folder's daemon --------------------------------------------
+
+/// Every `*.json` record under `rundir`, in the order the shell's glob yields them.
+///
+/// **This order is the contract `--ls` numbering rests on.** The shell writes
+/// `for r in "$RUNDIR"/*.json`, numbers what it finds 1, 2, 3…, and `--stop N` maps that
+/// number back by walking the SAME glob. A glob sorts; `read_dir` does not promise to, so
+/// the sort here is what makes `--ls`'s number mean the same thing to both readers.
+///
+/// Files only, matching the shell's `[ -f "$r" ] || continue` — a directory named
+/// `something.json` is not a record and must not shift every number after it.
+pub fn records_in(rundir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(rundir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .is_some_and(|x| x.eq_ignore_ascii_case("json"))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// **Which daemon a `--stop`/`--attach` argument names.**
+///
+/// Three forms, exactly as the shell takes them: nothing or `.` (this folder), an
+/// all-digit handle from `--ls`, or a directory. Returns the [`Where`] the rest of the
+/// launcher then uses, so the caller never re-derives a key.
+///
+/// # One divergence from the shell, deliberate and named
+///
+/// **`letibot --attach 0` REFUSES here; the shell accepted it and acted on this folder.**
+/// Measured 2026-10-01 before writing this — with no daemons recorded at all:
+///
+/// ```text
+/// scripts/letibot --attach 5   -> "there is no daemon 5 — `letibot --ls` numbers them"
+/// scripts/letibot --attach 0   -> "no harnessd for /tmp/emptyrun"        (this folder!)
+/// scripts/letibot --stop   0   -> "no daemon for /tmp/emptyrun"          (this folder!)
+/// ```
+///
+/// The shell's guard is `[ "$n" -ge "$want" ]`, where `n` counts records it walked. For
+/// `want=0` the counter never equals it, the walk ends with `n` at the record count (or 0
+/// with none), and `0 -ge 0` passes — so a handle the list never prints silently means
+/// "the folder I am standing in". `--ls` numbers from 1. A handle that is not on the list
+/// must refuse by name rather than quietly resolve to something the operator did not ask
+/// for, which is the same rule the rest of this tree follows about flags that do not land.
+///
+/// # And one more, for the same reason
+///
+/// A record that cannot be read or parsed refuses rather than contributing an empty
+/// workspace. The shell sets `WORKSPACE=""` and hashes it, and the empty path is the one
+/// key every folder on the box would share — see this module's docs on the guard that
+/// exists because of it. Refusing by name is the honest answer to a record that says
+/// nothing.
+pub fn retarget(rundir: &Path, here: &Path, want: &str) -> Result<Where, String> {
+    match want {
+        "" | "." => Ok(locate_in(rundir, here)),
+        w if w.bytes().all(|b| b.is_ascii_digit()) => {
+            let n: usize = w
+                .parse()
+                .map_err(|_| format!("there is no daemon {w} — `letibot --ls` numbers them"))?;
+            let records = records_in(rundir);
+            if n == 0 || n > records.len() {
+                return Err(format!(
+                    "there is no daemon {w} — `letibot --ls` numbers them"
+                ));
+            }
+            let rec = read_record(&records[n - 1]).ok_or_else(|| {
+                format!(
+                    "the record for daemon {w} says nothing usable ({}), so there is no \
+                     workspace to act on — `letibot --ls` lists what is there",
+                    records[n - 1].display()
+                )
+            })?;
+            if rec.workspace.is_empty() {
+                return Err(format!(
+                    "the record for daemon {w} has no workspace field ({}), so there is no \
+                     folder to act on",
+                    records[n - 1].display()
+                ));
+            }
+            Ok(locate_in(rundir, Path::new(&rec.workspace)))
+        }
+        dir => match std::fs::canonicalize(dir) {
+            Ok(p) => Ok(locate_in(rundir, &p)),
+            Err(_) => Err(format!("no such directory: {dir}")),
+        },
+    }
+}
+
 // --- the dispatch: what an invocation asks for ------------------------------------
 //
 // The shell decides this in THREE passes, and the split is not incidental — each pass
@@ -1841,5 +1936,203 @@ mod dispatch_tests {
                 target: String::new()
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+
+    /// A rundir with `n` synthetic records, named so their sorted order is known.
+    ///
+    /// The names are the real shape (`<12 hex>.json`) and the workspaces are distinct, so
+    /// "which record did number N pick" is answerable from the answer alone.
+    fn rundir_with(n: usize) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-retarget-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..n {
+            // 0-padded so the sorted order is 00, 01, 02…
+            let key = format!("{:012}", i + 1);
+            let ws = format!("/workspace/{i}");
+            std::fs::write(
+                dir.join(format!("{key}.json")),
+                format!(
+                    r#"{{"workspace": "{ws}", "socket": "/s{i}.sock", "pid": {}}}"#,
+                    1000 + i
+                ),
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    /// Nothing, or `.`, is this folder — and it goes through the same key derivation as
+    /// everything else, so the socket is the one the shell would use.
+    #[test]
+    fn no_target_and_dot_both_mean_this_folder() {
+        let dir = rundir_with(0);
+        let here = Path::new("/some/folder");
+        for want in ["", "."] {
+            let w = retarget(&dir, here, want).unwrap();
+            assert_eq!(w.workspace, here);
+            assert_eq!(w.key, key(here));
+            assert_eq!(w.socket, dir.join(format!("{}.sock", key(here))));
+        }
+    }
+
+    /// **The numbering contract, and it is the one that has to match `--ls`.** Number N is
+    /// the Nth record in the shell's glob order, which is the sorted filename order — so
+    /// this pins the ORDER, not just that some record came back.
+    #[test]
+    fn a_number_picks_the_nth_record_in_sorted_order() {
+        let dir = rundir_with(3);
+        let here = Path::new("/here");
+        assert_eq!(
+            retarget(&dir, here, "1").unwrap().workspace,
+            Path::new("/workspace/0")
+        );
+        assert_eq!(
+            retarget(&dir, here, "2").unwrap().workspace,
+            Path::new("/workspace/1")
+        );
+        assert_eq!(
+            retarget(&dir, here, "3").unwrap().workspace,
+            Path::new("/workspace/2")
+        );
+    }
+
+    /// Out of range refuses, with the shell's own sentence — measured by running
+    /// `scripts/letibot --attach 5` against an empty runtime dir.
+    #[test]
+    fn a_number_past_the_end_refuses_with_the_shells_sentence() {
+        let dir = rundir_with(2);
+        let e = retarget(&dir, Path::new("/here"), "5").unwrap_err();
+        assert_eq!(e, "there is no daemon 5 — `letibot --ls` numbers them");
+        // And with no records at all, which is the case that was measured.
+        let empty = rundir_with(0);
+        let e = retarget(&empty, Path::new("/here"), "5").unwrap_err();
+        assert_eq!(e, "there is no daemon 5 — `letibot --ls` numbers them");
+    }
+
+    /// **The divergence, pinned so it cannot drift back.** `0` is a handle `--ls` never
+    /// prints; the shell silently acted on this folder for it, and this refuses instead.
+    #[test]
+    fn zero_refuses_rather_than_silently_meaning_this_folder() {
+        let dir = rundir_with(3);
+        let here = Path::new("/here");
+        for want in ["0", "00"] {
+            let e = retarget(&dir, here, want).unwrap_err();
+            assert!(e.contains("there is no daemon"), "{e}");
+        }
+        // The control: with the SAME rundir, an in-range number still works, so this is
+        // about the handle rather than about the directory being unusable.
+        assert!(retarget(&dir, here, "1").is_ok());
+    }
+
+    /// A directory resolves the way the shell's `cd … && pwd -P` does — through symlinks,
+    /// to an absolute path.
+    #[test]
+    fn a_directory_is_resolved_through_symlinks() {
+        let base =
+            std::env::temp_dir().join(format!("letibot-retarget-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = base.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let dir = rundir_with(0);
+        let w = retarget(&dir, Path::new("/here"), link.to_str().unwrap()).unwrap();
+        let canonical = std::fs::canonicalize(&real).unwrap();
+        assert_eq!(w.workspace, canonical);
+        // The key follows the RESOLVED path, so both spellings name ONE daemon.
+        assert_eq!(
+            w.key,
+            retarget(&dir, Path::new("/here"), real.to_str().unwrap())
+                .unwrap()
+                .key
+        );
+    }
+
+    /// A path that is not a directory refuses with the shell's own words.
+    #[test]
+    fn a_directory_that_is_not_there_refuses_by_name() {
+        let dir = rundir_with(0);
+        let e = retarget(&dir, Path::new("/here"), "/no/such/place").unwrap_err();
+        assert_eq!(e, "no such directory: /no/such/place");
+    }
+
+    /// A record that says nothing refuses rather than hashing the empty path — the one
+    /// key every folder on the box would share.
+    #[test]
+    fn an_empty_record_refuses_rather_than_hashing_the_empty_path() {
+        let dir = rundir_with(1);
+        std::fs::write(dir.join("000000000001.json"), "{}").unwrap();
+        let e = retarget(&dir, Path::new("/here"), "1").unwrap_err();
+        assert!(e.contains("no workspace field"), "{e}");
+        // And the control that matters most: it is NOT the empty path's key, which is what
+        // the shell would have used.
+        assert_ne!(e.contains(&key(Path::new(""))), true);
+    }
+
+    /// A file that is not JSON at all is not a record either.
+    #[test]
+    fn an_unreadable_record_refuses_rather_than_being_skipped() {
+        let dir = rundir_with(1);
+        std::fs::write(dir.join("000000000001.json"), "not json at all").unwrap();
+        let e = retarget(&dir, Path::new("/here"), "1").unwrap_err();
+        assert!(e.contains("says nothing usable"), "{e}");
+    }
+
+    /// **Against the box's real records: the number must pick what `--ls` prints there.**
+    ///
+    /// Reads the live runtime directory and asserts the mapping is the sorted one, which
+    /// is the same order `scripts/letibot --ls` numbers. Skips on a box with none, and
+    /// says so rather than passing quietly.
+    #[test]
+    fn the_numbering_matches_the_glob_order_on_a_box_with_records() {
+        let dir = rundir();
+        let records = records_in(&dir);
+        if records.is_empty() {
+            eprintln!("SKIPPED: no daemon records under {}", dir.display());
+            return;
+        }
+        let mut names: Vec<String> = records
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        let sorted = {
+            let mut s = names.clone();
+            s.sort();
+            s
+        };
+        assert_eq!(
+            names, sorted,
+            "records_in must yield the glob's sorted order"
+        );
+        names.dedup();
+        assert_eq!(names.len(), records.len(), "no duplicate record names");
+
+        // Every in-range number resolves to the workspace NAMED INSIDE that record — the
+        // check that the number and the file agree, not merely that something came back.
+        for (i, path) in records.iter().enumerate() {
+            let rec = read_record(path).expect("a record under the runtime dir must parse");
+            let w = retarget(&dir, Path::new("/here"), &(i + 1).to_string())
+                .expect("an in-range number must resolve");
+            assert_eq!(w.workspace, Path::new(&rec.workspace));
+            // And its own filename is the hash of that workspace — the module's contract.
+            assert_eq!(
+                path.file_stem().unwrap().to_string_lossy(),
+                key(Path::new(&rec.workspace)),
+                "record {} names a workspace whose key is not its own filename",
+                path.display()
+            );
+        }
     }
 }
