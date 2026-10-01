@@ -11496,8 +11496,39 @@ impl App {
                     u.predicted_tokens as f64 * 1000.0 / tm.predicted_ms
                 ));
             }
-            if tm.wall_ms > 0 {
-                right.push(dur_human(tm.wall_ms));
+            // **WHILE A TURN RUNS THE DURATION IS THE TURN'S, and only the duration.**
+            //
+            // `last_timings` is measured when a round ENDS, and a round ends at every tool call and
+            // every job — so this number restarted three times in a turn the operator watched, while
+            // the row above the composer counted the turn. MEASURED on the other head's live screen,
+            // the same pair side by side: `Responding · 151s` on the composer edge and `· 4.5s ·`
+            // here, 151204 ms against 4474 ms. Two clocks for one turn, and the smaller one is the
+            // one next to the word *Responding*, which reads as a clock.
+            //
+            // **The ruling is the operator's**: while a turn runs the duration shown is the TURN's
+            // elapsed; when idle it falls back to the last turn's wall-ms, which is what this field
+            // is for and what an idle header has always shown.
+            //
+            // **`tok/s` and the out-count are NOT moved with it.** They stay on the last round's
+            // basis, because that is what `last_timings` is FOR — the operator's own earlier
+            // complaint about them was *"the rate comes and goes"*, so a rate from the round that
+            // just ended is the useful number and a duration from it is the false one. One field of
+            // the trio, not the trio.
+            //
+            // **This DEPARTS from the reference deliberately.** The comment above records this line
+            // as parity with the reference's `app.rs`, and after this change neither head matches
+            // it. Recorded here rather than left to look like a defect: an operator reading a bare
+            // duration beside a running state reads it as a clock, and they did.
+            let running_since = self
+                .turn
+                .as_ref()
+                .filter(|_| self.turn_busy())
+                .map(|t| t.started_ms)
+                .filter(|started| *started > 0);
+            match running_since {
+                Some(started) => right.push(dur_human(self.now_ms.saturating_sub(started))),
+                None if tm.wall_ms > 0 => right.push(dur_human(tm.wall_ms)),
+                None => {}
             }
             // And how much the answer was — the last of the turn's numbers, and
             // the reason an ordinary ending leaves the body with no footer line
@@ -31735,6 +31766,98 @@ mod tests {
             !screen.iter().any(|l| l.contains("── ")),
             "an ordinary ending has no footer: {screen:?}"
         );
+    }
+
+    /// **While a turn runs, the header's duration IS the turn's — the two clocks are one number.**
+    ///
+    /// MEASURED on the other head's live screen, and this head had the identical pair: the composer
+    /// row showed `Responding · 151s` (the turn, from `TurnStarted.began_ms`) while the header showed
+    /// `· 4.5s ·` — `last_timings.wall_ms`, which is measured when a ROUND ends. A round ends at every
+    /// tool call and every job, so the header's number restarted three times in one turn, and it is
+    /// the number sitting next to the word *Responding*, where a bare duration reads as a clock.
+    /// The operator read it that way: *"its responding timer resets not at the turn end but on jobs
+    /// and tool calls."*
+    ///
+    /// **The ruling is the operator's**: running → the turn's elapsed; idle → the last turn's
+    /// wall-ms. The alternative was proposed and refused twice in other shapes, so it is recorded
+    /// rather than re-derived.
+    ///
+    /// # The assertion is the AGREEMENT, not a value
+    ///
+    /// Both timers derive from the turn's start while a turn runs, so what has to hold is that they
+    /// are **equal**. The disagreement is what the operator saw — 151s beside 4.5s — so equality is
+    /// the fix stated as a property rather than as a number somebody has to keep in step. A test
+    /// asserting `4.0s` would pass while the two drifted apart on any other clock.
+    #[test]
+    fn while_a_turn_runs_the_header_and_the_turn_row_show_the_same_clock() {
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(ServerFrame::Event(env_at(
+            1,
+            1_000,
+            testing::turn_started("t1"),
+        )));
+        // A round finishes, so `last_timings` carries a SHORT wall-ms — the number that used to be
+        // the header's, and the whole of the defect.
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TurnFinished {
+                turn_id: "t1".into(),
+                finish_reason: letibot_sessionlog::event::FinishReason::Eos,
+                usage: Usage {
+                    prompt_tokens: 41_233,
+                    cached_tokens: 38_100,
+                    predicted_tokens: 900,
+                    cost_micros_usd: None,
+                },
+                timings: letibot_sessionlog::event::Timings {
+                    prompt_ms: 900.0,
+                    predicted_ms: 4_474.0,
+                    wall_ms: 4_474,
+                },
+            },
+        )));
+        // A call of that round is still running, which is what makes the turn BUSY across the round
+        // boundary — the case the two clocks disagree in.
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::ToolCallProposed {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                args_digest: "d".into(),
+                target: "cargo test".into(),
+            },
+        )));
+        a.clock(151_204);
+
+        assert!(a.turn_busy(), "the premise: a turn is running");
+        let row = a.turn_status(200);
+        let header = a.header_line(200);
+
+        // **The row says the turn's elapsed**, and it is the number the header must agree with.
+        // 151204 - 1000 = 150204 ms, and both renderers spell that `2m30s`.
+        assert!(row.contains("2m30s"), "the row's clock: {row}");
+        // The header used to say the round's `4.5s` here. It must agree with the row instead — and
+        // the assertion that matters is the AGREEMENT, so the string is taken from the row rather
+        // than typed twice: two literals that happen to match today are two literals to keep in step.
+        assert!(
+            !header.contains("4.5s"),
+            "the header still shows the last ROUND's wall-ms beside a running turn: {header}"
+        );
+        assert!(
+            header.contains("2m30s"),
+            "the header does not show the turn's elapsed: {header}"
+        );
+
+        // **And the rate and the count did NOT move with it.** `last_timings` is what they are for,
+        // and the operator's earlier complaint about them was *"the rate comes and goes"* — so the
+        // rate stays on the round that just ended while the duration becomes the turn's.
+        assert!(
+            header.contains("tok/s"),
+            "the rate went missing with the duration: {header}"
+        );
+        assert!(header.contains("900 out"), "{header}");
     }
 
     #[test]
