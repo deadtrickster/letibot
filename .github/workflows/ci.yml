@@ -230,48 +230,41 @@ jobs:
         continue-on-error: true
         run: cargo clippy --all-targets
 
-      # **ADVISORY, because this suite is written for the development box and says so.**
+      # **THIS GATES, and it took work to earn that.**
       #
-      # MEASURED on the first run that got here (36837584982): **11 targets failed, 85
-      # test instances, and every one of them is an environment assertion the tree makes
-      # on purpose.**
+      # It was advisory because the suite asserted the development box and could never
+      # go green elsewhere: MEASURED on run 36864121052, **2074 passed, 84 failed, 11
+      # suites red**, none of the 84 a defect — 76 wanting a vocabulary GGUF, 7 a
+      # cgroup v2 subtree, and the rest a session store. A check that can only fail is
+      # as empty as one that can only pass, and worse, because it teaches the reader to
+      # ignore annotations on every other step: a real failure inside one of those 11
+      # would have produced the identical output.
       #
-      #   * **74 need the vocabulary GGUF**, which the tests locate at an absolute
-      #     `/home/dead/models/...` path, overridable with `LETIBOT_VOCAB_GGUF`. The
-      #     file is the operator's; it is a shard of a 199 GB split model.
-      #   * **7 need a cgroup v2 subtree** to delegate into (`HostProcesses::new`).
-      #   * The remaining few are a slow-runner frame timeout and one intentional panic.
+      # The tests now SKIP on absent apparatus, loudly, via
+      # `letibot_tokencore::apparatus` — and the assertions are unchanged on the box
+      # that has it. `LETIBOT_REQUIRE_APPARATUS=1` refuses the skip, so a run that
+      # means it can demand full coverage.
       #
-      # **The tree deliberately ASSERTS these rather than skipping them**, in its own
-      # written words — `tokencore/src/lib.rs`: *"Deliberately not skipped when it is
-      # missing. A tokenizer test that quietly passes on a box with no model file is a
-      # test that reports the health of `std::fs::exists`"*. That is a decision, and this
-      # workflow does not get to overrule it by adding skips.
+      # **Earned on a runner, not here:** step 8 of run 36867146847 concluded
+      # `success`, where the same step previously reported 11 failing suites.
+      # `continue-on-error` is gone because the condition it tolerated no longer
+      # exists.
       #
-      # So CI cannot gate on this suite without either shipping 199 GB or weakening
-      # tests someone chose to make strict. It reports instead of gating — the same
-      # treatment as the clippy step above, and for the same reason: a job that is red
-      # the moment it is added is a job somebody deletes, taking the useful steps with
-      # it. **The moment a `LETIBOT_VOCAB_GGUF` can be provisioned on a runner, delete
-      # `continue-on-error` and this step becomes the real gate.**
-      #
-      # What DOES gate, and does run here: format, the release build, the smoke test,
-      # both name/tag checks, the self-contained package, and the installer.
+      # `continue-on-error` would have hidden that step's own conclusion — it only
+      # stops the JOB from failing — so the flag was removed on the STEP's success,
+      # which is the fact that matters.
       #
       # # The two flags, both measured
       #
-      # **`--no-fail-fast`**: `cargo test` aborts the remaining targets after the first
-      # failing binary, so one broken file reports nothing about the others — that is how
-      # four failures in `loop_closes.rs` concealed the whole suite behind them.
+      # **`--no-fail-fast`**: `cargo test` aborts remaining targets after the first
+      # failing binary, so one broken file reports nothing about the others.
       #
-      # **`-- --nocapture`**: the test harness captures a passing test's output, so a run
-      # prints **zero** `THIS IS NOT A PASS` lines without it. The server-gated tests
-      # (`live_qwen.rs`, `compact_live.rs`, `loop_closes.rs`, `todos_live.rs`) skip loudly
-      # in the tree's established idiom for environment-gated checks, and that loudness is
-      # the whole point of the idiom — *"a suite that is always red is a suite nobody
-      # reads"*. Without `--nocapture` nobody can read it either way.
-      - name: Test (advisory — the suite asserts this box's models and cgroup)
-        continue-on-error: true
+      # **`-- --nocapture`**: the harness captures a passing test's output, so without
+      # it a run prints ZERO `THIS IS NOT A PASS` lines and the skips are invisible.
+      # With it, a machine with no apparatus reports what it skipped and why, and that
+      # count is the measurement — *"81 skipped, no apparatus"* is a fact about the
+      # machine, where `exit code 101` was a fact about nothing.
+      - name: Test
         run: cargo test --workspace --no-fail-fast -- --nocapture
 
       # **THIS ONE GATES, and it is the one that can.**

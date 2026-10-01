@@ -166,35 +166,43 @@ pub fn present_gguf() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// **`present` must actually refuse when told to.** Without this the whole
-    /// mechanism is a function that always returns `Some`, which is the can-only-pass
-    /// shape one layer in.
+    /// **Both branches of `present`, in ONE test — and that is not tidiness.**
+    ///
+    /// `LETIBOT_REQUIRE_APPARATUS` is a PROCESS-GLOBAL environment variable, and
+    /// libtest runs the tests in a binary in PARALLEL. Written as two tests, one
+    /// setting the variable and one reading it, they race: MEASURED on a full
+    /// `cargo test --workspace --no-fail-fast -- --nocapture` run, both panicked
+    /// with `LETIBOT_REQUIRE_APPARATUS is set` while neither had set it. That flakes
+    /// in CI too, because the race is between the tests and does not depend on the
+    /// ambient environment at all.
+    ///
+    /// So the two branches share one test body and one save/restore, and the
+    /// variable is only ever set inside it.
     #[test]
-    fn present_returns_none_and_announces_when_the_apparatus_is_absent() {
+    fn present_skips_when_absent_and_fails_when_the_run_demands_the_apparatus() {
         let saved = std::env::var_os("LETIBOT_REQUIRE_APPARATUS");
-        // SAFETY: single-threaded test; restored below.
-        unsafe { std::env::remove_var("LETIBOT_REQUIRE_APPARATUS") };
+
+        // Present: no skip, no failure, whatever the variable says.
         assert_eq!(present("a test fixture", true), Some(()));
-        assert_eq!(present("a test fixture", false), None);
+
+        // Absent, and nobody is demanding it: a skip.
+        unsafe { std::env::remove_var("LETIBOT_REQUIRE_APPARATUS") };
+        assert_eq!(
+            present("a test fixture", false),
+            None,
+            "an absent fixture must skip rather than fail when the run does not insist"
+        );
+
+        // Absent, and the run insists: a FAILURE. This is what makes the skip
+        // refusable, so a box that has the apparatus can prove full coverage.
+        unsafe { std::env::set_var("LETIBOT_REQUIRE_APPARATUS", "1") };
+        let blew = std::panic::catch_unwind(|| present("a test fixture", false)).is_err();
+        unsafe { std::env::remove_var("LETIBOT_REQUIRE_APPARATUS") };
+
         unsafe {
             if let Some(v) = saved {
                 std::env::set_var("LETIBOT_REQUIRE_APPARATUS", v);
             }
-        }
-    }
-
-    /// And it must turn into a failure when a run says it means it — otherwise the
-    /// skip cannot be refused and nobody can prove full coverage on a box that has
-    /// the apparatus.
-    #[test]
-    fn require_apparatus_turns_the_skip_into_a_failure() {
-        let saved = std::env::var_os("LETIBOT_REQUIRE_APPARATUS");
-        // SAFETY: single-threaded test; restored below.
-        unsafe { std::env::set_var("LETIBOT_REQUIRE_APPARATUS", "1") };
-        let blew = std::panic::catch_unwind(|| present("a test fixture", false)).is_err();
-        unsafe { std::env::remove_var("LETIBOT_REQUIRE_APPARATUS") };
-        if let Some(v) = saved {
-            unsafe { std::env::set_var("LETIBOT_REQUIRE_APPARATUS", v) };
         }
         assert!(
             blew,
