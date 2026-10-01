@@ -267,6 +267,24 @@ jobs:
       - name: Test
         run: cargo test --workspace --no-fail-fast -- --nocapture
 
+      # **The multicall's own tests, again, LAST — and the reason is that they are
+      # cheap.** They need no model, no cgroup, no store and no network; the step
+      # above needs a llama.cpp build and several minutes. So the check that catches a
+      # dispatch-table edit runs at the END of a long pipeline for no better reason
+      # than that nobody split it out.
+      #
+      # MEASURED, and it cost a full CI run: `2f5a2c5` wired `Role::Render` and left
+      # it in a test's list of unported roles, so `run(Render, &[])` started the real
+      # renderer and returned 0 where the test asserted 2. My own verification of that
+      # commit was the fidelity BYTES — which were perfect — and not this suite,
+      # which fails in under a second. `cargo test -p letibot` is the whole of it.
+      #
+      # It is here rather than before the workspace run because a failure here is a
+      # statement about the dispatcher, and the dispatcher does not depend on anything
+      # above. If this ever goes red, the fix is small and local.
+      - name: Test the role dispatch, again (no apparatus, and the cheapest check here)
+        run: cargo test -p letibot
+
       # **THIS ONE GATES, and it is the one that can.**
       #
       # The step above is advisory because most of this tree's tests assert a
