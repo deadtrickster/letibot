@@ -75,9 +75,20 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
     // nothing, the assert fired and reported absent apparatus as a failed
     // assertion; on a runner there is no server, so the earlier guard caught it and
     // the inconsistency stayed hidden.
+    //
+    // **It checks the file the CONFIG resolves, not the constant.** The first version
+    // of this guarded `GLM_GGUF` while `cfg.vocab_gguf` above prefers
+    // `LETIBOT_VOCAB_GGUF` — so with the override pointing at nothing the guard
+    // PASSED and `Parts::load` then failed with `no vocabulary GGUF at
+    // /nonexistent/…`. A guard that resolves a different path from the thing it
+    // guards can be true while the test still cannot run, which is the whole defect
+    // it is there to prevent. MEASURED, and `compact_live.rs` had it too.
+    let gguf = std::env::var("LETIBOT_VOCAB_GGUF")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| GLM_GGUF.into());
     let Some(_) = letibot_tokencore::apparatus::present(
-        &format!("a GLM vocabulary GGUF ({GLM_GGUF})"),
-        std::path::Path::new(GLM_GGUF).is_file(),
+        &format!("a GLM vocabulary GGUF ({})", gguf.display()),
+        gguf.is_file(),
     ) else {
         return;
     };

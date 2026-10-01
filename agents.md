@@ -90,6 +90,34 @@ cause #3, so a future merge of adjudication meets its own overlap in
 
 ## Patterns that recur
 
+**A test asserts what it can prove on the machine it is running on.** A test that
+panics because the box has no vocabulary GGUF, no cgroup v2 subtree or no session
+store is reporting **absent apparatus as a failed assertion** — two different
+findings collapsed into one, which is the same mistake `ToolOutcome::Abstained`
+exists to prevent in the runtime (`"could not ask"` is not `"the answer is no"`).
+Use `letibot_tokencore::apparatus`:
+
+```rust
+let Some(_) = letibot_tokencore::apparatus::present_gguf() else { return };
+let Some(_) = letibot_tokencore::apparatus::present(
+    "a cgroup v2 tree",
+    letibot_tools::Cgroup2::probe().is_ok(),
+) else { return };
+```
+
+The skip is **loud** — it names what is missing and prints `THIS IS NOT A PASS` —
+which is what answers the older objection that a quiet skip *"reports the health of
+`std::fs::exists`"*. `LETIBOT_REQUIRE_APPARATUS=1` turns the skip back into a
+failure, so a run on the box that has the apparatus can refuse to skip. Set
+`LETIBOT_REQUIRE_MODEL=1` alongside it: `skip_live_test` already refuses to skip a
+**configured** endpoint, and the two together make a run that means it say so.
+
+**What is NOT apparatus: a configured endpoint that refuses.** The two look
+identical at the socket and are not the same fact. `LETIBOT_COMPLETION_URL` set is
+a promise about where the model is, and silence against a promise is a failure;
+unset, the address is a default nobody asked for and silence is a runner, a fresh
+clone or a laptop. If you add a skip, ask which of the two you are looking at.
+
 **A second copy of a list drifts.** The head once kept its own `const` of mode
 names; it offered a mode that did not exist and could not reach one that did.
 Protocol 18 added `SettingRow::choices` so whoever owns a closed set of names
