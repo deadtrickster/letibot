@@ -49,7 +49,14 @@ pub enum Delivery {
         snapshot: Box<Snapshot>,
         scrubbed: ScrubReport,
     },
-    /// The daemon is shutting down.
+    /// The daemon is shutting down, **and everything queued for this head has
+    /// already been delivered.**
+    ///
+    /// The second half is a guarantee rather than an observation: a head that is
+    /// told `daemon_stopping` and then `Bye` must actually receive both, in that
+    /// order, or the one sentence explaining why the session went away is lost to a
+    /// race. See `next_batch`, where honouring `closed` before the queue did exactly
+    /// that.
     Closed,
 }
 
@@ -745,9 +752,6 @@ impl Hub {
     pub fn next_batch(&self, head_id: &str, max: usize) -> Delivery {
         let mut g = self.lock();
         loop {
-            if g.closed {
-                return Delivery::Closed;
-            }
             let at = g.log.head_seq();
             let dropped = g.log.dropped();
             let Some(idx) = g.heads.iter().position(|h| h.id == head_id) else {
@@ -768,6 +772,31 @@ impl Hub {
                 let n = max.min(g.heads[idx].queue.len());
                 let events: Vec<Envelope> = g.heads[idx].queue.drain(..n).collect();
                 return Delivery::Events(Batch::new(events));
+            }
+            // **A CLOSED HUB STILL OWES THE HEAD WHAT WAS QUEUED FOR IT, and this
+            // check used to sit at the TOP of this loop — where it won every race
+            // against the drain below and dropped the queue outright.**
+            //
+            // MEASURED, and it flaked once in three runs on a loaded CI runner
+            // (36867928391, `a_stop_closes_the_registry_even_with_a_command_queued_
+            // and_nobody_draining`): the head saw `["Bye(daemon shutting down)"]` and
+            // nothing else. The `daemon_stopping` warning HAD been published — and
+            // the shutting-down path publishes it to every hub *before* it closes the
+            // registry, precisely so every other head is told why — but the pump's
+            // first `next_batch` after the close returned `Closed` before looking at
+            // the queue, so the warning was not late. It never existed.
+            //
+            // That made a documented ordering untrue: `Registry::close`'s own comment
+            // says the announcement goes first "while the hubs are still open and
+            // every other head can still be reached", and this loop is the only thing
+            // that could deliver it.
+            //
+            // A longer deadline cannot fix a frame that is never produced, which is
+            // why `until`'s `Timeout => continue` (added the same day, for a real
+            // premature-give-up bug) did not and could not help here. The two are
+            // different failures: that one was tolerance, this one is ORDERING.
+            if g.closed {
+                return Delivery::Closed;
             }
             g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
         }
@@ -1543,8 +1572,7 @@ mod tests {
         assert!(
             !b.backlog
                 .iter()
-                .any(|e| matches!(e.event, SessionEvent::DecisionRequested {
-                    .. })),
+                .any(|e| matches!(e.event, SessionEvent::DecisionRequested { .. })),
             "a resumed head must not be re-asked a settled question"
         );
         assert_eq!(b.scrubbed.settled_decisions, 1);
@@ -2050,6 +2078,58 @@ mod mode_steering_tests {
             matches!(left.kind, CommandKind::OperatorCall { execute: false, .. }),
             "{:?}",
             left.kind
+        );
+    }
+
+    /// **A closed hub still hands over what was queued for the head — ordered, not
+    /// raced.**
+    ///
+    /// The integration test this protects
+    /// (`a_stop_closes_the_registry_even_with_a_command_queued_and_nobody_draining`)
+    /// only caught the defect once in three runs on a loaded runner, because it
+    /// depended on which thread won. This does not depend on anything: publish, close,
+    /// then ask. The first answer must be the event; only then `Closed`.
+    ///
+    /// It would have failed every time before the fix, because `next_batch` checked
+    /// `closed` before it looked at the queue.
+    #[test]
+    fn a_closed_hub_delivers_what_was_queued_before_it_says_closed() {
+        let hub = Hub::new("ordered-shutdown");
+        let head = hub.attach("h", "tui", Caps::default(), 0).head_id;
+
+        // **No drain first, and that is not an omission.** A snapshot attach leaves
+        // this head's queue empty, and `next_batch` on an empty queue of an OPEN hub
+        // BLOCKS on its condvar — MEASURED: the first version of this test did
+        // `let _ = hub.next_batch(..)` here to "clear any backlog", and the test hung
+        // until it was killed. Publish, then close, then ask: the first answer is the
+        // event because there is something to answer with.
+        hub.publish(SessionEvent::Warning {
+            code: "daemon_stopping".into(),
+            detail: "`dead` asked this daemon to stop".into(),
+            compaction: None,
+        });
+        hub.close();
+
+        let first = hub.next_batch(&head, 256);
+        match &first {
+            Delivery::Events(b) => assert!(
+                b.events().iter().any(|e| matches!(
+                    &e.event,
+                    SessionEvent::Warning { code, .. } if code == "daemon_stopping"
+                )),
+                "the event that WAS queued must be delivered, not dropped: {b:?}"
+            ),
+            other => panic!(
+                "a closed hub with a queued event returned {other:?}; the head would \
+                 never be told why the daemon went"
+            ),
+        }
+
+        // And only now, with the queue empty, does it say closed.
+        assert_eq!(
+            hub.next_batch(&head, 256),
+            Delivery::Closed,
+            "the hub must still report Closed once it has delivered what it owed"
         );
     }
 }
