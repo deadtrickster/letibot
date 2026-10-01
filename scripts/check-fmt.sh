@@ -118,7 +118,20 @@ fi
 if [ -n "$mine" ]; then
     echo "check-fmt: these files this change touches are not formatted:" >&2
     for f in $mine; do echo "    ${f#"$repo_root"/}" >&2; done
-    printf '%s\n' "$report" >&2
+    # **Only OUR diffs are printed.** rustfmt's report also carries every file it
+    # walked into, and on this crate that is tens of kilobytes of pre-existing debt in
+    # files nobody touched — which buries the one file the reader needs, at the TOP
+    # where they would have found it, under a wall they have to scroll past. The note
+    # above already names the others.
+    printf '%s\n' "$report" | awk -v ours="$ours" '
+        /^Diff in / {
+            file = $0
+            sub(/^Diff in /, "", file)
+            sub(/:[0-9]+:$/, "", file)
+            show = (" " ours " " ~ (" " file " "))
+        }
+        show { print }
+    ' >&2
     exit 1
 fi
 
