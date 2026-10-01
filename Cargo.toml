@@ -23,6 +23,17 @@ members = [
 ]
 
 [workspace.package]
+# **ONE version for the whole tree, and it is the release tag's other half.**
+#
+# The release workflow refuses a tag that disagrees with this, because the two
+# numbers becoming different is a defect with no symptom until it is an update
+# loop: rano's `v0.1.1` was tagged with the manifest still at 0.1.0, so the
+# published binary reported 0.1.0 and every 0.1.0 install was offered 0.1.1 for
+# ever. One place to change, and a check that the tag matched it.
+#
+# 0.1.1 rather than 0.1.0 because `v0.1.0` is already tagged and 81 commits past
+# it; a tag must name a version this tree does not already claim.
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"

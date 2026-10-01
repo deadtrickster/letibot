@@ -1,0 +1,229 @@
+name: Release
+
+# Assets, built on a tag. This is what install.sh downloads:
+#
+#   curl -fsSL https://raw.githubusercontent.com/deadtrickster/letibot/main/install.sh | sh
+#
+# asks for `letibot-<triple>.tar.gz` at `releases/latest/download/`, holding at the
+# archive root:
+#
+#   harnessd letibot-tui letibot-askpass          the runtime
+#   libllama.so.0 libggml.so.0 libggml-base.so.0  what harnessd links
+#
+# `scripts/make-dist.sh` produces exactly that and asserts the contents; both this
+# workflow and `scripts/check-dist-names.sh` pin the names to install.sh's, so an
+# asset cannot be published under a name the installer does not ask for.
+
+on:
+  push:
+    tags: ['v*']
+  # Build the assets without publishing, to test a change to this file.
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # **A tag, not a branch** — the same `v0.3.0` CI uses, and for the reason the CI
+  # comment gives in full: a release must be REBUILDABLE. Re-running an old tag's
+  # workflow against a moving `master` would compile a different binary from the one
+  # that was tested and published, which is the same defect in a different coat.
+  LLAMA_REF: v0.3.0
+
+jobs:
+  # Runs first and cheaply, so a mismatch fails before two runners are spent.
+  names:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The names must be the ones install.sh asks for
+        run: sh scripts/check-dist-names.sh
+
+      # **The tag and the compiled version must agree.** This is checked by
+      # `scripts/check-tag.sh` rather than inline, because it is then runnable by
+      # hand — and the defect it catches has no symptom until it is an update loop:
+      # rano's `v0.1.1` shipped assets whose binary reported 0.1.0, and since an
+      # update check compares the TAG against the compiled version, every install was
+      # offered 0.1.1 forever.
+      #
+      # Only on a tag: a branch build has no version to agree with.
+      - name: The tag must match the workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: sh scripts/check-tag.sh "$GITHUB_REF_NAME"
+
+  build:
+    needs: names
+    runs-on: ${{ matrix.runs }}
+    timeout-minutes: 60
+    # **The names `crates/tokencore/build.rs` reads**, set here rather than on the
+    # individual steps: `Build` and `Package` both need them, and a step that forgot
+    # would silently fall back to the script's default — `/home/dead/Projects/llama.cpp`,
+    # the author's path — and fail with a message about a directory no runner has.
+    # `LETIBOT_LLAMA_LIB` is also what `scripts/make-dist.sh` copies the libraries from,
+    # so the packaged libraries are the linked ones by construction.
+    env:
+      LETIBOT_LLAMA_DIR: ${{ github.workspace }}/llama.cpp
+      LETIBOT_LLAMA_LIB: ${{ github.workspace }}/llama.cpp/build/bin
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+          - runs: ubuntu-24.04-arm
+            triple: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      # The triple is a claim about the binary. Check it against the toolchain's own
+      # host rather than trusting the runner image name: a silent change to what
+      # `ubuntu-latest` means would otherwise publish an x86_64 binary named aarch64,
+      # which install.sh downloads and then fails to execute.
+      - name: The runner must be the architecture we are claiming
+        run: |
+          set -eu
+          host=$(uname -m)
+          case "${{ matrix.triple }}:$host" in
+            x86_64-unknown-linux-gnu:x86_64) ;;
+            aarch64-unknown-linux-gnu:aarch64|aarch64-unknown-linux-gnu:arm64) ;;
+            *) echo "::error::runner is $host, claiming ${{ matrix.triple }}"; exit 1 ;;
+          esac
+
+      # **llama.cpp, CPU only, `$ORIGIN` rpath.** Both halves are load-bearing:
+      # the daemon cannot compile without the checkout, and the `$ORIGIN` rpath is what
+      # makes the packaged libraries find each other — `DT_RUNPATH` is not inherited by
+      # a library's own dependencies, measured, so an absolute runpath in
+      # `libllama.so.0` would have it look for `libggml.so.0` in the runner's build
+      # directory and nowhere else. `make-dist.sh` refuses to package libraries whose
+      # runpath is not `$ORIGIN`, so this fails at packaging rather than at a user's
+      # first run if the flag is ever dropped.
+      - name: Build llama.cpp (CPU, $ORIGIN rpath)
+        run: |
+          set -eu
+          git clone --depth 1 --branch "$LLAMA_REF" \
+            https://github.com/deadtrickster/llama.cpp llama.cpp
+          cmake -S llama.cpp -B llama.cpp/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CUDA=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_BUILD_RPATH='$ORIGIN' \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN'
+          cmake --build llama.cpp/build --config Release -j "$(nproc)"
+          # **EXACTLY `$ORIGIN`, and this is an equality rather than a substring match
+          # on purpose.** MEASURED on a two-library project: without
+          # `CMAKE_BUILD_WITH_INSTALL_RPATH=ON`, the library that depends on another came
+          # out as `RUNPATH=[$ORIGIN:/tmp/rpexp/A]` — it still RAN, because `$ORIGIN` is
+          # searched first, so nothing would have failed. The release would simply have
+          # carried this runner's build path inside a published `.so`. A `grep -q
+          # '\$ORIGIN'` passes that; this does not.
+          for so in libllama.so.0 libggml.so.0 libggml-base.so.0; do
+            rp=$(readelf -d "$LETIBOT_LLAMA_LIB/$so" | sed -n 's/.*RUNPATH.*\[\(.*\)\].*/\1/p')
+            echo "$so RUNPATH: [$rp]"
+            if [ "$rp" != '$ORIGIN' ]; then
+              echo "::error::$so's RUNPATH is [$rp], not exactly [\$ORIGIN]."
+              echo "The absolute entries here are build paths from this runner, and"
+              echo "they would be baked into an asset people download. Check the"
+              echo "CMAKE_BUILD_WITH_INSTALL_RPATH flag above is still present."
+              exit 1
+            fi
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.triple }}
+
+      - name: Build
+        run: cargo build --release --bin harnessd --bin letibot-tui --bin letibot-askpass
+
+      # **The daemon has to run before it is packaged** — and this is the only proof
+      # that the `$ORIGIN` runpath works, because the libraries are still where the
+      # build put them.
+      - name: The binaries must run
+        run: |
+          set -eu
+          ./target/release/harnessd --version
+          ./target/release/letibot-tui --version
+
+      - name: Package
+        run: sh scripts/make-dist.sh ${{ matrix.triple }} dist
+
+      # **And the PACKAGE must run with nothing else present.** The archive is
+      # extracted somewhere else and run with `LD_LIBRARY_PATH` emptied — so the only
+      # thing that can satisfy the loader is `$ORIGIN`. This is the check that turns
+      # "it worked on the build machine" into "it works on a machine with no
+      # llama.cpp", which is every machine but the author's.
+      - name: The package must run on its own
+        run: |
+          set -eu
+          d=$(mktemp -d)
+          tar -xzf dist/letibot-${{ matrix.triple }}.tar.gz -C "$d"
+          n=$(ls -1 "$d" | wc -l)
+          test "$n" -eq 6 || { echo "::error::archive holds $n entries, expected 6"; ls -la "$d"; exit 1; }
+          ( cd "$d" && env -u LD_LIBRARY_PATH ./harnessd --version )
+          ( cd "$d" && env -u LD_LIBRARY_PATH ./letibot-tui --version )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: letibot-${{ matrix.triple }}
+          # The whole dist directory, so the asset name is make-dist.sh's to decide and
+          # this file does not restate it.
+          path: dist/letibot-${{ matrix.triple }}.tar.gz
+          if-no-files-found: error
+
+  # Publishes the assets as a release, which is what makes `releases/latest` resolve.
+  # Separate from `build` so a failure to publish does not look like a failure to
+  # compile.
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List what will be published
+        run: ls -la dist/
+
+      # The same extraction the installer does, run once here so a bad archive is
+      # caught at publish time rather than by the first user.
+      - name: Every asset must extract to what install.sh expects
+        run: |
+          set -eu
+          for f in dist/*.tar.gz; do
+            d=$(mktemp -d)
+            tar -xzf "$f" -C "$d"
+            for want in harnessd letibot-tui letibot-askpass libllama.so.0 libggml.so.0 libggml-base.so.0; do
+              [ -f "$d/$want" ] || { echo "::error::$f is missing $want"; exit 1; }
+            done
+            for want in harnessd letibot-tui letibot-askpass; do
+              [ -x "$d/$want" ] || { echo "::error::$f: $want is not executable"; exit 1; }
+            done
+            rm -rf "$d"
+          done
+          echo "$(ls dist/*.tar.gz | wc -l) assets, all complete"
+
+      # `gh` rather than a release action: it is already on the runner, so this is one
+      # less third-party action to trust in the path that publishes binaries people
+      # download and run.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.tar.gz --clobber
+          else
+            gh release create "$tag" --title "$tag" --generate-notes dist/*.tar.gz
+          fi
+          gh release view "$tag" --json assets --jq '.assets[].name'

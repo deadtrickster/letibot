@@ -94,7 +94,7 @@ fn own_modes(parts: Parts) -> Parts {
     parts
 }
 
-fn config() -> Config {
+fn config() -> Option<Config> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
@@ -154,19 +154,32 @@ fn config() -> Config {
         cfg.dialect = dialect;
         cfg.vocab_gguf = gguf.into();
     }
+    // **NO SERVER, NO TEST — and the guard lives in `serving` so its wording cannot
+    // drift from the other live files.** MEASURED with the endpoint on a dead port: these
+    // four tests spent **373.55 s** failing, and `cargo test` aborts the remaining targets
+    // after the first failing binary — so most of the suite never ran. With the guard they
+    // finish in **0.00 s**. `LETIBOT_REQUIRE_MODEL=1` refuses the skip, which is how a run
+    // with a real server says it will not tolerate one.
+    if letibot_turn::serving::skip_live_test(&cfg.endpoint, "This test") {
+        return None;
+    }
+    // **`expect` runs once per process, not once per test.** It panics when the server at
+    // the endpoint is serving a model other than the one named — the failure this whole
+    // file's escape hatch exists for — and four tests each re-checking it would fetch
+    // `/props` four times to learn the same thing.
     static CHECKED: OnceLock<()> = OnceLock::new();
     CHECKED.get_or_init(|| letibot_turn::serving::expect(&cfg.endpoint, &cfg.model));
     // Short answers, and a bound low enough that a model which loops is a failing
     // test rather than a slow one.
     cfg.effort = Some("low".into());
     cfg.max_tool_rounds = 5;
-    cfg
+    Some(cfg)
 }
 
 #[test]
 fn a_tool_call_goes_out_runs_and_comes_back_as_an_answer() {
     let _lock = serial();
-    let cfg = config();
+    let Some(cfg) = config() else { return };
     let parts = own_modes(Parts::load(&cfg).expect("the vocabulary must load"));
     let hub = Hub::new("loop-test");
     let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
@@ -227,7 +240,7 @@ fn a_tool_call_goes_out_runs_and_comes_back_as_an_answer() {
 #[test]
 fn an_inert_retrieval_tool_reports_not_run_and_says_so_structurally() {
     let _lock = serial();
-    let cfg = config();
+    let Some(cfg) = config() else { return };
     let parts = own_modes(Parts::load(&cfg).expect("the vocabulary must load"));
     let hub = Hub::new("abstain-test");
     let mut h = Harness::open(&parts, cfg, hub).expect("the session opens");
@@ -317,7 +330,7 @@ fn a_head_prompts_over_the_socket_and_sees_the_turn() {
     use std::time::{Duration, Instant};
 
     let _lock = serial();
-    let mut cfg = config();
+    let Some(mut cfg) = config() else { return };
     let socket = cfg.socket.clone();
     let session = "socket-test".to_string();
     cfg.session_id = session.clone();
@@ -407,7 +420,7 @@ fn a_message_queued_mid_turn_is_answered_not_just_appended() {
     use letibot_transcript::{TranscriptItem, UserPart};
 
     let _lock = serial();
-    let cfg = config();
+    let Some(cfg) = config() else { return };
     let parts = own_modes(Parts::load(&cfg).expect("the vocabulary must load"));
     let hub = Hub::new("steering-continue-test");
     let head = hub.attach("tui", "test", Caps::default(), 0);

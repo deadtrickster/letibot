@@ -16,7 +16,11 @@
 //! make a test pass**: the services evict each other, and the eviction takes down
 //! whatever else is running on the same endpoint. This test uses the GLM dialect
 //! and the GLM vocabulary, which is what the server is already holding, so it
-//! starts nothing and evicts nothing. The serving preflight is the gate.
+//! starts nothing and evicts nothing. The serving preflight is the gate, and when
+//! nothing answers at all the test SKIPS rather than failing — see
+//! `letibot_turn::serving::skip_live_test`, and `LETIBOT_REQUIRE_MODEL` to refuse
+//! the skip. Five minutes of `SalvageExhausted` against a closed port is what that
+//! guard replaced.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};
@@ -30,10 +34,6 @@ const GLM_GGUF: &str =
 
 #[test]
 fn a_live_todo_write_reaches_the_store_and_the_log() {
-    assert!(
-        std::path::Path::new(GLM_GGUF).is_file(),
-        "no GLM vocabulary GGUF at {GLM_GGUF}"
-    );
     let dir = TempDir::new("harnessd-todos-live");
     let path = dir.path().join("sessions.db");
     let session_id = "todos-live";
@@ -45,6 +45,36 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
         .unwrap_or_else(|_| GLM_GGUF.into());
     cfg.store = Some(path.clone());
     cfg.session_id = session_id.into();
+    // The same escape hatch the other live files honour: with this set, the guard
+    // below must check the endpoint the test will actually use, not the default.
+    if let Ok(url) = std::env::var("LETIBOT_COMPLETION_URL") {
+        let (h, p) = url.rsplit_once(':').expect("HOST:PORT");
+        cfg.endpoint = letibot_turn::Endpoint::new(h, p.parse().expect("port"));
+    }
+
+    // **NO SERVER, NO TEST — and the guard goes BEFORE the vocabulary assertion.**
+    //
+    // MEASURED with the endpoint on a dead port: this is the one target in the whole
+    // workspace that still failed, `FAILED. 0 passed; 1 failed` in 14.73 s, panicking
+    // at `the turn: Turn(SalvageExhausted { streak: 4 })` — four retries against
+    // nothing. Every other live file either uses a canned server or needs no endpoint,
+    // which `cargo test --workspace --no-fail-fast` established rather than guessed.
+    //
+    // It goes FIRST because on a machine that is not this box the file fails for a
+    // second, louder reason: `GLM_GGUF` is an absolute path under `/home/dead`, so the
+    // `<GLM_GGUF>` assertion would fire before anything got as far as the endpoint.
+    // A skip has to be reached before the assertions it is skipping past.
+    if letibot_turn::serving::skip_live_test(&cfg.endpoint, "This test") {
+        return;
+    }
+
+    assert!(
+        std::path::Path::new(GLM_GGUF).is_file(),
+        "a model server answered at {} but there is no GLM vocabulary GGUF at \
+         {GLM_GGUF}, so the turn cannot be built. Point LETIBOT_VOCAB_GGUF at a GLM \
+         vocabulary, or unset LETIBOT_REQUIRE_MODEL to let this test skip.",
+        cfg.endpoint.authority()
+    );
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     let hub = Hub::new(session_id);
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session must open");

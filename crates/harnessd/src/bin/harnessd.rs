@@ -541,6 +541,21 @@ fn run() -> Result<i32, String> {
                 println!("{}", usage());
                 return Ok(0);
             }
+            // **The version, because an INSTALLER has to be able to prove the binary runs.**
+            //
+            // The one-line installer copies a binary it downloaded and then says what it got —
+            // `rano`'s own installer: *"a binary that cannot run is a failure this script would
+            // otherwise report as success"* — and the cheapest way to prove a binary runs is to ask
+            // it something it can answer without a socket, a model or a store. `--help` would do it
+            // and prints forty lines; this prints one.
+            //
+            // **`CARGO_PKG_VERSION` is the WORKSPACE's version**, which is the number the release
+            // tag has to agree with — see the root manifest. So a stale binary is visible from the
+            // same command the installer uses to check it landed.
+            "-V" | "--version" => {
+                println!("harnessd {}", env!("CARGO_PKG_VERSION"));
+                return Ok(0);
+            }
             other => return Err(format!("unknown argument {other}\n\n{}", usage())),
         }
     }

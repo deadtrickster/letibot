@@ -7,3 +7,10 @@ scripts/__pycache__/
 # repository — the one thing under it that a BUILD needs (the recall test key)
 # lives beside its test at crates/tools/tests/data/answer-key.tsv.
 scratch/
+
+# **The local rano override, and it must never be committed.** `rano` is a git
+# dependency pinned to a tag so the tree builds from a clone; this file points it
+# back at the operator's own checkout so editing rano takes effect immediately.
+# An absolute path in a committed file is exactly what made the daemon
+# unbuildable on a runner, which is the defect this arrangement exists to fix.
+/.cargo/config.toml

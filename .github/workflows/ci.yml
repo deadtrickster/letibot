@@ -1,0 +1,342 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A superseded push is not worth finishing. Without this, three quick commits leave
+# three runs queueing over the same code.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # **The llama.cpp build, and it is a TAG, not a branch.** `harnessd` links
+  # `libllama`, and this repository cannot COMPILE without a llama.cpp checkout —
+  # `crates/tokencore/build.rs` fails the build by name when `include/llama.h` or
+  # `libllama.so` is missing, which is a deliberate refusal rather than a link error
+  # nobody can read. So every job below builds it first.
+  #
+  # `v0.3.0` of the fork, and each part of that is a measurement:
+  #
+  #   * **A tag, because a branch is not a pin.** This repository is rebuilt when an
+  #     old release tag is re-run, and a moving `master` would then produce a
+  #     DIFFERENT binary from the one that was tested and published.
+  #   * **The fork, not upstream.** `deadtrickster/llama.cpp` also carries the
+  #     server work this box runs against, and its `master` is NOT upstream's
+  #     (`cc83d7b` against `41fc7584` when this was written).
+  #   * **`v0.3.0` and not the newest tag.** MEASURED: the tagged set here is
+  #     `v0.1.0` … `v0.3.0` on the fork, and the box's own llama.cpp — the library
+  #     its running daemons link — contains `v0.3.0`, `v0.4.0` and `v0.4.1` but NOT
+  #     `v0.5.0`. Pinning past what the box runs would test a tokenizer the operator
+  #     does not use.
+  #
+  # `v0.3.0` is known to be ADEQUATE rather than assumed: every symbol
+  # `crates/tokencore` needs — `llama_vocab_get_text`, `llama_vocab_get_add_bos`,
+  # `llama_vocab_is_control`, `llama_model_default_params` and the rest — is declared
+  # in that tag's `include/llama.h`, checked against the shim's own list. And
+  # `LLAMA_BUILD_SERVER`, `LLAMA_BUILD_TESTS`, `LLAMA_BUILD_EXAMPLES` and
+  # `GGML_CUDA` all exist there with CUDA defaulting OFF, so the flags below are not
+  # guesses about an older `CMakeLists.txt`.
+  LLAMA_REF: v0.3.0
+  # **These two names are not this file's invention — they are what the build reads.**
+  # `crates/tokencore/build.rs` locates the checkout through `LETIBOT_LLAMA_DIR` and
+  # `LETIBOT_LLAMA_LIB` and fails by name when either is wrong. They are set at JOB
+  # level, not per step, because `build.rs` runs for EVERY cargo command: clippy, test
+  # and build each compile the shim and need `llama.h`. An earlier draft of this file
+  # set them only on the packaging step, which would have failed three steps earlier
+  # with `llama.h not found at /home/dead/Projects/llama.cpp/include/llama.h` — the
+  # author's own path, read from the script's default, on a runner that has never
+  # heard of it. That is the shape of bug this repository keeps meeting: it works on
+  # the machine it was written on.
+  #
+  # **One name, one path, three consumers.** `LETIBOT_LLAMA_LIB` is what the shim links
+  # against, what `build.rs` bakes into the rpath, and what `scripts/make-dist.sh`
+  # copies the libraries out of — so the packaged libraries are the linked libraries by
+  # construction rather than by two settings agreeing.
+  LETIBOT_LLAMA_DIR: ${{ github.workspace }}/llama.cpp
+  LETIBOT_LLAMA_LIB: ${{ github.workspace }}/llama.cpp/build/bin
+
+jobs:
+  # One job, named for what it does, because the steps share a warm cache and a
+  # llama.cpp build: splitting fmt from test would build llama.cpp twice to save
+  # nothing.
+  test:
+    name: fmt, clippy, test, release
+    runs-on: ubuntu-latest
+    # **The backstop.** `cargo test` runs live tests that need a model server; those
+    # skip when there is none (see the note at the `Test` step), but a new one that
+    # forgets can block for three minutes per request — measured, 373.55 s to fail
+    # four tests. A job that hangs for six hours teaches nobody anything.
+    timeout-minutes: 45
+    steps:
+      # Full history, for one reason: the format step measures this change against the
+      # revision it started from, and a depth-1 clone does not have it.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # **llama.cpp, CPU only, and it is not optional.** The tokenizer is
+      # `llama_tokenize`; there is no pure-Rust path, so the daemon links it. CUDA is
+      # off on purpose: `libggml-cuda.so` is 65 MB and is NOT in any `DT_NEEDED` set
+      # (ggml dlopens its backends), so a CPU build tokenises identically and the
+      # runner needs no GPU.
+      #
+      # **The three rpath flags, and every one of them measured on this box** with a
+      # two-library project rather than taken from a manual:
+      #
+      #   * `CMAKE_BUILD_WITH_INSTALL_RPATH=ON` is the one that makes the output CLEAN.
+      #     Without it, `CMAKE_BUILD_RPATH` does not produce `$ORIGIN` — CMake appends
+      #     the build directory, and the library that depends on another (the
+      #     `libllama.so.0` → `libggml.so.0` case, which is exactly this shape) came out
+      #     with `RUNPATH=[$ORIGIN:/tmp/rpexp/A]`. It still RAN, because `$ORIGIN` was
+      #     searched first — so the defect has no failing test, and the release would
+      #     have shipped `/home/runner/work/letibot/letibot/llama.cpp/build/bin` inside
+      #     a published `.so`. With this flag the same experiment gives `RUNPATH=[$ORIGIN]`
+      #     on both libraries, and the package runs from a bare directory with
+      #     `LD_LIBRARY_PATH` unset.
+      #   * `CMAKE_INSTALL_RPATH='$ORIGIN'` is what that flag makes the build tree use.
+      #     The pair is what sets the value; one without the other does nothing useful.
+      #   * `CMAKE_BUILD_RPATH` is passed for the same reason as a belt: harmless here,
+      #     and right for a build that is run from the tree rather than installed.
+      #
+      # Why any of it matters, also measured: `DT_RUNPATH` is NOT inherited by a
+      # library's own dependencies. `libllama.so.0` finds `libggml.so.0` through ITS OWN
+      # runpath and nowhere else — so an absolute runpath produces a release asset that
+      # runs on the build machine and dies on every other one with
+      # `libggml.so.0: cannot open shared object file`.
+      #
+      # `scripts/make-dist.sh` refuses to package a library whose runpath does not
+      # mention `$ORIGIN`, and the assertion below catches the leak in the step that
+      # could still fix it.
+      - name: Build llama.cpp (CPU, $ORIGIN rpath)
+        run: |
+          set -eu
+          git clone --depth 1 --branch "$LLAMA_REF" \
+            https://github.com/deadtrickster/llama.cpp "$LETIBOT_LLAMA_DIR"
+          cmake -S "$LETIBOT_LLAMA_DIR" -B "$LETIBOT_LLAMA_DIR/build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CUDA=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_BUILD_RPATH='$ORIGIN' \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN'
+          cmake --build "$LETIBOT_LLAMA_DIR/build" --config Release -j "$(nproc)"
+          # Say what was built, and prove the runpath is EXACTLY what the packager
+          # requires — in the step that could still fix it, rather than four steps later.
+          ls -la "$LETIBOT_LLAMA_LIB"/libllama.so.0 "$LETIBOT_LLAMA_LIB"/libggml.so.0
+          for so in libllama.so.0 libggml.so.0 libggml-base.so.0; do
+            rp=$(readelf -d "$LETIBOT_LLAMA_LIB/$so" | sed -n 's/.*RUNPATH.*\[\(.*\)\].*/\1/p')
+            echo "$so RUNPATH: [$rp]"
+            [ "$rp" = '$ORIGIN' ] || {
+              echo "::error::$so's RUNPATH is [$rp], not exactly [\$ORIGIN]."
+              echo "An absolute entry here is a path from this runner that will be"
+              echo "baked into a published binary. See the flags above."
+              exit 1
+            }
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # **Format, for the files this change touches, and this is narrower than
+      # `cargo fmt --all` on purpose.**
+      #
+      # MEASURED on 2026-10-01: this tree is NOT rustfmt-clean — `cargo fmt --all --
+      # --check` reports **26 files and 154 hunks**, none of them related to any one
+      # change (`crates/tui/src/app.rs` alone is 94). So a whole-tree check here would
+      # be red the moment this workflow was added, before anyone changed anything,
+      # and a job that is red on arrival is a job somebody deletes — taking the clippy
+      # step with it.
+      #
+      # Checking the touched files is a real gate (new code cannot arrive unformatted)
+      # and it passes today. **When the rest of the tree has been formatted in its own
+      # commit, replace this with `cargo fmt --all -- --check`** — that is the better
+      # gate, and it is waiting on one mechanical commit, not on a decision.
+      - name: Format (the files this change touches)
+        run: |
+          set -eu
+          # The revision to measure from. A pull request names its target's commit; a
+          # push names the ref's previous tip. One of the two is always present.
+          base="${{ github.event.pull_request.base.sha }}"
+          [ -n "$base" ] || base="${{ github.event.before }}"
+          # An all-zero `before` is GitHub's way of saying the ref is new, so there is
+          # no previous revision to compare against; the parent commit is then the
+          # honest base, and on a root commit there is none and this says so.
+          case "$base" in
+            ""|0000000000000000000000000000000000000000)
+              if git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+                base=HEAD~1
+              else
+                echo "format check: no earlier revision to compare against; this is the"
+                echo "first commit on the ref, so nothing was checked."
+                exit 0
+              fi
+              ;;
+          esac
+          sh scripts/check-fmt.sh "$base"
+
+      # **The tree is not clippy-clean, and this step says so rather than pretending
+      # otherwise.**
+      #
+      # MEASURED on 2026-10-01: `cargo clippy --all-targets` reports **186 diagnostics
+      # across 14 crates**, none of them related to any one change. Same shape as the
+      # format check above, and the same reasoning: a job that is red the moment it is
+      # added is a job somebody deletes — and whoever deletes it takes the useful
+      # steps with it.
+      #
+      # So this runs WITHOUT `-D warnings`, which prints the whole list instead of
+      # stopping at the first crate, and it does not fail the job. **When the tree is
+      # clean, delete `continue-on-error` and add `-- -D warnings`** — that is the
+      # gate worth having, and it is waiting on a mechanical cleanup rather than on a
+      # decision. Until then it is VISIBLE rather than blocking: the output is in
+      # every run, so the list cannot quietly grow, and the release job cannot be
+      # held up by lint that predates it.
+      - name: Clippy (advisory until the tree is clean)
+        continue-on-error: true
+        run: cargo clippy --all-targets
+
+      # **The model-backed tests SKIP here, and that is deliberate.**
+      #
+      # MEASURED, 2026-10-01, with the endpoint pointed at a dead port: four tests in
+      # `loop_closes.rs` spent **373.55 s** failing, and `cargo test` aborts the
+      # remaining targets after the first failing binary — so most of the suite never
+      # ran at all. A runner has no `llama-server` and never will: the model is the
+      # operator's, and shipping one into CI would mean a multi-gigabyte download and
+      # a GPU.
+      #
+      # So each live test asks `/props` first and prints `SKIPPED … THIS IS NOT A
+      # PASS` when nothing answers. The same four tests now finish in **0.00 s**.
+      #
+      # **`-- --nocapture`, or the skips are INVISIBLE and the paragraph below would
+      # be a lie.** MEASURED: a full green run of this suite prints **zero**
+      # `THIS IS NOT A PASS` lines, because the test harness captures a passing test's
+      # output and cargo only shows it for a FAILURE. With `--nocapture` the same run
+      # prints them — the four in `loop_closes.rs`, the one in `todos_live`. A green
+      # that says nothing about what it skipped is the thing this whole arrangement
+      # exists to avoid, so the run says it out loud.
+      #
+      # **`--no-fail-fast`, because the default hides the rest of the suite.** MEASURED:
+      # `cargo test` aborts the remaining targets after the first failing binary, so one
+      # broken test file means the others never run and their state is unknown — which
+      # is how four failures in `loop_closes.rs` concealed everything behind them.
+      # With this flag every target runs and the run reports all of them.
+      #
+      # **That green means "not run", and the honest way to read it is the output, not the
+      # summary.** The policy lives in `letibot_turn::serving::skip_live_test`, one
+      # function, so every live file's wording and behaviour are the same.
+      #
+      # **A job that must not skip says so with `LETIBOT_REQUIRE_MODEL=1`**, which turns
+      # the skip into a failure naming the endpoint. Verified on this box: with the
+      # variable set and no server, `loop_closes` reports `FAILED. 0 passed; 4 failed` in
+      # 0.00 s rather than passing quietly. A skip nobody can refuse is a suite that
+      # stops testing without saying so.
+      - name: Test
+        run: cargo test --workspace --no-fail-fast -- --nocapture
+
+      # The release profile is a separate gate: it is what users run, and it is where
+      # a lint-free debug build can still fail.
+      - name: Release build
+        run: cargo build --release --bins
+
+      # **The binaries are the deliverable, so something runs them.** `--version` is
+      # the cheapest thing that proves a binary came up — it needs no socket, no model
+      # and no store — and it is the same command `install.sh` uses to check an
+      # install landed.
+      #
+      # Every line here was run before it was written, because two of the obvious
+      # ones are wrong:
+      #
+      #   * **`letibot-askpass` has no `--help` and must not be run bare.**
+      #     MEASURED: `argv[1]` is the sudo PROMPT, and with `LETIBOT_SOCKET` and
+      #     `LETIBOT_SESSION` set — which is what a shell inside a session looks like,
+      #     and what this repository's own development shell is — it does not exit at
+      #     all: it attaches and waits to ask somebody. On a runner both are unset and
+      #     it refuses at once with `not inside a letibot session`, which is a better
+      #     assertion than a flag it does not have. `timeout` bounds it regardless: a
+      #     smoke test that can hang for the 45-minute budget is worse than none.
+      #   * **`letibot-tui --help` exits 2, not 0** (it prints usage and reports the
+      #     invocation as wrong). So the smoke test uses `--version` on the head and
+      #     `--help` only on the daemon, which returns 0.
+      - name: Smoke test the binaries
+        run: |
+          set -eu
+          ./target/release/harnessd --version
+          ./target/release/letibot-tui --version
+          ./target/release/harnessd --help >/dev/null
+
+          # The askpass helper outside a session refuses, in its own words. `if`
+          # rather than `|| true`, so a silent success here is a failure.
+          if out=$(timeout 30 env -u LETIBOT_SOCKET -u LETIBOT_SESSION \
+                     ./target/release/letibot-askpass 'smoke test' 2>&1); then
+            echo "::error::letibot-askpass exited 0 outside a session; it should refuse"
+            exit 1
+          fi
+          case "$out" in
+            *"not inside a letibot session"*) ;;
+            *) echo "::error::letibot-askpass said something unexpected: $out"; exit 1 ;;
+          esac
+          echo "letibot-askpass refuses outside a session, in its own words: ok"
+
+      # The release assets are a CONTRACT between three files that never run together:
+      # install.sh, the release workflow, and make-dist.sh. Each is checked here so a
+      # mismatch fails on this push rather than on a user's install.
+      - name: Release asset names must be the ones install.sh asks for
+        run: sh scripts/check-dist-names.sh
+
+      # **And the tag check is exercised here, on every push, not only at release.**
+      # It is the check that catches an update loop, and a check that runs for the
+      # first time inside the release job is one that fails there — on a tag, after
+      # two runners have already built the assets.
+      #
+      # It is given the CURRENT workspace version prefixed with `v`, which is the tag
+      # a release of this commit would have to carry. That exercises the real
+      # comparison rather than a stand-in, and a version that cannot be a tag (a
+      # `-pre` suffix, say) fails here instead of at publish time.
+      - name: The version must be one a tag can carry
+        run: |
+          set -eu
+          v=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+          sh scripts/check-tag.sh "v$v"
+
+      # **And the package must actually be self-contained**, which is the check that
+      # would have caught the runpath defect: the archive is extracted to a temporary
+      # directory and the daemon is RUN from there. On a runner the llama.cpp build is
+      # at `$LETIBOT_LLAMA_LIB`, so a daemon whose libraries resolve only by that path dies
+      # here — `libggml.so.0: cannot open shared object file` — instead of on a user's
+      # machine.
+      - name: Package, and the package must run on its own
+        run: |
+          set -eu
+          sh scripts/make-dist.sh x86_64-unknown-linux-gnu dist
+          d=$(mktemp -d)
+          tar -xzf dist/letibot-x86_64-unknown-linux-gnu.tar.gz -C "$d"
+          n=$(ls -1 "$d" | wc -l)
+          test "$n" -eq 6 || { echo "::error::archive holds $n entries, expected 6"; ls -la "$d"; exit 1; }
+          for want in harnessd letibot-tui letibot-askpass; do
+            test -x "$d/$want" || { echo "::error::$want is not executable in the archive"; exit 1; }
+          done
+          # Run it with the llama build made invisible, which is what a user's machine
+          # looks like. `LD_LIBRARY_PATH` is explicitly emptied for the same reason:
+          # the point is that `$ORIGIN` is doing the work.
+          ( cd "$d" && env -u LD_LIBRARY_PATH ./harnessd --version )
+          ( cd "$d" && env -u LD_LIBRARY_PATH ./letibot-tui --version )
+
+      # The installer is the documented way in, so it is tested rather than assumed.
+      # It finds this checkout and builds it, so the build is already warm.
+      - name: Installer
+        run: |
+          set -eu
+          LETIBOT_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          test -x "$RUNNER_TEMP/bin/harnessd"
+          test -x "$RUNNER_TEMP/bin/letibot-tui"
+          test -x "$RUNNER_TEMP/bin/letibot-askpass"
+          # The installer's own final check, run again here so a change to it that
+          # stopped verifying would be visible.
+          ( cd "$RUNNER_TEMP/bin" && env -u LD_LIBRARY_PATH ./harnessd --version )

@@ -1,6 +1,6 @@
 [package]
 name = "letibot-ui"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -49,5 +49,5 @@ repository.workspace = true
 # keeps deleting. Used through `crate::text`, which is the forward.
 
 [dependencies]
-rano = { path = "/home/dead/Projects/rano/rano" }
+rano = { git = "https://github.com/deadtrickster/rano", tag = "v0.2.1" }
 letibot-transcript.workspace = true

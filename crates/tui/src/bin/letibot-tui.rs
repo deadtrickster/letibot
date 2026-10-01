@@ -46,6 +46,11 @@ struct Args {
     /// before it pkills.
     interrupt_all: bool,
     list_sessions: bool,
+    /// **Print the version and exit.** An installer has to be able to prove the binary it just copied
+    /// runs, and the cheapest proof is a question it can answer without a socket, a model or a store
+    /// — see `harnessd`'s arm for the full reason. `CARGO_PKG_VERSION` is the WORKSPACE's version,
+    /// which is the number the release tag must agree with.
+    version: bool,
     /// How long `--interrupt-all` waits for the turns to end.
     wait: u64,
     /// Answer "is there a daemon here, and does it speak this build's protocol" and
@@ -67,6 +72,7 @@ fn parse() -> Result<Args, String> {
         identity: std::env::var("USER").unwrap_or_else(|_| "operator".into()),
         interrupt_all: false,
         list_sessions: false,
+        version: false,
         wait: 30,
         probe: false,
     };
@@ -98,6 +104,7 @@ fn parse() -> Result<Args, String> {
             // `letibot --ls`, which draws the byobu-shaped view across folders.
             "--list-sessions" => a.list_sessions = true,
             "--wait" => a.wait = next()?.parse().map_err(|e| format!("--wait: {e}"))?,
+            "-V" | "--version" => a.version = true,
             "-h" | "--help" => return Err(usage()),
             other => return Err(format!("unknown argument {other}\n\n{}", usage())),
         }
@@ -129,6 +136,11 @@ fn main() {
 
     if args.demo || args.replay.is_some() {
         replay(&args, cfg);
+        return;
+    }
+
+    if args.version {
+        println!("letibot-tui {}", env!("CARGO_PKG_VERSION"));
         return;
     }
 
@@ -780,6 +792,7 @@ mod probe_tests {
             identity: "probe-test".into(),
             interrupt_all: false,
             list_sessions: false,
+            version: false,
             wait: 30,
             probe: true,
         }

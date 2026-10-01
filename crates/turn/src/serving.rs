@@ -51,6 +51,69 @@ pub fn served_model(endpoint: &Endpoint) -> Result<String, String> {
     ))
 }
 
+/// **Is a model server answering at this endpoint?** — the one question a test asks before it
+/// spends a turn.
+///
+/// MEASURED, and this is why the function exists: on a machine with no `llama-server`,
+/// `cargo test --workspace` spent **373.55 s** failing four tests in one file, and `cargo test`
+/// **aborts the remaining targets** after the first failing binary — so most of the suite never ran
+/// at all. A CI job built on that is red for a reason nobody can read, six minutes at a time.
+///
+/// So a live test asks this first and SKIPS with a sentence rather than failing with a stack trace.
+/// `SKIPPED … THIS IS NOT A PASS` is the phrasing `live_qwen.rs` already uses for the wrong-model
+/// case, and the rule behind it is the house's: a skip must never be mistakable for a green.
+///
+/// One `GET /props`, which is the cheapest thing an endpoint can answer and needs no tokenizer, no
+/// model and no turn. The connect timeout bounds it (10 s), so a blackholed address costs seconds
+/// rather than the read timeout's three minutes.
+pub fn reachable(endpoint: &Endpoint) -> bool {
+    http::get(endpoint, "/props").is_ok()
+}
+
+/// **Should this live test skip?** — the one question a live test asks before it spends a turn.
+///
+/// `true` means nothing answered at `endpoint` and the caller should return early. The line is
+/// printed HERE rather than at each call site so the wording cannot drift, and `THIS IS NOT A
+/// PASS` is deliberate: a skip that reads like a green is how a suite stops testing without
+/// anybody noticing.
+///
+/// # `LETIBOT_REQUIRE_MODEL` turns the skip into a failure
+///
+/// A skip that cannot be refused is a suite that quietly stops testing: with the variable unset,
+/// a machine with no server runs zero live tests and reports success. So this is how a run that
+/// means it says so — a nightly with a server, or an operator checking the live tests still pass.
+/// Set it to anything but `0` or empty and a missing server panics, naming the endpoint.
+///
+/// # Why the skip exists
+///
+/// MEASURED with the endpoint pointed at a dead port: four tests in `loop_closes.rs` spent
+/// **373.55 s** failing, and `cargo test` **aborts the remaining targets** after the first failing
+/// binary — so most of the suite never ran at all. A CI job built on that is red for a reason
+/// nobody can read, six minutes at a time. With this guard the same four finish in **0.00 s**.
+pub fn skip_live_test(endpoint: &Endpoint, what: &str) -> bool {
+    if reachable(endpoint) {
+        return false;
+    }
+    let required = std::env::var("LETIBOT_REQUIRE_MODEL")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
+    if required {
+        panic!(
+            "LETIBOT_REQUIRE_MODEL is set, and no model server answers at {}.\n\
+             {what} cannot run, and this run does not accept a skip.",
+            endpoint.authority()
+        );
+    }
+    eprintln!(
+        "SKIPPED: no model server at {}.\n\n\
+         {what} needs one: a real turn cannot be run without it — a llama.cpp `llama-server` on \
+         127.0.0.1:8080 by default, or wherever LETIBOT_COMPLETION_URL points.\n\
+         Nothing was run, and THIS IS NOT A PASS.",
+        endpoint.authority()
+    );
+    true
+}
+
 /// The server's context window, from `/props`, or `None` when it does not say.
 ///
 /// **The wall, read rather than assumed.** `docs/compaction.md` §1 settled that
