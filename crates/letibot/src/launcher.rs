@@ -34,9 +34,16 @@
 //! box, which is how `--continue` reopened another project's conversation". That guard
 //! is its own piece with its own test, and this module takes the workspace as given.
 //!
-//! Nor is the daemon's PID here: the shell gets it from `ss -lxpH`, which forks. That
-//! becomes a `/proc/net/unix` read — the same answer without the fork, and the same
-//! care about which of two daemons on one path is the live one.
+//! And the EXECUTION: spawning a daemon, waiting for its socket, writing the record
+//! beside it, exec'ing a head. `roles::launcher` carries the argument for why that
+//! waits — the short version is that the multicall is not what ships as `letibot`, so
+//! it would have no caller and no way to be verified.
+//!
+//! The daemon's PID *is* here now, and not by `ss`: `inode_of`/`daemon_pid` read
+//! `/proc/net/unix` and then find the holder by scanning `/proc/<pid>/fd` for
+//! `socket:[inode]`. Measured against `ss` on every live daemon, and the answer agrees
+//! — the reason for the read is that `ss` may simply be absent, which is a fact about
+//! a box rather than about speed. (It is not faster: 10.27 ms against 11.24 ms.)
 
 use std::path::{Path, PathBuf};
 
@@ -1136,7 +1143,7 @@ pub fn parse_seat(args: &[String]) -> Result<(Seat, Vec<String>), String> {
         let a = args[i].as_str();
         // `need` is the shell's `next()?`: a flag that wants a value gets the next
         // argument or the refusal.
-        let mut need = |what: &str| -> Result<String, String> {
+        let need = |what: &str| -> Result<String, String> {
             args.get(i + 1)
                 .cloned()
                 .ok_or_else(|| format!("{what} needs a value"))

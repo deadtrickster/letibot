@@ -102,6 +102,34 @@ fn exit_code(code: i32) -> ExitCode {
     ExitCode::from(u8::try_from(code.clamp(0, 255)).unwrap_or(1))
 }
 
+// **The LAUNCHER's execution is NOT ported, and the reason is not that it is hard.**
+//
+// `scripts/letibot` (1,181 lines) is what ships as `letibot`: `make-dist.sh` stages it
+// from `scripts/`, and it REFUSES to stage `target/release/letibot` under that name —
+// measured, and the comment there records what a source install did when the multicall
+// slipped through (`letibot --sessions` answered "no such role: --sessions"). So the
+// only launcher a user has is the shell script, and the multicall's launcher would have
+// no caller.
+//
+// What IS ported and tested is the part worth porting on its own: the decisions. Which
+// daemon a folder names (`key`, `locate`, `retarget`), whether one is up (`is_listening`,
+// `daemon_pid`, `live`), what the three read-only verbs say (`daemon_line`,
+// `daemons_lines`, `status_lines`), how to stop one (`stop`, `force_kill`), what an
+// invocation asks for (`decide`), and what a seat's flags are (`parse_seat`). Each
+// carries the incident that produced it into a test name, which is the whole argument
+// for the port.
+//
+// The remainder is the EXECUTION — resolve the workspace, spawn a daemon, wait for its
+// socket, write the record beside it, exec a head. Writing it now would be untestable
+// where it matters: bring-up spawns a process and waits on a socket, and this box runs
+// six live daemons whose records the same runtime directory holds. Verified only by
+// never being run is the exact shape this tree refuses elsewhere.
+//
+// **So the trigger is a decision, not a commit**: switch the archive's `letibot` to the
+// multicall. That is what gives the execution a user and a way to be verified (the
+// packaging gate that already refuses the binary here would become the thing that
+// ships it). Until then this says so, and points at the launcher that works.
+///
 /// `letibot` with nothing after it.
 pub fn launcher() -> ExitCode {
     eprintln!(
