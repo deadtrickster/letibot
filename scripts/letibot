@@ -1008,8 +1008,21 @@ esac
   From an install the binaries should be beside this script, so re-install, or
   point LETIBOT_BIN at the directory holding them."
 
+# **The remedy has to be one a reader can carry out.** This said
+# `systemctl --user start qwen-flash-next`, which names a unit that exists on
+# exactly one machine — the same shape as the `BIN` default above and as the
+# `cargo build --release` this script used to recommend to an installed box: a
+# message that is true where it was written and unusable everywhere else.
+#
+# What is true for everyone: a model server has to be running, it speaks the OpenAI
+# shape, and the address is whatever `$ENDPOINT` says. The llama.cpp line is the same
+# one `install.sh` prints, so the two agree.
 curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1 \
-  || die "nothing serving on $ENDPOINT. Start the model first (systemctl --user start qwen-flash-next)."
+  || die "nothing serving on $ENDPOINT
+  Start a model server first — letibot is a harness, and a turn needs one:
+    llama-server -m MODEL.gguf --port 8080
+  or a cloud provider instead:  --provider deepseek|glm|grok
+  Point this launcher elsewhere with LETIBOT_ENDPOINT=host:port."
 
 # THE RUNNING DAEMON'S MODEL MUST BE THE MODEL ON THE PORT.
 #
