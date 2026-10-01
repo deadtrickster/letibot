@@ -58,9 +58,68 @@ if [ -z "$files" ]; then
 fi
 
 echo "check-fmt: checking $(printf '%s\n' "$files" | wc -l) Rust file(s) this change touches"
-# `--edition 2024` is the workspace's, and it is stated here rather than inferred:
-# rustfmt parses a file according to the edition it is TOLD, and edition 2024 parses
-# some code (raw identifiers, `gen` blocks) that 2021 does not.
-# shellcheck disable=SC2086 # the list is newline-separated paths, and they must split
-rustfmt --check --edition 2024 $files
-echo "check-fmt: all formatted"
+
+# **Absolute, because rustfmt reports absolute paths and `git diff` gives relative
+# ones.** A comparison that mixed the two would silently match nothing, so every file
+# rustfmt complained about would look like "not ours" and this check would pass
+# everything — the can-only-pass shape, arrived at by a path-prefix mistake.
+repo_root=$(git rev-parse --show-toplevel)
+ours=""
+for f in $files; do
+    ours="$ours $repo_root/$f"
+done
+
+# `--edition 2024` is the workspace's, and it is stated rather than inferred: rustfmt
+# parses a file according to the edition it is TOLD, and edition 2024 accepts code
+# that 2021 does not.
+#
+# # Why this judges rustfmt's OUTPUT instead of its exit code
+#
+# **rustfmt follows `mod` declarations**, so handing it `lib.rs` also formats that
+# crate's children — MEASURED: `rustfmt --check crates/dialect-qwen/src/lib.rs`
+# reports a hunk in `src/render.rs`, a file it was never given. That made this script
+# fail on PRE-EXISTING debt in files a change did not touch, which is exactly the
+# failure mode it exists to avoid: CI went red on a commit whose own five files were
+# all clean, because one of them was a `lib.rs`.
+#
+# `--skip-children` would fix it and is NOT available on stable (`Unrecognized
+# option`), so the widening is filtered: only diffs naming a file this change touches
+# are fatal. What rustfmt says about other files is a NOTE — visible, not fatal, the
+# same posture the tree takes for the 26 files of pre-existing whole-tree debt.
+# shellcheck disable=SC2086 # a space-separated path list that must split
+report=$(rustfmt --check --edition 2024 $files 2>&1) && {
+    echo "check-fmt: all formatted"
+    exit 0
+}
+
+mine=""
+others=""
+for f in $(printf '%s\n' "$report" | sed -n 's/^Diff in \(.*\):[0-9]*:.*$/\1/p' | sort -u); do
+    case " $ours " in
+        *" $f "*) mine="$mine $f" ;;
+        *) others="$others $f" ;;
+    esac
+done
+
+if [ -z "$mine" ] && [ -z "$others" ]; then
+    # rustfmt failed without naming any file: a parse error rather than a formatting
+    # difference. Never ours to pass.
+    echo "check-fmt: rustfmt failed and named no file:" >&2
+    printf '%s\n' "$report" >&2
+    exit 1
+fi
+
+if [ -n "$others" ]; then
+    echo "check-fmt: note — rustfmt also wanted these, which this change does not touch." >&2
+    echo "  It follows \`mod\` declarations, so one \`lib.rs\` pulls in its children:" >&2
+    for f in $others; do echo "    ${f#"$repo_root"/}" >&2; done
+fi
+
+if [ -n "$mine" ]; then
+    echo "check-fmt: these files this change touches are not formatted:" >&2
+    for f in $mine; do echo "    ${f#"$repo_root"/}" >&2; done
+    printf '%s\n' "$report" >&2
+    exit 1
+fi
+
+echo "check-fmt: all $(printf '%s\n' "$files" | wc -l) file(s) this change touches are formatted"
