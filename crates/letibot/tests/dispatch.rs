@@ -39,7 +39,7 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
 /// test, which is an accident of which assertion ran first; this one says it plainly.
 #[test]
 fn wired_roles_do_not_say_they_are_unported() {
-    for word in ["render", "render-qwen", "m1"] {
+    for word in ["render", "render-qwen", "m1", "tui"] {
         let (_, _, stderr) = run(&[word]);
         assert!(
             !stderr.contains(STUB_MARKER),
@@ -59,7 +59,7 @@ fn wired_roles_do_not_say_they_are_unported() {
 /// `m1` moved between them when `m1::run` was wired.
 #[test]
 fn unwired_roles_still_say_they_are_unported() {
-    for word in ["daemon", "tui"] {
+    for word in ["daemon"] {
         let (code, _, stderr) = run(&[word]);
         assert!(
             stderr.contains(STUB_MARKER),

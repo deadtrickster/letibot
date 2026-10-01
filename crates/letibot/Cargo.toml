@@ -24,3 +24,5 @@ letibot-dialect-glm.workspace = true
 letibot-dialect-qwen.workspace = true
 # The `m1` role: `m1::run` is that binary's body, moved into this crate's lib.
 letibot-harnessd.workspace = true
+# The `Head` role: `head::run` is that binary's body, moved into this crate's lib.
+letibot-tui.workspace = true

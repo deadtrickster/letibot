@@ -970,6 +970,7 @@ dependencies = [
  "letibot-dialect-qwen",
  "letibot-harnessd",
  "letibot-sessionlog",
+ "letibot-tui",
 ]
 
 [[package]]

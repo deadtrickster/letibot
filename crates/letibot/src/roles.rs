@@ -42,7 +42,11 @@ pub fn run(role: Role, args: &[std::ffi::OsString]) -> ExitCode {
     match role {
         Role::Askpass => askpass(args),
         Role::Daemon => not_yet(role, "crates/harnessd/src/bin/harnessd.rs"),
-        Role::Head => not_yet(role, "crates/tui/src/bin/letibot-tui.rs"),
+        // Wired. `letibot_tui::head::run` is that binary's body; the flags parse
+        // exactly as they did, which matters more here than for any other role —
+        // `scripts/letibot` execs the head with `--socket S --identity U [--resume ID
+        // | --new-session TITLE]`, and leticl's Common Lisp head speaks that contract.
+        Role::Head => exit_code(letibot_tui::head::run(&args_to_strings(args))),
         // Wired. `letibot_harnessd::m1::run` is that binary's body; a usage error
         // exits 2 from inside it rather than returning, which is named in the module
         // docs there and is why this arm cannot report a code for every path.
@@ -304,7 +308,7 @@ mod tests {
     /// success while doing nothing is the failure mode this file exists to avoid.
     #[test]
     fn the_unported_roles_refuse_loudly_and_say_where_they_live() {
-        for role in [R::Daemon, R::Head] {
+        for role in [R::Daemon] {
             let code = run(role, &[]);
             assert_eq!(
                 code,

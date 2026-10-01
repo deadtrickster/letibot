@@ -1,3 +1,4 @@
+pub mod head;
 pub mod app;
 pub mod driver;
 pub mod markdown;
