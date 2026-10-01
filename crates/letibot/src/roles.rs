@@ -44,9 +44,41 @@ pub fn run(role: Role, args: &[std::ffi::OsString]) -> ExitCode {
         Role::Daemon => not_yet(role, "crates/harnessd/src/bin/harnessd.rs"),
         Role::Head => not_yet(role, "crates/tui/src/bin/letibot-tui.rs"),
         Role::M1 => not_yet(role, "crates/harnessd/src/bin/letibot-m1.rs"),
-        Role::Render => not_yet(role, "crates/dialect-glm/src/bin/letibot-render.rs"),
+        // **Wired.** The renderer's body lives in its crate's library now
+        // (`letibot_dialect_glm::cli::run`), so this role and the `letibot-render`
+        // binary are ONE implementation rather than two copies. That matters
+        // unusually much here: the fidelity gate execs this by PATH and compares the
+        // BYTES it produces, so a second copy that drifted by one space would
+        // re-prefill every conversation and the gate would report a divergence that
+        // was really a fork.
+        //
+        // `args` passes through unchanged — the dispatcher does not inspect them —
+        // because the gate's invocation (`--dialect … --profile faithful FIXTURE…`)
+        // must arrive exactly as it does when the binary is called directly.
+        Role::Render => exit_code(letibot_dialect_glm::cli::run(&args_to_strings(args))),
         Role::RenderQwen => not_yet(role, "crates/dialect-qwen/src/bin/letibot-render-qwen.rs"),
     }
+}
+
+/// The argv a role receives, as `String`.
+///
+/// Lossy, and named so: these are paths and flags. A role that needed a non-UTF-8
+/// argument would have to say so, and none does — the renderer reads FIXTURE paths,
+/// the daemon reads flags. One function rather than a repeated `map`, so what happens
+/// to a non-UTF-8 byte is decided once.
+fn args_to_strings(args: &[std::ffi::OsString]) -> Vec<String> {
+    args.iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// An exit code as `ExitCode`, for a role whose own `run` returns one.
+///
+/// Clamped rather than cast: a role returning something outside 0..=255 would wrap to
+/// an unrelated code, and a wrong exit code is worse than a conservative one — see the
+/// askpass role, where `sudo` reads the code to decide whether a password was given.
+fn exit_code(code: i32) -> ExitCode {
+    ExitCode::from(u8::try_from(code.clamp(0, 255)).unwrap_or(1))
 }
 
 /// `letibot` with nothing after it.

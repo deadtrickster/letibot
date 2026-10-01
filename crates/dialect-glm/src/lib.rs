@@ -98,6 +98,7 @@
 //!
 //! See `docs/implementation-plan.md` §7 and `tests/fidelity/README.md`.
 
+pub mod cli;
 use std::sync::OnceLock;
 
 use letibot_dialect::{

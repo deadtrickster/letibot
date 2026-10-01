@@ -18,3 +18,6 @@ path = "src/main.rs"
 [dependencies]
 # The askpass role's whole surface: attach to the daemon and carry one question.
 letibot-sessionlog.workspace = true
+# The render role: `cli::run` is the renderer, moved out of its bin so this
+# dispatcher and that binary are one implementation.
+letibot-dialect-glm.workspace = true
