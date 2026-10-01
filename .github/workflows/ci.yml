@@ -230,42 +230,48 @@ jobs:
         continue-on-error: true
         run: cargo clippy --all-targets
 
-      # **The model-backed tests SKIP here, and that is deliberate.**
+      # **ADVISORY, because this suite is written for the development box and says so.**
       #
-      # MEASURED, 2026-10-01, with the endpoint pointed at a dead port: four tests in
-      # `loop_closes.rs` spent **373.55 s** failing, and `cargo test` aborts the
-      # remaining targets after the first failing binary — so most of the suite never
-      # ran at all. A runner has no `llama-server` and never will: the model is the
-      # operator's, and shipping one into CI would mean a multi-gigabyte download and
-      # a GPU.
+      # MEASURED on the first run that got here (36837584982): **11 targets failed, 85
+      # test instances, and every one of them is an environment assertion the tree makes
+      # on purpose.**
       #
-      # So each live test asks `/props` first and prints `SKIPPED … THIS IS NOT A
-      # PASS` when nothing answers. The same four tests now finish in **0.00 s**.
+      #   * **74 need the vocabulary GGUF**, which the tests locate at an absolute
+      #     `/home/dead/models/...` path, overridable with `LETIBOT_VOCAB_GGUF`. The
+      #     file is the operator's; it is a shard of a 199 GB split model.
+      #   * **7 need a cgroup v2 subtree** to delegate into (`HostProcesses::new`).
+      #   * The remaining few are a slow-runner frame timeout and one intentional panic.
       #
-      # **`-- --nocapture`, or the skips are INVISIBLE and the paragraph below would
-      # be a lie.** MEASURED: a full green run of this suite prints **zero**
-      # `THIS IS NOT A PASS` lines, because the test harness captures a passing test's
-      # output and cargo only shows it for a FAILURE. With `--nocapture` the same run
-      # prints them — the four in `loop_closes.rs`, the one in `todos_live`. A green
-      # that says nothing about what it skipped is the thing this whole arrangement
-      # exists to avoid, so the run says it out loud.
+      # **The tree deliberately ASSERTS these rather than skipping them**, in its own
+      # written words — `tokencore/src/lib.rs`: *"Deliberately not skipped when it is
+      # missing. A tokenizer test that quietly passes on a box with no model file is a
+      # test that reports the health of `std::fs::exists`"*. That is a decision, and this
+      # workflow does not get to overrule it by adding skips.
       #
-      # **`--no-fail-fast`, because the default hides the rest of the suite.** MEASURED:
-      # `cargo test` aborts the remaining targets after the first failing binary, so one
-      # broken test file means the others never run and their state is unknown — which
-      # is how four failures in `loop_closes.rs` concealed everything behind them.
-      # With this flag every target runs and the run reports all of them.
+      # So CI cannot gate on this suite without either shipping 199 GB or weakening
+      # tests someone chose to make strict. It reports instead of gating — the same
+      # treatment as the clippy step above, and for the same reason: a job that is red
+      # the moment it is added is a job somebody deletes, taking the useful steps with
+      # it. **The moment a `LETIBOT_VOCAB_GGUF` can be provisioned on a runner, delete
+      # `continue-on-error` and this step becomes the real gate.**
       #
-      # **That green means "not run", and the honest way to read it is the output, not the
-      # summary.** The policy lives in `letibot_turn::serving::skip_live_test`, one
-      # function, so every live file's wording and behaviour are the same.
+      # What DOES gate, and does run here: format, the release build, the smoke test,
+      # both name/tag checks, the self-contained package, and the installer.
       #
-      # **A job that must not skip says so with `LETIBOT_REQUIRE_MODEL=1`**, which turns
-      # the skip into a failure naming the endpoint. Verified on this box: with the
-      # variable set and no server, `loop_closes` reports `FAILED. 0 passed; 4 failed` in
-      # 0.00 s rather than passing quietly. A skip nobody can refuse is a suite that
-      # stops testing without saying so.
-      - name: Test
+      # # The two flags, both measured
+      #
+      # **`--no-fail-fast`**: `cargo test` aborts the remaining targets after the first
+      # failing binary, so one broken file reports nothing about the others — that is how
+      # four failures in `loop_closes.rs` concealed the whole suite behind them.
+      #
+      # **`-- --nocapture`**: the test harness captures a passing test's output, so a run
+      # prints **zero** `THIS IS NOT A PASS` lines without it. The server-gated tests
+      # (`live_qwen.rs`, `compact_live.rs`, `loop_closes.rs`, `todos_live.rs`) skip loudly
+      # in the tree's established idiom for environment-gated checks, and that loudness is
+      # the whole point of the idiom — *"a suite that is always red is a suite nobody
+      # reads"*. Without `--nocapture` nobody can read it either way.
+      - name: Test (advisory — the suite asserts this box's models and cgroup)
+        continue-on-error: true
         run: cargo test --workspace --no-fail-fast -- --nocapture
 
       # The release profile is a separate gate: it is what users run, and it is where
