@@ -970,6 +970,7 @@ dependencies = [
  "letibot-dialect-qwen",
  "letibot-harnessd",
  "letibot-sessionlog",
+ "letibot-tokencore",
  "letibot-tui",
  "libc",
  "serde_json",

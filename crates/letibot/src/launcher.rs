@@ -543,23 +543,48 @@ mod liveness_tests {
     /// MEASURED when written: 10 records, 6 live, and the pid agreed in every case.
     #[test]
     fn every_live_daemon_agrees_with_ss() {
+        use letibot_tokencore::apparatus;
         use std::process::Command;
-        let dir = rundir();
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            eprintln!(
-                "SKIPPED: no {} on this box, so there are no daemons to compare",
-                dir.display()
-            );
-            return;
-        };
-        // `ss` is what the shell uses; if it is not installed, neither answer exists and
-        // this is the box the /proc read was written for.
-        let Ok(ss) = Command::new("ss").arg("-lxpH").output() else {
-            eprintln!("SKIPPED: no `ss` here — which is exactly why this reads /proc");
-            return;
-        };
-        let ss = String::from_utf8_lossy(&ss.stdout).into_owned();
 
+        // **Everything this test needs is APPARATUS, and all three conditions go
+        // through the same machinery rather than an `assert!`.**
+        //
+        // Its first version refused to pass vacuously with
+        // `assert!(n_live > 0, "… it should have SKIPPED")` — the instinct is right and
+        // is the same judgement as `THIS IS NOT A PASS`, but the enforcement was wrong:
+        // on a box with no daemon that assertion FAILS, where what it means is "this
+        // machine has nothing to compare against". MEASURED in CI:
+        //
+        //   every_live_daemon_agrees_with_ss ... FAILED
+        //     nothing was listening, so this proved nothing — it should have SKIPPED
+        //
+        // A runner has no daemon, so that could only ever fail there — the mirror of the
+        // `ldd` step that could only ever pass. `apparatus::present` says the honest
+        // thing instead, and `LETIBOT_REQUIRE_APPARATUS=1` turns the skip back into a
+        // failure for a box that means it.
+        let dir = rundir();
+        let Some(_) = apparatus::present(
+            &format!("a letibot runtime directory ({})", dir.display()),
+            dir.is_dir(),
+        ) else {
+            return;
+        };
+
+        // `ss` is what the shell uses to answer the same question. Without it there is
+        // nothing to compare against — and this is the box the `/proc` read was written
+        // for, so it is absent apparatus rather than a failure.
+        let ss_out = Command::new("ss").arg("-lxpH").output().ok();
+        let Some(_) = apparatus::present(
+            "the `ss` command, to compare this module's answer against",
+            ss_out.is_some(),
+        ) else {
+            return;
+        };
+        let ss = String::from_utf8_lossy(&ss_out.expect("present checked it").stdout).into_owned();
+
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
         let (mut n_live, mut stale, mut agreed) = (0, 0, 0);
         for e in entries.flatten() {
             let path = e.path();
@@ -595,10 +620,16 @@ mod liveness_tests {
                 );
             }
         }
-        assert!(
+
+        // **A daemon that lies about its pid FAILS; a machine with no daemon SKIPS.**
+        // This is the assertion, and it stays as it is — the machinery above is only
+        // about whether there was anything to assert against.
+        let Some(_) = apparatus::present(
+            "at least one daemon actually listening, to compare against",
             n_live > 0,
-            "nothing was listening, so this proved nothing — it should have SKIPPED"
-        );
+        ) else {
+            return;
+        };
         assert_eq!(
             agreed, n_live,
             "every live daemon must be found at the pid `ss` reports; {stale} record(s) were stale"

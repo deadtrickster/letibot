@@ -35,3 +35,9 @@ serde_json.workspace = true
 # Stopping a daemon is `kill(2)`; shelling out to `kill` is a builtin on several
 # systems and a fork on the rest, and this is one syscall.
 libc = "0.2"
+
+[dev-dependencies]
+# The apparatus machinery, for the one test that needs a machine with listening
+# daemons: absent apparatus SKIPS loudly rather than failing, and
+# LETIBOT_REQUIRE_APPARATUS=1 refuses the skip. See `letibot_tokencore::apparatus`.
+letibot-tokencore.workspace = true
