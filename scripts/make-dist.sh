@@ -222,6 +222,64 @@ done
 
 chmod 644 "$stage"/lib*.so.0
 
+# **THE CLOSURE CHECK — the one whose absence shipped a broken package.**
+#
+# The check above names four libraries and asserts they exist. That is a list, and
+# a list is only as good as the person who wrote it: the version that named three
+# passed every test on the development box and would have died on a user's machine
+# with `libggml-cpu.so.0: cannot open shared object file`.
+#
+# This asks the question the list cannot: **does every library the staged files
+# need actually come from somewhere the user will have?** For each ELF in the
+# stage, every `DT_NEEDED` must be either (a) already in the stage, or (b) a
+# library the base system provides, per `ldconfig`. Anything else is a hole.
+#
+# It is deliberately a NAME check and not an `ldd` run. MEASURED, and this is the
+# whole reason: `ldd` on the staged `harnessd` resolves through the binary's own
+# runpath, which legitimately carries the absolute llama.cpp build directory after
+# `$ORIGIN` — so the loader finds the missing library on the build machine and
+# `ldd` reports a clean closure. That is precisely how the three-library package
+# passed here. `ldconfig` consults no runpath, so it cannot be fooled the same way.
+#
+# `ldconfig` is glibc's; on a musl-only system it is absent and this check SKIPS
+# with a line saying so, rather than passing silently. The package is glibc-linked
+# in any case (it carries `libstdc++`), so the target is a glibc system.
+system_libs=""
+if command -v ldconfig >/dev/null 2>&1; then
+    system_libs=$(ldconfig -p 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')
+else
+    echo "make-dist: note: no ldconfig here, so the dependency closure of the" >&2
+    echo "  package cannot be checked. That check is what catches a library the" >&2
+    echo "  package forgot; without it, a hole is found by a user instead." >&2
+fi
+
+if [ -n "$system_libs" ]; then
+    for f in "$stage"/harnessd "$stage"/letibot-tui "$stage"/letibot-askpass "$stage"/lib*.so.0; do
+        [ -f "$f" ] || continue
+        # `-f` means a symlink to a real file passes; the staged libraries are real
+        # files because the copy above used `cp -L`.
+        needs=$(readelf -d "$f" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p')
+        for need in $needs; do
+            # In the package already: fine, whatever it is.
+            [ -f "$stage/$need" ] && continue
+            # Otherwise the system has to provide it. The leading and trailing
+            # spaces make this an exact name match rather than a substring, so
+            # `libggml.so.0` cannot be satisfied by `libggml-base.so.0`.
+            case " $system_libs " in
+                *" $need "*) continue ;;
+            esac
+            echo "make-dist: $need is needed by $(basename "$f") and is in neither" >&2
+            echo "  the package nor the base system, so the archive would be missing it." >&2
+            echo "  Add it to the library list at the top of this script, and copy it" >&2
+            echo "  from LETIBOT_LLAMA_LIB. (This is the check that catches a" >&2
+            echo "  dependency one level deeper than the list was written for.)" >&2
+            exit 1
+        done
+    done
+    echo "make-dist: dependency closure complete for $stage (ldconfig consulted)"
+fi
+
+
 
 # COPYFILE_DISABLE stops macOS tar writing AppleDouble `._harnessd` entries, which
 # would otherwise land in the archive and be extracted by the installer.
