@@ -379,6 +379,23 @@ jobs:
           echo "every installed name reached its own role"
 
 
+      # **The host-runtime check, asserted both ways.** This is the check that
+      # refuses an install when the machine lacks a library the binaries need at run
+      # time — `libstdc++.so.6`, `libgomp.so.1`, `libsqlite3.so.0` — none of which is
+      # in the archive, and all of which are on the machine this was written on.
+      #
+      # **Which is exactly why it is asserted here rather than trusted.** A guard
+      # whose happy path is the only path its author's machine can exercise can only
+      # pass; the runner has all three libraries too. So
+      # `scripts/check-host-runtime.sh` lies to `install.sh` about the host with a
+      # fake `ldconfig` and asserts what it does: refuses and NAMES the missing ones,
+      # checks each library separately, gives musl its own refusal rather than a
+      # package name that cannot help, and does not false-positive on a complete host.
+      #
+      # It gates: no model, no server, no cgroup, no network.
+      - name: The host-runtime check must be able to fail
+        run: sh scripts/check-host-runtime.sh
+
       # The release assets are a CONTRACT between three files that never run together:
       # install.sh, the release workflow, and make-dist.sh. Each is checked here so a
       # mismatch fails on this push rather than on a user's install.

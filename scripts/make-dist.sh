@@ -277,6 +277,66 @@ if [ -n "$system_libs" ]; then
         done
     done
     echo "make-dist: dependency closure complete for $stage (ldconfig consulted)"
+
+    # **AND THE OTHER HALF: the closure is not the same claim as "the user has
+    # what we assumed they have".**
+    #
+    # Everything above is checked against THIS BOX's `ldconfig`. That is the right
+    # question for "did we forget to copy a library", and it is the wrong question
+    # for "will this start on a minimal machine" — a build host has a toolchain, so
+    # `libstdc++`, `libgomp` and `libsqlite3` are all present and all silently
+    # assumed. MEASURED: the GitHub runner has them, so this passes there too.
+    #
+    # `install.sh` refuses by name when the user's machine lacks one of them, and it
+    # carries that list as `HOST_LIBS`. A hand-written list beside a computed one is
+    # the shape that has cost this tree repeatedly, so the two are held together
+    # here: every host library the closure actually FOUND must be either named in
+    # `HOST_LIBS` or on the short list of things every glibc system has by
+    # definition. A new dependency that nobody classified fails the release.
+    always='libc.so.6 libm.so.6 libgcc_s.so.1'
+    candidates=''
+    for f in "$stage"/harnessd "$stage"/letibot-tui "$stage"/letibot-askpass "$stage"/lib*.so.0; do
+        [ -f "$f" ] || continue
+        for need in $(readelf -d "$f" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p'); do
+            [ -f "$stage/$need" ] && continue
+            case " $always " in *" $need "*) continue ;; esac
+            # **The glibc loader, matched by SHAPE rather than by name.**
+            # It is arch-named — `ld-linux-x86-64.so.2` on x86-64,
+            # `ld-linux-aarch64.so.1` on arm64 — so an exact-name list would pass
+            # one half of the matrix and fail the other. It is always present on a
+            # glibc system by definition, and it is the very thing `install.sh`'s
+            # `have_glibc` globs for, so the two agree by construction. Found by this
+            # guard failing on its first run, which is the point of having it.
+            case "$need" in ld-linux*.so.*) continue ;; esac
+            case " $candidates " in *" $need "*) continue ;; esac
+            candidates="$candidates $need"
+        done
+    done
+    # What install.sh promises to check for, read from the file rather than restated.
+    install_sh_host=$(sed -n 's/^HOST_LIBS="\(.*\)"$/\1/p' "$repo/install.sh" | head -1)
+    if [ -z "$install_sh_host" ]; then
+        echo "make-dist: install.sh has no HOST_LIBS line to compare against." >&2
+        echo "  That list is what refuses an install on a machine missing a runtime" >&2
+        echo "  library; without it the failure is an exit-127 on a user's box." >&2
+        exit 1
+    fi
+    unlisted=''
+    for need in $candidates; do
+        case " $install_sh_host " in
+            *" $need "*) ;;
+            *) unlisted="$unlisted $need" ;;
+        esac
+    done
+    echo "make-dist: host-provided libraries: $(printf '%s ' $candidates)"
+    echo "make-dist: install.sh names:          $(printf '%s ' $install_sh_host)"
+    if [ -n "$unlisted" ]; then
+        echo "make-dist: these are needed at run time and install.sh does not check for them:$unlisted" >&2
+        echo "  They come from the host, so a machine without them installs cleanly and" >&2
+        echo "  then dies at exec. Either add them to HOST_LIBS in install.sh (with the" >&2
+        echo "  package name for the fix), or add them to \`always\` above if every glibc" >&2
+        echo "  system has them by definition." >&2
+        exit 1
+    fi
 fi
 
 

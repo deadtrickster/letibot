@@ -67,12 +67,116 @@ VERSION="${LETIBOT_VERSION:-}"
 BINARIES="harnessd letibot-tui letibot-askpass"
 LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
 
+# **THE LIBRARIES THE BINARIES NEED *FROM THE HOST*, and why this list is three.**
+#
+# The archive carries the four llama libraries. Everything else they link has to
+# come from the machine they land on, and MEASURED against the released asset, that
+# set is:
+#
+#   libc.so.6  libm.so.6  libgcc_s.so.1  ld-linux-*.so.*    every glibc Linux
+#   libstdc++.so.6    the C++ runtime    libllama, libggml, libggml-base, libggml-cpu
+#   libgomp.so.1      OpenMP             libggml-base, libggml-cpu
+#   libsqlite3.so.0   SQLite             harnessd
+#
+# The first line is on any glibc system by definition. **The last three are not**:
+# they arrive with a toolchain, or with software that happens to need them, and a
+# minimal container has none of them. Without this check the install reports success
+# and then `harnessd` dies at exec with `cannot open shared object file` — after
+# every file has been copied, and with nothing naming the library.
+#
+# **NAMED, NOT BUNDLED, and that is deliberate.** A shipped libstdc++ is a
+# compatibility claim nobody has measured: it has to match the host's libc, and one
+# older than the host's fails worse and more mysteriously than a missing one.
+# libgomp and libsqlite3 are the same argument. So this names what is missing and
+# how to get it — a line a person can paste.
+HOST_LIBS="libstdc++.so.6 libgomp.so.1 libsqlite3.so.0"
+
 say() { printf '%s\n' "$*"; }
 # Everything that is not the binary path goes to stderr, so the functions below can
 # be used in a command substitution without their chatter becoming the answer.
 warn() { printf '%s\n' "$*" >&2; }
 die() { printf 'letibot: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1; }
+
+# Is this a glibc system at all?
+#
+# The shipped binaries name `libc.so.6` and `ld-linux-<arch>.so.2`. On musl the
+# loader is `ld-musl-<arch>.so.1` instead — so no glibc loader means the prebuilt
+# assets cannot run HERE whatever else is installed, which is a DIFFERENT sentence
+# from "you are missing libgomp" and deserves its own.
+have_glibc() {
+    for d in /lib /lib64 /usr/lib /usr/lib64; do
+        [ -d "$d" ] || continue
+        for f in "$d"/ld-linux*.so.* "$d"/*/ld-linux*.so.*; do
+            [ -e "$f" ] && return 0
+        done
+    done
+    return 1
+}
+
+# Can THIS machine's loader find $1? 0 yes, 1 no.
+#
+# Deliberately no third "could not tell" that refuses: a check which fails when it
+# cannot check would refuse boxes that are perfectly fine, which is worse than the
+# mystery it replaces. The run at the end is the backstop, and it now names the
+# library the loader actually wanted.
+host_has_lib() {
+    if need ldconfig; then
+        # Matched in the shell rather than piped through `grep -q`, which is the
+        # shape this tree already uses for this exact question (`socket_is_listening`
+        # in `scripts/letibot`). `grep -q` exits on the first match and SIGPIPEs
+        # whoever is writing, and `pipefail` then reports the writer's 141 as the
+        # answer — measured there as a live daemon reported dead about one run in
+        # ten. install.sh does not set pipefail today; the pattern costs nothing and
+        # does not depend on that staying true.
+        case "$(ldconfig -p 2>/dev/null)" in
+            *"$1"*) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+    # No ldconfig. Unusual on glibc, normal on musl — and musl is answered above.
+    for d in /lib /lib64 /usr/lib /usr/lib64; do
+        [ -d "$d" ] || continue
+        [ -f "$d/$1" ] && return 0
+        for m in "$d"/*/; do
+            [ -f "$m$1" ] && return 0
+        done
+    done
+    return 1
+}
+
+# **Refuse before anything is downloaded or copied.**
+#
+# This is the sentence install.sh already had one level down — "a daemon whose
+# `libllama.so.0` is missing dies at exec with `cannot open shared object file`" —
+# applied to the libraries that are NOT in the archive. The value is turning an
+# exit-127 mystery into a line a person can paste.
+require_host_runtime() {
+    if ! have_glibc; then
+        die "this machine has no glibc dynamic loader, and the published binaries are
+  built for glibc — they cannot run here whatever is installed. (A musl system
+  such as Alpine is the usual case.) Build from source instead:
+      LETIBOT_FROM_SOURCE=1 sh install.sh
+  which needs git, Rust, a C compiler and a built llama.cpp checkout.
+  Nothing has been downloaded or copied."
+    fi
+    missing=""
+    for lib in $HOST_LIBS; do
+        host_has_lib "$lib" || missing="$missing $lib"
+    done
+    [ -n "$missing" ] || return 0
+    die "this machine is missing libraries the binaries need at run time:$missing
+
+  The install would otherwise succeed, and then harnessd would die at exec with
+  'cannot open shared object file' — naming none of them. Install them:
+
+    Debian/Ubuntu   apt-get install libstdc++6 libgomp1 libsqlite3-0
+    Fedora/RHEL     dnf install libstdc++ libgomp sqlite-libs
+
+  They are not bundled on purpose: a libstdc++ has to match the host's libc, and
+  one older than the host's fails worse and more mysteriously than a missing one.
+  Nothing has been downloaded or copied."
+}
 
 # A checkout to build from, or nothing: the directory holding this script, if it
 # holds letibot's own Cargo.toml. The `name = "letibot"`-shaped test is what keeps
@@ -157,6 +261,11 @@ build_from_source() {
 }
 
 main() {
+    # **Before the banner, before the download, before a single file is copied.**
+    # A box that cannot run the binaries should learn that in the first second,
+    # not after 16 MB and six files it will have to remove.
+    require_host_runtime
+
     say "letibot installs into: $INSTALL_DIR"
     say "  $BINARIES"
     say "  $LIBRARIES  (the tokenizer and llama.cpp's compute layer)"
@@ -230,9 +339,18 @@ main() {
     # first real proof that the libraries landed, because a daemon whose
     # `libllama.so.0` is missing dies at exec with `cannot open shared object file`
     # before it can print anything.
-    got=$("$INSTALL_DIR/harnessd" --version) ||
-        die "installed $INSTALL_DIR/harnessd, but it does not run (its libraries are $LIBRARIES, beside it)"
-    tui=$("$INSTALL_DIR/letibot-tui" --version) || die "installed letibot-tui, but it does not run"
+    # `2>&1` and a message that reads the loader's own words: the old one blamed
+    # "its libraries are $LIBRARIES, beside it", which are present — the failure it
+    # was printing is almost always a HOST library the pre-flight above could not
+    # see. The loader names it exactly, so this quotes the loader.
+    got=$("$INSTALL_DIR/harnessd" --version 2>&1) || die "installed $INSTALL_DIR/harnessd, but it does not run.
+  $got
+
+  If that names a library, it is the loader's own word for what is missing. The
+  four in $LIBRARIES are beside the binary; libstdc++, libgomp and libsqlite3 come
+  from the host and are listed at the top of this script."
+    tui=$("$INSTALL_DIR/letibot-tui" --version 2>&1) || die "installed letibot-tui, but it does not run.
+  $tui"
     say ""
     say "$got"
     say "$tui"

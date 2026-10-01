@@ -60,6 +60,26 @@ sit **beside the binaries** because that is what `$ORIGIN` resolves, so an insta
 **It does not install a model server.** letibot talks to an OpenAI-shaped endpoint: a llama.cpp
 `llama-server` on `127.0.0.1:8080` by default, or a cloud provider (`--provider deepseek|glm|grok`).
 
+### What has to be on the machine already
+
+The archive carries the four llama libraries, and nothing else. Three more come from the host, and a
+minimal container has none of them — so `install.sh` checks for these and refuses *by name* before
+it copies anything, rather than letting you discover it from an exit-127 afterwards:
+
+| needed | why | install it with |
+|---|---|---|
+| `libstdc++.so.6` | the C++ runtime `libllama` and `libggml*` link | `libstdc++6` · `dnf`/`apk` `libstdc++` |
+| `libgomp.so.1` | OpenMP, from `libggml-base` and `libggml-cpu` | `libgomp1` · `dnf` `libgomp` · `apk` `libgomp` |
+| `libsqlite3.so.0` | SQLite, which `harnessd` links | `libsqlite3-0` · `dnf` `sqlite-libs` · `apk` `sqlite-libs` |
+
+**They are named rather than bundled on purpose.** A shipped `libstdc++` is a compatibility claim
+nobody has measured: it has to match the host's libc, and one older than the host's fails worse and
+more mysteriously than a missing one.
+
+**The published binaries are glibc.** On musl — Alpine and its relatives — they cannot run at all,
+whatever is installed, and `install.sh` says so in its own words rather than offering an `apk add`
+that could not help. Use the source build there.
+
 ### What the one-liner itself needs
 
 `curl` to fetch the script, and `tar` to unpack the asset. **`wget` is not a substitute** — and on a
