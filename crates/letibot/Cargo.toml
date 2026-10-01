@@ -22,3 +22,5 @@ letibot-sessionlog.workspace = true
 # dispatcher and that binary are one implementation.
 letibot-dialect-glm.workspace = true
 letibot-dialect-qwen.workspace = true
+# The `m1` role: `m1::run` is that binary's body, moved into this crate's lib.
+letibot-harnessd.workspace = true

@@ -43,7 +43,10 @@ pub fn run(role: Role, args: &[std::ffi::OsString]) -> ExitCode {
         Role::Askpass => askpass(args),
         Role::Daemon => not_yet(role, "crates/harnessd/src/bin/harnessd.rs"),
         Role::Head => not_yet(role, "crates/tui/src/bin/letibot-tui.rs"),
-        Role::M1 => not_yet(role, "crates/harnessd/src/bin/letibot-m1.rs"),
+        // Wired. `letibot_harnessd::m1::run` is that binary's body; a usage error
+        // exits 2 from inside it rather than returning, which is named in the module
+        // docs there and is why this arm cannot report a code for every path.
+        Role::M1 => exit_code(letibot_harnessd::m1::run(&args_to_strings(args))),
         // **Wired.** The renderer's body lives in its crate's library now
         // (`letibot_dialect_glm::cli::run`), so this role and the `letibot-render`
         // binary are ONE implementation rather than two copies. That matters
@@ -301,7 +304,7 @@ mod tests {
     /// success while doing nothing is the failure mode this file exists to avoid.
     #[test]
     fn the_unported_roles_refuse_loudly_and_say_where_they_live() {
-        for role in [R::Daemon, R::Head, R::M1] {
+        for role in [R::Daemon, R::Head] {
             let code = run(role, &[]);
             assert_eq!(
                 code,

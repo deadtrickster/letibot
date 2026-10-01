@@ -39,7 +39,7 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
 /// test, which is an accident of which assertion ran first; this one says it plainly.
 #[test]
 fn wired_roles_do_not_say_they_are_unported() {
-    for word in ["render", "render-qwen"] {
+    for word in ["render", "render-qwen", "m1"] {
         let (_, _, stderr) = run(&[word]);
         assert!(
             !stderr.contains(STUB_MARKER),
@@ -52,9 +52,14 @@ fn wired_roles_do_not_say_they_are_unported() {
 /// promises. Without this, the test above would pass against a binary that printed
 /// nothing at all — and a check that cannot fail is the shape this whole repository
 /// keeps finding.
+///
+/// **This list shrinks as roles are wired**, and it is the two lists together that
+/// say which is which: `wired_roles_do_not_say_they_are_unported` names the wired
+/// ones, this names the rest, and a role in neither would be a role nobody checked.
+/// `m1` moved between them when `m1::run` was wired.
 #[test]
 fn unwired_roles_still_say_they_are_unported() {
-    for word in ["daemon", "tui", "m1"] {
+    for word in ["daemon", "tui"] {
         let (code, _, stderr) = run(&[word]);
         assert!(
             stderr.contains(STUB_MARKER),

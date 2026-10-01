@@ -91,6 +91,7 @@ pub mod calibrate;
 pub mod config;
 pub mod corpus;
 pub mod daemon;
+pub mod m1;
 pub mod decision_source;
 pub mod dialect;
 pub mod etalon;

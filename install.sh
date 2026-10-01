@@ -406,6 +406,44 @@ main() {
   from the host and are listed at the top of this script."
     tui=$("$INSTALL_DIR/letibot-tui" --version 2>&1) || die "installed letibot-tui, but it does not run.
   $tui"
+    # **And the LAUNCHER, which now links llama too.**
+    #
+    # It did not, while `letibot` was only a dispatcher over `sessionlog` and the two
+    # renderer crates. Wiring the `m1` role put `letibot-harnessd` in its dependency
+    # graph, and `harnessd` links `libllama` — so the binary an install puts on PATH
+    # needs the four libraries beside it like everything else. MEASURED, on the first
+    # run of the wired role:
+    #
+    #   ./letibot-m1: error while loading shared libraries: libllama.so.0: cannot
+    #   open shared object file
+    #
+    # Which is why its build script bakes `$ORIGIN` and why this check exists. It is
+    # also the check that would have caught it: `--version` needs the loads to
+    # resolve, and it needs no daemon, no model and no store.
+    #
+    # Skipped when the launcher is absent, because an older release does not carry it.
+    if [ "$have_launcher" = 1 ]; then
+        # **`--help`, NOT `--version`.** MEASURED against a real package: the
+        # launcher is a shell script and has no `--version` — the multicall binary
+        # does, and the two are different things under one name. The first version of
+        # this check used `--version` and would have failed EVERY install with
+        # `letibot: unknown flag: --version`, which is the same class of mistake as
+        # the launcher being absent: a check asserting a flag nothing implements.
+        #
+        # `--help` is true of the launcher, needs no daemon and no model, exits 0, and
+        # proves what matters — that it ran, and that `$ORIGIN` resolved the llama
+        # libraries it now links.
+        lch=$("$INSTALL_DIR/letibot" --help 2>&1) || die "installed $INSTALL_DIR/letibot, but it does not run.
+  $lch
+
+  It links the same libraries as harnessd, so this is the same answer: one of the
+  four in $LIBRARIES is not beside it, or a host library is missing."
+        case "$lch" in
+            *letibot*) ;;
+            *) die "installed $INSTALL_DIR/letibot, and it ran, but said something unexpected:
+  $lch" ;;
+        esac
+    fi
     say ""
     say "$got"
     say "$tui"
