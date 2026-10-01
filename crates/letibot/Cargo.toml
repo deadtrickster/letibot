@@ -32,3 +32,6 @@ sha2 = "0.10"
 # The record beside a socket is flat JSON, written by whichever launcher started
 # the daemon; reading it must survive a stale or half-written file.
 serde_json.workspace = true
+# Stopping a daemon is `kill(2)`; shelling out to `kill` is a builtin on several
+# systems and a fork on the rest, and this is one syscall.
+libc = "0.2"

@@ -318,6 +318,36 @@ pub fn is_listening(socket: &Path) -> bool {
     inode_of(socket).is_some()
 }
 
+/// **Is this process actually running?** — and a zombie is not.
+///
+/// `/proc/<pid>` exists for a ZOMBIE: a process that has died and whose parent has not
+/// reaped it keeps its directory (measured: state `Z` after SIGTERM, and the entry only
+/// disappears at `wait`). So `Path::is_dir("/proc/pid")` — which is what the shell's
+/// `[ -d "/proc/$p" ]` does — answers "still there" for a process that is already gone.
+///
+/// The shell gets away with it because it never starts harnessd as its own child: the
+/// daemon is `setsid`-ed, so its death is reaped by init and the entry goes. A library
+/// that is called from anywhere should not depend on that, so this reads the state field
+/// from `/proc/<pid>/stat` and treats `Z` (zombie) and `X` (dead) as not running.
+///
+/// Found by its own test: the first version used `is_dir` and reported a signalled child
+/// as `StillThere`, because the test had not reaped it yet.
+pub fn is_running(pid: u32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    // `pid (comm) state …` — and `comm` can contain spaces and parentheses, so the state
+    // is read from AFTER the last ')', which is the kernel's own advice.
+    let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r) else {
+        return false;
+    };
+    match rest.split_whitespace().next() {
+        // Z: dead, awaiting reap. X: dead. Neither is running.
+        None | Some("Z") | Some("X") => false,
+        Some(_) => true,
+    }
+}
+
 /// The socket inode from `/proc/net/unix`, or `None` when it is not listed — which is
 /// what "nothing is listening on this path" means.
 fn inode_of(socket: &Path) -> Option<String> {
@@ -392,7 +422,8 @@ pub fn daemon_pid(where_: &Where) -> Option<u32> {
     // The record, believed only while the process is still there.
     let r = read_record(&where_.record)?;
     let pid = r.pid?;
-    if Path::new(&format!("/proc/{pid}")).is_dir() {
+    // `is_running`, not `is_dir`: a record naming a zombie names nothing useful.
+    if is_running(pid) {
         return Some(pid);
     }
     None
@@ -573,5 +604,417 @@ mod liveness_tests {
             "every live daemon must be found at the pid `ss` reports; {stale} record(s) were stale"
         );
         eprintln!("agreed with ss on {agreed} live daemon(s); {stale} stale record(s) skipped");
+    }
+}
+
+// --- the three read-only verbs ----------------------------------------------------
+
+/// **One line about this folder's daemon** — the shell's `daemon_line`, and the
+/// `answers`/`model` distinction in it is the whole point.
+///
+/// A daemon records two true things about itself: the local vocab it binds token ids
+/// against (`model`, e.g. `qwen-3.8-27b`) and what actually answers the turns (`answers`,
+/// e.g. `deepseek/deepseek-flash`). Announcing the first to a person whose turns go to the
+/// second is the operator's *"so - qwen again"* — a line that reads as a claim about the
+/// model and is a claim about the tokenizer.
+///
+/// So `answers` wins when the record has one, and a record written before the field
+/// existed is labelled **`vocab`** rather than `model`: that label is true, and it is not
+/// a claim about what is answering.
+pub fn daemon_line(workspace: &Path, rec: &Record, pid: Option<u32>) -> String {
+    let mut out = format!("harnessd for {}", workspace.display());
+    if let Some(p) = pid {
+        out.push_str(&format!(" (pid {p})"));
+    }
+    if !rec.started.is_empty() {
+        out.push_str(&format!(", up since {}", rec.started));
+    }
+    if !rec.role.is_empty() {
+        out.push_str(&format!(", role {}", rec.role));
+    }
+    let who = if !rec.answers.is_empty() {
+        format!("model {}", rec.answers)
+    } else {
+        format!(
+            "vocab {}",
+            if rec.model.is_empty() {
+                "unknown"
+            } else {
+                &rec.model
+            }
+        )
+    };
+    out.push(' ');
+    out.push_str(&who);
+    out
+}
+
+/// What state a recorded daemon is in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum State {
+    /// Something is listening on its socket.
+    Up,
+    /// The record exists and nothing answers its socket — a daemon that has gone, and
+    /// whose record has not been cleaned up.
+    Stale,
+}
+
+/// One line per recorded daemon, for `letibot --daemons`.
+///
+/// The STALE case is reported rather than hidden, and the wording is the shell's:
+/// *"STALE (nothing listens on its socket)"*. A record whose socket is silent is how an
+/// operator finds a daemon that died without cleaning up, and it is also how the
+/// launcher knows to remove that record rather than trust its pid.
+///
+/// Takes the records as data so this is testable without a machine full of daemons: the
+/// caller reads the directory, this decides what each line says.
+pub fn daemons_lines(entries: &[(Record, State)]) -> Vec<String> {
+    if entries.is_empty() {
+        return vec!["no daemons recorded".to_string()];
+    }
+    entries
+        .iter()
+        .map(|(rec, state)| {
+            let st = match state {
+                State::Up => match rec.pid {
+                    Some(p) => format!("up (pid {p})"),
+                    None => "up".to_string(),
+                },
+                State::Stale => "STALE (nothing listens on its socket)".to_string(),
+            };
+            format!("{}  {}  {}", rec.workspace, st, rec.socket)
+        })
+        .collect()
+}
+
+/// What a `--status` invocation has to say, as lines.
+///
+/// Three cases, and the middle one is the one worth having: **something answered the
+/// socket and refused.** That is a different fact from silence — a daemon speaking a
+/// different protocol version is alive and serving — and printing "no daemon" for it is
+/// how a live daemon gets a second one started on top of it. The shell's comment says
+/// exactly that.
+///
+/// The model server is reported as a SEPARATE fact from the daemon, because it is one:
+/// the daemon's turns can go to a provider while the local server is down, and vice
+/// versa. The caller probes it and passes the answer in, so this stays offline.
+pub fn status_lines(
+    workspace: &Path,
+    where_: &Where,
+    up: Option<(&Record, Option<u32>)>,
+    probe_refusal: Option<&str>,
+    local: LocalServer<'_>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    match up {
+        Some((rec, pid)) => {
+            out.push(format!("up: {}", daemon_line(workspace, rec, pid)));
+            out.push(format!("socket   {}", where_.socket.display()));
+        }
+        None => match probe_refusal {
+            Some(why) => out.push(format!(
+                "on {}, but not speaking to this build: {why}",
+                where_.socket.display()
+            )),
+            None => out.push(format!("no daemon for {}", workspace.display())),
+        },
+    }
+    // The local model server, labelled for what it is rather than for what a reader might
+    // take it to be.
+    out.push(match local {
+        LocalServer::Serving {
+            endpoint,
+            model,
+            dialect,
+        } => {
+            format!("local    {endpoint} ok  ({model}, dialect {dialect})")
+        }
+        LocalServer::NotServing { endpoint } => format!("local    {endpoint} NOT SERVING"),
+    });
+    out
+}
+
+/// What the local endpoint answered, when the caller asked it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalServer<'a> {
+    /// The endpoint answered `/health`, and the model it is serving. `endpoint` is
+    /// carried so the line names where it looked, the way the shell's does.
+    Serving {
+        endpoint: &'a str,
+        model: &'a str,
+        dialect: &'a str,
+    },
+    NotServing {
+        endpoint: &'a str,
+    },
+}
+
+#[cfg(test)]
+mod verb_tests {
+    use super::*;
+
+    fn rec(answers: &str, model: &str) -> Record {
+        Record {
+            workspace: "/w".into(),
+            socket: "/w.sock".into(),
+            pid: Some(42),
+            role: "coder".into(),
+            model: model.into(),
+            answers: answers.into(),
+            dialect: "qwen".into(),
+            bash: true,
+            started: "2026-10-01T12:00:00+0200".into(),
+        }
+    }
+
+    /// **`answers` wins, because it is what answers.** This is the operator's *"so -
+    /// qwen again"*: a session whose turns go to deepseek announced as qwen, from a line
+    /// that is true about the tokenizer and read as a claim about the model.
+    #[test]
+    fn the_line_says_what_answers_not_what_it_tokenises_for() {
+        let line = daemon_line(
+            Path::new("/w"),
+            &rec("deepseek/deepseek-flash", "qwen-3.8-27b"),
+            Some(42),
+        );
+        assert!(line.contains("model deepseek/deepseek-flash"), "{line}");
+        assert!(
+            !line.contains("qwen-3.8-27b"),
+            "the vocab must not be the headline: {line}"
+        );
+        assert!(
+            line.contains("pid 42") && line.contains("role coder"),
+            "{line}"
+        );
+    }
+
+    /// A record from before `answers` existed is labelled `vocab` — true, and not a claim
+    /// about what answers.
+    #[test]
+    fn a_record_without_answers_is_labelled_vocab() {
+        let line = daemon_line(Path::new("/w"), &rec("", "qwen-3.8-27b"), None);
+        assert!(line.contains("vocab qwen-3.8-27b"), "{line}");
+        assert!(
+            !line.contains("model qwen"),
+            "it must not claim to be the model: {line}"
+        );
+        // And with neither field, `unknown` rather than an empty claim.
+        let bare = daemon_line(Path::new("/w"), &rec("", ""), None);
+        assert!(bare.contains("vocab unknown"), "{bare}");
+    }
+
+    /// `--daemons` reports STALE rather than hiding it — the record of a daemon that died
+    /// without cleaning up.
+    #[test]
+    fn the_daemons_list_distinguishes_up_from_stale() {
+        let lines = daemons_lines(&[
+            (rec("", "m"), State::Up),
+            (
+                Record {
+                    workspace: "/gone".into(),
+                    socket: "/gone.sock".into(),
+                    pid: Some(9),
+                    ..Default::default()
+                },
+                State::Stale,
+            ),
+        ]);
+        assert!(lines[0].contains("up (pid 42)"), "{:?}", lines[0]);
+        assert!(
+            lines[1].contains("STALE (nothing listens on its socket)"),
+            "{:?}",
+            lines[1]
+        );
+        assert!(
+            lines[1].starts_with("/gone  "),
+            "the workspace leads the line"
+        );
+
+        assert_eq!(
+            daemons_lines(&[]),
+            vec!["no daemons recorded".to_string()],
+            "an empty box says so rather than printing nothing"
+        );
+    }
+
+    /// **A refusal is not silence.** The middle case of `--status`, and the one that stops
+    /// a second daemon being started over a live one.
+    #[test]
+    fn status_separates_a_refusal_from_nothing_being_there() {
+        let w = locate_in(Path::new("/run/x"), Path::new("/w"));
+        let quiet = status_lines(
+            Path::new("/w"),
+            &w,
+            None,
+            None,
+            LocalServer::NotServing {
+                endpoint: "127.0.0.1:8080",
+            },
+        );
+        assert!(quiet[0].starts_with("no daemon for /w"), "{quiet:?}");
+
+        let refused = status_lines(
+            Path::new("/w"),
+            &w,
+            None,
+            Some("protocol version 26, this build speaks 27"),
+            LocalServer::NotServing {
+                endpoint: "127.0.0.1:8080",
+            },
+        );
+        assert!(
+            refused[0].contains("not speaking to this build"),
+            "a live daemon that refused must not be reported as absent: {refused:?}"
+        );
+
+        // And the local server is always reported, separately from the daemon.
+        let up = status_lines(
+            Path::new("/w"),
+            &w,
+            Some((&rec("deepseek/x", "qwen"), Some(42))),
+            None,
+            LocalServer::Serving {
+                endpoint: "127.0.0.1:8080",
+                model: "qwen-3.8-27b",
+                dialect: "qwen",
+            },
+        );
+        assert!(up[0].starts_with("up: harnessd for /w"), "{up:?}");
+        assert!(up[1].starts_with("socket   "), "{up:?}");
+        assert!(
+            up[2].contains("qwen-3.8-27b") && up[2].contains("dialect qwen"),
+            "{up:?}"
+        );
+    }
+}
+
+// --- stopping one ----------------------------------------------------------------
+
+/// What a stop attempt did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stopped {
+    /// The process was signalled and is gone.
+    Gone,
+    /// Signalled, and still there when the grace elapsed. **Not an error**: the shell
+    /// prints this and keeps the record, because a daemon that survives SIGTERM is a
+    /// fact the operator needs rather than a failure to retry.
+    StillThere,
+    /// No such process to signal.
+    NoSuchProcess,
+}
+
+/// How long to wait for a signalled daemon, in tenths of a second.
+///
+/// Ten times 500 ms, which is the shell's own loop — and its comment is the reason the
+/// wait exists at all: *"Measured 2026-09-16: a daemon wedged on a `llama-server` that
+/// had gone away swallowed SIGTERM, this printed 'stopped', deleted the record, and left
+/// an orphan holding the store and the GPU that `--daemons` could no longer see."*
+///
+/// **"stopped" is said after the process is gone, not after the signal is sent.** That
+/// is the whole of that incident, and it is why this returns [`Stopped::StillThere`]
+/// rather than a bare `Ok`.
+pub const STOP_TENTHS: u32 = 10;
+
+/// Signal a daemon to stop and wait for it, bounded.
+///
+/// The grace is spent in 50 ms steps rather than one 500 ms sleep: the common case is a
+/// daemon that exits at once, and the shell's `sleep 0.5` made every stop take at least
+/// half a second. Same bound, faster finish.
+pub fn stop(pid: u32) -> Stopped {
+    if !is_running(pid) {
+        return Stopped::NoSuchProcess;
+    }
+    // SIGTERM. `libc` rather than shelling out to `kill`: that is a shell builtin on
+    // several systems and a fork on the rest, and this is one syscall.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
+    for _ in 0..(STOP_TENTHS * 10) {
+        if !is_running(pid) {
+            return Stopped::Gone;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Stopped::StillThere
+}
+
+/// SIGKILL, for `--stop --force` after [`stop`] has given up.
+///
+/// A daemon that ignores SIGTERM is stuck on something that is never coming back — the
+/// 2026-09-16 case was a `llama-server` that had gone away — and leaving it holding the
+/// store and the GPU is worse than killing it. The caller has already *said* it is
+/// forcing, which is the difference between a decision and a surprise.
+pub fn force_kill(pid: u32) -> Stopped {
+    if !is_running(pid) {
+        return Stopped::NoSuchProcess;
+    }
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+    for _ in 0..20 {
+        if !is_running(pid) {
+            return Stopped::Gone;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Stopped::StillThere
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+
+    /// **Tested against a child this test starts, never a live daemon.**
+    ///
+    /// The machine this was written on has seven running daemons, and a stop test that
+    /// reached one of them would kill the operator's session — so the only pid that is
+    /// ever signalled here is a `sleep` this test spawned and owns.
+    #[test]
+    fn stop_reaches_a_process_and_waits_for_it_to_go() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a sleeper");
+        let pid = child.id();
+        assert!(is_running(pid), "it is running");
+
+        assert_eq!(stop(pid), Stopped::Gone, "the sleeper honours SIGTERM");
+        // And it really is gone: `wait` reaps it, and a second `stop` finds nothing.
+        let _ = child.wait();
+        assert_eq!(stop(pid), Stopped::NoSuchProcess);
+    }
+
+    /// A pid that is not there is `NoSuchProcess` rather than an error — the common case
+    /// for a record whose daemon has already gone.
+    #[test]
+    fn stopping_something_that_is_not_there_says_so() {
+        assert_eq!(stop(u32::MAX), Stopped::NoSuchProcess);
+        assert_eq!(force_kill(u32::MAX), Stopped::NoSuchProcess);
+    }
+
+    /// **`force_kill` reaches a process that ignores SIGTERM.** The 2026-09-16 shape: a
+    /// daemon wedged on something that had gone away.
+    ///
+    /// The child traps SIGTERM and exits on nothing, so only SIGKILL ends it. Spawned by
+    /// this test, so still no live daemon involved.
+    #[test]
+    fn force_kill_ends_a_process_that_ignores_sigterm() {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; sleep 30")
+            .spawn()
+            .expect("spawn a stubborn child");
+        let pid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Give the trap a moment to be installed, then SIGTERM is ignored.
+        assert_eq!(
+            stop(pid),
+            Stopped::StillThere,
+            "a process that ignores SIGTERM must be reported as still there, not as stopped              — that report is the whole of the 2026-09-16 incident"
+        );
+        assert!(is_running(pid), "and it is still there");
+        assert_eq!(force_kill(pid), Stopped::Gone, "SIGKILL ends it");
+        let _ = child.wait();
     }
 }
