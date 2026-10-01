@@ -538,6 +538,9 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
         fn model(&self) -> &str {
             "deepseek-flash"
         }
+        fn authority(&self) -> String {
+            "api.deepseek.com".into()
+        }
         fn complete(
             &self,
             _req: &TurnRequest<'_>,

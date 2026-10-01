@@ -227,6 +227,20 @@ pub trait MessagesBackend: Send + Sync {
     /// The model id sent on the wire.
     fn model(&self) -> &str;
 
+    /// **`HOST:PORT` of the thing this backend actually talks to**, for a message that
+    /// has to name it.
+    ///
+    /// A warning about a failed round used to name the LOCAL endpoint
+    /// (`cfg.endpoint.authority()`) on a path that also serves cloud turns — so a
+    /// resolver failure against `api.deepseek.com` was reported as a problem with
+    /// `127.0.0.1:8080`, and the operator went to look at a `llama-server` that was
+    /// answering. MEASURED 2026-10-01.
+    ///
+    /// So the host comes from the backend being used rather than from the daemon's
+    /// configuration, and it is read from the same URL the request is posted to — not
+    /// stored beside it, where it could drift.
+    fn authority(&self) -> String;
+
     /// One completion over the request, streaming deltas to `on_delta` as they
     /// arrive. `StreamFlow::Stop` from the callback closes the connection and
     /// the result is `Err(BackendError::Aborted)`.

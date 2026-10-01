@@ -110,6 +110,23 @@ impl MessagesBackend for OpenAiProvider {
         &self.model
     }
 
+    /// **The host the request is posted to, derived from `self.url` itself.**
+    ///
+    /// `self.url` is `creds.url` when the operator's key file overrode it, else the
+    /// preset's — and it is the very string `.post(&self.url)` uses, so this cannot name
+    /// a host the request did not go to. No URL crate: every producer of this string
+    /// (the preset table and the key file) writes `scheme://host[:port]/path`.
+    fn authority(&self) -> String {
+        self.url
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(&self.url)
+            .split('/')
+            .next()
+            .unwrap_or(&self.url)
+            .to_string()
+    }
+
     fn complete(
         &self,
         req: &TurnRequest<'_>,
@@ -404,6 +421,36 @@ mod tests {
                 .micros_usd,
             None
         );
+    }
+
+    /// **The authority is the host the request actually goes to, including when the
+    /// operator's key file moved it.**
+    ///
+    /// This exists because a warning about a failed round named the daemon's LOCAL
+    /// endpoint on a cloud turn; see `MessagesBackend::authority`. The override case is
+    /// the one that matters: `creds.url` wins over the preset, so the reported host has
+    /// to follow the URL — a version that read `preset.url` would name DeepSeek while the
+    /// request went to a proxy.
+    #[test]
+    fn the_authority_is_the_host_the_request_goes_to() {
+        let plain = Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: None,
+        };
+        let p = OpenAiProvider::new(&crate::presets::DEEPSEEK, Some("m"), plain);
+        assert_eq!(p.authority(), "api.deepseek.com");
+
+        // The key file's own URL wins, port and all, and it is what is reported.
+        let moved = Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: Some("http://10.0.0.7:8443/v1/chat/completions".into()),
+        };
+        let p = OpenAiProvider::new(&crate::presets::DEEPSEEK, Some("m"), moved);
+        assert_eq!(p.authority(), "10.0.0.7:8443");
     }
 
     /// **The request the API actually receives carries the reasoning back, because

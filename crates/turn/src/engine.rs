@@ -1274,6 +1274,31 @@ impl TurnEngine<'_> {
             Err(letibot_backend::BackendError::Refused { status, body }) => {
                 return Err(TurnFailure::Http(HttpError::Status { code: status, body }));
             }
+            // **An unreachable provider is not a malformed answer, and telling a reader
+            // it is sends them to debug the wrong end.** `Malformed` means *2xx, but not
+            // the shape expected* — `HttpError`'s own docstring — and folding a
+            // connection that NEVER HAPPENED into it produced, for the operator on
+            // 2026-10-01:
+            //
+            //   malformed http response: provider unreachable: io: failed to lookup
+            //   address information: Temporary failure in name resolution
+            //
+            // while `127.0.0.1:8080` was answering `/health` with 200 and
+            // `letibot --status` reported it `ok`. Nothing was malformed and no server
+            // had spoken; a transient `EAI_AGAIN` from a resolver under memory pressure
+            // was announced as garbage from a healthy local host.
+            //
+            // `HttpError::Io` is the class that is true of it — the transport failed —
+            // and `http_retry_after` already takes the round again for it, which is
+            // right: a host that could not be resolved this second may resolve the next.
+            // The payload keeps the provider's own words, prefixed with our class name so
+            // nothing that was in the old string is lost.
+            Err(letibot_backend::BackendError::Unreachable(m)) => {
+                return Err(TurnFailure::Http(HttpError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("provider unreachable: {m}"),
+                ))));
+            }
             Err(e) => {
                 return Err(TurnFailure::Http(HttpError::Malformed(e.to_string())));
             }

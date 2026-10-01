@@ -1513,3 +1513,109 @@ fn a_streaming_turn_reports_the_servers_counter_on_every_frame_that_advances_it(
     let total = (thought.len() + answer.len() + 2) as u64;
     assert_eq!(counts, (1..=total).collect::<Vec<_>>());
 }
+
+// --------------------------------------------------------------------------
+// What a FAILED round is called
+// --------------------------------------------------------------------------
+
+/// A provider that was never reached, which is what a resolver failure produces.
+///
+/// Not an `OpenAiProvider`: this test is about the CLASS the engine gives the
+/// failure, and a real provider would need a socket to fail against. What matters is
+/// that the error is `BackendError::Unreachable`, which is what
+/// `OpenAiProvider::complete` builds when `.send()` fails.
+struct NeverReached(&'static str);
+
+impl letibot_backend::MessagesBackend for NeverReached {
+    fn caps(&self) -> BackendCaps {
+        BackendCaps::METERED_API
+    }
+    fn name(&self) -> &str {
+        "deepseek"
+    }
+    fn model(&self) -> &str {
+        "deepseek-flash"
+    }
+    fn authority(&self) -> String {
+        "api.deepseek.com".into()
+    }
+    fn complete(
+        &self,
+        _req: &letibot_backend::TurnRequest<'_>,
+        _on_delta: &mut dyn FnMut(&letibot_backend::Delta) -> letibot_backend::StreamFlow,
+    ) -> Result<letibot_backend::Completion, letibot_backend::BackendError> {
+        Err(letibot_backend::BackendError::Unreachable(self.0.into()))
+    }
+}
+
+/// **A connection that never happened is an IO failure, not a malformed answer.**
+///
+/// `Malformed` means *2xx, but not the shape expected* — so this class told a reader a
+/// server had answered with garbage when no server had spoken. MEASURED 2026-10-01: the
+/// operator watched
+///
+///   malformed http response: provider unreachable: io: failed to lookup address
+///   information: Temporary failure in name resolution
+///
+/// with `127.0.0.1:8080` answering `/health` 200 and `letibot --status` reporting it
+/// `ok`. Nothing failed, so nothing caught it: the retry policy treats both classes the
+/// same, which is exactly why a wrong class survives — it costs a diagnosis, not a test.
+///
+/// The second half is the one that must not be lost: the message still says the provider
+/// was unreachable, and still carries the resolver's own words.
+#[test]
+fn an_unreached_provider_is_an_io_failure_and_not_a_malformed_answer() {
+    let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        eprintln!("SKIPPED: no vocabulary GGUF, so the engine cannot open a session");
+        return;
+    };
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    let idle = Canned::serve(Vec::new(), 0);
+    let mut engine = engine(&renderer, &parser, idle.endpoint.clone());
+    let mut session = session(&engine, "unreached-provider");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("hello")], &mut sink)
+        .unwrap();
+
+    let provider = NeverReached(
+        "io: failed to lookup address information: Temporary failure in name resolution",
+    );
+    let mut steering = Once(None);
+    let err = engine
+        .run_turn_messages(
+            &mut session,
+            &mut sink,
+            &mut steering,
+            &provider,
+            "be terse",
+            &[],
+            None,
+        )
+        .expect_err("a provider that was never reached cannot have answered");
+
+    match err {
+        TurnFailure::Http(letibot_turn::HttpError::Io(e)) => {
+            let msg = e.to_string();
+            assert!(
+                msg.contains("provider unreachable"),
+                "the provider's own words are gone: {msg}"
+            );
+            assert!(
+                msg.contains("Temporary failure in name resolution"),
+                "the resolver's own words are gone: {msg}"
+            );
+            // And the class, read the way a person reads it.
+            let shown = letibot_turn::HttpError::Io(e).to_string();
+            assert!(
+                !shown.contains("malformed"),
+                "an unreachable host is still being called malformed: {shown}"
+            );
+        }
+        TurnFailure::Http(letibot_turn::HttpError::Malformed(m)) => {
+            panic!("a connection that never happened was reported as a malformed answer: {m}")
+        }
+        other => panic!("a provider failure must arrive as TurnFailure::Http, got {other:?}"),
+    }
+}

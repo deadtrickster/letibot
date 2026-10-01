@@ -5568,14 +5568,23 @@ impl<'a> Harness<'a> {
                     break Err(TurnFailure::Http(e));
                 };
                 attempt += 1;
+                // **Which host, asked of the thing that was contacted.** This read
+                // `self.cfg.endpoint.authority()` — the LOCAL endpoint — on a path that
+                // also serves cloud turns, so a resolver failure against a provider was
+                // reported as a problem with `127.0.0.1:8080`. MEASURED 2026-10-01: the
+                // operator read *"the model server at 127.0.0.1:8080 did not answer:
+                // ... Temporary failure in name resolution"* and went to a `llama-server`
+                // that was answering `/health` with 200. Not knowing which host failed is
+                // what made the message expensive; `cfg.endpoint` is only right for the
+                // local route, so the cloud route is asked for its own.
+                let where_ = retry_host(self.provider.as_deref(), &self.cfg.endpoint);
                 self.hub.publish(SessionEvent::Warning {
                     code: "model_endpoint_retry".into(),
                     detail: format!(
-                        "the model server at {} did not answer: {e}. Taking this round \
+                        "the model endpoint at {where_} did not answer: {e}. Taking this round \
                          again in {:.0}s (attempt {attempt} of {}). \
                          Nothing was recorded, so the retry sends exactly the bytes this \
                          one did.",
-                        self.cfg.endpoint.authority(),
                         wait.as_secs_f64(),
                         self.cfg.http_retries,
                     ),
@@ -6454,6 +6463,29 @@ fn http_retry_after(
         letibot_turn::HttpError::Status { code, .. } => matches!(code, 408 | 429) || *code >= 500,
     };
     worth_it.then(|| std::time::Duration::from_secs(1u64 << attempt))
+}
+
+/// **The host a retry warning names, for the route this turn is on.**
+///
+/// Split out of the retry loop so the choice is testable on its own, because the wrong
+/// answer here is expensive in a way a passing build cannot show: the loop used to name
+/// `cfg.endpoint` — the LOCAL endpoint — on a path that also serves cloud turns, so the
+/// operator read
+///
+///   the model server at 127.0.0.1:8080 did not answer: ... Temporary failure in name
+///   resolution
+///
+/// on 2026-10-01 while `llama-server` was answering `/health` with 200 and
+/// `letibot --status` reported it `ok`. The failure was a resolver lookup for a provider
+/// host; the message sent them to debug the one component that was working.
+///
+/// So: the local route names the local endpoint, and a cloud route is asked for its own
+/// host — the URL it actually posts to, which the operator's key file may have moved.
+fn retry_host(provider: Option<&dyn letibot_backend::MessagesBackend>, local: &Endpoint) -> String {
+    match provider {
+        None => local.authority(),
+        Some(p) => p.authority(),
+    }
 }
 
 /// A few words from the first message, as a session name.
@@ -7872,8 +7904,8 @@ mod endpoint_retry {
     //! operator, 2026-09-17: *"implement exponential backoff and auto turn
     //! restart for when model http endpoint doesnt answer or answers with error
     //! codes except unauthenticated"*.
-    use super::{MAX_HTTP_RETRIES, http_retry_after};
-    use letibot_turn::HttpError;
+    use super::{MAX_HTTP_RETRIES, http_retry_after, retry_host};
+    use letibot_turn::{Endpoint, HttpError};
 
     fn status(code: u16) -> HttpError {
         HttpError::Status {
@@ -7996,6 +8028,57 @@ mod endpoint_retry {
         assert!(http_retry_after(&status(403), 0, MAX_HTTP_RETRIES).is_none());
         // And not on a later attempt either — it is the code, not the streak.
         assert!(http_retry_after(&status(401), 3, MAX_HTTP_RETRIES).is_none());
+    }
+
+    /// **A retry notice must name the host that was actually contacted.**
+    ///
+    /// The loop named `cfg.endpoint` — the LOCAL endpoint — on a path that also serves
+    /// cloud turns. MEASURED 2026-10-01: the operator read *"the model server at
+    /// 127.0.0.1:8080 did not answer: ... Temporary failure in name resolution"* and went
+    /// to a `llama-server` that was answering `/health` with 200, because the failure was
+    /// a resolver lookup against a provider host the message never named. The retry
+    /// policy was right and the diagnosis was wrong, which is why nothing caught it.
+    ///
+    /// The override half is the one worth pinning: the answer comes from the backend, so
+    /// it follows whatever URL that backend was built with — a proxy or a rented host is
+    /// named as itself, not as the preset it replaced.
+    #[test]
+    fn a_retry_names_the_host_that_was_contacted_and_not_the_local_one() {
+        use letibot_backend::{BackendCaps, BackendError, Completion, MessagesBackend, StreamFlow};
+
+        struct Cloud(&'static str);
+        impl MessagesBackend for Cloud {
+            fn caps(&self) -> BackendCaps {
+                BackendCaps::METERED_API
+            }
+            fn name(&self) -> &str {
+                "deepseek"
+            }
+            fn model(&self) -> &str {
+                "deepseek-flash"
+            }
+            fn authority(&self) -> String {
+                self.0.into()
+            }
+            fn complete(
+                &self,
+                _req: &letibot_backend::TurnRequest<'_>,
+                _on_delta: &mut dyn FnMut(&letibot_backend::Delta) -> StreamFlow,
+            ) -> Result<Completion, BackendError> {
+                unreachable!("this test is about the notice, not the round")
+            }
+        }
+
+        let local = Endpoint::new("127.0.0.1", 8080);
+        // The local route keeps naming the local endpoint, which is what it is.
+        assert_eq!(retry_host(None, &local), "127.0.0.1:8080");
+        // A cloud route names ITS host — not the local one, which was the bug.
+        let cloud = Cloud("api.deepseek.com");
+        assert_eq!(retry_host(Some(&cloud), &local), "api.deepseek.com");
+        assert_ne!(retry_host(Some(&cloud), &local), "127.0.0.1:8080");
+        // And it follows the backend's own URL, so a moved endpoint is named as itself.
+        let proxy = Cloud("10.0.0.7:8443");
+        assert_eq!(retry_host(Some(&proxy), &local), "10.0.0.7:8443");
     }
 
     /// The case this exists for: llama.cpp reloading a six-shard GGUF after
