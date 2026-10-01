@@ -90,10 +90,28 @@ fn glm_is_served() -> bool {
 
 #[test]
 fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
-    assert!(
-        std::path::Path::new(GLM_GGUF).is_file(),
-        "no GLM vocabulary GGUF at {GLM_GGUF}"
-    );
+    // **THE APPARATUS FIRST, and this ordering is a fix rather than a style.** The
+    // vocabulary assert used to come first, so MEASURED on a runner — no server and
+    // no GGUF — the missing FILE fired before the missing SERVER could be noticed,
+    // and absent apparatus was reported as a failed assertion. Nothing here is a
+    // defect on that box; the assert just ran before the guard that explains it.
+    //
+    // A test's guards go in the order the reasons do: what the machine must HAVE,
+    // then what must be RUNNING. `todos_live.rs` already had it this way.
+    //
+    // And it checks the file the CONFIG will actually use — `LETIBOT_VOCAB_GGUF`, else
+    // `GLM_GGUF` — rather than the constant alone, because a guard that resolves a
+    // different path from the thing it guards is a guard that can be true while the
+    // test still cannot run.
+    let gguf = std::env::var("LETIBOT_VOCAB_GGUF")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| GLM_GGUF.into());
+    let Some(_) = letibot_tokencore::apparatus::present(
+        &format!("a GLM vocabulary GGUF ({})", gguf.display()),
+        gguf.is_file(),
+    ) else {
+        return;
+    };
     // **The precondition the file's docstring already stated**, checked instead of assumed: a
     // vocabulary on disk is not a model on the endpoint, and only the second one can answer this.
     if !glm_is_served() {

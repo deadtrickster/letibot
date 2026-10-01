@@ -39,6 +39,7 @@
 //! If a change makes one of those a matter of calling the right function, it has
 //! undone the point of the strand rather than refactored it.
 
+pub mod apparatus;
 pub mod control;
 mod ffi;
 pub mod ledger;
@@ -69,39 +70,39 @@ mod tests {
         TokenDecoder, spans_to_string,
     };
     use letibot_transcript::{TranscriptItem, UserPart};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
-    /// The GGUF the FFI tests load a vocabulary out of.
+    /// The vocabulary the FFI tests load, or `None` with the skip already announced.
     ///
-    /// Deliberately **not** skipped when it is missing. A tokenizer test that
-    /// quietly passes on a box with no model file is a test that reports the
-    /// health of `std::fs::exists`, and this fleet has already paid for the
-    /// difference between a liveness indicator and the fact it stands in for. If
-    /// the default is wrong for your box, set `LETIBOT_VOCAB_GGUF`.
-    fn vocab_path() -> PathBuf {
-        let p = std::env::var("LETIBOT_VOCAB_GGUF").unwrap_or_else(|_| {
-            "/home/dead/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
-                .to_string()
-        });
-        let p = PathBuf::from(p);
-        assert!(
-            p.is_file(),
-            "no vocabulary GGUF at {}. Set LETIBOT_VOCAB_GGUF to one; for a split \
-             model pass the first shard.",
-            p.display()
-        );
-        p
-    }
-
-    fn vocab() -> Vocab {
-        Vocab::load(&vocab_path()).unwrap()
+    /// # This used to assert, and why it skips now
+    ///
+    /// It said, and it was deliberate:
+    ///
+    /// > Deliberately **not** skipped when it is missing. A tokenizer test that
+    /// > quietly passes on a box with no model file is a test that reports the
+    /// > health of `std::fs::exists`.
+    ///
+    /// **That is right about a QUIET skip**, and it is the reason this one is loud:
+    /// `apparatus::present_gguf` names the path, says which variable overrides it,
+    /// and prints `THIS IS NOT A PASS`. What it stops doing is reporting ABSENT
+    /// APPARATUS as a FAILED ASSERTION, which is a different finding — MEASURED on a
+    /// runner: 2074 passed, 84 failed, not one of them a defect, and the suite could
+    /// never go green there, so its red mark was a constant and a real failure inside
+    /// it would have been invisible.
+    ///
+    /// The count of skips is the fact worth reading. `LETIBOT_REQUIRE_APPARATUS=1`
+    /// turns the skip back into a failure, so a run on the box that has it can refuse
+    /// to skip and prove full coverage.
+    fn vocab() -> Option<Vocab> {
+        let p = apparatus::present_gguf()?;
+        Some(Vocab::load(&p).expect("the vocabulary must load"))
     }
 
     // --- the vocabulary loads at all -------------------------------------
 
     #[test]
     fn vocab_only_load_needs_no_weights_and_no_server() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         assert!(v.n_tokens() > 1000, "loaded {} tokens", v.n_tokens());
         assert!(v.bos().is_some());
         assert!(v.eos().is_some());
@@ -121,7 +122,7 @@ mod tests {
     /// is written and unverified, and saying so is the point.
     #[test]
     fn spaces_survive_the_token_round_trip() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         for text in [
             "if self.session_id != s.session_id {",
             "if !text.is_empty() && x != y {",
@@ -149,7 +150,7 @@ mod tests {
     /// per-token decoding is what broke it.
     #[test]
     fn multibyte_characters_survive_detokenizing() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         for text in [
             "héllo wörld",
             "日本語のテキスト",
@@ -168,7 +169,7 @@ mod tests {
 
     #[test]
     fn which_half_of_the_round_trip_eats_the_space() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         let with = v
             .tokenize_text("if self.session_id != s.session_id {")
             .unwrap();
@@ -193,7 +194,7 @@ mod tests {
     /// Concatenating `piece()` is faithful where `llama_detokenize` is not.
     #[test]
     fn pieces_concatenated_reproduce_the_text_exactly() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         for text in [
             "if self.session_id != s.session_id {",
             "if !text.is_empty() && x != y {",
@@ -208,7 +209,7 @@ mod tests {
 
     #[test]
     fn isolate_the_space_losing_token() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         for id in [961u32, 5824] {
             eprintln!(
                 "id {id}: piece(false)={:?} piece(true)={:?} detok_alone={:?}",
@@ -236,7 +237,7 @@ mod tests {
         // dialect crate proves the renderer will not *emit* a Control span for
         // this; here we prove that even if the string reaches the text path, the
         // text path cannot produce the control id.
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         let literal = "<|im_start|>";
         let control = v.resolve_control(literal).expect("Qwen has <|im_start|>");
 
@@ -260,7 +261,7 @@ mod tests {
 
     #[test]
     fn resolve_control_rejects_what_it_should_and_says_why() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
 
         // Absent from the vocabulary.
         assert!(matches!(
@@ -283,7 +284,7 @@ mod tests {
         // Measured: Qwen marks <|im_start|> CONTROL (attr 8) but <think> and
         // <tool_call> USER_DEFINED (attr 16). A check written against
         // llama_vocab_is_control would reject half of a correct dialect.
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         for literal in ["<think>", "</think>", "<tool_call>", "</tool_call>"] {
             let id = v
                 .resolve_control(literal)
@@ -328,7 +329,7 @@ mod tests {
 
     #[test]
     fn resolving_a_whole_dialect_reports_every_failure_at_once() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         let map = resolve(&v, &qwen()).expect("all six exist");
         assert_eq!(map.len(), 6);
         assert_eq!(map.ids_for_role(ControlRole::ThinkOpen).len(), 1);
@@ -365,7 +366,7 @@ mod tests {
         // broken vocabulary must print the same report, so a diff of two startup
         // logs is about the vocabulary. Declared here in a deliberately unsorted
         // order.
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         const BROKEN: &[ControlToken] = &[
             ControlToken::borrowed(ControlRole::ToolCallClose, "<|missing_c|>"),
             ControlToken::borrowed(ControlRole::TurnStartUser, "<|missing_a|>"),
@@ -389,7 +390,7 @@ mod tests {
         // is not one vocabulary entry never fires, and the turn then runs to
         // n_ctx -- a failure that costs a whole context window and says nothing.
         // Resolving it here costs one startup and names what was lost.
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         let good = [
             StopToken::borrowed(ControlRole::TurnEnd, "<|im_end|>"),
             StopToken::borrowed(ControlRole::EndOfTurn, "<|endoftext|>"),
@@ -416,7 +417,7 @@ mod tests {
         // vocab and must return Content(String). `TokenDecoder` is the seam, and
         // this is its only real implementation: ids in, the exact rendered bytes
         // back out, plus the role of every id that is a boundary.
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         let map = resolve(&v, &qwen()).unwrap();
         let decoder = VocabDecoder::new(&v, &map);
 
@@ -569,7 +570,7 @@ mod tests {
 
     #[test]
     fn tokenize_ledger_append_tokenize_is_always_a_strict_prefix_extension() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         let map = resolve(&v, &qwen()).unwrap();
 
         let prefix = StablePrefix {
@@ -638,7 +639,7 @@ mod tests {
 
     #[test]
     fn a_segment_mark_costs_no_tokens_and_still_changes_the_head() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         let map = resolve(&v, &qwen()).unwrap();
         let mark = TranscriptItem::SegmentMark {
             segment_id: "s".into(),
@@ -662,7 +663,7 @@ mod tests {
         // The "ours" half of the /apply-template fidelity diff (§7.2, I3). W3
         // compares this string against the server's; here we only prove the
         // tokenizer is not the thing that would make them differ.
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         let map = resolve(&v, &qwen()).unwrap();
         let prefix = StablePrefix {
             system: "sys".into(),
@@ -677,7 +678,7 @@ mod tests {
 
     #[test]
     fn a_control_span_from_a_foreign_dialect_is_a_wiring_error() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         let map = resolve(&v, &qwen()).unwrap();
         const FOREIGN: ControlToken =
             ControlToken::borrowed(ControlRole::TurnStartTool, "<|observation|>");
@@ -693,7 +694,7 @@ mod tests {
 
     #[test]
     fn a_restart_replays_real_tokens_rather_than_re_rendering() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
         let map = resolve(&v, &qwen()).unwrap();
         let prefix = StablePrefix {
             system: "sys".into(),
@@ -762,7 +763,7 @@ mod tests {
     /// different facts and only the second is a failure.
     #[test]
     fn we_agree_with_the_server_oracle_where_one_is_running() {
-        let v = vocab();
+        let Some(v) = vocab() else { return };
 
         // **Three facts, not two.** The doc above splits "the oracle is not running"
         // from "we disagree with the oracle". There is a third and it looks exactly
@@ -778,7 +779,7 @@ mod tests {
                 .ok()
                 .and_then(|d| d["model_path"].as_str().map(str::to_string))
                 .unwrap_or_default();
-            let ours = vocab_path().display().to_string();
+            let ours = apparatus::gguf_path().display().to_string();
             if !served.is_empty() && served != ours {
                 eprintln!(
                     "the server on 127.0.0.1:8080 is serving a different model, so its \
