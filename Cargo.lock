@@ -964,7 +964,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "letibot"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-dialect-glm",
  "letibot-dialect-qwen",
@@ -979,25 +979,25 @@ dependencies = [
 
 [[package]]
 name = "letibot-backend"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-transcript",
 ]
 
 [[package]]
 name = "letibot-code"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "rano",
 ]
 
 [[package]]
 name = "letibot-dialect"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "letibot-dialect-glm"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-dialect",
  "letibot-transcript",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-dialect-qwen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-dialect",
  "letibot-transcript",
@@ -1018,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-flowy"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-http",
  "letibot-tools",
@@ -1029,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-harnessd"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-backend",
  "letibot-code",
@@ -1053,11 +1053,11 @@ dependencies = [
 
 [[package]]
 name = "letibot-http"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "letibot-opencode"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-transcript",
  "rusqlite",
@@ -1066,7 +1066,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-provider"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-backend",
  "letibot-transcript",
@@ -1077,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-sessionlog"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-backend",
  "letibot-dialect",
@@ -1092,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-tokencore"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "cc",
  "letibot-dialect",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-tools"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-code",
  "letibot-tokencore",
@@ -1121,7 +1121,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-transcript"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-tui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-sessionlog",
  "letibot-transcript",
@@ -1142,7 +1142,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-turn"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-backend",
  "letibot-dialect",
@@ -1157,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-ui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-transcript",
  "rano",
@@ -1165,7 +1165,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-webfetch"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dom_smoothie",
  "htmd",
@@ -1175,7 +1175,7 @@ dependencies = [
 
 [[package]]
 name = "letibot-websearch"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "letibot-tools",
  "serde",

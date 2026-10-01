@@ -36,9 +36,13 @@ members = [
 # published binary reported 0.1.0 and every 0.1.0 install was offered 0.1.1 for
 # ever. One place to change, and a check that the tag matched it.
 #
-# 0.1.1 rather than 0.1.0 because `v0.1.0` is already tagged and 81 commits past
-# it; a tag must name a version this tree does not already claim.
-version = "0.1.1"
+# **0.1.2 rather than 0.1.1, and the reason is what a tag means.** `v0.1.1` is
+# already published and cannot be moved: it holds `harnessd`, `letibot-tui`,
+# `letibot-askpass` and the three libraries, and NOT the launcher — so an install
+# from it tells the user the release predates `letibot` and points them at
+# `letibot-tui` instead. Every role wired since lives in this tree and none of it
+# is in that asset, so a new tag is the only way any of it reaches anybody.
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
