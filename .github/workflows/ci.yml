@@ -267,37 +267,6 @@ jobs:
       - name: Test
         run: cargo test --workspace --no-fail-fast -- --nocapture
 
-      # **The multicall's own tests, again, LAST — and the reason is that they are
-      # cheap.** They need no model, no cgroup, no store and no network; the step
-      # above needs a llama.cpp build and several minutes. So the check that catches a
-      # dispatch-table edit runs at the END of a long pipeline for no better reason
-      # than that nobody split it out.
-      #
-      # MEASURED, and it cost a full CI run: `2f5a2c5` wired `Role::Render` and left
-      # it in a test's list of unported roles, so `run(Render, &[])` started the real
-      # renderer and returned 0 where the test asserted 2. My own verification of that
-      # commit was the fidelity BYTES — which were perfect — and not this suite,
-      # which fails in under a second. `cargo test -p letibot` is the whole of it.
-      #
-      # It is here rather than before the workspace run because a failure here is a
-      # statement about the dispatcher, and the dispatcher does not depend on anything
-      # above. If this ever goes red, the fix is small and local.
-      - name: Test the role dispatch, again (no apparatus, and the cheapest check here)
-        run: cargo test -p letibot
-
-      # **THIS ONE GATES, and it is the one that can.**
-      #
-      # The step above is advisory because most of this tree's tests assert a
-      # vocabulary GGUF and a cgroup v2 subtree that a runner does not have. The
-      # multicall's tests need **nothing**: no model, no server, no cgroup, no store.
-      # They are about a name table and an exit code.
-      #
-      # So they are a real gate rather than an advisory one, and that matters more
-      # here than anywhere else in the tree: the dispatch table is exactly the shape
-      # that can hold a name twice, and this tree has found two of those already.
-      # A `match` does NOT refuse a duplicate arm — it is a warning, and the first
-      # arm silently wins — so the `const` assertions in `main.rs` make it a compile
-      # error instead. This step is what runs them on every push.
       - name: Test the role dispatch (needs nothing; a real gate)
         run: cargo test -p letibot
 
