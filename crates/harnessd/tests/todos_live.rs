@@ -22,6 +22,8 @@
 //! the skip. Five minutes of `SalvageExhausted` against a closed port is what that
 //! guard replaced.
 
+use std::sync::OnceLock;
+
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::SessionEvent;
@@ -92,6 +94,12 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
     ) else {
         return;
     };
+    // The server, before the work: a vocabulary on disk is not a model on the
+    // endpoint, and only the second one can answer this. `compact_live.rs` has had
+    // this guard for a while; this file asserted the same precondition in prose.
+    if !glm_is_served() {
+        return;
+    }
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     let hub = Hub::new(session_id);
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session must open");
@@ -147,6 +155,61 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
          the write would open the pane empty until the next write",
         att.backlog.len()
     );
+}
+
+/// **Is the box actually serving the model this test renders for?**
+///
+/// It was not, and this file had no way to notice. Its header says *"The serving
+/// preflight is the gate"* — and the gate was a vocabulary FILE existing, which is a
+/// different question from a server being up. MEASURED on this box: serving
+/// `qwen-3.8-27b` while this test rendered GLM token ids, the turn failed with
+/// `Turn(SalvageExhausted { streak: 4 })` in 21.67 s — a symptom that names nothing
+/// about the cause, because the ids were out of range for the other vocabulary
+/// rather than because the salvage logic is wrong.
+///
+/// **`compact_live.rs` documents exactly this incident at length** (a GLM-vocabulary
+/// runner against a qwen server, `262194 tokens exceeds the available context size
+/// 262144`, *51 minutes* to discover) and guards against it. This file asserts the
+/// same precondition in prose and not in code — the same gap as the `GLM_GGUF` guard
+/// that resolved a different path from the config, in the same file.
+///
+/// So: refuse by name, in seconds, saying `THIS IS NOT A PASS`.
+fn glm_is_served() -> bool {
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        let want = std::env::var("LETIBOT_MODEL_ALIAS").unwrap_or_else(|_| "glm-5.3-flash".into());
+        match letibot_turn::serving::served_model(&cfg_endpoint()) {
+            Ok(served) if letibot_turn::serving::matches(&served, &want) => true,
+            Ok(served) => {
+                eprintln!(
+                    "SKIPPED: {} is serving `{served}`, and this test renders the GLM dialect for \
+                     `{want}` — the control tokens would not resolve, so nothing was run and THIS \
+                     IS NOT A PASS. Start {want}, or set LETIBOT_MODEL_ALIAS.",
+                    cfg_endpoint().authority()
+                );
+                false
+            }
+            Err(e) => {
+                eprintln!(
+                    "SKIPPED: could not ask {}/props ({e}), so nothing was run and THIS IS NOT A \
+                     PASS.",
+                    cfg_endpoint().authority()
+                );
+                false
+            }
+        }
+    })
+}
+
+/// The endpoint this test would use, without building a whole config.
+fn cfg_endpoint() -> letibot_turn::Endpoint {
+    match std::env::var("LETIBOT_COMPLETION_URL") {
+        Ok(url) => {
+            let (h, p) = url.rsplit_once(':').expect("HOST:PORT");
+            letibot_turn::Endpoint::new(h, p.parse().expect("port"))
+        }
+        Err(_) => letibot_turn::Endpoint::new("127.0.0.1", 8080),
+    }
 }
 
 /// A directory that removes itself, because a test that leaks a store per run
