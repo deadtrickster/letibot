@@ -274,6 +274,22 @@ jobs:
         continue-on-error: true
         run: cargo test --workspace --no-fail-fast -- --nocapture
 
+      # **THIS ONE GATES, and it is the one that can.**
+      #
+      # The step above is advisory because most of this tree's tests assert a
+      # vocabulary GGUF and a cgroup v2 subtree that a runner does not have. The
+      # multicall's tests need **nothing**: no model, no server, no cgroup, no store.
+      # They are about a name table and an exit code.
+      #
+      # So they are a real gate rather than an advisory one, and that matters more
+      # here than anywhere else in the tree: the dispatch table is exactly the shape
+      # that can hold a name twice, and this tree has found two of those already.
+      # A `match` does NOT refuse a duplicate arm — it is a warning, and the first
+      # arm silently wins — so the `const` assertions in `main.rs` make it a compile
+      # error instead. This step is what runs them on every push.
+      - name: Test the role dispatch (needs nothing; a real gate)
+        run: cargo test -p letibot
+
       # The release profile is a separate gate: it is what users run, and it is where
       # a lint-free debug build can still fail.
       - name: Release build
@@ -317,6 +333,51 @@ jobs:
             *) echo "::error::letibot-askpass said something unexpected: $out"; exit 1 ;;
           esac
           echo "letibot-askpass refuses outside a session, in its own words: ok"
+
+      # **And every role is RUN, not merely built** — see the smoke test above for why.
+      # A dispatcher that compiles and cannot dispatch is the same defect one layer in,
+      # so each role is invoked THROUGH A SYMLINK, which is how it is reached in an
+      # install, and each must either do its job or name where it actually lives.
+      # `askpass` outside a session must refuse at once (exit 1) rather than wait for
+      # the two-minute deadline with no head to answer.
+      - name: Every installed name dispatches to a role
+        run: |
+          set -eu
+          d=$(mktemp -d)
+          for n in letibot letibot-askpass letibot-tui harnessd letibot-m1 \
+                   letibot-render letibot-render-qwen; do
+            ln -s "$PWD/target/release/letibot" "$d/$n"
+          done
+          # The askpass role, invoked the way sudo does: a path, no arguments but the
+          # prompt. Outside a session it must refuse, and refuse FAST.
+          if out=$(cd "$d" && timeout 20 env -u LETIBOT_SOCKET -u LETIBOT_SESSION \
+                     ./letibot-askpass '[sudo] password: ' 2>&1); then
+            echo "::error::letibot-askpass exited 0 with no session; it must refuse"
+            exit 1
+          fi
+          case "$out" in
+            *"not inside a letibot session"*) ;;
+            *) echo "::error::letibot-askpass said something unexpected: $out"; exit 1 ;;
+          esac
+          # Every other role must answer as itself, proving the argv[0] dispatch
+          # reached the right arm rather than just some arm.
+          #
+          # **`--version`, not a bare name, and that is deliberate.** A bare
+          # `./harnessd` on a machine with no daemon STARTS ONE — which is the last
+          # thing CI should do, and it would hang here the moment that role is wired.
+          # `--version` terminates and names the role, so it stays correct as each
+          # role lands. Every role this step names must therefore answer `--version`
+          # when it is wired; a role that cannot is a role that cannot be smoke-tested,
+          # and that is worth knowing at wiring time rather than here.
+          for n in harnessd letibot-tui letibot-m1 letibot-render letibot-render-qwen; do
+            out=$(cd "$d" && timeout 20 "./$n" --version 2>&1 || true)
+            case "$out" in
+              *"$n"*) ;;
+              *) echo "::error::$n did not answer as itself to --version: $out"; exit 1 ;;
+            esac
+          done
+          echo "every installed name reached its own role"
+
 
       # The release assets are a CONTRACT between three files that never run together:
       # install.sh, the release workflow, and make-dist.sh. Each is checked here so a
