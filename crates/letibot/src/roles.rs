@@ -41,7 +41,17 @@ use crate::Role;
 pub fn run(role: Role, args: &[std::ffi::OsString]) -> ExitCode {
     match role {
         Role::Askpass => askpass(args),
-        Role::Daemon => not_yet(role, "crates/harnessd/src/bin/harnessd.rs"),
+        // **Wired, and it is the last one.** `letibot_harnessd::cli::run` is that
+        // binary's body, and this arm mirrors ITS `main` exactly — including the
+        // `harnessd: {e}` prefix on an error, because that is the role's name and a
+        // person reading a failed start should see the same sentence they always did.
+        Role::Daemon => match letibot_harnessd::cli::run(&args_to_strings(args)) {
+            Ok(code) => exit_code(code),
+            Err(e) => {
+                eprintln!("harnessd: {e}");
+                ExitCode::FAILURE
+            }
+        },
         // Wired. `letibot_tui::head::run` is that binary's body; the flags parse
         // exactly as they did, which matters more here than for any other role —
         // `scripts/letibot` execs the head with `--socket S --identity U [--resume ID
@@ -107,19 +117,17 @@ pub fn launcher() -> ExitCode {
     ExitCode::from(2)
 }
 
-/// A role that is still its own binary, said in one place so the wording cannot drift.
-fn not_yet(role: Role, source: &str) -> ExitCode {
-    eprintln!(
-        "letibot: `{}` is not a role of this binary yet — it still builds and runs on\n\
-         its own, from {source}.\n\
-         \n\
-         Wiring it here means moving that file's `main` body into its crate's library\n\
-         as a callable `pub fn`, then calling it from this dispatcher. Until then the\n\
-         installed name for this role is the executable, not this one.",
-        role.program()
-    );
-    ExitCode::from(2)
-}
+// **`not_yet` was here, and it is deleted because nothing is unported.**
+//
+// It printed "`{role}` is not a role of this binary yet" for a role still living as its
+// own binary, and it existed from `c3a5d44` — the first slice, where `askpass` was the
+// only role — until every role was wired. A stub that no longer has a caller is a
+// sentence the tree would still be carrying if it were not removed, and a reader would
+// have no way to tell which roles it applied to.
+//
+// The LAUNCHER is the one thing still not a role, and it says so from `launcher()`
+// below with its own message; that is a different thing from a role, which is why it
+// does not use this.
 
 /// **The role `sudo` runs.** Attach to the session's daemon, ask the person, print the
 /// secret on stdout.
@@ -304,17 +312,10 @@ mod tests {
         );
     }
 
-    /// The un-ported roles must refuse loudly. Exit 2, never 0: a role that reports
-    /// success while doing nothing is the failure mode this file exists to avoid.
-    #[test]
-    fn the_unported_roles_refuse_loudly_and_say_where_they_live() {
-        for role in [R::Daemon] {
-            let code = run(role, &[]);
-            assert_eq!(
-                code,
-                ExitCode::from(2),
-                "{role:?} is not ported yet and must not report success"
-            );
-        }
-    }
+    // **`the_unported_roles_refuse_loudly_and_say_where_they_live` was here, and it is
+    // gone because the list is empty.** Every role is wired, so the loop would run zero
+    // times and pass — which is the can-only-pass shape this repository keeps finding:
+    // a check that cannot fail is not a check. The assertion that still has teeth is
+    // `tests/dispatch.rs`'s, where the LAUNCHER produces the marker and the six roles
+    // must not.
 }

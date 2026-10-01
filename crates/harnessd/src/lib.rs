@@ -88,6 +88,7 @@
 pub mod answers;
 pub mod backfill;
 pub mod calibrate;
+pub mod cli;
 pub mod config;
 pub mod corpus;
 pub mod daemon;

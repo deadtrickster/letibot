@@ -9,22 +9,47 @@
 //! # Why the MESSAGE and not the exit code
 //!
 //! MEASURED while wiring `Role::RenderQwen`: it exits **2** with no arguments — a
-//! legitimate usage error — which is the same code the unported stub returns. So
-//! `assert_ne!(code, 2)` proves nothing about the renderers, and the unit test that
-//! asserted it was vacuous for exactly the roles it was written to cover.
+//! legitimate usage error — which is the same code an unported stub returned. So
+//! `assert_ne!(code, 2)` proves nothing, and an exit-code check cannot tell "wired"
+//! from "not a role of this binary yet". The distinction is the MESSAGE.
 //!
-//! A role's own refusals are its business. What this file asserts is the one sentence
-//! no other role prints, in both directions, so the two cannot both hold.
+//! # Every role is wired, so the marker needed a new producer
+//!
+//! With the `harnessd` role, all six are wired and `roles::not_yet` is deleted. The
+//! marker below is now produced by exactly one thing: the **launcher**, which is not a
+//! role and says so. That matters — if nothing printed it,
+//! `assert!(!contains(marker))` would pass against a binary that printed nothing at
+//! all, which is the can-only-pass shape this repository keeps finding.
+//! [`the_launcher_is_the_only_thing_that_is_not_a_role`] is what keeps it honest.
 
-/// The sentence only the unported branch prints. Both tests key on it, so rewriting
-/// that message fails here rather than silently making `is_wired` vacuous.
-const STUB_MARKER: &str = "is not a role of this binary yet";
+/// The sentence a thing that is not a role prints. One producer now — the launcher.
+const NOT_A_ROLE: &str = "not a role of this binary yet";
+
+/// **Safe invocations only, and that is a constraint rather than tidiness.**
+///
+/// `letibot daemon` with no arguments STARTS A DAEMON: a test that runs it leaves one
+/// behind, holding a socket and a store, and it would hang rather than fail. `letibot
+/// tui` with no arguments attaches a head, which is the same hazard one step down. So
+/// each role is reached by something that EXITS — a usage error, a version, or a
+/// refusal — and the list is the record of which invocation is safe for which role.
+const SAFE: &[(&str, &[&str])] = &[
+    ("daemon", &["--bogus"]),
+    ("tui", &["--version"]),
+    ("head", &["--version"]),
+    ("askpass", &[]),
+    ("m1", &["--bogus"]),
+    ("render", &[]),
+    ("render-qwen", &[]),
+];
 
 fn run(args: &[&str]) -> (Option<i32>, String, String) {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_letibot"))
-        .args(args)
-        .output()
-        .expect("the multicall runs");
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_letibot"));
+    cmd.args(args)
+        // No session, no socket: a role that would attach must not find one.
+        .env_remove("LETIBOT_SOCKET")
+        .env_remove("LETIBOT_SESSION")
+        .env_remove("LETIBOT_COMPLETION_URL");
+    let out = cmd.output().expect("the multicall runs");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -32,60 +57,49 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
     )
 }
 
-/// **A wired role must not say it is unported.**
+/// **No wired role may say it is not a role.**
 ///
 /// This is the direct statement of the fact that went stale in `54308ff`: `Role::Render`
-/// was wired and left in a list of unported roles. CI caught it through the *other*
-/// test, which is an accident of which assertion ran first; this one says it plainly.
+/// was wired and left in a list of unported roles. CI caught it through an *older* test,
+/// which was an accident of which assertion ran first; this one says it plainly, and it
+/// now covers all six roles.
 #[test]
-fn wired_roles_do_not_say_they_are_unported() {
-    for word in ["render", "render-qwen", "m1", "tui"] {
-        let (_, _, stderr) = run(&[word]);
+fn no_wired_role_says_it_is_not_a_role() {
+    for (word, args) in SAFE {
+        let mut full: Vec<&str> = vec![word];
+        full.extend_from_slice(args);
+        let (_, _, stderr) = run(&full);
         assert!(
-            !stderr.contains(STUB_MARKER),
+            !stderr.contains(NOT_A_ROLE),
             "`letibot {word}` is wired and must not claim otherwise: {stderr}"
         );
     }
 }
 
-/// And the roles that are NOT wired still say so, with the exit code the dispatcher
-/// promises. Without this, the test above would pass against a binary that printed
-/// nothing at all — and a check that cannot fail is the shape this whole repository
-/// keeps finding.
+/// **And the marker still has a producer, so the test above cannot be vacuous.**
 ///
-/// **This list shrinks as roles are wired**, and it is the two lists together that
-/// say which is which: `wired_roles_do_not_say_they_are_unported` names the wired
-/// ones, this names the rest, and a role in neither would be a role nobody checked.
-/// `m1` moved between them when `m1::run` was wired.
+/// The launcher is the one thing that is not a role: `letibot` with no arguments is the
+/// shell script's job, and the multicall says so rather than guessing which daemon the
+/// caller meant. If this stops producing the marker, the assertion above becomes a
+/// statement about the empty set — which is why this test exists rather than a comment
+/// saying the marker is still used.
 #[test]
-fn unwired_roles_still_say_they_are_unported() {
-    for word in ["daemon"] {
-        let (code, _, stderr) = run(&[word]);
-        assert!(
-            stderr.contains(STUB_MARKER),
-            "`letibot {word}` is not wired and must say so, not: {stderr}"
-        );
-        assert_eq!(code, Some(2), "`letibot {word}` must exit 2");
-    }
-}
-
-/// **The launcher role is not wired either**, and it is the one a person hits by
-/// typing the bare command. Asserted separately because its message is different —
-/// it names `scripts/letibot` rather than a source file — and because it is the role
-/// whose absence a user is most likely to meet.
-#[test]
-fn the_bare_command_says_the_launcher_is_not_a_role_yet() {
+fn the_launcher_is_the_only_thing_that_is_not_a_role() {
     let (code, _, stderr) = run(&[]);
     assert!(
-        stderr.contains("launcher is not a role of this binary yet"),
-        "`letibot` with no arguments must explain itself: {stderr}"
+        stderr.contains(NOT_A_ROLE),
+        "the bare command must explain that the launcher is not a role yet: {stderr}"
+    );
+    assert!(
+        stderr.contains("launcher"),
+        "and it must say WHICH thing is missing, by name: {stderr}"
     );
     assert_eq!(code, Some(2), "an unwired launcher must exit 2");
 }
 
-/// **`letibot` answers for itself**, and a typo is refused by name rather than
-/// resolving to a role — the dispatcher's own name is not in the table, which is
-/// what stops `letibot` from becoming the daemon by substring.
+/// **`letibot` answers for itself**, and a typo is refused by name rather than resolving
+/// to a role — the dispatcher's own name is not in the table, which is what stops
+/// `letibot` from becoming the daemon by substring.
 #[test]
 fn the_dispatcher_answers_for_itself_and_refuses_a_typo() {
     let (code, stdout, _) = run(&["--version"]);
@@ -101,4 +115,49 @@ fn the_dispatcher_answers_for_itself_and_refuses_a_typo() {
         stderr.contains("no such role"),
         "an unknown role must say so: {stderr}"
     );
+}
+
+/// Every role answers to its own NAME, through a symlink — the shape an install
+/// creates, and what `sudo` (for `letibot-askpass`) and the launcher reach by PATH.
+///
+/// **Exit 127 is the assertion worth having here.** The multicall links `libllama`
+/// through `letibot-harnessd`, so every one of these names needs the rpath to resolve;
+/// 127 is the loader saying it could not. That is the arm64 defect and the `m1` defect
+/// in one check, and it costs a symlink to ask.
+#[test]
+fn each_role_is_reachable_through_a_symlink_of_its_own_name() {
+    let dir = std::env::temp_dir().join(format!("letibot-dispatch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a temp dir");
+    let exe = env!("CARGO_BIN_EXE_letibot");
+    for (name, args) in [
+        ("harnessd", vec!["--bogus"]),
+        ("letibot-tui", vec!["--version"]),
+        ("letibot-askpass", vec![]),
+        ("letibot-m1", vec!["--bogus"]),
+        ("letibot-render", vec![]),
+        ("letibot-render-qwen", vec![]),
+    ] {
+        let link = dir.join(name);
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(exe, &link).expect("a symlink");
+        let out = std::process::Command::new(&link)
+            .args(&args)
+            .env_remove("LETIBOT_SOCKET")
+            .env_remove("LETIBOT_SESSION")
+            .output()
+            .expect("the role runs");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_ne!(
+            out.status.code(),
+            Some(127),
+            "`{name}` must not fail to LOAD — it shares the multicall's libraries, and \
+             127 means the loader could not find one: {stderr}"
+        );
+        assert!(
+            !stderr.contains(NOT_A_ROLE),
+            "`{name}` is a role reached by its own name, not a refusal: {stderr}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
