@@ -111,6 +111,32 @@ jobs:
       # `scripts/make-dist.sh` refuses to package a library whose runpath does not
       # mention `$ORIGIN`, and the assertion below catches the leak in the step that
       # could still fix it.
+      # **`LLAMA_BUILD_APP=OFF` is load-bearing, and this is the first thing CI taught
+      # us.** MEASURED on run 36835882659: llama.cpp built cleanly to **100%** and then
+      # failed on the last link —
+      #     /usr/bin/ld: cannot find -lllama-server-impl: No such file or directory
+      #     /usr/bin/ld: cannot find -lllama-cli-impl: No such file or directory
+      #     gmake[2]: *** [app/CMakeFiles/llama-app.dir/build.make:145: bin/llama] Error 1
+      #
+      # The cause is an option trap worth naming: `app/CMakeLists.txt` links **all
+      # eight** impl libraries — `llama-server-impl`, `llama-cli-impl`,
+      # `llama-completion-impl`, `llama-bench-impl`, `llama-batched-bench-impl`,
+      # `llama-fit-params-impl`, `llama-quantize-impl`, `llama-perplexity-impl` — and
+      # they are built by `tools/` and by the server target. So turning the server OFF
+      # removes a library the unified binary still demands, and the failure lands at
+      # 100%, on the last link, in a file nobody edited.
+      #
+      # `LLAMA_BUILD_APP=OFF` (v0.3.0's `CMakeLists.txt:247`, "build the unified
+      # binary") removes the target that wants them — the actual fix.
+      # `LLAMA_BUILD_TOOLS=OFF` is the speed-up that follows: eight tool binaries this
+      # package never ships. Together the build drops from hundreds of targets to
+      # **18**, verified by extracting v0.3.0 to /tmp, configuring it with these exact
+      # flags, and listing targets: `llama-app` is not configured at all, while
+      # `llama`, `ggml`, `ggml-base` and `ggml-cpu` still are.
+      #
+      # **The lesson, since it cost a CI round trip: checking that an option NAME exists
+      # is not checking that it gates the target that conflicts.** I did the first and
+      # reported it as if it were the second.
       - name: Build llama.cpp (CPU, $ORIGIN rpath)
         run: |
           set -eu
@@ -120,8 +146,10 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_CUDA=OFF \
             -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_TOOLS=OFF \
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_BUILD_APP=OFF \
             -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
             -DCMAKE_BUILD_RPATH='$ORIGIN' \
             -DCMAKE_INSTALL_RPATH='$ORIGIN'
@@ -129,7 +157,7 @@ jobs:
           # Say what was built, and prove the runpath is EXACTLY what the packager
           # requires — in the step that could still fix it, rather than four steps later.
           ls -la "$LETIBOT_LLAMA_LIB"/libllama.so.0 "$LETIBOT_LLAMA_LIB"/libggml.so.0
-          for so in libllama.so.0 libggml.so.0 libggml-base.so.0; do
+          for so in libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
             rp=$(readelf -d "$LETIBOT_LLAMA_LIB/$so" | sed -n 's/.*RUNPATH.*\[\(.*\)\].*/\1/p')
             echo "$so RUNPATH: [$rp]"
             [ "$rp" = '$ORIGIN' ] || {
@@ -318,7 +346,7 @@ jobs:
           d=$(mktemp -d)
           tar -xzf dist/letibot-x86_64-unknown-linux-gnu.tar.gz -C "$d"
           n=$(ls -1 "$d" | wc -l)
-          test "$n" -eq 6 || { echo "::error::archive holds $n entries, expected 6"; ls -la "$d"; exit 1; }
+          test "$n" -eq 7 || { echo "::error::archive holds $n entries, expected 7"; ls -la "$d"; exit 1; }
           for want in harnessd letibot-tui letibot-askpass; do
             test -x "$d/$want" || { echo "::error::$want is not executable in the archive"; exit 1; }
           done

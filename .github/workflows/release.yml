@@ -8,7 +8,7 @@ name: Release
 # archive root:
 #
 #   harnessd letibot-tui letibot-askpass          the runtime
-#   libllama.so.0 libggml.so.0 libggml-base.so.0  what harnessd links
+#   libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0  what harnessd links
 #
 # `scripts/make-dist.sh` produces exactly that and asserts the contents; both this
 # workflow and `scripts/check-dist-names.sh` pin the names to install.sh's, so an
@@ -95,6 +95,13 @@ jobs:
       # directory and nowhere else. `make-dist.sh` refuses to package libraries whose
       # runpath is not `$ORIGIN`, so this fails at packaging rather than at a user's
       # first run if the flag is ever dropped.
+      # **`LLAMA_BUILD_APP=OFF` and `LLAMA_BUILD_TOOLS=OFF` are load-bearing**, and the
+      # full account is in the CI workflow at the same step. In short: `app/CMakeLists.txt`
+      # links all eight `*-impl` libraries, so turning the server off — which removes
+      # `llama-server-impl` — fails at 100% on the unified binary's last link. Turning APP
+      # off removes the target that wants them; turning TOOLS off skips eight binaries this
+      # package never ships. MEASURED on run 36835882659, then verified against v0.3.0 by
+      # configuring it and confirming `llama-app` is not among its 18 targets.
       - name: Build llama.cpp (CPU, $ORIGIN rpath)
         run: |
           set -eu
@@ -104,8 +111,10 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_CUDA=OFF \
             -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_TOOLS=OFF \
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_BUILD_APP=OFF \
             -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
             -DCMAKE_BUILD_RPATH='$ORIGIN' \
             -DCMAKE_INSTALL_RPATH='$ORIGIN'
@@ -117,7 +126,7 @@ jobs:
           # searched first, so nothing would have failed. The release would simply have
           # carried this runner's build path inside a published `.so`. A `grep -q
           # '\$ORIGIN'` passes that; this does not.
-          for so in libllama.so.0 libggml.so.0 libggml-base.so.0; do
+          for so in libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
             rp=$(readelf -d "$LETIBOT_LLAMA_LIB/$so" | sed -n 's/.*RUNPATH.*\[\(.*\)\].*/\1/p')
             echo "$so RUNPATH: [$rp]"
             if [ "$rp" != '$ORIGIN' ]; then
@@ -162,7 +171,7 @@ jobs:
           d=$(mktemp -d)
           tar -xzf dist/letibot-${{ matrix.triple }}.tar.gz -C "$d"
           n=$(ls -1 "$d" | wc -l)
-          test "$n" -eq 6 || { echo "::error::archive holds $n entries, expected 6"; ls -la "$d"; exit 1; }
+          test "$n" -eq 7 || { echo "::error::archive holds $n entries, expected 7"; ls -la "$d"; exit 1; }
           ( cd "$d" && env -u LD_LIBRARY_PATH ./harnessd --version )
           ( cd "$d" && env -u LD_LIBRARY_PATH ./letibot-tui --version )
 
@@ -202,7 +211,7 @@ jobs:
           for f in dist/*.tar.gz; do
             d=$(mktemp -d)
             tar -xzf "$f" -C "$d"
-            for want in harnessd letibot-tui letibot-askpass libllama.so.0 libggml.so.0 libggml-base.so.0; do
+            for want in harnessd letibot-tui letibot-askpass libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
               [ -f "$d/$want" ] || { echo "::error::$f is missing $want"; exit 1; }
             done
             for want in harnessd letibot-tui letibot-askpass; do

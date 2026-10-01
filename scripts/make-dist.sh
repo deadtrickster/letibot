@@ -26,17 +26,50 @@
 # --release` and none is needed to run a session. Shipping six would be three more
 # things to version and a slower install for nothing.
 #
-# # And the llama libraries, which are NOT optional
+# # And the FOUR llama libraries, which are NOT optional
 #
-# `harnessd` links `libllama.so.0` (for the tokenizer), which links `libggml.so.0`
-# and `libggml-base.so.0`. MEASURED: those three are the whole of the non-system
-# set — 4.7 MB + 0.1 MB + 0.9 MB — and `libggml-cuda.so` is not in any `DT_NEEDED`
-# set because ggml dlopens its backends, so a CPU-only package still tokenises.
+# **FOUR, and this is the correction that matters most in this file.** The chain is
+# two levels deep, not one:
+#
+#     harnessd      -> libllama.so.0
+#     libllama.so.0 -> libggml.so.0, libggml-base.so.0
+#     libggml.so.0  -> libggml-cpu.so.0, libggml-base.so.0      <-- the second level
+#     libggml-cpu.so.0 -> libggml-base.so.0
+#
+# An earlier version of this script shipped THREE (llama, ggml, ggml-base) because
+# the check stopped one level down: it read `harnessd`'s `DT_NEEDED`, then
+# `libllama.so.0`'s, and never asked what `libggml.so.0` needs. MEASURED, both ways,
+# in a bare directory with the llama.cpp tree made unreachable:
+#
+#     three libraries -> ./harnessd: error while loading shared libraries:
+#                        libggml-cpu.so.0: cannot open shared object file      (exit 127)
+#     four libraries  -> harnessd 0.1.1                                       (exit 0)
+#
+# **And the wrong version PASSED on the development box**, which is the part worth
+# remembering: that machine's `libggml.so.0` carries an absolute runpath into
+# `build-glm/bin`, so the loader found `libggml-cpu.so.0` there and the daemon
+# started. It would have failed on every machine without that directory — the
+# precise failure shape this script exists to keep off a user's disk, reproduced
+# inside the script that guards against it.
+#
+# The authoritative list is the transitive closure, taken with `ldd` on a library
+# built with `$ORIGIN` only (so nothing resolves by accident):
+#
+#     libllama.so.0  libggml.so.0  libggml-cpu.so.0  libggml-base.so.0
+#
+# Everything else `ldd` reports is system: `libc`, `libm`, `libstdc++`, `libgcc_s`
+# and `libgomp` (the OpenMP runtime, which ships with gcc on every normal distro).
+#
+# `libggml-cuda.so` is NOT in this set for the release build, because it is 68 MB,
+# CUDA is off, and ggml reaches its backends through the CPU one. It IS in this
+# box's own `libggml.so.0`'s `DT_NEEDED` — this box's llama.cpp is a CUDA build —
+# which is another reason the list above is taken from a `$ORIGIN`-only build
+# rather than from whatever happens to be installed here.
 #
 # They are packaged because `harnessd`'s build script bakes `$ORIGIN` into its
-# runpath: the daemon finds these next to itself, and a package without them dies
-# at exec with `cannot open shared object file` on every machine that has no
-# llama.cpp checkout.
+# runpath: the daemon finds these next to itself, and a package missing any one of
+# them dies at exec with `cannot open shared object file` on every machine that has
+# no llama.cpp checkout.
 #
 # `LETIBOT_LLAMA_LIB` names the directory they are copied from — the same variable
 # the build script uses, so the libraries packaged are the libraries linked.
@@ -74,7 +107,7 @@ done
 # The libraries are a hard requirement, not a best effort: a package that names
 # them but does not carry them installs cleanly and then fails to start, which is
 # the failure shape this whole script exists to keep off a user's machine.
-for so in libllama.so.0 libggml.so.0 libggml-base.so.0; do
+for so in libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
     if [ ! -f "$lib/$so" ]; then
         echo "make-dist: $lib/$so not found." >&2
         echo "  harnessd links it and needs it in the package. Set LETIBOT_LLAMA_LIB" >&2
@@ -96,7 +129,7 @@ trap 'rm -rf "$stage"' EXIT INT TERM
 for want in harnessd letibot-tui letibot-askpass; do
     cp "$bin/$want" "$stage/$want"
 done
-for so in libllama.so.0 libggml.so.0 libggml-base.so.0; do
+for so in libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
     # `-L`: these are symlinks in a llama.cpp build tree (libllama.so.0 →
     # libllama.so.0.4.0) and an archive holding a dangling symlink extracts to
     # nothing. The real file is what has to travel.
@@ -131,7 +164,7 @@ chmod 755 "$stage"/*
 # release script that rewrote somebody's llama.cpp checkout would be a worse bug
 # than the one it fixes, and `patchelf` is only needed when the libraries were built
 # without `$ORIGIN` in the first place.
-for so in libllama.so.0 libggml.so.0 libggml-base.so.0; do
+for so in libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
     [ -f "$stage/$so" ] || continue
     # **Both spellings, and the empty case is NOT a pass.** `RPATH` is the older tag
     # and a library may carry either; matching only `RUNPATH` would read an `RPATH`-only
@@ -199,7 +232,7 @@ COPYFILE_DISABLE=1 tar -czf "$outdir/$name" -C "$stage" .
 # file riding along into a release is a thing that only shows up on a user's disk.
 listing=$(tar -tzf "$outdir/$name" | sed 's|^\./||' | grep -v '^$' | sort)
 expected=$(printf '%s\n' harnessd letibot-tui letibot-askpass \
-    libllama.so.0 libggml.so.0 libggml-base.so.0 | sort)
+    libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0 | sort)
 if [ "$listing" != "$expected" ]; then
     echo "make-dist: $name does not hold what it should." >&2
     echo "--- expected:" >&2

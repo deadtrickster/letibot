@@ -73,9 +73,9 @@ fi
 # **The contents of the archive are the other half of the contract**, and they are
 # read from `make-dist.sh` so the two cannot drift: it names what it puts in, and
 # this asserts the installer expects exactly that.
-made=$(grep -oE '\b(harnessd|letibot-tui|letibot-askpass|libllama\.so\.0|libggml\.so\.0|libggml-base\.so\.0)\b' \
+made=$(grep -oE '\b(harnessd|letibot-tui|letibot-askpass|libllama\.so\.0|libggml\.so\.0|libggml-cpu\.so\.0|libggml-base\.so\.0)\b' \
     "$repo/scripts/make-dist.sh" | sort -u)
-for want in harnessd letibot-tui letibot-askpass libllama.so.0 libggml.so.0 libggml-base.so.0; do
+for want in harnessd letibot-tui letibot-askpass libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0; do
     case " $(printf '%s ' $made) " in
         *" $want "*) ;;
         *) echo "check-dist-names: make-dist.sh never names $want" >&2; exit 1 ;;

@@ -10,9 +10,15 @@
 #   $PREFIX/letibot-askpass    what `sudo` runs inside a session to ask for a password
 #   $PREFIX/libllama.so.0      the tokenizer, which the daemon links
 #   $PREFIX/libggml.so.0       llama.cpp's compute layer, which libllama links
+#   $PREFIX/libggml-cpu.so.0   the CPU backend, which libggml links
 #   $PREFIX/libggml-base.so.0  and its base
 #
 # `$PREFIX` is `LETIBOT_INSTALL_DIR`, defaulting to `~/.local/bin`.
+#
+# **FOUR libraries, and the fourth is easy to miss**: `libllama.so.0` needs
+# `libggml.so.0`, and `libggml.so.0` needs `libggml-cpu.so.0`. A package without
+# that last one starts, gets as far as libggml, and dies with
+# `libggml-cpu.so.0: cannot open shared object file`.
 #
 # **The libraries go in the same directory as the binaries, and they are not
 # clutter.** `harnessd` links `libllama.so.0` for the tokenizer, and its build
@@ -55,11 +61,11 @@ REPO="deadtrickster/letibot"
 INSTALL_DIR="${LETIBOT_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${LETIBOT_VERSION:-}"
 
-# The three binaries and the three libraries, as `scripts/make-dist.sh` packages
+# The three binaries and the FOUR libraries, as `scripts/make-dist.sh` packages
 # them. `scripts/check-dist-names.sh` holds this list, the workflow and the
 # packaging script to each other, so a rename in one place fails in CI.
 BINARIES="harnessd letibot-tui letibot-askpass"
-LIBRARIES="libllama.so.0 libggml.so.0 libggml-base.so.0"
+LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
 
 say() { printf '%s\n' "$*"; }
 # Everything that is not the binary path goes to stderr, so the functions below can
@@ -161,7 +167,7 @@ main() {
 
     # Where the built (or downloaded) files are.
     from=""
-    # Where the three libraries are, when the source came from a build rather than
+    # Where the four libraries are, when the source came from a build rather than
     # from an asset — a build leaves them in the llama.cpp tree, not beside the
     # binaries.
     libs_from=""
