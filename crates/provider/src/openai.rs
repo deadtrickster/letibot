@@ -56,14 +56,28 @@ impl OpenAiProvider {
 
     /// The request body, for a test to look at.
     pub fn body(&self, req: &TurnRequest<'_>) -> Result<Value, BackendError> {
+        // **`tools` is built first, because it decides something about `messages`.**
+        //
+        // DeepSeek's thinking-mode guide: whether `reasoning_content` must be passed
+        // back "depends on whether the request carries the `tools` parameter" — with
+        // tools it MUST, without them it is ignored. So the condition is a property of
+        // THIS request, computed here, and handed to `convert` rather than guessed
+        // inside it from a provider name.
+        //
+        // MEASURED, and it is why this is not a tidy-up: the old `convert` dropped
+        // every reasoning item while the request carried tools, and the API answered
+        // `400: The reasoning_content in the thinking mode must be passed back` on a
+        // head at 940k of 999k tokens. Compaction is what failed, so the head could
+        // not recover — the remedy was the failing call.
+        let tools = crate::messages::tools(req.tools_json).map_err(BackendError::Malformed)?;
+        let carries_tools = !tools.is_empty();
         let mut body = json!({
             "model": self.model,
-            "messages": crate::messages::convert(req.system, req.items),
+            "messages": crate::messages::convert(req.system, req.items, carries_tools),
             "stream": true,
             "stream_options": {"include_usage": true},
         });
-        let tools = crate::messages::tools(req.tools_json).map_err(BackendError::Malformed)?;
-        if !tools.is_empty() {
+        if carries_tools {
             body["tools"] = Value::Array(tools);
         }
         if let Some(n) = req.max_output_tokens {
@@ -389,6 +403,99 @@ mod tests {
                 .cost
                 .micros_usd,
             None
+        );
+    }
+
+    /// **The request the API actually receives carries the reasoning back, because
+    /// `body` is where the `tools`/reasoning coupling is decided.**
+    ///
+    /// This is the assertion that was missing end to end. `convert`'s own tests say
+    /// what the SHAPE is when told to echo; this says that the request carrying tools
+    /// is the one that gets told — which is the half a provider-name guess would have
+    /// got wrong, since both DeepSeek models disagree behind one name.
+    #[test]
+    fn a_request_with_tools_passes_the_reasoning_back_and_one_without_does_not() {
+        use letibot_transcript::{ReasoningField, SystemOrigin, TranscriptItem, UserPart};
+        let items = vec![
+            TranscriptItem::System {
+                text: "be terse".into(),
+                origin: SystemOrigin::Bootstrap,
+            },
+            TranscriptItem::User {
+                speaker: Default::default(),
+                parts: vec![UserPart::Text {
+                    text: "what is the date?".into(),
+                }],
+            },
+            TranscriptItem::Reasoning {
+                text: "I should call get_date.".into(),
+                field: ReasoningField::ReasoningContent,
+                truncated: false,
+            },
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![letibot_transcript::ToolCall {
+                    id: "c1".into(),
+                    name: "get_date".into(),
+                    arguments: "{}".into(),
+                }],
+                truncated: false,
+            },
+        ];
+        let creds = Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: None,
+        };
+        let p = OpenAiProvider::new(&crate::presets::DEEPSEEK, Some("deepseek-flash"), creds);
+
+        let tools = vec![
+            r#"{"type":"function","function":{"name":"get_date","description":"today","parameters":{"type":"object","properties":{}}}}"#
+                .to_string(),
+        ];
+        let with = p
+            .body(&TurnRequest {
+                system: "be terse",
+                tools_json: &tools,
+                items: &items,
+                max_output_tokens: None,
+            })
+            .expect("the body builds");
+        assert!(
+            with["tools"].is_array(),
+            "the request must carry tools: {with:#?}"
+        );
+        let a = with["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .unwrap();
+        assert_eq!(
+            a["reasoning_content"], "I should call get_date.",
+            "a request carrying tools MUST pass the reasoning back or DeepSeek \
+             answers 400 — this is the defect that wedged a head at 94% context"
+        );
+
+        let without = p
+            .body(&TurnRequest {
+                system: "be terse",
+                tools_json: &[],
+                items: &items,
+                max_output_tokens: None,
+            })
+            .expect("the body builds");
+        assert!(without.get("tools").is_none(), "{without:#?}");
+        let a2 = without["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .unwrap();
+        assert!(
+            a2.get("reasoning_content").is_none(),
+            "without tools the field is not sent: {a2:#?}"
         );
     }
 }

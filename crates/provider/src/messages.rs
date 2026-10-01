@@ -8,9 +8,9 @@
 //! - `User` → `{"role":"user","content":"…"}` with the text parts joined by a
 //!   blank line. Images are not sent (none of the three is asked to see one
 //!   here) and are named in the text so the model knows something was there.
-//! - `Reasoning` → dropped. DeepSeek documents that `reasoning_content` from
-//!   earlier turns must not be sent back; GLM and Grok ignore it. Each turn's
-//!   reasoning is the model's own scratch, kept in our record only.
+//! - `Reasoning` → attached to the assistant message it belongs to, as
+//!   `reasoning_content`, **when the request carries `tools`.** See below: this is
+//!   a REQUEST-level rule, not a provider one, and getting it wrong wedged a head.
 //! - `Assistant` → `{"role":"assistant","content":…,"tool_calls":[…]}`.
 //!   `content` is `null` when there is no text and there are calls, which is
 //!   the shape the APIs emit and the one they accept back.
@@ -19,6 +19,51 @@
 //!   result is the payload; anything else is prefixed with what happened, so
 //!   the model can tell a refusal from an answer.
 //! - `SegmentMark` → dropped. It is the store's, not the model's.
+//!
+//! # `reasoning_content`, where this file was wrong and how it was found
+//!
+//! What was here said: *"DeepSeek documents that `reasoning_content` from earlier
+//! turns must not be sent back; GLM and Grok ignore it."* That was accurate about
+//! `deepseek-reasoner` and wrong about the model actually in use, and the live API
+//! said so — MEASURED in `~/logs/harnessd.log`, four times, on a head at 940k of
+//! 999k tokens:
+//!
+//! ```text
+//! compaction FAILED: http 400: The `reasoning_content` in the thinking mode must
+//! be passed back to the API. (request_id: 5f6e40f5-…)
+//! ```
+//!
+//! **The contract is per-REQUEST, and it turns on the `tools` parameter** — from
+//! DeepSeek's own thinking-mode guide:
+//!
+//! > In subsequent requests, whether `reasoning_content` should be passed back …
+//! > depends on whether the request carries the `tools` parameter:
+//! > * **carries `tools`**: the `reasoning_content` of all previous turns should be
+//! >   passed back … *"even for turns where the model did not perform a tool call.
+//! >   If your code does not correctly pass back `reasoning_content`, the API will
+//! >   return a 400 error."*
+//! > * **does not carry `tools`**: does not need to be passed back; even if passed,
+//! >   it will be ignored.
+//!
+//! So the condition is not a property of a provider or a model — it is a property
+//! of the request we are already building, and [`convert`] is TOLD it rather than
+//! deciding. `Preset::echo_reasoning` used to carry a guess at this per provider;
+//! it was declared once and read nowhere, and the distinction it named belonged to
+//! the request all along.
+//!
+//! # The failure shape, which is why no test caught it
+//!
+//! **It is compaction that fails, and compaction is the remedy.** A head sits at
+//! 94% of its context; the call that would free context is the one being rejected;
+//! so the head cannot recover on its own, and the operator's only move is to stop
+//! the daemon and reopen the session. Short turns keep working, so nothing looks
+//! wrong until a conversation has run for hours — which is why this arrived as a
+//! stuck head rather than as a failing test.
+//!
+//! And the reason it could not fail as a test: **nothing asserted the request
+//! SHAPE.** The code could not tell "we dropped it and the model did not mind" from
+//! "we dropped it and the next long session will 400", so there was no assertion to
+//! go red. The tests added below are about the request, not about a symptom.
 
 use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 use serde_json::{Value, json};
@@ -26,12 +71,32 @@ use serde_json::{Value, json};
 /// The `messages` array. `system` is prepended when non-empty and no `System`
 /// item leads the transcript — the harness keeps the system prompt in item 0,
 /// so normally it is already there and `system` is the same text.
-pub fn convert(system: &str, items: &[TranscriptItem]) -> Vec<Value> {
+/// `echo_reasoning` is the REQUEST's property, not the provider's: true when this
+/// request carries `tools`, which is when DeepSeek requires every previous turn's
+/// `reasoning_content` back. The caller computes it — see `OpenAiProvider::body`,
+/// which knows whether it is about to send `tools` — because a guess made here
+/// would be a second opinion about a decision already made one layer up.
+pub fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> Vec<Value> {
     let mut out = Vec::with_capacity(items.len() + 1);
     let leads_with_system = matches!(items.first(), Some(TranscriptItem::System { .. }));
     if !system.trim().is_empty() && !leads_with_system {
         out.push(json!({"role": "system", "content": system}));
     }
+    // **The open assistant turn's reasoning, waiting for the assistant it belongs
+    // to.** The transcript commits reasoning as it STREAMS and the assistant when it
+    // completes, so a run of `Reasoning` items is followed by its `Assistant` —
+    // MEASURED against the real transcript of the session that wedged: 9,272
+    // reasoning rows, and the run-length pattern is `reasoning×7 assistant×1`. That
+    // is the same shape `dialect-glm`'s renderer accumulates
+    // (`turn: Option<(Option<String>, String, Vec<ToolCall>)>`), which is the tree's
+    // existing precedent for this and is validated against the server by the
+    // fidelity gate.
+    //
+    // It is held ACROSS intervening items rather than cleared by them: a steering
+    // message can land between reasoning and its answer, and dropping the reasoning
+    // at that point is exactly the 400 this exists to prevent. The API's requirement
+    // is that it be present; folding it forward keeps it present.
+    let mut pending_reasoning: Option<String> = None;
     for item in items {
         match item {
             TranscriptItem::System { text, .. } => {
@@ -55,14 +120,19 @@ pub fn convert(system: &str, items: &[TranscriptItem]) -> Vec<Value> {
                 let mut content: Vec<Value> = Vec::new();
                 for p in parts {
                     match p {
-                        UserPart::Text { text } => content.push(json!({"type": "text", "text": text})),
-                        UserPart::Image { data_ref, .. } => content.push(
-                            json!({"type": "image_url", "image_url": {"url": data_ref}}),
-                        ),
-                        UserPart::FileRef { path, .. } => content.push(json!({"type": "text", "text": path})),
+                        UserPart::Text { text } => {
+                            content.push(json!({"type": "text", "text": text}))
+                        }
+                        UserPart::Image { data_ref, .. } => content
+                            .push(json!({"type": "image_url", "image_url": {"url": data_ref}})),
+                        UserPart::FileRef { path, .. } => {
+                            content.push(json!({"type": "text", "text": path}))
+                        }
                     }
                 }
-                let only_text = content.iter().all(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"));
+                let only_text = content
+                    .iter()
+                    .all(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"));
                 if only_text {
                     let text = content
                         .iter()
@@ -74,11 +144,30 @@ pub fn convert(system: &str, items: &[TranscriptItem]) -> Vec<Value> {
                     out.push(json!({"role": "user", "content": Value::Array(content)}));
                 }
             }
-            TranscriptItem::Reasoning { .. } | TranscriptItem::SegmentMark { .. } => {}
+            TranscriptItem::Reasoning { text, .. } => {
+                if echo_reasoning && !text.is_empty() {
+                    match &mut pending_reasoning {
+                        // Joined, not replaced: a truncated reasoning row and its
+                        // continuation are two items and one thought.
+                        Some(prev) => {
+                            prev.push_str("\n\n");
+                            prev.push_str(text);
+                        }
+                        None => pending_reasoning = Some(text.clone()),
+                    }
+                }
+            }
+            TranscriptItem::SegmentMark { .. } => {}
             TranscriptItem::Assistant {
                 text, tool_calls, ..
             } => {
                 let mut m = json!({"role": "assistant"});
+                // The reasoning this assistant produced, if the request must carry
+                // it. Set BEFORE `content` so the field order reads the way the API
+                // documents it, though order is not what it checks.
+                if let Some(r) = pending_reasoning.take() {
+                    m["reasoning_content"] = Value::String(r);
+                }
                 if text.is_empty() && !tool_calls.is_empty() {
                     m["content"] = Value::Null;
                 } else {
@@ -271,7 +360,12 @@ mod tests {
     use letibot_transcript::{ReasoningField, SystemOrigin, ToolCall};
 
     #[test]
-    fn items_become_the_apis_messages_and_reasoning_stays_home() {
+    fn items_become_the_apis_messages_without_tools() {
+        // **Renamed from `..._and_reasoning_stays_home`, which was the old rule.**
+        // Reasoning stays home only when the request carries no `tools`; with tools
+        // it must be passed back. A test named for a rule that has changed is the
+        // same defect as a comment that has, one layer in — and this one is the
+        // test that PASSED while the head wedged.
         let items = vec![
             TranscriptItem::System {
                 text: "be terse".into(),
@@ -285,7 +379,7 @@ mod tests {
             },
             TranscriptItem::Reasoning {
                 text: "thinking…".into(),
-                field: ReasoningField::ReasoningContent,
+                field: letibot_transcript::ReasoningField::ReasoningContent,
                 truncated: false,
             },
             TranscriptItem::Assistant {
@@ -309,7 +403,7 @@ mod tests {
                 media: None,
             },
         ];
-        let m = convert("be terse", &items);
+        let m = convert("be terse", &items, false);
         assert_eq!(m.len(), 4, "{m:?}");
         assert_eq!(m[0]["role"], "system");
         assert_eq!(m[1]["content"], "list the crates");
@@ -324,7 +418,7 @@ mod tests {
                 .starts_with("[glob: failed — no such dir]")
         );
         // A system prompt with no leading System item is prepended once.
-        let m2 = convert("sys", &items[1..2]);
+        let m2 = convert("sys", &items[1..2], false);
         assert_eq!(m2[0]["role"], "system");
         assert_eq!(m2.len(), 2);
     }
@@ -350,30 +444,39 @@ mod tests {
             }],
             truncated: false,
         };
-        let items = vec![proposed, TranscriptItem::ToolResult {
-            call_id: "c1".into(),
-            name: "read".into(),
-            outcome: ToolOutcome::Ok,
-            payload: "shot.png — image image/png 2×2 · 1 KiB".into(),
-            edit: None,
-            origin: None,
-            media: Some(letibot_transcript::media::Media {
-                mime: "image/png".into(),
-                bytes: 11,
-                width: Some(2),
-                height: Some(2),
-                data_ref: uri.into(),
-                delivered: false,
-            }),
-        }];
-        let m = convert("be terse", &items);
-        let tool = m.iter().find(|x| x["role"] == "tool").expect("the tool result");
+        let items = vec![
+            proposed,
+            TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "read".into(),
+                outcome: ToolOutcome::Ok,
+                payload: "shot.png — image image/png 2×2 · 1 KiB".into(),
+                edit: None,
+                origin: None,
+                media: Some(letibot_transcript::media::Media {
+                    mime: "image/png".into(),
+                    bytes: 11,
+                    width: Some(2),
+                    height: Some(2),
+                    data_ref: uri.into(),
+                    delivered: false,
+                }),
+            },
+        ];
+        let m = convert("be terse", &items, false);
+        let tool = m
+            .iter()
+            .find(|x| x["role"] == "tool")
+            .expect("the tool result");
         assert_eq!(tool["content"], "shot.png — image image/png 2×2 · 1 KiB");
         let att = m
             .iter()
             .find(|x| x["role"] == "user")
             .expect("the attachment did not reach the wire at all");
-        assert_eq!(att["content"][0]["text"], "Attached media from tool result:");
+        assert_eq!(
+            att["content"][0]["text"],
+            "Attached media from tool result:"
+        );
         assert_eq!(att["content"][1]["type"], "image_url");
         assert_eq!(att["content"][1]["image_url"]["url"], uri);
     }
@@ -395,16 +498,19 @@ mod tests {
             }],
             truncated: false,
         };
-        let items = vec![proposed, TranscriptItem::ToolResult {
-            call_id: "c1".into(),
-            name: "bash".into(),
-            outcome: ToolOutcome::Ok,
-            payload: "ok".into(),
-            edit: None,
-            origin: None,
-            media: None,
-        }];
-        let m = convert("be terse", &items);
+        let items = vec![
+            proposed,
+            TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "bash".into(),
+                outcome: ToolOutcome::Ok,
+                payload: "ok".into(),
+                edit: None,
+                origin: None,
+                media: None,
+            },
+        ];
+        let m = convert("be terse", &items, false);
         assert_eq!(m.iter().filter(|x| x["role"] == "user").count(), 0, "{m:?}");
         assert!(
             m.iter().find(|x| x["role"] == "tool").unwrap()["content"].is_string(),
@@ -429,12 +535,16 @@ mod tests {
                 },
             ],
         }];
-        let m = convert("be terse", &items);
-        let user = m.iter().find(|x| x["role"] == "user").expect("the user message");
+        let m = convert("be terse", &items, false);
+        let user = m
+            .iter()
+            .find(|x| x["role"] == "user")
+            .expect("the user message");
         assert_eq!(user["content"][0]["text"], "what is this?");
         assert_eq!(user["content"][1]["image_url"]["url"], uri);
         assert!(
-            !m.iter().any(|x| x.to_string().contains("not sent to this provider")),
+            !m.iter()
+                .any(|x| x.to_string().contains("not sent to this provider")),
             "the placeholder is still on the wire: {m:?}"
         );
     }
@@ -533,6 +643,7 @@ mod pairing_tests {
         let m = convert(
             "sys",
             &[user("go"), calls(&["c1"]), user("never mind, carry on")],
+            false,
         );
         assert_paired(&m);
         let filler = m
@@ -560,7 +671,7 @@ mod pairing_tests {
     /// does exactly that — and the provider counts it the same way.
     #[test]
     fn a_transcript_that_ends_mid_call_is_still_valid() {
-        let m = convert("sys", &[user("go"), calls(&["c1", "c2"])]);
+        let m = convert("sys", &[user("go"), calls(&["c1", "c2"])], false);
         assert_paired(&m);
         assert_eq!(m.iter().filter(|r| r["role"] == "tool").count(), 2);
     }
@@ -577,6 +688,7 @@ mod pairing_tests {
                 result("c2"),
                 user("next"),
             ],
+            false,
         );
         assert_paired(&m);
         let tools: Vec<&Value> = m.iter().filter(|r| r["role"] == "tool").collect();
@@ -589,7 +701,7 @@ mod pairing_tests {
     /// those too, and nothing downstream reads it.
     #[test]
     fn an_orphan_result_is_dropped_rather_than_sent() {
-        let m = convert("sys", &[user("go"), result("ghost"), user("next")]);
+        let m = convert("sys", &[user("go"), result("ghost"), user("next")], false);
         assert_paired(&m);
         assert!(
             !m.iter().any(|r| r["role"] == "tool"),
@@ -602,9 +714,122 @@ mod pairing_tests {
     #[test]
     fn a_well_formed_conversation_is_unchanged() {
         let items = [user("go"), calls(&["c1"]), result("c1"), user("thanks")];
-        let m = convert("sys", &items);
+        let m = convert("sys", &items, false);
         assert_paired(&m);
         assert_eq!(m.len(), 5, "system + four, nothing added: {m:?}");
         assert!(m[3]["content"].as_str().unwrap().contains("done"));
+    }
+
+    // --- `reasoning_content`, the contract this file used to get backwards -------
+
+    /// **A request carrying `tools` must pass every previous turn's reasoning back.**
+    ///
+    /// This is the assertion whose absence let a head wedge at 940k of 999k tokens:
+    /// nothing checked the request SHAPE against the documented rule, so the code
+    /// could not tell "we dropped it and the model did not mind" from "we dropped it
+    /// and the next long session will 400". It fails on the old behaviour, which
+    /// dropped the item unconditionally.
+    #[test]
+    fn a_request_with_tools_carries_each_turns_reasoning_on_its_assistant() {
+        let items = vec![
+            user("what is the date?"),
+            TranscriptItem::Reasoning {
+                text: "I should call get_date first.".into(),
+                field: letibot_transcript::ReasoningField::ReasoningContent,
+                truncated: false,
+            },
+            calls(&["c1"]),
+            result("c1"),
+            TranscriptItem::Reasoning {
+                text: "Now I can answer.".into(),
+                field: letibot_transcript::ReasoningField::ReasoningContent,
+                truncated: false,
+            },
+            TranscriptItem::Assistant {
+                text: "It is the 19th.".into(),
+                tool_calls: vec![],
+                truncated: false,
+            },
+        ];
+        let m = convert("sys", &items, true);
+        let assistants: Vec<&Value> = m.iter().filter(|r| r["role"] == "assistant").collect();
+        assert_eq!(assistants.len(), 2, "two assistant turns: {m:#?}");
+        for a in &assistants {
+            assert!(
+                a["reasoning_content"].is_string(),
+                "every assistant whose turn had reasoning must carry it when the \
+                 request has tools, or DeepSeek answers 400: {a:#?}"
+            );
+        }
+        assert_eq!(
+            assistants[0]["reasoning_content"], "I should call get_date first.",
+            "the reasoning attaches to the assistant it belongs to"
+        );
+        assert_eq!(assistants[1]["reasoning_content"], "Now I can answer.");
+    }
+
+    /// **And a request WITHOUT tools does not carry it** — the other half of the
+    /// documented rule, and the reason this is a parameter rather than a constant:
+    /// DeepSeek ignores the field without `tools`, and adding it anyway would be a
+    /// change to a prefix that buys nothing.
+    #[test]
+    fn a_request_without_tools_does_not_carry_it() {
+        let items = vec![
+            TranscriptItem::Reasoning {
+                text: "thinking".into(),
+                field: letibot_transcript::ReasoningField::ReasoningContent,
+                truncated: false,
+            },
+            TranscriptItem::Assistant {
+                text: "answer".into(),
+                tool_calls: vec![],
+                truncated: false,
+            },
+        ];
+        let m = convert("sys", &items, false);
+        assert!(
+            m.iter().all(|r| r.get("reasoning_content").is_none()),
+            "without tools the field is not sent: {m:#?}"
+        );
+    }
+
+    /// A split reasoning row is one thought in two items, so it travels joined — and
+    /// **nothing is dropped**, which is the whole requirement.
+    #[test]
+    fn a_truncated_reasoning_row_and_its_continuation_travel_together() {
+        let items = vec![
+            TranscriptItem::Reasoning {
+                text: "first half".into(),
+                field: letibot_transcript::ReasoningField::ReasoningContent,
+                truncated: true,
+            },
+            TranscriptItem::Reasoning {
+                text: "second half".into(),
+                field: letibot_transcript::ReasoningField::ReasoningContent,
+                truncated: false,
+            },
+            TranscriptItem::Assistant {
+                text: "answer".into(),
+                tool_calls: vec![],
+                truncated: false,
+            },
+        ];
+        let m = convert("sys", &items, true);
+        let a = m.iter().find(|r| r["role"] == "assistant").unwrap();
+        let r = a["reasoning_content"].as_str().unwrap();
+        assert!(
+            r.contains("first half") && r.contains("second half"),
+            "{r:?}"
+        );
+    }
+
+    /// An assistant with no reasoning before it gets no field — the field means
+    /// "this turn reasoned", not "the request has tools".
+    #[test]
+    fn an_assistant_that_did_not_reason_carries_no_field() {
+        let items = vec![user("hi"), calls(&["c1"])];
+        let m = convert("sys", &items, true);
+        let a = m.iter().find(|r| r["role"] == "assistant").unwrap();
+        assert!(a.get("reasoning_content").is_none(), "{a:#?}");
     }
 }

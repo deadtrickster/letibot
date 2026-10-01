@@ -20,11 +20,20 @@ pub struct Preset {
     /// refusing, and updated to a model that exists today — but it will go stale
     /// again, and the catalogue is what stops that mattering.
     pub fallback_model: &'static str,
-    /// Whether the provider wants `reasoning_content` echoed back on assistant
-    /// messages of earlier turns. DeepSeek documents that it must NOT be sent
-    /// (400 on `deepseek-reasoner` when interleaved with tool calls is the
-    /// documented failure); GLM and Grok ignore it. So nobody gets it.
-    pub echo_reasoning: bool,
+    // **`echo_reasoning` was here, and it is deleted rather than wired.**
+    //
+    // It was declared once and set three times, and read NOWHERE — so the tree
+    // looked like it had considered the question while the running daemon had not.
+    // The distinction it named is real, and it belonged to the REQUEST, not to this
+    // struct: DeepSeek's thinking-mode guide makes it turn on whether the request
+    // carries `tools`, and `OpenAiProvider::body` already knows that. A per-provider
+    // boolean could not express it however it was set — the two DeepSeek models
+    // disagree with each other, behind one provider name.
+    //
+    // The old doc comment is worth reading as a lesson rather than as a mistake: it
+    // was accurate about `deepseek-reasoner` and wrong about the model in use, and it
+    // read like a live switch. See `messages.rs`'s module docs for the measurement
+    // that found it and the citation that replaces it.
     /// Extra body fields the provider needs to think out loud, if any.
     pub thinking_field: Option<&'static str>,
     /// **This provider's id in the models.dev catalogue**, which is not always the
@@ -40,7 +49,6 @@ pub const DEEPSEEK: Preset = Preset {
     key_env: "DEEPSEEK_API_KEY",
     alt_envs: &[],
     fallback_model: "deepseek-v4-flash",
-    echo_reasoning: false,
     thinking_field: None,
     catalogue_id: "deepseek",
 };
@@ -51,7 +59,6 @@ pub const GLM: Preset = Preset {
     key_env: "ZHIPUAI_API_KEY",
     alt_envs: &["ZHIPU_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"],
     fallback_model: "glm-5.3-flash",
-    echo_reasoning: false,
     // Zhipu's `thinking: {"type": "enabled"}` switches GLM's reasoning on; the
     // provider sends it when the operator asks for a reasoning turn.
     thinking_field: Some("thinking"),
@@ -64,7 +71,6 @@ pub const GROK: Preset = Preset {
     key_env: "XAI_API_KEY",
     alt_envs: &["GROK_API_KEY"],
     fallback_model: "grok-4.3",
-    echo_reasoning: false,
     thinking_field: None,
     catalogue_id: "xai",
 };
