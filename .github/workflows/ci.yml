@@ -321,15 +321,17 @@ jobs:
           # file`, exactly as the arm64 leg did for `letibot-tui`. A dependency
           # arriving through a crate nobody thought of as linked to llama.
           #
-          # **`--help`, not `--version`:** what runs under this name is the shell
-          # LAUNCHER, which has no `--version` — the multicall binary does, and the two
-          # are different things sharing one name. `--help` exits 0, needs no daemon and
-          # no model, and proves the loads resolved.
+          # **`${MULTICALL}` and not `./letibot`:** what sits at `target/release/letibot`
+          # is the multicall BINARY and what an install puts under that name is the shell
+          # LAUNCHER — different things sharing a name, and only the first has
+          # `--version`. MEASURED: the first version of this line used `./letibot` with
+          # `$d`, a variable the PACKAGE step defines and this one does not, so the step
+          # died with `d: unbound variable` before asserting anything.
           #
-          # The package check below covers the packaged copy; this covers the one in
-          # `target/release`, so a dependency that arrives through a crate nobody
-          # thought was linked to llama fails here rather than at packaging time.
-          ( cd "$d" && env -u LD_LIBRARY_PATH ./letibot --help >/dev/null )
+          # Run from `target/release`, so the rpath is the only thing that can resolve
+          # the libraries — the absolute fallback entry does exist here, which is why the
+          # PACKAGE step below is the one that proves it on a machine with no llama.cpp.
+          env -u LD_LIBRARY_PATH ./target/release/letibot --version
 
       # **And every role is RUN, not merely built** — see the smoke test above for why.
       # A dispatcher that compiles and cannot dispatch is the same defect one layer in,
