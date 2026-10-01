@@ -21,3 +21,4 @@ letibot-sessionlog.workspace = true
 # The render role: `cli::run` is the renderer, moved out of its bin so this
 # dispatcher and that binary are one implementation.
 letibot-dialect-glm.workspace = true
+letibot-dialect-qwen.workspace = true

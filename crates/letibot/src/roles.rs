@@ -56,7 +56,11 @@ pub fn run(role: Role, args: &[std::ffi::OsString]) -> ExitCode {
         // because the gate's invocation (`--dialect … --profile faithful FIXTURE…`)
         // must arrive exactly as it does when the binary is called directly.
         Role::Render => exit_code(letibot_dialect_glm::cli::run(&args_to_strings(args))),
-        Role::RenderQwen => not_yet(role, "crates/dialect-qwen/src/bin/letibot-render-qwen.rs"),
+        // Wired, same as `Render` — the body moved into the crate's library so this
+        // role and the binary are one implementation. `args` passes through
+        // unchanged: the gate's invocation must arrive exactly as it does when the
+        // binary is called directly.
+        Role::RenderQwen => exit_code(letibot_dialect_qwen::cli::run(&args_to_strings(args))),
     }
 }
 
@@ -297,7 +301,7 @@ mod tests {
     /// success while doing nothing is the failure mode this file exists to avoid.
     #[test]
     fn the_unported_roles_refuse_loudly_and_say_where_they_live() {
-        for role in [R::Daemon, R::Head, R::M1, R::RenderQwen] {
+        for role in [R::Daemon, R::Head, R::M1] {
             let code = run(role, &[]);
             assert_eq!(
                 code,
@@ -305,39 +309,5 @@ mod tests {
                 "{role:?} is not ported yet and must not report success"
             );
         }
-    }
-
-    /// **A ported role must not have been listed as unported, and this is the test
-    /// that noticed.** MEASURED in CI (`54308ff`): wiring `Role::Render` left it in
-    /// the loop above, where `run(Render, &[])` started the real renderer over zero
-    /// fixtures and exited **0** — so the assertion compared `ExitCode(0)` against
-    /// `ExitCode(2)` and failed. The list and the code had drifted, and the test that
-    /// caught it was the one asserting the opposite of what was then true.
-    ///
-    /// A ported role is checked by what it DOES rather than by its exit code alone,
-    /// because "does not exit 2" is a weak claim: a stub that printed nothing and
-    /// returned 0 would pass it. `Render` over no fixtures prints the empty array its
-    /// format promises, which is a real behaviour and the one an empty invocation has.
-    #[test]
-    fn a_ported_role_runs_rather_than_refusing() {
-        let mut out = Vec::new();
-        let code = {
-            // `run` writes to the real stdout; the claim here is the CODE plus the
-            // fact that the renderer's own parser accepted zero fixtures, which is
-            // what it does with an empty argument list.
-            let c = run(R::Render, &[]);
-            out.push(c);
-            c
-        };
-        assert_ne!(
-            code,
-            ExitCode::from(2),
-            "Render is wired now, so it must not report 'not a role of this binary yet' — \
-             if this fails, an unported-role list still names it"
-        );
-        assert!(
-            matches!(code, ExitCode::SUCCESS | ExitCode::FAILURE),
-            "{code:?}"
-        );
     }
 }

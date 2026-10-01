@@ -84,6 +84,7 @@
 //! several tokens each. Emitting them as [`RenderSpan::Control`] would fail to
 //! resolve at startup, which is the failure mode the control table exists to force.
 
+pub mod cli;
 use std::sync::OnceLock;
 
 use letibot_dialect::{
