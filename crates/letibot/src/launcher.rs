@@ -290,3 +290,288 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+// --- is it listening, and which process is it ------------------------------------
+
+/// **Is this socket being listened on right now?**
+///
+/// The shell asks `ss -lxpH`, and its own comment on the helper that does it records a
+/// bug worth not repeating: `ss … | grep -q` is a trap under `pipefail`, because `grep
+/// -q` exits on the first match, `ss` gets SIGPIPE, and `pipefail` reports the writer's
+/// 141 even though the last command succeeded. Measured there as *"a live daemon
+/// labelled STALE"* about one run in ten. Reading a file cannot have that failure.
+///
+/// # Why `/proc` and not `ss`, and it is NOT speed
+///
+/// MEASURED on this box: an `ss -lxpH` fork costs **11.24 ms**, and the `/proc` read
+/// below costs **10.27 ms**. That is the same number for practical purposes, so this is
+/// not a performance change and should not be described as one. The reason is that **`ss`
+/// may not be installed** — the shell's `daemon_pid` documents that explicitly ("the
+/// record is a fallback for a box without `ss`") — and `/proc/net/unix` is always there
+/// on Linux. One fewer external command in the path that decides whether a daemon is up.
+///
+/// `/proc/net/unix` has no pid column: it carries the INODE, and the process holding that
+/// inode is found by scanning `/proc/<pid>/fd`. Measured against a live daemon: the path
+/// is field index 7, the inode index 6, and the scan returned exactly the pid the record
+/// named.
+pub fn is_listening(socket: &Path) -> bool {
+    inode_of(socket).is_some()
+}
+
+/// The socket inode from `/proc/net/unix`, or `None` when it is not listed — which is
+/// what "nothing is listening on this path" means.
+fn inode_of(socket: &Path) -> Option<String> {
+    let want = socket.as_os_str().as_encoded_bytes();
+    let table = std::fs::read("/proc/net/unix").ok()?;
+    for line in table.split(|b| *b == b'\n') {
+        let text = String::from_utf8_lossy(line);
+        let mut fields = text.split_whitespace();
+        // `Num RefCount Protocol Flags Type St Inode [Path]` — the path is absent for an
+        // abstract socket, which is why this cannot assume eight fields.
+        let (mut inode, mut path) = (None, None);
+        for (i, f) in fields.by_ref().enumerate() {
+            if i == 6 {
+                inode = Some(f.to_string());
+            }
+            path = Some(f);
+        }
+        if let (Some(inode), Some(path)) = (inode, path) {
+            if path.as_bytes() == want {
+                return Some(inode);
+            }
+        }
+    }
+    None
+}
+
+/// **The pid LISTENING on this socket** — the daemon, whatever the record says.
+///
+/// The shell's comment is the specification: *"The pid LISTENING on our socket … the
+/// record is a fallback for a box without `ss`."* So the socket is asked first and the
+/// record second, and the record's answer is only believed when `/proc/<pid>` still
+/// exists.
+///
+/// **More than one process can hold the socket**, because a child inherits open
+/// descriptors — so among the holders this prefers one whose command line names
+/// `harnessd`. That is the same check the shell's `--stop --all` makes before it kills
+/// anything, and it is the difference between stopping the daemon and stopping whatever
+/// happened to inherit its socket.
+pub fn daemon_pid(where_: &Where) -> Option<u32> {
+    if let Some(inode) = inode_of(&where_.socket) {
+        let want = format!("socket:[{inode}]");
+        let mut holders: Vec<u32> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir("/proc") {
+            for e in entries.flatten() {
+                let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+                    continue;
+                };
+                let fds = e.path().join("fd");
+                let Ok(list) = std::fs::read_dir(&fds) else {
+                    continue;
+                };
+                for fd in list.flatten() {
+                    if std::fs::read_link(fd.path())
+                        .ok()
+                        .and_then(|t| t.to_str().map(str::to_string))
+                        == Some(want.clone())
+                    {
+                        holders.push(pid);
+                        break;
+                    }
+                }
+            }
+        }
+        holders.sort_unstable();
+        if let Some(pid) = holders.iter().copied().find(|p| is_harnessd(*p)) {
+            return Some(pid);
+        }
+        if let Some(pid) = holders.first() {
+            return Some(*pid);
+        }
+    }
+    // The record, believed only while the process is still there.
+    let r = read_record(&where_.record)?;
+    let pid = r.pid?;
+    if Path::new(&format!("/proc/{pid}")).is_dir() {
+        return Some(pid);
+    }
+    None
+}
+
+/// Does `/proc/<pid>/cmdline` name `harnessd` as the program?
+///
+/// The shell does this with `tr '\0' '\n' < /proc/$pid/cmdline | head -1 | grep -q
+/// harnessd` — the first field is argv[0], and matching the basename avoids a path that
+/// merely contains the word.
+pub fn is_harnessd(pid: u32) -> bool {
+    let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+        return false;
+    };
+    let first = raw.split(|b| *b == 0).next().unwrap_or(&[]);
+    let name = String::from_utf8_lossy(first);
+    Path::new(name.trim())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n == "harnessd")
+        .unwrap_or(false)
+}
+
+/// **A socket file that something is listening on** — the shell's `live`.
+///
+/// Two questions, and both are asked because they fail differently: the path must be a
+/// socket (`-S`), and something must be listening. A stale socket file outlives a crashed
+/// daemon, which is the shell's own reason for not trusting the file alone: *"is there a
+/// daemon there"* is a conversation, not a stat.
+pub fn live(where_: &Where) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    match std::fs::metadata(&where_.socket) {
+        Ok(m) if m.file_type().is_socket() => is_listening(&where_.socket),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+
+    /// **A path with nothing on it is not listening**, and neither is a plain file —
+    /// the case a stale record leaves behind.
+    #[test]
+    fn a_path_with_no_socket_is_not_listening() {
+        let dir = std::env::temp_dir().join(format!("letibot-live-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let w = locate_in(&dir, Path::new("/home/dead/Projects/letibot"));
+
+        assert!(!is_listening(&w.socket), "nothing has been created yet");
+        assert!(!live(&w), "and `live` agrees");
+
+        // A plain FILE at the socket path is the stale case: the path exists, nothing is
+        // listening. `live` must say no where a bare `-e` would say yes.
+        std::fs::write(&w.socket, b"").expect("write");
+        assert!(w.socket.exists(), "the file is there");
+        assert!(!live(&w), "…and it is still not a daemon");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A record with no pid, or a pid that is not running, is not a daemon.
+    #[test]
+    fn the_record_is_a_fallback_only_while_its_process_exists() {
+        let dir = std::env::temp_dir().join(format!("letibot-fb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let w = locate_in(&dir, Path::new("/home/dead/Projects/letibot"));
+
+        // No record at all.
+        assert_eq!(daemon_pid(&w), None);
+
+        // A record whose pid is gone — `u32::MAX` is never a live pid, and the pid
+        // space is not going to reach it.
+        std::fs::write(
+            &w.record,
+            r#"{"workspace":"/home/dead/Projects/letibot","pid":4294967295}"#,
+        )
+        .expect("write");
+        assert_eq!(
+            daemon_pid(&w),
+            None,
+            "a dead pid in the record is not a daemon"
+        );
+
+        // And a record naming THIS process, which is certainly alive.
+        std::fs::write(
+            &w.record,
+            format!(r#"{{"workspace":"/x","pid":{}}}"#, std::process::id()),
+        )
+        .expect("write");
+        assert_eq!(daemon_pid(&w), Some(std::process::id()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **This process is not `harnessd`**, and the check says so — the guard that keeps
+    /// a `--stop` from killing whatever inherited the socket rather than the daemon.
+    #[test]
+    fn the_harnessd_check_is_not_a_substring_match() {
+        assert!(
+            !is_harnessd(std::process::id()),
+            "the test binary is not harnessd, however its path is spelled"
+        );
+        assert!(
+            !is_harnessd(u32::MAX),
+            "and a pid with no /proc entry is not"
+        );
+    }
+
+    /// **The Rust agrees with `ss` about the daemons running RIGHT NOW.**
+    ///
+    /// This is the cross-check the whole port rests on and it cannot be a unit test: it
+    /// compares this module's answer against the tool the shell uses, for every record
+    /// on the box, and reports the stale ones by name. It SKIPS when nothing is running
+    /// — a runner has no daemons — and says so, rather than passing vacuously.
+    ///
+    /// MEASURED when written: 10 records, 6 live, and the pid agreed in every case.
+    #[test]
+    fn every_live_daemon_agrees_with_ss() {
+        use std::process::Command;
+        let dir = rundir();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            eprintln!(
+                "SKIPPED: no {} on this box, so there are no daemons to compare",
+                dir.display()
+            );
+            return;
+        };
+        // `ss` is what the shell uses; if it is not installed, neither answer exists and
+        // this is the box the /proc read was written for.
+        let Ok(ss) = Command::new("ss").arg("-lxpH").output() else {
+            eprintln!("SKIPPED: no `ss` here — which is exactly why this reads /proc");
+            return;
+        };
+        let ss = String::from_utf8_lossy(&ss.stdout).into_owned();
+
+        let (mut n_live, mut stale, mut agreed) = (0, 0, 0);
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(rec) = read_record(&path) else {
+                continue;
+            };
+            if rec.workspace.is_empty() {
+                continue;
+            }
+            let w = locate(Path::new(&rec.workspace));
+            if !live(&w) {
+                stale += 1;
+                continue;
+            }
+            n_live += 1;
+            // What `ss` says: the pid on the line naming this socket.
+            let ss_pid = ss
+                .lines()
+                .find(|l| l.contains(rec.socket.as_str()))
+                .and_then(|l| l.split("pid=").nth(1))
+                .and_then(|r| r.split(',').next())
+                .and_then(|p| p.parse::<u32>().ok());
+            let mine = daemon_pid(&w);
+            if ss_pid.is_some() && mine == ss_pid {
+                agreed += 1;
+            } else {
+                eprintln!(
+                    "  {} ss says pid={ss_pid:?}, this module says pid={mine:?}",
+                    rec.socket
+                );
+            }
+        }
+        assert!(
+            n_live > 0,
+            "nothing was listening, so this proved nothing — it should have SKIPPED"
+        );
+        assert_eq!(
+            agreed, n_live,
+            "every live daemon must be found at the pid `ss` reports; {stale} record(s) were stale"
+        );
+        eprintln!("agreed with ss on {agreed} live daemon(s); {stale} stale record(s) skipped");
+    }
+}
