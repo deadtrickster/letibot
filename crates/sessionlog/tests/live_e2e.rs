@@ -46,12 +46,11 @@ use chatml::{ChatMlParser, ChatMlRenderer};
 fn vocab() -> &'static Vocab {
     static VOCAB: OnceLock<Vocab> = OnceLock::new();
     VOCAB.get_or_init(|| {
-        let path = std::env::var("LETIBOT_VOCAB_GGUF").unwrap_or_else(|_| {
-            "/home/dead/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
-                .to_string()
-        });
-        let p = std::path::PathBuf::from(&path);
-        assert!(p.is_file(), "no vocabulary GGUF at {path}");
+        // One home for this path: `letibot_tokencore::apparatus`. It was
+        // written out in seven crates, and `LETIBOT_VOCAB_GGUF` now wins
+        // unconditionally there rather than being a hint.
+        let p = letibot_tokencore::apparatus::gguf_path();
+        assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
         Vocab::load(&p).expect("the vocabulary must load")
     })
 }

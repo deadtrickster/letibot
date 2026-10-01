@@ -36,6 +36,9 @@ fn opened<'a>(cfg: &Config, parts: &'a Parts) -> Harness<'a> {
 
 #[test]
 fn a_resume_comes_back_with_the_plan_the_model_was_working_from() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let dir = TempDir::new("harnessd-todos");
     let path = dir.path().join("sessions.db");
     let session_id = "todos-restore-test";
@@ -94,6 +97,9 @@ fn a_resume_comes_back_with_the_plan_the_model_was_working_from() {
 
 #[test]
 fn a_session_that_never_wrote_todos_opens_with_an_empty_board() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let dir = TempDir::new("harnessd-todos-empty");
     let path = dir.path().join("sessions.db");
     let cfg = config(&path, "todos-empty-test");
@@ -161,8 +167,8 @@ impl Drop for TempDir {
 // the whole of the fix: whether it then fires is `deliver_due_nags`' business and is
 // the same code the turn-end path has always used.
 
-use letibot_harnessd::sessions::Outcome;
 use letibot_harnessd::Sessions;
+use letibot_harnessd::sessions::Outcome;
 use letibot_sessionlog::event::{TodoBy as WireTodoBy, TodoEntry, TodoStatus as WireTodoStatus};
 use letibot_sessionlog::hub::{CommandKind, QueuedCommand};
 use letibot_sessionlog::registry::Registry;
@@ -200,6 +206,9 @@ fn a_session_with_an_open_plan(tag: &str) -> (TempDir, std::path::PathBuf, Strin
 
 #[test]
 fn a_session_reopened_with_an_open_plan_arms_its_idle_clock() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (_dir, path, session_id) = a_session_with_an_open_plan("rearm-open");
     let cfg = config(&path, &session_id);
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
@@ -220,6 +229,9 @@ fn a_session_reopened_with_an_open_plan_arms_its_idle_clock() {
 
 #[test]
 fn a_reopened_session_with_a_finished_plan_arms_nothing() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (_dir, path, session_id) = a_session_with_an_open_plan("rearm-done");
     // Every row completed: a plan with nothing open is not a plan to nag about.
     Store::open(&path)
@@ -250,6 +262,9 @@ fn a_reopened_session_with_a_finished_plan_arms_nothing() {
 
 #[test]
 fn a_row_the_operator_adds_to_an_idle_session_arms_the_clock() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (_dir, path, session_id) = a_session_with_an_open_plan("rearm-set");
     // Start from a FINISHED plan so the open itself arms nothing, and the only
     // thing that can arm is the operator's own row.

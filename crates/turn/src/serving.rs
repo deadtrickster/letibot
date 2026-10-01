@@ -70,6 +70,25 @@ pub fn reachable(endpoint: &Endpoint) -> bool {
     http::get(endpoint, "/props").is_ok()
 }
 
+/// **Did somebody SAY where the model is?** — `LETIBOT_COMPLETION_URL` is set.
+///
+/// The distinction this exists for is between two states that look identical at the
+/// socket, because nothing answers in either:
+///
+///   * **configured and refusing** — somebody promised a server at this address. The
+///     run was told where the model is and it is not there. That is a FAILURE.
+///   * **never meant to have one** — the address is the default, nobody said
+///     anything, and this is a runner, a fresh clone or a laptop. That is absent
+///     apparatus, and it skips.
+///
+/// Without this, an endpoint somebody configured is silently skipped over, and the
+/// skip becomes the place a real failure hides — which is the objection that keeps
+/// this tree's live tests honest. `LETIBOT_REQUIRE_MODEL` remains as the belt: it
+/// refuses the skip even for an unconfigured endpoint.
+pub fn endpoint_is_configured() -> bool {
+    std::env::var_os("LETIBOT_COMPLETION_URL").is_some()
+}
+
 /// **Should this live test skip?** — the one question a live test asks before it spends a turn.
 ///
 /// `true` means nothing answered at `endpoint` and the caller should return early. The line is
@@ -93,6 +112,23 @@ pub fn reachable(endpoint: &Endpoint) -> bool {
 pub fn skip_live_test(endpoint: &Endpoint, what: &str) -> bool {
     if reachable(endpoint) {
         return false;
+    }
+    // **A configured endpoint that refuses is a failure, not a skip.**
+    //
+    // MEASURED, and it is why this is here rather than assumed: nothing answers,
+    // either way, so the socket cannot tell the two apart. What can is whether
+    // `LETIBOT_COMPLETION_URL` was SET — a promise about where the model is.
+    if endpoint_is_configured() {
+        panic!(
+            "LETIBOT_COMPLETION_URL points at {}, and nothing answers there, so {} \
+             cannot run.\n\n\
+             A server that was CONFIGURED and is refusing is a failure rather than a \
+             skip: this run was told which endpoint to use, and it is not up. Unset \
+             LETIBOT_COMPLETION_URL to let a machine that was never meant to have a \
+             server skip instead, or set LETIBOT_REQUIRE_MODEL=1 to refuse both.",
+            endpoint.authority(),
+            what
+        );
     }
     let required = std::env::var("LETIBOT_REQUIRE_MODEL")
         .map(|v| !v.is_empty() && v != "0")
@@ -318,5 +354,47 @@ mod ctx_tests {
         let rest = rest.trim_start().strip_prefix(':').unwrap().trim_start();
         let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
         assert_eq!(digits.parse::<u64>().unwrap(), 262144);
+    }
+}
+
+#[cfg(test)]
+mod skip_tests {
+    use super::*;
+
+    /// **The distinction, tested directly**, because neither state can be arranged
+    /// on a box that HAS a server: it is set up with an endpoint on a port nothing
+    /// listens on, and the difference is made by the environment alone.
+    #[test]
+    fn a_configured_endpoint_that_refuses_is_a_failure_and_an_unconfigured_one_skips() {
+        // Port 9 (discard) is the traditional nothing-listens-here.
+        let dead = Endpoint::new("127.0.0.1", 9);
+        let saved = std::env::var_os("LETIBOT_COMPLETION_URL");
+
+        // Configured: the promise was made, so silence is a failure.
+        unsafe { std::env::set_var("LETIBOT_COMPLETION_URL", "http://127.0.0.1:9") };
+        let configured_blew =
+            std::panic::catch_unwind(|| skip_live_test(&dead, "This test")).is_err();
+
+        // Not configured: nobody promised anything, so silence is absent apparatus.
+        unsafe { std::env::remove_var("LETIBOT_COMPLETION_URL") };
+        let unconfigured_skipped = skip_live_test(&dead, "This test");
+
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("LETIBOT_COMPLETION_URL", v),
+                None => std::env::remove_var("LETIBOT_COMPLETION_URL"),
+            }
+        }
+
+        assert!(
+            configured_blew,
+            "a CONFIGURED endpoint that refuses must fail — otherwise the skip becomes \
+             the place a real failure hides"
+        );
+        assert!(
+            unconfigured_skipped,
+            "an UNCONFIGURED endpoint that refuses must skip — that is a runner, a fresh \
+             clone, or a laptop"
+        );
     }
 }

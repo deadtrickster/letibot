@@ -55,10 +55,18 @@ use std::path::PathBuf;
 
 /// The vocabulary this box tokenises with.
 ///
-/// **One home for a path that was written out in six crates.** It was
+/// **One home for the copies that had to decide whether to skip.** It was
 /// `/home/dead/models/qwen3.8-flash-next/…` in `tokencore`, `engine_decisions`,
-/// `compaction`, `restore`, `todos_live` and `compact_live` — six copies of one
-/// string, which is the shape that drifts.
+/// `compaction`, `live_e2e`, `live_qwen`, `loop_closes`, `restore`, `todos_live`
+/// and `compact_live` — the same string in nine places, which is the shape that
+/// drifts, with `LETIBOT_VOCAB_GGUF` handled slightly differently in each.
+///
+/// **What is deliberately NOT consolidated**, so this claim is checkable rather
+/// than sweeping: `crates/harnessd/src/config.rs` keeps its own copy, because that
+/// one is the DAEMON'S default vocabulary rather than a test's, and a daemon
+/// refusing to start without a vocabulary is the behaviour we want. `serving.rs`
+/// and the remaining live-test helpers are not touched here — they are read-only
+/// about the path and already guard on the server before they need it.
 ///
 /// **An explicit `LETIBOT_VOCAB_GGUF` WINS, and is not a hint.** The first version
 /// of this scanned its candidates for the first one that existed, which MEANT a
@@ -131,6 +139,17 @@ pub fn present(what: &str, here: bool) -> Option<()> {
          \x20 its absence a failure rather than a skip."
     );
     None
+}
+
+/// Announce the skip and return `()`, for a caller that has ALREADY discovered the
+/// absence and is in an `else` branch.
+///
+/// `let Some(x) = probe() else { return apparatus::absent("a store"); };` reads as one
+/// line, where the alternative is a `present` call whose `Some` arm is unreachable and
+/// has to be written anyway. `present`'s refusal under `LETIBOT_REQUIRE_APPARATUS` still
+/// fires, so this cannot become a quieter path.
+pub fn absent(what: &str) {
+    let _ = present(what, false);
 }
 
 /// The vocabulary, or `None` with the skip already announced.

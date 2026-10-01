@@ -68,13 +68,19 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
         return;
     }
 
-    assert!(
+    // **The vocabulary is apparatus whether or not a server answered**, so it is
+    // the same skip rather than an assert. This used to `assert!` — with a message
+    // telling the reader how to make it SKIP, which is a sentence that should have
+    // been the code. MEASURED: with a server up and the override pointing at
+    // nothing, the assert fired and reported absent apparatus as a failed
+    // assertion; on a runner there is no server, so the earlier guard caught it and
+    // the inconsistency stayed hidden.
+    let Some(_) = letibot_tokencore::apparatus::present(
+        &format!("a GLM vocabulary GGUF ({GLM_GGUF})"),
         std::path::Path::new(GLM_GGUF).is_file(),
-        "a model server answered at {} but there is no GLM vocabulary GGUF at \
-         {GLM_GGUF}, so the turn cannot be built. Point LETIBOT_VOCAB_GGUF at a GLM \
-         vocabulary, or unset LETIBOT_REQUIRE_MODEL to let this test skip.",
-        cfg.endpoint.authority()
-    );
+    ) else {
+        return;
+    };
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     let hub = Hub::new(session_id);
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session must open");

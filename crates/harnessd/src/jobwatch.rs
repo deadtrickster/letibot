@@ -396,6 +396,12 @@ mod tests {
 
     #[test]
     fn a_backgrounded_result_through_the_sink_publishes_the_jobs_settlement() {
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a cgroup v2 tree",
+            letibot_tools::Cgroup2::probe().is_ok(),
+        ) else {
+            return;
+        };
         let hub = Hub::new("s-jobs");
         let host = a_host();
         let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
@@ -431,6 +437,12 @@ mod tests {
 
     #[test]
     fn a_job_watched_twice_and_again_after_settlement_publishes_once() {
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a cgroup v2 tree",
+            letibot_tools::Cgroup2::probe().is_ok(),
+        ) else {
+            return;
+        };
         let hub = Hub::new("s-jobs");
         let host = a_host();
         let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
@@ -474,6 +486,12 @@ mod tests {
     /// the operator's "a deliberate block before a dependent step" depends on.
     #[test]
     fn delivering_is_true_only_while_a_watcher_is_live_for_that_job() {
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a cgroup v2 tree",
+            letibot_tools::Cgroup2::probe().is_ok(),
+        ) else {
+            return;
+        };
         let hub = Hub::new("s-jobs");
         let host = a_host();
         let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
@@ -537,6 +555,12 @@ mod tests {
     /// the model's next call. A test on a clock would be testing the thread scheduler.
     #[test]
     fn the_sink_arms_the_watcher_and_that_is_what_makes_a_wait_decline() {
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a cgroup v2 tree",
+            letibot_tools::Cgroup2::probe().is_ok(),
+        ) else {
+            return;
+        };
         let hub = Hub::new("s-jobs");
         let host = a_host();
         let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
@@ -587,6 +611,12 @@ mod tests {
     /// which is gone by the time a settlement is delivered).
     #[test]
     fn a_settled_job_is_queued_for_the_model_with_the_command_the_event_omits() {
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a cgroup v2 tree",
+            letibot_tools::Cgroup2::probe().is_ok(),
+        ) else {
+            return;
+        };
         let hub = Hub::new("s-jobs");
         let host = a_host();
         let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
@@ -622,6 +652,12 @@ mod tests {
     /// own `a_wake_is_served_after_every_queued_command` asserts for a monitor's.
     #[test]
     fn a_jobs_completion_wakes_the_worker_with_no_command_behind_it_and_after_one_that_is() {
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a cgroup v2 tree",
+            letibot_tools::Cgroup2::probe().is_ok(),
+        ) else {
+            return;
+        };
         use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
 
         let r = Registry::new();

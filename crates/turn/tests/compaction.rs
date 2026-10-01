@@ -35,12 +35,11 @@ const TOOL_CALL_CLOSE: u32 = 248059;
 fn vocab() -> &'static Vocab {
     static VOCAB: OnceLock<Vocab> = OnceLock::new();
     VOCAB.get_or_init(|| {
-        let path = std::env::var("LETIBOT_VOCAB_GGUF").unwrap_or_else(|_| {
-            "/home/dead/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
-                .to_string()
-        });
-        let p = std::path::PathBuf::from(&path);
-        assert!(p.is_file(), "no vocabulary GGUF at {path}");
+        // One home for this path: `letibot_tokencore::apparatus`. It was
+        // written out in seven crates, and `LETIBOT_VOCAB_GGUF` now wins
+        // unconditionally there rather than being a hint.
+        let p = letibot_tokencore::apparatus::gguf_path();
+        assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
         Vocab::load(&p).expect("the vocabulary must load")
     })
 }
@@ -135,6 +134,9 @@ fn a_summary_turn(thought: &[u32], answer: &[u32], n_prompt: u64, cache_n: u64) 
 ///   with no reconciliation between them.
 #[test]
 fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let _lock = serial();
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
 
@@ -219,6 +221,9 @@ fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
 /// swallowed: the outcome carries the tool calls and the caller refuses.
 #[test]
 fn a_summary_turn_that_calls_tools_surfaces_them() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let _lock = serial();
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
 
@@ -275,6 +280,9 @@ fn a_summary_turn_that_calls_tools_surfaces_them() {
 /// a compaction that did not run must say so, not vanish into retries.
 #[test]
 fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_compaction() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let _lock = serial();
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
 
@@ -391,6 +399,9 @@ fn token_frames(ids: &[u32]) -> Vec<Frame> {
 /// the wall with `/compact` retrying into the same wall.
 #[test]
 fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let _lock = serial();
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
 
@@ -505,6 +516,9 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
 /// (262144)` from qwen for the SUMMARY. The second is this bug.
 #[test]
 fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     use letibot_backend::{
         BackendCaps, BackendError, Completion, Delta, MessagesBackend, StreamFlow, TurnRequest,
     };

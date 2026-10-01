@@ -189,11 +189,14 @@ fn restores_faithfully(loaded: &LoadedTranscript) -> Session {
 #[test]
 fn every_session_in_the_real_store_restores_with_its_chain_intact() {
     let Some((_dir, store)) = real_store_copy() else {
-        panic!(
-            "no store to restore. This assertion is about the sessions an operator \
-             will type `letibot --continue` against, and a fixture cannot stand in for \
-             them: it holds tokens this harness produced, not tokens a model did. Set \
-             LETIBOT_STORE to a sessions.db, or run this on the box that has one."
+        // **Absent apparatus, not a failed assertion** — and the comment it replaces
+        // is kept in substance, because it is right about FIXTURES: a synthetic store
+        // holds tokens this harness produced, not tokens a model did, so it cannot
+        // stand in. That argues against fabricating one, not against skipping: on the
+        // box that has a real store this runs in full, and on the box that does not it
+        // says so. See `letibot_tokencore::apparatus`.
+        return letibot_tokencore::apparatus::absent(
+            "a session store (LETIBOT_STORE, or ~/.local/share/letibot/sessions.db)",
         );
     };
 
@@ -228,7 +231,9 @@ fn every_session_in_the_real_store_restores_with_its_chain_intact() {
 #[test]
 fn a_row_whose_tokens_were_changed_is_refused_by_name() {
     let Some((_dir, store)) = real_store_copy() else {
-        panic!("no store; see the other test in this file for why this is not skipped");
+        return letibot_tokencore::apparatus::absent(
+            "a session store (LETIBOT_STORE, or ~/.local/share/letibot/sessions.db)",
+        );
     };
     let id = transcripts(&store)
         .into_iter()
@@ -261,7 +266,9 @@ fn a_row_whose_tokens_were_changed_is_refused_by_name() {
 #[test]
 fn rows_and_items_that_do_not_pair_are_refused_rather_than_zipped() {
     let Some((_dir, store)) = real_store_copy() else {
-        panic!("no store; see the first test in this file for why this is not skipped");
+        return letibot_tokencore::apparatus::absent(
+            "a session store (LETIBOT_STORE, or ~/.local/share/letibot/sessions.db)",
+        );
     };
     let id = transcripts(&store)
         .into_iter()

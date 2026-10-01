@@ -177,10 +177,10 @@ fn config(store: &std::path::Path, session_id: &str, workspace: &str) -> Config 
 #[test]
 fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
     let Some((_dir, path)) = store_copy("harnessd-resume") else {
-        panic!(
-            "no store to resume. A fixture cannot stand in for this: the rows an \
-             operator will type `--continue` against hold tokens a real model \
-             produced. Set LETIBOT_STORE, or run this on the box that has one."
+        // Absent apparatus rather than a failed assertion; the fixture argument in
+        // the message above still stands (see `letibot_tokencore::apparatus`).
+        return letibot_tokencore::apparatus::absent(
+            "a session store (LETIBOT_STORE, or ~/.local/share/letibot/sessions.db)",
         );
     };
     // Loaded before the pick, because which session this build can resume depends
@@ -255,7 +255,9 @@ fn a_session_recorded_under_another_dialect_is_re_rendered_not_refused() {
     // another renderer's — appending this one's bytes to them builds a prompt no
     // model was ever trained on, and nothing downstream can see it.
     let Some((_dir, path)) = store_copy("harnessd-dialect") else {
-        panic!("no store; see the other test in this file for why this is not skipped");
+        return letibot_tokencore::apparatus::absent(
+            "a session store (LETIBOT_STORE, or ~/.local/share/letibot/sessions.db)",
+        );
     };
     let probe = Parts::load(&config(&path, "", "/tmp")).expect("the vocabulary must load");
     let (session_id, _, workspace) = biggest(&path, &renders_template(&probe));

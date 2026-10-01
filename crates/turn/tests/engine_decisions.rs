@@ -41,12 +41,11 @@ const TOOL_CALL_CLOSE: u32 = 248059;
 fn vocab() -> &'static Vocab {
     static VOCAB: OnceLock<Vocab> = OnceLock::new();
     VOCAB.get_or_init(|| {
-        let path = std::env::var("LETIBOT_VOCAB_GGUF").unwrap_or_else(|_| {
-            "/home/dead/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
-                .to_string()
-        });
-        let p = std::path::PathBuf::from(&path);
-        assert!(p.is_file(), "no vocabulary GGUF at {path}");
+        // One home for this path: `letibot_tokencore::apparatus`. It was
+        // written out in seven crates, and `LETIBOT_VOCAB_GGUF` now wins
+        // unconditionally there rather than being a hint.
+        let p = letibot_tokencore::apparatus::gguf_path();
+        assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
         Vocab::load(&p).expect("the vocabulary must load")
     })
 }
@@ -171,6 +170,9 @@ fn a_thinking_turn(thought: &[u32], answer: &[u32]) -> Vec<Frame> {
 #[test]
 fn a_reasoning_only_length_turn_fails_and_leaves_the_region_untouched() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Progress {
         total: 10,
@@ -248,6 +250,9 @@ fn a_reasoning_only_length_turn_fails_and_leaves_the_region_untouched() {
 #[test]
 fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Progress {
         total: 10,
@@ -324,6 +329,9 @@ fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
 #[test]
 fn a_turn_that_closes_its_reasoning_and_says_something_still_succeeds() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Progress {
         total: 10,
@@ -366,6 +374,9 @@ fn a_turn_that_closes_its_reasoning_and_says_something_still_succeeds() {
 #[test]
 fn a_truncated_tool_argument_refuses_the_entire_batch() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Token {
         id: THINK_OPEN,
@@ -451,6 +462,9 @@ fn a_truncated_tool_argument_refuses_the_entire_batch() {
 #[test]
 fn the_same_content_succeeds_when_it_was_not_truncated() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Token {
         id: THINK_OPEN,
@@ -515,6 +529,9 @@ fn the_same_content_succeeds_when_it_was_not_truncated() {
 #[test]
 fn repetition_collapse_aborts_the_turn_and_raises_a_named_warning() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let renderer = ChatMlRenderer::with_guards(vec![Guard::RepetitionRun { run: 8 }]);
     let parser = ChatMlParser;
     let at = ids_of("@")[0];
@@ -604,6 +621,9 @@ impl SteeringSource for Once {
 #[test]
 fn a_message_already_waiting_is_read_before_the_model_speaks() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![
         Frame::Token {
@@ -688,6 +708,9 @@ fn a_message_already_waiting_is_read_before_the_model_speaks() {
 #[test]
 fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Token {
         id: THINK_OPEN,
@@ -754,6 +777,9 @@ fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
 #[test]
 fn an_urgent_message_interrupts_the_generation_rather_than_waiting_for_it() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Token {
         id: THINK_OPEN,
@@ -816,6 +842,9 @@ fn an_urgent_message_interrupts_the_generation_rather_than_waiting_for_it() {
 #[test]
 fn two_turns_hold_the_invariant_and_the_reuse_is_reported_separately() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let make = |n: u64, cache: u64| {
         let mut f = vec![
@@ -925,6 +954,9 @@ fn two_turns_hold_the_invariant_and_the_reuse_is_reported_separately() {
 #[test]
 fn the_first_delta_of_a_turn_is_reasoning_because_the_generation_prompt_opened_it() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let thought = ids_of("The user wants the days of the week.");
     let answer = ids_of("Monday");
@@ -971,6 +1003,9 @@ fn the_first_delta_of_a_turn_is_reasoning_because_the_generation_prompt_opened_i
 #[test]
 fn a_boundary_literal_is_cut_out_of_the_stream_rather_than_shown_to_a_head() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let thought = ids_of("Seven of them.");
     let answer = ids_of("Monday");
@@ -1013,6 +1048,9 @@ fn a_boundary_literal_is_cut_out_of_the_stream_rather_than_shown_to_a_head() {
 #[test]
 fn a_heads_deltas_split_by_channel_equal_the_rows_the_turn_committed() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let thought = ids_of("They want seven lines and nothing else.");
     let answer = ids_of("Monday\nTuesday");
@@ -1074,6 +1112,9 @@ fn a_heads_deltas_split_by_channel_equal_the_rows_the_turn_committed() {
 #[test]
 fn the_body_of_a_tool_call_is_never_announced_as_assistant_text() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Token {
         id: THINK_OPEN,
@@ -1184,6 +1225,9 @@ fn suppressed_script(head: &[u32], tail: &[u32]) -> Vec<Frame> {
 #[test]
 fn a_suppressed_token_costs_the_tail_of_a_turn_and_not_the_whole_of_it() {
     let _g = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let head = ids_of("Reading it now.");
     let tail = ids_of(" And then some more.");
@@ -1295,6 +1339,9 @@ fn a_suppressed_token_costs_the_tail_of_a_turn_and_not_the_whole_of_it() {
 #[test]
 fn the_ids_after_an_unaccountable_frame_never_reach_the_ledger() {
     let _g = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let head = ids_of("Reading it now.");
     let tail = ids_of(" And then some more.");
@@ -1357,6 +1404,9 @@ impl SteeringSource for After {
 #[test]
 fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
 
     // Open a reasoning block and fill it with the shape that caused this: a model
@@ -1433,6 +1483,9 @@ fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
 #[test]
 fn a_streaming_turn_reports_the_servers_counter_on_every_frame_that_advances_it() {
     let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
     let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let thought = ids_of("The user wants the days of the week.");
     let answer = ids_of("Monday");

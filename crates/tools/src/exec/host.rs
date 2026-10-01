@@ -1542,6 +1542,16 @@ mod tests {
         // this process — including `BASH_ENV`, which bash sources even for
         // non-interactive shells — can reach the child, and `PATH` is the pinned
         // one rather than whatever the parent carries at spawn time.
+        // **The cgroup is apparatus.** `HostProcesses::new` asks the kernel for a
+        // delegatable cgroup v2 subtree; a container without one has none to give, and
+        // that is a fact about the MACHINE rather than about the environment this test
+        // plants. Skipped rather than failed, loudly, per `apparatus`.
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a cgroup v2 tree",
+            letibot_tools::Cgroup2::probe().is_ok(),
+        ) else {
+            return;
+        };
         let root = std::env::temp_dir().join(format!("letibot-r10-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         // Edition 2024: touching the process environment is unsafe, and this is
