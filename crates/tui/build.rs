@@ -22,13 +22,31 @@
 //! `RUNPATH` at all**. So one of the two linkers records a dependency the other
 //! drops — and `letibot-tui` has no runpath to satisfy it with, on either.
 //!
-//! **Why the arm64 linker does that is not established here**, and this file does
-//! not claim to know: `letibot-tokencore` is not in this crate's dependency graph
-//! (`cargo tree -p letibot-tui` has zero occurrences of it), and tokencore is the
-//! only package that emits `-lllama`. Finding out would need an arm64 machine. What
-//! IS established is that the shipped binary cannot be trusted to have the
-//! dependency list its author measured, and that a package is the wrong place to
-//! discover it.
+//! **Why is now established, from the artifact the fixed run uploaded.** The arm64
+//! `letibot-tui` declares two libraries its x86_64 twin does not:
+//!
+//! ```text
+//! arm64  letibot-tui: NEEDED libllama.so.0, libsqlite3.so.0   (both tokencore's)
+//! x86_64 letibot-tui: NEEDED libc, libgcc_s, ld-linux          (neither)
+//! ```
+//!
+//! The libraries ARE offered to this link — the command line carries
+//! `-L native=…/build/letibot-tokencore-<hash>/out` and the llama directory, and
+//! `cargo:rustc-link-lib` propagates from a dependency where `rustc-link-arg` does
+//! not. Whether an offered-but-unused library survives to `DT_NEEDED` is the
+//! linker's `--as-needed` decision, and the two runners' toolchains disagree.
+//! Demonstrated on this box rather than asserted:
+//!
+//! ```text
+//! cc -o a main.c -Wl,--no-as-needed -L. -lunused  ->  NEEDED libunused.so  (kept)
+//! cc -o b main.c -Wl,--as-needed    -L. -lunused  ->  (no libunused)      (dropped)
+//! ```
+//!
+//! So the x86_64 head is *accidentally* clean: it needs no llama at run time today
+//! only because its linker is dropping a dependency that is genuinely being passed
+//! to it. Any symbol the head actually used from tokencore would put `libllama.so.0`
+//! back into ITS `DT_NEEDED` too. That is why the answer here is not "x86_64 does
+//! not need it" but "both get an rpath and both ship the libraries".
 //!
 //! # Why an rpath fixes it either way
 //!
