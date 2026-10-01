@@ -50,7 +50,19 @@ fi
 
 # Added, Copied, Modified or Renamed, never Deleted — rustfmt cannot read a file that
 # is gone, and `--diff-filter` is what makes a deletion not a crash.
-files=$(git diff --name-only --diff-filter=ACMR "$base" HEAD -- '*.rs' | sort)
+# **Committed changes, PLUS the working tree.**
+#
+# MEASURED, and it made this script's local run useless: `git diff base HEAD` sees only
+# COMMITTED files, so running it before a commit reported "this change touches no Rust
+# files" while a brand-new, unformatted `launcher.rs` sat in the working tree. CI is
+# unaffected — it runs on a clean tree after a push — but the run that is supposed to
+# catch a mistake before it leaves the machine saw nothing at all.
+#
+# `git status --porcelain` covers both modified-tracked (` M`) and untracked (`??`),
+# and the two lists are unioned. A path that appears twice does no harm: rustfmt on the
+# same file twice reports the same thing once per file.
+files=$( { git diff --name-only --diff-filter=ACMR "$base" HEAD -- '*.rs'
+           git status --porcelain -- '*.rs' | sed 's/^...//' ; } | sort -u )
 
 if [ -z "$files" ]; then
     echo "check-fmt: this change touches no Rust files"

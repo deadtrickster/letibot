@@ -26,3 +26,9 @@ letibot-dialect-qwen.workspace = true
 letibot-harnessd.workspace = true
 # The `Head` role: `head::run` is that binary's body, moved into this crate's lib.
 letibot-tui.workspace = true
+# The launcher role: a workspace hashes to a socket, and the key must match the
+# shell's `sha256sum | cut -c1-12` exactly or the port names a different daemon.
+sha2 = "0.10"
+# The record beside a socket is flat JSON, written by whichever launcher started
+# the daemon; reading it must survive a stale or half-written file.
+serde_json.workspace = true

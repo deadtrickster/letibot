@@ -59,6 +59,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::ExitCode;
 
+pub mod launcher;
 mod roles;
 
 /// What this invocation is being asked to be.

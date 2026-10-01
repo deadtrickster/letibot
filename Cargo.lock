@@ -971,6 +971,8 @@ dependencies = [
  "letibot-harnessd",
  "letibot-sessionlog",
  "letibot-tui",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
