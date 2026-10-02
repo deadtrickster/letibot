@@ -205,12 +205,39 @@ struct Accumulator {
     calls: Vec<(String, String, String)>, // (id, name, arguments) by index
     finish: Option<Finish>,
     usage: Option<Value>,
+    /// **The model the provider says it used**, read off the stream.
+    ///
+    /// Not the model we asked for, and the difference is the whole reason this field
+    /// exists. MEASURED 2026-10-02, this account:
+    ///
+    /// ```text
+    /// asked deepseek-chat    -> every chunk says  "model": "deepseek-flash"
+    /// asked deepseek-flash   -> every chunk says  "model": "deepseek-flash"
+    /// ```
+    ///
+    /// Six names are accepted and four are aliases, so the request name is a *wish*
+    /// and this is the fact. Cost was computed from the wish: `providers.toml` prices
+    /// `deepseek-chat` at 0.28/0.028/0.42 while the model actually serving it is
+    /// `deepseek-flash` at 0.15/0.003/0.6 — so a session on the retired alias reported
+    /// roughly twice the input rate and five times the cache rate of the turn it
+    /// really ran. `None` when the provider sends no `model` field at all, and then the
+    /// requested name is the only thing there is to price by.
+    model: Option<String>,
 }
 
 impl Accumulator {
     /// One SSE chunk → the deltas it carries, in order.
     fn absorb(&mut self, chunk: &Value) -> Vec<Delta> {
         let mut out = Vec::new();
+        // **Before the `choices` check below, deliberately.** The served model rides on
+        // every chunk including the usage-only one that carries no choices, and a
+        // version that read it after that `return` would miss exactly the chunks that
+        // matter least and the field that matters most.
+        if let Some(m) = chunk.get("model").and_then(|v| v.as_str())
+            && !m.is_empty()
+        {
+            self.model = Some(m.to_string());
+        }
         if let Some(u) = chunk.get("usage").filter(|u| !u.is_null()) {
             self.usage = Some(u.clone());
         }
@@ -305,7 +332,8 @@ impl Accumulator {
                     .and_then(|v| v.as_u64())
             })
             .unwrap_or(0);
-        // **The operator's file first, then the catalogue.**
+        // **The operator's file first, then the catalogue — and the SERVER's name, not
+        // ours.**
         //
         // `providers.toml` prices `deepseek-chat`, which is a model DeepSeek has
         // retired — so every turn on `deepseek-flash` reported `cost unpriced`,
@@ -318,13 +346,23 @@ impl Accumulator {
         // models.dev has the published rate, which is a better answer than
         // "unpriced" — and "unpriced" stays the answer when NEITHER has it, since
         // unpriced and free are different.
+        //
+        // **And the key is the served model, because the requested one is a wish.**
+        // MEASURED 2026-10-02: asking for `deepseek-chat` is answered by a stream whose
+        // every chunk says `"model": "deepseek-flash"`. Pricing the wish billed the
+        // retired alias's rate — 0.28/0.028/0.42 — for a turn the live model served at
+        // 0.15/0.003/0.6. When the provider sends no name, the requested one is all
+        // there is and is used; when it sends one that neither the file nor the
+        // catalogue prices, the turn is **unpriced**, which is the honest answer and
+        // the one this tree already prefers to a wrong number.
+        let billed = self.model.as_deref().unwrap_or(model);
         let micros_usd = creds
             .prices
-            .get(model)
+            .get(billed)
             .copied()
             .or_else(|| {
                 crate::catalogue::Catalogue::load()
-                    .model(preset.catalogue_id, model)
+                    .model(preset.catalogue_id, billed)
                     .and_then(|m| m.prices)
             })
             .map(|p| p.micros(prompt_tokens, cached_tokens, generated_tokens));
@@ -451,6 +489,72 @@ mod tests {
         };
         let p = OpenAiProvider::new(&crate::presets::DEEPSEEK, Some("m"), moved);
         assert_eq!(p.authority(), "10.0.0.7:8443");
+    }
+
+    /// **The provider's own `model` field is what gets billed, not the name we asked
+    /// for.**
+    ///
+    /// MEASURED 2026-10-02 against this account: `POST` with `model: deepseek-chat` is
+    /// answered by a stream in which every chunk says `"model": "deepseek-flash"`.
+    /// Cost was computed from the request, so a turn the live model served at
+    /// 0.15/0.003/0.6 was billed at the retired alias's 0.28/0.028/0.42 — and nothing
+    /// failed, because an alias is *supposed* to resolve.
+    ///
+    /// The two rates here are an order of magnitude apart so the assertion cannot pass
+    /// by arithmetic accident: 1000 prompt of which 600 cached and 100 out is 660
+    /// micro-USD at the served rate and 6600 at the requested one.
+    #[test]
+    fn the_served_model_is_what_gets_priced_not_the_requested_one() {
+        let mut creds = Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: None,
+        };
+        // The name we ASK for — a retired alias, priced by the operator's old table.
+        creds.prices.insert(
+            "deepseek-chat".into(),
+            crate::presets::Prices {
+                input: 10.0,
+                cached: 1.0,
+                output: 20.0,
+            },
+        );
+        // The name the provider ANSWERS with.
+        creds.prices.insert(
+            "deepseek-flash".into(),
+            crate::presets::Prices {
+                input: 1.0,
+                cached: 0.1,
+                output: 2.0,
+            },
+        );
+
+        let mut a = Accumulator::default();
+        // The shape of the real stream: the served name rides on every chunk.
+        a.absorb(&json!({"model": "deepseek-flash", "choices": [{"delta": {"content": "hi"}}]}));
+        a.absorb(&json!({"model": "deepseek-flash", "choices": [],
+                         "usage": {"prompt_tokens": 1000, "completion_tokens": 100,
+                                   "prompt_cache_hit_tokens": 600}}));
+        let done = a.finish("deepseek-chat", &creds, 12, &crate::presets::DEEPSEEK);
+        assert_eq!(
+            done.cost.micros_usd,
+            Some(660),
+            "the turn was priced from the model we asked for, not the one that served it"
+        );
+
+        // **And the control: with no `model` field at all, the request name is all
+        // there is to price by** — so this must not have become "always unpriced".
+        let mut b = Accumulator::default();
+        b.absorb(&json!({"choices": [],
+                         "usage": {"prompt_tokens": 1000, "completion_tokens": 100,
+                                   "prompt_cache_hit_tokens": 600}}));
+        let done = b.finish("deepseek-chat", &creds, 12, &crate::presets::DEEPSEEK);
+        assert_eq!(
+            done.cost.micros_usd,
+            Some(6600),
+            "a silent provider still prices"
+        );
     }
 
     /// **The request the API actually receives carries the reasoning back, because
