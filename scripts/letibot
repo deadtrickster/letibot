@@ -77,6 +77,12 @@ else
   # Nothing found: keep the FIRST candidate, so the message below names the place a
   # reader would expect to look — beside the launcher.
   [ -n "$BIN" ] || BIN="$_dir"
+  # **Resolved, so every message that names the binary names a path a reader can
+  # paste.** The source-tree candidate is `$_dir/../target/release`, and it printed
+  # through as `…/scripts/../target/release/harnessd` — ugly, and a path that only
+  # works from the directory it was written in. One `cd`, once, at startup: this is
+  # the value `--status`, the staleness line and every refusal quote back.
+  BIN="$(cd -- "$BIN" 2>/dev/null && pwd -P || printf '%s' "$BIN")"
 fi
 # THE HEAD IS A SEAT'S CHOICE. Everything above the head — finding or starting the
 # folder's daemon, the seat's defaults, --continue, --new — is this launcher's, and
@@ -799,6 +805,65 @@ daemon_line() {
   echo "harnessd for $WORKSPACE${p:+ (pid $p)}${started:+, up since $started}${role:+, role $role}${who:+ $who}"
 }
 
+# **THE DAEMON IS A PROCESS, AND EVERY FIX REACHES IT LAST.**
+#
+# A commit, a build and a running daemon are three different facts, and only the
+# third one changes what the operator sees. This is the tree's own rule — *"landed,
+# deployed and running are three different facts, and a rule you can read in a file
+# is evidence of none of them"* — and the daemon is where it keeps biting, because
+# it is the one long-lived process here and it reads its executable exactly once, at
+# exec.
+#
+# MEASURED 2026-10-02, three times in one day, and the third is the one that cost the
+# most: a fix committed at 16:37 and another at 17:01 were both in
+# `target/release/harnessd`, built 17:02, while leticl's daemon had started at 16:02.
+# So the head went on failing with `400: you requested 1464765 tokens` — which reads
+# EXACTLY like the unfixed bug, because as far as that process was concerned it was
+# the unfixed bug. The operator's report was *"leticl is stuck with compaction again,
+# for some reason it is broken"*, and it was not broken; it was 25 minutes behind.
+# Knowing that meant comparing a commit timestamp, `ps -o lstart` and a file's mtime
+# by hand. Nobody should have to do that once, never mind three times.
+#
+# **Both facts are already in this script**: `BIN` is the binary this launcher would
+# start, and `daemon_pid` names the one that is live. `/proc/<pid>`'s own mtime IS the
+# process start time — checked against `/proc/<pid>/stat` field 22 (starttime in clock
+# ticks, converted through `/proc/uptime`) and the two agree to 0.0s — so the whole
+# comparison is one `stat` and no interpreter fork, on a path that runs before
+# anything is on the screen.
+#
+# **A line, not a restart, and not a refusal.** A restart drops an in-flight turn and
+# that is the operator's call every time; the defect is not that a daemon is old, it is
+# that nothing says so. `/proc/<pid>/exe` reading `(deleted)` is the kernel telling the
+# truth — true of both stale daemons on this box today — but it says the executable was
+# REPLACED, not which way; the timestamps are what make the sentence specific.
+#
+# **And the line is about the BINARY, not about correctness.** A rebuild that only
+# touched the TUI obliges no daemon restart, so anything stronger would cry wolf on a
+# safe box. `it is not running what is on disk` is checkable and is true whenever it is
+# printed. The stronger answer is a build id carried by the daemon and compared by the
+# launcher — `--version` already distinguishes releases and would have caught every
+# case today — and that is a separate change.
+daemon_stale_line() {
+  local p dt bt
+  p="$(daemon_pid 2>/dev/null || true)"
+  [ -n "$p" ] || return 0
+  [ -x "$BIN/harnessd" ] || return 0
+  dt="$(stat -c %Y "/proc/$p" 2>/dev/null || true)"
+  bt="$(stat -c %Y "$BIN/harnessd" 2>/dev/null || true)"
+  # A `stat` that could not answer, or a value that is not a number: say nothing.
+  # Silence is the right answer for an unknown — this is a hint about a process, not
+  # a gate, and a guess here would be a warning about a daemon that is fine.
+  case "$dt$bt" in '' | *[!0-9]*) return 0 ;; esac
+  # Built before this daemon started? Then it is running what was on disk then.
+  [ "$bt" -gt "$dt" ] || return 0
+  # **With the date, not just the clock.** The daemon this was written for had been
+  # up for five days, and `started 14:57` reads as though that were today — the gap
+  # this line exists to name is a day count as often as it is minutes, so both ends
+  # carry the day. The path is quoted as resolved, which is what `BIN` now holds.
+  printf 'daemon %s started %s; %s was built %s — it is not running what is on disk\n' \
+    "$p" "$(date -d "@$dt" '+%m-%d %H:%M')" "$BIN/harnessd" "$(date -d "@$bt" '+%m-%d %H:%M')"
+}
+
 # Questions about the store need no socket, no model and no vocabulary. They are
 # answered before any of that is checked, so `letibot --sessions` still works on a
 # box whose model server is down -- which is exactly when you want to look.
@@ -928,6 +993,8 @@ SESSIONS_EOF
   --status)
     if up; then
       echo "up: $(daemon_line)"
+      stale="$(daemon_stale_line)"
+      [ -n "$stale" ] && echo "! $stale"
       echo "socket   $SOCKET"
     elif [ -n "$PROBE" ]; then
       # Something answered and refused. That is a different fact from silence, and
@@ -957,6 +1024,8 @@ SESSIONS_EOF
     retarget "${2:-}"
     if live; then
       echo "letibot: attached to $(daemon_line)" >&2
+      stale="$(daemon_stale_line)"
+      [ -n "$stale" ] && echo "letibot: ! $stale" >&2
       warn_swallowed_flags
       exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}"
     fi
@@ -1141,6 +1210,12 @@ fi
 # A daemon is already up. Ask it, rather than restarting it: a restart would cost
 # every other session on this box to open one, and one of them may be mid-turn.
 echo "letibot: attached to $(daemon_line)" >&2
+
+# **And say whether what is answering is what is on disk**, before anything else is
+# said: a stale daemon makes every other line here describe the wrong build. See
+# `daemon_stale_line` for why this is a sentence and not a restart.
+stale="$(daemon_stale_line)"
+[ -n "$stale" ] && echo "letibot: ! $stale" >&2
 
 # LANDED IS NOT RUNNING. `--bash` is a DAEMON flag: it decides which tools the seat
 # is given at open, and a daemon that is already up was opened without it. Attaching
