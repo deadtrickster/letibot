@@ -2396,10 +2396,10 @@ impl AdjudicatedGate {
             on_timeout: OnTimeout::Deny,
             // Layer A's, never the caller's.
             tier: baseline.tier.clone(),
-            resolved: !matches!(
-                baseline.verdict,
-                crate::intent::BaselineVerdict::NotRun { .. }
-            ),
+            // Layer A's, never the caller's — and **carried rather than read off the
+            // verdict**, because an unresolvable construct is now a widened scope rather
+            // than a `NotRun`. See `AuthorisationRequest::resolved`.
+            resolved: baseline.resolved,
             baseline: baseline.summary(),
             trail: match &self.trail_source {
                 Some(f) => f(call),
@@ -6018,24 +6018,35 @@ mod tests {
             "a secret reached a person"
         );
 
-        // **And a line the parser refused is refused**, which is a stronger statement
-        // than "it asks": the ruling's whole payment is that the parser's refusals are
-        // what makes a parsed line trustworthy. `not_run`, and nobody is consulted.
+        // **And a line the parser refused is now a line the POINT decides about**, which is
+        // the 2026-10-02 ruling: *"in allow-all, stop refusing a command because the
+        // grammar could not resolve a construct"*. It is still not a read — `$(ls)` has no
+        // known prefix and `cat` takes a path, so the scope widened to `unbounded` and the
+        // boundary conjunct in `reads_only` voids — so it keeps its exec access and the
+        // mode is consulted exactly as it would be for the literal spelling.
+        //
+        // **What must NOT change is that no model is asked.** `resolved` is carried
+        // separately from the verdict now and is still `false`, so `Adjudicable` is never
+        // minted and the only thing that can answer is a person. That is what the second
+        // assertion is for; the first is that this reached a human at all rather than
+        // being refused out of hand.
         let (mut g, asked) = gate();
         let unresolved = json!({"command": "cd /w && cat $(ls) src/lib.rs"});
         let row = g.request_for(&bash(&unresolved));
         assert_eq!(row.class.access, Access::Exec);
-        match g.admit(&bash(&unresolved)) {
-            GateDecision::Refuse {
-                outcome: ToolOutcome::NotRun { why },
-                ..
-            } => assert!(why.contains("could not resolve"), "{why}"),
-            other => panic!("an unresolvable line was not refused: {other:?}"),
-        }
+        assert!(
+            !row.resolved,
+            "the meaning was never resolved and the row says so"
+        );
+        assert!(
+            row.adjudicable().is_none(),
+            "a meaning nobody could read is never handed to a model to approve"
+        );
+        assert_eq!(g.admit(&bash(&unresolved)), GateDecision::Admit);
         assert_eq!(
             asked.load(Ordering::Relaxed),
-            0,
-            "an action nobody could read reached a person"
+            1,
+            "an action nobody could read must reach a person, exactly once"
         );
     }
 
@@ -6499,22 +6510,213 @@ mod tests {
         assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
+    /// **The operator's own command, at `allow-all`: admitted, with nobody asked.**
+    ///
+    /// This is the case that filed the ruling, verbatim from their pane:
+    ///
+    /// ```text
+    /// Ran "cd … && make lint; echo \"exit=$?\"; …"   · not run · 17 lines
+    /// this command's meaning does not exist yet, so nothing can decide about it.
+    /// who decided: boundary:normaliser
+    /// basis: … parameter_expansion: `$?` … decides the argument: "\"exit=$?\""
+    /// ...for allow all mode
+    /// ```
+    ///
+    /// The `$?` widens nothing — `echo` takes a string, not a place — so the command
+    /// reads as it would with a literal `$?` replaced by `0`, and the point admits it.
+    ///
+    /// **Measured at the point that has the rule in it**: `ALLOW_ALL_HERE`, which is
+    /// `exec: Admit` and `OperatorConsented`, with an adjudicator that FAILS if it is
+    /// consulted. Nothing is asked, which is the whole of what "for allow all mode"
+    /// meant. The second half is the other side of the ruling: the same command at
+    /// `always-ask` is NOT admitted by the point, so a person is asked — the widening is
+    /// a scope, not a bypass.
     #[test]
-    fn an_unresolvable_command_reaching_the_gate_is_not_run_and_never_admitted() {
+    fn the_operators_echo_dollar_question_is_admitted_at_allow_all_and_asks_elsewhere() {
+        use crate::mode::Mode;
+
+        // **`NoAdjudicator` fails closed on everything**, so an `Admit` here can only have
+        // come from the point. That is a stronger statement than "nobody was asked": it
+        // is that nobody COULD have admitted it and it was admitted anyway.
+        let cmd = json!({"command": "cd /w && make lint; echo \"exit=$?\""});
+
+        let mut permissive = AdjudicatedGate::new(Box::new(NoAdjudicator))
+            .with_mode(Mode::ALLOW_ALL_HERE)
+            .with_exec_follows_mode(true)
+            .with_surroundings(pinned());
+        assert_eq!(
+            permissive.admit(&bash(&cmd)),
+            GateDecision::Admit,
+            "allow-all is the point that admits this; the adjudicator refuses everything"
+        );
+        // And the row still says what was not read, which is the disclosure that replaces
+        // the refusal.
+        assert!(!permissive.log[0].request.resolved);
+        assert!(
+            permissive.log[0]
+                .request
+                .baseline
+                .contains("the meaning was never resolved"),
+            "the row must still say what was never read: {}",
+            permissive.log[0].request.baseline
+        );
+
+        // The same command where the point does not admit exec: a person decides, and no
+        // model is offered the question.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        let a = asked.clone();
+        let mut narrow = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human:test",
+            move |req: &AdjudicationRequest| {
+                a.fetch_add(1, Ordering::Relaxed);
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "deny_and_tell",
+                    "human:test",
+                    "not now",
+                ))
+            },
+        )))
+        .with_mode(Mode::ALWAYS_ASK)
+        .with_exec_follows_mode(false)
+        .with_surroundings(pinned());
+        assert!(
+            matches!(narrow.admit(&bash(&cmd)), GateDecision::Refuse { .. }),
+            "a narrow point must not admit it"
+        );
+        assert_eq!(asked.load(Ordering::Relaxed), 1, "a person was asked");
+    }
+
+    /// **An unresolvable command now reaches the POINT, and the point decides.**
+    ///
+    /// This test was `an_unresolvable_command_reaching_the_gate_is_not_run_and_never_admitted`
+    /// and it asserted a refusal. The operator's ruling of 2026-10-02 changed that — *"in
+    /// allow-all, stop refusing a command because the grammar could not resolve a
+    /// construct"* — so `/bin/cat $FILE` is admitted at a permissive point, and the two
+    /// facts that make that safe are what this pins:
+    ///
+    /// * **`resolved` is still `false`.** It is carried on its own now rather than read
+    ///   off the verdict, so no corpus row claims a resolution that never happened.
+    /// * **`adjudicable()` is still `None`.** A meaning nobody could read is never handed
+    ///   to a MODEL to approve; the point decides, and a point that does not admit asks a
+    ///   person. See the narrow-point half below, which is the other side of the ruling:
+    ///   *"a narrow mode finds the widened scope outside its grant and refuses"*.
+    /// **A standing grant never settles a command whose meaning was never resolved.**
+    ///
+    /// This is the property the operator's own instruction protects — *"that field must
+    /// stop being derived from it and start being carried on its own"* — and it is the
+    /// one place the change could have gone wrong invisibly. `Grant::covers` takes
+    /// `resolved` as an argument and refuses an unresolved action before it looks at
+    /// coverage (its own unit tests cover that); what those tests cannot see is whether
+    /// the GATE passes the right thing. It used to derive the flag from the verdict, and
+    /// the verdict for an unresolvable construct is no longer `NotRun` — so a version that
+    /// kept deriving it would pass `true` here and an `allow_session` taken over one
+    /// `cat` would quietly cover every later `cat $ANYTHING`.
+    ///
+    /// The pair is chosen so the grant CANNOT be refused for an incidental reason: the
+    /// two calls must have the same class and the same intents, which the assertion says
+    /// out loud rather than assuming. If that ever stops holding, this test fails on the
+    /// assertion rather than passing vacuously.
+    #[test]
+    fn a_standing_grant_does_not_cover_a_command_whose_meaning_was_never_resolved() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        let a = asked.clone();
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human:test",
+            move |req: &AdjudicationRequest| {
+                a.fetch_add(1, Ordering::Relaxed);
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_session",
+                    "human:test",
+                    "yes, for the session",
+                ))
+            },
+        )))
+        .with_mode(crate::mode::Mode::ALWAYS_ASK)
+        .with_exec_follows_mode(false)
+        .with_surroundings(pinned());
+
+        // First: a resolved call, which the person allows FOR THE SESSION.
+        let plain = json!({"command": "cd /w && make lint"});
+        let _ = g.admit(&bash(&plain));
+        assert_eq!(asked.load(Ordering::Relaxed), 1, "the first call asked once");
+
+        // Second: the same shape with one word the grammar cannot read. Same program,
+        // same class, same intents — so only `resolved` can keep the grant off it.
+        let opaque = json!({"command": "cd /w && make $TARGET"});
+        let resolved_row = g.request_for(&bash(&plain));
+        let opaque_row = g.request_for(&bash(&opaque));
+        assert_eq!(
+            resolved_row.class, opaque_row.class,
+            "the pair must differ only in resolution, or this test proves nothing"
+        );
+        assert!(opaque_row.adjudicable().is_none(), "and no model is asked");
+        let _ = g.admit(&bash(&opaque));
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            2,
+            "the grant must not have settled the unresolved call; nothing but a person may"
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_command_reaching_the_gate_is_admitted_at_a_permissive_point() {
         let mut g = permissive_gate();
         let args = json!({"command": "/bin/cat $FILE"});
-        match g.admit(&bash(&args)) {
-            GateDecision::Refuse {
-                outcome: ToolOutcome::NotRun { why },
-                tell,
-            } => {
-                assert!(why.contains("$FILE"), "{why}");
-                assert!(tell.contains("nobody decided"), "{tell}");
-            }
-            other => panic!("unresolved is NotRun, never admit: {other:?}"),
-        }
+        assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
         assert!(!g.log[0].request.resolved);
         assert!(g.log[0].request.adjudicable().is_none());
+    }
+
+    /// **And the same command at a point that does not admit it asks a PERSON.**
+    ///
+    /// The other half of the ruling, and the half that keeps it from being a bypass: the
+    /// widening is not an admission, it is a *scope*, and a narrow point finds an unbounded
+    /// scope outside its grant for the same reason it refuses the literal. MEASURED here —
+    /// `always-ask` with `exec_follows_mode` off, which is the strongest form of the
+    /// assertion because no point admits exec there.
+    #[test]
+    fn an_unresolvable_command_at_a_narrow_point_reaches_a_person_and_not_a_model() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        let a = asked.clone();
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human:test",
+            move |req: &AdjudicationRequest| {
+                a.fetch_add(1, Ordering::Relaxed);
+                // The person is shown the widened scope, which is the point of widening
+                // rather than refusing: they can see *what* is unknown.
+                assert!(
+                    req.baseline.contains("unbounded"),
+                    "the card must say the scope is unbounded: {}",
+                    req.baseline
+                );
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:test",
+                    "fine",
+                ))
+            },
+        )))
+        .with_mode(crate::mode::Mode::ALWAYS_ASK)
+        .with_exec_follows_mode(false)
+        .with_surroundings(pinned());
+
+        let args = json!({"command": "/bin/cat $FILE"});
+        let row = g.request_for(&bash(&args));
+        assert_eq!(
+            row.class.access,
+            Access::Exec,
+            "not a read: the path is unknown"
+        );
+        assert!(row.adjudicable().is_none(), "no model is asked about it");
+        // A person is, and their yes is what admits it.
+        assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
+        assert_eq!(asked.load(Ordering::Relaxed), 1);
     }
 
     #[test]

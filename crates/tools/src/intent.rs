@@ -43,8 +43,17 @@
 //!
 //! # The two questions this module answers
 //!
-//! 1. **Did the grammar resolve it?** [`letibot_code::shell`] answers, and an
-//!    unresolved command is [`BaselineVerdict::NotRun`] — nobody could decide.
+//! 1. **Did the grammar resolve it?** [`letibot_code::shell`] answers, and an unresolved
+//!    command used to be [`BaselineVerdict::NotRun`] — nobody could decide. **That
+//!    changed on the operator's ruling of 2026-10-02**: *"in allow-all, stop refusing a
+//!    command because the grammar could not resolve a construct"*. An unresolvable
+//!    construct is now a WIDENED SCOPE — *"an opaque fragment means this could be any
+//!    value, so the scope becomes the widest that construct could reach"* — and the point
+//!    decides like any other read. `NotRun` survives for the two cases where there is no
+//!    scope to widen: a parse error (the structure itself may be misread) and a program
+//!    nobody can name (the intents are derived from it, so there is no verb to scope).
+//!    [`Baseline::resolved`] carries *what was actually read*, separately from the
+//!    verdict, so a row can never claim a resolution that never happened.
 //! 2. **What does it intend, and over what?** [`Baseline::scoped`], checkable against a
 //!    sentence the operator actually said.
 //!
@@ -181,7 +190,7 @@
 
 use std::collections::BTreeSet;
 
-use letibot_code::shell::{self, Normalised, RedirectTarget, Stage, Word};
+use letibot_code::shell::{self, Decides, Normalised, RedirectTarget, Stage, Word};
 
 use crate::adjudicate::{FlowRule, Tier};
 use crate::runtime::{ScriptBody, ScriptSource};
@@ -2045,6 +2054,32 @@ pub enum Region {
     Remote(String),
     /// No path to place.
     None,
+    /// **A path that could be anything** — the widening an unresolvable construct gets
+    /// instead of a refusal.
+    ///
+    /// MEASURED 2026-10-02, and this is the case it was added for: the launcher refused
+    /// `cd … && make lint; echo "exit=$?"` outright, at `allow-all`, because `$?` is a
+    /// construct the grammar cannot resolve. The operator's ruling — *"in allow-all, stop
+    /// refusing a command because the grammar could not resolve a construct"* — names the
+    /// shape of the fix: *"an opaque fragment means this could be any value, so the scope
+    /// becomes the widest that construct could reach"*.
+    ///
+    /// So an unresolved construct in an argument position is not *unreadable*, it is
+    /// **unbounded**: `rm -rf $X` may name the workspace or `/`, and the widest a value
+    /// nobody knows could reach is the honest reading, rather than the refusal it used to
+    /// get. Everything downstream then works on a real region — the always-ask rule for
+    /// destruction outside the project fires (its exemption is `Workspace | Scratch |
+    /// None`, and this is none of them), [`Region::is_outside`] answers `true` so a `cat
+    /// $FILE` is not mistaken for a read, and `Tier::Auto`'s inside-ness fails. That is
+    /// how a narrow mode refuses it and `allow-all` admits it, with **no mode
+    /// special-cased anywhere**.
+    ///
+    /// Distinguished from [`Region::HostOther`] on purpose, and the distinction is R9's:
+    /// `HostOther` is *unplaceable* and deliberately **not** outside, so a relative path
+    /// stays a relative path. A construct nobody can read is a different fact from a path
+    /// nobody can place, and reading the second as the first is the defect R9 already paid
+    /// for. This one could reach anywhere, so it is outside for that reason.
+    Unbounded,
 }
 
 impl Region {
@@ -2062,6 +2097,7 @@ impl Region {
             Region::HostOther => "host_other",
             Region::Remote(_) => "remote",
             Region::None => "none",
+            Region::Unbounded => "unbounded",
         }
     }
 
@@ -2089,12 +2125,14 @@ impl Region {
     ///
     /// # The exhaustiveness is the point
     ///
-    /// **No `_` arm**, so a thirteenth `Region` is a **compile error here** rather than a
+    /// **No `_` arm**, so a fourteenth `Region` is a **compile error here** rather than a
     /// new region silently classified as innocent. The inline list this replaced named
     /// eight of the twelve and had nothing to say about the ninth somebody would add —
     /// which is this session's own shape (a list standing in for a derivation) inside the
     /// fix for it. The compiler asks the question; the operator answers it once, at the
-    /// only place the answer means anything.
+    /// only place the answer means anything. **It fired for `Unbounded`**, which is the
+    /// entry that had to be argued rather than assumed: unknown is not innocent, so it is
+    /// outside.
     ///
     /// `Secret` and `Remote` carry data, so those two arms bind `_` in the *pattern* —
     /// that is a field, not a fallback.
@@ -2114,7 +2152,13 @@ impl Region {
             | Region::SystemBinaries
             | Region::Device
             | Region::Temp
-            | Region::Root => true,
+            | Region::Root
+            // **A value nobody can read could be anywhere, including outside.** The
+            // opposite reading — that an unknown is innocent until placed — is the R9
+            // defect, and it is the one direction of error this table exists to avoid:
+            // `cat $FILE` must not be treated as a read of something inside the project.
+            // See the variant's own docs for why this is not `HostOther`.
+            | Region::Unbounded => true,
         }
     }
 }
@@ -2544,8 +2588,20 @@ fn remote_host(s: &str) -> String {
         .unwrap_or_else(|| s.to_string())
 }
 
+/// **What a target that nobody could name is called**, in a scoped intent and on a card.
+///
+/// One constant rather than a literal in several places: it is a *value the model reads* —
+/// layer B is asked to check the intent against what the operator said, and a widened scope
+/// has to say plainly that the target is not known rather than render an empty string that
+/// reads as *no target*.
+pub const UNRESOLVED_TARGET: &str = "<unresolved>";
+
 /// Programs whose positional operands are words or numbers, never places: a
 /// region placed on `20` or `hello` is a fact about nothing.
+///
+/// **And an unresolvable operand of one widens nothing**, which is the same rule read the
+/// other way: `echo "exit=$?"` passes a string, so there is no scope for the construct to
+/// reach. See [`Baseline::widen_argument`].
 const NON_PATH_OPERANDS: &[&str] = &[
     "sleep", "seq", "echo", "printf", "true", "false", "date", "uname", "hostname", "whoami", "id",
     "nproc", "uptime", "free", "basename", "dirname", "expr", "bc", "yes", "kill", "wait", "exit",
@@ -2649,9 +2705,13 @@ pub const ALWAYS_ASK: &[AlwaysAskRule] = &[
     },
     AlwaysAskRule {
         name: "could_not_be_read",
-        why: "layer A could not resolve the action. Carried as `NotRun` rather than as \
-              this tier, and listed here because it is the same requirement: \
-              \"I could not read it\" and \"a human must read it\" are one sentence",
+        why: "layer A could not read the action at all — a parse error it could only \
+              recover from, or a program nobody can name. Carried as `NotRun` rather than \
+              as this tier, and listed here because it is the same requirement: \"I could \
+              not read it\" and \"a human must read it\" are one sentence. **An \
+              unresolvable ARGUMENT is no longer this**: it widens to the scope it could \
+              reach, so it meets the always-ask rules on its merits rather than on its \
+              unreadability",
     },
 ];
 
@@ -2680,9 +2740,13 @@ const AUTHENTICATES: &[&str] = &[
 pub enum BaselineVerdict {
     /// Readable, and not a disclosure. Nobody has decided yet.
     Ask,
-    /// Nobody could decide, because the action's meaning does not exist yet — an
-    /// unresolvable construct, or a bare command name in a shell nobody declared.
+    /// Nobody could decide, because the action's meaning does not exist yet — a parse
+    /// error the grammar could only *recover* from, or a program nobody can name.
     /// Never `Denied`, because nobody decided; never `Admit`, for the same reason.
+    ///
+    /// **An unresolvable ARGUMENT is not this any more** — it is a widened scope and asks
+    /// like anything else; see this module's header. What is left here is the two cases
+    /// with no scope to widen.
     NotRun { why: String },
 }
 
@@ -2704,8 +2768,8 @@ impl BaselineVerdict {
 pub struct ScopedIntent {
     pub intent: Intent,
     /// The path, address or program the intent is over, as the program will receive
-    /// it. `"<unresolved>"` when the grammar could not say — and then the whole
-    /// baseline is `NotRun` anyway.
+    /// it. [`UNRESOLVED_TARGET`] when the grammar could not say — a widened scope, whose
+    /// region is [`Region::Unbounded`] and which the point then judges like any other.
     pub target: String,
     pub region: Region,
 }
@@ -2767,6 +2831,21 @@ pub struct Baseline {
     /// regions for such an action; the regions themselves are unchanged and still
     /// drive the tier rules that consume them.
     pub path_decided: bool,
+    /// **Whether the grammar resolved the whole command** — carried rather than derived
+    /// from [`Baseline::verdict`], and that separation is the point.
+    ///
+    /// It was read off the verdict: `NotRun` meant unresolved. MEASURED 2026-10-02, an
+    /// unresolvable construct is no longer a refusal — it is a *widened scope*, and the
+    /// verdict for one is [`BaselineVerdict::Ask`] like any other readable action. Deriving
+    /// the two from each other after that would have the record claim a resolution that
+    /// never happened, which is the one thing the corpus may not do. So the verdict says
+    /// *who may decide this* and this says *what was actually read*, and they are allowed
+    /// to disagree.
+    ///
+    /// Consumers that must keep refusing an unread action read THIS: `Adjudicable` is
+    /// minted only for a resolved one, so an unresolvable construct is never handed to a
+    /// model to approve — the point decides, and a point that does not admit asks a person.
+    pub resolved: bool,
     /// **Every path this call opens for writing** — R35's field, and the reason it exists here
     /// rather than only inside the classifier: the tier question and the card question are
     /// different, and this is the one the OPERATOR reads.
@@ -2803,11 +2882,19 @@ impl Baseline {
     ///
     /// * **Every computed intent is a look or a read.** No `ExecuteCode` from a
     ///   vehicle, no `WriteFile` from a redirection or a `tee`, no `Destroy`.
-    /// * **Nothing unresolved and nothing unknown** — an unresolvable word puts
-    ///   [`Intent::Unknown`] in the set or makes the verdict `NotRun`, and the ruling
-    ///   puts both out of scope in as many words: *this requirement is PAID FOR by* the
-    ///   parser's refusals *and is void the moment a line contains anything it could not
-    ///   parse.*
+    /// * **Not `NotRun`** — an action whose meaning does not exist at all (a parse error,
+    ///   a program nobody can name) is not a read, and the ruling puts that out of scope
+    ///   in as many words: *this requirement is PAID FOR by* the parser's refusals.
+    ///
+    ///   **An unresolvable ARGUMENT no longer voids it, and that is the 2026-10-02
+    ///   ruling.** Until then this conjunct read *nothing unresolved*, and an unresolved
+    ///   word made the verdict `NotRun` so the two came to the same thing. Now the word
+    ///   *widens* instead, and what keeps `cat $FILE` out of this bucket is the region
+    ///   conjunct below — [`Region::Unbounded`] is outside, so an unknown path is not a
+    ///   read — while `echo "exit=$?"` stays a read because `echo` takes no path to
+    ///   widen. That asymmetry is the operator's own answer, in their words: *"`$?`
+    ///   inside `echo` widens nothing `echo` can act on, so it is admitted even in a
+    ///   narrow mode — which is the actually-correct answer, not a concession."*
     /// * **Non-empty** — a call that computed no intents at all is a call about nothing,
     ///   not a read.
     /// * **No region this classifier can point at and call outside** — see the long note
@@ -2890,6 +2977,7 @@ impl Baseline {
         let mut b = Baseline {
             write_targets: Vec::new(),
             command: None,
+            resolved: n.is_resolved(),
             intents: BTreeSet::new(),
             regions: BTreeSet::new(),
             tier: Tier::MayApprove,
@@ -2941,18 +3029,62 @@ impl Baseline {
             ));
         }
 
-        // 1. The honest limit, first and without appeal. §4's layer 2: *"a construct
-        //    the grammar cannot resolve is not classified as safe; it is reported as
-        //    unresolvable, which is not_run, not ok."*
+        // 1. **What an unresolvable construct MEANS, which is no longer a refusal.**
         //
-        //    Evaluated BEFORE the intents so that a partial reading can never be
-        //    presented as a complete one.
-        if !n.is_resolved() {
+        //    §4's layer 2 still holds for the case it was written about: *"a construct the
+        //    grammar cannot resolve is not classified as safe"* — nothing here says safe.
+        //    What changed, on the operator's ruling of 2026-10-02, is what happens
+        //    instead of `NotRun`:
+        //
+        //      "in allow-all, stop refusing a command because the grammar could not
+        //       resolve a construct"
+        //
+        //    MEASURED, and it is what filed this: the launcher refused
+        //    `cd … && make lint; echo "exit=$?"` outright at `allow-all`, on a `$?` that
+        //    widens nothing `echo` can act on. The shape of the fix is the operator's own
+        //    sentence — *"an opaque fragment means this could be any value, so the scope
+        //    becomes the widest that construct could reach"* — and that widening happens in
+        //    [`Baseline::absorb_stage`], where argument positions are placed.
+        //
+        //    So `verdict` stays [`BaselineVerdict::Ask`]: who may decide this is the mode's
+        //    business again, exactly as for a command whose every literal was readable, and
+        //    **no mode is special-cased anywhere**. `allow-all` admits it because it admits
+        //    the widened scope; a narrow mode refuses it because the widened scope is
+        //    outside its grant — the same reason it refuses the literal spelling.
+        //
+        //    Two cases KEEP `NotRun`, and both are cases where there is no scope to widen:
+        //
+        //    * **A parse error.** `Construct::ParseError` and `Normalised::partial` mean the
+        //      grammar could not read the STRUCTURE, and tree-sitter recovers by handing back
+        //      a plausible tree rather than nothing — so every claim about the recovered
+        //      region is a guess, including which words are arguments at all. Widening a
+        //      scope assumes the shape is known and only the value is not; here neither is.
+        //      The measured cost of trusting recovery: `cat >&2 <<< 'here string'` reads back
+        //      as a READ of a file named `here string`.
+        //
+        //    * **A program nobody can name** — `$CMD --now`, `"$(which x)" -y`. The intents
+        //      come from the program, so an unknown program makes every intent a guess, and
+        //      `Intent::Unknown` is the ABSENCE of a finding rather than a widening of one.
+        //      There is no wider value to substitute; there is no verb to scope.
+        let unreadable_structure = n.partial
+            || n.unresolved
+                .iter()
+                .any(|u| matches!(u.construct, shell::Construct::ParseError));
+        let unknown_program = n
+            .unresolved
+            .iter()
+            .any(|u| matches!(u.decides, shell::Decides::Program));
+        if unreadable_structure || unknown_program {
+            let what = if unreadable_structure {
+                "the grammar could not read the structure of"
+            } else {
+                "nobody can name the program in"
+            };
             b.verdict = BaselineVerdict::NotRun {
                 why: format!(
                     "this command's meaning does not exist yet, so nothing can decide \
-                     about it. The grammar read {} bytes and {} stage(s) and could not \
-                     resolve:\n{}\nNothing ran. Resolve the construct(s) above and \
+                     about it: {what} it. The grammar read {} bytes and {} stage(s) and \
+                     could not resolve:\n{}\nNothing ran. Resolve the construct(s) above and \
                      re-issue the command with literal values, or use a tool that takes \
                      the target as its own argument.",
                     n.bytes,
@@ -2960,6 +3092,19 @@ impl Baseline {
                     n.unresolved_report()
                 ),
             };
+        } else if !n.is_resolved() {
+            // **Recorded, and it is the whole of what a reader gets instead of a refusal.**
+            // The finding is the same report the refusal used to carry — byte offsets, the
+            // construct, the known prefix — because that is what makes the row auditable,
+            // and it is now a finding on an admitted row rather than the body of a refusal.
+            b.findings.push(format!(
+                "the grammar read {} bytes and {} stage(s) and could not resolve {} \
+                 construct(s), so the scope of each is taken as the widest it could reach:\n{}",
+                n.bytes,
+                n.stages.len(),
+                n.unresolved.len(),
+                n.unresolved_report()
+            ));
         }
 
         // 2. Intents and regions, per stage. Computed even for an unresolved command,
@@ -3038,6 +3183,68 @@ impl Baseline {
         b.command = Some(n);
         b.settle(env);
         b
+    }
+
+    /// **The scope an unresolvable argument widens to**, or nothing when it widens
+    /// nothing.
+    ///
+    /// The operator's rule, 2026-10-02: *"an opaque fragment means this could be any
+    /// value, so the scope becomes the widest that construct could reach"*. Three cases,
+    /// and the second is the one that makes this correct rather than merely permissive:
+    ///
+    /// * **A non-path operand widens nothing.** `echo "exit=$?"` — the case that filed
+    ///   this — passes a string, not a place, and `NON_PATH_OPERANDS` already says so for
+    ///   every resolved spelling of it (`echo hello`, `sleep 20`). A construct in that
+    ///   position therefore teaches the classifier nothing new and gets [`Region::None`],
+    ///   exactly as the literal would. That is *"`$?` inside `echo` widens nothing `echo`
+    ///   can act on"*, and it is why such a command stays a READ and is admitted at every
+    ///   point rather than only at `allow-all`.
+    ///
+    /// * **A known prefix fixes the start of the word, so nothing is widened.** `$X` has
+    ///   none and could reach `/etc/shadow`; `target/$X` and `-$N` have one that says the
+    ///   word is relative or a flag, and the loop that places known prefixes has already
+    ///   said where it lands. Widening those would be the R9 defect in reverse — inventing
+    ///   an outside for something the text has already placed.
+    ///
+    /// * **Otherwise, unbounded** — and the scoped intents go with it, because the always-ask
+    ///   rules are judged on scope. `rm -rf $X` must fire
+    ///   `destruction_outside_the_project` exactly as `rm -rf /` fires it, or the widened
+    ///   scope would be a fact the rules could not see.
+    ///
+    /// Deliberately the same three verbs as the resolved loop's, and the same identity-flag
+    /// exemption: the fix for a widened scope and the fix for a literal one are the same
+    /// problem, and two lists would drift.
+    fn widen_argument(
+        &mut self,
+        n: &Normalised,
+        at: usize,
+        effective: &str,
+        index: usize,
+        identity: &[usize],
+    ) {
+        let Some(u) = n.unresolved.get(at) else {
+            return;
+        };
+        // Only an argument position: a program is refused outright by the caller (there is
+        // no verb to scope when nobody can name the program), and a redirection target has
+        // its own loop.
+        if !matches!(u.decides, Decides::Argument) || u.known_prefix.is_some() {
+            return;
+        }
+        if NON_PATH_OPERANDS.contains(&effective) {
+            self.regions.insert(Region::None);
+            return;
+        }
+        self.regions.insert(Region::Unbounded);
+        for verb in [Intent::Destroy, Intent::WriteFile, Intent::Network] {
+            if self.intents.contains(&verb) && !identity.contains(&index) {
+                self.scoped.push(ScopedIntent {
+                    intent: verb,
+                    target: UNRESOLVED_TARGET.to_string(),
+                    region: Region::Unbounded,
+                });
+            }
+        }
     }
 
     /// Decide the outcome class. **Only tightens** — [`Tier::strictest`] — so an
@@ -3202,6 +3409,10 @@ impl Baseline {
         let mut b = Baseline {
             write_targets: if writes { named } else { Vec::new() },
             command: None,
+            // Not a shell command, so there is no grammar to have resolved or not: the
+            // paths came from the caller as literals. `true` is the honest answer —
+            // nothing about this action was read *partially*.
+            resolved: true,
             intents: BTreeSet::new(),
             regions: BTreeSet::new(),
             tier: Tier::MayApprove,
@@ -3293,8 +3504,32 @@ impl Baseline {
         } else {
             format!(" over [{}]", regions.join(" "))
         };
+        // **And whether the meaning was ever read.** This string is what lands on the
+        // corpus row (`CorpusRow::baseline`) and on the card a person is shown, so it is
+        // the only durable place the fact can live — and it MUST live somewhere, because
+        // an unresolvable construct is no longer a `not_run` refusal whose body carried
+        // it (2026-10-02). Without this the row would say `ask` and nothing else, which is
+        // the corpus claiming a resolution that never happened.
+        //
+        // Appended at the END rather than folded into the verdict token, deliberately:
+        // `ask — intents [...]` is a shape callers and tests already read, and a marker
+        // inserted into it would be a change to every consumer of one string. A reader
+        // that wants only the verdict still finds it where it was.
+        let unread = if self.resolved {
+            String::new()
+        } else {
+            let n = self
+                .command
+                .as_ref()
+                .map(|c| c.unresolved.len())
+                .unwrap_or(0);
+            format!(
+                " — the meaning was never resolved ({n} construct(s); each scope is taken \
+                 as the widest it could reach)"
+            )
+        };
         format!(
-            "{} — intents [{}]{}{}",
+            "{} — intents [{}]{}{}{}",
             self.verdict.as_str(),
             intents.join(" "),
             regions_part,
@@ -3303,7 +3538,8 @@ impl Baseline {
                 Tier::MayApprove => String::new(),
                 Tier::AlwaysAsk { rule, .. } => format!(" — ALWAYS ASK ({rule})"),
                 Tier::Blocked { rule, .. } => format!(" — INEXPRESSIBLE ({})", rule.as_str()),
-            }
+            },
+            unread,
         )
     }
 
@@ -3621,6 +3857,20 @@ impl Baseline {
                 continue;
             }
             for w in word.flatten() {
+                // **A construct nobody can read is a WIDENED scope, not a missing word.**
+                //
+                // MEASURED 2026-10-02, and this is the whole of the ruling: the launcher
+                // refused `cd … && make lint; echo "exit=$?"` at `allow-all` because `$?`
+                // is unresolvable, and the operator's ruling is that an opaque fragment
+                // *"means this could be any value, so the scope becomes the widest that
+                // construct could reach"*. Widening rather than refusing is what lets the
+                // ordinary machinery answer: the region decides whether this is a read,
+                // the scoped intent feeds the destruction rule, and the point decides —
+                // with no mode special-cased anywhere.
+                if let Word::Unresolved(at) = w {
+                    self.widen_argument(n, *at, &effective, i, &identity);
+                    continue;
+                }
                 let Some(text) = w.text() else { continue };
                 if text.starts_with('-') || text.is_empty() || text.contains('\n') {
                     continue;
@@ -3686,6 +3936,36 @@ impl Baseline {
                 RedirectTarget::HereString(w) => Some(w),
                 _ => None,
             };
+            // **A redirection to a file nobody can name writes somewhere unknown.**
+            //
+            // MEASURED after the widening landed, 2026-10-02, and it is the hole that
+            // widening opened: `cat > $F` and `echo hi > $F` reported
+            // `reads=true tier=auto regions=[]` — a write to a path decided at run time,
+            // read as a harmless look *inside* the workspace, and therefore admitted at
+            // every point including the narrow ones. `cat > x` (the same command with a
+            // literal) is `[read_file, write_file]` and is not a read. So the unresolved
+            // target gets the same two facts the literal does — the write intent, and a
+            // region — with the region widened because the path could be anywhere.
+            if let Some(Word::Unresolved(at)) = w {
+                if let Some(u) = n.unresolved.get(*at) {
+                    if r.op.writes() {
+                        self.intents.insert(Intent::WriteFile);
+                        self.scoped.push(ScopedIntent {
+                            intent: Intent::WriteFile,
+                            target: UNRESOLVED_TARGET.to_string(),
+                            region: Region::Unbounded,
+                        });
+                    }
+                    self.findings.push(format!(
+                        "the target of this `{}` redirection is decided at run time, so it \
+                         could be any path on the box: {}",
+                        if r.op.writes() { "output" } else { "input" },
+                        u.text
+                    ));
+                    self.regions.insert(Region::Unbounded);
+                }
+                continue;
+            }
             if let Some(text) = w.and_then(|w| w.text()) {
                 let region = env.region_of(text);
                 if let Region::Secret(store) = &region
@@ -3837,23 +4117,43 @@ impl Baseline {
         if self.authenticating.is_none() {
             self.authenticating = inner.authenticating.clone();
         }
-        if let BaselineVerdict::NotRun { why } = inner.verdict {
-            if propagate_not_run {
+        // **Two ways a folded action can be partially unreadable, and the condition used
+        // to see only one.** `NotRun` was the whole of it while an unresolvable construct
+        // was a refusal; since 2026-10-02 that construct is a *widened scope* and the
+        // verdict is `Ask`, so keying on the verdict alone silently stopped disclosing —
+        // a script written to a file whose body has run-time parameters went back to
+        // reading as a write with nothing said about what could not be read.
+        //
+        // The two ways are different things and the sentence says which: `NotRun` means
+        // the body was REFUSED, and `!resolved` means it was read and its unknowns were
+        // widened. Both leave the reader owing the same disclosure — *the rest is the
+        // script's own runtime, not this call's* — which is the point of the arm.
+        let inner_unreadable: Option<String> = match &inner.verdict {
+            BaselineVerdict::NotRun { why } if propagate_not_run => {
                 self.verdict = BaselineVerdict::NotRun {
                     why: format!("{where_}: {why}"),
                 };
-            } else {
-                let first = why
-                    .split(['.', '\n'])
-                    .next()
-                    .unwrap_or(&why)
-                    .trim()
-                    .to_string();
-                self.findings.push(format!(
-                    "{where_}: read as far as the grammar could — {first}; the rest \
-                     is the script's own runtime, not this call's"
-                ));
+                None
             }
+            BaselineVerdict::NotRun { why } => Some(why.clone()),
+            _ if !inner.resolved => inner
+                .command
+                .as_ref()
+                .map(|c| c.unresolved_report())
+                .filter(|r| !r.is_empty()),
+            _ => None,
+        };
+        if let Some(why) = inner_unreadable {
+            let first = why
+                .split(['.', '\n'])
+                .next()
+                .unwrap_or(&why)
+                .trim()
+                .to_string();
+            self.findings.push(format!(
+                "{where_}: read as far as the grammar could — {first}; the rest \
+                 is the script's own runtime, not this call's"
+            ));
         }
     }
 
@@ -5402,27 +5702,61 @@ mod tests {
         );
     }
 
+    /// **An unresolvable construct is WIDENED, and the record still says it was never
+    /// resolved.**
+    ///
+    /// This test asserted `NotRun` until 2026-10-02, when the operator ruled: *"in
+    /// allow-all, stop refusing a command because the grammar could not resolve a
+    /// construct"*. `cat $FILE` is still not *safe* — nothing here says that — but the
+    /// verdict is now the mode's business rather than a refusal, and the two facts that
+    /// make that honest are both asserted below: the scope is the WIDEST the construct
+    /// could reach (`unbounded`, so the destruction rule and `reads_only` see a real
+    /// region rather than a hole), and `resolved` is still `false`, carried on its own
+    /// rather than read off the verdict, so no corpus row can claim a resolution that
+    /// never happened.
     #[test]
-    fn an_unresolvable_command_is_not_run_and_the_refusal_carries_the_fix() {
+    fn an_unresolvable_command_is_widened_and_still_says_it_was_never_resolved() {
         let x = b("cat $FILE");
-        match &x.verdict {
-            BaselineVerdict::NotRun { why } => {
-                assert!(why.contains("$FILE"), "{why}");
-                assert!(why.contains("Nothing ran"), "{why}");
-                assert!(why.contains("literal values"), "{why}");
-            }
-            v => panic!("an unresolvable command is NotRun, got {v:?}"),
-        }
+        assert_eq!(x.verdict, BaselineVerdict::Ask, "{:?}", x.verdict);
+        assert!(
+            !x.resolved,
+            "the record must still say the meaning was never read"
+        );
+        assert!(
+            x.regions.contains(&Region::Unbounded),
+            "the scope is the widest it could reach: {:?}",
+            x.regions
+        );
+        // Not a read: the file could be anywhere, including outside. This is what keeps
+        // the exec access a `cat $FILE` has today, and it is the conjunct that stops the
+        // widening from being a way to run a read unasked.
+        assert!(!x.reads_only(), "an unknown path is not a read");
+        // And the draft is still reported verbatim — offsets, construct, known prefix —
+        // as a FINDING on the row rather than as the body of a refusal.
+        assert!(
+            x.findings.iter().any(|f| f.contains("$FILE")),
+            "{:?}",
+            x.findings
+        );
     }
 
     #[test]
     fn an_unresolvable_path_whose_prefix_is_secret_is_still_blocked() {
         // The two facts must compose: unresolvable AND inside the store. Letting the
         // weaker one win would make `cat ~/.ssh/$KEY` merely "nobody decided" and
-        // invite a retry with the variable resolved.
+        // invite a retry with the variable resolved
+        //
+        // **And that guarantee is unchanged by the widening**, which is the half worth
+        // stating: `Tier::Blocked` is layer A's and is taken before any point is consulted,
+        // so a widened scope cannot reach it. The verdict is `Ask` now — the mode may have
+        // its say about the rest — and the block is exactly where it was.
         let x = b("cat ~/.ssh/$KEY");
-        assert!(matches!(x.verdict, BaselineVerdict::NotRun { .. }));
-        assert!(matches!(x.tier, Tier::Blocked { .. }), "{:?}", x.tier);
+        assert!(
+            matches!(x.tier, Tier::Blocked { .. }),
+            "a secret prefix must still block: {:?}",
+            x.tier
+        );
+        assert!(!x.resolved, "and the row still says it was never resolved");
     }
 
     #[test]
@@ -5905,7 +6239,11 @@ mod tests {
         // are pinned here beside it.
         for cmd in ["git show-ref", "git for-each-ref", "git rev-parse HEAD"] {
             let x = b(cmd);
-            assert!(x.reads_only(), "`{cmd}` stopped being a read: {:?}", x.intents);
+            assert!(
+                x.reads_only(),
+                "`{cmd}` stopped being a read: {:?}",
+                x.intents
+            );
         }
     }
 
@@ -6016,12 +6354,26 @@ mod tests {
         // word later: nothing here can say `$CMD` is not `sh -c …`.
         assert!(has_exec("/usr/bin/ssh -o ProxyCommand=$CMD user@host"));
 
-        // Fail-closed twice over: the command as a whole is `NotRun`, because a
-        // meaning that does not exist cannot be decided about either.
-        assert!(matches!(
-            b("/usr/bin/ssh -o ProxyCommand=$CMD user@host").verdict,
-            BaselineVerdict::NotRun { .. }
-        ));
+        // **The finding survives the widening, and it is the half that matters.** A
+        // meaning that does not exist cannot be decided about favourably, but "cannot be
+        // decided" is no longer a refusal either (2026-10-02): the value widens and the
+        // MODE decides. What must not change is that the vehicle was still FOUND — a word
+        // nobody read is not a word that is not there — and MEASURED on this command the
+        // widening leaves it an always-ask in any case: `[execute_code, network]` over
+        // `host_other`, with `credential_use` and the unseen host both firing. So the
+        // assertion is the one fail-closed means here: the exec intent is present, the
+        // command is not a read, and the row still says it was never resolved.
+        let x = b("/usr/bin/ssh -o ProxyCommand=$CMD user@host");
+        assert!(
+            !x.resolved,
+            "the record must still say the meaning was never read"
+        );
+        assert!(
+            x.intents.contains(&Intent::ExecuteCode),
+            "the vehicle must still be found: {:?}",
+            x.intents
+        );
+        assert!(!x.reads_only(), "an unknown ProxyCommand is not a read");
     }
 
     #[test]
@@ -7011,9 +7363,20 @@ mod heredoc_bodies {
             x.findings
         );
         // But text that runs NOW with an expansion in it is as unreadable as
-        // `bash -c` with one.
+        // `bash -c` with one — and **the thing that catches it is the widening**, not a
+        // refusal: `$DIR` has no known prefix and `rm` takes a path, so the scope becomes
+        // unbounded and `destruction_outside_the_project` fires exactly as it does for
+        // `rm -rf /`. Asserted as the RULE rather than as a verdict, because that is what
+        // has to be true for the mode to refuse it: a narrow point finds an unbounded
+        // delete outside its grant, and `allow-all` admits it.
         let y = b("bash <<'EOF'\nrm -rf $DIR\nEOF");
-        assert!(matches!(y.verdict, BaselineVerdict::NotRun { .. }));
+        assert_eq!(
+            rule(&y),
+            Some("destruction_outside_the_project"),
+            "{:?}",
+            y.findings
+        );
+        assert!(y.regions.contains(&Region::Unbounded), "{:?}", y.regions);
     }
 
     #[test]
@@ -7663,7 +8026,10 @@ open(p,'w').write('x')
             "the path the script writes did not reach the card: {:?}",
             b.write_targets
         );
-        assert!(b.intents.contains(&Intent::WriteFile), "and the intent is what it was");
+        assert!(
+            b.intents.contains(&Intent::WriteFile),
+            "and the intent is what it was"
+        );
 
         // **Unresolved is not absent**, and the difference is the requirement's own sentence: a write
         // whose target could not be read is the case a person most needs to see.

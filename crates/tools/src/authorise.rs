@@ -2745,7 +2745,13 @@ mod tests {
             kind: RequestKind::Permission,
             options: permission_options(Some("src/main.rs")),
             on_timeout: OnTimeout::Deny,
-            resolved: !matches!(b.verdict, crate::intent::BaselineVerdict::NotRun { .. }),
+            // **Carried, not derived.** It used to read the verdict — `NotRun` meant
+            // unresolved — and that stopped being true when an unresolvable construct
+            // became a *widened scope* rather than a refusal (2026-10-02). Deriving it
+            // still would have the corpus claim a resolution that never happened, which
+            // is the one thing this field exists to prevent. The verdict says *who may
+            // decide*; this says *what was actually read*.
+            resolved: b.resolved,
             tier: b.tier.clone(),
             baseline: b.summary(),
             trail,

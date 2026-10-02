@@ -159,8 +159,31 @@ whose meaning does not exist yet is theatre.
 Parsing through a **grammar** means the gate and the classifier see the same structure the
 shell will execute: which binaries, which arguments, which redirections, which
 substitutions, where the data flows. And the honest limit stays honest — a construct the
-grammar cannot resolve (a command built at runtime) is **not classified as safe**; it is
-reported as unresolvable, which is `not_run`, not `ok`.
+grammar cannot resolve (a command built at runtime) is **not classified as safe**.
+
+**AMENDED 2026-10-02, on the operator's ruling.** This paragraph used to end *"it is
+reported as unresolvable, which is `not_run`, not `ok`"*, and that is no longer what
+happens — not because the limit was softened, but because refusing was the wrong
+reading of it. Their ruling, from a `make lint` in `klick-tick` refused at `allow-all`
+because the command ended `echo "exit=$?"`:
+
+> *"in allow-all, stop refusing a command because the grammar could not resolve a
+> construct"* — and the shape of the fix, in their words: *"an opaque fragment means this
+> could be any value, so the scope becomes the widest that construct could reach"*.
+
+So an unresolvable construct in an argument position is **widened rather than refused**:
+the scope becomes the widest it could reach (`Region::Unbounded`), the always-ask rules
+are then judged on that real scope (`rm -rf $X` fires `destruction_outside_the_project`
+exactly as `rm -rf /` does), and the point decides — `allow-all` admits, a narrow point
+asks a person. `echo "$?"` widens nothing `echo` can act on, so it stays a read.
+
+Two cases still return `NotRun`, and both are cases with no scope to widen: a **parse
+error** (the structure itself may be misread — tree-sitter recovers by handing back a
+plausible tree) and a **program nobody can name** (the intents are derived from it, so
+there is no verb to scope). `Baseline::resolved` carries *what was actually read*
+separately from the verdict, so no corpus row claims a resolution that never happened,
+and `Adjudicable` is still never minted for an unresolved action — the point decides, and
+a point that does not admit asks a person, never a model.
 
 **Layer 3 — the adjudicator, with the conversation.**
 
@@ -509,8 +532,10 @@ reason per entry for the same cause `ALWAYS_ASK` does: a list without reasons ge
 - `allow <program> in this project` grants `(program, ActionClass)`, never a text match.
 - A grant **cannot cover a class it was not granted for.** Granting `git status` does not
   grant `git -c …`.
-- **An unresolvable normalisation is never covered by a grant.** It is already `NotRun`;
-  a grant must not be able to rescue it.
+- **An unresolvable normalisation is never covered by a grant.** A grant must not be
+  able to rescue it, and since 2026-10-02 the thing that refuses it is
+  [`Baseline::resolved`], carried on its own — the verdict alone no longer says it, because
+  an unresolvable construct is widened rather than refused.
 - The grant states **what it covers in class terms** when offered, so the operator sees
   what they are agreeing to: *"git — reads and writes inside the project, NOT code
   execution."*
@@ -547,9 +572,9 @@ So globbing is first-class. What it does **not** get is silence:
 - **A glob can reach `MayApprove` and `AlwaysAsk`. It can never reach `Inexpressible`.**
   §3's flow rule is not a setting, and a user-written glob is still a grant. You can shoot
   your foot; you cannot shoot your head.
-- **A glob never covers an unresolvable normalisation.** `NotRun` stands. If layer A could
-  not read the command, no pattern written in advance about a command nobody could parse
-  applies to it.
+- **A glob never covers an unresolvable normalisation.** Nothing written in advance about
+  a command nobody could parse applies to it — if layer A could not read the command, no
+  pattern agrees with it. The refusal reads the resolution flag, not the verdict.
 
 The difference from every harness in the survey is not that we refuse the glob. It is that
 `git *` here **tells you it includes the execution vehicles**, and opencode's
