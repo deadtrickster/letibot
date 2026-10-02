@@ -6590,7 +6590,7 @@ mod tests {
 
     /// **A standing grant never settles a command whose meaning was never resolved.**
     ///
-    /// This is the property the operator's own instruction protects — *"that field must
+    /// This is the property the instruction of 2026-10-02 protects — *"that field must
     /// stop being derived from it and start being carried on its own"* — and it is the
     /// one place the change could have gone wrong invisibly. `Grant::covers` takes
     /// `resolved` as an argument and refuses an unresolved action before it looks at
@@ -6655,7 +6655,7 @@ mod tests {
     /// **An unresolvable command now reaches the POINT, and the point decides.**
     ///
     /// This test was `an_unresolvable_command_reaching_the_gate_is_not_run_and_never_admitted`
-    /// and it asserted a refusal. The operator's ruling of 2026-10-02 changed that — *"in
+    /// and it asserted a refusal. The instruction of 2026-10-02 changed that — *"in
     /// allow-all, stop refusing a command because the grammar could not resolve a
     /// construct"* — so `/bin/cat $FILE` is admitted at a permissive point, and the two
     /// facts that make that safe are what this pins:

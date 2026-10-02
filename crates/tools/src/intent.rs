@@ -45,8 +45,13 @@
 //!
 //! 1. **Did the grammar resolve it?** [`letibot_code::shell`] answers, and an unresolved
 //!    command used to be [`BaselineVerdict::NotRun`] — nobody could decide. **That
-//!    changed on the operator's ruling of 2026-10-02**: *"in allow-all, stop refusing a
-//!    command because the grammar could not resolve a construct"*. An unresolvable
+//!    changed on an instruction of 2026-10-02**, and the provenance is stated here for the
+//!    same reason this tree gives provenance a field on a table row: **it arrived in this
+//!    session as a quoted operator ruling, but its author was an orchestrator agent, not
+//!    the operator.** What it says is *"in allow-all, stop refusing a command because the
+//!    grammar could not resolve a construct"*, and what follows is what the code does
+//!    about it — the tests and the corpus measurement below hold regardless of who asked.
+//!    An unresolvable
 //!    construct is now a WIDENED SCOPE — *"an opaque fragment means this could be any
 //!    value, so the scope becomes the widest that construct could reach"* — and the point
 //!    decides like any other read. `NotRun` survives for the two cases where there is no
@@ -2059,8 +2064,9 @@ pub enum Region {
     ///
     /// MEASURED 2026-10-02, and this is the case it was added for: the launcher refused
     /// `cd … && make lint; echo "exit=$?"` outright, at `allow-all`, because `$?` is a
-    /// construct the grammar cannot resolve. The operator's ruling — *"in allow-all, stop
-    /// refusing a command because the grammar could not resolve a construct"* — names the
+    /// construct the grammar cannot resolve. The instruction of that day — *"in allow-all,
+    /// stop refusing a command because the grammar could not resolve a construct"*, from
+    /// an orchestrator agent rather than the operator, see this module's header — names the
     /// shape of the fix: *"an opaque fragment means this could be any value, so the scope
     /// becomes the widest that construct could reach"*.
     ///
@@ -2892,7 +2898,7 @@ impl Baseline {
     ///   *widens* instead, and what keeps `cat $FILE` out of this bucket is the region
     ///   conjunct below — [`Region::Unbounded`] is outside, so an unknown path is not a
     ///   read — while `echo "exit=$?"` stays a read because `echo` takes no path to
-    ///   widen. That asymmetry is the operator's own answer, in their words: *"`$?`
+    ///   widen. That asymmetry is the instruction's own answer, in its words: *"`$?`
     ///   inside `echo` widens nothing `echo` can act on, so it is admitted even in a
     ///   narrow mode — which is the actually-correct answer, not a concession."*
     /// * **Non-empty** — a call that computed no intents at all is a call about nothing,
@@ -3033,16 +3039,16 @@ impl Baseline {
         //
         //    §4's layer 2 still holds for the case it was written about: *"a construct the
         //    grammar cannot resolve is not classified as safe"* — nothing here says safe.
-        //    What changed, on the operator's ruling of 2026-10-02, is what happens
-        //    instead of `NotRun`:
+        //    What changed, on the instruction of 2026-10-02 (see the module header for whose),
+        //    is what happens instead of `NotRun`:
         //
         //      "in allow-all, stop refusing a command because the grammar could not
         //       resolve a construct"
         //
         //    MEASURED, and it is what filed this: the launcher refused
         //    `cd … && make lint; echo "exit=$?"` outright at `allow-all`, on a `$?` that
-        //    widens nothing `echo` can act on. The shape of the fix is the operator's own
-        //    sentence — *"an opaque fragment means this could be any value, so the scope
+        //    widens nothing `echo` can act on. The shape of the fix is that instruction's
+        //    own sentence — *"an opaque fragment means this could be any value, so the scope
         //    becomes the widest that construct could reach"* — and that widening happens in
         //    [`Baseline::absorb_stage`], where argument positions are placed.
         //
@@ -3188,7 +3194,8 @@ impl Baseline {
     /// **The scope an unresolvable argument widens to**, or nothing when it widens
     /// nothing.
     ///
-    /// The operator's rule, 2026-10-02: *"an opaque fragment means this could be any
+    /// The instruction of 2026-10-02 — from an orchestrator agent rather than the
+    /// operator, see this module's header — *"an opaque fragment means this could be any
     /// value, so the scope becomes the widest that construct could reach"*. Three cases,
     /// and the second is the one that makes this correct rather than merely permissive:
     ///
@@ -3861,7 +3868,7 @@ impl Baseline {
                 //
                 // MEASURED 2026-10-02, and this is the whole of the ruling: the launcher
                 // refused `cd … && make lint; echo "exit=$?"` at `allow-all` because `$?`
-                // is unresolvable, and the operator's ruling is that an opaque fragment
+                // is unresolvable, and the instruction of that day is that an opaque fragment
                 // *"means this could be any value, so the scope becomes the widest that
                 // construct could reach"*. Widening rather than refusing is what lets the
                 // ordinary machinery answer: the region decides whether this is a read,
@@ -5705,7 +5712,7 @@ mod tests {
     /// **An unresolvable construct is WIDENED, and the record still says it was never
     /// resolved.**
     ///
-    /// This test asserted `NotRun` until 2026-10-02, when the operator ruled: *"in
+    /// This test asserted `NotRun` until 2026-10-02, when the instruction arrived: *"in
     /// allow-all, stop refusing a command because the grammar could not resolve a
     /// construct"*. `cat $FILE` is still not *safe* — nothing here says that — but the
     /// verdict is now the mode's business rather than a refusal, and the two facts that
