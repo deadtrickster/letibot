@@ -536,7 +536,7 @@ fn row_lines(
     };
     let body_w = cfg.width.saturating_sub(width::width(&gutter) + 1).max(8);
     // Tabs must be expanded before wrapping or the width is a lie.
-    let text = expand_tabs(text, 4);
+    let text = expand_tabs(text, TAB_STOP);
     let body = paint_with_emphasis(&text, role, emph, cfg.palette);
     let wrapped = width::wrap(&body, body_w);
     // The gutter takes the line's own foreground on a changed row — the same
@@ -652,8 +652,8 @@ fn pair_rows(rows: &[Row], old: &[&str], new: &[&str]) -> Vec<Option<Spans>> {
             let (Some(ol), Some(nl)) = (old.get(a), new.get(b)) else {
                 continue;
             };
-            let ol = expand_tabs(ol, 4);
-            let nl = expand_tabs(nl, 4);
+            let ol = expand_tabs(ol, TAB_STOP);
+            let nl = expand_tabs(nl, TAB_STOP);
             if let Some((os, ns)) = word_spans(&ol, &nl) {
                 out[rem_start + k] = Some(os);
                 out[add_start + k] = Some(ns);
@@ -725,8 +725,28 @@ fn tokens(s: &str) -> Spans {
     out
 }
 
+/// **Where a tab lands, for every renderer in this workspace that shows code.**
+///
+/// One constant because three renderers draw the same fact — the unified diff, the
+/// side-by-side diff and the markdown fence — and a reader who sees an indent four
+/// deep in one and eight in another cannot tell which is lying. Eight is what a
+/// terminal does with a raw tab, which is what the fence used to hand it; three of
+/// these are ours, so the stop is a decision, and a decision gets one home.
+///
+/// Four rather than eight because that is the stop the diff has always used and the
+/// one leticl's `classed-segments` agrees to; two heads must not disagree about how
+/// deep an indent is.
+pub const TAB_STOP: usize = 4;
+
 /// Expand tabs to a tab stop. A diff that measures a tab as one column
 /// mis-aligns every line that has one, which in Go and Makefiles is all of them.
+///
+/// **The stop is measured in EMITTED COLUMNS, not in the source index**, and the
+/// difference is a run of tabs: `"\t\t"` is eight columns, not seven. A version that
+/// computed each stop from the character's index would place the second tab at
+/// `(1 / 4 + 1) * 4 = 4` and pad it by three, because the first tab had already
+/// pushed the text four columns right while advancing the index by one. The same
+/// arithmetic is wrong after any double-width character, for the same reason.
 pub fn expand_tabs(s: &str, stop: usize) -> String {
     if !s.contains('\t') {
         return s.to_string();
@@ -1141,6 +1161,28 @@ mod tests {
         assert_eq!(expand_tabs("\tif x {", 4), "    if x {");
         assert_eq!(expand_tabs("ab\tc", 4), "ab  c");
         assert_eq!(width::width(&expand_tabs("a\tb", 4)), 5);
+        // **THE RUN IS THE CASE THAT SEPARATES the two implementations**, and it is
+        // the one no test covered until 2026-10-02 — which is why `sidediff` carried a
+        // second, wrong copy of this arithmetic for as long as it did. A stop computed
+        // from the source INDEX makes the second of two tabs three columns wide, since
+        // the first tab moved the text four columns while advancing the index by one:
+        // seven where a terminal shows eight.
+        assert_eq!(expand_tabs("\t\treturn", 4), "        return");
+        assert_eq!(width::width(&expand_tabs("\t\treturn", 4)), 14);
+        // And the same arithmetic after a double-width character, which is the other
+        // way index and column part company. Two CJK chars are FOUR columns, so the tab
+        // lands exactly ON the stop and pads four more — five spaces before the `x`,
+        // counting the literal one. (Written out because the first version of this line
+        // guessed three: the arithmetic that pads by `stop - (col % stop)` is easy to
+        // do in the head and get wrong, which is the whole reason it lives in one
+        // function.) An index-based stop would have called the column 2 and padded by
+        // two, putting the `x` three columns left of where a terminal puts it.
+        assert_eq!(
+            expand_tabs("\u{4e2d}\u{6587}\t x", 4),
+            "\u{4e2d}\u{6587}     x"
+        );
+        // The stop is the workspace's one constant, not a literal at each call site.
+        assert_eq!(TAB_STOP, 4, "both heads agree an indent is four deep");
     }
 
     #[test]

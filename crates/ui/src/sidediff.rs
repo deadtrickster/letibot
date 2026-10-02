@@ -75,9 +75,6 @@ const SEP_W: usize = 3;
 /// same time; the renderer degrades rather than overprints, which is cheaper
 /// than a caller that has to guess whether the panels will fit.
 const MIN_BODY: usize = 8;
-/// Tabs expand to the stop [`crate::diff::expand_tabs`] uses, so a classed
-/// line and a plain line of the same source measure the same.
-const TAB_STOP: usize = 4;
 
 /// Render the two-panel view of `old` → `new`.
 ///
@@ -87,6 +84,32 @@ const TAB_STOP: usize = 4;
 /// the pair and not the wrap.
 pub fn render_split(old: &[&str], new: &[&str], sc: &SplitConfig) -> Vec<String> {
     let p = sc.cfg.palette;
+    // **Tabs first, once, before anything colours or measures a line.**
+    //
+    // This used to happen inside `paint_classed`, per character, with the stop computed
+    // from the character's index in the SOURCE — which is a different number from the
+    // column it lands on the moment a line has more than one tab, or a double-width
+    // character before it. `"\t\t"` came out seven columns wide instead of eight.
+    //
+    // Expanding HERE rather than in the painter is what makes the class grid line up:
+    // `class_grid` colours the same strings this produces, so a grid indexed by expanded
+    // character and a line of expanded characters are the same grid. Expanding later — in
+    // the painter, after the classes were computed on the source — is the arrangement
+    // that made the two disagree, and the reason this stop had to be duplicated.
+    //
+    // It is also what the unified diff already does, in the same words: *"Tabs must be
+    // expanded before wrapping or the width is a lie."*
+    let old_x: Vec<String> = old
+        .iter()
+        .map(|l| crate::diff::expand_tabs(l, crate::diff::TAB_STOP))
+        .collect();
+    let new_x: Vec<String> = new
+        .iter()
+        .map(|l| crate::diff::expand_tabs(l, crate::diff::TAB_STOP))
+        .collect();
+    let old: Vec<&str> = old_x.iter().map(String::as_str).collect();
+    let new: Vec<&str> = new_x.iter().map(String::as_str).collect();
+    let (old, new) = (&old[..], &new[..]);
     let d = diff_lines(old, new);
     let hs = hunks(&d, sc.cfg.context);
     let mut out = Vec::new();
@@ -464,20 +487,20 @@ fn pad_to(s: &str, w: usize) -> String {
 }
 
 /// Paint a line by its syntax classes: runs of one role open and close
-/// together, and a tab expands to spaces that carry the tab's own class so
-/// the class grid and the visible columns stay the same grid.
+/// together.
+///
+/// **There is no tab arm here, deliberately.** The text reaching this function has
+/// already been expanded by [`crate::diff::expand_tabs`] — see `render_split`, which
+/// does it before the class grid is built so that the grid and the line are the same
+/// grid. This function used to expand as it painted, computing each stop from the
+/// source index; that is a second implementation of one fact, with its own bug, and
+/// it is the shape this tree has already paid for twice.
 fn paint_classed(text: &str, classes: &[Role], p: Palette) -> String {
     let mut out = String::with_capacity(text.len() + 16);
     let mut run = Role::Plain;
     let mut run_buf = String::new();
     for (i, ch) in text.chars().enumerate() {
         let role = classes.get(i).copied().unwrap_or(Role::Plain);
-        if ch == '\t' {
-            flush(&mut run, &mut run_buf, &mut out, p);
-            let stop = (i / TAB_STOP + 1) * TAB_STOP;
-            out.push_str(&p.paint(role, &" ".repeat(stop - i)));
-            continue;
-        }
         if role != run {
             flush(&mut run, &mut run_buf, &mut out, p);
             run = role;
@@ -652,8 +675,14 @@ mod tests {
         // **The empty grid `rano` returns**, for both sides: zero rows against two lines.
         let rows = render_pair(&pair, &old, &new, &[], &[], &cfg, &g);
         let text = plain(&rows).join("\n");
-        assert!(text.contains("let x = 1;"), "the left text still draws: {text}");
-        assert!(text.contains("let x = 2;"), "the right text still draws: {text}");
+        assert!(
+            text.contains("let x = 1;"),
+            "the left text still draws: {text}"
+        );
+        assert!(
+            text.contains("let x = 2;"),
+            "the right text still draws: {text}"
+        );
         // And a grid one row SHORT, which is the other shape of the same edge.
         let short = vec![Vec::new()];
         let rows = render_pair(&pair, &old, &new, &short, &short, &cfg, &g);
@@ -1036,6 +1065,50 @@ mod tests {
             left.find("fn").unwrap(),
             right.trim_start().find("fn").unwrap(),
             "{changed:?}"
+        );
+
+        // **A RUN of tabs, which is the case this test did not have and the one that
+        // separates the two implementations.** MEASURED 2026-10-02, comparing notes with
+        // leticl: the expansion here computed each stop from the character's index in the
+        // SOURCE, so the second of two tabs was padded by three where a terminal pads by
+        // four — seven columns instead of eight. With ONE tab the two agree, so this test
+        // was green throughout, which is why the defect was silent rather than obvious.
+        //
+        // Asserted against the unified renderer's own function rather than against a
+        // literal: "the same stops" is this test's whole subject, and a literal here
+        // would let the two drift again while both matched the test.
+        let lined = ["\t\treturn x", "\t\treturn y"];
+        let rows = plain(&render_split(
+            &lined[..1],
+            &lined[1..],
+            &sc(120, Palette::None, 1, 1),
+        ));
+        // The whole row, not one half of it: both panels are on it and the pair that
+        // changed is on the left. `want` keeps its leading spaces — they are the thing
+        // under test.
+        let want = crate::diff::expand_tabs("\t\treturn x", crate::diff::TAB_STOP);
+        let code = rows
+            .iter()
+            .find(|r| r.contains("return x"))
+            .expect("the deleted line is on screen");
+        assert!(
+            code.contains(&want),
+            "two tabs must be eight columns, the same stop the unified renderer uses: \
+             {code:?} does not contain {want:?}"
+        );
+        // **Anchored at the sign, because a bare `contains` cannot tell seven spaces
+        // from eight here.** The gutter's own trailing space sits directly before the
+        // indent, so `code.contains("        return x")` is satisfied by a SEVEN-column
+        // indent with the gutter's space in front of it. Measured: that assertion passed
+        // against the very arithmetic it is written to catch, which is worse than not
+        // having it — a test that cannot fail on the bug it names reads as coverage.
+        let body = code
+            .split_once("- ")
+            .expect("the row carries a deletion sign")
+            .1;
+        assert!(
+            body.starts_with("        return x"),
+            "eight columns of indent, not seven: {body:?}"
         );
     }
 }

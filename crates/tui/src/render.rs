@@ -224,8 +224,34 @@ impl CodePaint {
     }
 
     /// Hand over whatever is new.
+    ///
+    /// **Tabs become spaces HERE, before anything parses or measures.** A raw tab
+    /// handed to the terminal is expanded at THAT terminal's stop — conventionally
+    /// eight — while `width::char_width` counts it as ZERO columns, so the row on the
+    /// glass and this head's model of it were two different lines. The stop is
+    /// [`letibot_ui::diff::TAB_STOP`], the same one both diff renderers use: a Go body
+    /// indented four deep in the diff view must not be eight deep in a fence.
+    ///
+    /// Per LINE, and that is not a detail. `expand_tabs` computes each stop from the
+    /// column the tab lands on, and a column carried across the `\n` would make the
+    /// first tab of line 2 depend on how wide line 1 was — `char_width('\n')` is zero,
+    /// so one call over the joined text does exactly that.
+    ///
+    /// Here rather than in `lines()` is what covers every branch. The stream parses
+    /// expanded text, so its spans are in the same coordinates as the rows painted
+    /// from them; and the no-grammar fallback, which returns `self.text` untouched,
+    /// gets expanded text too. Fixing only the highlighted path is precisely how the
+    /// unhighlightable fence stayed broken.
+    ///
+    /// `src` only ever grows at its end while the fence is open, so the delta `pushed`
+    /// tracks stays a prefix: expansion is a left-to-right fold, so the expansion of a
+    /// prefix is a prefix of the expansion, whatever a later line adds.
     fn feed(&mut self, lines: &[String], closed: bool) {
-        let mut src = lines.join("\n");
+        let mut src = lines
+            .iter()
+            .map(|l| letibot_ui::diff::expand_tabs(l, letibot_ui::diff::TAB_STOP))
+            .collect::<Vec<_>>()
+            .join("\n");
         if closed {
             src.push('\n');
         }
@@ -961,6 +987,52 @@ mod tests {
             color: false,
             budget: Budget::default(),
             base: None,
+        }
+    }
+
+    /// **A tab-indented fence expands its tabs, in every branch.**
+    ///
+    /// MEASURED 2026-10-02, comparing notes with leticl: the fence path expanded tabs
+    /// NOWHERE, so a raw `\t` reached the terminal and was expanded at ITS stop —
+    /// conventionally eight — while `width::char_width` counted it as ZERO columns. A Go
+    /// body indented four deep in the diff view was eight deep in a fence, and this
+    /// head's idea of the row disagreed with the glass.
+    ///
+    /// Three branches, and the reason all three are asserted: the highlighted path, the
+    /// path for a language rano has no grammar for, and a bare fence. Fixing only the
+    /// first is the mistake that leaves ```text and unlabelled blocks still broken.
+    #[test]
+    fn a_fenced_block_expands_its_tabs_however_it_is_highlighted() {
+        let body: Vec<String> = vec![
+            "func f() {".into(),
+            "\tif x {".into(),
+            "\t\treturn".into(),
+            "\t}".into(),
+            "}".into(),
+        ];
+        // go = a grammar rano has; text = one it does not; "" = a bare fence.
+        for lang in ["go", "text", ""] {
+            let block = Block::Code {
+                lang: lang.into(),
+                lines: body.clone(),
+                closed: true,
+            };
+            let lines = render_block(&block, &cfg());
+            let joined = lines.join("\n");
+            assert!(
+                !joined.contains('\t'),
+                "a raw tab reached the terminal in a {lang:?} fence: {joined:?}"
+            );
+            // One tab is four columns, two are eight — the run is the case a
+            // source-index stop gets wrong, so it is asserted and not assumed.
+            assert!(
+                lines.iter().any(|l| l.contains("│     if x {")),
+                "one tab is four spaces in a {lang:?} fence: {lines:?}"
+            );
+            assert!(
+                lines.iter().any(|l| l.contains("│         return")),
+                "two tabs are eight spaces in a {lang:?} fence: {lines:?}"
+            );
         }
     }
 
