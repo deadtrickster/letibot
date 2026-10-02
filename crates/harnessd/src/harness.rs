@@ -5543,6 +5543,15 @@ impl<'a> Harness<'a> {
             // budget measuring the wrong thing. See `http_retry_after`.
             let outcome = loop {
                 let mut steering = self.steering();
+                // **Start watching BEFORE the round, so the wait itself is covered.**
+                // The host is `Some` only on the metered route — a local prefill's
+                // silence is progress, not a hang; see `SilenceWatch`.
+                let cloud_host = silence_host(self.provider.as_deref());
+                let watch = SilenceWatch::start(
+                    self.hub.clone(),
+                    cloud_host,
+                    std::time::Duration::from_secs(SILENT_ROUND_SECS),
+                );
                 let attempted = match &self.provider {
                     None => {
                         self.engine
@@ -5560,6 +5569,9 @@ impl<'a> Harness<'a> {
                         None,
                     ),
                 };
+                // The round has produced something or failed, either way the silence
+                // is over and the watchdog has nothing left to say.
+                watch.finish();
                 let Err(TurnFailure::Http(e)) = attempted else {
                     attempt = 0;
                     break attempted;
@@ -6485,6 +6497,149 @@ fn retry_host(provider: Option<&dyn letibot_backend::MessagesBackend>, local: &E
     match provider {
         None => local.authority(),
         Some(p) => p.authority(),
+    }
+}
+
+/// **Whether a silence notice applies at all, and about which host.**
+///
+/// `None` for the local route — and that is a policy, not an accident: a local round is
+/// silent for 29-31 s reloading a cold GGUF and for minutes on a long prefill, both of
+/// which this tree calls *progress*. Split from `SilenceWatch` so the decision can be
+/// tested without starting a thread, and from `retry_host` because this one has to
+/// answer `None` where that one always names something.
+fn silence_host(provider: Option<&dyn letibot_backend::MessagesBackend>) -> Option<String> {
+    provider.map(|p| p.authority())
+}
+
+/// **How long a CLOUD round may produce nothing before the silence is worth
+/// naming.**
+///
+/// Fifteen seconds, and the number is a judgement rather than a measurement. What IS
+/// measured (2026-10-02) is the shape it distinguishes: a degraded DeepSeek answered a
+/// streaming request in **12.44 s** to first byte while rejecting a bogus key in
+/// 0.33 s and a non-streaming request returned nothing at all in 25 s. So a metered
+/// round can sit silent for tens of seconds and then succeed — and until this existed,
+/// the operator learned that by asking somebody to run `curl -w`.
+///
+/// Chosen above the 12.44 s that was measured as *working*, so the notice means "this
+/// is slower than a healthy provider", not "this failed".
+const SILENT_ROUND_SECS: u64 = 15;
+
+/// **The notice for a cloud round that has produced nothing, when one is
+/// warranted.**
+///
+/// Pure — no clock, no thread — so the decision can be tested on its own. The
+/// watchdog below is its only caller.
+///
+/// The sentence is careful about what is actually known. Nothing here can see the HTTP
+/// status, so it does not claim the request was accepted: it says the round has
+/// produced nothing, which is the fact, and names the host it is waiting on.
+fn silence_notice(
+    host: &str,
+    silent: std::time::Duration,
+    threshold: std::time::Duration,
+) -> Option<String> {
+    if silent < threshold {
+        return None;
+    }
+    Some(format!(
+        "no answer from {host} yet: this round has produced nothing in {}s. It is not a \
+         failure — a provider that is slow to start answering looks exactly like this, and \
+         so does one that has gone away. The retry ladder is what reports the second, so \
+         nothing is being restarted and the request is still open.",
+        silent.as_secs(),
+    ))
+}
+
+/// **Say something WHILE a cloud round is silent**, which is the one thing the
+/// operator could not interpret.
+///
+/// # Why a thread and not a timeout
+///
+/// The provider blocks its round inside `complete`, so nothing on this thread can
+/// notice a silence: the round gets control back only when a delta arrives or the
+/// request fails, and both of those are the END of the silence. A watchdog is the only
+/// way to speak during the wait.
+///
+/// # Why it REPORTS rather than aborting
+///
+/// A first-byte *deadline* that aborted would break the case that was measured to be
+/// working: 12.44 s to first byte is a degraded provider that DOES answer, and a
+/// deadline short enough to catch it would fail a round that was going to succeed and
+/// then retry into the same slow backend. What the operator lacked was not a kill
+/// switch but a sentence; the retry ladder already handles a provider that is
+/// genuinely gone, and `http_retry_after` is where that policy lives. So this fires
+/// once, the round continues, and nothing is cancelled.
+///
+/// # Scope, and why it is the cloud route only
+///
+/// A LOCAL round is legitimately silent for 29-31 s reloading a cold GGUF and for
+/// minutes on a long prefill — this tree calls both of those *progress*, and the retry
+/// constants are written around them. A notice there would fire on healthy work and
+/// teach the operator to ignore the code, which is worse than not having it. `None` for
+/// the local route is therefore not an omission.
+struct SilenceWatch {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SilenceWatch {
+    /// Start watching, or return an inert one when there is nothing worth saying.
+    ///
+    /// `host` is `Some` only for a metered route; see the type's own docs.
+    fn start(
+        hub: std::sync::Arc<letibot_sessionlog::hub::Hub>,
+        host: Option<String>,
+        threshold: std::time::Duration,
+    ) -> Self {
+        use std::sync::atomic::Ordering;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let Some(host) = host else {
+            // Inert: the flag is already set, so `finish` is a no-op and no thread
+            // exists to join.
+            stop.store(true, Ordering::SeqCst);
+            return SilenceWatch { stop, handle: None };
+        };
+        let flag = stop.clone();
+        let handle = std::thread::spawn(move || {
+            // A short slice rather than one sleep of `threshold`, so the round can end
+            // promptly without this thread outliving it — the flag is checked between
+            // slices, and the thread exits within one slice of the round finishing.
+            let slice = std::time::Duration::from_millis(100);
+            let started = std::time::Instant::now();
+            loop {
+                if flag.load(Ordering::SeqCst) {
+                    return;
+                }
+                let silent = started.elapsed();
+                if let Some(detail) = silence_notice(&host, silent, threshold) {
+                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                        code: "model_slow_first_byte".into(),
+                        detail,
+                        compaction: None,
+                    });
+                    // **Once.** A round that is slow for a minute should not fill the
+                    // session with the same sentence; the first one carried the news.
+                    return;
+                }
+                std::thread::sleep(slice.min(threshold.saturating_sub(silent)));
+            }
+        });
+        SilenceWatch {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    /// Stop watching and wait for the thread to notice. Cheap: it is asleep on a 100 ms
+    /// slice, so this costs at most that — and nothing at all for the local route, where
+    /// no thread was started.
+    fn finish(self) {
+        use std::sync::atomic::Ordering;
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(h) = self.handle {
+            let _ = h.join();
+        }
     }
 }
 
@@ -7904,7 +8059,9 @@ mod endpoint_retry {
     //! operator, 2026-09-17: *"implement exponential backoff and auto turn
     //! restart for when model http endpoint doesnt answer or answers with error
     //! codes except unauthenticated"*.
-    use super::{MAX_HTTP_RETRIES, http_retry_after, retry_host};
+    use super::{
+        MAX_HTTP_RETRIES, SilenceWatch, http_retry_after, retry_host, silence_host, silence_notice,
+    };
     use letibot_turn::{Endpoint, HttpError};
 
     fn status(code: u16) -> HttpError {
@@ -8028,6 +8185,134 @@ mod endpoint_retry {
         assert!(http_retry_after(&status(403), 0, MAX_HTTP_RETRIES).is_none());
         // And not on a later attempt either — it is the code, not the streak.
         assert!(http_retry_after(&status(401), 3, MAX_HTTP_RETRIES).is_none());
+    }
+
+    /// **The notice fires only past the threshold, and says what it knows.**
+    ///
+    /// The number in the sentence is the measured silence, not the threshold — the
+    /// operator needs to know how long they waited, not what the policy was.
+    #[test]
+    fn the_silence_notice_needs_the_threshold_passed() {
+        let t = std::time::Duration::from_secs(15);
+        assert!(
+            silence_notice("api.deepseek.com", std::time::Duration::from_secs(14), t).is_none()
+        );
+        let n = silence_notice("api.deepseek.com", std::time::Duration::from_secs(22), t)
+            .expect("past the threshold there is something to say");
+        assert!(
+            n.contains("api.deepseek.com"),
+            "the host is the whole point: {n}"
+        );
+        assert!(n.contains("22s"), "the measured silence belongs in it: {n}");
+        // And it must not claim to know what it cannot: nothing here sees the HTTP
+        // status, so `accepted` would be an invention.
+        assert!(!n.contains("accepted"), "{n}");
+    }
+
+    /// **A round that has produced nothing publishes exactly one notice.**
+    ///
+    /// MEASURED as the shape this exists for: a degraded DeepSeek took 12.44 s to its
+    /// first byte and a NON-streaming request returned nothing in 25 s — and until this,
+    /// the operator could not tell either from a provider that was gone without asking
+    /// for `curl -w`.
+    ///
+    /// Once, not once per slice: a round that is slow for a minute must not fill the
+    /// session with the same sentence.
+    #[test]
+    fn a_silent_cloud_round_publishes_one_notice() {
+        use letibot_sessionlog::SessionEvent;
+        let hub = letibot_sessionlog::hub::Hub::new("silence-cloud");
+        let watch = SilenceWatch::start(
+            hub.clone(),
+            Some("api.deepseek.com".into()),
+            std::time::Duration::from_millis(50),
+        );
+        // Long enough for several 100 ms slices — so a version that published per
+        // slice would be caught here rather than in production.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let said: Vec<String> = hub
+            .retained()
+            .iter()
+            .filter_map(|e| match &e.event {
+                SessionEvent::Warning { code, detail, .. } if code == "model_slow_first_byte" => {
+                    Some(detail.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        watch.finish();
+        assert_eq!(said.len(), 1, "one notice, not one per slice: {said:?}");
+        assert!(said[0].contains("api.deepseek.com"), "{}", said[0]);
+    }
+
+    /// **And a local round is never nagged about silence.**
+    ///
+    /// A cold GGUF reload is 29-31 s and a long prefill is minutes; both are progress,
+    /// and the retry constants are written around them. A notice there would fire on
+    /// healthy work and teach the operator to ignore the code.
+    ///
+    /// Two halves, because they are two different mistakes: `silence_host` decides
+    /// whether the route qualifies at all (tested here, no thread), and `SilenceWatch`
+    /// decides what to do once it does (tested above and below).
+    #[test]
+    fn a_local_round_is_not_told_its_silence_is_suspicious() {
+        use letibot_backend::{BackendCaps, BackendError, Completion, MessagesBackend, StreamFlow};
+        use letibot_sessionlog::SessionEvent;
+
+        struct Cloud(&'static str);
+        impl MessagesBackend for Cloud {
+            fn caps(&self) -> BackendCaps {
+                BackendCaps::METERED_API
+            }
+            fn name(&self) -> &str {
+                "deepseek"
+            }
+            fn model(&self) -> &str {
+                "deepseek-flash"
+            }
+            fn authority(&self) -> String {
+                self.0.into()
+            }
+            fn complete(
+                &self,
+                _req: &letibot_backend::TurnRequest<'_>,
+                _on_delta: &mut dyn FnMut(&letibot_backend::Delta) -> StreamFlow,
+            ) -> Result<Completion, BackendError> {
+                unreachable!("this test is about the route decision, not the round")
+            }
+        }
+
+        // The decision, first: the local route is not a silence to report.
+        assert_eq!(silence_host(None), None, "a local prefill is progress");
+        let cloud = Cloud("api.deepseek.com");
+        assert_eq!(
+            silence_host(Some(&cloud)).as_deref(),
+            Some("api.deepseek.com")
+        );
+        // And it follows the backend's own URL, so a proxy is named as itself.
+        assert_eq!(
+            silence_host(Some(&Cloud("10.0.0.7:8443"))).as_deref(),
+            Some("10.0.0.7:8443")
+        );
+
+        // And the mechanism: an inert watch says nothing however long it runs.
+        let hub = letibot_sessionlog::hub::Hub::new("silence-local");
+        let watch = SilenceWatch::start(
+            hub.clone(),
+            silence_host(None),
+            std::time::Duration::from_millis(50),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let said = hub
+            .retained()
+            .iter()
+            .filter(|e| {
+                matches!(&e.event,
+                    SessionEvent::Warning { code, .. } if code == "model_slow_first_byte")
+            })
+            .count();
+        watch.finish();
+        assert_eq!(said, 0, "a local prefill is not a fault");
     }
 
     /// **A retry notice must name the host that was actually contacted.**

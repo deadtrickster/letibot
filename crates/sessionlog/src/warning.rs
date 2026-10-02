@@ -171,6 +171,13 @@ pub const TABLE: &[(&str, Class)] = &[
     // the handling — and when the retries are exhausted the turn fails under
     // `turn_failed`, which is a failure.
     ("model_endpoint_retry", Class::Routine),
+    // **A provider that has not started answering, said while it is still silent.**
+    // Routine, and the distinction matters: nothing failed. The request is open, the
+    // round is still running, and a degraded provider that takes 12 s to its first byte
+    // is the case this is FOR — measured on DeepSeek, 2026-10-02. Filing it as a failure
+    // would mark a session as having gone wrong for the crime of waiting, which is
+    // exactly the misreading the code exists to prevent.
+    ("model_slow_first_byte", Class::Routine),
     // Their interrupt and their promote arrived between turns, so there was nothing to
     // stop or move. The operator's own act, and a no-op.
     ("interrupt_idle", Class::Routine),
@@ -426,27 +433,27 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 70 codes, of which **7** are the reader's own input refused.
+    /// **The census, pinned.** 71 codes, of which **7** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_23_routine_7_refused_and_39_failures() {
+    fn the_table_is_24_routine_7_refused_and_40_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **70, not the 69 the census was taken at**, because R36 added `anchor_lost` — a
-        // fact about the READER rather than about the session: the row a scrolled viewport
-        // was holding is not in the transcript any more. Counted here rather than left
-        // implicit, because a census that quietly moves is not a census.
-        assert_eq!(TABLE.len(), 70, "the table's size");
-        assert_eq!(count(Class::Routine), 23);
+        // **71, not the 70 the census was taken at**, because `model_slow_first_byte` —
+        // a provider that has not started answering, said while it is still silent — is
+        // Routine and therefore moves THIS register rather than the red one. Counted
+        // rather than left implicit, because a census that quietly moves is not a census.
+        assert_eq!(TABLE.len(), 71, "the table's size");
+        assert_eq!(count(Class::Routine), 24);
         assert_eq!(count(Class::Refused), 7, "the seven in READER_INPUT");
         assert_eq!(count(Class::Failure), 40);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 39 of 69 and the middle is 7**, which is why the third register is a
-        // correction rather than a redefinition — 85% of the failures were already the right
-        // kind of thing.
+        // register is 40 of 71 and the middle is 7**, which is why the third register is a
+        // correction rather than a redefinition — most of the failures were already the
+        // right kind of thing.
     }
 
     /// **Every code in `READER_INPUT` is `Refused`, and every `Refused` code is in it.**
