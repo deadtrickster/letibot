@@ -489,7 +489,7 @@ impl SessionView {
                 advice,
                 deadline,
                 on_timeout,
-                            ..
+                ..
             } => {
                 self.open.retain(|d| &d.req_id != req_id);
                 self.open.push(OpenDecision {
@@ -749,6 +749,14 @@ impl SessionView {
             // itself and the view carries no counter. Ephemeral besides, so a late head
             // never replays a tick.
             SessionEvent::Filling { .. } => {}
+            // **Live-only, exactly as `Filling` is, and for the same reason.** A
+            // snapshot is what is TRUE at a seq; a fold's progress is a line that walks,
+            // so a value stored here would be sent to a late head as a fact about now
+            // when it was a fact about four minutes ago. What a late head needs from a
+            // compaction it missed is the fork and the `compacted` warning, and the view
+            // already keeps both — see `is_interactive` in `scrub.rs`, which strips this
+            // from every stored projection for the same reason.
+            SessionEvent::CompactionProgress { .. } => {}
         }
     }
 

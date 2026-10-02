@@ -134,6 +134,48 @@ pub enum TurnEvent {
     },
     /// §18's post-flight assertions land here, and so do §8.5's guards.
     Warning { code: &'static str, detail: String },
+    /// **A fold's long wait, named as the compaction's own.**
+    ///
+    /// The overrun paths summarise a SCRATCH transcript, and a scratch turn's own
+    /// `PromptProgress` cannot go out as itself: it lands in the head's
+    /// `turn.progress`, which is the SESSION's turn, so the scratch prompt's token
+    /// count was drawn as the session's context — the operator watched `69k` sit over
+    /// a 240k conversation that had not changed (2026-09-20, and again 2026-10-02 as
+    /// *"leticl compacts but why no progress bar?"*).
+    ///
+    /// The number was never wrong. Its LABEL was, and this is that number with its own:
+    /// a head that draws these fields cannot confuse them with session context however
+    /// similar the figures are, because the event says which compaction and which half
+    /// produced them.
+    ///
+    /// **Two halves is the most that exist and one is the common case.** The cloud
+    /// strategy folds once (`summarise_first_half`), reporting `1 of 1`; the local one
+    /// summarises a recent tail and then the older part (`summarise_overrun`), which is
+    /// why the count is a pair rather than a flag.
+    CompactionProgress {
+        /// Which half is running, 1-based, in the order they RUN — which for the local
+        /// plan is the recent tail first, since its cold prompt is the cheap one to warm
+        /// the cache with.
+        half: u64,
+        /// How many halves this compaction has: 1 or 2.
+        halves: u64,
+        /// The half's own prompt, in the box's ledger tokens. The same unit every other
+        /// count in this tree is in, so a reader can compare it with a `--status` figure
+        /// without a conversion nobody named.
+        prompt_tokens: u64,
+        /// How much of that prompt the server has read. Zero on a transport that reports
+        /// no prefill — a messages stream says nothing until it answers — which is a
+        /// real answer here and not a failure to report one.
+        processed: u64,
+        /// What the half has produced so far, counted in `unit`.
+        written: u64,
+        /// **What `written` counts, because the two transports do not count the same
+        /// thing.** A token stream reports `tokens_predicted`; a messages stream reports
+        /// only text, so a character count is the whole of what is knowable there. One
+        /// name for both would be a lie about one of them, and the daemon is the layer
+        /// that knows which transport it is on.
+        unit: &'static str,
+    },
 }
 
 /// Where events go.
@@ -196,6 +238,7 @@ fn kind_of(e: &TurnEvent) -> &'static str {
         TurnEvent::TurnFinished { .. } => "TurnFinished",
         TurnEvent::TurnInterrupted { .. } => "TurnInterrupted",
         TurnEvent::Warning { .. } => "Warning",
+        TurnEvent::CompactionProgress { .. } => "CompactionProgress",
     }
 }
 

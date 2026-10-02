@@ -143,6 +143,14 @@ pub const TABLE: &[(&str, Class)] = &[
     // happen. These are the four the operator was met by.
     ("auto_compact", Class::Routine),
     ("compacted", Class::Routine),
+    // **The fold saying what it is doing while it does it** — *"compacting half 1 of 2: the
+    // most recent exchanges — 348 item(s), 940612 token(s) to read"*, and then what the half
+    // answered. Routine by the same rule as the four above: the operation the operator is
+    // waiting on, described in its own units, and deleting it loses only the reason the wait
+    // was minutes long. It is the opposite of a fault — a fault is what a silent wait gets
+    // read as. Measured 2026-10-02: a fold ran for minutes with nothing on the screen, and
+    // the operator asked *"leticl compacts but why no progress bar?"*.
+    ("compact_half", Class::Routine),
     // **The operator's own call ran** — R31's size disclosure. Routine by the rule
     // above: it is a sentence about something the operator asked for that worked, and
     // deleting it loses only the number they were owed. It is the count of context they
@@ -433,25 +441,26 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 71 codes, of which **7** are the reader's own input refused.
+    /// **The census, pinned.** 72 codes, of which **7** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_24_routine_7_refused_and_40_failures() {
+    fn the_table_is_25_routine_7_refused_and_40_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **71, not the 70 the census was taken at**, because `model_slow_first_byte` —
+        // **72, not the 70 the census was taken at**, because `model_slow_first_byte` —
         // a provider that has not started answering, said while it is still silent — is
-        // Routine and therefore moves THIS register rather than the red one. Counted
-        // rather than left implicit, because a census that quietly moves is not a census.
-        assert_eq!(TABLE.len(), 71, "the table's size");
-        assert_eq!(count(Class::Routine), 24);
+        // Routine and therefore moves THIS register rather than the red one, and because
+        // `compact_half` does the same for a fold that is running. Counted rather than left
+        // implicit, because a census that quietly moves is not a census.
+        assert_eq!(TABLE.len(), 72, "the table's size");
+        assert_eq!(count(Class::Routine), 25);
         assert_eq!(count(Class::Refused), 7, "the seven in READER_INPUT");
         assert_eq!(count(Class::Failure), 40);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 40 of 71 and the middle is 7**, which is why the third register is a
+        // register is 40 of 72 and the middle is 7**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

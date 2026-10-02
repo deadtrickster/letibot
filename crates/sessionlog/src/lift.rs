@@ -54,6 +54,26 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
         TurnEvent::TokensGenerated { turn_id, tokens } => {
             SessionEvent::TokensGenerated { turn_id, tokens }
         }
+        // **The compaction's own progress, never lifted as the session's.** This is the
+        // one arm here that exists to NOT forward an event as itself; see
+        // `TurnEvent::CompactionProgress`. Nothing about the wording would have shown
+        // the difference — the head drew it under the wrong label, as the session's
+        // context, because that is the only slot a `PromptProgress` has.
+        TurnEvent::CompactionProgress {
+            half,
+            halves,
+            prompt_tokens,
+            processed,
+            written,
+            unit,
+        } => SessionEvent::CompactionProgress {
+            half,
+            halves,
+            prompt_tokens,
+            processed,
+            written,
+            unit: unit.to_string(),
+        },
         TurnEvent::Delta {
             turn_id,
             target,

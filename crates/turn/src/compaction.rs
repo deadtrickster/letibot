@@ -125,7 +125,7 @@ use letibot_dialect::StablePrefix;
 use letibot_transcript::{SystemOrigin, TranscriptItem, UserPart};
 
 use crate::engine::{Session, TurnEngine, TurnFailure, TurnOk};
-use crate::events::{EventSink, NullSink};
+use crate::events::{EventSink, NullSink, TurnEvent};
 use crate::length::EmptyReason;
 
 /// What is appended as the compaction turn's instruction — **on both the local and
@@ -1574,6 +1574,9 @@ pub fn summarise_overrun(
         prefix,
         &format!("{scratch_id}-tail"),
         &items[*tail_from..],
+        1,
+        2,
+        "the most recent exchanges",
         sink,
         answerer,
     )?;
@@ -1582,6 +1585,9 @@ pub fn summarise_overrun(
         prefix,
         &format!("{scratch_id}-old"),
         &items[..*cut],
+        2,
+        2,
+        "the older part",
         sink,
         answerer,
     )?;
@@ -1612,26 +1618,113 @@ pub fn summarise_overrun(
     })
 }
 
+/// **Carries a scratch summary turn's long wait out, labelled as the compaction's own.**
+///
+/// The slice is history the operator has already seen, over a transcript that is never
+/// persisted, so its rows and deltas must not go out — announcing them puts *"waiting
+/// for the body of …"* placeholders on the screen for a conversation that does not
+/// exist. That is why this path used a `NullSink`, and it is why the sink is still not
+/// the caller's: everything except progress is dropped here.
+///
+/// **What it adds is the label.** A scratch turn's `PromptProgress` lifted as itself
+/// lands in the head's `turn.progress`, which is the SESSION's — so the scratch prompt's
+/// token count was drawn as the session's context and the operator watched `69k` sit
+/// over a 240k conversation that had not changed. The number was never wrong; its label
+/// was, and [`TurnEvent::CompactionProgress`] is that number with a correct one.
+struct CompactionSink<'a> {
+    inner: &'a mut dyn EventSink,
+    half: u64,
+    halves: u64,
+    prompt_tokens: u64,
+    /// Prefill, from a transport that reports it.
+    processed: u64,
+    /// Characters received, for the transport that reports no token count.
+    chars: u64,
+    /// The server's own count, when the transport gives one.
+    tokens: Option<u64>,
+    /// Deltas seen, so the publish can be strided. See `emit`.
+    deltas: u64,
+}
+
+impl CompactionSink<'_> {
+    /// What to report as `written`, and in which unit.
+    ///
+    /// A token count wins where there is one: it is the server's own figure, and it is
+    /// the unit the rest of this tree counts in. Characters are the fallback and not a
+    /// lesser answer — on a messages transport they are the only thing that arrives
+    /// while the model writes, and a fold on that transport is the case that ran for
+    /// minutes with nothing on the screen at all.
+    fn written(&self) -> (u64, &'static str) {
+        match self.tokens {
+            Some(t) => (t, "tokens"),
+            None => (self.chars, "chars"),
+        }
+    }
+
+    fn publish(&mut self) {
+        let (written, unit) = self.written();
+        let p = TurnEvent::CompactionProgress {
+            half: self.half,
+            halves: self.halves,
+            prompt_tokens: self.prompt_tokens,
+            processed: self.processed,
+            written,
+            unit,
+        };
+        self.inner.emit(p);
+    }
+}
+
+impl EventSink for CompactionSink<'_> {
+    fn emit(&mut self, event: TurnEvent) {
+        match event {
+            TurnEvent::PromptProgress { progress, .. } => {
+                self.processed = progress.processed;
+                self.publish();
+            }
+            TurnEvent::TokensGenerated { tokens, .. } => {
+                self.tokens = Some(tokens);
+                self.publish();
+            }
+            TurnEvent::Delta { text, .. } => {
+                self.chars += text.chars().count() as u64;
+                self.deltas += 1;
+                // **Strided, because a tick per chunk is a flood and the flood is what
+                // breaks the indicator.** A messages stream delivers a delta per token,
+                // so publishing on each would push thousands of frames at a head whose
+                // queue has a cap — and over the cap the hub demotes it and throws the
+                // queue away, so the ticks stop arriving. That failure is already
+                // measured here twice (see `FILLING_STRIDE`); a progress bar reads as a
+                // fraction, not as a count, so one tick per 32 costs the reader nothing.
+                if self.deltas == 1 || self.deltas % 32 == 0 {
+                    self.publish();
+                }
+            }
+            // Everything else: the scratch rows, the tool calls, the turn's own
+            // boundaries. Dropped, which is the whole reason this sink exists.
+            _ => {}
+        }
+    }
+}
+
 /// One summary turn over one slice, in a throwaway session.
+///
+/// `half` and `halves` are what the caller knows and this cannot: the local plan runs
+/// two of these, the cloud plan one. `what` names the slice in the operator's words,
+/// for the line that opens and closes each half.
 fn summarise_one(
     engine: &mut TurnEngine<'_>,
     prefix: &StablePrefix,
     scratch_id: &str,
     slice: &[TranscriptItem],
+    half: u64,
+    halves: u64,
+    what: &str,
     sink: &mut dyn EventSink,
     answerer: &Answerer<'_>,
 ) -> Result<Harvest, TurnFailure> {
-    // `ProgressOnly`: the rows are a copy of history the operator has already
-    // seen, so announcing them puts `waiting for the body of …` placeholders on
-    // their screen for a transcript that is never persisted. The PREFILL is worth
-    // showing -- it is minutes long and is the only honest answer to "what is it
-    // doing".
-    // Nothing to the head. Forwarding `PromptProgress` from here looked like a fix
-    // for "tui doesnt show any prefill" and was worse: the head drew the scratch
-    // prompt's token count as the SESSION's context, and the operator watched it
-    // sit at "69k" over a 240k conversation that had not changed. Progress is the
-    // caller's to report, in words, per half.
-    let _ = sink;
+    // The rows go to a `NullSink` and stay there; see `CompactionSink` for why that is
+    // the right answer for the slice and the wrong one for the progress.
     let mut quiet = NullSink;
     let mut scratch = engine.open(scratch_id, prefix).map_err(TurnFailure::from)?;
     scratch
@@ -1645,26 +1738,60 @@ fn summarise_one(
         .append_items(engine, &[instruction], &mut quiet)
         .map_err(TurnFailure::from)?;
 
-    let ok = engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
-        loop {
-            match answerer.run(engine, &mut scratch, &mut quiet) {
-                Ok(ok) => break Ok(ok),
-                Err(TurnFailure::UnfinishedReasoning { .. }) => {
-                    append_salvage_notice(
-                        &mut scratch,
-                        engine,
-                        &mut quiet,
-                        UNFINISHED_REASONING_NOTICE,
-                    )?;
+    // **The half's own prompt, in LEDGER tokens** — prefix, slice and instruction —
+    // which is the unit every other count in this tree is in, so a reader can put it
+    // beside a `--status` figure without a conversion nobody named.
+    let prompt_tokens = scratch.ledger.len() as u64;
+    sink.emit(TurnEvent::Warning {
+        code: "compact_half",
+        detail: format!(
+            "compacting half {half} of {halves}: {what} — {} item(s), {prompt_tokens} \
+             token(s) to read. Nothing of this half reaches the transcript; it is \
+             summarised in a scratch session of its own.",
+            slice.len()
+        ),
+    });
+
+    let (ok, wrote, unit) = {
+        let mut progress = CompactionSink {
+            inner: sink,
+            half,
+            halves,
+            prompt_tokens,
+            processed: 0,
+            chars: 0,
+            tokens: None,
+            deltas: 0,
+        };
+        let ok = engine.without_reasoning(|engine| -> Result<TurnOk, TurnFailure> {
+            loop {
+                match answerer.run(engine, &mut scratch, &mut progress) {
+                    Ok(ok) => break Ok(ok),
+                    Err(TurnFailure::UnfinishedReasoning { .. }) => {
+                        append_salvage_notice(
+                            &mut scratch,
+                            engine,
+                            &mut quiet,
+                            UNFINISHED_REASONING_NOTICE,
+                        )?;
+                    }
+                    Err(TurnFailure::EmptyLength { reason, .. }) => {
+                        let notice = empty_length_notice(reason);
+                        append_salvage_notice(&mut scratch, engine, &mut quiet, &notice)?;
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(TurnFailure::EmptyLength { reason, .. }) => {
-                    let notice = empty_length_notice(reason);
-                    append_salvage_notice(&mut scratch, engine, &mut quiet, &notice)?;
-                }
-                Err(e) => return Err(e),
             }
-        }
-    })?;
+        })?;
+        let (w, u) = progress.written();
+        (ok, w, u)
+    };
+    // The closing line, in the same voice as the opening one: minutes of nothing became
+    // a pair of sentences and a number that moved between them.
+    sink.emit(TurnEvent::Warning {
+        code: "compact_half",
+        detail: format!("half {half} of {halves} answered: {wrote} {unit} written."),
+    });
     Ok(harvest(&ok.items))
 }
 
@@ -1745,7 +1872,17 @@ pub fn summarise_first_half(
     sink: &mut dyn EventSink,
     answerer: &Answerer<'_>,
 ) -> Result<Harvest, TurnFailure> {
-    summarise_one(engine, prefix, scratch_id, &items[..split], sink, answerer)
+    summarise_one(
+        engine,
+        prefix,
+        scratch_id,
+        &items[..split],
+        1,
+        1,
+        "the conversation so far",
+        sink,
+        answerer,
+    )
 }
 
 #[cfg(test)]
@@ -1789,5 +1926,174 @@ mod folding {
         // The first item alone is past half, so the split lands before it and the
         // first half would be empty -- there is no useful fold here.
         assert_eq!(plan_fold(&items, P, W), None);
+    }
+}
+
+/// **The scratch turn's long wait, carried out labelled — the sink's own contract.**
+///
+/// This is a unit test of [`CompactionSink`] rather than a drive of `summarise_one`
+/// through an engine, and that is the right level for it: what can silently regress is
+/// not "did a fold happen" — the session either compacts or it does not — it is *what a
+/// head was told while it waited*. The failure this guards is precise: re-label a
+/// scratch prompt as the session's own `PromptProgress` and a head draws the scratch
+/// token count as the session's context, which is the `69k` that sat over a 240k
+/// conversation (2026-09-20). Nothing else in this tree writes
+/// [`TurnEvent::CompactionProgress`], so the assertion is exact.
+#[cfg(test)]
+mod compaction_sink {
+    use super::*;
+    use crate::completion::PromptProgress;
+    use crate::events::DeltaTarget;
+
+    /// A sink that keeps what it was given, so a test can say what a head would see.
+    #[derive(Default)]
+    struct Recorder {
+        seen: Vec<TurnEvent>,
+    }
+
+    impl EventSink for Recorder {
+        fn emit(&mut self, event: TurnEvent) {
+            self.seen.push(event);
+        }
+    }
+
+    fn sink<'a>(inner: &'a mut Recorder, prompt_tokens: u64) -> CompactionSink<'a> {
+        CompactionSink {
+            inner,
+            half: 2,
+            halves: 2,
+            prompt_tokens,
+            processed: 0,
+            chars: 0,
+            tokens: None,
+            deltas: 0,
+        }
+    }
+
+    fn progress_of(event: &TurnEvent) -> (u64, u64, u64, u64, u64, &'static str) {
+        match event {
+            TurnEvent::CompactionProgress {
+                half,
+                halves,
+                prompt_tokens,
+                processed,
+                written,
+                unit,
+            } => (*half, *halves, *prompt_tokens, *processed, *written, unit),
+            other => panic!("expected CompactionProgress, got {other:?}"),
+        }
+    }
+
+    /// Reading: a `PromptProgress` becomes a `CompactionProgress` carrying the half's
+    /// own identity and prompt size, and the number is the server's `processed`.
+    #[test]
+    fn a_scratch_prompts_progress_is_relabelled_as_the_halfs_own() {
+        let mut rec = Recorder::default();
+        {
+            let mut s = sink(&mut rec, 940_612);
+            s.emit(TurnEvent::PromptProgress {
+                turn_id: "scratch#1".into(),
+                progress: PromptProgress {
+                    total: 940_612,
+                    cache: 0,
+                    processed: 12_345,
+                    time_ms: 900,
+                },
+            });
+        }
+        assert_eq!(rec.seen.len(), 1, "one event in, one event out");
+        assert_eq!(
+            progress_of(&rec.seen[0]),
+            (2, 2, 940_612, 12_345, 0, "chars"),
+            "the half, its prompt, and what has been read — in the compaction's own fields"
+        );
+        assert!(
+            matches!(rec.seen[0], TurnEvent::CompactionProgress { .. }),
+            "and it is the one variant a head has a field of its own for"
+        );
+    }
+
+    /// Writing: the server's own count wins and says so, in `tokens`.
+    #[test]
+    fn the_servers_token_count_is_what_written_reports() {
+        let mut rec = Recorder::default();
+        {
+            let mut s = sink(&mut rec, 500);
+            s.emit(TurnEvent::TokensGenerated {
+                turn_id: "scratch#1".into(),
+                tokens: 1_200,
+            });
+        }
+        assert_eq!(
+            progress_of(&rec.seen[0]),
+            (2, 2, 500, 0, 1_200, "tokens"),
+            "the provider's own figure, in the unit it is in"
+        );
+    }
+
+    /// **A messages transport has no token count at all**, so characters are what
+    /// `written` reports — and that is the case that ran for minutes in silence.
+    /// Strided, so a delta per token does not flood a head's capped queue: the first
+    /// delta publishes, then every 32nd.
+    #[test]
+    fn a_messages_stream_counts_characters_and_publishes_on_a_stride() {
+        let mut rec = Recorder::default();
+        {
+            let mut s = sink(&mut rec, 940_612);
+            for i in 0..96 {
+                s.emit(TurnEvent::Delta {
+                    turn_id: "scratch#1".into(),
+                    target: DeltaTarget::Text,
+                    text: "word ".into(),
+                });
+                assert_eq!(s.deltas, i + 1);
+            }
+        }
+        // 1, 32, 64 and 96 — four publishes for ninety-six deltas, not ninety-six.
+        assert_eq!(rec.seen.len(), 4, "strided, not a tick per chunk");
+        assert_eq!(
+            progress_of(&rec.seen[0]),
+            (2, 2, 940_612, 0, 5, "chars"),
+            "the first delta publishes at once, so the line appears when writing starts"
+        );
+        assert_eq!(
+            progress_of(&rec.seen[3]),
+            (2, 2, 940_612, 0, 480, "chars"),
+            "96 deltas x 5 chars"
+        );
+    }
+
+    /// **The scratch rows and the tool calls do not go out.** Announcing them puts
+    /// *"waiting for the body of …"* placeholders on the screen for a conversation
+    /// that does not exist, which is why this path was a `NullSink` — and why the sink
+    /// must drop everything except progress.
+    #[test]
+    fn the_scratch_conversations_own_rows_are_dropped() {
+        let mut rec = Recorder::default();
+        {
+            let mut s = sink(&mut rec, 100);
+            s.emit(TurnEvent::TurnStarted {
+                turn_id: "scratch#1".into(),
+                model: "deepseek-flash".into(),
+                ledger_head: "deadbeef".into(),
+                began_ms: None,
+            });
+            s.emit(TurnEvent::ToolCallProposed {
+                turn_id: "scratch#1".into(),
+                call_id: "call_1".into(),
+                name: "read".into(),
+                args_digest: "sha".into(),
+                arguments: "{}".into(),
+            });
+            s.emit(TurnEvent::Warning {
+                code: "row_coverage_gap".into(),
+                detail: "the scratch transcript is not the session's".into(),
+            });
+        }
+        assert!(
+            rec.seen.is_empty(),
+            "a scratch turn's rows belong to no head: {:?}",
+            rec.seen
+        );
     }
 }

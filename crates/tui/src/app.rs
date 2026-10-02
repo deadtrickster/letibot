@@ -2044,6 +2044,30 @@ pub struct App {
     /// stays. See [`filling_line`] for why this is the daemon's count and not a count of
     /// the rows still lacking a body.
     filling: Option<(String, String, u64, u64)>,
+    /// **A fold's long wait** ([`SessionEvent::CompactionProgress`](letibot_sessionlog::SessionEvent::CompactionProgress)),
+    /// in the compaction's own units.
+    ///
+    /// **A field of its own rather than a second use of `turn.progress`, and that
+    /// separation is the fix.** The overrun compaction summarises a SCRATCH transcript;
+    /// when its `PromptProgress` was forwarded as itself it landed in `turn.progress`,
+    /// which is the SESSION's turn, so the scratch prompt's token count was drawn as the
+    /// session's context — the operator watched `69k` sit over a 240k conversation that
+    /// had not changed (2026-09-20). Nothing here can be confused with the session's
+    /// figures however alike they look, because nothing else writes this field.
+    compacting: Option<CompactionLine>,
+}
+
+/// One compaction half, as the daemon reports it.
+#[derive(Debug, Clone)]
+struct CompactionLine {
+    half: u64,
+    halves: u64,
+    prompt_tokens: u64,
+    processed: u64,
+    written: u64,
+    /// What `written` counts — `tokens` or `chars`, the daemon's word, because the two
+    /// transports do not report the same thing.
+    unit: String,
 }
 
 /// **A bulk announcement: the ids a snapshot carried with no body, and when it landed.**
@@ -2193,6 +2217,81 @@ fn filling_line(
             )
         ),
         cfg.palette().paint(Role::Faint, &format!("  {what}")),
+    ]
+}
+
+/// **A fold, in the compaction's own units** — the renderer for
+/// [`SessionEvent::CompactionProgress`](letibot_sessionlog::SessionEvent::CompactionProgress).
+///
+/// A free function for `filling_line`'s reason: by the time the tail is assembled,
+/// `screen` has already borrowed `self` mutably.
+///
+/// **Two phases, because a fold has two and they are minutes apart.** While the server
+/// is still reading the half's prompt it draws the prefill bar the ordinary turn draws —
+/// the same three-valued bar, so a reader who has watched one recognises this one — and
+/// the count is *read*. Once it starts writing, the count is *written* and the bar is
+/// gone: there is no total to draw a fraction of, which is why that number is a count and
+/// not a percentage. A bar that invented a total would be an indicator that is not the
+/// fact.
+fn compacting_line(c: &CompactionLine, now_ms: u64, cfg: &RenderConfig) -> Vec<String> {
+    let p = cfg.palette();
+    let where_ = format!("half {} of {}", c.half, c.halves);
+    // Reading, and there is something to show progress against.
+    if c.processed > 0 && c.processed < c.prompt_tokens {
+        let pre = progress::Prefill {
+            total: c.prompt_tokens,
+            // Nothing of a scratch prompt is cached: it is a slice of history under a
+            // prefix the server may hold, but the slice itself has never been sent.
+            cache: 0,
+            processed: c.processed,
+            time_ms: 0,
+        };
+        let total_s = progress::thousands(c.prompt_tokens);
+        let counts = format!(
+            "{:>w$} of {total_s} tokens read",
+            progress::thousands(c.processed),
+            w = total_s.chars().count()
+        );
+        let used = CAT_SLOT + counts.chars().count() + 6;
+        let bar_cols = cfg.width.saturating_sub(used).clamp(8, 40);
+        return vec![
+            String::new(),
+            format!(
+                "  {} {}  {}",
+                progress::bar(&pre, bar_cols, p),
+                p.paint(Role::Faint, &counts),
+                p.paint(
+                    Role::Faint,
+                    &format!("{cat:<CAT_SLOT$}", cat = cat_frame(now_ms))
+                )
+            ),
+            p.paint(
+                Role::Faint,
+                &format!(
+                    "  compacting {where_} — nothing shows on the \
+                 transcript until it lands, and the conversation is kept either way"
+                ),
+            ),
+        ];
+    }
+    // Writing: a count and no fraction. `unit` is the daemon's word for what it counts.
+    vec![
+        String::new(),
+        format!(
+            "  {} {}",
+            p.paint(
+                Role::Faint,
+                &format!("{cat:<CAT_SLOT$}", cat = cat_frame(now_ms))
+            ),
+            p.paint(
+                Role::Faint,
+                &format!(
+                    "compacting {where_} — {} {} written so far",
+                    progress::thousands(c.written),
+                    c.unit
+                )
+            )
+        ),
     ]
 }
 
@@ -2632,6 +2731,7 @@ impl App {
             cursor: None,
             bulk: None,
             filling: None,
+            compacting: None,
             bye: None,
             daemon_pid: None,
             unconfirmed: Vec::new(),
@@ -4133,6 +4233,30 @@ impl App {
                 self.redraw = true;
                 Disposition::Rendered
             }
+            SessionEvent::CompactionProgress {
+                half,
+                halves,
+                prompt_tokens,
+                processed,
+                written,
+                unit,
+            } => {
+                // **Stored in its own field, which is the whole point of the event.** This
+                // must not touch `self.turn.progress`: that slot is the SESSION's turn, and
+                // a scratch summary's numbers landing there is exactly the mislabel the
+                // old suppression traded away the progress line to avoid. Nothing else
+                // writes `self.compacting`, so the two cannot be confused.
+                self.compacting = Some(CompactionLine {
+                    half,
+                    halves,
+                    prompt_tokens,
+                    processed,
+                    written,
+                    unit,
+                });
+                self.redraw = true;
+                Disposition::Rendered
+            }
             SessionEvent::TurnStarted {
                 turn_id,
                 model,
@@ -4816,6 +4940,16 @@ impl App {
                 }
                 if code == "compacted" || code == "reseated" {
                     self.resolve_fork();
+                    // **And the fold is over, so the line that walks stops walking.** The
+                    // progress event is ephemeral by construction — it has no "done" — so
+                    // what ends it is this: the durable warning that says the fork landed.
+                    // `auto_compact_failed` clears it too, below: a fold that failed is not
+                    // a fold that is still running, and a line that outlives its operation is
+                    // the stale measurement this file's `ToolStarted` arm already refuses.
+                    self.compacting = None;
+                }
+                if code == "auto_compact_failed" {
+                    self.compacting = None;
                 }
                 // A slash LISTING opens the pane; a slash sentence stays a note.
                 // The daemon sends both under one code — `detail` is the command
@@ -11129,6 +11263,16 @@ impl App {
             segs.push(Seg::Owned(filling_line(
                 &what, &unit, done, total, now_ms, &cfg,
             )));
+        }
+
+        // **A compaction's own progress, drawn without a threshold.** A fill is gated by
+        // `MIN_FILLING` because a three-row carry does not deserve a cat; a fold is never
+        // small, never ordinary and never optional — it runs only when the session is at
+        // the wall, and it is the longest wait in the program, so there is nothing to
+        // weigh. This is the line the operator asked for twice: *"leticl compacts but why
+        // no progress bar?"*
+        if let Some(c) = self.compacting.clone() {
+            segs.push(Seg::Owned(compacting_line(&c, now_ms, &cfg)));
         }
 
         // **An unnamed bulk announcement: the head says only what it observed.**

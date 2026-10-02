@@ -1430,6 +1430,46 @@ pub enum SessionEvent {
         /// How much there is, known before the first row where it can be.
         total: u64,
     },
+    /// **A fold's long wait, named as the compaction's own** — see
+    /// [`letibot_turn::events::TurnEvent::CompactionProgress`] for the event this is
+    /// the wire form of, and `summarise_one` for the sink that produces it.
+    ///
+    /// The overrun compaction summarises a SCRATCH transcript, and forwarding its raw
+    /// `PromptProgress` put the scratch prompt's token count in the head's
+    /// `turn.progress` — the SESSION's turn — so the operator watched `69k` sit over a
+    /// 240k conversation that had not changed (2026-09-20). The number was never wrong;
+    /// its label was. This is that number under its own name, which is why a head that
+    /// draws these fields cannot confuse them with session context however similar the
+    /// figures are.
+    ///
+    /// **A new variant is a `PROTOCOL_VERSION` bump**, unlike the defaulted field on
+    /// [`SessionEvent::Warning`] above: an older head has no arm for this and would
+    /// fail to decode the frame, so the attach-time refusal is what tells it why rather
+    /// than a head that dies mid-stream. The two are different classes of change and the
+    /// version note says which this is.
+    ///
+    /// **Ephemeral, like [`SessionEvent::Filling`]**: a progress frame from four minutes
+    /// ago is a lie about now. What survives the compaction is the fork, the `compacted`
+    /// warning and its [`CompactionReport`].
+    CompactionProgress {
+        /// Which half is running, 1-based, in the order they RUN — the recent tail
+        /// first on the local plan, since its cold prompt is the cheap one to warm the
+        /// server's cache with.
+        half: u64,
+        /// How many halves: 1 for the cloud fold, 2 for the local two-half plan.
+        halves: u64,
+        /// The half's own prompt, in the box's ledger tokens.
+        prompt_tokens: u64,
+        /// How much of it the server has read. `0` on a messages transport, which
+        /// reports no prefill — a real answer, not a missing one.
+        processed: u64,
+        /// What the half has produced so far.
+        written: u64,
+        /// What `written` counts: `tokens` where the transport reports the server's own
+        /// count, `chars` where it reports only text. Named, because the two transports
+        /// do not count the same thing and one name for both would be a lie about one.
+        unit: String,
+    },
 }
 
 impl SessionEvent {
@@ -1467,6 +1507,7 @@ impl SessionEvent {
             SessionEvent::OperatorCallAllowed { .. } => "OperatorCallAllowed",
             SessionEvent::JobOutput { .. } => "JobOutput",
             SessionEvent::Filling { .. } => "Filling",
+            SessionEvent::CompactionProgress { .. } => "CompactionProgress",
         }
     }
 }

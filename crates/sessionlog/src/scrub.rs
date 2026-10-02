@@ -82,6 +82,11 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // is the rows it appended and the note that says it finished; scrubbing this
         // and keeping those is exactly right.
         SessionEvent::Filling { .. } => true,
+        // Ephemeral, for `Filling`'s reason exactly: a compaction's progress is a line
+        // that walks while a fold runs, and a tick from four minutes ago is a lie about
+        // now. What survives the compaction is the fork and the `compacted` warning —
+        // scrubbing this and keeping those is the same split `Filling` makes.
+        SessionEvent::CompactionProgress { .. } => true,
 
         // Everything below is durable: replaying it states a fact that is still
         // true, or that was true at its seq and is timestamped as such.
@@ -245,8 +250,7 @@ impl StoredProjection {
             _ => {
                 debug_assert!(
                     !is_interactive(&env.event)
-                        || matches!(env.event, SessionEvent::DecisionRequested {
-                            .. }),
+                        || matches!(env.event, SessionEvent::DecisionRequested { .. }),
                     "BUG: an interactive event reached the stored projection unhandled. \
                      `is_interactive` and `keep` must classify the same set."
                 );
@@ -401,8 +405,7 @@ mod tests {
                 SessionEvent::PromptProgress { .. }
                     | SessionEvent::TokensGenerated { .. }
                     | SessionEvent::ToolProgress { .. }
-                    | SessionEvent::DecisionRequested {
-                        .. }
+                    | SessionEvent::DecisionRequested { .. }
                     | SessionEvent::JobOutput { .. }
             );
             assert_eq!(interactive, expected, "{}", e.kind());

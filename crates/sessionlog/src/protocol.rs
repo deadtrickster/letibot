@@ -288,7 +288,25 @@ use crate::view::Snapshot;
 /// **This version is also where the signpost learned about `ServerFrame`.** The check that every
 /// frame is accounted for covered the two directions that already existed and not the third, so
 /// a new server frame broke an old head with nothing asking about it — found by adding one.
-pub const PROTOCOL_VERSION: u32 = 26;
+///
+/// # 27: a compaction can show its own progress
+///
+/// [`crate::event::SessionEvent::CompactionProgress`] is a new server event, so a version-26 head
+/// would fail to decode it — the version-4 argument, and the same ATTACH-time refusal.
+///
+/// **Why an event and not the field-with-a-default that `Warning`'s own note calls safe.** That
+/// note's test is *"both directions are safe"*, and this fails it on one side: a defaulted field
+/// on an existing variant is a frame an older head already has an arm for, while a new VARIANT is
+/// one it has no arm for at all. `serde` has no catch-all on this enum — deliberately, so a head
+/// cannot silently skip a fact it does not understand — which is what makes the difference real
+/// rather than a matter of taste.
+///
+/// **What it is for, in the operator's words:** *"leticl compacts but why no progress bar?"*, and
+/// then *"even more so for this overruns when we compact in turns"*. The overrun compaction
+/// summarises a scratch transcript, so its progress could not be forwarded as the session's — a
+/// `PromptProgress` from there is drawn as the session's own context, which it is not, and that
+/// mislabel is what the suppression was for. This event is the same numbers under their own name.
+pub const PROTOCOL_VERSION: u32 = 27;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1505,6 +1523,7 @@ mod tests {
                 | crate::SessionEvent::JobSettled { .. }
                 | crate::SessionEvent::OperatorCallAllowed { .. }
                 | crate::SessionEvent::Filling { .. }
+                | crate::SessionEvent::CompactionProgress { .. }
                 | crate::SessionEvent::PromptProgress { .. }
                 | crate::SessionEvent::ScreenRequested { .. }
                 | crate::SessionEvent::SecretRequested { .. }
@@ -1557,10 +1576,11 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 26,
-            "the match above was last reconciled with the frame list at 26 — bumped for \
-             `SetOperatorTodos`, a NEW frame (which an old daemon cannot read at all), as opposed \
-             to an added defaulted field, which is the case that needs no bump"
+            PROTOCOL_VERSION, 27,
+            "the match above was last reconciled with the frame list at 27 — bumped for \
+             `CompactionProgress`, a NEW event inside `ServerFrame::Event` (an old head's \
+             `SessionEvent` has no catch-all, so it cannot read one at all), as opposed to an \
+             added defaulted field, which is the case that needs no bump. 26 was `SetOperatorTodos`"
         );
     }
 
@@ -1639,7 +1659,10 @@ mod tests {
             panic!("not a set_operator_todos: {f:?}");
         };
         assert_eq!(expected_seq, 4537, "the rest of the frame still reads");
-        assert!(items.is_empty(), "an absent list is an empty half: {items:?}");
+        assert!(
+            items.is_empty(),
+            "an absent list is an empty half: {items:?}"
+        );
 
         // And the spelling WITH items is unaffected — the two neighbours this could break are a
         // full half and a one-row half, so both are asserted here rather than assumed.
