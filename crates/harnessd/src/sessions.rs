@@ -1439,15 +1439,23 @@ impl<'a> Sessions<'a> {
                 // `compacting:` and then nothing at all, because the failure went
                 // only to a hub with no head attached — a compaction that silently
                 // did not happen is worse than one that never fired.
+                //
+                // **Path-neutral, because there are two callers now.** This used to
+                // say "the turn you asked for succeeded; what failed is the tidying
+                // after it" — true of the after-turn call sites and FALSE of the one
+                // `run_prompt` makes BEFORE the send. There no turn ran, and the
+                // next one will not "may hit the wall": it WILL, because this
+                // compaction was the thing making room for it. A message describing
+                // the wrong one of two callers is the defect `republish_after`
+                // already names, one layer down.
                 eprintln!("  compaction FAILED: {e}");
                 if let Some(hub) = &hub {
                     hub.publish(SessionEvent::Warning {
                         code: "auto_compact_failed".into(),
                         detail: format!(
-                            "the automatic compaction did not run: {e}. The turn you \
-                             asked for succeeded; what failed is the tidying after it, \
-                             and the next turn may hit the context wall. `/compact` \
-                             retries it.",
+                            "the automatic compaction did not run: {e}. This session is \
+                             over its context budget and nothing made room, so the next \
+                             turn will hit the context wall. `/compact` retries it.",
                         ),
 
                         compaction: None,
