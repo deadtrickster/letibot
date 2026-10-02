@@ -98,9 +98,21 @@
 //!   * cloud provider -> summarise, fold, continue; no overlap, no seam, no
 //!     duplicated region.
 //!
-//! Only the first is implemented. The second is a smaller piece of work than the
-//! first and is written down here so it is a choice somebody makes rather than a
-//! gap somebody finds.
+//! **Both are implemented and both are wired.** `plan_overrun` decides WHICH, and
+//! `Harness::compact_inner` carries out the answer: the fold is `plan_fold` +
+//! `summarise_first_half` with the second half kept verbatim, and the two-half plan
+//! is `summarise_overrun`. This paragraph used to end *"Only the first is
+//! implemented"*, which stopped being true when the second arrived, and the stale
+//! sentence cost a reader an afternoon: it is why the overrun path was described as
+//! never having run, when in fact it ran and failed (see below). **A note that says
+//! a thing is missing is a claim with a lifetime**, and this one outlived its
+//! truth by as long as nobody read the code beside it.
+//!
+//! What made the mistake easy: the two entry points look asymmetric from here.
+//! `summarise_overrun` is `pub` in this crate and `summarise_first_half` is too, so
+//! both are "the module's", while the decision between them lives in `harnessd` —
+//! one crate away from this prose. Grepping this file alone therefore shows a
+//! planner and no chooser.
 //!
 //! Held apart, the overrun plan below reads as two separate judgements rather
 //! than one muddle. Summarising the old half is a prompt that is a true PREFIX of
