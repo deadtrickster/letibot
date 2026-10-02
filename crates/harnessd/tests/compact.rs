@@ -1086,3 +1086,81 @@ fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
         "a ratio of one is not a conversion: the two counts are the same number"
     );
 }
+
+/// **A resumed session is checked for the wall BEFORE its first turn is sent.**
+///
+/// `compact_if_at_the_wall`'s own contract is to compact *"when the NEXT turn
+/// would not fit"*, and its two older call sites are both AFTER a turn — so the
+/// one prompt nothing checked was the first prompt after a resume, which is
+/// exactly the prompt a reopened session gets. Measured 2026-10-02: a reopened
+/// leticl session sent 1,463,497 tokens against a 1,048,576 window on every
+/// attempt, and the provider's refusal came back as a BACKEND error rather than
+/// `ContextWall` — so `after_turn`'s `out.is_ok() || wall` was false, the
+/// compaction was never reached, and no amount of retyping could dig that session
+/// out. A dead head, not a slow one.
+///
+/// The fixture is the salvage test's, for the same reason it uses it: a prefix in
+/// a 512-token window is over the wall before any turn runs, so nothing about the
+/// conversation has to build up first. What is asserted is the ORDER — the wall
+/// is announced before the turn starts — because that ordering *is* the property
+/// under test, and it is the one thing an assertion on `out.is_ok()` cannot see.
+///
+/// The compaction then FAILS here, because this fixture's prompt is larger than
+/// its window; that is the fixture's point and not this test's. What matters is
+/// that it was CONSIDERED before anything was sent, which is what a resumed
+/// session needs and what it did not have. The failure itself is the salvage
+/// test's assertion, not this one's.
+#[test]
+fn the_wall_is_checked_before_the_first_turn_after_a_resume() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    use letibot_harnessd::Sessions;
+    use letibot_sessionlog::event::SessionEvent;
+    use letibot_sessionlog::registry::Registry;
+
+    let dir = TempDir::new("harnessd-wall-before-turn");
+    let path = dir.path().join("sessions.db");
+    let session_id = "wall-before-turn-test";
+    let mut cfg = config(&path, session_id);
+    cfg.context_window = Some(512);
+    let parts = load_parts(&cfg);
+
+    // A plain answer, because the prompt turn is the only request that fits here.
+    let scripts = vec![a_plain_answer_turn(
+        &parts.vocab,
+        "counting",
+        "forty-two",
+        30,
+    )];
+    let serv = canned::Canned::serve_each(scripts, 4);
+    cfg.endpoint = serv.endpoint.clone();
+
+    let registry = Registry::new();
+    registry
+        .create(session_id, "", Sessions::wiring(&cfg))
+        .expect("the session is in the registry");
+    let hub = registry.get(session_id).expect("the hub is the registry's");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
+
+    // **Nothing has run yet**: the session has just been opened, which is the state
+    // a resume leaves it in, and the prompt below is its first turn.
+    let out = sessions.submit(session_id, "count the things");
+    assert!(out.is_ok(), "the prompt turn still answers: {out:?}");
+
+    let events: Vec<SessionEvent> = hub.retained().iter().map(|e| e.event.clone()).collect();
+    let announced = events
+        .iter()
+        .position(|e| matches!(e, SessionEvent::Warning { code, .. } if code == "auto_compact"))
+        .expect("the wall was announced at all");
+    let started = events
+        .iter()
+        .position(|e| matches!(e, SessionEvent::TurnStarted { .. }))
+        .expect("the turn started at all");
+    assert!(
+        announced < started,
+        "the wall must be considered before the first turn is sent, not after it: \
+         auto_compact at {announced}, TurnStarted at {started}"
+    );
+}

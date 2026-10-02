@@ -913,6 +913,31 @@ impl<'a> Sessions<'a> {
         // `run_prompt` is the one place a prompt from ANY door arrives (a head's enter, a script,
         // `--continue`), and a rule applied at one door is a rule the other doors do not have.
         self.note_operator_prompt(session_id);
+        // **The wall is checked BEFORE the send, not only after the last turn.**
+        //
+        // `compact_if_at_the_wall`'s own contract is to compact *"when the NEXT
+        // turn would not fit"* — and both of its call sites are AFTER a turn, so
+        // the contract holds for every turn except the first one after a resume.
+        // A session that has just been reopened has taken no turn since the daemon
+        // started, so nothing has checked, and the prompt goes out whole.
+        //
+        // Measured 2026-10-02, and it is what made a dead head rather than a slow
+        // one: a resumed leticl session sent 1,463,497 tokens against a 1,048,576
+        // window. The provider's refusal comes back as a BACKEND error and not as
+        // `HarnessError::ContextWall`, so `after_turn`'s `out.is_ok() || wall` is
+        // false and the compaction is never reached — the session could not
+        // recover on its own however many times the operator retyped. With this
+        // check, the same session compacts first and the turn fits (~923k).
+        //
+        // Before the turn clock, not after: a compaction is the tidying, not a
+        // round of the turn, and a composer that counted it would show the
+        // operator a turn duration that is mostly the summary.
+        //
+        // Not a second copy of the tidying: the same function, the same predicate
+        // and the same swallowed failure, called earlier on the one path every
+        // prompt from every door takes (`--continue`, a head's enter, a script).
+        // The invariant it restores is the one the call sites already assumed.
+        self.compact_if_at_the_wall(session_id);
         // **A turn is one prompt however many ROUNDS it takes, so the clock starts HERE.**
         // `run_turn_steered` is called inside the round loop, so `TurnStarted` fires per round
         // and a head timing from it restarts at every one — the composer read `2.1s` a minute
@@ -924,7 +949,7 @@ impl<'a> Sessions<'a> {
             h.begin_turn_clock(began);
         }
         let hub = self.registry.get(session_id);
-        // Opened here rather than held across the tidying below: a live borrow of
+        // Opened here rather than held across the tidying above: a live borrow of
         // `self.open` would stop a compaction from re-entering it.
         let out = match self.harness(session_id) {
             Ok(h) => h.submit(text),
