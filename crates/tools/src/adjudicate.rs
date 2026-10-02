@@ -6588,20 +6588,6 @@ mod tests {
         assert_eq!(asked.load(Ordering::Relaxed), 1, "a person was asked");
     }
 
-    /// **An unresolvable command now reaches the POINT, and the point decides.**
-    ///
-    /// This test was `an_unresolvable_command_reaching_the_gate_is_not_run_and_never_admitted`
-    /// and it asserted a refusal. The operator's ruling of 2026-10-02 changed that — *"in
-    /// allow-all, stop refusing a command because the grammar could not resolve a
-    /// construct"* — so `/bin/cat $FILE` is admitted at a permissive point, and the two
-    /// facts that make that safe are what this pins:
-    ///
-    /// * **`resolved` is still `false`.** It is carried on its own now rather than read
-    ///   off the verdict, so no corpus row claims a resolution that never happened.
-    /// * **`adjudicable()` is still `None`.** A meaning nobody could read is never handed
-    ///   to a MODEL to approve; the point decides, and a point that does not admit asks a
-    ///   person. See the narrow-point half below, which is the other side of the ruling:
-    ///   *"a narrow mode finds the widened scope outside its grant and refuses"*.
     /// **A standing grant never settles a command whose meaning was never resolved.**
     ///
     /// This is the property the operator's own instruction protects — *"that field must
@@ -6642,7 +6628,11 @@ mod tests {
         // First: a resolved call, which the person allows FOR THE SESSION.
         let plain = json!({"command": "cd /w && make lint"});
         let _ = g.admit(&bash(&plain));
-        assert_eq!(asked.load(Ordering::Relaxed), 1, "the first call asked once");
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            1,
+            "the first call asked once"
+        );
 
         // Second: the same shape with one word the grammar cannot read. Same program,
         // same class, same intents — so only `resolved` can keep the grant off it.
@@ -6662,6 +6652,20 @@ mod tests {
         );
     }
 
+    /// **An unresolvable command now reaches the POINT, and the point decides.**
+    ///
+    /// This test was `an_unresolvable_command_reaching_the_gate_is_not_run_and_never_admitted`
+    /// and it asserted a refusal. The operator's ruling of 2026-10-02 changed that — *"in
+    /// allow-all, stop refusing a command because the grammar could not resolve a
+    /// construct"* — so `/bin/cat $FILE` is admitted at a permissive point, and the two
+    /// facts that make that safe are what this pins:
+    ///
+    /// * **`resolved` is still `false`.** It is carried on its own now rather than read
+    ///   off the verdict, so no corpus row claims a resolution that never happened.
+    /// * **`adjudicable()` is still `None`.** A meaning nobody could read is never handed
+    ///   to a MODEL to approve; the point decides, and a point that does not admit asks a
+    ///   person. See the narrow-point half below, which is the other side of the ruling:
+    ///   *"a narrow mode finds the widened scope outside its grant and refuses"*.
     #[test]
     fn an_unresolvable_command_reaching_the_gate_is_admitted_at_a_permissive_point() {
         let mut g = permissive_gate();
