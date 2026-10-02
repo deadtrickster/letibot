@@ -36,13 +36,22 @@ members = [
 # published binary reported 0.1.0 and every 0.1.0 install was offered 0.1.1 for
 # ever. One place to change, and a check that the tag matched it.
 #
-# **0.1.2 rather than 0.1.1, and the reason is what a tag means.** `v0.1.1` is
-# already published and cannot be moved: it holds `harnessd`, `letibot-tui`,
-# `letibot-askpass` and the three libraries, and NOT the launcher — so an install
-# from it tells the user the release predates `letibot` and points them at
-# `letibot-tui` instead. Every role wired since lives in this tree and none of it
-# is in that asset, so a new tag is the only way any of it reaches anybody.
-version = "0.1.2"
+# **0.2.0 rather than 0.1.3, and it is a decision rather than a default.** This release
+# carries `PROTOCOL_VERSION` 26 -> 27, and a protocol bump is the one change in this tree
+# that makes a correct head and a correct daemon refuse each other — by name, with a `Bye`
+# and no `Hello`, which is a clean refusal and still a broken install. The version string
+# is what a person reads before upgrading one half and not the other, so it is the only
+# place that warning can be given.
+#
+# **For a `0.x` tree the MINOR is the compatibility slot.** `^0.1.2` means
+# `>=0.1.2, <0.2.0`, exactly as `^1.2` means `<2.0` — so a minor bump is what tells
+# somebody pairing two installs that the pairing may no longer hold, and a patch bump
+# tells them it will. `v0.1.2` carried a protocol bump (25 -> 26) as a *patch*, and that
+# is the precedent this deliberately does not follow: it is the shape that made a wire
+# break invisible in a number that promised compatibility. leticl pins this tree by tag
+# (`LETIBOT_REF`) and must move that pin either way, so the number costs nobody a
+# mechanism; it is read by a human, and it has exactly one job.
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
