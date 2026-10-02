@@ -2850,17 +2850,48 @@ impl App {
     /// operator who chose *stop* and got a running daemon learns it here, once, on stderr,
     /// rather than from `ps` a day later — which is exactly how this one was found.
     ///
-    /// `None` when there is nothing to say — no stop was asked for, or it worked. Four
-    /// different sentences, and they are different because the operator's next move
-    /// differs: it went; it did not go and a turn was running (legitimate, and it will
-    /// finish); it did not go and nothing was running or it could not even be asked (the
-    /// wedge, and here is the verb); or the daemon said goodbye on its own.
+    /// `None` when there is nothing to say — no stop was asked for, it worked, or **the
+    /// daemon said goodbye**. The sentences below are four because the operator's next move
+    /// differs: it did not go and a turn was running (legitimate, and it will finish); it did
+    /// not go and nothing was running or it could not even be asked (the wedge, and here is
+    /// the verb); or the daemon ended the connection itself, which is a different fact with
+    /// its own sentence in [`App::farewell`].
     pub fn stop_farewell(&self) -> Option<String> {
         let s = self.stopping.as_ref()?;
         let secs = s.since_ms.max(self.now_ms).saturating_sub(s.since_ms) / 1000;
-        // Matched on what was OBSERVED, not on what was hoped. `gone` is checked first
-        // because it is the only fact that answers the operator's question.
-        if s.gone {
+        // **A `Bye` is the daemon saying it is going, and it is the last word this head
+        // gets.** The operator was reading this pair on nearly every orderly stop, four
+        // lines apart and in this order:
+        //
+        // ```text
+        // letibot: the daemon was asked to stop and had not gone 0s later.
+        //   the request was acknowledged and did not stop; pid 2291248 is still there.
+        //   `letibot --stop --force` finishes it — …
+        // letibot: the daemon ended this head — daemon shutting down
+        // ```
+        //
+        // The second line is the daemon saying goodbye. The first said it did not go — and
+        // recommended `--force`, which *aborts in-flight turns over the protocol*, against a
+        // daemon that had just left politely.
+        //
+        // **`gone` could not have been true here, by construction, and that is the whole
+        // defect.** `gone` is *the process has exited and been collected* — observed by
+        // reaping — and the head leaves the moment this frame arrives, which is the moment
+        // the daemon has *begun* shutting down and the earliest point at which it cannot yet
+        // have been reaped. So the one observation available at this call site is *not yet*,
+        // and a farewell keyed on it can only report failure. `should_quit` already knows
+        // better, in its own comment: *"saying goodbye is the daemon going, so nothing is
+        // left to wait for."* This is the same fact, said on the way out, so the two
+        // sentences agree because they share a cause.
+        //
+        // **`gone` is not overloaded to mean this.** It goes on meaning exactly what its
+        // docstring says — the strongest observation, and the only one that is *the daemon
+        // has actually gone* — and a `Bye` is a second, weaker answer to the same question
+        // with its own name. The `0s` in the message above is the arithmetic of the same
+        // mistake rather than a second one: the frame arrives milliseconds after the ack, so
+        // the wait really was under a second — it was simply too early to judge. On the only
+        // path that still prints it, the deadline has passed and the figure is at least 5.
+        if s.gone || self.bye.is_some() {
             return None;
         }
         let pid = match s.pid {

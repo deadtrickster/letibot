@@ -114,11 +114,39 @@ fn wait_ticking<T>(
     panic!("timed out waiting for {what}");
 }
 
+/// **What the peer does when it is asked to stop.**
+///
+/// Three behaviours because there are three different questions to ask about a stop, and
+/// the third is the one a real daemon actually produces — see [`OnStop::AcceptedThenBye`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OnStop {
+    /// Acknowledges, then closes the socket silently. The state machine (`acked`,
+    /// `closed`, `gone`) is read through this one.
+    Accepted,
+    /// Says nothing at all, so the head has only a write and a deadline.
+    Silent,
+    /// **Acknowledges and then says goodbye, which is what a real daemon does.**
+    ///
+    /// `ServerHandle::shutdown` closes the registry, the seat's pump answers
+    /// `Delivery::Closed` with `Bye { reason: "daemon shutting down" }`
+    /// (`crates/sessionlog/src/server.rs`), and that is the last frame an orderly stop
+    /// produces.
+    ///
+    /// **This mode is new, and its absence is why nothing caught the defect.** The peer
+    /// used to close silently with a comment asserting that the real daemon sends no
+    /// `Bye` — *"`serve_conn` returns, the writer is dropped, and the head's pump sees
+    /// EOF"* — which is exactly backwards, and `reconnect.rs`'s header says so in as many
+    /// words: *"the seat's pump answers `Delivery::Closed` with `ServerFrame::Bye { reason:
+    /// \"daemon shutting down\" }` — and a `Bye` is by design not a drop."* Two test files
+    /// disagreed about the daemon's behaviour, and the one that modelled a stop had it
+    /// wrong, so the farewell below was never once exercised against the frame it
+    /// actually gets.
+    AcceptedThenBye,
+}
+
 /// **A daemon that answers `Attach` and hands back whatever else it is sent.**
 ///
-/// Two channels: the frames it received, and a switch for whether it should answer a
-/// `Stop` with the daemon's own `Accepted` — withheld by the test that needs a daemon
-/// which never answers.
+/// Two channels: the frames it received, and how it should answer a `Stop`.
 struct Peer {
     frames: std::sync::mpsc::Receiver<ClientFrame>,
     path: PathBuf,
@@ -126,7 +154,17 @@ struct Peer {
 }
 
 impl Peer {
+    /// The two-behaviour form: answer the stop, or never answer it.
     fn start(path: PathBuf, answer_stop: bool) -> Peer {
+        let on_stop = if answer_stop {
+            OnStop::Accepted
+        } else {
+            OnStop::Silent
+        };
+        Peer::start_with(path, on_stop)
+    }
+
+    fn start_with(path: PathBuf, on_stop: OnStop) -> Peer {
         let listener = UnixListener::bind(&path).expect("bind");
         let (tx, frames) = std::sync::mpsc::channel();
         let join = std::thread::spawn(move || {
@@ -169,7 +207,7 @@ impl Peer {
                     return;
                 }
                 if is_stop {
-                    if !answer_stop {
+                    if on_stop == OnStop::Silent {
                         // **The daemon that never answers.** The socket stays open and
                         // nothing comes back, which is the case the ack exists to
                         // distinguish from a delivered request.
@@ -182,10 +220,19 @@ impl Peer {
                             note: letibot_sessionlog::NOTE_STOPPING.into(),
                         })
                         .expect("accepted");
-                    // **Then it goes, silently and without a `Bye`** — which is what the
-                    // real daemon does: `serve_conn` returns, the writer is dropped, and
-                    // the head's pump sees EOF. A `Bye` would end this head for a different
-                    // reason and hide the state machine under test.
+                    // **And, on the third mode, the goodbye a real daemon sends.** Written
+                    // before the close, in the order the real one writes it: the ack, then
+                    // the `Bye`, then the socket goes.
+                    if on_stop == OnStop::AcceptedThenBye {
+                        writer
+                            .write(&ServerFrame::Bye {
+                                reason: "daemon shutting down".into(),
+                            })
+                            .expect("bye");
+                    }
+                    // Then it goes. `Accepted` closes silently — the writer is dropped and
+                    // the head's pump sees EOF — which is the case the state machine is
+                    // read through.
                     let _ = writer.get_mut().shutdown(std::net::Shutdown::Both);
                     return;
                 }
@@ -422,6 +469,79 @@ fn a_successful_stop_says_nothing_on_the_way_out() {
         a.stop_farewell(),
         None,
         "it went; there is nothing to report"
+    );
+    let _ = std::fs::remove_file(&peer.path);
+}
+
+/// **The daemon's own goodbye is the stop being answered, and saying otherwise puts two
+/// contradicting sentences on stderr four lines apart.**
+///
+/// A real daemon shutting down does not close the socket silently: the seat's pump answers
+/// `Delivery::Closed` with `Bye { reason: "daemon shutting down" }`, so the last thing an
+/// orderly stop produces is a farewell. The head leaves on that frame — `should_quit` says
+/// so in its own comment, *"saying goodbye is the daemon going, so nothing is left to
+/// wait for"* — and it leaves **before it has reaped anything**, because the goodbye is
+/// written before the process exits and `Stopping::gone` means *observed gone by reaping*.
+/// So on this path `gone` is `false` by construction: the earliest the goodbye can arrive
+/// is before the observation is possible.
+///
+/// Read together with a farewell that requires `gone`, that produced this, in the
+/// operator's scrollback for days, on nearly every orderly stop:
+///
+/// ```text
+/// letibot: the daemon was asked to stop and had not gone 0s later.
+///   the request was acknowledged and did not stop; pid 2291248 is still there.
+///   …
+/// letibot: the daemon ended this head — daemon shutting down
+/// ```
+///
+/// The second line is the daemon saying goodbye; the first says it did not go. The advice
+/// is worse than the contradiction: `--force` *aborts in-flight turns over the protocol*,
+/// and it was being recommended against a daemon that had just left politely.
+///
+/// Both halves are asserted, because the fix must not silence a real failure: the goodbye
+/// is named by `farewell`, and the stop is not reported as one that did not take.
+#[test]
+fn the_daemons_goodbye_is_the_stop_being_answered() {
+    let path = socket_path("goodbye");
+    let peer = Peer::start_with(path.clone(), OnStop::AcceptedThenBye);
+    // No pid: this head did not spawn the daemon, so the weaker half of the evidence is
+    // all it ever has — and the goodbye is what it must act on.
+    let mut link = Link::open(&path, SESSION, 0, "tui", "test").expect("attach");
+    let mut a = app();
+    step(&mut link, &mut a);
+    choose_stop(&mut link, &mut a);
+
+    let stop = format!(
+        "{:?}",
+        wait_for("the stop frame", || peer
+            .next()
+            .filter(|f| matches!(f, ClientFrame::Stop { .. })))
+    );
+    assert!(
+        stop.contains("Stop"),
+        "the request reached the socket: {stop}"
+    );
+    wait_ticking(&mut link, &mut a, "the goodbye to end the head", |a| {
+        a.should_quit().then_some(())
+    });
+
+    assert!(
+        a.stopping().is_some_and(|s| s.acked && !s.gone),
+        "acknowledged, and the stronger observation was never available — which is the \
+         whole reason a farewell keyed on `gone` cannot be right here"
+    );
+    assert_eq!(
+        a.farewell(),
+        Some("daemon shutting down"),
+        "the goodbye is the fact the operator is left with"
+    );
+    assert_eq!(
+        a.stop_farewell(),
+        None,
+        "the daemon said goodbye, so the question is answered. A sentence here would \
+         contradict the line printed under it and recommend `--force` against a daemon \
+         that had already left."
     );
     let _ = std::fs::remove_file(&peer.path);
 }
