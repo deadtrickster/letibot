@@ -75,6 +75,33 @@ lubuntu2 pending):
 | refused × always_ask — caught before the model | **32 of 292 (11.0%)** |
 | not_run — layer A cannot read it | **31,462 of 104,496 (30.1%)**, all "meaning does not exist yet" |
 
+**The `not_run` row was fixed on 2026-10-02, and this is the measurement of it.** The
+operator, refused at `allow-all` on a `make lint` whose only sin was ending
+`echo "exit=$?"`: *"in allow-all, stop refusing a command because the grammar could not
+resolve a construct"*. An unresolvable construct is now a **widened scope** rather than a
+refusal — see `docs/boundary-and-adjudication.md`, amended there with the reasoning — and
+the same sweep over this corpus, old binary against new:
+
+| | |
+|---|---|
+| `not_run` before | **38,237 of 120,593 (31.7%)** |
+| `not_run` after | **2,853 of 120,593 (2.4%)** |
+| verdicts that moved | **35,384, every one `not_run` → `ask`** — none the other way |
+| removed from the tier | 152 `auto` → `may_approve`, 89 `may_approve` → `always_ask` — **both stricter** |
+| changed read-ness | 164, **all `not_run` → `ask`** (a variable inside `echo`) |
+| commands that became LESS strict | **0** |
+
+The 2,853 that still refuse are the two cases with no scope to widen: a parse error (the
+structure itself may be misread) and a program nobody can name (the intents are derived
+from it). So step 2a's "read the `not_run` fifth" is done, and what it found is that the
+fifth was not a fifth of anything obscure — it was ordinary work refused for spelling a
+variable.
+
+The table above is one sweep with one caveat worth stating: the numbers are layer A's
+alone (`classify` over the commands), which is exactly what the `not_run` row was about,
+and not a re-run of `--etalon`'s prompt counts — that mode is gone from the tree. The
+121,137-row corpus it was taken from is at `~/.local/share/letibot/etalon.jsonl`.
+
 Prompts on rows that ran, by rule: `network_egress_to_an_unseen_host` 7,024 ·
 `credential_use` 1,736 (`find ~ -name x.go`, `grep … flowy` — a name match) ·
 `destruction_outside_the_project` 1,162 · `secret_off_box` 720 (`. ~/.config/flowy/env-… &&
