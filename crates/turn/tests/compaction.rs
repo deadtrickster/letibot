@@ -527,6 +527,11 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
     struct Counting {
         calls: AtomicUsize,
         text: String,
+        /// **How many tools the request carried**, recorded off the real
+        /// `TurnRequest` rather than inferred. See the assertion below: this is the
+        /// wiring the `reasoning_content` contract hangs off, and it is invisible
+        /// from every other angle.
+        tools_seen: AtomicUsize,
     }
     impl MessagesBackend for Counting {
         fn caps(&self) -> BackendCaps {
@@ -543,10 +548,12 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
         }
         fn complete(
             &self,
-            _req: &TurnRequest<'_>,
+            req: &TurnRequest<'_>,
             on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
         ) -> Result<Completion, BackendError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
+            self.tools_seen
+                .store(req.tools_json.len(), Ordering::Relaxed);
             on_delta(&Delta::Text(self.text.clone()));
             Ok(Completion {
                 text: self.text.clone(),
@@ -582,11 +589,11 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
     let backend = Counting {
         calls: AtomicUsize::new(0),
         text: summary.to_string(),
+        tools_seen: AtomicUsize::new(usize::MAX),
     };
     let answerer = letibot_turn::compaction::Answerer::Provider {
         backend: &backend,
         system: "you are a summariser",
-        tools_json: &[],
     };
     let outcome =
         letibot_turn::run_compaction(&mut engine, &mut session, &mut sink, &answerer).unwrap();
@@ -595,6 +602,22 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
         backend.calls.load(Ordering::Relaxed),
         1,
         "the summary did not reach the provider"
+    );
+    // **The compaction request carries NO tools, and that is a wire property with a
+    // consequence half a session away.** DeepSeek requires every previous turn's
+    // `reasoning_content` back *when the request carries `tools`* — so a summary
+    // turn that offered tools made the largest request in the session the one whose
+    // whole job was to make room, and wedged a head at 1,463,497 tokens against a
+    // 1,048,576 window. Measured on a leticl session, 2026-10-02.
+    //
+    // Asserted on the request the backend actually received rather than on the
+    // `Answerer` value: the type no longer has a field for tools, so the absence is
+    // structurally guaranteed — but a `&[]` that somebody later fills in would not
+    // fail to compile, and this is the assertion that would catch it.
+    assert_eq!(
+        backend.tools_seen.load(Ordering::Relaxed),
+        0,
+        "a summary turn offered tools, which forces the reasoning echo back onto the wire"
     );
     assert_eq!(outcome.summary, summary);
 }

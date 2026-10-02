@@ -312,13 +312,51 @@ pub struct CompactionOutcome {
 pub enum Answerer<'a> {
     /// The daemon's own endpoint, for a session that runs there anyway.
     Local,
-    /// The session's provider, with the prefix's system and tools — the same
-    /// four arguments the ordinary cloud turn passes, so the summary is rendered
-    /// and counted the way every other turn in that conversation is.
+    /// The session's provider, with the prefix's system prompt — and **deliberately
+    /// without its tools.**
+    ///
+    /// # Why a summary turn gets no tools, and what it cost to learn
+    ///
+    /// This variant used to carry `tools_json: &prefix.tools_json`, on the reasoning
+    /// that the summary should be "rendered and counted the way every other turn in
+    /// that conversation is". That reasoning was written before the reasoning-echo
+    /// contract was understood, and the two together wedged a head:
+    ///
+    /// MEASURED 2026-10-02, on a leticl session that could not take a single turn:
+    ///
+    /// ```text
+    /// http 400: This model's maximum context length is 1048576 tokens. However,
+    ///           you requested 1463497 tokens (1463497 in the messages, 0 in ...)
+    /// ```
+    ///
+    /// 1,463,497 against a 1,048,576 window, from a session whose ledger read
+    /// 940,211. The difference is the reasoning history: DeepSeek's rule is that
+    /// `reasoning_content` must be passed back **when the request carries `tools`**
+    /// (see `provider::messages`), and carrying tools is exactly what this variant
+    /// did — so every compaction echoed half a million tokens of thinking at a
+    /// request whose only job is to write prose about what happened.
+    ///
+    /// Three things are wrong with offering tools to a summary, and each alone
+    /// would be enough:
+    ///
+    /// * **It cannot call one.** [`crate::compaction::harvest`] counts a summary
+    ///   turn's tool calls so the outcome can report them; nothing executes them.
+    ///   Offering tools invites an answer that will not run.
+    /// * **It is what forces the echo.** Drop them and `carries_tools` is false, the
+    ///   reasoning stays home, and the request falls back to roughly the ledger's own
+    ///   size — DeepSeek ignores the absence *by its own documented rule*, so the
+    ///   contract is satisfied in the direction it was written rather than
+    ///   special-cased around.
+    /// * **A compaction is the one call that must FIT.** It runs when the window is
+    ///   nearly full — that is the only time it runs — so the largest request in the
+    ///   session is the one whose whole purpose is to make room.
+    ///
+    /// The field is gone rather than passed as `&[]` at the call site, so a later
+    /// caller cannot reintroduce this by handing in the prefix again: there is no
+    /// longer anywhere to put it.
     Provider {
         backend: &'a dyn letibot_backend::MessagesBackend,
         system: &'a str,
-        tools_json: &'a [String],
     },
 }
 
@@ -331,17 +369,17 @@ impl Answerer<'_> {
     ) -> Result<TurnOk, TurnFailure> {
         match self {
             Answerer::Local => engine.run_turn(session, sink),
-            Answerer::Provider {
-                backend,
-                system,
-                tools_json,
-            } => engine.run_turn_messages(
+            Answerer::Provider { backend, system } => engine.run_turn_messages(
                 session,
                 sink,
                 &mut crate::steering::NoSteering,
                 *backend,
                 system,
-                tools_json,
+                // **No tools, and the empty slice is the point rather than an
+                // oversight.** See this type's own docs: carrying tools is what makes
+                // the provider require every previous turn's `reasoning_content` back,
+                // and a summary turn cannot call a tool anyway.
+                &[],
                 None,
             ),
         }

@@ -4484,7 +4484,6 @@ impl<'a> Harness<'a> {
             Some(p) => letibot_turn::compaction::Answerer::Provider {
                 backend: p.as_ref(),
                 system: &prefix.system,
-                tools_json: &prefix.tools_json,
             },
         }
     }
