@@ -4510,6 +4510,13 @@ impl<'a> Harness<'a> {
             Some(p) => letibot_turn::compaction::Answerer::Provider {
                 backend: p.as_ref(),
                 system: &prefix.system,
+                // **The prefix's own tools, so the summary is sent under the SAME
+                // prefix as every other turn in this conversation.** They are not here
+                // so the summary can call one — nothing executes what it proposes.
+                // They are here so a local server's cached prefix still matches and
+                // the largest call in the session is not a cold prefill. See
+                // `Answerer::Provider`'s docs.
+                tools_json: &prefix.tools_json,
             },
         }
     }

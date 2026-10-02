@@ -56,19 +56,20 @@ impl OpenAiProvider {
 
     /// The request body, for a test to look at.
     pub fn body(&self, req: &TurnRequest<'_>) -> Result<Value, BackendError> {
-        // **`tools` is built first, because it decides something about `messages`.**
+        // **`tools` is built first because it is part of the request — NOT because it
+        // decides whether the reasoning echo is required.** This comment asserted the
+        // opposite for a day, on the strength of the vendor's guide, and the guide is
+        // not the API: five permutations measured against the live API 2026-10-02 all
+        // answered 200, including `tools` with no `reasoning_content` and no tools with
+        // none either. `crate::messages`' module header carries the table.
         //
-        // DeepSeek's thinking-mode guide: whether `reasoning_content` must be passed
-        // back "depends on whether the request carries the `tools` parameter" — with
-        // tools it MUST, without them it is ignored. So the condition is a property of
-        // THIS request, computed here, and handed to `convert` rather than guessed
-        // inside it from a provider name.
-        //
-        // MEASURED, and it is why this is not a tidy-up: the old `convert` dropped
-        // every reasoning item while the request carried tools, and the API answered
-        // `400: The reasoning_content in the thinking mode must be passed back` on a
-        // head at 940k of 999k tokens. Compaction is what failed, so the head could
-        // not recover — the remedy was the failing call.
+        // So `carries_tools` is **our switch for how much to send**, not a rule being
+        // obeyed. It is still worth having — it keeps a large reasoning history off a
+        // request that does not need it — and it is NOT what causes the
+        // `reasoning_content … must be passed back` refusal: the echo is off for a
+        // no-tools request, and a compaction carrying no tools was refused with exactly
+        // that message. That trigger is unexplained, and a refusal now logs this
+        // request's shape so the next one can be read rather than guessed at.
         let tools = crate::messages::tools(req.tools_json).map_err(BackendError::Malformed)?;
         let carries_tools = !tools.is_empty();
         let mut body = json!({
@@ -95,6 +96,104 @@ impl OpenAiProvider {
         }
         Ok(body)
     }
+}
+
+/// **The SHAPE of a request that was refused: roles in order, which fields each
+/// message carries, and how long they are. Never the content.**
+///
+/// Written for a refusal nobody can explain from documentation — two readings of
+/// `The reasoning_content in the thinking mode must be passed back to the API` have
+/// been disproven by measurement, and the module header of [`crate::messages`] carries
+/// both. What a third attempt needs is the actual request, and this is that request
+/// with the conversation left out.
+///
+/// The distinctions below are the ones a theory can turn on and a summary would lose:
+///
+///   * **`size`, in bytes**, because the refusal this was written for has only ever
+///     been seen on requests whose conversation was far past the model's window, and
+///     the largest request this harness ever sends is a compaction of a session it
+///     has already lost. A shape that cannot say how big it is cannot show that.
+///   * **`absent` versus `null`.** `"content": null` is what these APIs EMIT for an
+///     assistant message that only made tool calls, and a `reasoning_content` that is
+///     present-and-null is a different message from one with no such key at all. If
+///     the trigger is a field being the wrong KIND of empty, only this distinction
+///     shows it.
+///   * **Lengths**, so a message that is present-and-empty is never mistaken for one
+///     that is present-and-large.
+///   * **Call ids, truncated to 8 chars**, so a `tool` result can be matched to the
+///     `tool_calls` entry that asked for it. A result nothing asked for is a shape
+///     these APIs reject, and one whose id differs by a digit is a different shape.
+///   * **Role order**, which is what "how many turns are echoed back, and which"
+///     actually means.
+///
+/// Content is deliberately not here. A refusal log that quoted the conversation would
+/// be a second copy of the transcript in a text file, and every diagnosis this is for
+/// is answerable from the shape.
+fn shape(body: &Value, bytes: usize) -> String {
+    let mut out = String::new();
+    let n_tools = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    out.push_str(&format!(
+        "    {bytes} bytes, model={} tools={n_tools} stream={} top-level-keys=[{}]",
+        body.get("model").and_then(Value::as_str).unwrap_or("?"),
+        body.get("stream").and_then(Value::as_bool).unwrap_or(false),
+        body.as_object()
+            .map(|o| o.keys().cloned().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default(),
+    ));
+    let none: Vec<Value> = Vec::new();
+    let msgs = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .unwrap_or(&none);
+    out.push_str(&format!("\n    {} message(s):", msgs.len()));
+    for (i, m) in msgs.iter().enumerate() {
+        out.push_str(&format!("\n      [{i}] {}", one_message(m)));
+    }
+    out
+}
+
+/// One message of a [`shape`] dump. `absent` and `null` are different answers.
+fn one_message(m: &Value) -> String {
+    let mut bits = vec![format!(
+        "{:<9}",
+        m.get("role").and_then(Value::as_str).unwrap_or("?")
+    )];
+    for key in ["content", "reasoning_content"] {
+        bits.push(match m.get(key) {
+            None => format!("{key}=absent"),
+            Some(Value::Null) => format!("{key}=null"),
+            Some(Value::String(s)) => format!("{key}={}ch", s.chars().count()),
+            // An array is the other shape `content` takes (multi-part); its length is
+            // the fact, and its parts are content.
+            Some(Value::Array(a)) => format!("{key}=array({})", a.len()),
+            Some(_) => format!("{key}=?"),
+        });
+    }
+    match m.get("tool_calls").and_then(Value::as_array) {
+        None => bits.push("tool_calls=absent".into()),
+        Some(calls) => {
+            let ids: Vec<String> = calls
+                .iter()
+                .map(|c| {
+                    c.get("id")
+                        .and_then(Value::as_str)
+                        .map(|s| s.chars().take(8).collect::<String>())
+                        .unwrap_or_else(|| "no-id".into())
+                })
+                .collect();
+            bits.push(format!("tool_calls={}[{}]", calls.len(), ids.join(" ")));
+        }
+    }
+    if let Some(id) = m.get("tool_call_id").and_then(Value::as_str) {
+        bits.push(format!(
+            "tool_call_id={}",
+            id.chars().take(8).collect::<String>()
+        ));
+    }
+    bits.join(" ")
 }
 
 impl MessagesBackend for OpenAiProvider {
@@ -133,6 +232,9 @@ impl MessagesBackend for OpenAiProvider {
         on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
     ) -> Result<Completion, BackendError> {
         let body = self.body(req)?;
+        // Serialised once and kept, so a refusal can say how large the request was
+        // without paying for a second pass over a body that may be megabytes.
+        let payload = body.to_string();
         let started = Instant::now();
         let resp = self
             .agent
@@ -140,7 +242,7 @@ impl MessagesBackend for OpenAiProvider {
             .header("Authorization", &format!("Bearer {}", self.creds.key))
             .header("Content-Type", "application/json")
             .header("Accept", "text/event-stream")
-            .send(body.to_string().as_bytes())
+            .send(payload.as_bytes())
             .map_err(|e| BackendError::Unreachable(e.to_string()))?;
         let status = resp.status().as_u16();
         if !(200..300).contains(&status) {
@@ -160,6 +262,13 @@ impl MessagesBackend for OpenAiProvider {
                         })
                 })
                 .unwrap_or(text);
+            // **What was SENT, when what was sent was refused** — the shape of it and
+            // never the content. This exists because two explanations of the
+            // `reasoning_content … must be passed back` refusal have already been
+            // disproven by measurement (see [`crate::messages`]' module header), and a
+            // third guess would be worth no more than they were. The next occurrence
+            // is read off this.
+            eprintln!("  refused request shape:\n{}", shape(&body, payload.len()));
             return Err(BackendError::Refused {
                 status,
                 body: message,
@@ -402,6 +511,93 @@ impl Accumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The refused-request dump says what a diagnosis needs and leaks nothing.**
+    ///
+    /// This is the record two disproven theories are handed over to — see
+    /// `crate::messages`' module header for the five live-API permutations that killed
+    /// the second one. Because it exists to END a guessing game, the test is about the
+    /// two ways it could mislead rather than about its formatting:
+    ///
+    ///   * it must carry the distinctions a theory turns on — a field that is ABSENT
+    ///     against one that is present-and-null, a count of characters for each part,
+    ///     the role order, and the truncated call ids that pair a result to its call;
+    ///   * and it must not carry the conversation. A refusal log that quoted the model
+    ///     and the operator's own words would be a second copy of the transcript in a
+    ///     plain text file, and every diagnosis this is for is answerable without it.
+    #[test]
+    fn the_refused_request_shape_says_what_is_needed_and_leaks_nothing() {
+        let body = json!({
+            "model": "deepseek-flash",
+            "stream": true,
+            "messages": [
+                {"role": "system", "content": "SECRET-SYSTEM-TEXT"},
+                {"role": "user", "content": "SECRET-OPERATOR-WORDS"},
+                {"role": "assistant", "content": Value::Null,
+                 "reasoning_content": "SECRET-THINKING",
+                 "tool_calls": [{"id": "call_abcdefghijkl", "type": "function",
+                                 "function": {"name": "read", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "call_abcdefghijkl", "content": "SECRET-PAYLOAD"},
+                // No reasoning_content key at all, which is NOT the same as an empty one.
+                {"role": "assistant", "content": "ok"},
+            ],
+        });
+        let dump = shape(&body, 4242);
+
+        // The size, and the top-level facts.
+        assert!(dump.contains("4242 bytes"), "{dump}");
+        assert!(dump.contains("tools=0"), "{dump}");
+        assert!(dump.contains("5 message(s)"), "{dump}");
+
+        // Roles, in order.
+        for (i, role) in ["system", "user", "assistant", "tool", "assistant"]
+            .iter()
+            .enumerate()
+        {
+            assert!(
+                dump.contains(&format!("[{i}] {role}")),
+                "message {i} should be a {role}: {dump}"
+            );
+        }
+
+        // **Absent, null, and an exact length — three different answers**, and the
+        // difference is the whole reason this is not a summary. The figures are counted
+        // from the literals above rather than guessed at: a length assertion that is
+        // loose enough to pass for the wrong string is not an assertion.
+        assert!(dump.contains("content=null"), "a null content: {dump}");
+        assert!(
+            dump.contains("reasoning_content=absent"),
+            "a missing key: {dump}"
+        );
+        assert!(dump.contains("content=18ch"), "the system text: {dump}");
+        assert!(
+            dump.contains("content=21ch"),
+            "the operator's words: {dump}"
+        );
+        assert!(
+            dump.contains("reasoning_content=15ch"),
+            "the thinking: {dump}"
+        );
+        assert!(dump.contains("content=14ch"), "the payload: {dump}");
+        assert!(dump.contains("content=2ch"), "the short one: {dump}");
+
+        // The call, truncated, and the result that answers it.
+        assert!(dump.contains("tool_calls=1[call_abc]"), "{dump}");
+        assert!(dump.contains("tool_call_id=call_abc"), "{dump}");
+
+        // And nothing else. Every secret above is absent.
+        for secret in [
+            "SECRET-SYSTEM-TEXT",
+            "SECRET-OPERATOR-WORDS",
+            "SECRET-THINKING",
+            "SECRET-PAYLOAD",
+        ] {
+            assert!(
+                !dump.contains(secret),
+                "the dump quoted content ({secret}): {dump}"
+            );
+        }
+    }
 
     #[test]
     fn deltas_accumulate_into_text_reasoning_calls_and_usage() {

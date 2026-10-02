@@ -528,10 +528,16 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
         calls: AtomicUsize,
         text: String,
         /// **How many tools the request carried**, recorded off the real
-        /// `TurnRequest` rather than inferred. See the assertion below: this is the
-        /// wiring the `reasoning_content` contract hangs off, and it is invisible
-        /// from every other angle.
+        /// `TurnRequest` rather than inferred. The summary turn must send the
+        /// session's OWN prefix, and this is the only angle from which that is
+        /// visible: the tool list is what makes the prefix byte-identical to every
+        /// other turn's, which is what lets a local server reuse its cached prefix
+        /// instead of re-reading the whole conversation cold.
         tools_seen: AtomicUsize,
+        /// The tools themselves, not just the count — a summary sent under a
+        /// *different* tool list would still be a different prefix, and a count
+        /// cannot tell that apart from the right one.
+        names_seen: std::sync::Mutex<Vec<String>>,
     }
     impl MessagesBackend for Counting {
         fn caps(&self) -> BackendCaps {
@@ -554,6 +560,7 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.tools_seen
                 .store(req.tools_json.len(), Ordering::Relaxed);
+            *self.names_seen.lock().unwrap_or_else(|e| e.into_inner()) = req.tools_json.to_vec();
             on_delta(&Delta::Text(self.text.clone()));
             Ok(Completion {
                 text: self.text.clone(),
@@ -586,14 +593,21 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
         .unwrap();
 
     let summary = "decided: the provider answered; open: none";
+    // The session's own tool list, as a prefix would carry it.
+    let tools = vec![
+        "{\"name\":\"bash\"}".to_string(),
+        "{\"name\":\"read\"}".to_string(),
+    ];
     let backend = Counting {
         calls: AtomicUsize::new(0),
         text: summary.to_string(),
         tools_seen: AtomicUsize::new(usize::MAX),
+        names_seen: std::sync::Mutex::new(Vec::new()),
     };
     let answerer = letibot_turn::compaction::Answerer::Provider {
         backend: &backend,
         system: "you are a summariser",
+        tools_json: &tools,
     };
     let outcome =
         letibot_turn::run_compaction(&mut engine, &mut session, &mut sink, &answerer).unwrap();
@@ -603,21 +617,31 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
         1,
         "the summary did not reach the provider"
     );
-    // **The compaction request carries NO tools, and that is a wire property with a
-    // consequence half a session away.** DeepSeek requires every previous turn's
-    // `reasoning_content` back *when the request carries `tools`* — so a summary
-    // turn that offered tools made the largest request in the session the one whose
-    // whole job was to make room, and wedged a head at 1,463,497 tokens against a
-    // 1,048,576 window. Measured on a leticl session, 2026-10-02.
+    // **The compaction request carries the session's tools**, and that is a
+    // deliberate choice rather than dead weight: a summary cannot call one, but the
+    // tool list is what makes its prefix byte-identical to every other turn's, so a
+    // local server reuses the cached prefix instead of re-reading the largest
+    // conversation in the session cold.
     //
-    // Asserted on the request the backend actually received rather than on the
-    // `Answerer` value: the type no longer has a field for tools, so the absence is
-    // structurally guaranteed — but a `&[]` that somebody later fills in would not
-    // fail to compile, and this is the assertion that would catch it.
+    // The opposite was tried and reverted 2026-10-02, on a rule that turned out not
+    // to be the API's behaviour: the vendor's guide says `reasoning_content` must be
+    // passed back when a request carries `tools`, and all five permutations measured
+    // against the live API answered 200 — and a no-tools compaction was still refused
+    // for not passing `reasoning_content` back. See `Answerer::Provider`'s docs.
+    //
+    // Asserted on the request the backend actually received, and on the tool list
+    // itself rather than its length: a summary sent under a DIFFERENT list is still a
+    // different prefix, which is the failure this exists to catch.
     assert_eq!(
         backend.tools_seen.load(Ordering::Relaxed),
-        0,
-        "a summary turn offered tools, which forces the reasoning echo back onto the wire"
+        tools.len(),
+        "a summary turn must send the session's own tools, or its prefix will not \
+         match the one the server has cached"
+    );
+    assert_eq!(
+        *backend.names_seen.lock().unwrap_or_else(|e| e.into_inner()),
+        tools,
+        "the summary sent a different tool list from the session's"
     );
     assert_eq!(outcome.summary, summary);
 }

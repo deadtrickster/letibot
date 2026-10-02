@@ -20,12 +20,12 @@
 //!   the model can tell a refusal from an answer.
 //! - `SegmentMark` → dropped. It is the store's, not the model's.
 //!
-//! # `reasoning_content`, where this file was wrong and how it was found
+//! # `reasoning_content`, which this file has now been wrong about twice
 //!
-//! What was here said: *"DeepSeek documents that `reasoning_content` from earlier
-//! turns must not be sent back; GLM and Grok ignore it."* That was accurate about
-//! `deepseek-reasoner` and wrong about the model actually in use, and the live API
-//! said so — MEASURED in `~/logs/harnessd.log`, four times, on a head at 940k of
+//! **First it said the opposite.** *"DeepSeek documents that `reasoning_content` from
+//! earlier turns must not be sent back; GLM and Grok ignore it."* That was accurate
+//! about `deepseek-reasoner` and wrong about the model actually in use, and the live
+//! API said so — MEASURED in `~/logs/harnessd.log`, four times, on a head at 940k of
 //! 999k tokens:
 //!
 //! ```text
@@ -33,23 +33,51 @@
 //! be passed back to the API. (request_id: 5f6e40f5-…)
 //! ```
 //!
-//! **The contract is per-REQUEST, and it turns on the `tools` parameter** — from
-//! DeepSeek's own thinking-mode guide:
+//! **Then it asserted a rule the API does not enforce.** The correction came from
+//! DeepSeek's thinking-mode guide, and it was quoted here as the API's behaviour:
 //!
 //! > In subsequent requests, whether `reasoning_content` should be passed back …
-//! > depends on whether the request carries the `tools` parameter:
-//! > * **carries `tools`**: the `reasoning_content` of all previous turns should be
-//! >   passed back … *"even for turns where the model did not perform a tool call.
-//! >   If your code does not correctly pass back `reasoning_content`, the API will
-//! >   return a 400 error."*
-//! > * **does not carry `tools`**: does not need to be passed back; even if passed,
-//! >   it will be ignored.
+//! > depends on whether the request carries the `tools` parameter: *carries `tools`*
+//! > — passed back; *does not carry `tools`* — not needed, and ignored if passed.
 //!
-//! So the condition is not a property of a provider or a model — it is a property
-//! of the request we are already building, and [`convert`] is TOLD it rather than
-//! deciding. `Preset::echo_reasoning` used to carry a guess at this per provider;
-//! it was declared once and read nowhere, and the distinction it named belonged to
-//! the request all along.
+//! MEASURED against the live API 2026-10-02 (`deepseek-flash`). **All five answer
+//! 200:**
+//!
+//! ```text
+//! no tools, assistant without reasoning_content                 200
+//! tools,    assistant without reasoning_content                 200
+//! tools,    assistant with tool_calls, no reasoning_content     200
+//! tools,    assistant with tool_calls, with reasoning_content   200
+//! no tools, assistant with tool_calls, no reasoning_content     200
+//! ```
+//!
+//! So `tools` neither requires the echo nor forbids it, and **omitting
+//! `reasoning_content` does not produce a 400 in any of those shapes.** What follows
+//! from that is the important part: [`convert`]'s `echo_reasoning` is **this
+//! harness's own switch for how much to send, not a contract being obeyed.** It is
+//! still worth having — it keeps half a million tokens of thinking off a request that
+//! does not need them — but a choice is not evidence about the API, and it was
+//! mistaken for evidence here for a day.
+//!
+//! # What is still unexplained, said rather than guessed at
+//!
+//! `The reasoning_content in the thinking mode must be passed back to the API` is a
+//! refusal this harness really has received, and **nothing in this file explains its
+//! trigger.** Both explanations it has offered are disproven: it is not "we dropped
+//! them while carrying tools" — a compaction carrying **no** tools got exactly that
+//! 400 on 2026-10-02 — and it is not the `tools` parameter at all, per the table
+//! above.
+//!
+//! What is known is only the company it has kept: it has been seen on requests whose
+//! conversation was far past the model's window, alongside a size complaint. Whether
+//! the cause is the size, a message ordering, a field present-and-empty rather than
+//! absent, or something else is **not known**, and it will not be inferred from
+//! documentation that has already misled this file twice.
+//!
+//! So a refused request now logs its own SHAPE — roles in order, which fields each
+//! message carries, and their lengths, never the content — from
+//! `OpenAiProvider::complete`, at the moment of the refusal. The next occurrence is
+//! read off the record instead of argued from a hypothesis.
 //!
 //! # The failure shape, which is why no test caught it
 //!
@@ -71,11 +99,13 @@ use serde_json::{Value, json};
 /// The `messages` array. `system` is prepended when non-empty and no `System`
 /// item leads the transcript — the harness keeps the system prompt in item 0,
 /// so normally it is already there and `system` is the same text.
-/// `echo_reasoning` is the REQUEST's property, not the provider's: true when this
-/// request carries `tools`, which is when DeepSeek requires every previous turn's
-/// `reasoning_content` back. The caller computes it — see `OpenAiProvider::body`,
-/// which knows whether it is about to send `tools` — because a guess made here
-/// would be a second opinion about a decision already made one layer up.
+///
+/// `echo_reasoning` is **this harness's own choice about how much to send**, not a
+/// provider rule being obeyed: the module header carries the five live-API
+/// permutations that disprove the vendor's `tools` condition. The caller computes it
+/// — `OpenAiProvider::body`, which knows whether it is about to send `tools` — so the
+/// decision is made once, where the request is assembled, rather than guessed at here
+/// from a provider name.
 pub fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> Vec<Value> {
     let mut out = Vec::with_capacity(items.len() + 1);
     let leads_with_system = matches!(items.first(), Some(TranscriptItem::System { .. }));
