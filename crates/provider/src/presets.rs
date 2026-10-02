@@ -17,8 +17,42 @@ pub struct Preset {
     /// `/models deepseek` therefore named something that no longer exists.
     ///
     /// Kept so a box without opencode still has a name to try rather than
-    /// refusing, and updated to a model that exists today — but it will go stale
-    /// again, and the catalogue is what stops that mattering.
+    /// refusing — but it will go stale again, and the catalogue is what stops that
+    /// mattering.
+    ///
+    /// # It must be a name the account OFFERS, and being *accepted* is not that
+    ///
+    /// MEASURED 2026-10-02 against the live DeepSeek account, because the value here
+    /// had drifted to `deepseek-v4-flash` — which the catalogue's own pick-by-rule
+    /// deliberately avoids:
+    ///
+    /// ```text
+    /// GET /models            -> deepseek-flash, deepseek-v4-pro        (offered: 2)
+    /// POST /chat/completions -> accepts deepseek-flash, deepseek-v4-flash,
+    ///                           deepseek-v4-pro, deepseek-chat
+    ///                           and answers with `model: deepseek-flash` for the two
+    ///                           names it does not offer                  (accepted: 4)
+    /// ```
+    ///
+    /// So a wrong name here does **not** fail loudly — it is silently aliased onto a
+    /// model that does exist, and the operator never sees an error. That is the whole
+    /// hazard: an alias is a **deprecation path**, so a fallback that only works
+    /// because of one is a fallback with a lifetime nobody has written down, on the
+    /// path taken when something else has already gone wrong.
+    ///
+    /// It also contradicted this tree's own rule. [`Catalogue::default_model`] orders
+    /// by biggest window, then lowest price, then **shortest name** — and its comment
+    /// says why: *"A provider publishes the same model under a rolling alias and
+    /// under dated snapshots … The alias is always the shorter string."* The
+    /// catalogue therefore picks `deepseek-flash` while this froze the longer
+    /// `deepseek-v4-flash`, so a box WITH a catalogue and a box WITHOUT one chose
+    /// different models.
+    ///
+    /// The check that measures it is `scripts/check-provider-models.sh`, which asks
+    /// each provider's own `/models` and refuses a fallback that is not offered. It
+    /// skips (loudly) where no key resolves, because that is a fact about the box.
+    ///
+    /// [`Catalogue::default_model`]: crate::catalogue::Catalogue::default_model
     pub fallback_model: &'static str,
     // **`echo_reasoning` was here, and it is deleted rather than wired.**
     //
@@ -48,7 +82,7 @@ pub const DEEPSEEK: Preset = Preset {
     url: "https://api.deepseek.com/chat/completions",
     key_env: "DEEPSEEK_API_KEY",
     alt_envs: &[],
-    fallback_model: "deepseek-v4-flash",
+    fallback_model: "deepseek-flash",
     thinking_field: None,
     catalogue_id: "deepseek",
 };
@@ -152,5 +186,75 @@ mod tests {
         assert_eq!(p.micros(1000, 600, 100), 660);
         assert_eq!(Preset::parse("Zhipu").unwrap().name, "glm");
         assert!(Preset::parse("openai").unwrap_err().contains("three"));
+    }
+
+    /// **Every `fallback_model` must be a name the catalogue also carries, and must be
+    /// the SHORTEST name for what it names.**
+    ///
+    /// Both halves are here because the two failures are different, and only one of
+    /// them is visible from inside the tree:
+    ///
+    /// * **Invented or retired** — the name is not in the catalogue at all. This is the
+    ///   failure the doc comment on the field records: `deepseek-chat` and
+    ///   `grok-4-fast` sat here after models.dev had retired them. Caught by the first
+    ///   assertion.
+    /// * **The long alias** — the name IS in the catalogue, and so is the model under a
+    ///   shorter one, at the same window and the same price. MEASURED 2026-10-02:
+    ///   `deepseek-v4-flash` was here while `deepseek-flash` — the name the account
+    ///   actually offers, and the one [`Catalogue::default_model`] picks — sat beside
+    ///   it with identical figures. A box with a catalogue and a box without one
+    ///   therefore chose different models, and the live API aliased the wrong name
+    ///   onto the right model so nothing ever failed. Caught by the second assertion,
+    ///   which applies the same rule the catalogue does for the same reason.
+    ///
+    /// Skipped — loudly — where the catalogue is not readable, because the absence is
+    /// a fact about the box rather than about this constant. **What no test here can
+    /// see is the account's own model list**, which is the authority: models.dev
+    /// carried `deepseek-v4-flash` while the account did not offer it. That is what
+    /// `scripts/check-provider-models.sh` is for, and it needs a key.
+    ///
+    /// [`Catalogue::default_model`]: crate::catalogue::Catalogue::default_model
+    #[test]
+    fn every_fallback_names_a_real_model_and_its_shortest_form() {
+        let cat = crate::catalogue::Catalogue::load();
+        if cat.is_empty() {
+            eprintln!(
+                "SKIPPED: no catalogue at {}, so the fallback names cannot be checked \
+                 against it — run scripts/check-provider-models.sh with a key for the \
+                 check that matters",
+                crate::catalogue::default_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(no path)".into())
+            );
+            return;
+        }
+        for (preset, catalogue_id) in [(&DEEPSEEK, "deepseek"), (&GLM, "zhipuai"), (&GROK, "xai")] {
+            let Some(facts) = cat.model(catalogue_id, preset.fallback_model) else {
+                panic!(
+                    "{}: fallback_model `{}` is not a model {} carries — this is the \
+                     failure that shipped once already (`deepseek-chat`, `grok-4-fast`). \
+                     Pick one of: {:?}",
+                    preset.name,
+                    preset.fallback_model,
+                    catalogue_id,
+                    cat.model_names(catalogue_id),
+                );
+            };
+            // **No SHORTER name may name the same window and price.** If one does, the
+            // fallback is a longer spelling of a model the catalogue's own rule would
+            // have reached by the shorter one — so a box with a catalogue and a box
+            // without one choose differently, and the live API may alias the longer
+            // name onto the shorter model silently, which is how this went unnoticed.
+            if let Some(shorter) =
+                cat.shorter_equivalent(catalogue_id, preset.fallback_model, facts)
+            {
+                panic!(
+                    "{}: fallback_model `{}` is a longer name for the same model — `{}` has \
+                     the same window and price and is what the catalogue's rule picks. A box \
+                     with a catalogue and a box without one would choose differently.",
+                    preset.name, preset.fallback_model, shorter,
+                );
+            }
+        }
     }
 }

@@ -167,7 +167,47 @@ impl Catalogue {
         self.providers.get(provider)?.models.get(model).copied()
     }
 
-    /// **The model to use when the operator names none**, chosen by rule rather
+    /// Every model name a provider carries, sorted — for a failure message that
+    /// can offer the alternatives rather than only naming the mistake.
+    pub fn model_names(&self, provider: &str) -> Vec<String> {
+        self.providers
+            .get(provider)
+            .map(|p| p.models.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// **A strictly shorter name for the same window and price, when one exists.**
+    ///
+    /// This is [`Catalogue::default_model`]'s tiebreak exposed for the one caller that
+    /// needs it as a question rather than as a sort: a check on the frozen
+    /// `fallback_model`. A provider publishes one model under a rolling alias and under
+    /// dated snapshots — `deepseek-flash` beside `deepseek-v4-flash`, same 1M window,
+    /// same 0.15 input — and *the alias is the shorter string*. So a fallback for which
+    /// this answers `Some` is a longer spelling of a model the catalogue would have
+    /// reached under another name, and a box with a catalogue and a box without one
+    /// choose differently.
+    ///
+    /// `None` is the answer to want: nothing shorter names the same thing.
+    pub fn shorter_equivalent(&self, provider: &str, name: &str, of: ModelFacts) -> Option<String> {
+        self.providers
+            .get(provider)?
+            .models
+            .iter()
+            // Same window, same input rate, a different name, and SHORTER than the one
+            // being asked about — the shape of a longer alias.
+            .filter(|(n, m)| {
+                n.as_str() != name
+                    && n.len() < name.len()
+                    && m.context == of.context
+                    && m.prices.map(|p| p.input) == of.prices.map(|p| p.input)
+            })
+            // The shortest of those, then the name, matching `default_model`'s order so
+            // the suggestion is the spelling that rule would have used.
+            .min_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)))
+            .map(|(n, _)| n.clone())
+    }
+
+    /// The model to use when the operator names none, chosen by rule rather
     /// than written down.
     ///
     /// A hardcoded default is a string that goes stale silently, and both of ours
