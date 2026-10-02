@@ -279,11 +279,13 @@ pub struct ShapelessAdmit {
     pub arguments_json: String,
 }
 
-/// **11** since the corpus records **which of the four `Unsure`s** an oracle's answer was
+/// **12** since the session row pairs its provider count with the LEDGER that count
+/// was measured against — `context_ledger`, additive, described at its migration arm
+/// below. **11** since the corpus records **which of the four `Unsure`s** an oracle's answer was
 /// (R12) — `oracle_reading`, additive, described at its migration arm below. **10** since it
 /// records whether an oracle was consulted and what it answered (R11), and **9** added
 /// `oracle_reply` for the same requirement.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -330,8 +332,16 @@ CREATE TABLE IF NOT EXISTS session (
     context_tokens INTEGER,          -- v8; the last turn's prompt_tokens. NULL = no
                                      -- turn has finished. Survives a restart so an
                                      -- attaching head can show the context at once.
-    context_cached INTEGER           -- v8; the last turn's cached_tokens, for the
+    context_cached INTEGER,          -- v8; the last turn's cached_tokens, for the
                                      -- cache %. NULL with context_tokens.
+    context_ledger INTEGER           -- v12; the LEDGER tokens that context_tokens was
+                                     -- measured against. A provider count on its own is
+                                     -- not a ratio: the daemon used to recover
+                                     -- ledger_scale by pairing it with whatever ledger
+                                     -- it had TODAY, which for a resumed session is a
+                                     -- bigger conversation and so a wrong ratio in the
+                                     -- direction that compacts too late. NULL = no
+                                     -- measurement / one that predates this column.
 );
 
 CREATE TABLE IF NOT EXISTS transcript (
@@ -709,6 +719,17 @@ pub struct StoredSession {
     pub context_tokens: Option<u64>,
     /// The last turn's cached tokens, for the cache %. `None` with `context_tokens`.
     pub context_cached: Option<u64>,
+    /// **The ledger this box counted for the same prompt** — the other half of the
+    /// measurement [`StoredSession::context_tokens`] is one side of.
+    ///
+    /// The ratio between the two is what turns a provider's window into a ledger
+    /// size, and a ratio needs BOTH numbers from the same prompt. Recovering it from
+    /// a provider count alone silently pairs that count with today's ledger, which is
+    /// only the same conversation if nothing has been appended since — and at a
+    /// resume it usually is not. `None` for a row written before this column existed,
+    /// which is *unverifiable* rather than wrong: such a pair is refused rather than
+    /// guessed at, and the next turn measures afresh.
+    pub context_ledger: Option<u64>,
 }
 
 /// One line of a session's todo list, as the model wrote it.
@@ -1095,6 +1116,41 @@ impl Store {
             if !has {
                 self.conn
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN oracle_reading TEXT")?;
+            }
+        }
+        if from < 12 {
+            // v12: **the ledger that `context_tokens` was measured against.**
+            //
+            // `Config::ledger_scale` is recovered at startup by pairing the stored
+            // provider count with the ledger the daemon has just rebuilt, which is
+            // the same conversation only if nothing was appended between the measure
+            // and the restart — and at a resume it usually is not. Measured
+            // 2026-10-02: a store holding `context_tokens = 940211`, measured on a
+            // ~950k-token conversation, was paired with a rebuilt ledger of
+            // 1,486,369, giving a ratio of 0.63 where the truth was 1.016. The
+            // window came out 1,580,888 instead of ~1,015,628 — so a session 1.46M
+            // tokens deep planned against a window it was already far past, never
+            // compacted, and died at the provider's 400 on every attempt.
+            //
+            // **NULL on every existing row, and not backfilled.** A backfill would
+            // have to assert that a count from whenever that row was written
+            // measures the transcript as it stands now, and that assertion IS the
+            // bug being fixed. NULL reads as "unverifiable", the recovery refuses
+            // such a pair instead of guessing at it, and the next turn writes a real
+            // one. The cost is bounded and lands the safe way: an unverified session
+            // falls back to the unscaled window, which compacts EARLY rather than
+            // late (see `Config::tokens_are_unscaled`).
+            //
+            // Idempotent for the same reason v6 is: the fixtures build a current
+            // store and walk the version back, so the column can already be there.
+            let has: bool = self
+                .conn
+                .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_ledger'")
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn
+                    .execute_batch("ALTER TABLE session ADD COLUMN context_ledger INTEGER")?;
             }
         }
         Ok(())
@@ -1485,7 +1541,8 @@ impl Store {
                     s.role,
                     s.parent_session_id,
                     s.context_tokens,
-                    s.context_cached
+                    s.context_cached,
+                    s.context_ledger
                FROM session s",
         )?;
         let mut out: Vec<StoredSession> = stmt
@@ -1507,6 +1564,7 @@ impl Store {
                     parent_session_id: r.get(11)?,
                     context_tokens: r.get::<_, Option<i64>>(12)?.map(|v| v as u64),
                     context_cached: r.get::<_, Option<i64>>(13)?.map(|v| v as u64),
+                    context_ledger: r.get::<_, Option<i64>>(14)?.map(|v| v as u64),
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -1558,12 +1616,30 @@ impl Store {
     /// Record the last turn's context on the session row, so a head that attaches
     /// after a restart can show how big the prompt is without waiting for a turn.
     /// `None` clears it (a session that has run no turn since the column existed).
-    pub fn set_context(&self, id: &str, tokens: Option<u64>, cached: Option<u64>) -> Result<()> {
+    ///
+    /// **`ledger` is not decoration and must be passed whenever `tokens` is.**
+    /// `tokens` is the PROVIDER's count and `ledger` is this box's for the same
+    /// prompt; only the two together give a ratio, and a ratio recovered from the
+    /// provider's half alone is one measured against a different conversation. Pass
+    /// `None` for both when clearing. See [`StoredSession::context_ledger`].
+    pub fn set_context(
+        &self,
+        id: &str,
+        tokens: Option<u64>,
+        cached: Option<u64>,
+        ledger: Option<u64>,
+    ) -> Result<()> {
         // `i64` on the wire: rusqlite's `ToSql` has no `u64`, and a token count
         // that does not fit an `i64` is not a prompt this box will ever send.
         let n = self.conn.execute(
-            "UPDATE session SET context_tokens = ?2, context_cached = ?3 WHERE id = ?1",
-            params![id, tokens.map(|t| t as i64), cached.map(|c| c as i64)],
+            "UPDATE session SET context_tokens = ?2, context_cached = ?3, context_ledger = ?4 \
+             WHERE id = ?1",
+            params![
+                id,
+                tokens.map(|t| t as i64),
+                cached.map(|c| c as i64),
+                ledger.map(|l| l as i64)
+            ],
         )?;
         if n == 0 {
             return Err(StoreError::NotFound(format!("session {id}")));
@@ -2605,22 +2681,38 @@ mod tests {
         let got = s.session("sess-1").unwrap().unwrap();
         assert_eq!(got.context_tokens, None);
         assert_eq!(got.context_cached, None);
+        assert_eq!(got.context_ledger, None);
 
-        s.set_context("sess-1", Some(44_700), Some(40_000)).unwrap();
+        s.set_context("sess-1", Some(44_700), Some(40_000), Some(43_900))
+            .unwrap();
         let got = s.session("sess-1").unwrap().unwrap();
         assert_eq!(got.context_tokens, Some(44_700));
         assert_eq!(got.context_cached, Some(40_000));
+        // **The other half of the measurement, and the reason both moved together.**
+        // A provider count with no ledger beside it cannot be turned into a ratio:
+        // whoever reads it back has to supply the ledger, and supplying TODAY's is
+        // the bug this column exists to stop.
+        assert_eq!(got.context_ledger, Some(43_900));
 
         // A later turn replaces the number: it is the LAST turn's prompt, not a
         // sum and not a maximum.
-        s.set_context("sess-1", Some(51_000), Some(44_700)).unwrap();
+        s.set_context("sess-1", Some(51_000), Some(44_700), Some(50_200))
+            .unwrap();
         let got = s.session("sess-1").unwrap().unwrap();
         assert_eq!(got.context_tokens, Some(51_000));
         assert_eq!(got.context_cached, Some(44_700));
+        assert_eq!(got.context_ledger, Some(50_200));
+
+        // Clearing takes the pair with it. A row that kept the ledger while the
+        // count went away would read as a measurement of nothing.
+        s.set_context("sess-1", None, None, None).unwrap();
+        let got = s.session("sess-1").unwrap().unwrap();
+        assert_eq!(got.context_tokens, None);
+        assert_eq!(got.context_ledger, None);
 
         // A session nobody has written is not a row to update.
         assert!(matches!(
-            s.set_context("nope", Some(1), None),
+            s.set_context("nope", Some(1), None, None),
             Err(StoreError::NotFound(_))
         ));
     }
@@ -2668,6 +2760,14 @@ mod tests {
                 .unwrap();
             c.execute("ALTER TABLE session DROP COLUMN context_cached", [])
                 .unwrap();
+            // **And v12's, because a genuine v7 store never had it either.** The
+            // fixture is built by walking a CURRENT store backwards, so leaving this
+            // column in place would mean the v12 arm below hit its idempotence check
+            // (`has = true`) and its `ALTER` — the one line a real pre-v12 store
+            // needs — was never run by any test. Same reasoning as the v6 arm's own
+            // note about the fixtures, pointed the other way.
+            c.execute("ALTER TABLE session DROP COLUMN context_ledger", [])
+                .unwrap();
             c.execute("UPDATE schema_version SET version = 7", [])
                 .unwrap();
             assert!(
@@ -2675,6 +2775,12 @@ mod tests {
                     .get::<_, Option<i64>>(0))
                     .is_err(),
                 "the fixture still has a context_tokens column, so it is not a v7 store"
+            );
+            assert!(
+                c.query_row("SELECT context_ledger FROM session", [], |r| r
+                    .get::<_, Option<i64>>(0))
+                    .is_err(),
+                "the fixture still has a context_ledger column, so the v12 ALTER is untested"
             );
         }
 
@@ -2688,10 +2794,16 @@ mod tests {
         // existed", and a write after the migration comes back.
         let got = s.session("s-ctx").unwrap().expect("the v7 row survived");
         assert_eq!(got.context_tokens, None);
-        s.set_context("s-ctx", Some(12_000), Some(11_000)).unwrap();
+        // v12's column arrived with the same migration run, and is `None` on this
+        // pre-existing row: unverifiable rather than zero, so the recovery refuses
+        // the pair. See the v12 arm.
+        assert_eq!(got.context_ledger, None);
+        s.set_context("s-ctx", Some(12_000), Some(11_000), Some(11_800))
+            .unwrap();
         let got = s.session("s-ctx").unwrap().unwrap();
         assert_eq!(got.context_tokens, Some(12_000));
         assert_eq!(got.context_cached, Some(11_000));
+        assert_eq!(got.context_ledger, Some(11_800));
     }
 
     #[test]

@@ -2704,19 +2704,45 @@ impl<'a> Harness<'a> {
         //
         // Nothing has to be re-measured. `context_tokens` on the session row IS
         // the provider's count for the last prompt, written by `persist_context`
-        // at the end of the turn that measured it, and the ledger it was paired
-        // with is the one just rebuilt — the conversation has not changed since.
-        // So the pair is recovered rather than recomputed, and no model is asked
-        // anything.
+        // at the end of the turn that measured it, and `context_ledger` beside it
+        // is this box's count for that SAME prompt (v12) — so the pair is
+        // recovered rather than recomputed, and no model is asked anything.
+        //
+        // **Both halves, or neither.** The paragraph that used to stand here said
+        // the ledger "is the one just rebuilt — the conversation has not changed
+        // since", and that was an assumption rather than a measurement: it holds
+        // only when nothing was appended between the last turn and this restart.
+        // The gate below asks the row instead of assuming.
+        // **And only when the pair measures THIS conversation.**
+        //
+        // A ratio needs both counts from the same prompt, and the row now records
+        // them together. Without this check the pair was reconstructed from
+        // `session.ledger.len()` — TODAY's ledger — which is the same conversation
+        // only if nothing was appended since the measurement. At a resume it
+        // usually is not, and the error lands the dangerous way: a count from a
+        // SMALLER conversation divided into a BIGGER ledger overstates the ratio,
+        // so the window grows and the session compacts too late rather than too
+        // early.
+        //
+        // Measured 2026-10-02, on the session this check would have saved: a store
+        // holding 940,211, measured on a ~950k-token conversation, was paired with
+        // a rebuilt ledger of 1,486,369 — 0.63 where the truth was 1.016. The
+        // window came out 1,580,888 for a session already 1.46M tokens deep, so it
+        // never compacted and died at the provider's 400 on every attempt.
+        //
+        // A row with no `context_ledger` was written before the column existed and
+        // is REFUSED rather than guessed at. Unverifiable is not the same as wrong,
+        // but the two are the same as unmeasured, and the unscaled window is the
+        // honest answer for both — it compacts early, which is the direction nobody
+        // loses a session to. See `Config::tokens_are_unscaled`.
         if cfg.provider.is_some()
             && cfg.ledger_scale.is_none()
             && let Some(store) = &store
             && let Ok(Some(row)) = store.session(&cfg.session_id)
-            && let Some(provider_tokens) = row.context_tokens
-            && provider_tokens > 0
-            && session.ledger.len() > 0
+            && let Some(scale) =
+                recovered_scale(row.context_tokens, row.context_ledger, session.ledger.len())
         {
-            cfg.ledger_scale = Some((session.ledger.len() as u64, provider_tokens));
+            cfg.ledger_scale = Some(scale);
         }
         // **Fill the harness view's slot, now that there is something to disclose.**
         // The tool was registered before the gate and the backend existed — it had
@@ -5276,7 +5302,7 @@ impl<'a> Harness<'a> {
         // provider's own, and dividing the new base by a measured ratio would put
         // a derived number where every other reader expects a measured one.
         if let Some(store) = &self.store {
-            let _ = store.set_context(&self.cfg.session_id, None, None);
+            let _ = store.set_context(&self.cfg.session_id, None, None, None);
         }
         Ok(ForkReport {
             transcript_id: new_id,
@@ -5716,6 +5742,9 @@ impl<'a> Harness<'a> {
                 self.cfg.ledger_scale =
                     Some((self.session.ledger.len() as u64, ok.metrics.prompt_tokens));
             }
+            // Persisted with the ledger beside the count, so a restart recovers the
+            // pair above instead of pairing the count with whatever ledger it has
+            // then. See the gate in `Harness::open`.
             self.persist_context(&ok.metrics)?;
             truncated |= ok.truncated;
             // A steering message injected at the step boundary is already in the
@@ -6291,9 +6320,57 @@ impl<'a> Harness<'a> {
                 &self.cfg.session_id,
                 Some(metrics.prompt_tokens),
                 Some(metrics.cached_tokens),
+                // **The same ledger the in-memory pair above just used**, so a
+                // restart recovers what this daemon had rather than a second
+                // opinion about it. Both are taken AFTER the round's rows are
+                // appended, so the two agree by construction.
+                Some(self.session.ledger.len() as u64),
             )
             .map_err(|e| HarnessError::Store(format!("context: {e}")))
     }
+}
+
+/// **The stored ledger-to-provider pair, or `None` when it does not measure the
+/// conversation in hand.**
+///
+/// The decision is a free function for the reason `sweep_abandoned_calls` gives
+/// about its own: it can be tested without a daemon, a model or a socket. That is
+/// not tidiness here — a provider cannot be pointed at a canned server (a
+/// `ProviderConfig` names a vendor and nothing else), so a gate left inline in
+/// `Harness::open` could only ever be exercised by a test that talks to
+/// DeepSeek. The bug this replaces was found in production precisely because
+/// nothing checked the pairing.
+///
+/// `ledger_now` is what this box counts for the conversation it has just rebuilt.
+/// The stored ledger is what it counted for the prompt the provider's number
+/// belongs to, and **equality is the whole test**: a ratio is a function of the
+/// two SIZES, so a matching ledger size is exactly the equivalence the ratio
+/// needs, and it is a stronger claim than the length alone suggests — content
+/// that differed while measuring the same would still yield the right ratio.
+///
+/// It refuses in three cases, and each lands the safe way (an unscaled window,
+/// which compacts EARLY):
+///
+///   * no stored pair — a row written before v12, or one whose turn never
+///     finished. Unverifiable is not the same as wrong, but the two are the same
+///     as unmeasured;
+///   * a ledger that has moved since — rows appended, or a compaction forked the
+///     transcript, either of which makes the provider's number describe a
+///     conversation this one is not;
+///   * a zero on either side, which is not a measurement of anything.
+fn recovered_scale(
+    stored_provider: Option<u64>,
+    stored_ledger: Option<u64>,
+    ledger_now: usize,
+) -> Option<(u64, u64)> {
+    let provider_tokens = stored_provider?;
+    if provider_tokens == 0 || ledger_now == 0 {
+        return None;
+    }
+    if stored_ledger != Some(ledger_now as u64) {
+        return None;
+    }
+    Some((ledger_now as u64, provider_tokens))
 }
 
 /// **`0` is unbounded**, which is the default; see [`Config::max_tool_rounds`].
@@ -7372,6 +7449,48 @@ fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
 
 #[cfg(test)]
 mod tests {
+    /// **A stored pair measures ONE conversation, and it is used only for that
+    /// one.** See [`super::recovered_scale`].
+    ///
+    /// The defect this closes, measured 2026-10-02: a store holding 940,211 —
+    /// the provider's count for a ~950k-token conversation — was paired with a
+    /// ledger of 1,486,369 that the daemon had just rebuilt, because nothing
+    /// recorded which conversation the number belonged to. The ratio came out
+    /// 0.63 where the truth was 1.016, and the window 1,580,888 instead of about
+    /// 1,015,628 — so a session 1.46M tokens deep planned against a window it was
+    /// already far past, never compacted, and died at the provider's 400 on every
+    /// attempt.
+    #[test]
+    fn a_stored_token_pair_is_used_only_for_the_conversation_it_measured() {
+        // The pair that matches: both halves of one measurement, and the ledger
+        // this daemon has rebuilt is the same size.
+        assert_eq!(
+            super::recovered_scale(Some(940_211), Some(940_211), 940_211),
+            Some((940_211, 940_211)),
+            "a pair measured on this conversation IS the ratio"
+        );
+        // **The bug.** The same count, which was true — of a smaller conversation.
+        // Smaller is the dangerous direction: divided into a bigger ledger it
+        // OVERSTATES the ratio, so the window grows and compaction comes too late.
+        assert_eq!(
+            super::recovered_scale(Some(940_211), Some(940_211), 1_486_369),
+            None,
+            "a count from a smaller conversation must not be paired with this ledger"
+        );
+        // A row written before v12 has no ledger to check against. Unverifiable is
+        // not the same as wrong, but it IS the same as unmeasured — and the
+        // unscaled window is the honest answer for unmeasured.
+        assert_eq!(super::recovered_scale(Some(940_211), None, 940_211), None);
+        // No provider count at all: a row whose turn never finished.
+        assert_eq!(super::recovered_scale(None, Some(940_211), 940_211), None);
+        // Zero is not a measurement of anything, on either side.
+        assert_eq!(
+            super::recovered_scale(Some(0), Some(940_211), 940_211),
+            None
+        );
+        assert_eq!(super::recovered_scale(Some(940_211), Some(0), 0), None);
+    }
+
     /// **Infinity is `0`, and it is one line, so it gets one test.**
     ///
     /// The operator: *"make 200 tool calls limit configurable and set it to
