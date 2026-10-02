@@ -68,13 +68,41 @@
 //! 400 on 2026-10-02 — and it is not the `tools` parameter at all, per the table
 //! above.
 //!
-//! What is known is only the company it has kept: it has been seen on requests whose
-//! conversation was far past the model's window, alongside a size complaint. Whether
-//! the cause is the size, a message ordering, a field present-and-empty rather than
-//! absent, or something else is **not known**, and it will not be inferred from
-//! documentation that has already misled this file twice.
+//! What is known is only the company this refusal has kept: it arrives on requests whose
+//! conversation is large, alongside a size complaint. Whether the cause is a message
+//! ordering, a field present-and-empty rather than absent, or something else is **not
+//! known**, and it will not be inferred from documentation that has already misled this
+//! file twice. The size, which was the last obvious answer, is measured away below.
 //!
-//! So a refused request now logs its own SHAPE — roles in order, which fields each
+//! **And the size is refuted too, MEASURED 2026-10-02 against the live API.** That theory
+//! was the last one standing and it was the most attractive, because it explained the
+//! refusals without needing any structural anomaly: two clean requests, no tools, one
+//! user message of prose, nothing else:
+//!
+//! ```text
+//! 976,097 provider tokens   200   finish: length (16 of 16 output tokens, all reasoning)
+//! 1,248,039 provider tokens 400   "maximum context length is 1048576 tokens. However, you
+//!                                  requested 1248055 tokens (1248039 in the messages, 16 in
+//!                                  the completion)"  — in 5.6 s
+//! ```
+//!
+//! So a structurally clean request past the window gets the honest complaint, naming exact
+//! counts, and gets it in seconds. Two further facts from the log, read off the OUTCOME
+//! SIZES rather than from adjacency — a result of ~9-20k tokens is the two-half overrun
+//! (everything summarised, nothing kept verbatim) and a result near half the session is
+//! `letibot-turn`'s fold (summary plus the second half verbatim):
+//!
+//!   * the refusals at 938,613 / 937,942 / 940,211 ledger tokens were the two-half plan,
+//!     whose requests are the conversation itself; the successful compactions at 940,451
+//!     and 940,610 were the same plan. Same size, same plan, both outcomes.
+//!   * 1,488,795 FAILED and 1,489,461 SUCCEEDED — the fold, at the same size, whose
+//!     summary request is only the FIRST half. One 400 and one 200.
+//!
+//! Both refusing requests were comfortably inside the window. The trigger is still unknown;
+//! what has changed is that three explanations have been measured away, and the next
+//! occurrence has the shape log below to be read off instead of argued about.
+//!
+//! So a refused request logs its own SHAPE — roles in order, which fields each
 //! message carries, and their lengths, never the content — from
 //! `OpenAiProvider::complete`, at the moment of the refusal. The next occurrence is
 //! read off the record instead of argued from a hypothesis.
