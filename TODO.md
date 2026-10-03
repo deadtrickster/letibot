@@ -385,24 +385,68 @@ fixture is the thing to build if even that is to be asserted.
 
 ### The premise, verified rather than taken
 
-Delegation is **one level today by construction**, and the guarantee lives in the seat tables rather
-than in any guard. `crates/tools/src/runtime.rs`'s `roles::m2_coder()` — the seat every subagent is
-re-seated to (`Seat::Coder`, `harnessd::config`, which re-seats for the tools and must not re-confine)
-— names exactly
+**Delegation is one level today, and that is a fact about the SEAT TABLE rather than a property of the
+design.** `crates/tools/src/runtime.rs`'s `roles::m2_coder()` — the seat every subagent is re-seated to
+(`Seat::Coder`, `harnessd::config`, which re-seats for the tools and must not re-confine) — names
+exactly
 
     read · write · edit · grep · glob · read_spill · todo · bash
 
-and **`task` is not among them**, while `roles::orchestrator()` and `roles::leticode()` both name
-`task` and `task_result`. So a grandchild cannot arise today and there is **no live grandchild
-case to repair**.
+and **`task` is not among them**, while `roles::orchestrator()` and `roles::leticode()` both name it.
+So a grandchild is unreachable **in today's binary** — and the operator has ruled what the design is:
+*“subagents are absolutely allowed to spawn subagents up to configured nesting level.”*
 
-**This corrects `fd4aaad`'s commit message, which described that case as a live defect.** It is not:
-it is the case that arrives the day delegation gains a second level, and the honest word for it is a
-capability that is absent by construction rather than one that is broken.
+**CORRECTED 2026-10-03, an hour after this entry landed (`660b585`), and the correction is mine.** That
+commit filed the absent `task` as a **safety property** — *“the guarantee is in the seat tables rather
+than in a guard”* — and concluded there was no live grandchild case and that `fd4aaad` had overstated
+one. **Both halves of that are wrong.** The missing seat is the *gap this requirement exists to close*,
+so the nested-wake problem below is live now and not on the day trees land; and `fd4aaad`'s finding was
+right — this entry's narrowing was right about the binary and wrong about the contract. The one thing to
+carry forward is the finding, not any of the three framings of it.
 
 ### The ruling
 
 **Trees are allowed, to a configurable depth, default 3.**
+
+### Two things settled while this is still a plan, because they change the diff
+
+**1. The depth limit rides the CONFIG, not the seat table — and the idiom already exists.** *“Does the
+seat name `task`”* can express exactly two depths, zero and unlimited, so it cannot carry a
+*configured* limit at all. `base_role_for_seat` (`harness.rs:7508`) is already the shape that can:
+`m2_coder` **lists** `bash`, and the config **strips** it when `!cfg.allow_bash` — the comment there
+says why, and it is the same sentence this needs: *“listing it here is what makes the flag mean
+something for this seat.”* So `task` is listed on the seat and stripped where the depth says no, with
+the counter riding the config the child is built from — a `depth` field on the config, incremented once
+at spawn (`harness.rs:7262`'s `sub_cfg`, built from `self.base`), and read where the tools are seated.
+
+**And the refusal is by NAME, not by absence.** A seat that simply lacks `task` at the limit
+manufactures the workaround, and that is this tree's own recorded lesson in the same file four hundred
+lines away — `m2_coder`'s comment on `todo`: *“a capability that exists but is hidden manufactures the
+workaround”*, measured at 13 tool calls and ~15k tokens of a model emulating the tool it had not been
+given. A `task` call past the limit gets a refusal that names the knob.
+
+**2. The wake fix is NOT depth-N-safe, and what is missing is the SERVANT rather than the routing.**
+Verified in the code instead of argued:
+
+  · `settled_here` (`jobwatch.rs:520`) rings `bell.ring_wake(&hub.session_id())` — and **which hub that
+    is depends on whose watcher it is**: every harness builds its own, so a child that spawns a
+    grandchild rings for the CHILD's session id;
+  · `Sessions::wake` (`sessions.rs:1634`) is the only servant, and its second line is
+    `let Some(harness) = self.open.get_mut(session_id) else { return Outcome::Ignored };`
+  · a child harness is built inside the runner's thread (`harness.rs:7278`) and **adopted into the
+    registry, not into `Sessions::open`** (`registry.adopt`, line 7288) — which is exactly why a head
+    can peek at it and attach to it while the daemon still cannot drive it.
+
+So depth 1 closes **because the watcher belongs to the PARENT, and the parent is in `open`**: the bell
+is rung for a session the daemon owns, `wake` drains the queue, and the `[task]` row lands in the
+parent's transcript. At depth 2 the watcher belongs to the CHILD, the daemon is woken for a session it
+does not hold, and it **returns `Ignored` — the condition fires and is discarded**, which is the shape
+of failure this row's own design note names. Routing a settlement through `completion_notice` therefore
+buys nothing here: *a job is a job* is true of the **routing** and says nothing about the **servant**.
+
+**Which is what “one slots list and one watcher set per TREE, rooted at the top session” is for** — and
+it now has a reason rather than an assertion: **the bell must ring for a session the daemon can
+drive**, and the only such session in a tree is its root.
 
 ### Four pieces, and the first three are mechanical
 
@@ -454,6 +498,123 @@ else reads it.
 the tree exactly once, **every ancestor's handle can be collected from any level**, and a depth one
 past the knob is refused by name rather than by a stack that quietly runs out — with the correction
 above carried wherever `fd4aaad` is read.
+
+## The `Subagent` event's `prompt` is a title, and on the finish it is the child's answer — **OPEN, reported from leticl 2026-10-03**
+
+**(No R-number: the series is yours to number.)**
+
+The operator, reading the subagents pane: *"the first prompt is truncated too early"* and *"I want to
+be able to easily see it in full"*. MEASURED, and it is not a truncation the head can undo:
+
+```rust
+let title = derive_title(prompt);   // harness.rs:7177 — "the title is the subtask's first line"
+publish("opening", &title);
+publish("running", &title);
+publish("done",    &first_line);   // harness.rs:7322 — the CHILD'S ANSWER's first line
+```
+
+So the one field a head has for *what this child was asked to do* is the task's first line from the
+start, and on the finishing event it is replaced by what the child said. Read out of the running head:
+the row for a child spawned from a session carried **122 characters which were its answer**, while the
+task was two lines and ~250 characters — the head had no copy of the task anywhere, and the pane's
+first line is where the operator saw it.
+
+**The ask, and it is two small things:** carry the task itself on the event (the head can truncate for
+a row — it already truncates everything else it draws), and if the picker wants the child's answer as
+a subtitle then that is a second field, not this one rewritten: a field named `prompt` that holds a
+title on two states and an answer on the third cannot be read by either party without knowing which
+state it is.
+
+leticl's half is already in: the child's task is drawn in full in the peek, from the transcript read
+(`821d218`… `the-subagent-pane-draws-the-task-in-full-and-follows-the-rung`). The pane's *row* cannot
+be fixed until this is.
+
+**still open?** `grep -n "publish(\"done\"" crates/harnessd/src/harness.rs` still passes `&first_line`.
+
+**done when** a long, multi-line task reads whole on the pane's row (or an unfold of it does) without
+opening the child.
+
+## A sub-session is a SESSION a head may ATTACH to — the filter that hides it is the bug — **OPEN, corrected from leticl 2026-10-03**
+
+**CORRECTED THE SAME HOUR, AND THE CORRECTION IS BIGGER THAN THE ASK BELOW.** The operator: *"why readonly?
+subagent session is more like you driving others via tmux. I already can post to subagent, and agent can
+talk back and forth too"*. **A child is not a thing to be VIEWED; it is a session to be ATTACHED to** —
+the same relationship this session has with the head it is spoken through, one level down — and the
+defect is five lines that hide it on purpose:
+
+```
+letibot   app.rs:3421   .filter(|s| s.parent_session_id.is_none())
+          app.rs:3505   .filter(|s| s.parent_session_id.is_none())
+leticl    head.lisp:1053    (remove-if … :parent-session-id)
+          session.lisp:382  (remove-if … :parent-session-id)
+          panes.lisp:77     (remove-if … :parent-session-id)
+```
+
+leticl's `panes.lisp:71` records the provenance — *the reference filters `parent_session_id.is_none()` on
+both `Hello` and …* — and `chrome.lisp:363` states the belief out loud: **a subagent is not a session a
+picker lists**. That belief is the bug. Everything downstream of it — `/peek`, `Peeked`,
+`sub_out_lines`, `subagent-out-lines` — exists to work around a session that was hidden on purpose.
+
+**So the ask is not a richer `Peek` at all, and the read-only snapshot I asked for was a workaround for
+the filter. Everything that follows is DELETION:**
+
+  · **the picker lists sub-sessions**, under their parent or marked with it — the parent id is already
+    on the row, so the information is there and is being thrown away;
+  · **attaching to one is ordinary**: `Attach { since_seq: 0 }` answers with a `Snapshot`, which both
+    heads already draw with the real renderer — markdown, air rule, tool cards, the rung. Nothing to
+    build;
+  · **`sub_out_lines` and `subagent-out-lines` are deleted**, not taught and not re-pointed;
+  · **the subagents pane becomes a view onto sessions-with-a-parent**, not a second renderer with its
+    own idea of what a row looks like;
+  · and **leticl's `a216cfa`** — the copy taught about tasks and rungs — goes with the copy. It is
+    scaffolding around a session hidden by five lines, and worth naming as such.
+
+**The question that is actually yours:** does `Peek` still earn its place once the filter is gone? It may
+— reading a child without leaving the parent is a real convenience rather than a necessity — and that is
+yours to judge. The correction above is why I am not asking for a snapshot variant any more.
+
+**And one thing neither head should lose in the deletion:** the filter existed because a picker full of
+children is noise, and twenty subagents would bury the four conversations the operator cares about.
+**Nesting is the answer, not listing flat** — a child under its parent is both discoverable and quiet.
+The reference's instinct was right about the symptom and wrong about the cure.
+
+**still open?** `grep -n "parent_session_id.is_none" crates/tui/src/app.rs` still answers two.
+
+**done when** a head attaches to a sub-session like any other, and neither `sub_out_lines` nor
+`subagent-out-lines` exists.
+
+**THE ASK AS FIRST FILED, kept for the record and superseded by the correction above.**
+
+**(No R-number: the series is yours to number.)**
+
+The operator, correcting leticl's plan before it was built: *"yes subagents are not even scratch
+session they are session, just sub sessions"*. That settles the whole shape:
+
+  · **`Peeked` is why there is a second renderer in each head.** Its own docstring says the events it
+    carries are *for reading, NOT FOR FOLDING INTO THE HEAD'S STATE* — so a head with a peek may not
+    fold them, and has nothing to do but draw them by hand. That is `sub_out_lines` here
+    (`app.rs:12682`) and `subagent-out-lines` in leticl, a copy of it;
+  · **the door that returns the right thing already exists**: `SessionEvent::Subagent`'s `subagent_id`
+    is *the subagent's own session id*, and `Attach`/`Resync` with `since_seq = 0` answers with a
+    `Snapshot` — rows, which both heads already draw with their real renderer, markdown, air rule,
+    tool cards and rung and all. **Nothing new is invented; a door that is unused for children.**
+
+**The ask: `Peek { session_id }` answers with a `snapshot` as well as (or instead of) `events`** — or,
+if you prefer, a read-only attach to a child id. leticl's preference is the first, and the reason is
+the frame name: `Peek` promises *this is a read, not an attachment*, which is a property worth keeping
+explicit — an attach that only read would blur the two gestures the subagents pane already owns
+(Enter reads a child, `o` switches into it).
+
+Then **both plain-string renderers are DELETED, not taught**: leticl deletes `subagent-out-lines` the
+day the snapshot lands, and its half is ready. Worth a day's wait rather than a head-local fold,
+because two folds for one conversation is the drift this pair has hit five times in two days — the
+thinking count drawn twice, leticl's three file lists, `BINARIES`, the weather list, and now this.
+
+**still open?** `grep -n "Peeked" crates/sessionlog/src/protocol.rs` — the reply has `events` and no
+`snapshot` field.
+
+**done when** a peeked child is drawn by the same renderer as any session in both heads, and neither
+`sub_out_lines` nor `subagent-out-lines` exists.
 
 ## R18 — every hand-rolled lexer replaced by rano + tree-sitter — **given 2026-09-20**
 
