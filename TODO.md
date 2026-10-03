@@ -515,6 +515,68 @@ the tree exactly once, **every ancestor's handle can be collected from any level
 past the knob is refused by name rather than by a stack that quietly runs out — with the correction
 above carried wherever `fd4aaad` is read.
 
+## R59 — the context wall's denominator moves a third between firings — **OPEN, raised by the operator 2026-10-03**
+
+The operator, on letibot's compaction: *"something is off here, like too much too early too wtf."* Four
+`context wall` lines on one daemon whose `context_window` is 999,999 — **and no way to say which session
+each was about**, because the wall line carried no id, which is why that is the first thing fixed below.
+
+    stopped after 13 round(s) at 1400086 of 1118167 tokens
+    stopped after  7 round(s) at 1463534 of 1484966 tokens
+    stopped after  2 round(s) at 1257759 of 1199811 tokens
+    stopped after 16 round(s) at 1429974 of 1484829 tokens
+
+**The denominator is `planning_window()`, and it is a measurement rather than a bug.** `Config::ledger_scale`
+is `(ledger.len(), the last round's prompt_tokens)`, refreshed at the end of **every** round
+(`harness.rs:5848`), and `planning_window` is `context_window * ledger / provider` clamped to
+`[w/4, 4w]`. The four windows above are 1.12x–1.48x the configured 1M, i.e. the ledger ran 12% to 48%
+wider than the provider's own count of the same prompt — **how much of that session was reasoning the
+messages provider is never sent**, which the docstring already says varies per session and over the life
+of one. So the ratio is doing its job; what moves is the printed pair.
+
+**And the threshold the wall FIRES on does not move at all — the swing is in the display only.**
+Verified from the code rather than argued: the check is `resident + headroom() >=
+planning_window()` where `resident = session.ledger.len()` at the top of the round loop and `ledger_scale`
+was taken at the bottom of the previous one, so `resident == ledger`; `headroom()` is `w/16` at these
+sizes; substituting gives `ledger >= 15/16 * w * ledger/provider`, the `ledger` cancels, and the
+condition is exactly **`provider_prompt_tokens >= 15/16 * context_window`** — one fixed fraction of the
+configured window, independent of the ratio. The wall fires in the provider's units; only the *ledger*
+pair printed beside it swings. That is the same unit confusion the operator already caught once
+(*"1.35 is a lie - that top was shown as 900+"*, `Config::shown_tokens`' docstring), now in a log line
+instead of a notice.
+
+**Which makes the two asks different sizes.**
+
+  · **The measurement is theirs to rule on: smooth or not.** A smoothed ratio (an EMA) would hold the
+    printed denominator still and cost lag — the window would track a genuinely changing reasoning
+    fraction a turn or two late — and it would not move the fail point, because the fail point is
+    already ratio-independent. This tree's own argument for the ratio is *"it is not a constant: it is
+    how much of the conversation is reasoning"*, and smoothing is the one change that makes it less of
+    the measurement it was written to be. Recommendation: **leave it per-round**; if the printed number
+    is the problem, fix the printing.
+  · **The display is not: print the provider's figure.** `{resident} of {window}` is in ledger tokens
+    and every notice a head draws is in the provider's (`shown_tokens`). Printing the provider-side
+    number (or both, as the wall *notice* already does with its `(counted as the provider counts them;
+    …the ledger says X of Y)` aside) makes the log line read in the same unit as the screen it
+    describes.
+
+**The id that makes it decidable is landed** — `bd012ed` gives the `context wall` line the session name
+its `compacting:` neighbour has had since this same morning, so the next occurrence pairs a wall with the
+compaction beneath it **by id rather than by adjacency**. That is what answers *"too much too early"*:
+whether the 1.25M-to-633k folds and the 985k-to-8k compactions in the operator's log are one session
+behaving differently or two behaving consistently — and note the two are different paths with different
+contracts (a fold and a compaction), which the operator's own caution says not to conflate.
+
+**still open?** `grep -n "context wall:" crates/harnessd/src/harness.rs` finds the id;
+`grep -n "ledger_scale =" crates/harnessd/src/harness.rs` finds the one per-round refresh at 5849 and the
+recovery at 2833; no smoothing exists anywhere, so both routes above are unstarted.
+
+**done when** the wall's log line and the compaction's can be paired by id (done, `bd012ed`), and either
+the ratio is left per-round with the printing moved to the provider's unit, or a smoothed ratio is added
+with the argument for the lag written down — so that the denominator on the screen and in the log is the
+number the operator can check, and the analysis *"too much too early"* rests on attributed lines rather
+than adjacency.
+
 ## The `Subagent` event's `prompt` is a title, and on the finish it is the child's answer — **OPEN, reported from leticl 2026-10-03**
 
 **(No R-number: the series is yours to number.)**
@@ -593,6 +655,24 @@ yours to judge. The correction above is why I am not asking for a snapshot varia
 children is noise, and twenty subagents would bury the four conversations the operator cares about.
 **Nesting is the answer, not listing flat** — a child under its parent is both discoverable and quiet.
 The reference's instinct was right about the symptom and wrong about the cure.
+
+**MEASURED ON THE REBUILT DAEMON, 2026-10-03 23:40, AND IT ANSWERS THE QUESTION YOU ASKED AN HOUR AGO.**
+Daemon 652570, started 23:34:31 from the 23:28 rebuild — the field exists, and **the path the head's
+pane uses passes `None`**: a peek at a *running* child answered
+
+    events  : 652
+    snapshot: NIL
+
+So `1520bb5` is landed and not reachable from the door leticl actually knocks on. This is exactly the
+case the relay warned about (*three call sites pass None*), and it is why leticl has **not** deleted
+`subagent-out-lines`: the deletion waits for a peek that comes back with rows. The three sites are worth
+naming in your own tree — whichever one the head's `Peek { session_id }` lands on is the one that
+matters, and it is the read-a-child-without-leaving-the-parent path rather than the ones used
+internally.
+
+leticl's half is ready and inert: `%peek-snapshot-pane` draws rows through the real renderer the moment
+any arrive, the event path stays as the degraded one and SAYS so, and the copy is deleted the day the
+pane's own peek answers with rows.
 
 **still open?** `grep -n "parent_session_id.is_none" crates/tui/src/app.rs` still answers two.
 
