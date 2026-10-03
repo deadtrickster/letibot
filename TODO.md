@@ -307,13 +307,18 @@ overclaimed it.** The chain decomposes, and all but one piece is asserted:
 | a completion is taken once, not left for the next wake | the same test |
 | a job's sentence | `a_completion_notice_names_the_job_and_says_do_not_wait` (`harness.rs:7764`) |
 | **a child's sentence** | **`8533d84`** — landed, and it did not exist before |
-| **`Harness::wake()`'s own body**: the partition and the `Speaker::Agent` item | **nothing, on either kind** |
+| the partition: which noun for which kind, and none for nothing | **`a_settlement_is_two_nouns_out_of_one_channel`** — the partition is now `completion_notices`, a pure function, and it is asserted on a job, a child, both, two children, and an empty queue |
+| **`wake()`'s remaining body**: taking the queue and submitting one `Speaker::Agent` item | **nothing, on either kind** |
 
-So the unexecuted part is that one body. It cannot be reached by a unit test, and this crate has **no
-fixture that builds a `Harness` at all** — every harnessd test is a pure-function unit test or a
-registry-level integration test — which is *why* the hop has none, and is the thing to build if the hop
-is to be asserted rather than read. Until then the reading in the bullet above is the evidence, and it
-is reading rather than measurement; that is stated here rather than left to look stronger than it is.
+**Narrowed again 2026-10-03 (the paragraph this replaces said the whole body was unasserted).** `wake()`
+had the partition inline, where only a live `Harness` could reach it — and this crate has **no fixture
+that builds a `Harness` at all** (every harnessd test is a pure-function unit test or a registry-level
+integration test), which is *why* the decision had none. So the decision was lifted out into
+[`completion_notices`] (`harness.rs`), which is pure and now tested; `wake()` keeps only the part that
+is not a decision — take the queue, call the function, submit what it returns. What remains unexecuted
+is therefore those few lines, and the reading in the bullet above is still the evidence for them:
+reading rather than measurement, stated here rather than left to look stronger than it is. A `Harness`
+fixture is the thing to build if even that is to be asserted.
 
 ## R18 — every hand-rolled lexer replaced by rano + tree-sitter — **given 2026-09-20**
 
