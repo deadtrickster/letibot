@@ -139,6 +139,16 @@ pub struct Parts {
     /// It rides [`Parts`] rather than [`Config`] because a config is *this* session's
     /// facts and a watcher set is a live `Arc`, not a value to clone per session.
     pub tree_watch: Option<std::sync::Arc<crate::jobwatch::JobWatchers>>,
+    /// **The subagent handle list a child of this session shares** (R58).
+    ///
+    /// `None` for a root — its runner gets a fresh list. `Some(parent's)` for a child, so
+    /// the whole tree hands out and collects ONE list: `task_result` and `job_kill` on a
+    /// grandchild's handle then work from any ancestor, which is the requirement's own
+    /// *"every ancestor's handle can be collected from any level"*. Without it the tree's
+    /// wake delivers a settlement the root was told about and cannot collect — the
+    /// completion names a handle no runner in `open` holds.
+    pub(crate) tree_slots:
+        Option<std::sync::Arc<std::sync::Mutex<Vec<(String, std::sync::Arc<TaskSlot>)>>>>,
 }
 
 /// How many ledger rows a resume announces between progress ticks.
@@ -176,6 +186,8 @@ impl Parts {
             skills,
             // A root session is its own tree; it has no parent's watcher set to join.
             tree_watch: None,
+            // Nor a parent's handle list: a root's runner gets a fresh one (R58).
+            tree_slots: None,
         })
     }
 }
@@ -1770,7 +1782,7 @@ impl<'a> Harness<'a> {
                 tasks: parts.tasks.clone(),
                 skills: parts.skills.clone(),
                 lsp: parts.lsp.clone(),
-                slots: Default::default(),
+                slots: parts.tree_slots.clone().unwrap_or_default(),
                 // Filled below, once this harness has built its own `job_watch` (R58).
                 tree_watch: tree_watch_slot.clone(),
             });
@@ -6948,7 +6960,7 @@ impl letibot_tools::Adjudicator for SubagentAdjudicator {
 /// A `Condvar` rather than a poll loop, for the same reason [`letibot_tools::exec`]
 /// gives a job one: a `task_result` with a `timeout_ms` should wake when the
 /// child answers, not on the next tick of somebody's chosen interval.
-struct TaskSlot {
+pub(crate) struct TaskSlot {
     state: std::sync::Mutex<letibot_tools::builtins::task::TaskStatus>,
     settled: std::sync::Condvar,
     /// **Whether this subagent was stopped rather than finishing**, which is the one
@@ -7383,6 +7395,11 @@ impl HarnessTaskRunner {
             // the same field one level up. So the whole tree rings one bell with no
             // parent-chain walk.
             tree_watch: self.tree_watch.lock().expect("tree watch").clone(),
+            // **And the child shares this tree's handle list** (R58), the other half of
+            // *"every ancestor's handle can be collected from any level"*: a grandchild
+            // pushed into this list is collectable and killable by the root, which is the
+            // session the tree's wake is delivered to.
+            tree_slots: Some(self.slots.clone()),
         };
 
         let mut sub = Harness::open_with_registry(
