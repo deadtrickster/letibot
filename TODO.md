@@ -378,7 +378,7 @@ is therefore those few lines, and the reading in the bullet above is still the e
 reading rather than measurement, stated here rather than left to look stronger than it is. A `Harness`
 fixture is the thing to build if even that is to be asserted.
 
-## R58 — subagent TREES: delegation to a configurable depth, and no settlement without a worker — **a FEATURE, ruled 2026-10-03; the framing below is settled and the design is NOT started**
+## R58 — subagent TREES: delegation to a configurable depth, and no settlement without a worker — **LANDED 2026-10-03 (`9a9e8a1`); the design note below is kept for what it argued**
 
 > **A feature, not a fix, and keeping that distinction is the first thing this row is for.** It exists
 > because a commit message overstated a live defect that does not exist.
@@ -498,17 +498,71 @@ re-checked at each level.
 **handles**: the slots list and the watcher set that turn a settlement into a wake. Two different
 orphans, two different owners, and neither fix touches the other.
 
-**still open?** `grep -rn "max_depth" crates/harnessd/src/ crates/tools/src/` finds **nothing**, so
-no spawn budget exists anywhere. `grep -rn depth crates/harnessd/src/ | grep -v slash.rs` finds
-exactly two lines and **neither is about spawning** — `sessions.rs:1273` and `config.rs:252`, both
-prose about the model's *context* depth (*"depth was measured not to hurt"*), which is the other
-meaning of the word. And `grep -n '"task"' crates/tools/src/runtime.rs` names it twice: `orchestrator`
-and `leticode`, and not `m2_coder`. Nothing here is started.
+**LANDED 2026-10-03 (`9a9e8a1`) — all four pieces, with the two that mattered made testable.**
 
-**One naming consequence, from that grep rather than from taste.** `depth` in this tree already means
-the *model's* depth (`config.rs:252`), so a knob called `depth` would be two quantities under one word
-in one config file — name it for what it is (`max_subagent_depth`, or `tree_depth`) before anything
-else reads it.
+  · **1. The seat.** `m2_coder` names `task` and `task_result` (`runtime.rs`), seated at every
+    depth on purpose: the cap is enforced at the CALL, not by the seat's absence, because a seat
+    that simply lacked `task` at the limit manufactures the workaround this role already paid for
+    once (its own `todo` note). The pair goes together for `orchestrator`'s reason.
+  · **2. The depth.** `Config::depth` (0 for a root) is incremented once at `spawn_subagent`'s
+    `sub_cfg`, and rides the config down the tree like `unconfined` does.
+  · **3. The knob.** `Config::max_subagent_depth`, default 3, `--max-subagent-depth`. The refusal
+    is `subagent_depth_refusal` (`harness.rs`), a pure function so it needs no harness to test:
+    it names where the session is, the level it would have opened, and the knob that moves it.
+  · **4. The worker's bell.** A child's watcher set is built from its ROOT's
+    (`JobWatchers::shares_tree`): `completions`/`watching`/`settled`/`stop`/`bell` shared, and a
+    new `wake_target` carrying the root's id so the ring goes **up**. The root's set rides `Parts`
+    as `tree_watch` (`None` at `Parts::load`, the parent's set at spawn), and the target
+    propagates unchanged, so a tree rings one bell with no parent walk. **The slots list needed
+    nothing** — `Parts::load` already builds one `Arc<TaskJournal>` for the daemon, so any
+    ancestor can already collect any handle (REFINED above).
+
+Tests: `a_grandchilds_settlement_rings_the_tree_root` (jobwatch) drives a depth-2 settlement
+through the CHILD's set and asserts the completion lands on the tree's queue and the ring names the
+root; `the_depth_cap_refuses_the_spawn_one_past_it_by_name` (harness) pins the boundary; 
+`the_coder_seat_names_the_delegation_pair` (runtime) pins the seating; and the plan-mode fixture
+registers the pair — the same loud `resolve_role` path its own comment records for `todo` and
+`bash`.
+
+**still open?** `grep -rn "max_subagent_depth" crates/` finds the field, the flag, the refusal and
+the two tests; `grep -n '"task"' crates/tools/src/runtime.rs` now names it three times
+(`orchestrator`, `leticode`, `m2_coder`); `grep -n "wake_target" crates/harnessd/src/jobwatch.rs`
+names the ring target. **Not yet exercised end to end**: no test spawns a real depth-2 tree through
+the daemon, because that needs two live harnesses and a model — the mechanism is pinned at the
+`JobWatchers` layer, which is where the defect was.
+
+**One naming consequence, settled rather than left open.** `depth` in this tree already means the
+*model's* depth (`config.rs:252`), so the SESSION's level is `Config::depth` and the KNOB is
+`max_subagent_depth` — two names, not one word doing two jobs. That is the consequence this
+paragraph asked for, applied.
+
+**REFINED 2026-10-03, reading the code the four pieces will touch: half of piece 4 is ALREADY DONE, and
+the other half is smaller than the section above implies.**
+
+  · **The slots list is per-DAEMON, not per-tree.** `Parts::load` (`harness.rs:138`) builds ONE
+    `Arc<TaskJournal>` for the process — the same one-0.6s-load argument as the vocab — and every child
+    inherits that same Arc (`spawn_subagent`'s `Parts { tasks: self.tasks.clone() }`, `harness.rs:7285`).
+    So `task_result` already reaches any handle from any ancestor. *"Every ancestor's handle can be
+    collected from any level"* is satisfied **more widely than the tree**; nothing to build. (If a
+    tightening to *exactly* the tree is wanted later — so a sibling root cannot collect another root's
+    child — that is a separate, deliberate narrowing and not part of this.)
+  · **So the whole of piece 4 is the watcher set, and it is one field.** `settled_here`
+    (`jobwatch.rs:520`) rings `bell.ring_wake(&hub.session_id())` — the **child's** id — and queues the
+    `JobCompletion` on the **child's** `completions`. Both are per-session because the child's set is
+    built fresh in `open_with_registry` (`harness.rs:2283`). At depth 2 that queues onto, and rings for,
+    a session `Sessions::open` does not hold — the `Ignored` above, from one field rather than a missing
+    structure.
+  · **The shape the fix takes.** The tree's watcher set is the ROOT's and a child's is built from it:
+    `completions`, `watching`, `settled`, `stop` and `bell` shared (Arcs — `with_tasks` already shares
+    three of them), a `wake_target: String` carrying the root id so the ring goes **up** rather than out,
+    and only `hub`/`host`/`tasks` new per child. The root's set rides `Parts` as a
+    `tree_watch: Option<Arc<JobWatchers>>` — `None` from `Parts::load` for a root, `Some(self.job_watch)`
+    at `spawn_subagent` — so `open_with_registry` finds it and shares instead of building. No new root
+    walk: the set it is built from already knows its root.
+  · **And piece 4 cannot land alone.** At depth 1 the watcher that rings belongs to the parent, which IS
+    the root, so the change is **unobservable and untestable today** — a grandchild cannot exist until
+    `task` is seated past level 1. Pieces 1 and 4 land together or the diff is scaffolding nothing can
+    exercise.
 
 **done when** a session at depth 3 spawns a child that spawns a child, each child's settlement wakes
 the tree exactly once, **every ancestor's handle can be collected from any level**, and a depth one
@@ -656,19 +710,21 @@ children is noise, and twenty subagents would bury the four conversations the op
 **Nesting is the answer, not listing flat** — a child under its parent is both discoverable and quiet.
 The reference's instinct was right about the symptom and wrong about the cure.
 
-**MEASURED ON THE REBUILT DAEMON, 2026-10-03 23:40, AND IT ANSWERS THE QUESTION YOU ASKED AN HOUR AGO.**
-Daemon 652570, started 23:34:31 from the 23:28 rebuild — the field exists, and **the path the head's
-pane uses passes `None`**: a peek at a *running* child answered
+**MEASURED ON THE REBUILT DAEMON, 2026-10-03 23:40 — AND THE MEASUREMENT WAS RIGHT WHILE THE
+CONCLUSION DRAWN FROM IT WAS NOT.** Daemon 652570, started 23:34:31 from the 23:28 rebuild — the field
+exists, and that peek answered
 
     events  : 652
     snapshot: NIL
 
-So `1520bb5` is landed and not reachable from the door leticl actually knocks on. This is exactly the
-case the relay warned about (*three call sites pass None*), and it is why leticl has **not** deleted
-`subagent-out-lines`: the deletion waits for a peek that comes back with rows. The three sites are worth
-naming in your own tree — whichever one the head's `Peek { session_id }` lands on is the one that
-matters, and it is the read-a-child-without-leaving-the-parent path rather than the ones used
-internally.
+**`snapshot: NIL` beside 652 events is the daemon answering an `Events` request exactly as designed, and
+"not reachable" (this paragraph's first form, and leticl's `eb896f3`) is the stale-claim defect this pair
+has now corrected four times.** `server.rs:765` makes the two shapes **alternatives, not a pair** — a head
+that asks for `Rows` gets the snapshot and an EMPTY ring, because sending both would put the same content
+on the wire twice. So the field was reachable all along; the peek simply did not opt in, and
+**a one-field change on the `Peek` a head sends (`shape: PeekShape::Rows`) is the whole of what was
+missing.** leticl's half is still inert only because its peek sends `Events`; the `shape` field is on the
+wire and the daemon has answered `Rows` since `1520bb5`.
 
 leticl's half is ready and inert: `%peek-snapshot-pane` draws rows through the real renderer the moment
 any arrive, the event path stays as the degraded one and SAYS so, and the copy is deleted the day the
@@ -689,6 +745,29 @@ as the explicitly-degraded fallback an older daemon forces, and it says so. So o
 **rendering** half of *"both plain-string renderers are DELETED, not taught"* is satisfied by making
 `sub_out_lines` a thin shell over the real renderer — kept, because the `Peek` door was kept — rather than
 deleted; the deletion the section asks for is only reachable once the peek's own answer is never the ring.
+
+**RULED, 2026-10-03: `Peek` EARNS ITS PLACE — the FIRST of the operator's three answers — and
+`PeekShape::Rows` is its shape.**
+
+  · **It is not the filter's workaround and did not die with the filter.** What `Peek` does that attaching
+    cannot is **read a session without moving the head's own**. Attaching changes `session_id`, and that
+    changes *where the next prompt goes*; and by this head's own words in `switch_to`, going to a session
+    "has no state" kept and "this head does not keep per-session marks" — so the reader's place is lost
+    and coming back is a fresh resync. **A read that moves the head is not a read**, and that is the
+    reason this survives the deletion of the filter, the picker's flatness and the second renderer.
+  · **With `Rows` it costs no second renderer.** `sub_out_from_rows` runs the session's items through
+    `item_lines` — the same one every transcript row uses — so the cost that made the deletion attractive
+    is already gone; what remains of the hand-rolled path is the degraded fallback alone.
+  · **So the two plain-string renderers are FALLBACKS, not alternatives.** Each head keeps at most one,
+    and it says so — the operator's own rule: a `None` snapshot falls back to the ring **and says so** —
+    or deletes it if it will not answer a daemon older than the field. **Neither is deleted because the
+    peek is redundant, because the peek is not.**
+  · **leticl carries the one-field change**: `Peek { shape: PeekShape::Rows }`, and its pane draws through
+    the real renderer the moment rows arrive (its half is already written and inert, per its own note).
+  · **One recommendation, for parity rather than the wire**: the two heads should agree that **Enter on a
+    row READS and a neighbour ATTACHES** — attaching on Enter silently redirects the next prompt to the
+    child, which is exactly the hazard the read exists to avoid. This head is Enter = read, `o` = attach;
+    leticl's new Enter = attach is the half to reconsider, and the operator's call.
 
 **done when** a head attaches to a sub-session like any other, and neither `sub_out_lines` nor
 `subagent-out-lines` exists.
