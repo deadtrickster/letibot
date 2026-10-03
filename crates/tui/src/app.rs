@@ -9127,12 +9127,6 @@ impl App {
         None
     }
 
-    /// **The view is held** (R56) — a question for the driver, since the freeze is kept in two
-    /// places and a caller that knew only one of them would be half right.
-    pub fn held(&self) -> bool {
-        self.hold
-    }
-
     /// One frame: `h` lines of at most `w` columns — **and while the view is held, the same frame
     /// every time.**
     ///
@@ -22618,11 +22612,11 @@ mod tests {
             2,
             testing::delta("t1", "the answer is"),
         )));
-        assert!(!a.held(), "the premise: the view is following");
+        assert!(!a.hold, "the premise: the view is following");
 
         // **The freeze, and the one write it owes** — the marker, on the hint bar's row.
         assert_eq!(a.key(Key::CtrlP), None, "the hold is not a daemon action");
-        assert!(a.held());
+        assert!(a.hold);
         let frozen = a.screen(100, 24);
         assert!(
             frozen.iter().any(|l| l.contains(HOLD_MARKER)),
@@ -22668,7 +22662,7 @@ mod tests {
         // **The release follows again, and says how much arrived — once**, which is what makes
         // the count honest: a live count while held would be an animation.
         assert_eq!(a.key(Key::CtrlP), None);
-        assert!(!a.held(), "the second press releases");
+        assert!(!a.hold, "the second press releases");
         let released = a.screen(100, 24);
         assert_ne!(released, frozen, "the view did not come back");
         let said = released.join("\n");
