@@ -41,6 +41,182 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## R55 — a round's end and a turn's end are the same event on the wire — **OPEN, reported from leticl through the relay 2026-10-03**
+
+The operator, watching leticl's composer edge during a multi-round turn: *"sometimes 'responding'
+timers flickers to Responded and then back, without time reset. not harmful but annoying"*, and then
+*"so it looks like the harnessd must be explicit here and add another real end marker"*.
+
+The timer does not reset because you measured the turn once: `harnessd/src/harness.rs:4339`
+`begin_turn_clock` — *"Called once per prompt, never per round"* — sets `turn_began_ms` and the
+engine's copy, and every round's `TurnStarted` carries that same stamp. Good, and it is the half that
+works. The status word toggles because the **ending** is not marked at all: `engine.rs:1318-1320`
+
+```rust
+let finish_reason = match done.finish {
+    Finish::Stop | Finish::ToolCalls | Finish::Other(_) => FinishReason::Eos,
+```
+
+so a round that ended to call tools publishes a `TurnFinished { finish_reason: Eos }` that is
+byte-identical to a real ending — which your own comment at `harness.rs:5800` already says out loud:
+*"Per round, the same way the heads' own `TurnFinished` updates theirs."* A head therefore believes
+the turn is over in the window between a round's finish and its calls being proposed (nothing is
+generating and no call is unfinished yet), writes its `Responded in …` report, and the proposal flips
+it back. On leticl's screen: `Responding → Responded → Responding` on every round boundary, with the
+duration untouched — measured on the operator's own head, `Responded in 4m09s at 21:37` drawn while
+the turn was still running.
+
+**The ask: mark the real end.** The minimal shape, and the operator's own framing — *another real
+end marker*: a `final: bool` on the existing `TurnFinished` (or a `round: u32` beside it if naming the
+round is wanted). The metrics stay per round, where the heads read them; only the ending gains a name.
+An absent field should mean **final**, i.e. today's behaviour, so an old head against a new daemon
+keeps working and a new head against a recent daemon flickers but never lies.
+
+**Both heads then answer it with one predicate each**: while a turn is in flight the row says
+`Responding`, including that window; the report is written only on `final`, and cleared at the next
+`TurnStarted` as it is today. leticl's half is one line in its `:turn-finished` arm — it is ready to
+land the day the field exists, and its suite builds the event by hand, so it is testable before this
+ships.
+
+**What letibot found when it read the three sites — and why the shape is an EVENT, not a field.**
+All three citations hold verbatim: `begin_turn_clock`'s *"Called once per prompt, never per round"*,
+the `Finish::Stop | Finish::ToolCalls | Finish::Other(_) => Eos` fold, and — the one leticl could not
+read — `harness.rs:5800`, which is **support rather than a contradiction**: it says *"Per round, the
+same way the heads' own `TurnFinished` updates theirs"* in the middle of explaining why the SESSION
+row's prompt size is per round, i.e. it records this as deliberate.
+
+**The engine cannot set `final`, and that is the whole of it.** `Finish::ToolCalls` establishes only
+that a continuation MAY follow; whether one does is decided one layer up, in this daemon's round loop
+— `room_for_next_turn` and then `run_continuation` (`harnessd/src/sessions.rs`) — and the convergence
+point that already knows a prompt is over is the one where `end_turn_clock()` is called
+(`sessions.rs:1090`, whose own comment is *"Every turn ends here"*). A `final: false` written at the
+engine's fold would therefore be a **guess**, and on the paths where the guess is wrong — the room
+check says no, an interrupt lands while the calls are still running, `Finish::ToolCalls` on a turn
+that then fails — the head is left saying *Responding* with nothing running at all. That trades the
+flicker for a **stuck row**, and a stuck row is the worse defect: R13 exists because a reader who
+cannot tell working from wedged is the confusion this row is for.
+
+So the marker is published where the decision is made, and that means **a new variant — call it
+`TurnEnded { turn_id, finish_reason }` — rather than a field on the round's event.** Re-publishing the
+round's `TurnFinished` at the convergence point is the alternative and it double-counts `usage` in any
+head that accumulates the turn's cost. A field would also have to carry the right default (`absent`
+= final, i.e. not `#[serde(default)]`'s `false` for a positive name), which is the smaller of the two
+problems. **A new variant cannot ride a `#[serde(default)]`, so this one DOES need the
+`PROTOCOL_VERSION` bump** — a new field would not, which is the rule stated at `PROTOCOL_VERSION`
+itself, and the reason leticl's question was worth asking rather than assuming.
+
+**What THIS head does today, so the operator knows what to look for here.** letibot has no past tense
+at all — `Responding` is the only word the row has (`app.rs:13718`), so it cannot flicker to
+*Responded* — and it **drops the row** for the same window instead: the last call of a round finishing
+and the next round's first delta, because `turn_busy()` is `generating || a call unfinished`
+(`app.rs:8185`) and every call of the finished round is `Finished` by then. **And this tree currently
+asserts that as correct**: `the_status_row_survives_a_tool_call` pins *"the call lands and nothing
+else is outstanding, so the work is over and the row stands down"*. The fix therefore REWRITES that
+assertion rather than adding beside it, and that is the fail-first evidence — available before any
+daemon change, since it is one predicate and one test. The backstop that makes this *annoying rather
+than harmful* on this head is `a_turn_that_has_gone_quiet_says_so_rather_than_spinning`: forty silent
+seconds and the row says something again.
+
+**still open?** `grep -n "final" crates/sessionlog/src/event.rs` around the `TurnFinished` variant
+shows no such field, and `crates/turn/src/engine.rs:1320` still folds `Finish::ToolCalls` into `Eos`.
+
+**done when** the daemon publishes the end at the convergence point (where `end_turn_clock` is
+called), `PROTOCOL_VERSION` is bumped for the variant with the reason stated in the commit, and a
+two-round stream on each head shows the status row up across every round boundary and down only at the
+marked end — asserted, not watched: a test per head, and on this head that test replaces the one that
+currently pins the flicker.
+
+## R56 — the view can be held, so a selection survives a streaming turn — **leticl has it, this side does not (`c9634bc`)**
+
+The operator, on losing a text selection while a turn streams: *"leticl resets selection if screen
+wasnt scrolled too. so both should not do it if anything selected. whether it means stopping render and
+showing me 'new content' marker - likely."*
+
+**Two measurements decide the design, and the first kills the obvious fix.** `tmux pipe-pane` on both
+heads: leticl erased NOTHING in a twenty-two minute turn (no `ESC[2J`, no `ESC[K`) and still lost the
+selection — **any write into a selected cell clears it**, so erasing is not the trigger and there is no
+gentler way to paint. And the head **cannot detect the selection at all**: with mouse reporting on,
+holding Shift tells the TERMINAL to select and not to forward the events, which is exactly why Shift is
+the gesture. So *do not repaint while something is selected* is not implementable as written; the
+reader is the only party who knows, so the reader holds the view.
+
+**The contract, and it is all of it: while held, the head writes NOTHING.** Not a spinner, not a clock,
+not a counter that ticks. One written cell is one lost selection. The events keep arriving and the head
+keeps folding them — it simply stops drawing — so this needs no protocol change at all. Three pieces on
+leticl's side, each in the one place that owns it: `paint-wanted-p` (the loop's only gate on painting —
+a held view outranks both an event and the clock, and the loop still SLEEPS on a refusal, or a held
+screen would spin a core), `*frozen-frame*` (the marker cannot be drawn without a write and cannot be
+drawn while nothing writes, so the freeze owes exactly one frame, spent by the paint after the bytes
+are out), and `frozen-lines` (the row itself).
+
+**The chord is `ctrl-p`, and it is AGREED rather than picked** — the operator's first choice was
+`ctrl-f`, which is taken by the composer's emacs motions (*ctrl-f goes right*, and the reference's
+decoder binds it too); `ctrl-p` is free because the todos pane gave it up when that moved to `ctrl-t`,
+and *pause* is the better mnemonic. An operator who learns it on one head will reach for it on the
+other, so it must be the same key and the same words on both.
+
+**The wording, verbatim, so the two heads cannot say it two ways:**
+
+    ⏸ the view is held — ctrl-p follows again
+
+and on the release, one note: **`the view follows again — N rows arrived while it was held`**, counted
+ONCE at that moment, because a live count while held would be an animation and an animation is writes.
+
+`c9634bc` is the whole of it on leticl's side, with the probe output in the commit message.
+
+**THE CHORD DOES NOT TRANSFER, and this is the one thing to settle before any code.** `ctrl-p` is
+free on leticl *because its todos pane gave the key up and moved to `ctrl-t`* — and **here `ctrl-p` IS
+the todos pane** (`term.rs:781` decodes `0x10`, and the bar reads `ctrl-p todos`). `ctrl-t` cannot be
+the destination here either: this head already spends it on the payload window (`ctrl-t newest
+result · /t all tool rows`, which the operator reads off the bar and which R10 narrowed to that
+meaning on purpose). So on this side the freeze can only have `ctrl-p` if the TODOS PANE MOVES, and
+the decoder's own comment says what is left: *"`ctrl-v` (`0x16`) and `0x1c`-`0x1e` are the only bytes
+left in this table with no arm"*. None of the four is mnemonic for *plan*, and none is mnemonic for
+*pause* either — `ctrl-p` is the only letter that names the new act, which is why the conflict is on
+the pane rather than on the hold.
+
+Two ways out, both honest, and they are the operator's to pick:
+
+  · **mirror leticl: todos → `ctrl-t`, and the payload window → `ctrl-v`** ("view"). Best parity —
+    the two heads then agree on the freeze AND on the pane — and it moves a key in daily use, with the
+    bar entry and its tests to match.
+  · **todos → `ctrl-v`, keeping `ctrl-t` as the payload window.** Nothing the operator uses today
+    changes, one pane key stays divergent (which it already is: jobs is `ctrl-q` here and `ctrl-j`
+    there, and nobody has minded).
+
+**still open?** `grep -rn "frozen\|paint-wanted-p" crates/tui/src/` — no hold, no gate.
+
+**done when** a multi-round turn on their head writes nothing between the freeze and the release (the
+byte-level assertion leticl's suite makes), the marker appears exactly once, and the release says how
+much arrived.
+
+## Which side owns WEATHER — a classification both heads must answer the same way — **OPEN, question to settle between the heads**
+
+The operator ruled: *"both heads should not emit it inside conversation"* for `model_slow_first_byte` —
+the diagnostic is wanted, its PLACEMENT was wrong, so it leaves the transcript, lights the `⚠` and
+`/notes` still lists the sentence. leticl landed its half in `973d58f`, and the shape it took is worth
+copying or overruling deliberately rather than by accident:
+
+  · the test is **not** *is this routine* but **is this an event in the record**. `+weather-warnings+` is
+    `model_slow_first_byte` and `model_endpoint_retry`; `auto_compact` and `compacted` are routine too
+    and STAY ROWS, because a compaction changes the conversation; `prefix_check_skipped` stays a row
+    because a skipped check is *said, never counted as a pass*;
+  · it is a **subset of the routine register** (`warning.rs`'s `Class::Routine`), asserted by a test
+    (`821d218`) so a code cannot be silenced here alone.
+
+**The question: where does WEATHER live?** leticl's list is head-local and yours is the daemon's
+register, so the two heads now hold two answers to one question — and a code added to one and not the
+other is two heads disagreeing about whether a sentence is an event, which is the two-lists defect the
+archive's file set was made un-driftable for in `018fc45`.
+
+Two shapes, and the second needs a reason written down: **the daemon classifies weather beside
+`Class::Routine`** (one answer, both heads read it, neither can drift — leticl's preference, because it
+is what the register already does), or the lists stay head-local with the reason they must exist
+separately stated in both trees.
+
+**done when** a code added on one side cannot silently change a head's placement without the other
+side seeing it — one list, or two with a stated reason and a guard that reads the other.
+
 ## R18 — every hand-rolled lexer replaced by rano + tree-sitter — **given 2026-09-20**
 
 > lets extend todo with this task - completely replace handrolled code with rano and
