@@ -776,10 +776,23 @@ pub fn decode_prefix(b: &[u8], force: bool) -> (Vec<Key>, usize) {
                 out.push(Key::CtrlS);
                 i += 1;
             }
-            // The todos pane. Ctrl+P is the print byte and nothing in a raw
-            // terminal listens for it.
+            // **Hold the view** (R56). Ctrl+P is the print byte and nothing in a raw
+            // terminal listens for it, and *pause* is what the key is for: while it is
+            // held the head writes nothing, so a mouse selection survives a streaming
+            // turn. The todos pane gave this byte up when it moved to `ctrl-t` — see the
+            // `0x16` arm below for the whole rework.
             0x10 => {
                 out.push(Key::CtrlP);
+                i += 1;
+            }
+            // **The payload window**: open or close the newest long tool result (it was
+            // `ctrl-t` until R56 moved it here). `0x16` had no arm before, so it reached
+            // the `_ => i += 1` fallthrough and was eaten silently — free in the strongest
+            // sense. It carries no tty meaning a raw terminal is waiting for (`VEOL`/`VLNEXT`
+            // are the literal-next byte `0x16` only under `IEXTEN`, which `cfmakeraw`
+            // clears), and `v` for *view* is the mnemonic the window was missing.
+            0x16 => {
+                out.push(Key::CtrlV);
                 i += 1;
             }
             // The subagent tree. Ctrl+G is BEL; in raw mode nothing rings on it and
@@ -806,9 +819,9 @@ pub fn decode_prefix(b: &[u8], force: bool) -> (Vec<Key>, usize) {
             //
             // Free on this side and free in the strongest sense: this byte had NO arm
             // before, so it reached the `_ => i += 1` fallthrough and was eaten silently —
-            // a key that does nothing rather than a key bound to nothing. `ctrl-v` (`0x16`)
-            // and `0x1c`-`0x1e` are the only bytes left in this table with no arm, and none
-            // of those four has a mnemonic worth having.
+            // a key that does nothing rather than a key bound to nothing. `0x1c`-`0x1e` are
+            // the only bytes left in this table with no arm, and none of the three has a
+            // mnemonic worth having (`0x16`, the fourth, became `ctrl-v` in R56).
             //
             // **Not a tty control character**, so nothing upstream is listening for it: it
             // is not `IXON`/`IXOFF` (`ctrl-s`/`ctrl-q` are, and `cfmakeraw` clears them),

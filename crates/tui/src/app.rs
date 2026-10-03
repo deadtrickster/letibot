@@ -500,8 +500,10 @@ pub enum Key {
     /// **Open the rest of the newest long tool result**, or close that window.
     ///
     /// One row, and not the conversation: the whole-conversation unfold is the verb
-    /// `/t`. See the `CtrlT` arm in `App::key` for the ruling.
-    CtrlT,
+    /// `/t`. See the `CtrlV` arm in `App::key` for the ruling. **R56 moved this off
+    /// `ctrl-t`**, which is now the todos pane; `v` for *view* is the mnemonic it never
+    /// had, and `0x16` had no arm at all before this — see `term.rs`.
+    CtrlV,
     /// Show or hide the raw, unparsed text of tool calls.
     CtrlX,
     /// Repaint from scratch.
@@ -509,6 +511,14 @@ pub enum Key {
     /// Open or close the session picker.
     CtrlS,
     /// Open or close the todos pane: the session's plan and the repo's queue.
+    ///
+    /// **R56 moved this off `ctrl-p`** (which is now the hold) and onto leticl's own key,
+    /// so one operator learns one chord for one pane — see [`Self::CtrlP`].
+    CtrlT,
+    /// **Hold the view** (R56): while held, the head writes nothing at all, so a mouse
+    /// selection survives a streaming turn. The reader is the only party who can know a
+    /// selection exists — the terminal does not forward a Shift-drag — so the reader, not
+    /// the head, decides when to stop painting. See [`App::toggle_hold`] for the contract.
     CtrlP,
     /// Open or close the subagent tree: the subagents this session spawned.
     CtrlG,
@@ -586,6 +596,7 @@ impl Key {
             Key::Eof => E::Eof,
             Key::CtrlR
             | Key::CtrlT
+            | Key::CtrlV
             | Key::CtrlX
             | Key::CtrlL
             | Key::CtrlS
@@ -1825,6 +1836,22 @@ pub struct App {
     quit: bool,
     /// Set whenever a full repaint is wanted regardless of the diff.
     redraw: bool,
+    /// **The view is held** (R56). While it is, the head writes nothing at all, so a mouse
+    /// selection survives a streaming turn. See [`App::toggle_hold`] for the contract.
+    ///
+    /// The events keep arriving and the head keeps folding them — only the drawing stops.
+    hold: bool,
+    /// **The frozen frame**, composed once when the hold began (with the marker on it, which
+    /// is the one write the freeze owes) and returned byte for byte thereafter, so the
+    /// terminal's own diff produces no bytes at all.
+    hold_frame: Option<Vec<String>>,
+    /// The size `hold_frame` was composed for. A resize moves every row, so the freeze owes
+    /// exactly one more frame there.
+    hold_size: (usize, usize),
+    /// `items.len()` when the hold began, so the release can say how much arrived while it
+    /// was held — counted ONCE, at that moment, because a live count is an animation and an
+    /// animation is writes.
+    hold_rows: usize,
     /// Wall clock, fed in by the driver, and when this head last had anything from
     /// the daemon.
     ///
@@ -2427,6 +2454,12 @@ enum TodoStop {
 pub const QUEUED: &str = "queued";
 pub const UNCONFIRMED: &str = "unconfirmed";
 
+/// **The one sentence a held view says** (R56), in the words the two heads agreed on, because an
+/// operator who learns it on one head reaches for it on the other. It takes the hint bar's row —
+/// the row that already talks about keys — and it names the key that undoes the hold, which is
+/// R29's rule for a disclosure: it carries the act that ends it.
+pub const HOLD_MARKER: &str = "⏸ the view is held — ctrl-p follows again";
+
 /// The commands the composer completes, in the order Tab offers them. Aliases
 /// (`s`, `q`, `h`, …) are deliberately absent: this list is what Tab offers
 /// and what the live line shows, and offering both spellings doubles the list
@@ -2476,7 +2509,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     // C14 calls the table *vocabulary, not implementation* and wants one shared artefact
     // both heads read — that is a cross-tree change and is filed rather than half-done
     // here, but **listing what this head implements is this head's half of it.**
-    ("todos", "open or close the todos pane (ctrl-p)"),
+    ("todos", "open or close the todos pane (ctrl-t)"),
     (
         "todo",
         "TEXT adds one of YOUR rows · done N · rm N — the pane numbers your half",
@@ -2728,6 +2761,10 @@ impl App {
             stats: false,
             quit: false,
             redraw: false,
+            hold: false,
+            hold_frame: None,
+            hold_size: (0, 0),
+            hold_rows: 0,
             now_ms: 0,
             last_event_at: 0,
             live_join: None,
@@ -2763,6 +2800,13 @@ impl App {
     /// Whether the head wants the terminal repainted from scratch (Ctrl-L, or a
     /// fold that changed every cached line). Reading it clears it.
     pub fn take_redraw(&mut self) -> bool {
+        // **A held view does not let the glass be thrown away** (R56). A `true` here makes the
+        // driver call `Terminal::invalidate`, which forces a full repaint — and a full repaint is
+        // bytes, the one thing the hold exists to prevent. The flag is LEFT SET, so the release
+        // spends it exactly once and the screen comes back whole.
+        if self.hold {
+            return false;
+        }
         std::mem::take(&mut self.redraw)
     }
 
@@ -5405,13 +5449,13 @@ impl App {
                 self.refold();
                 return None;
             }
-            Key::CtrlT => {
+            Key::CtrlV => {
                 // **One row, not a switch — R10's ruling on the overload.**
                 //
                 // This used to flip the conversation-wide tool fold *and* seed a window
                 // on the newest long result, so one chord did two things: the wall, and
                 // one row's rest. The seam under the reader's eyes says `… +N lines ·
-                // ctrl-t opens it`, which reads per-row, and the operator's report is
+                // ctrl-v opens it`, which reads per-row, and the operator's report is
                 // exactly that **what surprised them was that ctrl-t triggered the wall
                 // AT ALL**. A chord cannot be named by a per-row seam and mean the whole
                 // conversation, so it keeps the meaning a seam can honestly name and the
@@ -5496,7 +5540,12 @@ impl App {
                 }
                 return self.picker.then_some(Action::ListSessions);
             }
-            Key::CtrlP => return self.toggle_todos(),
+            Key::CtrlT => return self.toggle_todos(),
+            // **Hold the view (R56).** While held the head writes nothing at all, so a
+            // mouse selection survives a streaming turn; the second press releases it and
+            // says how much arrived while it was held. The whole contract is in
+            // [`App::toggle_hold`].
+            Key::CtrlP => return self.toggle_hold(),
             // Ctrl+G for the subagent tree: R/T/X/L/S/P are taken, A/E/W/U/Y/K/B/F
             // are the composer's readline keys, and the subagent tree is a *view*,
             // not a thing the composer needs a letter for.
@@ -9033,7 +9082,105 @@ impl App {
     /// jobs in one line, which is why it read as a status message and not as a
     /// place to type. Neither surveyed project puts anything inside the input.
     /// The affordance is the caret and the container.
+    /// **Hold the view, or let it follow again** (R56) — `ctrl-p` and nothing else.
+    ///
+    /// # The contract, and it is all of it: while held, the head writes NOTHING
+    ///
+    /// Not a spinner, not a clock, not a counter that ticks. **One written cell is one lost
+    /// selection** — the terminal clears a selection as soon as anything is painted over it, so
+    /// there is no gentler way to keep painting and keep the selection. The events keep arriving
+    /// and this head keeps folding them; it simply stops drawing, which is why nothing in the
+    /// protocol or in the daemon had to change.
+    ///
+    /// **The reader is the only party who can know a selection exists.** With mouse reporting on,
+    /// a Shift-drag is handed to the TERMINAL and never reaches this process — which is exactly
+    /// why Shift is the gesture — so *do not repaint while something is selected* is not
+    /// implementable as written. The reader knows, so the reader holds the view.
+    ///
+    /// # How the hold is kept, in three pieces
+    ///
+    /// * [`App::screen`] composes ONE frame when the hold begins — with the marker on it, which
+    ///   is the single write the freeze owes — and returns that same frame byte for byte
+    ///   thereafter, so the terminal's own diff produces no bytes at all;
+    /// * [`App::take_redraw`] refuses while held, so nothing can force `invalidate` and a full
+    ///   repaint behind the hold's back;
+    /// * this function, which counts what arrived ONCE, at the release, because a live count while
+    ///   held would be an animation and an animation is writes.
+    fn toggle_hold(&mut self) -> Option<Action> {
+        if self.hold {
+            self.hold = false;
+            let arrived = self.items.len().saturating_sub(self.hold_rows);
+            self.hold_rows = 0;
+            self.hold_frame = None;
+            self.hold_size = (0, 0);
+            self.redraw = true;
+            self.say(&format!(
+                "the view follows again — {arrived} rows arrived while it was held"
+            ));
+        } else {
+            self.hold = true;
+            self.hold_rows = self.items.len();
+            self.hold_frame = None;
+            self.hold_size = (0, 0);
+            self.redraw = true;
+        }
+        None
+    }
+
+    /// **The view is held** (R56) — a question for the driver, since the freeze is kept in two
+    /// places and a caller that knew only one of them would be half right.
+    pub fn held(&self) -> bool {
+        self.hold
+    }
+
+    /// One frame: `h` lines of at most `w` columns — **and while the view is held, the same frame
+    /// every time.**
+    ///
+    /// # The hold, and why it is a wrapper rather than a flag inside the renderer
+    ///
+    /// While the view is held the head writes NOTHING, so a mouse selection survives a streaming
+    /// turn: the frame is composed once — with the marker on it, which is the one write the freeze
+    /// owes — and every later call returns that same frame byte for byte, which `Terminal::draw`
+    /// diffs into no bytes at all. See [`App::toggle_hold`] for the contract and the three pieces
+    /// that keep it.
+    ///
+    /// It is a wrapper because the composition must run EXACTLY once while held and must keep
+    /// running normally otherwise; a flag threaded through the body would have to be honoured at
+    /// every one of the hundreds of writes the body makes, and one arm that forgot would be a lost
+    /// selection.
     pub fn screen(&mut self, term_w: usize, h: usize) -> Vec<String> {
+        if self.hold
+            && self.hold_size == (term_w, h)
+            && let Some(frame) = &self.hold_frame
+        {
+            return frame.clone();
+        }
+        let mut out = self.compose_screen(term_w, h);
+        if self.hold {
+            // **The marker takes the hint bar's row.** It is one row that always exists, so the
+            // freeze costs no height and reflows nothing — and it is the row that already talks
+            // about keys, which is the row a held view's one sentence belongs on.
+            let gutter = Self::gutter(term_w);
+            let w = term_w.saturating_sub(2 * gutter).max(1);
+            let marker = self
+                .cfg
+                .palette()
+                .paint(Role::Attention, &trim_to(HOLD_MARKER, w));
+            let row = if gutter > 0 {
+                format!("{}{marker}", " ".repeat(gutter))
+            } else {
+                marker
+            };
+            if let Some(last) = out.last_mut() {
+                *last = row;
+            }
+            self.hold_size = (term_w, h);
+            self.hold_frame = Some(out.clone());
+        }
+        out
+    }
+
+    fn compose_screen(&mut self, term_w: usize, h: usize) -> Vec<String> {
         // The gutter, applied to the *whole* frame rather than to the transcript.
         // The operator's report was "no margins for the main output — things are
         // hard left with literally zero space"; inseting only the body would have
@@ -9681,7 +9828,7 @@ impl App {
             // Measured after the swap, 2026-09-23: 146 columns, so at 80 the bar reads
             // through `ctrl-r thinki`; at 100, through `ctrl-t newest r`; at 120 the pair is
             // whole; at the operator's own 210, all of it is.
-            "ctrl-s sessions · ctrl-n notes · ctrl-p todos · ctrl-g subagents · ctrl-r thinking · ctrl-t newest result · /t all tool rows · ctrl-q jobs · /help"
+            "ctrl-s sessions · ctrl-n notes · ctrl-t todos · ctrl-g subagents · ctrl-r thinking · ctrl-v newest result · /t all tool rows · ctrl-q jobs · ctrl-p hold · /help"
         };
         // The separator belongs between two halves, not in front of one: with
         // the editor's half suppressed the bar used to open with a bare `·`.
@@ -15159,7 +15306,7 @@ fn reserved_for_run(
 
 /// # The seam, which is the one thing here that is not a count
 ///
-/// ` · ctrl-t opens it`, or ` · /verbosity` on a run that is not the newest. R37 AMENDED
+/// ` · ctrl-v opens it`, or ` · /verbosity` on a run that is not the newest. R37 AMENDED
 /// requires a marker that **opens**, and R40's rule is that a chord may only be named where
 /// it acts — so the newest run's marker names the chord and every other one names the verb
 /// that does reach it. It is a seam and not content, exactly as `… +8 lines · /t unfolds it`
@@ -15269,7 +15416,7 @@ struct Counts {
 /// **The widest room a marker may claim from the sentence it continues**, leading space included.
 ///
 /// leticl's `+hidden-run-marker-cols+` is 56, measured there against the longest marker a realistic
-/// run writes — `[100 tool calls, 999 thinking lines] · ctrl-t opens it` is 54 columns plus the
+/// run writes — `[100 tool calls, 999 thinking lines] · ctrl-v opens it` is 54 columns plus the
 /// space in front. letibot reserves the marker's **measured** width instead, and that is the jump
 /// the operator complained about: *"the text starts to jump — counts add digits when grow, and at
 /// some point the line could be split so things jump even more. i dont like jumps."* A room that
@@ -15378,8 +15525,8 @@ const MARKER_SEAM: bool = false;
 /// is a correction to leticl, which with its seam off tries one rung — `((0 . 2))` — and so never
 /// steps the counts down; the operator asked for the counts to compress either way.)
 const SEAM_RUNGS: [(&str, &str); 3] = [
-    (" · ctrl-t opens it", " · /verbosity"),
-    (" · ctrl-t", " · /verbosity"),
+    (" · ctrl-v opens it", " · /verbosity"),
+    (" · ctrl-v", " · /verbosity"),
     ("", ""),
 ];
 
@@ -15519,7 +15666,7 @@ fn marker_carries_live(live: LiveWork) -> bool {
 struct Marker {
     /// `[1 tool call, 2 thinking lines]` — the content, drawn plain except for the calls count.
     counts: Counts,
-    /// ` · ctrl-t opens it` — an affordance, drawn faint. Dot included.
+    /// ` · ctrl-v opens it` — an affordance, drawn faint. Dot included.
     seam: &'static str,
     /// **Does this marker carry the work in flight** — [`marker_carries_live`], decided by the
     /// caller because only the caller knows which row it is drawing.
@@ -15579,7 +15726,7 @@ impl Marker {
 /// carries.
 ///
 /// The seam is the opposite case, and this head's own register rule says so: **dim is for a
-/// sentence you could delete with the reader no worse off** (R29). `· ctrl-t opens it` is that
+/// sentence you could delete with the reader no worse off** (R29). `· ctrl-v opens it` is that
 /// — an affordance, not the count — and it is the same register every other elided row says
 /// `… +N lines · /t unfolds it` in.
 ///
@@ -16150,7 +16297,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
             "in the session list, picks the row under the pointer; enter still switches",
         ),
         (
-            "ctrl-p",
+            "ctrl-t",
             "the todos pane: the model's plan, and the repo's TODO.md read-only — ↑↓ moves (or click a row), enter acts on the row under the cursor, pgup/pgdn scrolls",
         ),
         (
@@ -16163,9 +16310,14 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         ("ctrl-r", "fold or unfold the model's thinking"),
         (
-            "ctrl-t",
+            "ctrl-v",
             "open the rest of the newest long tool result — ↓ pages it, esc closes. \
              It is one row, not a switch: `/t` unfolds every tool row at once",
+        ),
+        (
+            "ctrl-p",
+            "hold the view: while it is held the head writes nothing, so a text selection \
+             survives a streaming turn. Press again to release — it says how many rows arrived",
         ),
         (
             "/notes",
@@ -17881,7 +18033,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 .collect();
             let bad = !matches!(outcome, letibot_transcript::ToolOutcome::Ok);
             let mark = if tools.is_open() { "▾" } else { "▸" };
-            // `▾ Read crates/ui/src/style.rs · ok · 183 lines · ctrl-t`, not
+            // `▾ Read crates/ui/src/style.rs · ok · 183 lines · ctrl-v`, not
             // `▾ read(call_0) …`. The verb and the target are the two words a
             // person scans a settled call for, and the id — a correlation key —
             // takes their place only when the target is not known.
@@ -18004,7 +18156,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     if lines.len() == 1 { "" } else { "s" }
                 ),
             ));
-            // No `· ctrl-t` here. The chord belongs on the elision row below, which
+            // No `· ctrl-v` here. The chord belongs on the elision row below, which
             // exists exactly when something is hidden — an affordance on a card
             // with nothing folded is eight columns of every row spent advertising
             // a key that would do nothing, and the hint bar already teaches it.
@@ -18199,7 +18351,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     } else if newest {
                         // **The chord, on the row it acts on.** `ctrl-t` opens the window
                         // into the newest long result, and this is that row.
-                        format!("  … +{hidden} lines · ctrl-t opens it")
+                        format!("  … +{hidden} lines · ctrl-v opens it")
                     } else {
                         // **Not this chord.** `ctrl-t` acts on the newest long result and
                         // there is no cursor in this head to point it at an older one, so
@@ -22279,15 +22431,15 @@ mod tests {
         assert!(listed.contains("line 1 of the rule it cites"), "{listed}");
     }
 
-    /// **R10's ruling on `ctrl-t`: one row, not the conversation.**
+    /// **R10's ruling on `ctrl-v`: one row, not the conversation.**
     ///
     /// The chord flips the tool fold for the **whole** conversation while the pager's
-    /// own seam advertises it as `… +N lines · ctrl-t`, which reads per-row. The
+    /// own seam advertises it as `… +N lines · ctrl-v`, which reads per-row. The
     /// operator was surprised *"that ctrl-t triggered the wall AT ALL"*, and the fix is
     /// to keep the meaning a per-row seam can honestly name: the chord opens one row's
     /// window, and the conversation-wide unfold keeps the verb it already had.
     #[test]
-    fn ctrl_t_opens_one_rows_window_and_the_whole_folds_are_the_verb() {
+    fn ctrl_v_opens_one_rows_window_and_the_whole_folds_are_the_verb() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         let long: String = (0..40).map(|i| format!("line {i}\n")).collect();
@@ -22296,11 +22448,11 @@ mod tests {
         // **The seam names the chord on the row the chord reaches**, and it is the only
         // long row here.
         let folded = a.screen(100, 40).join("\n");
-        assert!(folded.contains("ctrl-t opens it"), "{folded:?}");
+        assert!(folded.contains("ctrl-v opens it"), "{folded:?}");
 
         // The chord opens that row's window and **does not unfold the other rows**: the
         // fold is the verb's, and one chord doing both is what made this a wall.
-        a.key(Key::CtrlT);
+        a.key(Key::CtrlV);
         assert_eq!(a.payload_sel.as_deref(), Some("i1"));
         assert!(
             !a.tools.is_open(),
@@ -22313,7 +22465,7 @@ mod tests {
         );
 
         // Pressing it again closes the window and leaves everything else alone.
-        a.key(Key::CtrlT);
+        a.key(Key::CtrlV);
         assert_eq!(a.payload_sel, None);
         assert!(!a.tools.is_open());
 
@@ -22346,12 +22498,12 @@ mod tests {
     /// rest are ordered by what a reader cannot find out any other way. That is the test's last
     /// assertion, and it is the reason `tab completes /commands` is the entry that gave way.
     #[test]
-    fn the_bar_says_what_ctrl_t_does_and_names_the_verb_that_does_the_rest() {
+    fn the_bar_says_what_ctrl_v_does_and_names_the_verb_that_does_the_rest() {
         let mut a = app();
         let bar = a.screen(210, 24).pop().unwrap_or_default();
 
         // The words are true: one row, not the conversation.
-        assert!(bar.contains("ctrl-t"), "the chord left the bar: {bar}");
+        assert!(bar.contains("ctrl-v"), "the chord left the bar: {bar}");
         assert!(
             !bar.contains("long output"),
             "the bar still says the conversation-wide thing ctrl-t stopped doing: {bar}"
@@ -22363,7 +22515,7 @@ mod tests {
         );
         // Adjacent, because they are the two a reader confuses: one result, all of them.
         assert!(
-            bar.contains("ctrl-t newest result · /t all tool rows"),
+            bar.contains("ctrl-v newest result · /t all tool rows"),
             "the pair is not stated as a pair: {bar}"
         );
 
@@ -22372,7 +22524,7 @@ mod tests {
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         let long: String = (0..40).map(|i| format!("line {i}\n")).collect();
         a_result_row(&mut a, 2, "i1", &long);
-        a.key(Key::CtrlT);
+        a.key(Key::CtrlV);
         assert_eq!(
             a.payload_sel.as_deref(),
             Some("i1"),
@@ -22382,7 +22534,7 @@ mod tests {
             !a.tools.is_open(),
             "the bar says one result and ctrl-t folded them all"
         );
-        a.key(Key::CtrlT);
+        a.key(Key::CtrlV);
         assert_eq!(a.command("t"), None);
         assert!(
             a.tools.is_open(),
@@ -22418,9 +22570,14 @@ mod tests {
         // **The measurement, recorded.** R22's arithmetic is that a chord past the frame's
         // width is a chord nobody has, so the numbers are pinned rather than remembered.
         // (`trim` is the frame's gutter, which is not the bar's own width.)
+        //
+        // **Re-measured 2026-10-03 for R56's rework**, which added `ctrl-p hold` and moved the
+        // todos pane to `ctrl-t` and the payload window to `ctrl-v`: 146 → 160, the new entry's
+        // own width. What is visible at 80 and at 120 is unchanged (the two pinned entries at 80,
+        // the `ctrl-v newest result · /t all` pair whole at 120), which the assertions below keep.
         assert_eq!(
             bar.trim().chars().count(),
-            146,
+            160,
             "the bar's width changed; re-measure what is visible at 80: {bar}"
         );
         let at80 = a.screen(80, 24).pop().unwrap_or_default();
@@ -22429,13 +22586,99 @@ mod tests {
             "R22's two pinned entries left the first 80 columns: {at80}"
         );
         assert!(
-            !at80.contains("ctrl-t"),
+            !at80.contains("ctrl-v"),
             "the pair now fits at 80 — better than the measurement, so update it: {at80}"
         );
         let at120 = a.screen(120, 24).pop().unwrap_or_default();
         assert!(
-            at120.contains("ctrl-t newest result · /t all"),
+            at120.contains("ctrl-v newest result · /t all"),
             "the pair is not whole at 120, which is where it was measured to be: {at120}"
+        );
+    }
+
+    /// **R56: while the view is held, the head writes NOTHING** — so a mouse selection survives
+    /// a streaming turn, which is the whole of why the hold exists.
+    ///
+    /// The contract has three clauses and this drives all three: the frame is composed once
+    /// (with the marker on it, the single write the freeze owes), every later call returns it
+    /// **byte for byte** while a turn streams and rows land, and the release says what arrived.
+    /// The zero-bytes claim is asserted the only way a frame test can: `screen` is what the
+    /// terminal diffs against the glass, so a frame that does not change is a frame that writes
+    /// no bytes at all.
+    #[test]
+    fn a_held_view_draws_the_same_frame_while_the_turn_streams() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::delta("t1", "the answer is"),
+        )));
+        assert!(!a.held(), "the premise: the view is following");
+
+        // **The freeze, and the one write it owes** — the marker, on the hint bar's row.
+        assert_eq!(a.key(Key::CtrlP), None, "the hold is not a daemon action");
+        assert!(a.held());
+        let frozen = a.screen(100, 24);
+        assert!(
+            frozen.iter().any(|l| l.contains(HOLD_MARKER)),
+            "the held frame does not say it is held:\n{}",
+            frozen.join("\n")
+        );
+
+        // **And then nothing is written, however much arrives.** A turn streams, a round lands,
+        // two rows are appended — the frame must not move by a byte.
+        for i in 0..20u64 {
+            a.apply(ServerFrame::Event(env(
+                3 + i,
+                testing::delta("t1", " more"),
+            )));
+        }
+        a.apply(ServerFrame::Event(env(
+            23,
+            testing::appended("s.0", "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            24,
+            testing::content("s.0", "an answer"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            25,
+            testing::appended("u.1", "user"),
+        )));
+        assert_eq!(
+            a.screen(100, 24),
+            frozen,
+            "the held frame moved while the turn streamed"
+        );
+
+        // **`redraw` cannot force a repaint behind the hold's back**, which is the other way
+        // bytes could reach the glass: a full repaint writes every row.
+        a.mark_redraw();
+        assert!(
+            !a.take_redraw(),
+            "a held view let the glass be thrown away, so a full repaint is one frame away"
+        );
+        assert_eq!(a.screen(100, 24), frozen);
+
+        // **The release follows again, and says how much arrived — once**, which is what makes
+        // the count honest: a live count while held would be an animation.
+        assert_eq!(a.key(Key::CtrlP), None);
+        assert!(!a.held(), "the second press releases");
+        let released = a.screen(100, 24);
+        assert_ne!(released, frozen, "the view did not come back");
+        let said = released.join("\n");
+        assert!(
+            said.contains("the view follows again — 2 rows arrived while it was held"),
+            "the release did not count what arrived:\n{said}"
+        );
+        assert!(
+            !said.contains(HOLD_MARKER),
+            "the marker outlived the hold:\n{said}"
         );
     }
 
@@ -23650,11 +23893,11 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_p_opens_the_todos_pane_and_esc_closes_it() {
+    fn ctrl_t_opens_the_todos_pane_and_esc_closes_it() {
         let mut a = app();
         // Opening asks for the list — the bootstrap read — and the pane draws
         // both of its sections, labelled as the two different things they are.
-        assert_eq!(a.key(Key::CtrlP), Some(Action::ListTodos));
+        assert_eq!(a.key(Key::CtrlT), Some(Action::ListTodos));
         let screen = a.screen(100, 30).join("\n");
         assert!(screen.contains("todos"), "{screen}");
         assert!(
@@ -23678,8 +23921,8 @@ mod tests {
         a.key(Key::Esc);
         assert!(!a.todos_pane);
         // Toggling twice does not ask twice without opening in between.
-        assert_eq!(a.key(Key::CtrlP), Some(Action::ListTodos));
-        assert_eq!(a.key(Key::CtrlP), None);
+        assert_eq!(a.key(Key::CtrlT), Some(Action::ListTodos));
+        assert_eq!(a.key(Key::CtrlT), None);
     }
 
     #[test]
@@ -24054,7 +24297,7 @@ mod tests {
         .expect("write");
         let mut a = app();
         a.wiring.workspace = dir.display().to_string();
-        a.key(Key::CtrlP);
+        a.key(Key::CtrlT);
         let screen = a.screen(140, 40).join("\n");
         assert!(
             screen.contains("the model is never told about it"),
@@ -24089,7 +24332,7 @@ mod tests {
         .expect("write");
         let mut a = app();
         a.wiring.workspace = dir.display().to_string();
-        a.key(Key::CtrlP);
+        a.key(Key::CtrlT);
 
         // The screen's own rows, which is what a click's `y` names. No session is attached, so
         // there is no header above the pane and row N of the screen is row N of the pane.
@@ -24211,7 +24454,7 @@ mod tests {
                     .to_string()
             })
             .unwrap_or_default();
-        a.key(Key::CtrlP);
+        a.key(Key::CtrlT);
         let screen = a.screen(110, 40).join("\n");
         assert!(screen.contains("[x] seat the tool"), "{screen}");
         assert!(screen.contains("[~] render the pane"), "{screen}");
@@ -24776,7 +25019,7 @@ mod tests {
 
         let mut a = app();
         a.wiring.workspace = dir.display().to_string();
-        a.key(Key::CtrlP);
+        a.key(Key::CtrlT);
         let top = a.screen(110, 20).join("\n");
         assert!(top.contains("T0 item number 0"), "{top}");
         assert!(
@@ -24814,7 +25057,7 @@ mod tests {
         a.key(Key::PageDown);
         a.screen(110, 20);
         a.key(Key::Esc);
-        a.key(Key::CtrlP);
+        a.key(Key::CtrlT);
         assert_eq!(a.pane_scroll, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -24836,7 +25079,7 @@ mod tests {
         std::fs::write(dir.join("TODO.md"), &body).expect("write");
         let mut a = app();
         a.wiring.workspace = dir.display().to_string();
-        a.key(Key::CtrlP);
+        a.key(Key::CtrlT);
         a.screen(110, 20);
 
         for _ in 0..30 {
@@ -24872,7 +25115,7 @@ mod tests {
         .expect("write");
         let mut a = app();
         a.wiring.workspace = dir.display().to_string();
-        a.key(Key::CtrlP);
+        a.key(Key::CtrlT);
         assert!(!a.screen(110, 30).join("\n").contains("the body line"));
         // **The cursor starts on the ADD CONTROL**, which is the head of `todos_stops` and
         // leticl's own starting position — so one Down is what puts it on the first repo item. The
@@ -24947,7 +25190,7 @@ mod tests {
         std::fs::write(dir.join("TODO.md"), body).expect("write");
         let mut a = app();
         a.wiring.workspace = dir.display().to_string();
-        a.key(Key::CtrlP);
+        a.key(Key::CtrlT);
 
         // Folded: the first line, and a mark that there is more. T2 has no body
         // and so carries no mark — `···` means "there is more", not "this is an
@@ -25087,7 +25330,7 @@ mod tests {
                 ],
             },
         )));
-        a.key(Key::CtrlP);
+        a.key(Key::CtrlT);
         let screen = a.screen(110, 40).join("\n");
 
         // The model's half.
@@ -25137,7 +25380,7 @@ mod tests {
 
         let mut a = app();
         a.wiring.workspace = dir.display().to_string();
-        a.key(Key::CtrlP);
+        a.key(Key::CtrlT);
         assert!(a.screen(110, 40).join("\n").contains("[ ] Phase 0  [0/1]"));
 
         // The operator ticks it off in their editor, with the pane still up.
@@ -26588,7 +26831,7 @@ mod tests {
     /// in **one function**, so the two spellings cannot drift.
     #[test]
     fn the_panes_and_the_promote_are_reachable_as_verbs() {
-        // `/todos` opens the pane and asks the daemon for the list, exactly as `ctrl-p`.
+        // `/todos` opens the pane and asks the daemon for the list, exactly as `ctrl-t`.
         let mut a = app();
         assert_eq!(a.submit("/todos".into()), Some(Action::ListTodos));
         assert!(a.todos_pane);
@@ -26598,7 +26841,7 @@ mod tests {
         assert!(!a.todos_pane);
         // The chord and the verb agree.
         let mut b = app();
-        assert_eq!(b.key(Key::CtrlP), Some(Action::ListTodos));
+        assert_eq!(b.key(Key::CtrlT), Some(Action::ListTodos));
         assert!(b.todos_pane, "the chord opens the same pane");
 
         // The subagent tree is the same shape: no bootstrap read, because the tree is
@@ -27814,7 +28057,7 @@ mod tests {
         // conversation** (R10 moved that to `/t`), so the arrows now page the newest
         // payload rather than moving the transcript — which is the intended contract
         // and is asserted below rather than assumed.
-        a.key(Key::CtrlT);
+        a.key(Key::CtrlV);
         a.screen(80, 24);
         assert!(
             a.payload_sel.is_some(),
@@ -27862,10 +28105,10 @@ mod tests {
 
         // Close the window, and it still scrolls. **The chord toggles the window and
         // nothing else now** (R10), so this is one press to open and one to close.
-        a.key(Key::CtrlT);
+        a.key(Key::CtrlV);
         a.screen(80, 24);
         assert!(a.payload_sel.is_some(), "ctrl-t did not open the window");
-        a.key(Key::CtrlT);
+        a.key(Key::CtrlV);
         a.screen(80, 24);
         assert_eq!(a.payload_sel, None, "ctrl-t did not close the window");
         let at_collapse = a.scroll;
@@ -28221,12 +28464,12 @@ mod tests {
         // not the whole conversation.
         let folded = a.screen(100, 60).join("\n");
         assert!(folded.contains("line 0"), "{folded:?}");
-        assert!(folded.contains("ctrl-t opens it"), "{folded:?}");
+        assert!(folded.contains("ctrl-v opens it"), "{folded:?}");
 
         // Ctrl-T opens a view on the newest payload row. **It does not touch the fold**
         // any more: one chord, one meaning, and this one is the per-row window the seam
         // above just named.
-        a.key(Key::CtrlT);
+        a.key(Key::CtrlV);
         assert!(a.payload_sel.is_some(), "ctrl-t opened no view");
         let head = a.screen(100, 60).join("\n");
         assert!(
@@ -28278,7 +28521,7 @@ mod tests {
         let mut a = app();
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         a_result_row(&mut a, 2, "i1", "one line\n");
-        a.key(Key::CtrlT);
+        a.key(Key::CtrlV);
         assert_eq!(
             a.payload_sel, None,
             "a one-line result has nothing to page, so a view on it is a claim"
@@ -36136,7 +36379,7 @@ mod tests {
         // it - we dont need that."* What this test used to check is therefore gone by ruling, and
         // what replaces it is the ruling itself: neither spelling is on the screen, on any run.
         assert!(
-            !quiet.contains("ctrl-t opens it"),
+            !quiet.contains("ctrl-v opens it"),
             "the chord is still advertised on a marker: {quiet}"
         );
         assert!(
@@ -36168,7 +36411,7 @@ mod tests {
         assert!(!closed.contains("first output"), "{closed}");
 
         // **The chord.** It opens the newest run — both rows here, since they are contiguous.
-        a.key(Key::CtrlT);
+        a.key(Key::CtrlV);
         let open = a.screen(110, 40).join("\n");
         assert!(
             !open.contains("[2 tool calls"),
@@ -36186,7 +36429,7 @@ mod tests {
             "the rows are the head's own, with their headlines and payloads: {open}"
         );
         // The same key closes it, and the marker comes back.
-        a.key(Key::CtrlT);
+        a.key(Key::CtrlV);
         let shut = a.screen(110, 40).join("\n");
         assert!(shut.contains("[2 tool calls"), "{shut}");
         assert!(!shut.contains("second output"), "{shut}");
@@ -36237,7 +36480,7 @@ mod tests {
         a_result_row(&mut a, 1, "s.0", "the payload");
         a.verbosity = Verbosity::Conversation;
         a.invalidate_history();
-        a.key(Key::CtrlT);
+        a.key(Key::CtrlV);
         assert!(a.payload_sel.is_some(), "the run is open");
         assert!(a.screen(110, 40).join("\n").contains("the payload"));
         // Now leave the rung. The run is not a run any more, and the id must not be read as
