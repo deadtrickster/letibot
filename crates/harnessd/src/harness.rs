@@ -7285,6 +7285,14 @@ impl HarnessTaskRunner {
         )
         .map_err(|e| fail(e.to_string()))?;
         // Open. Now it is a session a head can switch into, and now it is running.
+        //
+        // **Adopted into the REGISTRY and not into `Sessions::open`, and that difference is R58's
+        // whole constraint.** A head can peek at this session and attach to it (both go through
+        // `registry.resolve`), while the daemon cannot *drive* it: `Sessions::wake` needs
+        // `self.open.get_mut(session_id)` and returns `Ignored` when it is absent, so a settlement
+        // rung for a session created HERE is dropped. That is invisible at depth 1 — the watcher that
+        // rings belongs to the parent, which is in `open` — and fatal at depth 2, where the child's
+        // own watcher rings the child.
         self.registry
             .adopt(sub_hub, title.clone(), wiring, Some(parent.clone()))
             .map_err(|e| fail(e.to_string()))?;

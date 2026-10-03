@@ -396,13 +396,29 @@ and **`task` is not among them**, while `roles::orchestrator()` and `roles::leti
 So a grandchild is unreachable **in today's binary** — and the operator has ruled what the design is:
 *“subagents are absolutely allowed to spawn subagents up to configured nesting level.”*
 
-**CORRECTED 2026-10-03, an hour after this entry landed (`660b585`), and the correction is mine.** That
-commit filed the absent `task` as a **safety property** — *“the guarantee is in the seat tables rather
-than in a guard”* — and concluded there was no live grandchild case and that `fd4aaad` had overstated
-one. **Both halves of that are wrong.** The missing seat is the *gap this requirement exists to close*,
-so the nested-wake problem below is live now and not on the day trees land; and `fd4aaad`'s finding was
-right — this entry's narrowing was right about the binary and wrong about the contract. The one thing to
-carry forward is the finding, not any of the three framings of it.
+**CORRECTED 2026-10-03, twice, and the second correction is the one worth reading.** `660b585` filed
+the absent `task` as a **safety property** — *“the guarantee is in the seat tables rather than in a
+guard”* — concluded that there was **no live grandchild case**, and **retracted `fd4aaad`'s finding** as
+an overstatement. All three are the same mistake, and it is not about subagents:
+
+> **An inspection of what the code does today cannot correct a statement of what it is supposed to do.**
+> The seat table lacking `task` is evidence about the **binary**. The ruling is evidence about the
+> **requirement**. Where the two disagree, the binary is the thing that is wrong — which is what makes
+> this a TODO item instead of a description.
+
+The same shape as three defects fixed the same day — `plan_overrun`'s note describing a decision the
+code no longer made, the three `rano` manifests whose comments still said *“the absolute path is
+deliberate”* after the lines took a git tag, leticl's `install.sh` requiring eleven files while its
+workflow packaged ten — with one difference that matters: in each of those the CODE was the authority.
+Here the claim was the operator's own ruling, which is the one case where that ordering is never right.
+
+**`fd4aaad` did not overstate it, and that retraction is WITHDRAWN.** The finding — *a nested child's
+harness is built inside the runner's thread, outside `Sessions::open`, so nothing serves its wake* — was
+correct when it was written and is correct now, and it is asserted in the code at `Sessions::wake`'s
+early return and at the `registry.adopt` that creates the situation. Restoring it matters more than any
+framing does: a reader who finds a retraction stops looking, and whoever writes the trees will need
+exactly that finding. So the missing seat is the gap **this requirement exists to close**, and the
+nested-wake problem below is live now rather than on the day trees land.
 
 ### The ruling
 

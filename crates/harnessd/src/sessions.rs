@@ -1633,6 +1633,19 @@ impl<'a> Sessions<'a> {
     /// telling the model the same thing twice.
     pub fn wake(&mut self, session_id: &str) -> Outcome {
         let hub = self.registry.get(session_id);
+        // **A session the daemon does not DRIVE is ignored here — and for a nested subagent that is
+        // silence rather than a no-op** (R58, and the finding is worth more than the framing around
+        // it). A child's harness is built inside the runner's thread and adopted into the `registry`,
+        // which is exactly what lets a head peek at it and attach to it — and it is **not** in
+        // `open`. So a *grandchild's* settlement rings `bell.ring_wake(&child.session_id())`, arrives
+        // here, and returns `Ignored`: the condition fires and is discarded.
+        //
+        // **At depth 1 this line is never reached for a child**, which is the only reason the chain
+        // closes today: the watcher that rings belongs to the PARENT, the parent is in `open`, and
+        // `Harness::wake` below drains the queue that the `[task]` row comes out of. Depth 2 moves
+        // the watcher down a level and lands here instead. The fix is not in this function — it is
+        // that the bell must ring for a session the daemon can drive, which is R58's "one slots list
+        // and one watcher set per TREE, rooted at the top session".
         let Some(harness) = self.open.get_mut(session_id) else {
             return Outcome::Ignored;
         };
