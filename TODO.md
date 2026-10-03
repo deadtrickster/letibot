@@ -641,7 +641,7 @@ with the argument for the lag written down — so that the denominator on the sc
 number the operator can check, and the analysis *"too much too early"* rests on attributed lines rather
 than adjacency.
 
-## The `Subagent` event's `prompt` is a title, and on the finish it is the child's answer — **OPEN, reported from leticl 2026-10-03**
+## The `Subagent` event's `prompt` is a title, and on the finish it is the child's answer — **LANDED 2026-10-03 (`83be154`) on letibot's side; the wire now carries the task**
 
 **(No R-number: the series is yours to number.)**
 
@@ -671,7 +671,29 @@ leticl's half is already in: the child's task is drawn in full in the peek, from
 (`821d218`… `the-subagent-pane-draws-the-task-in-full-and-follows-the-rung`). The pane's *row* cannot
 be fixed until this is.
 
-**still open?** `grep -n "publish(\"done\"" crates/harnessd/src/harness.rs` still passes `&first_line`.
+**LANDED, 2026-10-03 (`83be154`).** Both halves of the ask, and the wire is letibot's so leticl's
+pane row can be fixed now:
+
+  · **`task: String`** on `SessionEvent::Subagent` — the subtask in full, the same string on every
+    state, `#[serde(default)]`, and **never truncated by the daemon**: the head truncates for a row as
+    it does for everything else it draws.
+  · **`answer: Option<String>`** — the child's answer's first line, `Some` only on the finish. The
+    same string `prompt` carries there, given its own name so a reader does not have to know the
+    state.
+  · **`prompt` is left exactly as it was**, two meanings and all, which is what keeps a head older
+    than these fields byte-identical; a new head reads the row from `task` and falls back to `prompt`
+    when `task` is empty — which is the pre-field behaviour, not a blank row. letibot's row does that
+    (`subagents_lines`), flattens newlines because the row is one line, and draws `answer` as the
+    subtitle; Enter still opens the whole thing in the peek.
+
+`a_subagent_row_shows_the_task_and_the_answer_beside_it` pins both halves; the pane's older fixtures
+carry `task: ""` and keep exercising the fallback.
+
+**leticl:** the fields are on the wire with no protocol bump (a volunteered frame may grow a field,
+not a variant), so its row can read `task` where it reads `prompt` today and its subtitle `answer`.
+
+**still open?** `grep -n "task: task.clone()" crates/harnessd/src/harness.rs` finds the publication;
+`grep -n "s.task.is_empty()" crates/tui/src/app.rs` finds the fallback. Nothing open on this side.
 
 **done when** a long, multi-line task reads whole on the pane's row (or an unfold of it does) without
 opening the child.
