@@ -1727,12 +1727,12 @@ impl<'a> Harness<'a> {
         // same object — a digest running on a second runner would be a subagent
         // tree the operator's `task_result` listing does not show.
         let digest_runner = task_runner.clone();
-        // **And kept for the job watchers, which are built much further down.** They have
-        // to be able to tell a subagent's handle from a job's, and this is the object that
-        // mints the former. Cloned here because `task_runner` is MOVED into the registry
-        // on the next statement — `digest_runner` above is the same object for the same
-        // reason, and the watchers must see that one runner and not a second.
-        let watch_runner = task_runner.clone();
+        // **And it is the session's HOLDER OF SUBAGENT HANDLES**, for the watchers and for
+        // `job_kill` both. Cloned here because `task_runner` is MOVED into the registry on
+        // the next statement — `digest_runner` above is the same object for the same
+        // reason, and all three must see one runner: a second one would hand out handles
+        // its sibling cannot collect or stop.
+        let subagent_runner = task_runner.clone();
         registry = letibot_tools::with_session_tools(
             registry,
             todo_board.clone(),
@@ -1750,7 +1750,11 @@ impl<'a> Harness<'a> {
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobList)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobOutput)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobWait)))
-            .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobKill)))
+            .and_then(|_| {
+                registry.register(Box::new(
+                    letibot_tools::builtins::jobs::JobKill::with_tasks(subagent_runner.clone()),
+                ))
+            })
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::monitor::Monitor)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::pkill::Pkill)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::ps::Ps)))
@@ -2257,7 +2261,7 @@ impl<'a> Harness<'a> {
         // session closed: the completion never queued, the bell never rung, and a
         // thread leaked per `task` call. Giving the watchers the runner is what makes
         // the handle route to its own wait (R7's hop, for a subagent).
-        let job_watch = Some(job_watch.with_tasks(&watch_runner));
+        let job_watch = Some(job_watch.with_tasks(&subagent_runner));
         let tool_sink = JobWatchSink::new(
             IntentSink::new(intent.clone(), ToolLogSink::new(hub.clone())),
             job_watch.clone(),
@@ -6879,6 +6883,15 @@ impl letibot_tools::Adjudicator for SubagentAdjudicator {
 struct TaskSlot {
     state: std::sync::Mutex<letibot_tools::builtins::task::TaskStatus>,
     settled: std::sync::Condvar,
+    /// **Whether this subagent was stopped rather than finishing**, which is the one
+    /// thing the child's own result cannot say.
+    ///
+    /// An interrupted turn still returns text — whatever it had written when the
+    /// interrupt landed — so `run_to_completion` comes back `Ok`, and a `task_result`
+    /// that called that `Done` would hand the parent a truncated answer under the name of
+    /// the child's last word. The flag is set by [`HarnessTaskRunner::kill`], before the
+    /// interrupt is sent, so the settlement that follows cannot be read as an answer.
+    killed: std::sync::atomic::AtomicBool,
 }
 
 impl TaskSlot {
@@ -6888,6 +6901,7 @@ impl TaskSlot {
                 note: None,
             }),
             settled: std::sync::Condvar::new(),
+            killed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -6900,7 +6914,26 @@ impl TaskSlot {
         }
     }
 
+    /// Marked before the interrupt goes out, so a settlement that arrives a microsecond
+    /// later cannot be recorded as the child having answered.
+    fn kill(&self) {
+        self.killed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     fn settle(&self, status: letibot_tools::builtins::task::TaskStatus) {
+        // **`Done` under a kill is not an answer.** See the field: the text is what the
+        // child had written when it was stopped, and reporting it as the child's word is
+        // the same defect as reporting a truncated summary as whole.
+        let status = match status {
+            letibot_tools::builtins::task::TaskStatus::Done { .. }
+                if self.killed.load(std::sync::atomic::Ordering::SeqCst) =>
+            {
+                letibot_tools::builtins::task::TaskStatus::Failed {
+                    why: "stopped by `job_kill` — this is not an answer".into(),
+                }
+            }
+            other => other,
+        };
         *self.state.lock().expect("task slot") = status;
         self.settled.notify_all();
     }
@@ -7002,6 +7035,64 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             return Err(format!("the subagent thread could not be started: {e}"));
         }
         Ok(sub_id)
+    }
+
+    /// **Stop a subagent by interrupting the turn it is running.**
+    ///
+    /// The child spends its whole life inside `sub.submit`, and the one door that reaches
+    /// a turn already running is that session's own steering — the same door a head's
+    /// Esc-esc uses, addressed to the child's hub rather than to this session's. The hub
+    /// is reachable because a subagent is a real registered session (that is what lets an
+    /// operator attach to one), and it is found by the handle the model was given.
+    ///
+    /// **The address is the daemon's, not a head's.** `submit` wants a head id for its
+    /// record, and `\0daemon` is the vocabulary of a caller that is not a head at all —
+    /// the same shape `head.rs`'s probe attach uses for an identity nobody minted. The
+    /// `expected_seq` is `0`, which the hub reads as *no expectation*: a stop has nothing
+    /// to say about where the reader is, and a stale mark would refuse the kill.
+    fn kill(&self, handle: &str) -> Result<String, String> {
+        let slot = self
+            .slots
+            .lock()
+            .expect("task slots")
+            .iter()
+            .find(|(h, _)| h == handle)
+            .map(|(_, s)| s.clone());
+        let Some(slot) = slot else {
+            return Err(format!(
+                "no subagent `{handle}` in this session; `task_result` with no argument \
+                 lists the ones there are"
+            ));
+        };
+        let Some(hub) = self.registry.get(handle) else {
+            return Err(format!(
+                "`{handle}` has already settled, or its session is gone, so there is no \
+                 turn left to interrupt. Nothing was stopped."
+            ));
+        };
+        // **Marked first.** The interrupt is asynchronous and the child may return while
+        // the sentence below is being formatted; a settlement recorded as `Done` before
+        // the flag was set is a truncated answer presented as the child's last word.
+        slot.kill();
+        let f = hub.submit(
+            "\0daemon",
+            &format!(
+                "job_kill-{}",
+                letibot_sessionlog::registry::short_id(handle)
+            ),
+            0,
+            letibot_sessionlog::CommandKind::Interrupt {
+                reason: "`job_kill` stopped this subagent; whatever it had written is \
+                         incomplete"
+                    .into(),
+            },
+        );
+        Ok(format!(
+            "interrupted the turn `{handle}` was running. A subagent is stopped by \
+             interrupting its turn, not by reaping a process, so there is no cgroup and no \
+             pid to report; the daemon answered {f:?}. `task_result` on it now says it was \
+             stopped rather than answered."
+        ))
     }
 
     fn collect(
@@ -7614,6 +7705,54 @@ mod tests {
 
     use super::*;
     use letibot_tools::authorise::TrailProvenance;
+
+    /// **A killed subagent settles as STOPPED, not as having answered.**
+    ///
+    /// An interrupted turn still returns the text it had written when the interrupt
+    /// landed, so `run_to_completion` comes back `Ok` — and a `task_result` that called
+    /// that the child's last word would hand the parent a truncated answer with nothing on
+    /// it to say it had been cut off. The same defect as a truncated summary presented as
+    /// whole, one layer down.
+    #[test]
+    fn a_killed_subagent_settles_as_stopped_rather_than_as_an_answer() {
+        use letibot_tools::builtins::task::TaskStatus;
+
+        // Unkilled: the answer is the answer. This arm is here because the kill flag must
+        // not become the relabelling of every completion that happens to follow one.
+        let plain = TaskSlot::new();
+        plain.settle(TaskStatus::Done {
+            answer: "half a sentence".into(),
+        });
+        assert!(matches!(
+            &*plain.state.lock().expect("slot"),
+            TaskStatus::Done { .. }
+        ));
+
+        let killed = TaskSlot::new();
+        killed.kill();
+        killed.settle(TaskStatus::Done {
+            answer: "half a sentence".into(),
+        });
+        match &*killed.state.lock().expect("slot") {
+            TaskStatus::Failed { why } => assert!(
+                why.contains("job_kill"),
+                "the reason names the stop, so a reader can tell it from a crash: {why}"
+            ),
+            other => panic!("a killed subagent settled as {other:?}"),
+        }
+
+        // **A real failure is not relabelled.** The flag must not overwrite the child's
+        // own reason for dying, which is the more useful sentence of the two.
+        let failed = TaskSlot::new();
+        failed.kill();
+        failed.settle(TaskStatus::Failed {
+            why: "the model went away".into(),
+        });
+        assert!(matches!(
+            &*failed.state.lock().expect("slot"),
+            TaskStatus::Failed { why } if why.contains("went away")
+        ));
+    }
 
     /// **R7's tool-side half: the sentence says the result comes to you.**
     ///

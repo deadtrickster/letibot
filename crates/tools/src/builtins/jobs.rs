@@ -641,7 +641,7 @@ fn wait_on_job(
             notes: vec![],
             edit: None,
             needs_in_view: Vec::new(),
-        media: None,
+            media: None,
         },
         Waited::NeverStarted { .. } => Invocation::failed(
             format!("`{id}` was running a moment ago and the wait could not observe it"),
@@ -725,7 +725,7 @@ fn wait_on_scope(
             notes: vec![],
             edit: None,
             needs_in_view: Vec::new(),
-        media: None,
+            media: None,
         },
         // The seat brief's rule as an outcome: only count absence after presence.
         Ok(Waited::NeverStarted {
@@ -748,17 +748,68 @@ fn wait_on_scope(
 
 // ---------------------------------------------------------------- job_kill
 
-pub struct JobKill;
+/// **`job_kill` stops a job or a subagent, and the two are stopped differently.**
+///
+/// The operator's ruling, having found that this reached only the host's process table:
+/// *"expand"* — and the shape of the expansion is the ruling's own: *"in a way agent is
+/// a background job."* A job is reaped: a cgroup, a pid, descendants. A subagent is
+/// **interrupted**: it owns no process, and the turn it is running is the only thing there
+/// is to stop. So the runner makes the second kind possible and this routes to it.
+pub struct JobKill {
+    /// `None` when nothing here can start a subagent, which is the honest configuration
+    /// for a harness driven without a session registry.
+    tasks: Option<std::sync::Arc<dyn crate::builtins::task::TaskRunner>>,
+}
+
+impl JobKill {
+    /// The no-subagent form: a session that cannot spawn one has nothing for the runner
+    /// branch to reach, and `kill_subagent` says so by name rather than silently falling
+    /// through to a job lookup that will also fail.
+    pub fn new() -> JobKill {
+        JobKill { tasks: None }
+    }
+
+    /// The daemon's form: the same runner `task` uses, so a handle this stops is a handle
+    /// that tool handed out.
+    pub fn with_tasks(tasks: std::sync::Arc<dyn crate::builtins::task::TaskRunner>) -> JobKill {
+        JobKill { tasks: Some(tasks) }
+    }
+
+    /// Stop a subagent, or say why not.
+    ///
+    /// **The process host is not consulted and must not be.** `task` is `Access::Session`
+    /// and needs no host, so gating this on one would leave a session that hands work to a
+    /// child with no way to stop it — the same hole the watcher set had, and the same
+    /// reason this is `Option` rather than a precondition.
+    fn kill_subagent(&self, handle: &str) -> Result<String, String> {
+        match &self.tasks {
+            Some(r) => r.kill(handle),
+            None => Err(format!(
+                "no subagent `{handle}` can be stopped here: this session has no runner \
+                 that starts them. Nothing was stopped."
+            )),
+        }
+    }
+}
+
+impl Default for JobKill {
+    fn default() -> Self {
+        JobKill::new()
+    }
+}
 
 impl Tool for JobKill {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "job_kill",
-            "Stop a job, or everything in a scope. Give `job` or `scope`. This kills \
-             a cgroup, so every descendant the command started goes with it and \
-             there is no pattern that could match something else. The result lists \
-             what was actually killed, by pid and command line, and says whether \
-             anything survived. Use this instead of `pkill` or `kill`.",
+            "Stop a job, a subagent, or everything in a scope. Give `job` or `scope`. \
+             A job is killed by its cgroup, so every descendant the command started goes \
+             with it and there is no pattern that could match something else. **A subagent \
+             handle is stopped by interrupting the turn it is running** — a subagent owns \
+             no process, so there is no pid or cgroup to report, and a `task_result` on it \
+             afterwards says it was stopped rather than answered. The result lists what was \
+             actually killed, and says whether anything survived. Use this instead of \
+             `pkill` or `kill`.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -773,11 +824,25 @@ impl Tool for JobKill {
     }
 
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
-        let Some(host) = ctx.backend.processes() else {
-            return no_process_host(ctx);
-        };
         let job = args.get("job").and_then(|v| v.as_str());
         let scope = args.get("scope").and_then(|v| v.as_str());
+        // **A subagent first, and before the host is asked for.** The two handle namespaces
+        // do not overlap — a job id comes from the process host and a subagent handle from
+        // the runner — but the *order* is load-bearing for a different reason: a session
+        // with no process host must still be able to stop its own child, so this cannot sit
+        // behind `processes()`.
+        if let Some(id) = job
+            && let Ok(said) = self.kill_subagent(id)
+        {
+            return Invocation::ok(format!("{said}\n"));
+        }
+        let Some(host) = ctx.backend.processes() else {
+            // A host that cannot start processes has no jobs. What it may still have is a
+            // subagent, and the runner was asked about that above and refused by name (or
+            // there is no runner) — so the sentence names the missing host alone, which is
+            // the true half of a case with nothing left in it.
+            return no_process_host(ctx);
+        };
         // What the harness knows and `/proc` may not be able to say at the instant
         // of the kill: the command the model actually asked for. A record whose
         // only identification is a `/proc` read is a record that reads `[sh] (no
@@ -931,8 +996,8 @@ mod tests {
             ),
             (
                 "job_kill",
-                JobKill.schema().access,
-                JobKill.schema().description,
+                JobKill::new().schema().access,
+                JobKill::new().schema().description,
             ),
         ];
         for (name, access, desc) in tools {
@@ -956,7 +1021,7 @@ mod tests {
             JobList.schema(),
             JobOutput.schema(),
             JobWait.schema(),
-            JobKill.schema(),
+            JobKill::new().schema(),
         ] {
             let names = s.param_names().join(",");
             for banned in ["pattern", "match", "name_regex", "grep", "cmdline"] {
@@ -968,5 +1033,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **`job_kill` reaches a subagent, and a session that cannot start one says so.**
+    ///
+    /// The operator's ruling: *"expand"*. A subagent owns no process, so this cannot be
+    /// the host's kill — it is the runner's, and the runner is what makes the handle
+    /// meaningful. Asserted at `kill_subagent` rather than through `invoke` because what
+    /// is being pinned is the *routing*: which of the two kinds a handle goes to, and that
+    /// a session with no runner refuses by name instead of silently trying the host and
+    /// reporting an unknown job.
+    #[test]
+    fn job_kill_stops_a_subagent_through_its_runner() {
+        use crate::builtins::task::{TaskRunner, TaskSpec, TaskStatus};
+
+        /// The runner as a recorder: what it was asked to stop is the assertion.
+        struct Recorded(std::sync::Mutex<Vec<String>>);
+
+        impl TaskRunner for Recorded {
+            fn start(&self, _prompt: &str, _spec: &TaskSpec) -> Result<String, String> {
+                Err("this runner starts nothing".into())
+            }
+            fn collect(&self, _handle: &str, _timeout: std::time::Duration) -> TaskStatus {
+                TaskStatus::Unknown
+            }
+            fn kill(&self, handle: &str) -> Result<String, String> {
+                self.0.lock().expect("recorded").push(handle.to_string());
+                Ok(format!("interrupted the turn `{handle}` was running"))
+            }
+        }
+
+        // No runner: refused by name, and the refusal is about the runner rather than
+        // about a job id — a model that read the other sentence would go looking for a
+        // typo in a handle that is correct.
+        let said = super::JobKill::new()
+            .kill_subagent("s-1-sub-9")
+            .expect_err("a session with no runner cannot stop a subagent");
+        assert!(said.contains("no runner"), "{said}");
+        assert!(
+            said.contains("s-1-sub-9"),
+            "the refusal names the handle it was given: {said}"
+        );
+
+        let runner = std::sync::Arc::new(Recorded(Default::default()));
+        let said = super::JobKill::with_tasks(runner.clone())
+            .kill_subagent("s-1-sub-9")
+            .expect("the runner stopped it");
+        assert!(said.contains("interrupted"), "{said}");
+        assert_eq!(
+            runner.0.lock().expect("recorded").as_slice(),
+            ["s-1-sub-9".to_string()],
+            "the handle the model gave is the handle the runner was asked about"
+        );
     }
 }

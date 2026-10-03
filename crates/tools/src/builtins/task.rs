@@ -110,6 +110,27 @@ pub trait TaskRunner: Send + Sync {
     fn started(&self) -> Vec<String> {
         Vec::new()
     }
+
+    /// **Stop a subagent.** `Ok` is what was done, in the words the operator gets;
+    /// `Err` is why it could not be, said rather than swallowed.
+    ///
+    /// The operator's ruling, when `job_kill` was found to reach only the host's process
+    /// table: *"expand"*. A subagent is not a process, so it cannot be reaped the way a
+    /// job is — and it is still the same handle-shaped thing a model reaches for a stop
+    /// with, which is the rest of the same ruling: *"in a way agent is a background job."*
+    ///
+    /// **The kill is an interrupt of the child's turn**, because that turn is the only
+    /// thing a subagent is doing: it does not own a process, a cgroup or a scope, and the
+    /// one door that reaches a turn already running is the session's own steering — the
+    /// same door a head's Esc-esc uses. A runner that cannot do that says so rather than
+    /// returning a kill it did not perform.
+    fn kill(&self, handle: &str) -> Result<String, String> {
+        Err(format!(
+            "this session's runner cannot stop `{handle}`: a subagent is stopped by \
+             interrupting the turn it is running, which only the runner that started it \
+             can do. Nothing was stopped."
+        ))
+    }
 }
 
 /// The default: no runner, and it says so rather than pretending to have run.

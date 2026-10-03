@@ -99,9 +99,9 @@ pub mod exec;
 pub mod files;
 pub mod firecode;
 pub mod grant;
-pub mod media;
 pub mod head_run;
 pub mod intent;
+pub mod media;
 pub mod mode;
 pub mod permission;
 pub mod result;
@@ -279,7 +279,7 @@ pub fn runner_tools(
     reg.register(Box::new(builtins::jobs::JobList))?;
     reg.register(Box::new(builtins::jobs::JobOutput))?;
     reg.register(Box::new(builtins::jobs::JobWait))?;
-    reg.register(Box::new(builtins::jobs::JobKill))?;
+    reg.register(Box::new(builtins::jobs::JobKill::new()))?;
     reg.register(Box::new(builtins::monitor::Monitor))?;
     Ok(reg)
 }
