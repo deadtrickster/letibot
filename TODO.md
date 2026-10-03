@@ -161,6 +161,20 @@ So the three routes, with what each actually costs:
 re-pin)”*). **The fail-first half needs no ruling and is unaffected by the choice**: this head’s row and
 the test that currently pins the flicker.
 
+**And the convergence point is now verified rather than quoted** — both routes depend on it, and one of
+its edges fails in exactly the way both are trying to prevent. `end_turn_clock` has **one** caller:
+`sessions.rs:1090`, inside `after_turn`. `run_prompt` ends by calling `after_turn` unconditionally
+(line 974 passes the `out` **Result**, so a failure is not a bypass), `submit` is the only way in, and
+the wall-continuation loop (`1057`–`1085`, `WALL_CONTINUES`) runs **before** the clock stops — so a
+marker published there lands after every continuation rather than before it. Every ending therefore
+reaches it: an `eos` finish, a `length` cut, a failure, an interrupt, and each wall continuation.
+
+**The one caveat, and it is where the publish must not go.** `end_turn_clock()` sits inside
+`if let Some(h) = self.open.get_mut(session_id)` — so a session that left `open` between the round loop
+and this tail skips it. That *should* mean *no heads left to tell*; the marker's publisher belongs
+**outside** that guard anyway, because a head still attached to a session the daemon has closed would
+otherwise sit on a stuck row, which is the failure mode this whole row exists to avoid.
+
 **What THIS head does today, so the operator knows what to look for here.** letibot has no past tense
 at all — `Responding` is the only word the row has (`app.rs:13718`), so it cannot flicker to
 *Responded* — and it **drops the row** for the same window instead: the last call of a round finishing
