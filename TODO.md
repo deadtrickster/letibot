@@ -674,7 +674,21 @@ leticl's half is ready and inert: `%peek-snapshot-pane` draws rows through the r
 any arrive, the event path stays as the degraded one and SAYS so, and the copy is deleted the day the
 pane's own peek answers with rows.
 
-**still open?** `grep -n "parent_session_id.is_none" crates/tui/src/app.rs` still answers two.
+**still open?** `grep -n "parent_session_id.is_none" crates/tui/src/app.rs` answers **one** — and it is not a
+filter: it is the header's root COUNT (`app.rs:12002`), which deliberately counts conversations rather
+than rows so an expanded tree does not change the position indicator. The two filters this section was
+filed against are gone.
+
+**LANDED ON LETIBOT'S SIDE, 2026-10-03.** `c840aee` removed both `.filter(|s| s.parent_session_id.is_none())`
+call sites the grep above used to answer, and put the whole enumeration behind one `App::session_rows` /
+`push_children` / `session_root` (five readers routed through it, `ctrl-s` the picker, children nested
+under their parent and counted as conversations in the header). `dc60a0c` then made this head **ask for
+rows** — `PeekShape::Rows` — and draw them through `item_lines`, the one renderer a transcript row uses,
+so a peeked child is a tool card on the pane rather than a hand-rolled dump; the event path survives only
+as the explicitly-degraded fallback an older daemon forces, and it says so. So on this head the
+**rendering** half of *"both plain-string renderers are DELETED, not taught"* is satisfied by making
+`sub_out_lines` a thin shell over the real renderer — kept, because the `Peek` door was kept — rather than
+deleted; the deletion the section asks for is only reachable once the peek's own answer is never the ring.
 
 **done when** a head attaches to a sub-session like any other, and neither `sub_out_lines` nor
 `subagent-out-lines` exists.
