@@ -96,14 +96,36 @@ that then fails — the head is left saying *Responding* with nothing running at
 flicker for a **stuck row**, and a stuck row is the worse defect: R13 exists because a reader who
 cannot tell working from wedged is the confusion this row is for.
 
-So the marker is published where the decision is made, and that means **a new variant — call it
-`TurnEnded { turn_id, finish_reason }` — rather than a field on the round's event.** Re-publishing the
-round's `TurnFinished` at the convergence point is the alternative and it double-counts `usage` in any
-head that accumulates the turn's cost. A field would also have to carry the right default (`absent`
-= final, i.e. not `#[serde(default)]`'s `false` for a positive name), which is the smaller of the two
-problems. **A new variant cannot ride a `#[serde(default)]`, so this one DOES need the
-`PROTOCOL_VERSION` bump** — a new field would not, which is the rule stated at `PROTOCOL_VERSION`
-itself, and the reason leticl's question was worth asking rather than assuming.
+So the marker is published where the decision is made, and that means **a new variant — `TurnEnded`.**
+Re-publishing the round's `TurnFinished` at the convergence point is the alternative and it
+double-counts `usage` in any head that accumulates the turn's cost. A field would also have to carry
+the right default (`absent` = final, i.e. not `#[serde(default)]`'s `false` for a positive name), which
+is the smaller of the two problems.
+
+**CORRECTED 2026-10-03, an hour after the paragraph above: the variant does NOT need the protocol
+bump, because this tree already has the mechanism.** [`PROTOCOL_VERSION`]'s version-27 note is that a
+new VARIANT forces a bump *because a head has no arm for it* — *"`serde` has no catch-all on this
+enum — deliberately, so a head cannot silently skip a fact it does not understand"* — and `Caps`
+carries, in its own words, *"**free-form feature names, for forward compatibility**"*
+(`protocol.rs`: `features: Vec<String>`, currently unused and evidently waiting for its first
+customer). The hub **already gates delivery per head on those caps** — `hub.rs:931` filters by
+`can_decide` when routing a decision and `hub.rs:1425` bounds a head by `caps.queue` — so:
+
+  · the head declares a feature name in its `Caps` on attach (this head would declare it, and leticl's
+    half is one string where its attach already is);
+  · the daemon sends `TurnEnded` **only to a head that declared it**, so no head ever receives a frame
+    it cannot read and the reason the bump existed is dissolved rather than dodged;
+  · and `Hello` **echoes the features the daemon honours** (a new field with `#[serde(default)]`, for
+    which the rule is genuinely *no bump*), because otherwise a head cannot tell *this daemon ignores
+    my feature* from *no turn has ended yet* — and guessing that right is the difference between the
+    flicker and a row stuck on for ever.
+
+So the bump is not needed after all, and the operator's deliberate pin of leticl to `v0.2.0` (protocol
+27) is left intact: an old head gets today's behaviour, a new head gets the marker, and neither ever
+sees a frame it has no arm for. If the operator would rather have the coarse signpost — one number
+that says the two halves are skewed — then bump and the argument above is the fallback rather than the
+mistake; say which in the commit, since the two routes cost leticl different things (a declared
+feature, or a re-pin).
 
 **What THIS head does today, so the operator knows what to look for here.** letibot has no past tense
 at all — `Responding` is the only word the row has (`app.rs:13718`), so it cannot flicker to
@@ -121,10 +143,10 @@ seconds and the row says something again.
 shows no such field, and `crates/turn/src/engine.rs:1320` still folds `Finish::ToolCalls` into `Eos`.
 
 **done when** the daemon publishes the end at the convergence point (where `end_turn_clock` is
-called), `PROTOCOL_VERSION` is bumped for the variant with the reason stated in the commit, and a
-two-round stream on each head shows the status row up across every round boundary and down only at the
-marked end — asserted, not watched: a test per head, and on this head that test replaces the one that
-currently pins the flicker.
+called) and sends it only to a head that declared the feature; `Hello` echoes the honoured features so
+a head can tell *ignored* from *not yet*; and a two-round stream on each head shows the status row up
+across every round boundary and down only at the marked end — asserted, not watched: a test per head,
+and on this head that test replaces the one that currently pins the flicker.
 
 ## R56 — the view can be held, so a selection survives a streaming turn — **leticl has it, this side does not (`c9634bc`)**
 
@@ -216,6 +238,66 @@ separately stated in both trees.
 
 **done when** a code added on one side cannot silently change a head's placement without the other
 side seeing it — one list, or two with a stated reason and a guard that reads the other.
+
+## R57 — a child's completion is not a firing, so the wake never happens — **measured from leticl 2026-10-03; explained below, and the last hop is STILL UNTESTED**
+
+The operator restarted the session that spawns `task` children so that this could be tested rather
+than assumed, and the measurement is:
+
+  · the child ran and answered — two facts off a fixture, no decisions in it;
+  · **the head's agent counter flashed 1 → 0**, so the child's `opening`/`running`/`done` events DID
+    reach a head and were folded. That half works;
+  · **no notice row appeared** — not in the head, not in the model's own conversation;
+  · `job_list` in the session that spawned it: **0 monitors, 0 fired, 0 jobs**. Nothing was armed, so
+    nothing could fire;
+  · the model learned the child had finished **only by polling** (`task_result`) — the sentence in the
+    daemon's own banner: *"a fired monitor reaches the model only when something calls job_list. That
+    is a poll, not a wake."*
+
+The mechanism is not missing. `completion_notice` (`harness.rs:664`) publishes *"[job] a job you
+backgrounded has ended"*, those notices arrive unprompted, and one arrived in leticl's transcript
+today. Its signature is `fn completion_notice(done: &[JobCompletion])` — **jobs only, no children.**
+D26 says the wake exists (*"T24's wake turns a firing into a user item and runs a turn"*), so the gap
+is narrower than *no wake*: **a child's finish is not a firing.**
+
+**done when** a `task` child's completion reaches the model unprompted — the same
+`User { speaker: Agent }` row a job's ending produces, in a session that armed no monitor of its own.
+
+**What letibot found reading the tree, and it changes what to do about the measurement.** The chain is
+**closed on HEAD and was open in the build that was measured**:
+
+  · **The daemon under test was a binary from the day before, and that is the whole explanation.**
+    Measured on this box 2026-10-03: `target/release/harnessd` is dated **2026-10-02 20:17:36**
+    (34724024 bytes), and `fd4aaad` (*"a subagent settles the same way a backgrounded job does"*) was
+    committed **2026-10-03 21:16:24** — twenty-five hours later. The daemon serving leticl's workspace
+    (pid 3840826) had been restarted minutes before the check and was running **that same file**, so a
+    fresh PROCESS was running a stale BINARY: **a session restart does not rebuild a daemon.** The dated
+    build cannot have contained the child path at all, and `0 monitors, 0 fired, 0 jobs` is exactly what
+    it should do. leticl's reading of `completion_notice` as *"jobs only, no children"* is a reading of
+    that build rather than of the tree.
+    *(The pin is NOT the reason, and it was checked the wrong way first: leticl runs LOCALLY, so
+    `LETIBOT_REF` describes its release packaging and says nothing about the daemon on this box.)*
+  · On HEAD there is **one queue and one bell**, not two mechanisms: `JobWatchers::with_tasks` gives
+    the watcher the session's `TaskRunner`, `watch_task` (`jobwatch.rs:432`) queues through
+    `settled_here` — *"the push and the bell"* — and `Harness::wake` (`harness.rs:4442`) takes both
+    kinds off `take_completions()` and partitions them **for wording only** (`job_output` for a job,
+    `task_result` for a child), submitting one `User { speaker: Speaker::Agent }` item — the same row
+    the ruling asked for. And the monitor waiter is **not** needed for this: the watcher rings the
+    bell itself, so a session with no monitors is woken by a child.
+  · **So the first thing to do is not to build anything: it is to re-measure on a daemon that has been
+    REBUILT** (`cargo build --release`, then restart that daemon — the rebuild is the half that was
+    missed), because the measurement above cannot distinguish *the code is wrong* from *the code was
+    not in the binary* — and it is the second.
+
+**The gap that remains, and it is mine.** The last hop has **never been executed by any test**: this
+tree tests the notice *functions* (`completion_notice`, `harness.rs:7764`) and the *watcher*
+(`a_subagent_settles_through_the_jobs_own_channel`, `jobwatch.rs:967`), and nothing anywhere asserts
+that `wake()` turns a queued child into the Agent row — on the JOB side either. That is the same shape
+as R53 §1.2 (a docstring standing where an assertion should be), and it is why *"nothing fired"* could
+be reported without anything in CI disagreeing. The test to write is one: arm no monitor, finish a
+`FakeTask`, assert `wake()` returns a turn and the submitted item is `Speaker::Agent` and names the
+child. That is leticl's `done when` as an assertion, and it is the thing to land before asking anybody
+to watch a screen again.
 
 ## R18 — every hand-rolled lexer replaced by rano + tree-sitter — **given 2026-09-20**
 
