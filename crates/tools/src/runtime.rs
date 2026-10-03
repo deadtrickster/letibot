@@ -1013,9 +1013,19 @@ pub mod roles {
             // something for this seat; without the entry the flag would be ignored and
             // the operator would be told a capability was on while it was not.
             //
-            // Eight tools against a ceiling of eight when the flag is given, seven
-            // without. `goal` is still not here: a separate capability is a separate
-            // decision.
+            // Nine tools without the flag and ten with it — over §8.4's eight, and the
+            // seat's own ceiling is `DEFAULT_MAX_TOOLS` (16), so both fit. `goal` is
+            // still not here: a separate capability is a separate decision.
+            //
+            // **`task` and `task_result` are seated here for R58** — *"subagents are
+            // absolutely allowed to spawn subagents up to configured nesting level"* — and
+            // they are seated rather than stripped at the limit **on purpose**: the
+            // depth cap is enforced where the call is made (`HarnessTaskRunner::start`,
+            // refused by name against `--max-subagent-depth`), because a seat that simply
+            // lacked `task` at the limit manufactures the workaround, which is exactly
+            // what this role's own note on `todo` above records a model paying 13 calls
+            // and ~15k tokens for. The pair goes together for `orchestrator`'s reason: a
+            // seat that can start work and never read it is worse than one that cannot.
             &[
                 "read",
                 "write",
@@ -1025,6 +1035,8 @@ pub mod roles {
                 "read_spill",
                 "todo",
                 "bash",
+                "task",
+                "task_result",
             ],
         )
     }
@@ -2074,6 +2086,36 @@ mod tests {
         role.max_tools = 0;
         let e = reg.resolve_role(&role).unwrap_err();
         assert!(format!("{e}").contains("probe"), "{e}");
+    }
+
+    /// **`m2_coder` seats the delegation pair** (R58).
+    ///
+    /// `task` and `task_result` are listed on the seat rather than stripped at the depth
+    /// limit, on purpose: the cap is enforced where the call is made
+    /// (`harnessd::harness::subagent_depth_refusal`), so the seat must name both at every
+    /// depth or a child could start work it cannot collect — `orchestrator`'s own rule.
+    #[test]
+    fn the_coder_seat_names_the_delegation_pair() {
+        let seat = roles::m2_coder();
+        assert!(
+            seat.tools.iter().any(|t| t == "task"),
+            "a subagent must be able to delegate: {:?}",
+            seat.tools
+        );
+        assert!(
+            seat.tools.iter().any(|t| t == "task_result"),
+            "a seat that can start work and not collect it is worse than one that \
+             cannot: {:?}",
+            seat.tools
+        );
+        // The pair is seated, not pushed: a role over its ceiling is refused at resolve,
+        // so an overflow here would be a prompt the build cannot seat at all.
+        assert!(
+            seat.tools.len() <= seat.max_tools,
+            "the seat is over its own ceiling: {} > {}",
+            seat.tools.len(),
+            seat.max_tools
+        );
     }
 
     #[test]

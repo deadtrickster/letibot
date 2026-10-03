@@ -180,6 +180,16 @@ pub struct JobWatchers {
     /// Jobs already published, so a late duplicate finish cannot publish a
     /// settlement twice.
     settled: Arc<Mutex<HashSet<String>>>,
+    /// **Which session the bell is rung for** — the tree's ROOT, not this session (R58).
+    ///
+    /// A settlement must reach a session the daemon can *drive*, and the only such
+    /// session in a subagent tree is its root: `Sessions::wake` needs
+    /// `self.open.get_mut(id)`, a child is adopted into the registry and not into
+    /// `open`, so a ring for a child is a condition that fires and is discarded. A
+    /// root's set rings itself; a child's set is built from the root's
+    /// ([`JobWatchers::shares_tree`]) and inherits this, so the whole tree rings one
+    /// bell, and the completions queue (also shared) is what the root's wake drains.
+    wake_target: String,
 }
 
 impl JobWatchers {
@@ -200,6 +210,8 @@ impl JobWatchers {
             stop: Arc::new(AtomicBool::new(false)),
             watching: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(HashSet::new())),
+            // A root session rings for itself — the tree's root and its own id are one.
+            wake_target: hub.session_id().to_string(),
         })
     }
 
@@ -220,6 +232,7 @@ impl JobWatchers {
             stop: Arc::new(AtomicBool::new(false)),
             watching: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(HashSet::new())),
+            wake_target: hub.session_id().to_string(),
         })
     }
 
@@ -239,6 +252,34 @@ impl JobWatchers {
             stop: Arc::clone(&self.stop),
             watching: Arc::clone(&self.watching),
             settled: Arc::clone(&self.settled),
+            wake_target: self.wake_target.clone(),
+        })
+    }
+
+    /// **Join this session's watcher to its tree's** (R58).
+    ///
+    /// A child keeps everything that is genuinely its own — the hub its rows are
+    /// published to, the host and the runner that know its handles — and takes from the
+    /// tree the three things that must be one per tree: the **completions queue** the
+    /// root's `Harness::wake` drains, the **watching/settled sets** that make
+    /// `delivering` tree-wide and stop one settlement being queued twice, and the
+    /// **stop flag** so a tree closes together. And the **ring target**, so a
+    /// grandchild's settlement rings the root rather than the child — which is what
+    /// turns `Sessions::wake`'s `Ignored` into a turn the daemon actually runs.
+    ///
+    /// `tree` is the root's set (its own `wake_target` is its own id), so this needs no
+    /// parent-chain walk: the set it is built from already knows its root.
+    pub fn shares_tree(self: Arc<Self>, tree: &Arc<JobWatchers>) -> Arc<Self> {
+        Arc::new(JobWatchers {
+            host: self.host.clone(),
+            hub: Weak::clone(&self.hub),
+            tasks: self.tasks.clone(),
+            completions: Arc::clone(&tree.completions),
+            bell: self.bell.clone(),
+            stop: Arc::clone(&tree.stop),
+            watching: Arc::clone(&tree.watching),
+            settled: Arc::clone(&tree.settled),
+            wake_target: tree.wake_target.clone(),
         })
     }
 
@@ -308,13 +349,25 @@ impl JobWatchers {
         let watching = Arc::clone(&self.watching);
         let settled = Arc::clone(&self.settled);
         let runner = self.tasks.as_ref().and_then(Weak::upgrade);
+        let wake_target = self.wake_target.clone();
         if let Some(runner) =
             runner.filter(|r| !matches!(r.collect(&job, Duration::ZERO), TaskStatus::Unknown))
         {
+            let wake_for_task = wake_target.clone();
             let _ = std::thread::Builder::new()
                 .name(format!("subagent-watch-{}", &job[..job.len().min(20)]))
                 .spawn(move || {
-                    watch_task(runner, hub, completions, bell, stop, watching, settled, job)
+                    watch_task(
+                        runner,
+                        hub,
+                        completions,
+                        bell,
+                        stop,
+                        watching,
+                        settled,
+                        wake_for_task,
+                        job,
+                    )
                 });
             return;
         }
@@ -327,7 +380,19 @@ impl JobWatchers {
         };
         let _ = std::thread::Builder::new()
             .name(format!("job-watch-{}", &job[..job.len().min(20)]))
-            .spawn(move || watch_one(host, hub, completions, bell, stop, watching, settled, job));
+            .spawn(move || {
+                watch_one(
+                    host,
+                    hub,
+                    completions,
+                    bell,
+                    stop,
+                    watching,
+                    settled,
+                    wake_target,
+                    job,
+                )
+            });
     }
 }
 
@@ -340,6 +405,7 @@ fn watch_one(
     stop: Arc<AtomicBool>,
     watching: Arc<Mutex<HashSet<String>>>,
     settled: Arc<Mutex<HashSet<String>>>,
+    wake_target: String,
     job: String,
 ) {
     loop {
@@ -392,7 +458,9 @@ fn watch_one(
                         detail: String::new(),
                     });
                 if let Some(bell) = &bell {
-                    bell.ring_wake(&hub.session_id());
+                    // **The tree's root, not this session** (R58): a ring for a child is a
+                    // condition that fires where no worker is listening.
+                    bell.ring_wake(&wake_target);
                 }
                 settled.lock().expect("job watchers").insert(job.clone());
                 break;
@@ -437,15 +505,18 @@ fn watch_task(
     stop: Arc<AtomicBool>,
     watching: Arc<Mutex<HashSet<String>>>,
     settled: Arc<Mutex<HashSet<String>>>,
+    wake_target: String,
     job: String,
 ) {
     loop {
         // The hub is the same liveness test the job path uses: a session that has
         // closed takes its hub with it, and there is nothing left a settlement would
-        // be true of.
-        let Some(hub) = hub.upgrade() else {
+        // be true of. The completion queue is the TREE's (R58), so a child's settlement
+        // still needs the child's hub alive to be worth queueing — nothing else here
+        // reads it.
+        if hub.upgrade().is_none() {
             break;
-        };
+        }
         match runner.collect(&job, WATCH_CHUNK) {
             // Settled, one way or the other. Both are the model's business: a subagent
             // that failed is the thing the parent is blocked on just as much as one
@@ -455,10 +526,10 @@ fn watch_task(
                     "done",
                     first_line(&answer),
                     &job,
-                    &hub,
                     &completions,
                     &bell,
                     &settled,
+                    &wake_target,
                 );
                 break;
             }
@@ -467,10 +538,10 @@ fn watch_task(
                     "failed",
                     first_line(&why),
                     &job,
-                    &hub,
                     &completions,
                     &bell,
                     &settled,
+                    &wake_target,
                 );
                 break;
             }
@@ -495,10 +566,10 @@ fn settled_here(
     state: &str,
     detail: String,
     job: &str,
-    hub: &Hub,
     completions: &Arc<Mutex<VecDeque<JobCompletion>>>,
     bell: &Option<Arc<Bell>>,
     settled: &Arc<Mutex<HashSet<String>>>,
+    wake_target: &str,
 ) {
     completions
         .lock()
@@ -518,7 +589,8 @@ fn settled_here(
             detail,
         });
     if let Some(bell) = bell {
-        bell.ring_wake(&hub.session_id());
+        // **The tree's root, not this session** (R58) — see `JobWatchers::wake_target`.
+        bell.ring_wake(wake_target);
     }
     settled
         .lock()
@@ -1020,6 +1092,72 @@ mod tests {
         assert!(
             watchers.take_completions().is_empty(),
             "a completion is taken once, not left for the next wake"
+        );
+    }
+
+    /// **A GRANDCHILD's settlement rings the ROOT and lands on the tree's queue** (R58).
+    ///
+    /// The defect this pins, from the code rather than from a symptom: at depth ≥ 2 the
+    /// watcher that rings belongs to the CHILD, and `Sessions::wake` serves only a session
+    /// in `open` — a child is adopted into the registry, not into `open`, so
+    /// `bell.ring_wake(&child)` is a condition that fires and is discarded. So a child's
+    /// set is built from the root's (`JobWatchers::shares_tree`), and this asserts the two
+    /// facts that make the wake land: the **queue** the completion is pushed to is the
+    /// root's, and the **session** the bell is rung for is the root's.
+    ///
+    /// No process host anywhere: the whole point of the tree is that `task` needs none, so
+    /// a test that required a cgroup would be testing the wrong channel.
+    #[test]
+    fn a_grandchilds_settlement_rings_the_tree_root() {
+        use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
+
+        let r = Registry::new();
+        // The root is the session a daemon drives; the child is the one it does not.
+        let root = r
+            .create("s-root", "", SessionWiring::default())
+            .expect("the root registers");
+        let child = r
+            .create_under(
+                "s-child",
+                "",
+                SessionWiring::default(),
+                Some("s-root".into()),
+            )
+            .expect("the child registers");
+        // Each create rings an Open; drain both so the next ring is the settlement's.
+        assert!(matches!(r.next_work(), Some(Work::Open(id)) if id == "s-root"));
+        assert!(matches!(r.next_work(), Some(Work::Open(id)) if id == "s-child"));
+
+        // The root's own set — its wake target is its own id.
+        let root_watch = JobWatchers::watching_tasks(&root, Some(Arc::clone(r.bell())));
+
+        // The child's runner knows the grandchild's handle, and the child's set is built
+        // FROM the root's, which is what gives it the root's queue and ring target.
+        let child_runner = Arc::new(FakeTask::new("s-child-sub-1"));
+        let child_watch = JobWatchers::watching_tasks(&child, Some(Arc::clone(r.bell())))
+            .with_tasks(&(child_runner.clone() as Arc<dyn TaskRunner>))
+            .shares_tree(&root_watch);
+
+        // The grandchild settles; the watcher runs in the CHILD's set.
+        child_watch.watch("s-child-sub-1".into());
+        child_runner.finish("the grandchild answered");
+
+        // The completion is on the TREE's queue — the one the ROOT's wake drains — and
+        // not on a queue nobody reads.
+        let done = wait_for_completion(&root_watch);
+        assert_eq!(done.job, "s-child-sub-1");
+        assert_eq!(done.state, "done");
+        assert!(
+            !done.detail.is_empty(),
+            "the tree's row carries what the grandchild said"
+        );
+
+        // And the bell was rung for the ROOT. A ring for the child would be the whole
+        // defect, and `next_work` returning the child here is what that looks like.
+        assert!(
+            matches!(r.next_work(), Some(Work::Woken(id)) if id == "s-root"),
+            "a grandchild's settlement must ring the tree's root, or Sessions::wake \
+             answers `Ignored` and the condition is discarded"
         );
     }
 

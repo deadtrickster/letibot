@@ -126,6 +126,19 @@ pub struct Parts {
     /// The loaded skills, shared with the `skill` tool and the dashboard's `skills`
     /// panel.
     pub skills: std::sync::Arc<letibot_tools::builtins::skill::SkillRegistry>,
+    /// **The watcher set of the subagent TREE this session belongs to, when it is a
+    /// child** (R58).
+    ///
+    /// `None` for a root: a root's watcher set is its own, built at open. `Some` for a
+    /// child, carrying its parent's, so the child's set can join the tree's — sharing
+    /// the completions queue the root's `wake` drains and the ring target that is the
+    /// root's id. Without this a grandchild's settlement queues onto, and rings for, a
+    /// session `Sessions::open` does not hold, and `Sessions::wake` returns `Ignored`:
+    /// the condition fires and is discarded.
+    ///
+    /// It rides [`Parts`] rather than [`Config`] because a config is *this* session's
+    /// facts and a watcher set is a live `Arc`, not a value to clone per session.
+    pub tree_watch: Option<std::sync::Arc<crate::jobwatch::JobWatchers>>,
 }
 
 /// How many ledger rows a resume announces between progress ticks.
@@ -161,6 +174,8 @@ impl Parts {
             tasks,
             lsp,
             skills,
+            // A root session is its own tree; it has no parent's watcher set to join.
+            tree_watch: None,
         })
     }
 }
@@ -1740,6 +1755,11 @@ impl<'a> Harness<'a> {
                 .map(|s| s.todos(&cfg.session_id).unwrap_or_default())
                 .unwrap_or_default(),
         ));
+        // **The slot a child of this session reads to join the tree** (R58). Declared
+        // here, before the runner that holds it, and filled once `job_watch` exists
+        // below — see `HarnessTaskRunner::tree_watch`.
+        let tree_watch_slot: Arc<std::sync::Mutex<Option<Arc<crate::jobwatch::JobWatchers>>>> =
+            Default::default();
         let task_runner: Arc<dyn letibot_tools::builtins::task::TaskRunner> =
             Arc::new(HarnessTaskRunner {
                 vocab: parts.vocab.clone(),
@@ -1751,6 +1771,8 @@ impl<'a> Harness<'a> {
                 skills: parts.skills.clone(),
                 lsp: parts.lsp.clone(),
                 slots: Default::default(),
+                // Filled below, once this harness has built its own `job_watch` (R58).
+                tree_watch: tree_watch_slot.clone(),
             });
         // Cloned before `with_session_tools` takes it: `digest` folds its findings
         // through the same subagent runner `task` uses, so the two must be the
@@ -2292,6 +2314,23 @@ impl<'a> Harness<'a> {
         // thread leaked per `task` call. Giving the watchers the runner is what makes
         // the handle route to its own wait (R7's hop, for a subagent).
         let job_watch = Some(job_watch.with_tasks(&subagent_runner));
+        // **And a child joins its TREE's set** (R58). The two halves piece 4 needs are
+        // both here: the completion must land on a queue the root's `Harness::wake`
+        // drains, and the bell must ring for the root — the only session in a tree that
+        // is in `Sessions::open`, so the only one `Sessions::wake` will serve. A root
+        // has no tree to join (`tree_watch` is `None` from `Parts::load`) and keeps its
+        // own set, whose `wake_target` is its own id.
+        let job_watch = match (&parts.tree_watch, job_watch) {
+            (Some(tree), Some(w)) => Some(w.shares_tree(tree)),
+            (_, other) => other,
+        };
+        // **And this session's own set is what ITS children will join** (R58). Filled
+        // here, after the join above, so the value a child reads is already the joined
+        // one — which is how the ring target stays the tree's root at every depth
+        // without anything walking a parent chain.
+        if let Some(w) = &job_watch {
+            *tree_watch_slot.lock().expect("tree watch") = Some(Arc::clone(w));
+        }
         let tool_sink = JobWatchSink::new(
             IntentSink::new(intent.clone(), ToolLogSink::new(hub.clone())),
             job_watch.clone(),
@@ -6994,6 +7033,43 @@ struct HarnessTaskRunner {
     /// Shared with every clone of this runner — the thread that runs a child
     /// holds one, and so does the tool that collects it.
     slots: Arc<std::sync::Mutex<Vec<(String, Arc<TaskSlot>)>>>,
+    /// **The watcher set a child of THIS session joins** (R58).
+    ///
+    /// A slot rather than a value because the runner is built before the harness has
+    /// built its own `job_watch`, and the runner must outlive the assignment — so the
+    /// harness fills this once, a few lines later, with the set a child should join.
+    /// For a root that set is the root's own; for a child it is the child's, which
+    /// already carries the tree's root as its ring target — so a `Parts` built for a
+    /// grandchild inherits the root all the way down without a parent-chain walk.
+    tree_watch: Arc<std::sync::Mutex<Option<Arc<crate::jobwatch::JobWatchers>>>>,
+}
+
+/// **The R58 depth refusal, as one pure function so it is testable without a harness.**
+///
+/// `Some(message)` refuses a `task` call that would open a level past `max`;
+/// `None` is *go*. Two design decisions are the whole of it:
+///
+/// * **It refuses by NAME and not by absence.** `task` stays seated on `m2_coder` at
+///   every depth, so the model always sees the tool; the refusal says which knob moves
+///   the limit. A seat that simply lacked `task` at the cap manufactures the workaround
+///   this tree has already paid for once (`m2_coder`'s note on `todo`: 13 calls and
+///   ~15k tokens emulating a tool that had not been given).
+/// * **It is assessed at the CALL and not on the seat**, because a seat can say only
+///   *names `task`* (unlimited) or *does not* (never), and the ruling wants a
+///   configured number in between.
+///
+/// A `max` of 0 refuses every `task` call, which is the honest reading of *no nesting*.
+fn subagent_depth_refusal(depth: u32, max: u32) -> Option<String> {
+    if depth < max {
+        return None;
+    }
+    Some(format!(
+        "this session is at subagent depth {depth} and `--max-subagent-depth` is {max}, so \
+         `task` here would open depth {}. Nothing was started. Raise \
+         `--max-subagent-depth` (or start the run with it higher) if the tree should go \
+         deeper.",
+        depth + 1,
+    ))
 }
 
 impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
@@ -7012,6 +7088,16 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         prompt: &str,
         spec: &letibot_tools::builtins::task::TaskSpec,
     ) -> Result<String, String> {
+        // **The depth cap, and it is refused by NAME rather than by absence** (R58).
+        // `task` is seated on `m2_coder` unconditionally, so a model always sees the
+        // tool and learns *why* it cannot use it here; the alternative — stripping
+        // `task` from the seat at the limit — is the workaround this tree has already
+        // paid for once (the `todo` note on `m2_coder`: 13 calls and ~15k tokens
+        // emulating a tool that had not been given). `depth` is the session's own level,
+        // so this refuses the spawn that would create level `depth + 1`.
+        if let Some(why) = subagent_depth_refusal(self.base.depth, self.base.max_subagent_depth) {
+            return Err(why);
+        }
         // The id is minted here rather than inside the body, because it is what
         // this call returns and the body has not run yet.
         let sub_id = format!(
@@ -7271,6 +7357,12 @@ impl HarnessTaskRunner {
             title: title.clone(),
             seat,
             parent_session_id: Some(parent.clone()),
+            // **One level down, incremented once and only here** (R58). It rides the
+            // config the child is built from, the way `unconfined` and the workspace do,
+            // so a grandchild's `depth` is 2 without anything walking a parent chain —
+            // and `HarnessTaskRunner::start` refuses the spawn at the cap before this is
+            // reached, so a config at the cap never gets a child to increment for.
+            depth: self.base.depth + 1,
             downgrade,
             placement,
             ..self.base.clone()
@@ -7285,6 +7377,12 @@ impl HarnessTaskRunner {
             tasks: self.tasks.clone(),
             lsp: self.lsp.clone(),
             skills: self.skills.clone(),
+            // **The child joins this tree's watcher set** (R58): the parent's own set,
+            // whose `wake_target` is the tree's root — the parent is a root at depth 0,
+            // and at depth ≥ 1 the parent's set already carries the root's target from
+            // the same field one level up. So the whole tree rings one bell with no
+            // parent-chain walk.
+            tree_watch: self.tree_watch.lock().expect("tree watch").clone(),
         };
 
         let mut sub = Harness::open_with_registry(
@@ -7651,6 +7749,41 @@ fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
 
 #[cfg(test)]
 mod tests {
+    /// **The depth cap refuses by NAME, and at the right boundary** (R58).
+    ///
+    /// `task` is seated on `m2_coder` at every depth, so the seat table is not where the
+    /// limit lives — this function is. `depth == max` is the `task` call that would open
+    /// `max + 1` and is refused; `depth == max - 1` is the last one allowed.
+    #[test]
+    fn the_depth_cap_refuses_the_spawn_one_past_it_by_name() {
+        // A root (0) with the ruled default (3) may spawn, and so may levels 1 and 2.
+        assert!(super::subagent_depth_refusal(0, 3).is_none());
+        assert!(super::subagent_depth_refusal(1, 3).is_none());
+        assert!(super::subagent_depth_refusal(2, 3).is_none());
+        // Depth 3 is the last level; `task` there would open depth 4 and is refused.
+        let why = super::subagent_depth_refusal(3, 3).expect("refused at the cap");
+        assert!(
+            why.contains("depth 3"),
+            "the refusal names where it is: {why}"
+        );
+        assert!(
+            why.contains("depth 4"),
+            "and the level it would have opened: {why}"
+        );
+        assert!(
+            why.contains("--max-subagent-depth"),
+            "and the knob that moves it — a refusal that does not name the knob is how a \
+             model manufactures the workaround this seat already paid for once: {why}"
+        );
+        assert!(
+            why.contains("Nothing was started"),
+            "a refusal is not a maybe: {why}"
+        );
+        // A cap of 0 refuses even a root — *no nesting*, read honestly rather than as
+        // *unlimited*.
+        assert!(super::subagent_depth_refusal(0, 0).is_some());
+    }
+
     /// **A stored pair measures ONE conversation, and it is used only for that
     /// one.** See [`super::recovered_scale`].
     ///

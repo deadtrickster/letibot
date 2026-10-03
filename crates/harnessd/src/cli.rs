@@ -364,6 +364,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // into the transcript and that is the operator's call to make.
             "--grant-ro" => cfg.grants_ro.push(PathBuf::from(next()?)),
             "--bash" => cfg.allow_bash = true,
+            // **How deep a subagent tree may go.** Zero refuses every `task` call by
+            // name; the default is the operator's ruling (3). A flag rather than a
+            // hidden constant because it bounds a whole tree and is the one number an
+            // operator reaches for when a run should not fan out.
+            "--max-subagent-depth" => {
+                cfg.max_subagent_depth = next()?
+                    .parse()
+                    .map_err(|e| format!("--max-subagent-depth: {e}"))?
+            }
             "--adjudicator" => cfg.adjudicator = AdjudicatorChoice::parse(&next()?)?,
             // **Layer B's endpoint.** Its own, not `--endpoint`: the guard does not
             // have to be the model doing the work, and on this fleet it should not

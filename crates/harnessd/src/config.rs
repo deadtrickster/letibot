@@ -265,6 +265,14 @@ pub struct Config {
     /// session. Recorded into the store so a subagent tree is a fact on disk, not an
     /// id convention a picker has to reverse-engineer.
     pub parent_session_id: Option<String>,
+    /// **How deep in a subagent tree this session sits.** Zero for a root, one for its
+    /// child, and so on — a config fact rather than a seat fact, because the seat table
+    /// (*"does this role name `task`"*) can express exactly two depths, zero and
+    /// unlimited, and the ruling wants a *configured* number in between.
+    ///
+    /// Incremented once, at spawn (`harness.rs`'s `sub_cfg`), and read where `task` is
+    /// seated and where a call past [`Config::max_subagent_depth`] is refused by name.
+    pub depth: u32,
     /// Whether this session's backend is rooted at `/` — opencode parity: `read`
     /// reaches the whole host and the permission ruleset, not a jail, is the gate.
     ///
@@ -403,6 +411,17 @@ pub struct Config {
     /// The disclosure says exactly this, so an operator who passes the flag is
     /// making a decision rather than accepting a default.
     pub allow_bash: bool,
+    /// **How deep a subagent tree may go.** The operator's ruling, 2026-10-03:
+    /// *"subagents are absolutely allowed to spawn subagents up to configured nesting
+    /// level."* Default 3.
+    ///
+    /// It rides the config rather than the seat table for the reason above `depth`: a
+    /// seat that names `task` says *unlimited*, and one that does not says *never*, and
+    /// neither can carry a number. `task` is therefore **listed on the seat and the
+    /// limit enforced at the call**, refused by name rather than by the tool's absence —
+    /// a capability that exists but is hidden manufactures the workaround (see
+    /// `m2_coder`'s own note on `todo`).
+    pub max_subagent_depth: u32,
     /// Who decides a gated call. See [`AdjudicatorChoice`].
     pub adjudicator: AdjudicatorChoice,
     /// Where layer B lives, `HOST:PORT` speaking llama.cpp's `/completion`.
@@ -910,6 +929,7 @@ impl Config {
             store: None,
             session_id: format!("s-{}", now_ns()),
             parent_session_id: None,
+            depth: 0,
             http: None,
             ledger_scale: None,
             unconfined: false,
@@ -939,6 +959,7 @@ impl Config {
             provider: None,
             fabric: None,
             allow_bash: false,
+            max_subagent_depth: 3,
             adjudicator: AdjudicatorChoice::default(),
             oracle: None,
             oracle_model: None,
