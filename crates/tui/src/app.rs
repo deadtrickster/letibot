@@ -5654,7 +5654,7 @@ impl App {
                     self.scroll_tail_overlay(false, 1);
                     return None;
                 }
-                Key::Enter if self.editor.text().is_empty() => {
+                Key::Enter => {
                     let id = self.sub_out.as_ref().unwrap().session_id.clone();
                     self.sub_out_pending = Some(id.clone());
                     return Some(Action::Peek(id));
@@ -5683,7 +5683,15 @@ impl App {
                     self.scroll_tail_overlay(false, 1);
                     return None;
                 }
-                Key::Enter | Key::Right if self.editor.text().is_empty() => {
+                Key::Enter => {
+                    return self.job_out_page(true);
+                }
+                // **`Right` keeps the guard that `Enter` just lost**, and the difference
+                // is what the key is *for*. Enter here is the pane's — it is the key the
+                // pane advertises and the operator's words are not what they meant by it.
+                // Right is a cursor key first: a half-typed line keeps its motion, which
+                // is the same reason the composer's own arrows are not up for grabs.
+                Key::Right if self.editor.text().is_empty() => {
                     return self.job_out_page(true);
                 }
                 Key::Left if self.editor.text().is_empty() => {
@@ -5758,7 +5766,7 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                Key::Enter if self.editor.text().is_empty() => {
+                Key::Enter => {
                     return self.config_change();
                 }
                 _ => {}
@@ -5862,8 +5870,10 @@ impl App {
         // i press down arrow I wont get into the permissions menu, by which time
         // my prompt is erased and gone"*.
         //
-        // The quit card and the jobs pane in this same file already take Up/Down
-        // unconditionally and gate only Enter; the ladder was the odd one out.
+        // The quit card and the jobs pane in this same file take Up/Down
+        // unconditionally — they no longer gate Enter, which is now every
+        // pane's (see the arm that closes the composer to it below); the ladder
+        // was the odd one out for the arrows.
         // Nothing is taken from the composer, because a one-line composer does not
         // edit with Up/Down — what moves aside is scrollback scrolling, for as long
         // as an ask is open, and PageUp/PageDown still do that.
@@ -5979,7 +5989,7 @@ impl App {
                         Action::StopDaemon
                     });
                 }
-                Key::Enter if self.editor.text().is_empty() => {
+                Key::Enter => {
                     self.quit_card = false;
                     self.quit = true;
                     return Some(if self.quit_sel == 0 {
@@ -6087,7 +6097,7 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                Key::Enter if self.editor.text().is_empty() => {
+                Key::Enter => {
                     // Reading, not moving: the output pane opens on the `Peeked`
                     // reply, and this head never leaves the session it is in.
                     let row = &self.subagents[self.subagents_sel.min(n - 1)];
@@ -6232,7 +6242,7 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                Key::Enter if self.editor.text().is_empty() => {
+                Key::Enter => {
                     if self.session_id.is_empty() {
                         self.say("not attached to a session yet");
                         self.redraw = true;
@@ -6358,6 +6368,40 @@ impl App {
                 }
                 _ => {}
             }
+        }
+
+        // **An open pane owns Enter, even when it has nothing to act on.**
+        //
+        // The operator, 2026-10-03, having gone to the jobs pane and pressed Enter with a
+        // stray character in the composer: *"the pane own keyboard in a way, so enter is a
+        // pane thing."* That is the rule this arm is, and it is the rule the arms above now
+        // keep — each of them used to gate its own Enter on `editor.text().is_empty()`, so
+        // **a pane's Enter silently became "send what I was typing"** the moment there was
+        // anything in the composer. What they read as a keystroke aimed at the pane was
+        // sent to the model.
+        //
+        // This is the second half of that: the panes whose blocks above are conditional on
+        // having rows (`jobs_pane && !self.jobs.is_empty()`, and the subagent tree's twin)
+        // do not run at all over an empty list, and `help`, `stats` and the two overlay
+        // screens have no Enter arm. Without this, Enter in an empty jobs pane is still the
+        // composer's, which is the same defect with one row fewer on the screen.
+        //
+        // **What is deliberately NOT here.** The pickers, the mode picker, the decision
+        // ladder and the todos stops: for those, a typed line IS the answer — a row number,
+        // an id prefix, a name — and `submit` routes it to the right one and holds the
+        // words. Swallowing Enter there would break the typed path those panes advertise.
+        // The rule is *the pane owns the key*, not *the composer is dead*: a pane that
+        // names no meaning for Enter takes it anyway, and one that names a meaning for the
+        // typed line keeps it.
+        if matches!(k, Key::Enter)
+            && (self.help
+                || self.stats
+                || self.jobs_pane
+                || self.subagents_pane
+                || self.slash_out.is_some()
+                || self.payload_sel.is_some())
+        {
+            return None;
         }
 
         let now = self.now_ms;
@@ -38260,6 +38304,65 @@ mod tests {
         // The command still reads, because it is the daemon's and was never
         // rebuilt from a turn this head happens to be showing.
         assert_eq!(a.jobs[0].command, "cargo build");
+    }
+
+    /// **A pane's Enter belongs to the pane, even with words in the composer.**
+    ///
+    /// The operator, 2026-10-03, having gone to the jobs pane and pressed Enter with a
+    /// stray character sitting in the composer: *"the pane own keyboard in a way, so enter
+    /// is a pane thing."* Every pane arm used to gate its own Enter on
+    /// `editor.text().is_empty()`, so **a keystroke aimed at the pane became "send what I
+    /// was typing"** — and what was in the composer was a `\`, which is what reached the
+    /// model as a prompt.
+    ///
+    /// Both halves are asserted, because both are the point: Enter is not a submit, and the
+    /// words are still there to be sent deliberately — held, not eaten. The second is the
+    /// property that makes this safe to do to a half-written line at all.
+    #[test]
+    fn a_panes_enter_is_the_panes_even_with_words_in_the_composer() {
+        let mut a = App::new(plain_cfg(80));
+        a.session_id = "s1".into();
+        a.apply(jobs_frame(
+            "s1",
+            vec![daemon_job("j1", "cargo test --workspace", true)],
+        ));
+        a.jobs_pane = true;
+        a.set_composer("\\");
+        let act = a.key(Key::Enter);
+        assert!(
+            !matches!(act, Some(Action::Prompt(_))),
+            "Enter in the jobs pane sent the composer instead of opening the job: {act:?}"
+        );
+        assert_eq!(
+            a.editor.text(),
+            "\\",
+            "and the line is held where it was — a pane that ate it would lose the words \
+             the operator had typed"
+        );
+        // **And the pane's own act happened**, which is the half that makes this ownership
+        // rather than mere suppression: Enter is not "swallowed while a pane is up", it is
+        // the pane's. Asserted because a blanket swallow would pass the two checks above
+        // and would be a worse answer — a key that does nothing where the operator asked
+        // for something.
+        assert!(
+            a.job_out.as_ref().is_some_and(|j| j.job == "j1"),
+            "Enter opened the job's output, which is what the pane's Enter means"
+        );
+
+        // **The other half: with no pane up, Enter is still the composer's.** A rule that
+        // stopped a bare prompt from sending would be a worse defect than the one it fixed.
+        //
+        // A *fresh* head rather than the one above, because that one now has the
+        // job-output view open — and the view owning Enter is the same rule working, not
+        // an exception to it. Asserting the control on a head with an overlay up would be
+        // asserting that the rule does not apply to overlays.
+        let mut b = App::new(plain_cfg(80));
+        b.session_id = "s1".into();
+        b.set_composer("\\");
+        assert!(
+            matches!(b.key(Key::Enter), Some(Action::Prompt(t)) if t == "\\"),
+            "with no pane open, Enter sends the line"
+        );
     }
 
     /// The daemon's answer to `ListJobs`, which is the only way a row gets here.
