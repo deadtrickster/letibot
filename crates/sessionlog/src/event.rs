@@ -1247,17 +1247,43 @@ pub enum SessionEvent {
     /// hub, so a head attached to the parent sees the subagent spawn and finish
     /// without subscribing to the subagent's own hub.
     ///
-    /// `state` is `running`, `done` or `failed`; `prompt` is the subtask's first
-    /// line (the same derivation the subagent's title uses), so a head shows what
-    /// the subagent was for without parsing the `task` call's arguments.
+    /// `state` is `opening`, `running`, `done` or `failed`.
     Subagent {
         /// The subagent's own session id. Named `subagent_id` rather than
         /// `session_id` because [`Envelope`] already carries the *parent*'s
         /// `session_id`, and a flattened duplicate field would fail to parse.
         subagent_id: String,
         state: String,
+        /// **The subtask's first line on the opening states, and the child's answer's
+        /// first line on the finish** — a field with two meanings, kept exactly as it
+        /// was so a head older than `task` below is unchanged.
+        ///
+        /// **A new head must not read the ROW from this.** Its meaning depends on
+        /// `state`, and on the finish it is no longer what the child was asked. Read
+        /// [`SessionEvent::Subagent::task`] for the row and
+        /// [`SessionEvent::Subagent::answer`] for the subtitle. The operator, reading
+        /// this pane: *"the first prompt is truncated too early"*, and the measured
+        /// case was a row of 122 characters which were the ANSWER, with the task — two
+        /// lines, ~250 characters — nowhere on the wire at all.
         prompt: String,
         role: String,
+        /// **The subtask this child was asked to do, in full, and the same string on
+        /// every state.**
+        ///
+        /// Carried whole — never truncated by the daemon — because it is the only copy
+        /// a head gets and the head truncates for a row as it does for everything else
+        /// it draws. `#[serde(default)]` so a daemon built before this field answers
+        /// with an empty string and a head falls back to `prompt`, which is the
+        /// pre-field behaviour rather than a blank row.
+        #[serde(default)]
+        task: String,
+        /// **The child's answer's first line, on the finishing state and nowhere else.**
+        ///
+        /// `None` while the child is opening, running, or has failed. The same string
+        /// `prompt` carries on the finish, given its own name so a reader does not have
+        /// to know the state to interpret it.
+        #[serde(default)]
+        answer: Option<String>,
     },
 
     /// A background job this session started has stopped running.

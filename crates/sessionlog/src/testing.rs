@@ -294,6 +294,8 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             state: "running".into(),
             prompt: "summarize ~/bin/letibot".into(),
             role: "coder".into(),
+            task: "summarize ~/bin/letibot".into(),
+            answer: None,
         },
         SessionEvent::JobSettled {
             job: "j7".into(),

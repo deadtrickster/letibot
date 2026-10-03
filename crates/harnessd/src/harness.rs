@@ -7300,13 +7300,21 @@ impl HarnessTaskRunner {
         // Publish the subagent's state on the **parent's** hub, so a head attached to
         // the parent sees the spawn and finish without subscribing to the subagent's
         // own hub. Same three states the journal records, same prompt.
-        let publish = |state: &str, prompt: &str| {
+        //
+        // **`task` is the whole subtask and `prompt` keeps its old two-meaning shape**
+        // (title on the opening states, the answer's first line on the finish) so a head
+        // older than the field sees exactly what it saw before. A new head reads the row
+        // from `task` and the subtitle from `answer` — see `SessionEvent::Subagent`.
+        let task = prompt.to_string();
+        let publish = |state: &str, said: &str, answer: Option<String>| {
             if let Some(hub) = self.registry.get(&parent) {
                 hub.publish(SessionEvent::Subagent {
                     subagent_id: sub_id.clone(),
                     state: state.to_string(),
-                    prompt: prompt.to_string(),
+                    prompt: said.to_string(),
                     role: seat.as_str().to_string(),
+                    task: task.clone(),
+                    answer,
                 });
             }
         };
@@ -7327,7 +7335,7 @@ impl HarnessTaskRunner {
             prompt: title.clone(),
             parent: parent.clone(),
         });
-        publish("opening", &title);
+        publish("opening", &title, None);
         progress(&match placement {
             Placement::Firecode => format!(
                 "opening subagent {} in a firecode VM: copying the workspace, booting",
@@ -7350,7 +7358,7 @@ impl HarnessTaskRunner {
                 prompt: why.clone(),
                 parent: parent.clone(),
             });
-            publish("failed", &why);
+            publish("failed", &why, None);
             why
         };
 
@@ -7432,7 +7440,7 @@ impl HarnessTaskRunner {
             prompt: title.clone(),
             parent: parent.clone(),
         });
-        publish("running", &title);
+        publish("running", &title, None);
         progress(&format!(
             "subagent {} open after {:.1}s — running; ctrl-g lists it, enter attaches",
             letibot_sessionlog::registry::short_id(&sub_id),
@@ -7454,7 +7462,7 @@ impl HarnessTaskRunner {
             prompt: first_line.clone(),
             parent: parent.clone(),
         });
-        publish("done", &first_line);
+        publish("done", &first_line, Some(first_line.clone()));
         Ok(match landed {
             Some(where_) => format!("{}\n\n[subagent placement] {where_}", reply.text),
             None => reply.text,

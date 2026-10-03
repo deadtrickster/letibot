@@ -660,11 +660,21 @@ impl Fold {
 #[derive(Debug, Clone)]
 struct SubagentState {
     session_id: String,
-    /// `running` | `done` | `failed`.
+    /// `opening` | `running` | `done` | `failed`.
     state: String,
-    /// The subtask's first line, the same derivation the subagent's title uses.
+    /// **The legacy field, and the pre-`task` fallback**: the subtask's first line on the
+    /// opening states, and the child's answer's first line once it has finished. A new
+    /// row reads [`SubagentState::task`]; this is here so a daemon older than that field
+    /// still draws what it always did.
     prompt: String,
     role: String,
+    /// **The subtask in full, from the event's `task`.** Empty against a daemon that
+    /// predates the field, and the pane then falls back to `prompt`.
+    task: String,
+    /// **The child's answer's first line**, `Some` only once it has finished — the
+    /// subtitle, kept apart from the row so a completion cannot be mistaken for the
+    /// question.
+    answer: Option<String>,
 }
 
 /// What one subagent's Enter opens: its tool output, read out of the subagent's
@@ -4315,6 +4325,8 @@ impl App {
                 state,
                 prompt,
                 role,
+                task,
+                answer,
             } => {
                 if let Some(row) = self
                     .subagents
@@ -4324,12 +4336,16 @@ impl App {
                     row.state = state;
                     row.prompt = prompt;
                     row.role = role;
+                    row.task = task;
+                    row.answer = answer;
                 } else {
                     self.subagents.push(SubagentState {
                         session_id: subagent_id,
                         state,
                         prompt,
                         role,
+                        task,
+                        answer,
                     });
                 }
                 self.redraw = true;
@@ -12832,11 +12848,22 @@ impl App {
                 == self
                     .subagents_sel
                     .min(self.subagents.len().saturating_sub(1));
+            // **The task, drawn whole; `prompt` is the pre-field fallback.** A `done` row
+            // drawn from `prompt` showed the child's ANSWER where the operator was looking
+            // for what they asked — measured, 122 characters of answer with the two-line
+            // task nowhere on the wire. Newlines are collapsed because the pane row is one
+            // line, and the whole task is one Enter away (the peek), which is the unfold
+            // the ask allowed.
+            let asked: String = if s.task.is_empty() {
+                s.prompt.clone()
+            } else {
+                s.task.split_whitespace().collect::<Vec<_>>().join(" ")
+            };
             let left = format!(
                 "{} {} {}",
                 if picked { "▸" } else { " " },
                 colour(&self.cfg, state_colour, mark),
-                without_control_lines(&s.prompt)
+                without_control_lines(&asked)
             );
             let left = if picked {
                 colour(&self.cfg, sgr::REVERSE, &left)
@@ -12847,10 +12874,16 @@ impl App {
             out.push(dim(
                 &self.cfg,
                 &format!(
-                    "       {} · role {} · {}{}",
+                    "       {} · role {} · {}{}{}",
                     short_id(&s.session_id),
                     without_control_lines(&s.role),
                     without_control_lines(&s.state),
+                    // **The answer as the SUBTITLE, where it belongs** — its own dim clause
+                    // rather than the row, which is the question.
+                    match (&s.answer, s.state.as_str()) {
+                        (Some(a), "done") => format!(" — {}", without_control_lines(a)),
+                        _ => String::new(),
+                    },
                     if s.state == "opening" {
                         " — not attachable yet"
                     } else {
@@ -24314,6 +24347,8 @@ mod tests {
                 state: "running".into(),
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
+                task: String::new(),
+                answer: None,
             },
         )));
         // A spawn that the head saw. The running count lives in the pane —
@@ -24348,6 +24383,8 @@ mod tests {
             state: "running".into(),
             prompt: "find the bug".into(),
             role: "coder".into(),
+            task: String::new(),
+            answer: None,
         };
         a.apply(ServerFrame::Event(env(1, spawn.clone())));
         a.key(Key::CtrlG);
@@ -24398,6 +24435,8 @@ mod tests {
                 state: "opening".into(),
                 prompt: "find the bug".into(),
                 role: "coder".into(),
+                task: String::new(),
+                answer: None,
             },
         )));
         a.key(Key::CtrlG);
@@ -24423,6 +24462,8 @@ mod tests {
                 state: "running".into(),
                 prompt: "find the bug".into(),
                 role: "coder".into(),
+                task: String::new(),
+                answer: None,
             },
         )));
         assert_eq!(a.subagents.len(), 1);
@@ -24444,6 +24485,8 @@ mod tests {
                 state: "running".into(),
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
+                task: String::new(),
+                answer: None,
             },
         )));
         a.key(Key::CtrlG);
@@ -24659,6 +24702,8 @@ mod tests {
                 state: "done".into(),
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
+                task: String::new(),
+                answer: None,
             },
         )));
         a.key(Key::CtrlG);
@@ -24699,6 +24744,8 @@ mod tests {
                 state: "running".into(),
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
+                task: String::new(),
+                answer: None,
             },
         )));
         a.apply(ServerFrame::Event(env(
@@ -24708,6 +24755,8 @@ mod tests {
                 state: "done".into(),
                 prompt: "Here is the summary.".into(),
                 role: "coder".into(),
+                task: String::new(),
+                answer: None,
             },
         )));
         assert_eq!(a.subagents.len(), 1, "done replaces running, not appends");
@@ -24716,6 +24765,52 @@ mod tests {
         let screen = a.screen(100, 24).join("\n");
         assert!(screen.contains("done"), "{screen}");
         assert!(screen.contains("Here is the summary."), "{screen}");
+    }
+
+    /// **The pane's row is the TASK, and the child's answer is the subtitle beside it.**
+    ///
+    /// The defect this pins, measured on the running head: a `done` row drew **122 characters
+    /// which were the child's ANSWER**, with the two-line task nowhere on the wire — because
+    /// `prompt` held a title on the opening states and the answer's first line on the finish,
+    /// and a field whose meaning depends on `state` cannot be read as the row. So the event
+    /// carries `task` whole (and never truncated by the daemon) and `answer` as its own field,
+    /// and this asserts both halves: the row is the question, the subtitle is the answer.
+    #[test]
+    fn a_subagent_row_shows_the_task_and_the_answer_beside_it() {
+        let mut a = app();
+        a.key(Key::CtrlG);
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "done".into(),
+                // The LEGACY meaning on the finish: the answer's first line. Kept, so an old
+                // head is unchanged.
+                prompt: "twelve rows have no reader".into(),
+                role: "coder".into(),
+                task: "audit the session store\nand say which rows are never read".into(),
+                answer: Some("twelve rows have no reader".into()),
+            },
+        )));
+        let frame = a.screen(120, 40);
+        let screen = frame.join("\n");
+        // **The whole task, flattened to the row** — both of its lines are there, and *both*
+        // words of it, which is the difference from the legacy field's first line alone.
+        assert!(
+            screen.contains("audit the session store and say which rows are never read"),
+            "{screen}"
+        );
+        // **And the answer is its own clause**, the subtitle, not the row.
+        assert!(screen.contains("twelve rows have no reader"), "{screen}");
+        let row = frame
+            .iter()
+            .find(|l| l.contains("audit the session store"))
+            .expect("the task's row");
+        assert!(
+            !row.contains("twelve rows have no reader"),
+            "the answer was drawn AS the task — the field-that-means-two-things defect is \
+             back: {row}"
+        );
     }
 
     /// **A CLICK ON THE PANE MOVES THE CURSOR TO THE ROW IT IS ON.**
@@ -27960,6 +28055,8 @@ mod tests {
                 state: "running".into(),
                 prompt: format!("summarise{HOSTILE}"),
                 role: "coder".into(),
+                task: String::new(),
+                answer: None,
             },
         )));
         b.subagents_pane = true;
@@ -33141,6 +33238,8 @@ mod tests {
                 state: "running".into(),
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
+                task: String::new(),
+                answer: None,
             },
         )));
         let screen = a.screen(100, 24);
@@ -33157,6 +33256,8 @@ mod tests {
                 state: "done".into(),
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
+                task: String::new(),
+                answer: None,
             },
         )));
         assert!(
