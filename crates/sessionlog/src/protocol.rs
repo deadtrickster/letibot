@@ -665,6 +665,35 @@ pub struct JobEntry {
     pub elapsed_ms: u64,
 }
 
+/// **What a head wants back from a peek** — the scrub of a replay, or the rows of a session.
+///
+/// The original answer is [`PeekShape::Events`] and it is the **default**, so a head that sends no
+/// such field gets exactly what it always got. That default is what makes this free: **a frame the
+/// head ASKS for can grow a field**, where a frame the daemon VOLUNTEERS cannot grow a variant —
+/// which is the version-4 argument the version notes keep making, and the reason `Peek` and
+/// `ReadJobOutput` each cost a version number when they arrived as new *frames*.
+///
+/// # Why rows exist, and it is the operator's correction of 2026-10-03
+///
+/// *“yes subagents are not even scratch session they are session, just sub sessions”* — a child
+/// **is** a session: the daemon holds it, it has rows, it has a store, and it can produce a
+/// snapshot. [`ServerFrame::Peeked`]’s own docstring is what forced the alternative — the events it
+/// returns are *“for reading, not for folding into the head's state”* — so a head could do nothing
+/// with them but draw them **by hand**. That is `sub_out_lines` in letibot and `subagent-out-lines`
+/// in leticl: the same plain-string renderer, written twice, because the wire left them nothing
+/// else to do. A head that asks for rows gets what an attach returns, draws it with the renderer it
+/// already has, and **deletes** its copy of the other one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PeekShape {
+    /// The retained scrollback, scrubbed exactly as a replay is. The default, and what a head that
+    /// does not ask for anything else keeps getting.
+    #[default]
+    Events,
+    /// **The session's own rows**, as a [`Snapshot`] — the same thing an attach answers with, and
+    /// needing no scrub because a view is already the durable half of a session’s frame stream.
+    Rows,
+}
+
 /// Head → daemon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "frame", rename_all = "snake_case")]
@@ -1045,7 +1074,15 @@ pub enum ClientFrame {
     /// Answered with [`ServerFrame::Peeked`] on the same stream; the connection's
     /// seat, its acks and its live events are untouched. Lazy by construction:
     /// nothing is read until this is sent, and sending it again is a fresh read.
-    Peek { session_id: String },
+    Peek {
+        session_id: String,
+        /// **What to read back.** Absent is [`PeekShape::Events`], which is what every existing
+        /// caller already gets, so this is additive on the wire in both directions: a daemon older
+        /// than the field ignores it and answers with events, and a head older than it never sends
+        /// it. See [`PeekShape`] for why rows exist at all.
+        #[serde(default)]
+        shape: PeekShape,
+    },
     /// **The daemon is a proxy: it answers from its caches, or from the store.**
     ///
     /// Its two in-memory rings are a **cache tuned for the normal case** — the tail of a
@@ -1291,6 +1328,18 @@ pub enum ServerFrame {
         session_id: String,
         dropped: u64,
         events: Vec<Envelope>,
+        /// **The session's rows, when the head asked for [`PeekShape::Rows`].**
+        ///
+        /// `Some` exactly when the request said `Rows`, and `None` otherwise — so a head can tell
+        /// *this daemon does not know the field* from *there was nothing to send*, which is the same
+        /// rule `Hello`'s own `snapshot` follows. Both are absent-means-old; neither is an error.
+        ///
+        /// **Boxed for `Hello`'s reason, and it is the same frame-size argument**: a snapshot is
+        /// two orders of magnitude larger than everything else on this wire, and an unboxed field
+        /// would cost *every* `ServerFrame` — the `Event` carrying a three-character delta
+        /// included — the space of the largest one.
+        #[serde(default)]
+        snapshot: Option<Box<Snapshot>>,
     },
     /// The answer to [`ClientFrame::FetchRow`]: a window of one row's body.
     ///

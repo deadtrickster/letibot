@@ -13,7 +13,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::mpsc::Sender;
 
-use crate::protocol::{Ack, Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
+use crate::protocol::{Ack, Caps, ClientFrame, PROTOCOL_VERSION, PeekShape, ServerFrame};
 use crate::wire::{FrameReader, FrameWriter, WireError};
 
 #[derive(Debug)]
@@ -583,12 +583,19 @@ impl HeadClient {
         Ok(())
     }
 
-    /// Read another session's scrollback without leaving this one. Answered with
-    /// a `Peeked` frame on the pump, like every other ask — a head that stopped
-    /// to wait for it would stop rendering the turn it is watching.
-    pub fn peek(&mut self, session_id: &str) -> Result<(), ClientError> {
+    /// Read another session's scrollback — or, with [`PeekShape::Rows`], its **rows** —
+    /// without leaving this one. Answered with a `Peeked` frame on the pump, like every
+    /// other ask — a head that stopped to wait for it would stop rendering the turn it is
+    /// watching.
+    ///
+    /// **The shape is asked for and never assumed.** `Events` is what this has always
+    /// sent, and what a head that draws the ring itself keeps sending; `Rows` is for a pane
+    /// that wants to draw a session the way it draws any other, which is why it exists at
+    /// all — see [`PeekShape`].
+    pub fn peek(&mut self, session_id: &str, shape: PeekShape) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::Peek {
             session_id: session_id.to_string(),
+            shape,
         })?;
         Ok(())
     }

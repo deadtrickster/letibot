@@ -3637,6 +3637,7 @@ impl App {
                 session_id,
                 dropped,
                 events,
+                snapshot: _,
             } => {
                 self.sub_out_pending = None;
                 let mut lines = subagent_out_lines(&events);
@@ -24076,6 +24077,7 @@ mod tests {
         a.apply(ServerFrame::Peeked {
             session_id: "s-sub-1".into(),
             dropped: 3,
+            snapshot: None,
             events: vec![
                 env(
                     1,
@@ -24152,6 +24154,7 @@ mod tests {
         a.apply(ServerFrame::Peeked {
             session_id: "s-sub-1".into(),
             dropped: 0,
+            snapshot: None,
             events: vec![env(
                 1,
                 SessionEvent::TranscriptContent {
@@ -24198,6 +24201,7 @@ mod tests {
         a.apply(ServerFrame::Peeked {
             session_id: "s-sub-1".into(),
             dropped: 0,
+            snapshot: None,
             events: vec![],
         });
         // An empty scrollback says so; it does not look like a missing session.

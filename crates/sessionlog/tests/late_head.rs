@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use letibot_sessionlog::client::{HeadClient, Inbound, pump};
 use letibot_sessionlog::event::{DeltaTarget, SessionEvent};
 use letibot_sessionlog::hub::Hub;
-use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
+use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, PeekShape, ServerFrame};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
 use letibot_sessionlog::server::{ServerHandle, serve, serve_conn};
 use letibot_sessionlog::testing::*;
@@ -458,6 +458,10 @@ fn a_peek_reads_another_session_without_moving_the_head() {
 
     w.write(&ClientFrame::Peek {
         session_id: "s-child".into(),
+        // **The default, spelled.** This test is about the ring, and it is also the assertion
+        // that the default shape really is `Events`: a head that asks for nothing keeps getting
+        // exactly what it always got, which is what makes the rows field additive.
+        shape: PeekShape::Events,
     })
     .expect("peek");
     match r.read::<ServerFrame>().expect("peeked") {
@@ -465,9 +469,15 @@ fn a_peek_reads_another_session_without_moving_the_head() {
             session_id,
             dropped,
             events,
+            snapshot,
         } => {
             assert_eq!(session_id, "s-child");
             assert_eq!(dropped, 0);
+            assert!(
+                snapshot.is_none(),
+                "a snapshot arrived unasked: the default shape is events, and a head that does \
+                 not ask for rows must not be sent one"
+            );
             assert!(
                 events.iter().any(|e| matches!(
                     &e.event,
@@ -480,6 +490,121 @@ fn a_peek_reads_another_session_without_moving_the_head() {
     }
 
     // The connection never moved: the parent's next event still arrives here.
+    parent.publish(warn("still here"));
+    assert!(matches!(
+        r.read::<ServerFrame>().expect("parent event"),
+        ServerFrame::Event(_)
+    ));
+}
+
+/// **The other shape a peek can answer with: the session's own ROWS** — and it is the operator's
+/// correction of 2026-10-03 that made it exist: *"yes subagents are not even scratch session they
+/// are session, just sub sessions."*
+///
+/// # Why the ring was not enough, in one line
+///
+/// [`ServerFrame::Peeked`]'s own docstring is what forced the second renderer: the events it
+/// returns are *"for reading, not for folding into the head's state"* — so a head could do nothing
+/// with them but **draw them by hand**, and that hand-written plain-string renderer is
+/// `sub_out_lines` in letibot and `subagent-out-lines` in leticl. A child is a session, so it can
+/// be asked for what an attach returns: rows, with their bodies. Both heads then draw it with the
+/// renderer they already have and **delete** their copy of the other one.
+///
+/// # The three properties, and each one is a way this could be wrong
+///
+/// * **The rows are the CHILD's.** A peek that answered with the caller's own session would be the
+///   same frame with the wrong contents, which is the one failure a head cannot detect.
+/// * **The rows carry the BODY.** That is the whole reason for the shape: the ring carries an
+///   announcement with no text and a content event beside it, and a snapshot's row carries the
+///   text. This asserts the text, because a row without its body is the defect wearing the fix's
+///   frame name.
+/// * **The two shapes are alternatives, not a pair.** Sending both would put one session on the
+///   wire twice and leave a head free to draw it twice — and it would cost the snapshot's bytes on
+///   every peek that only wanted the ring.
+#[test]
+fn a_peek_can_ask_for_rows_and_gets_the_session_it_names() {
+    let registry = Registry::new();
+    let wiring = SessionWiring::default();
+    let parent = registry
+        .create("s-parent", "parent", wiring.clone())
+        .expect("create");
+    let child = registry.create("s-child", "child", wiring).expect("create");
+    child.publish(turn_started("t2"));
+    // A row, announced and then given its body — the same two steps the daemon performs.
+    child.publish(appended("s-child.0", "user"));
+    child.publish(content("s-child.0", "a child's own words"));
+
+    let (a, b) = UnixStream::pair().expect("pair");
+    let reg = registry.clone();
+    let _server = std::thread::spawn(move || {
+        let _ = serve_conn(reg, a);
+    });
+    let mut w = FrameWriter::new(b.try_clone().expect("clone"));
+    let mut r = FrameReader::new(b);
+
+    w.write(&ClientFrame::Attach {
+        protocol_version: PROTOCOL_VERSION,
+        session_id: "s-parent".into(),
+        since_seq: 0,
+        kind: "tui".into(),
+        identity: "test".into(),
+        caps: Caps::default(),
+    })
+    .expect("attach");
+    assert!(matches!(
+        r.read::<ServerFrame>().expect("hello"),
+        ServerFrame::Hello { .. }
+    ));
+
+    w.write(&ClientFrame::Peek {
+        session_id: "s-child".into(),
+        shape: PeekShape::Rows,
+    })
+    .expect("peek");
+    match r.read::<ServerFrame>().expect("peeked") {
+        ServerFrame::Peeked {
+            session_id,
+            events,
+            snapshot,
+            ..
+        } => {
+            assert_eq!(
+                session_id, "s-child",
+                "the answer names the session that was asked for, not the one that asked"
+            );
+            assert!(
+                events.is_empty(),
+                "the shapes are alternatives rather than a pair: one session must not travel \
+                 twice in one frame, or a head is free to draw it twice: {events:?}"
+            );
+            let snap = snapshot.expect("rows were asked for and no snapshot came");
+            assert_eq!(snap.session_id, "s-child");
+            let row = snap
+                .items
+                .iter()
+                .find(|it| it.item_id == "s-child.0")
+                .expect("the child's own row is in the child's snapshot");
+            // **The body**, which is the one thing this shape exists to deliver.
+            let text = match row.item.as_ref() {
+                Some(letibot_transcript::TranscriptItem::User { parts, .. }) => parts
+                    .iter()
+                    .find_map(|p| match p {
+                        letibot_transcript::UserPart::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
+                other => panic!("expected the child's user row, got {other:?}"),
+            };
+            assert_eq!(
+                text, "a child's own words",
+                "the row arrived without its body — which is the announcement the ring already \
+                 carried, wearing the fix's frame name"
+            );
+        }
+        other => panic!("expected Peeked, got {other:?}"),
+    }
+
+    // And this is still a READ: the parent's own stream carries on untouched.
     parent.publish(warn("still here"));
     assert!(matches!(
         r.read::<ServerFrame>().expect("parent event"),
@@ -521,6 +646,7 @@ fn a_peek_at_an_unknown_session_is_rejected_by_name() {
 
     w.write(&ClientFrame::Peek {
         session_id: "s-absent".into(),
+        shape: PeekShape::Events,
     })
     .expect("peek");
     match r.read::<ServerFrame>().expect("rejected") {

@@ -37,8 +37,8 @@ use std::thread::JoinHandle;
 
 use crate::hub::{CommandKind, Delivery, Hub, Reply};
 use crate::protocol::{
-    ClientFrame, HEAD_RUN_TOOLS, PROTOCOL_VERSION, REJECT_NOT_IN_STORE, REJECT_UNKNOWN_SESSION,
-    ServerFrame,
+    ClientFrame, HEAD_RUN_TOOLS, PROTOCOL_VERSION, PeekShape, REJECT_NOT_IN_STORE,
+    REJECT_UNKNOWN_SESSION, ServerFrame,
 };
 use crate::registry::{Registry, SessionWiring};
 use crate::wire::{FrameReader, FrameWriter, WireError};
@@ -739,7 +739,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
-            Ok(ClientFrame::Peek { session_id }) => {
+            Ok(ClientFrame::Peek { session_id, shape }) => {
                 // A read, not a move: the seat, its acks and its live events are
                 // untouched, and the answer is the named session's scrollback
                 // scrubbed exactly as a replay would be — a peek IS a replay, so
@@ -747,14 +747,35 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 // this daemon does not hold is a Rejected naming it, never an
                 // empty Peeked: an empty answer and a missing session must not
                 // look alike.
+                //
+                // **`PeekShape::Rows` answers with the session's own view instead**, and it is
+                // the same read rather than a second one: a child IS a session — the operator,
+                // 2026-10-03: *"yes subagents are not even scratch session they are session, just
+                // sub sessions"* — so the rows an attach would be given are the rows this returns.
+                // **The two shapes are alternatives and not a pair**: a head that asked for rows
+                // gets the snapshot and an EMPTY ring, because sending both would put the same
+                // session on the wire twice and leave a head free to draw it twice.
+                //
+                // **No scrub on the rows**, and the asymmetry is the point: `scrub_replay`
+                // exists because a ring of *events* carries interactive-only frames a late reader
+                // must not act on, and a `Snapshot` is built from the view — which is already the
+                // durable half of that stream. Scrub what is a replay; a view is not one.
                 match registry.resolve(&session_id) {
                     Some(hub) => {
-                        let retained = hub.retained();
-                        let (kept, _) = crate::scrub::scrub_replay(retained.iter(), &retained);
+                        let (events, snapshot) = match shape {
+                            PeekShape::Rows => (Vec::new(), Some(Box::new(hub.snapshot()))),
+                            PeekShape::Events => {
+                                let retained = hub.retained();
+                                let (kept, _) =
+                                    crate::scrub::scrub_replay(retained.iter(), &retained);
+                                (kept, None)
+                            }
+                        };
                         let f = ServerFrame::Peeked {
                             session_id: hub.session_id(),
                             dropped: hub.dropped(),
-                            events: kept,
+                            events,
+                            snapshot,
                         };
                         writer.lock().unwrap().write(&f)?;
                     }

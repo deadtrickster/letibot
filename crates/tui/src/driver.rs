@@ -590,7 +590,8 @@ impl Link {
                     // which session this connection is in, and nothing is read until the
                     // operator asked — the laziness is the point.
                     Action::Peek(id) => {
-                        self.client.peek(&id)?;
+                        self.client
+                            .peek(&id, letibot_sessionlog::protocol::PeekShape::Events)?;
                     }
                     // The same shape as `Peek`: a read that comes back as an event on the
                     // log rather than a frame on this connection, and the pane is built from
