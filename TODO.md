@@ -326,6 +326,83 @@ is therefore those few lines, and the reading in the bullet above is still the e
 reading rather than measurement, stated here rather than left to look stronger than it is. A `Harness`
 fixture is the thing to build if even that is to be asserted.
 
+## R58 — subagent TREES: delegation to a configurable depth, and no settlement without a worker — **a FEATURE, ruled 2026-10-03; the framing below is settled and the design is NOT started**
+
+> **A feature, not a fix, and keeping that distinction is the first thing this row is for.** It exists
+> because a commit message overstated a live defect that does not exist.
+
+### The premise, verified rather than taken
+
+Delegation is **one level today by construction**, and the guarantee lives in the seat tables rather
+than in any guard. `crates/tools/src/runtime.rs`'s `roles::m2_coder()` — the seat every subagent is
+re-seated to (`Seat::Coder`, `harnessd::config`, which re-seats for the tools and must not re-confine)
+— names exactly
+
+    read · write · edit · grep · glob · read_spill · todo · bash
+
+and **`task` is not among them**, while `roles::orchestrator()` and `roles::leticode()` both name
+`task` and `task_result`. So a grandchild cannot arise today and there is **no live grandchild
+case to repair**.
+
+**This corrects `fd4aaad`'s commit message, which described that case as a live defect.** It is not:
+it is the case that arrives the day delegation gains a second level, and the honest word for it is a
+capability that is absent by construction rather than one that is broken.
+
+### The ruling
+
+**Trees are allowed, to a configurable depth, default 3.**
+
+### Four pieces, and the first three are mechanical
+
+1. **Seat `task` where the depth allows it.** `task` is `Access::Session`, asserted and argued in
+   `builtins/task.rs`: *"`task` runs no host command itself — it delegates to a child turn whose own
+   gate governs its write/exec/network calls"*, and *"a subagent that could not even be spawned
+   without a head would never run."* That is the same class as `todo`, which `m2_coder`'s own comment
+   records as needing **no gate change** — so this piece is a seating decision and not a permission
+   one. It does meet §8.4's ceiling: `m2_coder` is seven tools without `bash` and eight with it, so
+   the daemon's `max_tools += 1` shape (`harness.rs`, the `bash` and `web_fetch` precedents) is what
+   the addition follows.
+2. **A depth counter on the spawn path**, so `task`'s seating is a function of where the child sits
+   rather than of a flag somebody has to remember.
+3. **The knob**, default 3, beside the other session settings.
+4. **Orphan-proofing, which is the load-bearing piece and the reason a depth of 1 is not simply
+   raised to 3.** See below.
+
+### The piece that is not mechanical: a settlement must ring a bell that has a worker
+
+The working design, and it is the whole of what makes depth safe: **one slots list and one watcher
+set per TREE, rooted at the top session** — so a settlement always rings a bell that has a worker,
+and **any ancestor can collect the handle**.
+
+That is R57’s own finding with one more level under it. R57 is about a settlement nobody hears
+(the bell and the worker are not paired, and the child's completion is a firing rather than a
+wake); at depth > 1 the same defect gains a floor: a child's child settles into a tree whose root may
+be the only worker left, and a handle held by the wrong level is a handle no key reaches. The shape
+above is what makes "impossible at any depth" a property of the structure rather than a rule
+re-checked at each level.
+
+**Not to be confused with T24, and the word *orphan* is what conflates them.** T24 is about
+**processes**: cgroups, worktrees, tmux sessions, what a child leaves running. This is about
+**handles**: the slots list and the watcher set that turn a settlement into a wake. Two different
+orphans, two different owners, and neither fix touches the other.
+
+**still open?** `grep -rn "max_depth" crates/harnessd/src/ crates/tools/src/` finds **nothing**, so
+no spawn budget exists anywhere. `grep -rn depth crates/harnessd/src/ | grep -v slash.rs` finds
+exactly two lines and **neither is about spawning** — `sessions.rs:1273` and `config.rs:252`, both
+prose about the model's *context* depth (*"depth was measured not to hurt"*), which is the other
+meaning of the word. And `grep -n '"task"' crates/tools/src/runtime.rs` names it twice: `orchestrator`
+and `leticode`, and not `m2_coder`. Nothing here is started.
+
+**One naming consequence, from that grep rather than from taste.** `depth` in this tree already means
+the *model's* depth (`config.rs:252`), so a knob called `depth` would be two quantities under one word
+in one config file — name it for what it is (`max_subagent_depth`, or `tree_depth`) before anything
+else reads it.
+
+**done when** a session at depth 3 spawns a child that spawns a child, each child's settlement wakes
+the tree exactly once, **every ancestor's handle can be collected from any level**, and a depth one
+past the knob is refused by name rather than by a stack that quietly runs out — with the correction
+above carried wherever `fd4aaad` is read.
+
 ## R18 — every hand-rolled lexer replaced by rano + tree-sitter — **given 2026-09-20**
 
 > lets extend todo with this task - completely replace handrolled code with rano and
