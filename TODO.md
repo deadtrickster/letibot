@@ -206,6 +206,14 @@ Two ways out, both honest, and they are the operator's to pick:
     changes, one pane key stays divergent (which it already is: jobs is `ctrl-q` here and `ctrl-j`
     there, and nobody has minded).
 
+**The operator's answer, 2026-10-03: *"yes leticl reworked hotkeys"*** — read as the FIRST route,
+because that is the only reading in which leticl's rework is the reason rather than the trivia: leticl
+has already paid for the rework, so this head converges with it. todos → `ctrl-t`, the payload window →
+`ctrl-v` ("view", and free — `term.rs`'s own comment lists `0x16` as unclaimed), and `ctrl-p` is the
+hold's. The words and the marker sentence are unchanged from the agreement above. If that reading is
+wrong, one word stops it — and it is worth the one word, because the cost of being wrong here is the
+reader's muscle memory rather than a compile error.
+
 **still open?** `grep -rn "frozen\|paint-wanted-p" crates/tui/src/` — no hold, no gate.
 
 **done when** a multi-round turn on their head writes nothing between the freeze and the release (the
@@ -289,15 +297,23 @@ is narrower than *no wake*: **a child's finish is not a firing.**
     missed), because the measurement above cannot distinguish *the code is wrong* from *the code was
     not in the binary* — and it is the second.
 
-**The gap that remains, and it is mine.** The last hop has **never been executed by any test**: this
-tree tests the notice *functions* (`completion_notice`, `harness.rs:7764`) and the *watcher*
-(`a_subagent_settles_through_the_jobs_own_channel`, `jobwatch.rs:967`), and nothing anywhere asserts
-that `wake()` turns a queued child into the Agent row — on the JOB side either. That is the same shape
-as R53 §1.2 (a docstring standing where an assertion should be), and it is why *"nothing fired"* could
-be reported without anything in CI disagreeing. The test to write is one: arm no monitor, finish a
-`FakeTask`, assert `wake()` returns a turn and the submitted item is `Speaker::Agent` and names the
-child. That is leticl's `done when` as an assertion, and it is the thing to land before asking anybody
-to watch a screen again.
+**The gap that remains, and it is mine — measured precisely, since the first version of this paragraph
+overclaimed it.** The chain decomposes, and all but one piece is asserted:
+
+| piece | asserted by |
+|---|---|
+| the completion is queued, with `kind: Subagent` | `a_subagent_settles_through_the_jobs_own_channel` (`jobwatch.rs:967`) |
+| **the bell RINGS** for a child (`Work::Woken`) | the same test, `jobwatch.rs:1016` |
+| a completion is taken once, not left for the next wake | the same test |
+| a job's sentence | `a_completion_notice_names_the_job_and_says_do_not_wait` (`harness.rs:7764`) |
+| **a child's sentence** | **`8533d84`** — landed, and it did not exist before |
+| **`Harness::wake()`'s own body**: the partition and the `Speaker::Agent` item | **nothing, on either kind** |
+
+So the unexecuted part is that one body. It cannot be reached by a unit test, and this crate has **no
+fixture that builds a `Harness` at all** — every harnessd test is a pure-function unit test or a
+registry-level integration test — which is *why* the hop has none, and is the thing to build if the hop
+is to be asserted rather than read. Until then the reading in the bullet above is the evidence, and it
+is reading rather than measurement; that is stated here rather than left to look stronger than it is.
 
 ## R18 — every hand-rolled lexer replaced by rano + tree-sitter — **given 2026-09-20**
 
