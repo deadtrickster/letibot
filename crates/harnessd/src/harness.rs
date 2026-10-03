@@ -7800,6 +7800,86 @@ mod tests {
         assert!(text.contains("command not recorded"), "{text}");
         assert!(!text.contains("``"), "an empty pair of backticks: {text}");
     }
+    /// **The child's sentence, which had no test, and it is the one the model reads.**
+    ///
+    /// `completion_notice`'s twin on the subagent side: same channel, same wake, and the text is
+    /// again the deliverable. It is the *whole* of what the parent is handed when a child finishes
+    /// between turns, so what it names and what it promises are asserted rather than left to the
+    /// docstring — which is exactly the gap that let *"nothing fired"* be reported without anything
+    /// in CI disagreeing about whether the notice could fire at all.
+    ///
+    /// **Two functions rather than a flag on one**, and the first assertion is why: the verb a child
+    /// is read with is `task_result`, not `job_output`, so a model that gets the wrong one is being
+    /// sent to a door that does not open. The second is that a child's completion carries an ANSWER
+    /// where a job's carries a command's output, and the parent that is told only *it stopped* has to
+    /// go and ask — which is the poll this whole path exists to end.
+    #[test]
+    fn a_childs_completion_names_the_child_and_points_at_task_result() {
+        let one = JobCompletion {
+            kind: BackgroundKind::Subagent,
+            job: "s-1-sub-1".into(),
+            // A subagent runs no command, and the field must not quietly hold an answer.
+            command: String::new(),
+            state: "done".into(),
+            produced: 0,
+            elapsed_ms: 0,
+            detail: "two facts off a fixture".into(),
+        };
+        let text = subagent_notice(&[one.clone()]);
+        // The label, and it is what tells this row from a job's: one channel, two nouns.
+        assert!(
+            text.starts_with("[task]"),
+            "labelled like a monitor: {text}"
+        );
+        assert!(
+            text.contains("a subagent you started has finished"),
+            "{text}"
+        );
+        assert!(text.contains("`s-1-sub-1`"), "{text}");
+        assert!(text.contains("done"), "{text}");
+        // **What the child SAID.** Without this the notice is a doorbell with no answer behind it:
+        // the parent is told something happened and must still go and read.
+        assert!(text.contains("two facts off a fixture"), "{text}");
+        // The half that is the fix and not the footnote, in the job side's own words.
+        assert!(text.contains("do not need to wait"), "{text}");
+        assert!(text.contains("task_result"), "{text}");
+        assert!(
+            !text.contains("job_output"),
+            "a subagent is read with `task_result`; sending the parent to `job_output` is a door \
+             that does not open: {text}"
+        );
+
+        // **A child that said nothing gets no empty field.** The job side guards an empty command
+        // (`` `` ``); the field that can be empty here is `detail`, and the shape it would leave is
+        // a line ending in a colon with nothing after it.
+        let bare = subagent_notice(&[JobCompletion {
+            detail: String::new(),
+            ..one.clone()
+        }]);
+        assert!(
+            !bare.contains("done:"),
+            "an empty detail drew a colon and nothing after it: {bare}"
+        );
+        assert!(bare.contains("`s-1-sub-1` done"), "{bare}");
+
+        // **Two children are one notice, two lines, and the plural sentence** — a round that spawned
+        // a pair reports a pair rather than making the reader count the list themselves.
+        let pair = subagent_notice(&[
+            one.clone(),
+            JobCompletion {
+                job: "s-1-sub-2".into(),
+                ..one.clone()
+            },
+        ]);
+        assert!(
+            pair.contains("2 subagents you started have finished"),
+            "{pair}"
+        );
+        assert!(
+            pair.contains("s-1-sub-1") && pair.contains("s-1-sub-2"),
+            "{pair}"
+        );
+    }
 
     /// **A finished foreground command is not a job anybody acts on.**
     ///
