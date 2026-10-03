@@ -148,7 +148,7 @@ a head can tell *ignored* from *not yet*; and a two-round stream on each head sh
 across every round boundary and down only at the marked end — asserted, not watched: a test per head,
 and on this head that test replaces the one that currently pins the flicker.
 
-## R56 — the view can be held, so a selection survives a streaming turn — **leticl has it, this side does not (`c9634bc`)**
+## R56 — the view can be held, so a selection survives a streaming turn — **BOTH HEADS HAVE IT (`c9634bc` leticl, `2b49304` here)**
 
 The operator, on losing a text selection while a turn streams: *"leticl resets selection if screen
 wasnt scrolled too. so both should not do it if anything selected. whether it means stopping render and
@@ -214,7 +214,13 @@ hold's. The words and the marker sentence are unchanged from the agreement above
 wrong, one word stops it — and it is worth the one word, because the cost of being wrong here is the
 reader's muscle memory rather than a compile error.
 
-**still open?** `grep -rn "frozen\|paint-wanted-p" crates/tui/src/` — no hold, no gate.
+**still open?** No — `2b49304` is the whole of it here: `App::toggle_hold` on `ctrl-p`,
+`App::screen`'s one-frame freeze with the marker on it, `App::take_redraw`'s refusal, and
+the panes moved to make room (`todos` → `ctrl-t`, the payload window → `ctrl-v`). The route
+taken is the FIRST one the chord section above offers — the mirror of leticl — which is what
+the operator's *"yes leticl reworked hotkeys"* was read as, and it is recorded as a reading
+rather than a ruling because being wrong costs muscle memory and no compiler catches it.
+`a_held_view_draws_the_same_frame_while_the_turn_streams` drives all three clauses.
 
 **done when** a multi-round turn on their head writes nothing between the freeze and the release (the
 byte-level assertion leticl's suite makes), the marker appears exactly once, and the release says how
