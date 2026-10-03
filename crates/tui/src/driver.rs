@@ -589,9 +589,18 @@ impl Link {
                     // pump and the output pane is built from it. Nothing here changes
                     // which session this connection is in, and nothing is read until the
                     // operator asked — the laziness is the point.
+                    //
+                    // **Rows, and the shape is the head's own decision.** A child is a
+                    // session, so this pane is drawn by the one renderer that draws rows
+                    // (`sub_out_from_rows`), and asking for them here is what makes that the
+                    // ordinary path rather than the exception. The daemon's answer is still
+                    // `Peeked` with a `snapshot` that may be `None` — a daemon built before
+                    // the field ignores the shape and answers with its ring — and *that* is
+                    // the fallback `SubOut::degraded` puts on the screen, so the asking head
+                    // does not have to be the one that says which it got.
                     Action::Peek(id) => {
                         self.client
-                            .peek(&id, letibot_sessionlog::protocol::PeekShape::Events)?;
+                            .peek(&id, letibot_sessionlog::protocol::PeekShape::Rows)?;
                     }
                     // The same shape as `Peek`: a read that comes back as an event on the
                     // log rather than a frame on this connection, and the pane is built from

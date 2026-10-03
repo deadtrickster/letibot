@@ -723,9 +723,17 @@ enum HeadSetting {
 #[derive(Debug, Clone)]
 struct SubOut {
     session_id: String,
-    /// One line per rendered row: a `· name — outcome` header per tool result,
-    /// the payload verbatim under it, and the spill locators at the end.
+    /// One line per rendered row — **and which renderer produced them is [`SubOut::degraded`]'s
+    /// business**: the session's own rows go through `item_lines`, the same one every row of the
+    /// transcript uses, and the event-ring fallback goes through `subagent_out_lines`.
     lines: Vec<String>,
+    /// **The daemon answered with the event ring rather than the session's rows.**
+    ///
+    /// `Peeked::snapshot` is `None` when the daemon predates the field, or when the peek did not ask
+    /// for rows — so the fallback is necessary, and the operator's rule is that a fallback has to be
+    /// *visible*: a degraded render and a plain one must not look alike, or a reader cannot tell
+    /// whether they are looking at a session or at a list of its events.
+    degraded: bool,
     /// Lines hidden off the bottom. Zero is "following the tail"; the pane draw
     /// clamps it, because only the draw knows the visible height.
     scroll: usize,
@@ -733,6 +741,11 @@ struct SubOut {
     spill: Option<String>,
     /// Events that fell off the daemon's scrollback before this read — the same
     /// disclosure a `Hello` makes, because a peek is a replay.
+    ///
+    /// **Kept across the rewrite and it had to be**: a snapshot is bounded by the daemon's view
+    /// bounds exactly as the ring is by its cap, so a trimmed read must still say it was trimmed.
+    /// A missing answer rendering as an empty one is `card::Outcome::Abstained`'s rule, one pane
+    /// along.
     dropped: u64,
 }
 
@@ -3752,22 +3765,35 @@ impl App {
                 session_id,
                 dropped,
                 events,
-                snapshot: _,
+                snapshot,
             } => {
                 self.sub_out_pending = None;
-                let mut lines = subagent_out_lines(&events);
+                // **The session's rows, when the daemon sent them** — and the whole point of the
+                // field is that this is the ORDINARY path now. A child is a session (the operator,
+                // 2026-10-03: *"yes subagents are not even scratch session they are session, just
+                // sub sessions"*), so its rows are drawn by the one renderer that draws rows, and
+                // the hand-rolled plain-string path below is what an older daemon falls back to.
+                let (lines, degraded) = match &snapshot {
+                    Some(s) => (self.sub_out_from_rows(&s.items), false),
+                    None => (subagent_out_lines(&events), true),
+                };
+                let mut lines = lines;
                 if lines.is_empty() {
-                    lines.push(
-                        "    this subagent's scrollback has neither an answer nor tool \
-                         output. It may still be running, or its rows may have fallen \
-                         off the daemon's ring."
+                    lines.push(match snapshot {
+                        // A session with nothing in it is a different statement from a session
+                        // whose rows could not be read, and the two must not look alike.
+                        Some(_) => "    this session has no rows yet.".to_string(),
+                        None => "    this subagent's scrollback has neither an answer nor tool \
+                                  output. It may still be running, or its rows may have fallen \
+                                  off the daemon's ring."
                             .to_string(),
-                    );
+                    });
                 }
                 let spill = spill_sub_out(&session_id, &lines);
                 self.sub_out = Some(SubOut {
                     session_id,
                     lines,
+                    degraded,
                     scroll: 0,
                     spill,
                     dropped,
@@ -12841,10 +12867,88 @@ impl App {
         out.into_iter().map(|l| trim_to(&l, w)).collect()
     }
 
-    /// The output view: a terminal, not a document. The tail shows by default;
-    /// arrows walk back toward the beginning; `scroll` counts lines hidden off
-    /// the bottom and is clamped here, where the visible height is actually
-    /// known — a key handler cannot clamp what it cannot see.
+    /// **A peeked session's rows, drawn by the renderer every other row goes through** — the
+    /// deletion this whole change exists for.
+    ///
+    /// # What it replaces, and it was not the renderer's fault
+    ///
+    /// A child's output used to be built as plain strings by hand (`subagent_out_lines`), so it had
+    /// none of the markdown, none of the air rule and none of the tool cards a parent's rows have —
+    /// **in both heads**, leticl having inherited the shape faithfully. The defect was in the WIRE:
+    /// `Peeked` answered with events *"for reading, not for folding into the head's state"*, which
+    /// left a head nothing to do with them but draw them by hand. `Peeked::snapshot` is that fixed
+    /// and this is the renderer half: `item_lines`, once, with the walk's own separator rule.
+    ///
+    /// # Two decisions worth stating
+    ///
+    /// * **Rendered once, when the rows land; not per frame.** The pane is a static list of a
+    ///   finished read, and `App::screen` runs tens of times a second — see its own note on the cost
+    ///   of a frame. The width is the frame's at the moment of the peek, which is the same width the
+    ///   pane's own `trim_to` then clamps against.
+    /// * **`targets` is seeded from the snapshot's own turn**, because that is where a row's display
+    ///   target lives: an assistant row carries the arguments its calls were proposed with, and a
+    ///   child's snapshot carries that turn. Rows whose calls are not in it render their correlation
+    ///   id instead of a file name, which is `card::Phase::Replayed`'s rule — absent, not invented.
+    fn sub_out_from_rows(&self, items: &[SnapshotItem]) -> Vec<String> {
+        let cfg = self.cfg.clone();
+        let mut targets: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for it in items {
+            if let Some(TranscriptItem::Assistant { tool_calls, .. }) = it.item.as_ref() {
+                for c in tool_calls {
+                    targets.insert(
+                        c.id.clone(),
+                        letibot_sessionlog::display_target(&c.arguments),
+                    );
+                }
+            }
+        }
+        let mut out: Vec<String> = Vec::new();
+        // The walk's own separator rule: air where the KIND changes, and none between two activity
+        // rows. One rule for the transcript and for this pane, or the pane is a second renderer
+        // again in the one place nobody would look.
+        let mut prev: Option<RowClass> = None;
+        for (i, it) in items.iter().enumerate() {
+            let answered = round_results(items, i);
+            let ctx = ItemCtx {
+                cfg: &cfg,
+                think: Fold::Folded,
+                tools: Fold::Folded,
+                raw: false,
+                targets: &targets,
+                answered: &answered,
+                // No durations, no diffs and no approvals: this head did not watch these calls run,
+                // and the maps that carry them are keyed by THIS session's item ids. The renderer
+                // already says *replayed* for all three rather than inventing one.
+                drawn_live: false,
+                elapsed_ms: None,
+                edit: None,
+                decision: None,
+                bound: None,
+                // Nothing here is this head's own echo, so the mark never appears.
+                echo_mark: QUEUED,
+                echo_open: false,
+                rung: Verbosity::Normal,
+                diff_split: self.diff_split,
+                payload_view: None,
+                payload_newest: None,
+            };
+            let (class, rows) = item_lines(it, &ctx);
+            if rows.is_empty() {
+                continue;
+            }
+            let pack = prev == Some(RowClass::Activity) && class == RowClass::Activity;
+            if !out.is_empty() && !pack {
+                out.push(String::new());
+            }
+            out.extend(rows);
+            prev = Some(class);
+        }
+        out
+    }
+
+    /// The output view: the session's own rows, as a terminal scrolls them — or, when the daemon
+    /// answered with its event ring, the plain fallback sayings so on the screen.
     fn sub_out_lines(&mut self, room: usize) -> Vec<String> {
         let Some(v) = self.sub_out.as_mut() else {
             return Vec::new();
@@ -12862,6 +12966,18 @@ impl App {
                     v.dropped,
                     if v.dropped == 1 { "" } else { "s" }
                 ),
+            ));
+        }
+        // **A degraded render says so.** The rows could not be read — an older daemon, which
+        // ignores the shape a head asks with — so what follows is the event ring drawn plainly.
+        // A reader who cannot tell the two apart cannot tell a session from a list of its events,
+        // and the sentence names the way to get the real one.
+        if v.degraded {
+            out.push(dim(
+                &self.cfg,
+                "    this daemon answered with its event ring, not this session's rows — what \
+                 follows is drawn plainly, without the tool cards or the markdown. A daemon built \
+                 with `Peeked::snapshot` draws it as a session.",
             ));
         }
         out.push(String::new());
@@ -24384,6 +24500,11 @@ mod tests {
         let v = a.sub_out.as_ref().expect("the view opened");
         assert_eq!(v.session_id, "s-sub-1");
         assert_eq!(v.dropped, 3);
+        // **No snapshot, so this is the FALLBACK and it says so.** The daemon answered
+        // with its event ring because that is all it had to answer with; a reader who
+        // could not tell this from a session drawn from its rows would be reading a
+        // different thing than they think — the whole reason `degraded` exists.
+        assert!(v.degraded, "an event-ring answer is the fallback");
         let text = v.lines.join("\n");
         assert!(text.contains("· bash — ok"), "{text}");
         assert!(text.contains("line one"), "{text}");
@@ -24413,6 +24534,82 @@ mod tests {
         let screen = a.screen(100, 24).join("\n");
         assert!(screen.contains("subagent output"), "{screen}");
         assert!(screen.contains("3 earlier events"), "{screen}");
+        // And the degraded sentence reaches the screen, naming the way to the real draw.
+        assert!(screen.contains("event ring"), "{screen}");
+    }
+
+    /// **R58's other half: a peek answered with ROWS draws a session, not a dump.**
+    ///
+    /// The daemon's `Peeked::snapshot` is the child's own transcript — the same rows the
+    /// transcript renders — so the pane goes through `item_lines`, and what a reader sees is a
+    /// **tool card** (`▸ Ran ls -la /etc · ok · …`), not the plain `· bash — ok` strings the
+    /// event-ring fallback is stuck with. The two must not look alike, and the way this pins
+    /// that is a word only one of the two renderers produces: the verb the card maps `bash` to,
+    /// with the target its own arguments seed.
+    ///
+    /// And it asserts the absence of the degraded sentence, because a render that shows the
+    /// card and still claims it could not read the rows is the other half of the same defect.
+    #[test]
+    fn a_peek_drawn_from_the_session_rows_shows_a_tool_card_and_does_not_claim_degrading() {
+        let mut a = app();
+        let mut snap = Hub::new("s-sub-1").snapshot();
+        snap.items = vec![
+            letibot_sessionlog::view::SnapshotItem {
+                item_id: "s-sub-1.a".into(),
+                kind: "assistant".into(),
+                ledger_head: "beef".into(),
+                ts: 0,
+                item: Some(TranscriptItem::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![letibot_transcript::ToolCall {
+                        id: "c1".into(),
+                        name: "bash".into(),
+                        arguments: r#"{"command":"ls -la /etc"}"#.into(),
+                    }],
+                    truncated: false,
+                }),
+            },
+            letibot_sessionlog::view::SnapshotItem {
+                item_id: "s-sub-1.r".into(),
+                kind: "tool_result".into(),
+                ledger_head: "beef".into(),
+                ts: 0,
+                item: Some(TranscriptItem::ToolResult {
+                    call_id: "c1".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "total 0".into(),
+                    edit: None,
+                    origin: None,
+                    media: None,
+                }),
+            },
+        ];
+        a.apply(ServerFrame::Peeked {
+            session_id: "s-sub-1".into(),
+            dropped: 0,
+            events: vec![],
+            snapshot: Some(Box::new(snap)),
+        });
+        let v = a.sub_out.as_ref().expect("the view opened");
+        assert!(
+            !v.degraded,
+            "rows were asked for and sent: this is not the fallback"
+        );
+        assert_eq!(v.session_id, "s-sub-1");
+        let text = v.lines.join("\n");
+        // The card, and the target the snapshot's own turn seeded — neither word is in the
+        // plain event-ring fallback, which is the property being pinned. The verb is the one
+        // the card maps `bash` to (`Ran`, not the tool's own name), and the subject is quoted
+        // because the argument has a space in it — both are `item_lines`' doing, not this
+        // pane's, which is exactly the point: one renderer, not two.
+        assert!(text.contains(r#"▸ Ran "ls -la /etc" · ok"#), "{text}");
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains(r#"Ran "ls -la /etc""#), "{screen}");
+        assert!(
+            !screen.contains("event ring"),
+            "a card was drawn; the pane must not also claim it could not read the rows:\n{screen}"
+        );
     }
 
     #[test]
@@ -30720,6 +30917,7 @@ mod tests {
         a.sub_out = Some(SubOut {
             session_id: "sub-1".into(),
             lines: (0..100).map(|i| format!("out {i}")).collect(),
+            degraded: false,
             scroll: 0,
             spill: None,
             dropped: 0,
