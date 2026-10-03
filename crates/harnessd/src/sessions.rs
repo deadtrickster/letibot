@@ -1330,9 +1330,17 @@ impl<'a> Sessions<'a> {
         // could not see is precisely the "a session doing something the operator
         // did not see coming" the banner promises against. Verified 2026-09-15:
         // the fork was in the store and the terminal said nothing.
+        // **And it NAMES THE SESSION, which is the one thing this line could not say.** The
+        // log is one file every daemon appends to (`~/logs/harnessd.log`), so this line and
+        // the two below it arrived with no way to tell which of seven sessions they were
+        // about — the `→ http 400` lines carry an id and these, the ones that say what
+        // happened, did not. Measured 2026-10-03: attributing a compaction failure took an
+        // hour of archaeology across `ps`, window prints and the store, and the answer was
+        // still inferred rather than read. The id costs fourteen bytes and makes it a
+        // measurement.
         eprintln!(
-            "  compacting: {resident} of {window} tokens resident, less than the {} the \
-             next turn needs",
+            "  {session_id}: compacting: {resident} of {window} tokens resident, less than \
+             the {} the next turn needs",
             headroom
         );
         if let Some(hub) = &hub {
@@ -1421,7 +1429,10 @@ impl<'a> Sessions<'a> {
                         .harness_of(session_id)
                         .map(|h| h.config().shown_tokens(after))
                         .unwrap_or(after);
-                    eprintln!("  compacted: {after} tokens resident now, was {resident}.{cut}");
+                    eprintln!(
+                        "  {session_id}: compacted: {after} tokens resident now, was \
+                         {resident}.{cut}"
+                    );
                     if let Some(hub) = &hub {
                         hub.publish(SessionEvent::Warning {
                             code: "auto_compact".into(),
@@ -1448,7 +1459,7 @@ impl<'a> Sessions<'a> {
                 // compaction was the thing making room for it. A message describing
                 // the wrong one of two callers is the defect `republish_after`
                 // already names, one layer down.
-                eprintln!("  compaction FAILED: {e}");
+                eprintln!("  {session_id}: compaction FAILED: {e}");
                 if let Some(hub) = &hub {
                     hub.publish(SessionEvent::Warning {
                         code: "auto_compact_failed".into(),
