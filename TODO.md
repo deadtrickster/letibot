@@ -127,6 +127,40 @@ that says the two halves are skewed — then bump and the argument above is the 
 mistake; say which in the commit, since the two routes cost leticl different things (a declared
 feature, or a re-pin).
 
+**MEASURED 2026-10-03, before any code: the gate the paragraph above rests on does not exist.** The
+whole no-bump argument turns on *“the daemon sends `TurnEnded` **only to a head that declared it**”*,
+and this tree has no way to send a frame to one head. `crates/sessionlog/src/hub.rs`'s entire public
+surface offers exactly two routes to a head: `publish` (an `Envelope` in the log, read by every head in
+`seq` order through `next_batch`) and `submit` (a `ServerFrame` **returned to the caller**, which writes
+it back to the one head that asked). `deciding_heads()` is the nearest thing to a per-head gate and is
+not one — it is a *query* the adjudicator makes before posting — and `Caps.features` today is
+**advisory**: `FEATURE_QUESTION_ANSWERS`’ own doc says a head that does not advertise it *“can still be
+sent a question”* and will simply not answer. Nothing in the tree filters a frame by a declared
+feature.
+
+So the three routes, with what each actually costs:
+
+ · **A per-head directed frame.** New machinery in the connection layer: either the daemon holds every
+   head’s writer, or an outbound queue per head that the accept loop drains. It dissolves the bump
+   exactly as the paragraph above intends, and it touches the most delicate layer in the daemon — the
+   one where a head that is not written to does not hear that its turn ended.
+ · **A `SessionEvent::TurnEnded` and a bump to 28.** The simplest thing that works: one variant, every
+   head reads it in `seq` order, a late head replays it correctly, and an old head is refused at the
+   handshake rather than handed a frame it has no arm for. The cost is leticl’s — a re-pin, and the
+   operator deliberately pinned leticl to 27 — which is a *sentence on the other head*, not a code
+   change here.
+ · **Zero-bump by reuse, and rejected twice for two different reasons.** Re-publishing the round’s
+   `TurnFinished` at the convergence point double-charges every head that accumulates `usage`, and an
+   old head over-billing is worse than a flicker. And a `Warning { code: "turn_ended" }` is an arm
+   every head already has — so it works, and **a head that does not know the code DRAWS it**: one dim
+   row per turn boundary, in the conversation the `model_slow_first_byte` ruling has just finished
+   moving weather *out* of.
+
+**Which route is the operator’s to pick**, which the paragraph above already says in the same words
+(*“say which in the commit, since the two routes cost leticl different things (a declared feature, or a
+re-pin)”*). **The fail-first half needs no ruling and is unaffected by the choice**: this head’s row and
+the test that currently pins the flicker.
+
 **What THIS head does today, so the operator knows what to look for here.** letibot has no past tense
 at all — `Responding` is the only word the row has (`app.rs:13718`), so it cannot flicker to
 *Responded* — and it **drops the row** for the same window instead: the last call of a round finishing
@@ -141,12 +175,16 @@ seconds and the row says something again.
 
 **still open?** `grep -n "final" crates/sessionlog/src/event.rs` around the `TurnFinished` variant
 shows no such field, and `crates/turn/src/engine.rs:1320` still folds `Finish::ToolCalls` into `Eos`.
+And the gate the no-bump route needs is *absent rather than unfinished*: `grep -n "pub fn "
+crates/sessionlog/src/hub.rs` lists no directed send, so that is the piece to build if route one is
+chosen.
 
 **done when** the daemon publishes the end at the convergence point (where `end_turn_clock` is
-called) and sends it only to a head that declared the feature; `Hello` echoes the honoured features so
-a head can tell *ignored* from *not yet*; and a two-round stream on each head shows the status row up
-across every round boundary and down only at the marked end — asserted, not watched: a test per head,
-and on this head that test replaces the one that currently pins the flicker.
+called) by whichever route the operator picks above — a filtered `TurnEnded`, or a bumped version
+whose `Hello` echo says what is honoured — so that **no head is ever handed a frame it has no arm for**;
+and a two-round stream on each head shows the status row up across every round boundary and down only at
+the marked end — asserted, not watched: a test per head, and on this head that test replaces the one
+that currently pins the flicker.
 
 ## R56 — the view can be held, so a selection survives a streaming turn — **BOTH HEADS HAVE IT (`c9634bc` leticl, `2b49304` here)**
 
