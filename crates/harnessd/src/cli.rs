@@ -100,6 +100,12 @@ fn usage() -> String {
      \x20                           exist yet, so the boundary keeps secret bytes out\n\
      \x20                           of the VIEW and nothing stops a tool result\n\
      \x20                           carrying them into the transcript\n\
+     \x20 --max-subagent-depth 3    how deep a subagent tree may go, in levels below\n\
+     \x20                           the root. `task` is seated on every subagent, so\n\
+     \x20                           a call past this depth is refused BY NAME rather\n\
+     \x20                           than withdrawn -- a capability that exists but is\n\
+     \x20                           hidden manufactures the workaround. 0 refuses\n\
+     \x20                           every `task` call\n\
      \x20 --adjudicator console     who decides a gated call, and the default for any\n\
      \x20                           role that can reach the gate. Reads this daemon's\n\
      \x20                           own stdin, so it works in the foreground and an\n\
