@@ -71,52 +71,101 @@ use std::time::Duration;
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::registry::Bell;
+use letibot_tools::builtins::task::{TaskRunner, TaskStatus};
 use letibot_tools::exec::{JobId, JobState, ProcessHost, Waited};
 use letibot_tools::{ToolEvent, ToolEventSink};
 use letibot_transcript::ToolOutcome;
 
 /// How long one blocking wait lasts before the thread re-checks its handles and
 /// the stop flag. A job's settlement wakes the wait **immediately** — the condvar
-/// under the job's state is what `wait_job` sleeps in — so this bounds only how
-/// long a closing session's watcher can linger, never how late a settlement is.
+/// under the job's state is what `wait_job` sleeps in, and a subagent's is the one
+/// `TaskRunner::collect` waits in — so this bounds only how long a closing session's
+/// watcher can linger, never how late a settlement is.
 const WATCH_CHUNK: Duration = Duration::from_secs(5);
 
-/// **One background job's end, as the MODEL must be told it.**
+/// **Which kind of backgrounded thing this is.**
 ///
-/// Not [`SessionEvent::JobSettled`], and deliberately not on the wire. The event is
-/// the head-facing fact and carries exactly the scalars a pane draws (`job`, `state`,
-/// `produced`, `elapsed_ms`); a completion carries one field more — the **command** —
-/// because the sentence the model is handed has to say what ended, and the command is
-/// only reachable from the live [`JobView`] at the moment it settles. Putting it on
-/// the event would be a wire change nobody needs: no head draws a command from a
-/// settlement, and the head that has the row already has the command from the tool
-/// result that backgrounded it.
+/// A subagent settles through this channel because it *is* a background job — the
+/// operator's ruling: *"i think it should arrive the same way backgrounded jobs
+/// complete. in a way agent is a background job."* It is work handed off, it runs
+/// while the turn does not, it settles once, and it has a result to collect and an id
+/// to kill by. The two differ only in **how** you wait for them and in what a
+/// settlement is called, so they share one queue, one bell and one wake, and this is
+/// the field that lets the sentence be true for each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundKind {
+    /// A host process from `bash --background`, waited on by `wait_job`.
+    Job,
+    /// A subagent from `task`, waited on by its own slot's condvar.
+    Subagent,
+}
+
+/// A backgrounded thing's end, as the model is told it.
 ///
-/// Built by the watcher (which has the [`JobView`]), queued on
-/// [`JobWatchers::completions`], and drained by
+/// Built by the watcher, queued on [`JobWatchers::completions`], and drained by
 /// [`crate::harness::Harness::wake`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobCompletion {
+    /// Which of the two this was — see [`BackgroundKind`].
+    pub kind: BackgroundKind,
     /// The job's handle, as the backgrounded result printed it.
     pub job: String,
     /// The command it ran. Empty when the job was already reaped and the view is
     /// gone, which the notice says rather than inventing one.
+    ///
+    /// **Always empty for a subagent**, which is not a command and has no command
+    /// line. What a subagent has instead is [`JobCompletion::detail`], and the two
+    /// are separate fields rather than one reused one because a command that turns
+    /// out to hold an answer is the kind of field a reader stops trusting.
     pub command: String,
     /// What happened to the process: `exited 0`, `signalled 15`, `killed by job_kill`.
+    ///
+    /// For a subagent: `done` or `failed` — the same two words
+    /// [`letibot_sessionlog::SessionEvent::Subagent`] publishes, so the pane's row
+    /// and the model's notice name the same state.
     pub state: String,
     /// Bytes the job wrote, all streams together — the `job_output` denominator.
+    /// Zero for a subagent, which writes no bytes to a stream this end can count.
     pub produced: u64,
     /// Wall time from spawn to settlement.
     pub elapsed_ms: u64,
+    /// **A subagent's own first word about how it ended**: the first line of its
+    /// answer, or the reason it failed.
+    ///
+    /// The jobs path needs no such field — the model's route to what a job said is
+    /// `job_output`, and the command it ran is what a settlement is *about*. A
+    /// subagent's answer is the thing the model is waiting for, and putting it in
+    /// the notice is what makes the wake actionable rather than a nudge; the whole
+    /// of it is still in `task_result`, which the notice names.
+    pub detail: String,
 }
 
-/// The per-session set of watched background jobs.
+/// The per-session set of watched background jobs and subagents.
 ///
 /// Held by the harness, fed by [`JobWatchSink`] as backgrounded results pass
 /// through it, and stopped when the session's backend closes.
 pub struct JobWatchers {
-    host: Weak<dyn ProcessHost>,
+    /// `None` when this session cannot start processes **but can still spawn
+    /// subagents** — `task` needs no process host, and a read-only seat that hands work
+    /// to a child is exactly the case where a completion nobody is told about is hardest
+    /// to notice. A set with no host watches no jobs because there are none to watch;
+    /// it is not an error state.
+    host: Option<Weak<dyn ProcessHost>>,
     hub: Weak<Hub>,
+    /// **The other thing that backgrounds, and the reason this file is task-aware.**
+    ///
+    /// `task` finishes as [`ToolOutcome::Backgrounded`] — the same outcome
+    /// `bash --background` gives, deliberately, so the sink above arms a watcher for
+    /// it without knowing which tool it came from. But a subagent is not a host
+    /// process: `wait_job` has never heard of its handle, answers
+    /// [`Waited::NeverStarted`], and the wait below would spin on that name until the
+    /// session closed — the completion never queued, the bell never rung, and a
+    /// thread leaked per `task` call for the session's life. So the handle is asked
+    /// about here first, and a subagent is waited on the way a subagent settles.
+    ///
+    /// `Weak` for the same reason the host is: a watcher must not keep a session's
+    /// runner alive.
+    tasks: Option<Weak<dyn TaskRunner>>,
     /// Settlements the model has not been told yet, in the order they happened.
     /// Drained by [`JobWatchers::take_completions`] on the harness's next wake.
     completions: Arc<Mutex<VecDeque<JobCompletion>>>,
@@ -143,13 +192,53 @@ impl JobWatchers {
     /// one, which is the truth for a session no worker is serving.
     pub fn new(host: &Arc<dyn ProcessHost>, hub: &Arc<Hub>, bell: Option<Arc<Bell>>) -> Arc<Self> {
         Arc::new(JobWatchers {
-            host: Arc::downgrade(host),
+            host: Some(Arc::downgrade(host)),
             hub: Arc::downgrade(hub),
+            tasks: None,
             completions: Arc::new(Mutex::new(VecDeque::new())),
             bell,
             stop: Arc::new(AtomicBool::new(false)),
             watching: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(HashSet::new())),
+        })
+    }
+
+    /// **A set for a session that cannot start processes but can still spawn a
+    /// subagent.**
+    ///
+    /// `task` is `Access::Session` and needs no host — a read-only seat can hand work to
+    /// a child — so keying the whole watcher set on the *process* host would have made
+    /// the wake work only where a command could also be backgrounded. It is the same
+    /// channel either way; this is the arm where the job half has nothing to watch.
+    pub fn watching_tasks(hub: &Arc<Hub>, bell: Option<Arc<Bell>>) -> Arc<Self> {
+        Arc::new(JobWatchers {
+            host: None,
+            hub: Arc::downgrade(hub),
+            tasks: None,
+            completions: Arc::new(Mutex::new(VecDeque::new())),
+            bell,
+            stop: Arc::new(AtomicBool::new(false)),
+            watching: Arc::new(Mutex::new(HashSet::new())),
+            settled: Arc::new(Mutex::new(HashSet::new())),
+        })
+    }
+
+    /// **And the session's subagents settle here too.**
+    ///
+    /// A separate call rather than a fourth parameter, because a watcher set is built
+    /// in two places that do not both have a runner — a test's bare host, and the
+    /// harness — and a `None` there is the honest description of a set that can watch
+    /// no subagents at all.
+    pub fn with_tasks(self: Arc<Self>, tasks: &Arc<dyn TaskRunner>) -> Arc<Self> {
+        Arc::new(JobWatchers {
+            host: self.host.clone(),
+            hub: Weak::clone(&self.hub),
+            tasks: Some(Arc::downgrade(tasks)),
+            completions: Arc::clone(&self.completions),
+            bell: self.bell.clone(),
+            stop: Arc::clone(&self.stop),
+            watching: Arc::clone(&self.watching),
+            settled: Arc::clone(&self.settled),
         })
     }
 
@@ -191,8 +280,17 @@ impl JobWatchers {
         self.stop.store(true, Ordering::Relaxed);
     }
 
-    /// Watch one job. Idempotent: a job already watched, or already settled, is
-    /// left alone.
+    /// Watch one backgrounded thing. Idempotent: one already watched, or already
+    /// settled, is left alone.
+    ///
+    /// **Which kind it is, is asked rather than inferred.** The sink that calls this
+    /// sees a `Backgrounded` outcome and a handle; it does not know whether the tool
+    /// that produced it was `bash` or `task`, and it should not have to — the whole
+    /// point of `task` returning the same outcome is that the same channel carries
+    /// both. So the runner is asked once, with a zero timeout, and `Unknown` — the
+    /// answer for a handle it never minted — is what sends the handle down the job
+    /// path. No string sniffing on the handle's shape, which would be a naming
+    /// convention mistaken for a fact.
     pub fn watch(self: &Arc<Self>, job: String) {
         {
             let mut watching = self.watching.lock().expect("job watchers");
@@ -202,13 +300,31 @@ impl JobWatchers {
             }
             watching.insert(job.clone());
         }
-        let host = Weak::clone(&self.host);
+        let host = self.host.as_ref().map(Weak::clone);
         let hub = Weak::clone(&self.hub);
         let completions = Arc::clone(&self.completions);
         let bell = self.bell.clone();
         let stop = Arc::clone(&self.stop);
         let watching = Arc::clone(&self.watching);
         let settled = Arc::clone(&self.settled);
+        let runner = self.tasks.as_ref().and_then(Weak::upgrade);
+        if let Some(runner) =
+            runner.filter(|r| !matches!(r.collect(&job, Duration::ZERO), TaskStatus::Unknown))
+        {
+            let _ = std::thread::Builder::new()
+                .name(format!("subagent-watch-{}", &job[..job.len().min(20)]))
+                .spawn(move || {
+                    watch_task(runner, hub, completions, bell, stop, watching, settled, job)
+                });
+            return;
+        }
+        // Not a subagent and no host to ask: nothing here can ever settle this handle, so
+        // it is dropped rather than left in `watching` — a name that outlives its watcher
+        // would make `delivering` true for ever and leak the entry.
+        let Some(host) = host else {
+            watching.lock().expect("job watchers").remove(&job);
+            return;
+        };
         let _ = std::thread::Builder::new()
             .name(format!("job-watch-{}", &job[..job.len().min(20)]))
             .spawn(move || watch_one(host, hub, completions, bell, stop, watching, settled, job));
@@ -267,11 +383,13 @@ fn watch_one(
                     .lock()
                     .expect("job completions")
                     .push_back(JobCompletion {
+                        kind: BackgroundKind::Job,
                         job: job.clone(),
                         command,
                         state: word,
                         produced,
                         elapsed_ms,
+                        detail: String::new(),
                     });
                 if let Some(bell) = &bell {
                     bell.ring_wake(&hub.session_id());
@@ -295,6 +413,127 @@ fn watch_one(
         }
     }
     watching.lock().expect("job watchers").remove(&job);
+}
+
+/// **The same settlement, waited on the way a subagent settles.**
+///
+/// `watch_one`'s shape is kept exactly — a chunked wait whose chunk is the shutdown
+/// re-check and nothing else, a queue push, a bell — and the only thing that changes
+/// is what is being waited on. `TaskRunner::collect` is a condvar wait inside the
+/// subagent's own slot, so a child that answers unblocks this at once and the chunk
+/// bounds only how long a closing session's watcher lingers.
+///
+/// **No `JobSettled` is published here, and that is deliberate rather than an
+/// omission.** The subagent's run already published [`SessionEvent::Subagent`] with
+/// the same state word, from the thread that ran it (harness.rs) — that is the
+/// head-facing fact and the pane's row. Publishing a second event for one settlement
+/// would be the duplication this tree keeps finding under other names, and the two
+/// would drift the moment either changed.
+fn watch_task(
+    runner: Arc<dyn TaskRunner>,
+    hub: Weak<Hub>,
+    completions: Arc<Mutex<VecDeque<JobCompletion>>>,
+    bell: Option<Arc<Bell>>,
+    stop: Arc<AtomicBool>,
+    watching: Arc<Mutex<HashSet<String>>>,
+    settled: Arc<Mutex<HashSet<String>>>,
+    job: String,
+) {
+    loop {
+        // The hub is the same liveness test the job path uses: a session that has
+        // closed takes its hub with it, and there is nothing left a settlement would
+        // be true of.
+        let Some(hub) = hub.upgrade() else {
+            break;
+        };
+        match runner.collect(&job, WATCH_CHUNK) {
+            // Settled, one way or the other. Both are the model's business: a subagent
+            // that failed is the thing the parent is blocked on just as much as one
+            // that answered.
+            TaskStatus::Done { answer } => {
+                settled_here(
+                    "done",
+                    first_line(&answer),
+                    &job,
+                    &hub,
+                    &completions,
+                    &bell,
+                    &settled,
+                );
+                break;
+            }
+            TaskStatus::Failed { why } => {
+                settled_here(
+                    "failed",
+                    first_line(&why),
+                    &job,
+                    &hub,
+                    &completions,
+                    &bell,
+                    &settled,
+                );
+                break;
+            }
+            // Still working, or a handle this runner never minted. `Unknown` used to be
+            // unreachable here — it is what sends a handle down the job path — but a
+            // slot can be forgotten while a watcher sleeps, so it ends the wait rather
+            // than spinning on a name nobody owns.
+            TaskStatus::Running { .. } | TaskStatus::Unknown => {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+        }
+    }
+    watching.lock().expect("job watchers").remove(&job);
+}
+
+/// Queue one subagent's settlement and ring — the push and the bell, which are the
+/// same two things the job path does at the same moment in its own wait.
+#[allow(clippy::too_many_arguments)]
+fn settled_here(
+    state: &str,
+    detail: String,
+    job: &str,
+    hub: &Hub,
+    completions: &Arc<Mutex<VecDeque<JobCompletion>>>,
+    bell: &Option<Arc<Bell>>,
+    settled: &Arc<Mutex<HashSet<String>>>,
+) {
+    completions
+        .lock()
+        .expect("job completions")
+        .push_back(JobCompletion {
+            kind: BackgroundKind::Subagent,
+            job: job.to_string(),
+            // A subagent runs no command; the notice for one is built from `state`
+            // and `detail` and never reads this.
+            command: String::new(),
+            state: state.to_string(),
+            // It writes no bytes to a stream this end can count. The tokens it
+            // generated are in the subagent's own metrics, and `produced` means
+            // `job_output`'s denominator everywhere else.
+            produced: 0,
+            elapsed_ms: 0,
+            detail,
+        });
+    if let Some(bell) = bell {
+        bell.ring_wake(&hub.session_id());
+    }
+    settled
+        .lock()
+        .expect("job watchers")
+        .insert(job.to_string());
+}
+
+/// The first line of what a subagent said, for a one-line notice. The whole of it is
+/// in `task_result`, which the notice names.
+fn first_line(text: &str) -> String {
+    let l = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    if l.chars().count() <= 160 {
+        return l.trim().to_string();
+    }
+    format!("{}…", l.trim().chars().take(160).collect::<String>())
 }
 
 /// A [`ToolEventSink`] that starts a watcher for every job a call leaves behind.
@@ -705,6 +944,149 @@ mod tests {
         match r.next_work() {
             Some(Work::Woken(id)) => assert_eq!(id, "s-jobs", "the job's completion wakes it"),
             _ => panic!("the completion must arrive as a wake, after the operator's line"),
+        }
+    }
+
+    /// **A subagent settles through the job channel, because it IS one.**
+    ///
+    /// The operator's ruling: *"i think it should arrive the same way backgrounded jobs
+    /// complete. in a way agent is a background job."* `task` already returns the same
+    /// `Backgrounded` outcome `bash --background` does, so the sink above already arms a
+    /// watcher for a subagent's handle. Before this, that watcher called
+    /// `ProcessHost::wait_job` on a name the host had never heard: the host answers
+    /// `NeverStarted`, which `watch_one` reads as *"a boot window and not a finish"*, and
+    /// the thread then re-asked every `WATCH_CHUNK` until the session closed. So **the
+    /// completion was never queued, the bell was never rung, and a thread was leaked per
+    /// `task` call for the session's life** — the parent turn ended, the subagent
+    /// finished, and the one process that could act on it was never told.
+    ///
+    /// This asserts the two things that were missing and the wake that carries them. On
+    /// the code before the dispatch it does not merely fail: it times out with an empty
+    /// queue, because nothing in the old path could ever put anything in it.
+    #[test]
+    fn a_subagent_settles_through_the_jobs_own_channel() {
+        use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
+
+        let r = Registry::new();
+        let hub = r
+            .create("s-tasks", "", SessionWiring::default())
+            .expect("the session registers");
+        assert!(matches!(r.next_work(), Some(Work::Open(_))));
+
+        // A host is still required: a session has one channel and it is built with both
+        // waits. A subagent simply never reaches this one.
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a cgroup v2 tree",
+            letibot_tools::Cgroup2::probe().is_ok(),
+        ) else {
+            return;
+        };
+        let host = a_host();
+
+        let runner = Arc::new(FakeTask::new("s-1-sub-1"));
+        let watchers = JobWatchers::new(
+            &(host as Arc<dyn ProcessHost>),
+            &hub,
+            Some(Arc::clone(r.bell())),
+        )
+        .with_tasks(&(runner.clone() as Arc<dyn TaskRunner>));
+
+        watchers.watch("s-1-sub-1".into());
+        // The child answers. Nothing else happens: there is no job by that name.
+        runner.finish("the child answered");
+
+        let done = wait_for_completion(&watchers);
+        assert_eq!(
+            done.kind,
+            BackgroundKind::Subagent,
+            "one channel, and the field that lets the sentence be true for each"
+        );
+        assert_eq!(done.state, "done", "the same word the pane's row carries");
+        assert!(
+            done.detail.contains("the child answered"),
+            "the model is handed what the child said, not only that it stopped: {:?}",
+            done.detail
+        );
+        assert!(
+            done.command.is_empty(),
+            "a subagent runs no command, and that field must not quietly hold an answer"
+        );
+
+        assert!(
+            matches!(r.next_work(), Some(Work::Woken(id)) if id == "s-tasks"),
+            "and it WAKES the worker — a settlement that lands between turns is a \
+             condition nobody acts on unless this rings"
+        );
+        assert!(
+            watchers.take_completions().is_empty(),
+            "a completion is taken once, not left for the next wake"
+        );
+    }
+
+    /// A runner that knows exactly one handle and answers when the test says so.
+    struct FakeTask {
+        handle: String,
+        answer: Mutex<Option<String>>,
+        settled: std::sync::Condvar,
+    }
+
+    impl FakeTask {
+        fn new(handle: &str) -> Self {
+            FakeTask {
+                handle: handle.to_string(),
+                answer: Mutex::new(None),
+                settled: std::sync::Condvar::new(),
+            }
+        }
+
+        fn finish(&self, said: &str) {
+            *self.answer.lock().expect("fake task") = Some(said.to_string());
+            self.settled.notify_all();
+        }
+    }
+
+    impl TaskRunner for FakeTask {
+        fn start(
+            &self,
+            _prompt: &str,
+            _spec: &letibot_tools::builtins::task::TaskSpec,
+        ) -> Result<String, String> {
+            Err("this runner starts nothing".into())
+        }
+
+        /// **`Unknown` for everything but its one handle**, which is the answer that
+        /// tells `JobWatchers::watch` a handle is not a subagent — and which a mirror of
+        /// this test on the jobs side relies on to keep its own path.
+        fn collect(&self, handle: &str, timeout: Duration) -> TaskStatus {
+            if handle != self.handle {
+                return TaskStatus::Unknown;
+            }
+            let g = self.answer.lock().expect("fake task");
+            let (g, _) = self
+                .settled
+                .wait_timeout_while(g, timeout, |a| a.is_none())
+                .expect("fake task");
+            match &*g {
+                Some(a) => TaskStatus::Done { answer: a.clone() },
+                None => TaskStatus::Running { note: None },
+            }
+        }
+    }
+
+    /// The one completion, or a deadline. A poll rather than a `job_wait`: what is being
+    /// waited for is another thread's queue push, and a test that blocked on a condvar
+    /// this file does not own would be testing its own sleep.
+    fn wait_for_completion(w: &JobWatchers) -> JobCompletion {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(c) = w.take_completions().into_iter().next() {
+                return c;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no completion for the subagent within 10s — nothing queued it"
+            );
+            std::thread::sleep(Duration::from_millis(25));
         }
     }
 }

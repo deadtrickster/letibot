@@ -69,7 +69,7 @@ use letibot_turn::{
 
 use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat, SpillPolicy, SpillStorage};
 use crate::dialect::Wiring;
-use crate::jobwatch::{JobCompletion, JobWatchSink, JobWatchers};
+use crate::jobwatch::{BackgroundKind, JobCompletion, JobWatchSink, JobWatchers};
 // `is_writable` is a trait method; the backend's own answer is only reachable
 // with the trait in scope.
 use letibot_tools::ExecBackend as _;
@@ -690,6 +690,40 @@ fn completion_notice(done: &[JobCompletion]) -> String {
         "This is the completion arriving on its own — you do not need to wait for it, and \
          `job_wait` would only block you for a result you already have. Read what it wrote \
          with `job_output` (job=\"…\"), then carry on with what you were doing.",
+    );
+    s
+}
+
+/// **The same sentence for a subagent, and the same rule behind it.**
+///
+/// A subagent settles through the job channel because it *is* one — the operator's
+/// ruling — and this is only the wording, not a second mechanism. What differs is the
+/// verb: a subagent has no `job_output` to read, it has `task_result`, and its answer is
+/// the thing the model was waiting for rather than a stream it has to go and fetch. So
+/// the notice carries the child's first line as well as naming how to collect the whole
+/// of it, which is what makes the wake actionable rather than a nudge.
+fn subagent_notice(done: &[JobCompletion]) -> String {
+    let mut s = String::from("[task] ");
+    if done.len() == 1 {
+        s.push_str("a subagent you started has finished:\n");
+    } else {
+        s.push_str(&format!(
+            "{} subagents you started have finished:\n",
+            done.len()
+        ));
+    }
+    for c in done {
+        if c.detail.is_empty() {
+            s.push_str(&format!("  - `{}` {}\n", c.job, c.state));
+        } else {
+            s.push_str(&format!("  - `{}` {}: {}\n", c.job, c.state, c.detail));
+        }
+    }
+    s.push_str(
+        "This is the completion arriving on its own — you do not need to wait for it, and \
+         calling `task_result` to block would only hold you for a result you already have. \
+         Read what it said with `task_result` (task=\"…\"), then carry on with what you \
+         were doing.",
     );
     s
 }
@@ -1693,6 +1727,12 @@ impl<'a> Harness<'a> {
         // same object — a digest running on a second runner would be a subagent
         // tree the operator's `task_result` listing does not show.
         let digest_runner = task_runner.clone();
+        // **And kept for the job watchers, which are built much further down.** They have
+        // to be able to tell a subagent's handle from a job's, and this is the object that
+        // mints the former. Cloned here because `task_runner` is MOVED into the registry
+        // on the next statement — `digest_runner` above is the same object for the same
+        // reason, and the watchers must see that one runner and not a second.
+        let watch_runner = task_runner.clone();
         registry = letibot_tools::with_session_tools(
             registry,
             todo_board.clone(),
@@ -2201,9 +2241,23 @@ impl<'a> Harness<'a> {
         // background job's result but `job_wait`. The watcher now also queues a
         // completion and rings this bell, so the settlement arrives as an unprompted
         // turn of its own — the same route a fired monitor takes.
-        let job_watch = backend
-            .processes_arc()
-            .map(|h| JobWatchers::new(&h, &hub, Some(Arc::clone(session_registry.bell()))));
+        // **Built whether or not this session can start a process.** `task` needs no
+        // process host, so keying the watcher set on one would leave a read-only seat that
+        // hands work to a child with no way to be told the child finished — the same
+        // defect surviving in the sessions least able to notice it.
+        let bell = Some(Arc::clone(session_registry.bell()));
+        let job_watch = match backend.processes_arc() {
+            Some(h) => JobWatchers::new(&h, &hub, bell),
+            None => JobWatchers::watching_tasks(&hub, bell),
+        };
+        // **And the session's subagents settle through it too.** `task` returns the
+        // same `Backgrounded` outcome `bash --background` does, so the sink below
+        // already arms a watcher for it — and that watcher asked the host about a name
+        // the host has never heard, answered `NeverStarted`, and spun on it until the
+        // session closed: the completion never queued, the bell never rung, and a
+        // thread leaked per `task` call. Giving the watchers the runner is what makes
+        // the handle route to its own wait (R7's hop, for a subagent).
+        let job_watch = Some(job_watch.with_tasks(&watch_runner));
         let tool_sink = JobWatchSink::new(
             IntentSink::new(intent.clone(), ToolLogSink::new(hub.clone())),
             job_watch.clone(),
@@ -4409,7 +4463,20 @@ impl<'a> Harness<'a> {
             .map(|w| w.take_completions())
             .unwrap_or_default();
         if !done.is_empty() {
-            notices.push(completion_notice(&done));
+            // **Two sentences, one channel.** A job and a subagent arrive through the
+            // same queue and the same bell — see `JobWatchers::watch` — and they are
+            // told apart here rather than in two queues, because two queues would be
+            // the second mechanism the ruling avoided. The split is only for wording:
+            // a job is read with `job_output` and a subagent with `task_result`.
+            let (tasks, jobs): (Vec<JobCompletion>, Vec<JobCompletion>) = done
+                .into_iter()
+                .partition(|c| c.kind == BackgroundKind::Subagent);
+            if !jobs.is_empty() {
+                notices.push(completion_notice(&jobs));
+            }
+            if !tasks.is_empty() {
+                notices.push(subagent_notice(&tasks));
+            }
         }
         if notices.is_empty() {
             return Ok(None);
@@ -7557,11 +7624,13 @@ mod tests {
     #[test]
     fn a_completion_notice_names_the_job_and_says_do_not_wait() {
         let text = completion_notice(&[JobCompletion {
+            kind: BackgroundKind::Job,
             job: "j7".into(),
             command: "cargo build --release".into(),
             state: "exited 0".into(),
             produced: 4096,
             elapsed_ms: 4_400,
+            detail: String::new(),
         }]);
         assert!(text.starts_with("[job]"), "labelled like a monitor: {text}");
         assert!(text.contains("`j7`"), "{text}");
@@ -7581,11 +7650,13 @@ mod tests {
     #[test]
     fn a_reaped_jobs_completion_says_the_command_was_not_recorded() {
         let text = completion_notice(&[JobCompletion {
+            kind: BackgroundKind::Job,
             job: "j9".into(),
             command: String::new(),
             state: "gone".into(),
             produced: 0,
             elapsed_ms: 0,
+            detail: String::new(),
         }]);
         assert!(text.contains("command not recorded"), "{text}");
         assert!(!text.contains("``"), "an empty pair of backticks: {text}");
