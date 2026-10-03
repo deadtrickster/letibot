@@ -378,7 +378,7 @@ is therefore those few lines, and the reading in the bullet above is still the e
 reading rather than measurement, stated here rather than left to look stronger than it is. A `Harness`
 fixture is the thing to build if even that is to be asserted.
 
-## R58 — subagent TREES: delegation to a configurable depth, and no settlement without a worker — **LANDED 2026-10-03 (`9a9e8a1`); the design note below is kept for what it argued**
+## R58 — subagent TREES: delegation to a configurable depth, and no settlement without a worker — **LANDED 2026-10-03 (`9a9e8a1` + `51d5bd2` + `53e829c`); the design note below is kept for what it argued**
 
 > **A feature, not a fix, and keeping that distinction is the first thing this row is for.** It exists
 > because a commit message overstated a live defect that does not exist.
@@ -498,7 +498,8 @@ re-checked at each level.
 **handles**: the slots list and the watcher set that turn a settlement into a wake. Two different
 orphans, two different owners, and neither fix touches the other.
 
-**LANDED 2026-10-03 (`9a9e8a1`) — all four pieces, with the two that mattered made testable.**
+**LANDED 2026-10-03 (`9a9e8a1`, the handle-list half in `51d5bd2`, the flag in `53e829c`) — all four
+pieces, with the two that mattered made testable.**
 
   · **1. The seat.** `m2_coder` names `task` and `task_result` (`runtime.rs`), seated at every
     depth on purpose: the cap is enforced at the CALL, not by the seat's absence, because a seat
@@ -509,13 +510,14 @@ orphans, two different owners, and neither fix touches the other.
   · **3. The knob.** `Config::max_subagent_depth`, default 3, `--max-subagent-depth`. The refusal
     is `subagent_depth_refusal` (`harness.rs`), a pure function so it needs no harness to test:
     it names where the session is, the level it would have opened, and the knob that moves it.
-  · **4. The worker's bell.** A child's watcher set is built from its ROOT's
+  · **4. The worker's bell, and ONE handle list.** A child's watcher set is built from its ROOT's
     (`JobWatchers::shares_tree`): `completions`/`watching`/`settled`/`stop`/`bell` shared, and a
     new `wake_target` carrying the root's id so the ring goes **up**. The root's set rides `Parts`
-    as `tree_watch` (`None` at `Parts::load`, the parent's set at spawn), and the target
-    propagates unchanged, so a tree rings one bell with no parent walk. **The slots list needed
-    nothing** — `Parts::load` already builds one `Arc<TaskJournal>` for the daemon, so any
-    ancestor can already collect any handle (REFINED above).
+    as `tree_watch` (`None` at `Parts::load`, the parent's set at spawn), and the target propagates
+    unchanged, so a tree rings one bell with no parent walk. **And the same for the handles**
+    (`51d5bd2`): `Parts::tree_slots` seeds the child's runner with the parent's `slots`, so the root
+    can `task_result`/`job_kill`/list every handle in its tree — without it the root is *told* about
+    a grandchild's settlement and answered *"no subagent … in this session"* when it asks.
 
 Tests: `a_grandchilds_settlement_rings_the_tree_root` (jobwatch) drives a depth-2 settlement
 through the CHILD's set and asserts the completion lands on the tree's queue and the ring names the
@@ -526,20 +528,28 @@ registers the pair — the same loud `resolve_role` path its own comment records
 
 **still open?** `grep -rn "max_subagent_depth" crates/` finds the field, the flag, the refusal and
 the two tests; `grep -n '"task"' crates/tools/src/runtime.rs` now names it three times
-(`orchestrator`, `leticode`, `m2_coder`); `grep -n "wake_target" crates/harnessd/src/jobwatch.rs`
-names the ring target. **Not yet exercised end to end**: no test spawns a real depth-2 tree through
-the daemon, because that needs two live harnesses and a model — the mechanism is pinned at the
-`JobWatchers` layer, which is where the defect was.
+(`orchestrator`, `leticode`, `m2_coder`); `grep -n "wake_target\|tree_slots\|shares_tree"
+crates/harnessd/src/` names the ring target and both shared channels. **Not yet exercised end to end**:
+no test spawns a real depth-2 tree through the daemon, because that needs two live harnesses and a
+model — the mechanism is pinned at the `JobWatchers` layer, which is where the defect was, and the
+handle-list sharing rides the same untested path.
 
 **One naming consequence, settled rather than left open.** `depth` in this tree already means the
 *model's* depth (`config.rs:252`), so the SESSION's level is `Config::depth` and the KNOB is
 `max_subagent_depth` — two names, not one word doing two jobs. That is the consequence this
 paragraph asked for, applied.
 
-**REFINED 2026-10-03, reading the code the four pieces will touch: half of piece 4 is ALREADY DONE, and
-the other half is smaller than the section above implies.**
+**REFINED 2026-10-03 — and the first bullet below is WRONG, kept with its correction because the
+correction is the one worth reading.** The claim was that the slots list is per-daemon and so
+*"any ancestor can collect"* needed nothing. **It needed the second commit.** `Parts::load`'s
+`Arc<TaskJournal>` is the dashboard's state file, not the handle list; the handles live on
+`HarnessTaskRunner::slots`, which is per-SESSION — `collect`, `kill` and `started` all read it, and
+`kill`'s own refusal says *"no subagent `{handle}` in this session"*. So the root could be told about a
+grandchild and could not collect it. `tree_slots` (`51d5bd2`) is the fix, and the mistake is the same
+shape as this row's own premise: a sound-sounding inspection of one structure used to conclude about
+another.
 
-  · **The slots list is per-DAEMON, not per-tree.** `Parts::load` (`harness.rs:138`) builds ONE
+  · **(WRONG — see the correction above.)** The slots list is per-DAEMON, not per-tree. `Parts::load` (`harness.rs:138`) builds ONE
     `Arc<TaskJournal>` for the process — the same one-0.6s-load argument as the vocab — and every child
     inherits that same Arc (`spawn_subagent`'s `Parts { tasks: self.tasks.clone() }`, `harness.rs:7285`).
     So `task_result` already reaches any handle from any ancestor. *"Every ancestor's handle can be
