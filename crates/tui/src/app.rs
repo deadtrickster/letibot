@@ -1852,6 +1852,15 @@ pub struct App {
     /// was held — counted ONCE, at that moment, because a live count is an animation and an
     /// animation is writes.
     hold_rows: usize,
+    /// **Which conversations the picker has EXPANDED** — a parent's session id, whose sub-sessions
+    /// are being shown under it.
+    ///
+    /// **Empty is the default, and that default is the answer to the objection that kept
+    /// sub-sessions out of this list altogether**: *twenty subagents bury the four conversations I
+    /// care about*. Collapsed shows exactly what the picker showed before children were listed —
+    /// so nothing is hidden that was not hidden, and nothing the daemon told us is thrown away.
+    /// See [`App::session_rows`].
+    expanded: Vec<String>,
     /// Wall clock, fed in by the driver, and when this head last had anything from
     /// the daemon.
     ///
@@ -2426,6 +2435,20 @@ fn take_window(segs: &[Seg<'_>], start: usize, end: usize) -> Vec<String> {
     out
 }
 
+/// **One row of the session picker** — see [`App::session_rows`], which is the only thing that
+/// builds one.
+///
+/// A pair of facts rather than a bare `usize`, because the list is NESTED: which session it is, and
+/// how deep it sits. Deriving the depth at the drawing site instead is exactly how the drawing and
+/// the keys become two enumerations again — the defect `todos_stops` exists to record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionRow {
+    /// Index into `App::sessions`.
+    idx: usize,
+    /// 0 for a conversation; 1 for a sub-session under it; deeper for a tree.
+    depth: usize,
+}
+
 /// **One row of the todos pane the cursor may land on** — see [`App::todos_stops`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TodoStop {
@@ -2765,6 +2788,7 @@ impl App {
             hold_frame: None,
             hold_size: (0, 0),
             hold_rows: 0,
+            expanded: Vec::new(),
             now_ms: 0,
             last_event_at: 0,
             live_join: None,
@@ -3042,6 +3066,95 @@ impl App {
     /// the picker, and `letibot --sessions` prints it in full. A label is for
     /// recognising a session; an id is for naming one to a command, and those are
     /// different jobs done in different places.
+    /// **The picker's rows, as ONE enumeration — every key and the drawing read this.**
+    ///
+    /// # Why one function and not a filter at each reader
+    ///
+    /// Five things index a session list: the picker's arrows and Enter, its seeding, the row a
+    /// typed number names, and the header's position. Working out *which row is that* separately
+    /// for a nested list is the **two-enumerations defect** and this file already carries the scar:
+    /// [`App::todos_stops`], whose docstring is the operator's own two reports — *"arrows dont go
+    /// here"* and *"mouse doesnt click"* — two symptoms of one cursor whose position came from one
+    /// list and whose row came from another.
+    ///
+    /// # The shape
+    ///
+    /// A conversation is depth 0 and keeps the daemon's own order. A sub-session sits directly
+    /// under the session that spawned it, **when that session is expanded** — `parent_session_id`
+    /// is already on every row, so nothing had to be added to the wire for this.
+    ///
+    /// **The chain down to the session you are IN is always shown**, whatever the collapse state:
+    /// a picker that hides where you are is a picker that cannot answer *where am I*, which is the
+    /// one question the header above it exists to answer.
+    ///
+    /// # What the filter this replaces was protecting against
+    ///
+    /// Not curiosity — noise. Collapsed-by-default is that concern answered instead of obeyed, and
+    /// the operator's own words are the reason the OBEDIENCE was wrong: *"yes subagents are not
+    /// even scratch session they are session, just sub sessions"*, and *"why readonly? subagent
+    /// session is more like you driving others via tmux"*. A session a head can post to, and get an
+    /// answer from, is not a row to be filtered — it is a session to be driven.
+    fn session_rows(&self) -> Vec<SessionRow> {
+        // The chain from the current session up to its root, by id — so the way back to where you
+        // are is always on the screen.
+        let mut path: Vec<String> = vec![self.session_id.clone()];
+        let mut cur = self.session_id.as_str();
+        while let Some(s) = self.sessions.iter().find(|s| s.session_id == cur)
+            && let Some(p) = s.parent_session_id.as_deref()
+        {
+            path.push(p.to_string());
+            cur = p;
+        }
+        let mut out: Vec<SessionRow> = Vec::new();
+        for (i, s) in self.sessions.iter().enumerate() {
+            if s.parent_session_id.is_some() {
+                continue;
+            }
+            out.push(SessionRow { idx: i, depth: 0 });
+            self.push_children(&mut out, &s.session_id, 1, &path);
+        }
+        out
+    }
+
+    /// A session's children, in the daemon's order, one step deeper — the recursive half of
+    /// [`App::session_rows`].
+    ///
+    /// A child is shown when its parent is expanded **or** when it is on the chain to the current
+    /// session; anything else is collapsed into its parent.
+    fn push_children(
+        &self,
+        out: &mut Vec<SessionRow>,
+        parent: &str,
+        depth: usize,
+        path: &[String],
+    ) {
+        let open = self.expanded.iter().any(|e| e == parent);
+        for (i, s) in self.sessions.iter().enumerate() {
+            if s.parent_session_id.as_deref() != Some(parent) {
+                continue;
+            }
+            if !open && !path.iter().any(|p| *p == s.session_id) {
+                continue;
+            }
+            out.push(SessionRow { idx: i, depth });
+            self.push_children(out, &s.session_id, depth + 1, path);
+        }
+    }
+
+    /// **The conversation this head's session belongs to** — itself, unless it is a sub-session.
+    ///
+    /// The header counts *conversations*, and this is the half that keeps a head driving a child
+    /// from reading `0/4`: it still says which conversation it is in.
+    fn session_root(&self) -> String {
+        let mut cur = self.session_id.as_str();
+        while let Some(s) = self.sessions.iter().find(|s| s.session_id == cur)
+            && let Some(p) = s.parent_session_id.as_deref()
+        {
+            cur = p;
+        }
+        cur.to_string()
+    }
+
     fn session_label(&self, id: &str) -> String {
         self.sessions
             .iter()
@@ -3413,13 +3526,17 @@ impl App {
                 self.head_id = head_id.clone();
                 self.seated = Some(head_id);
                 self.wiring = wiring;
-                // Subagents are not sessions a picker lists: they are children of this
-                // session, shown in the subagent tree (`ctrl-g`), and reached by
-                // `/switch id` rather than by cluttering the flat list.
-                self.sessions = sessions
-                    .into_iter()
-                    .filter(|s| s.parent_session_id.is_none())
-                    .collect();
+                // **Sub-sessions are KEPT, and the belief that used to filter them here is the
+                // defect this line closes.** The operator, 2026-10-03: *"yes subagents are not even
+                // scratch session they are session, just sub sessions"*, and *"why readonly?
+                // subagent session is more like you driving others via tmux"*. A child is a
+                // session the daemon holds, a head can post to it and it answers — so a head that
+                // drops it is throwing away a session it can DRIVE.
+                //
+                // What the filter was protecting against was noise, and that is
+                // [`App::session_rows`]'s business now: nested, collapsed by default, with the
+                // parent's id already on the row.
+                self.sessions = sessions;
                 self.dropped += dropped;
                 self.scrubbed += scrubbed.total();
                 // `session_id` is assigned by `load` and **not before it**: `load`
@@ -3500,10 +3617,8 @@ impl App {
                 current,
                 created,
             } => {
-                self.sessions = sessions
-                    .into_iter()
-                    .filter(|s| s.parent_session_id.is_none())
-                    .collect();
+                // Kept whole, like the `Hello` arm above — see it for why the filter is gone.
+                self.sessions = sessions;
                 self.session_id = current;
                 match created {
                     // A session was made *because this head asked*. Going there is
@@ -5533,10 +5648,13 @@ impl App {
                 if self.picker {
                     // The cursor starts where you are, so Enter on an untouched list
                     // is a no-op and the arrows move from a row that means something.
+                    // **Through the same enumeration the arrows and Enter read.** The session this
+                    // head is in is always a row — `session_rows` shows the chain down to it
+                    // whatever is collapsed — so this position always exists.
                     self.picker_sel = self
-                        .sessions
+                        .session_rows()
                         .iter()
-                        .position(|s| s.session_id == self.session_id)
+                        .position(|r| self.sessions[r.idx].session_id == self.session_id)
                         .unwrap_or(0);
                 }
                 return self.picker.then_some(Action::ListSessions);
@@ -6007,7 +6125,8 @@ impl App {
         // The empty-composer rule is the decision ladder's own: a half-typed id's
         // Enter still means the id.
         if self.picker && !self.sessions.is_empty() {
-            let n = self.sessions.len();
+            let rows = self.session_rows();
+            let n = rows.len();
             match k {
                 Key::Up => {
                     self.picker_sel = if self.picker_sel == 0 {
@@ -6023,8 +6142,39 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
+                // **A conversation with sub-sessions opens and closes**, the two gestures a tree
+                // uses everywhere — and the reason a collapsed default can afford to be collapsed.
+                // Guarded on an empty composer, like every other pane's arrows.
+                Key::Right if self.editor.text().is_empty() => {
+                    let id = self.sessions[rows[self.picker_sel.min(n - 1)].idx]
+                        .session_id
+                        .clone();
+                    if !self.expanded.iter().any(|e| *e == id) {
+                        self.expanded.push(id);
+                        self.redraw = true;
+                    }
+                    return None;
+                }
+                Key::Left if self.editor.text().is_empty() => {
+                    let row = rows[self.picker_sel.min(n - 1)];
+                    // **A child closes its PARENT**, so `←` means *back up the tree* rather than
+                    // nothing at all on the row you just arrived at.
+                    let want = match row.depth {
+                        0 => Some(self.sessions[row.idx].session_id.clone()),
+                        _ => self.sessions[row.idx].parent_session_id.clone(),
+                    };
+                    if let Some(want) = want
+                        && let Some(pos) = self.expanded.iter().position(|e| *e == want)
+                    {
+                        self.expanded.remove(pos);
+                        self.redraw = true;
+                    }
+                    return None;
+                }
                 Key::Enter if self.editor.text().is_empty() => {
-                    let id = self.sessions[self.picker_sel.min(n - 1)].session_id.clone();
+                    let id = self.sessions[rows[self.picker_sel.min(n - 1)].idx]
+                        .session_id
+                        .clone();
                     return self.switch_to(id);
                 }
                 Key::Click { y, .. } => {
@@ -6812,11 +6962,16 @@ impl App {
             self.redraw = true;
             return None;
         }
+        // **The number is the row the picker DREW.** They are the same list only while nothing is
+        // expanded, and a number that means one thing on the screen and another in this function is
+        // the two-enumerations defect. The prefix search below stays over every session on purpose:
+        // a collapsed child is still reachable by name, which is what collapsing is for.
+        let rows = self.session_rows();
         if let Ok(n) = typed.parse::<usize>()
             && n >= 1
-            && n <= self.sessions.len()
+            && n <= rows.len()
         {
-            let id = self.sessions[n - 1].session_id.clone();
+            let id = self.sessions[rows[n - 1].idx].session_id.clone();
             return self.switch_to(id);
         }
         let hits: Vec<&SessionBrief> = self
@@ -11810,13 +11965,23 @@ impl App {
         // screen — one untitled session, whose name is therefore an opaque id — was
         // also the case with no position indicator. Two absences do not add up to a
         // fact, and "1/1" is a fact: this daemon holds one session and you are in it.
-        let at = self
+        // **Conversations, not rows.** The header answers *which of several sessions this is*, and
+        // a denominator that grew because somebody expanded a tree would be answering a question
+        // about the PICKER. So both halves count roots — and the position is the current session's
+        // ROOT, so a head driving a sub-session still says which conversation it belongs to instead
+        // of reading `0/4`.
+        let roots: Vec<&SessionBrief> = self
             .sessions
             .iter()
-            .position(|s| s.session_id == self.session_id)
+            .filter(|s| s.parent_session_id.is_none())
+            .collect();
+        let root = self.session_root();
+        let at = roots
+            .iter()
+            .position(|s| s.session_id == root)
             .map(|i| i + 1)
             .unwrap_or(0);
-        right.push(format!("{at}/{}", self.sessions.len().max(1)));
+        right.push(format!("{at}/{}", roots.len().max(1)));
         // What this session is talking to: the daemon's own word from `Hello`, or
         // — before that has arrived — the model the running turn named. It lived
         // on the composer's top border, the one row the eye crosses on every
@@ -12980,22 +13145,47 @@ impl App {
                  replaying a recorded log and has no daemon to ask.",
             ));
         }
-        for (i, s) in self.sessions.iter().enumerate() {
+        // **Through the one enumeration.** A sub-session is indented under the conversation that
+        // spawned it, and a conversation with children carries the fold glyph every tree in this
+        // head uses. The numbering is the ROW's, so the number a reader counts to is the number
+        // `/switch N` takes.
+        let rows = self.session_rows();
+        let kids_of = |id: &str| {
+            self.sessions
+                .iter()
+                .filter(|s| s.parent_session_id.as_deref() == Some(id))
+                .count()
+        };
+        for (at, row) in rows.iter().enumerate() {
+            let i = row.idx;
+            let s = &self.sessions[i];
             let here = s.session_id == self.session_id;
             // The same ladder the decision prompt draws: the mark IS the thing Enter
             // takes, and the row it sits on is inverse. The session this head is in
             // keeps its bold name, so "where am I" and "what Enter takes" stay two
             // readable facts even when they are different rows.
-            let picked = i == self.picker_sel.min(self.sessions.len().saturating_sub(1));
+            let picked = at == self.picker_sel.min(rows.len().saturating_sub(1));
             let mark = if picked { "▸" } else { " " };
             let name = if s.title.is_empty() {
                 short_id(&s.session_id)
             } else {
                 s.title.clone()
             };
+            // **The fold is its own glyph beside the mark**, and only on a conversation that has
+            // children — a row without any keeps the exact columns it had before sub-sessions were
+            // listed, which is what keeps this screen looking unchanged until you expand something.
+            let kids = kids_of(&s.session_id);
+            let fold = if kids == 0 {
+                ""
+            } else if self.expanded.iter().any(|e| *e == s.session_id) {
+                "▾"
+            } else {
+                "▸"
+            };
+            let indent = "  ".repeat(row.depth.min(3));
             let left = format!(
-                "{mark} {:>2}  {}",
-                i + 1,
+                "{indent}{mark}{fold} {:>2}  {}",
+                at + 1,
                 p.paint(
                     if here { Role::Strong } else { Role::Plain },
                     &without_control_lines(&name),
@@ -22589,6 +22779,84 @@ mod tests {
             at120.contains("ctrl-v newest result · /t all"),
             "the pair is not whole at 120, which is where it was measured to be: {at120}"
         );
+    }
+
+    /// **A sub-session is listed under the conversation that spawned it, and it switches like any
+    /// other** — the operator's correction of 2026-10-03, and the half of it that is letibot's.
+    ///
+    /// *"yes subagents are not even scratch session they are session, just sub sessions"*, and
+    /// *"why readonly? subagent session is more like you driving others via tmux"*. Two sites used to
+    /// drop every row with a parent — `Hello` and `Sessions` — so a session a head can post to, and
+    /// get an answer from, was thrown away on the way in. What that filter was protecting against was
+    /// noise, and the answer to noise is nesting rather than silence.
+    ///
+    /// Four properties, and the third is the one a two-enumerations regression would break:
+    ///
+    /// * **Kept**: both rows are in `sessions` after a `Hello`.
+    /// * **Collapsed by default**: one row drawn, so this screen looks exactly as it did before
+    ///   sub-sessions were listed at all.
+    /// * **The listing and the keys agree**: the child is indented under its parent, and the cursor
+    ///   that reaches it by `↓` is the row `Enter` switches to — both read from [`App::session_rows`].
+    /// * **`←` folds it back**, on whichever of the two rows the cursor is on.
+    #[test]
+    fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
+        let mut child = brief("s-child", "the child", false);
+        child.parent_session_id = Some("s-root".into());
+        let mut a = app();
+        a.apply(hello(
+            "s-root",
+            vec![brief("s-root", "root", false), child],
+            Hub::new("s-root").snapshot(),
+        ));
+        // **Kept.** The daemon told this head about two sessions and it holds two.
+        assert_eq!(
+            a.sessions.len(),
+            2,
+            "a sub-session was discarded on the way in"
+        );
+        a.picker = true;
+
+        // **Collapsed by default**, which is the whole reason the default is not noisy.
+        assert_eq!(a.session_rows().len(), 1, "the child is shown unexpanded");
+        let closed = a.screen(100, 30).join("\n");
+        assert!(
+            !closed.contains("the child"),
+            "a collapsed child was drawn anyway:\n{closed}"
+        );
+
+        // **The fold, on the row the cursor is on** — it starts on the session this head is in.
+        assert_eq!(a.key(Key::Right), None, "expanding is not a daemon action");
+        assert_eq!(a.session_rows().len(), 2, "expanding shows the child");
+        let open = a.screen(100, 30).join("\n");
+        assert!(
+            open.contains("the child"),
+            "the child is not drawn:\n{open}"
+        );
+
+        // **The cursor reaches it, and the row it reaches is the row Enter takes.** One
+        // enumeration, so the indentation the eye sees and the row the key acts on cannot drift.
+        assert_eq!(a.key(Key::Down), None);
+        let picked = a.screen(100, 30).join("\n");
+        let mark_at = |needle: &str| {
+            picked
+                .lines()
+                .find(|l| l.contains(needle))
+                .and_then(|l| l.find('\u{25b8}'))
+        };
+        assert!(
+            mark_at("the child") > mark_at("root"),
+            "the child is not indented under its parent:\n{picked}"
+        );
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Switch("s-child".into())),
+            "Enter on a sub-session must be an ordinary attach"
+        );
+
+        // **`←` folds it back** — and a child row closes its PARENT, so the key means *back up the
+        // tree* on the row you just arrived at rather than nothing at all.
+        a.key(Key::Left);
+        assert_eq!(a.session_rows().len(), 1, "left did not fold the tree");
     }
 
     /// **R56: while the view is held, the head writes NOTHING** — so a mouse selection survives
