@@ -5645,8 +5645,20 @@ impl<'a> Harness<'a> {
 
                         compaction: None,
                     });
+                    // **And it names the session, for the same reason the `compacting:` line
+                    // two steps below it does and only since 2026-10-03.** This is one log file
+                    // every daemon appends to, so a wall printed here and the compaction it
+                    // triggers (`sessions.rs`) land with other sessions' work between them —
+                    // and with no id either side, *which* session met the wall is unreadable,
+                    // which is exactly what left the operator's *"too much too early"*
+                    // unattributable. Measured 2026-10-03: a wall at 1.4M tokens followed by a
+                    // fold to 633k and a compaction to 8k, and no way to say whether those were
+                    // one session behaving differently or two behaving consistently. The id
+                    // costs fourteen bytes and makes the pair a measurement rather than an
+                    // adjacency — the same correction the `compacting:` line already had.
+                    let session_id = &self.cfg.session_id;
                     eprintln!(
-                        "  context wall: stopped after {round} round(s) at {resident} of {window} tokens"
+                        "  {session_id}: context wall: stopped after {round} round(s) at {resident} of {window} tokens"
                     );
                     return Err(HarnessError::ContextWall {
                         rounds: round,
