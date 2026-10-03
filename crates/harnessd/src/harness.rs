@@ -727,6 +727,36 @@ fn subagent_notice(done: &[JobCompletion]) -> String {
     );
     s
 }
+/// **One channel, two nouns: the sentences a settlement produces, in one place.**
+///
+/// A job and a subagent arrive through the same queue and ring the same bell — see
+/// [`JobWatchers::watch`] — and they are told apart **here** rather than in two queues, because two
+/// queues would be the second mechanism the ruling avoided. The split is only for wording: a job is
+/// read with `job_output` and a child with `task_result`.
+///
+/// **Why it is a function rather than four lines inside [`Harness::wake`].** This is the one part of
+/// the wake that decides anything, and `wake()` cannot be reached by a test: it needs a live
+/// `Harness`, which this crate's tests build only where an apparatus (a vocabulary, a store) is
+/// present. **A decision exercisable only by standing up a whole session is a decision nothing
+/// asserts** — which is how *"nothing fired"* could be reported without CI disagreeing about whether
+/// the notice could fire at all. So the partition is pure and has pure tests, and `wake()` is left
+/// with the part that is not a decision: taking the queue and submitting what this returns.
+///
+/// An empty queue returns nothing, and that is load-bearing rather than tidy: `wake()` returns
+/// `Ok(None)` on an empty result rather than running a turn with nothing to say.
+fn completion_notices(done: Vec<JobCompletion>) -> Vec<String> {
+    let (tasks, jobs): (Vec<JobCompletion>, Vec<JobCompletion>) = done
+        .into_iter()
+        .partition(|c| c.kind == BackgroundKind::Subagent);
+    let mut out = Vec::new();
+    if !jobs.is_empty() {
+        out.push(completion_notice(&jobs));
+    }
+    if !tasks.is_empty() {
+        out.push(subagent_notice(&tasks));
+    }
+    out
+}
 
 /// A duration in the words a settlement reads with: `4.4s`, `1m12s`.
 fn human_secs(ms: u64) -> String {
@@ -4466,22 +4496,9 @@ impl<'a> Harness<'a> {
             .as_ref()
             .map(|w| w.take_completions())
             .unwrap_or_default();
-        if !done.is_empty() {
-            // **Two sentences, one channel.** A job and a subagent arrive through the
-            // same queue and the same bell — see `JobWatchers::watch` — and they are
-            // told apart here rather than in two queues, because two queues would be
-            // the second mechanism the ruling avoided. The split is only for wording:
-            // a job is read with `job_output` and a subagent with `task_result`.
-            let (tasks, jobs): (Vec<JobCompletion>, Vec<JobCompletion>) = done
-                .into_iter()
-                .partition(|c| c.kind == BackgroundKind::Subagent);
-            if !jobs.is_empty() {
-                notices.push(completion_notice(&jobs));
-            }
-            if !tasks.is_empty() {
-                notices.push(subagent_notice(&tasks));
-            }
-        }
+        // The sentences, and which kind gets which — [`completion_notices`], which is where that
+        // decision lives so that it can be asserted without a live session.
+        notices.extend(completion_notices(done));
         if notices.is_empty() {
             return Ok(None);
         }
@@ -7878,6 +7895,66 @@ mod tests {
         assert!(
             pair.contains("s-1-sub-1") && pair.contains("s-1-sub-2"),
             "{pair}"
+        );
+    }
+    /// **The wake's one decision, asserted: which sentence for which kind, and none for nothing.**
+    ///
+    /// The partition is the whole of what [`Harness::wake`] decides about a settlement — everything
+    /// else it does is take the queue and submit the text — and it is asserted here because `wake()`
+    /// itself cannot be: it needs a live `Harness`, which this crate's tests build only where a
+    /// vocabulary and a store are present. See [`completion_notices`] for why that is not a reason to
+    /// leave the decision unasserted.
+    #[test]
+    fn a_settlement_is_two_nouns_out_of_one_channel() {
+        let job = |id: &str| JobCompletion {
+            kind: BackgroundKind::Job,
+            job: id.into(),
+            command: "cargo test".into(),
+            state: "exited 0".into(),
+            produced: 12,
+            elapsed_ms: 900,
+            detail: String::new(),
+        };
+        let child = |id: &str| JobCompletion {
+            kind: BackgroundKind::Subagent,
+            job: id.into(),
+            command: String::new(),
+            state: "done".into(),
+            produced: 0,
+            elapsed_ms: 0,
+            detail: "off a fixture".into(),
+        };
+
+        // **Nothing settled says nothing**, which is what makes a spurious wake cost no generation.
+        assert!(completion_notices(Vec::new()).is_empty());
+
+        // **The two nouns are the point.** A reader told `[job]` about a child goes looking for it
+        // with `job_output` — which is the wrong door, and is what a hand measurement had to find
+        // because nothing asserted this.
+        let only_child = completion_notices(vec![child("s-1-sub-1")]);
+        assert_eq!(only_child.len(), 1, "{only_child:?}");
+        assert!(only_child[0].starts_with("[task]"), "{:?}", only_child[0]);
+        assert!(only_child[0].contains("task_result"), "{:?}", only_child[0]);
+        let only_job = completion_notices(vec![job("j7")]);
+        assert_eq!(only_job.len(), 1, "{only_job:?}");
+        assert!(only_job[0].starts_with("[job]"), "{:?}", only_job[0]);
+        assert!(only_job[0].contains("job_output"), "{:?}", only_job[0]);
+
+        // **Both kinds are one wake and two sentences**, job first — the order the old inline code
+        // produced, kept so the record of a session reads the same way it did.
+        let both = completion_notices(vec![job("j7"), child("s-1-sub-1")]);
+        assert_eq!(both.len(), 2, "{both:?}");
+        assert!(both[0].starts_with("[job]"), "{:?}", both[0]);
+        assert!(both[1].starts_with("[task]"), "{:?}", both[1]);
+
+        // **Two children are one sentence, not two** — the plural arm of the child's own wording,
+        // asserted through the partition so the two functions cannot drift apart.
+        let pair = completion_notices(vec![child("s-1-sub-1"), child("s-1-sub-2")]);
+        assert_eq!(pair.len(), 1, "{pair:?}");
+        assert!(
+            pair[0].contains("2 subagents you started have finished"),
+            "{:?}",
+            pair[0]
         );
     }
 
