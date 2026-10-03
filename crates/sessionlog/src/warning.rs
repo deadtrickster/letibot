@@ -67,8 +67,10 @@
 /// The operator, having been shown a red note for a mistyped `/qwe` sitting in the same
 /// colour as `ledger_chain_mismatch`: *"red is stop the world event … a mistyped /qwe is not
 /// a session in trouble."* The instruction was to **measure before ruling**, and this is the
-/// count over the table: **69 codes — 23 Routine, 46 Failure** — of which **7** are *the
-/// reader asked for something that is not there*:
+/// count over the table **as it stood at the ruling** — 69 codes, 23 Routine, 46 Failure
+/// (**73 today**; `the_register_census` is the number that is pinned, and this paragraph is
+/// the measurement the ruling was made on rather than a live mirror of the table) — of which
+/// **7** are *the reader asked for something that is not there*:
 ///
 /// ```text
 /// slash_refused        the verb they typed is not one
@@ -338,6 +340,15 @@ pub const TABLE: &[(&str, Class)] = &[
     ("protocol_skew", Class::Failure),
     ("orphan_body", Class::Failure),
     ("sudo", Class::Failure),
+    // **A head that was told something is edge-bound and has nowhere to put it.** The code is
+    // in [`ALARM_ONLY`], so the daemon's sentence is not drawn in the conversation; the head
+    // is supposed to move it to a counter, and this is what it says when it has no counter to
+    // move it to. `Failure` and not `Routine`, and the argument is the same one that keeps
+    // `anchor_lost` here: the diagnostic reaches neither the record nor the triangle, so a
+    // reader who is not told has been told nothing at all. It is also the loudest thing this
+    // module can say about a *build* rather than about a session — the two halves of the tree
+    // disagree about where a note goes, and no event, socket or grant is involved.
+    ("alarm_only_unregistered", Class::Failure),
     // Codes that exist only in fixtures in this tree — a head under test is handed a
     // wall, a gap, a decision that timed out, a guard that tripped. They are classified
     // because the guard reads every `code:` literal under `crates/`, which is where the
@@ -368,9 +379,76 @@ pub fn is_failure(code: &str) -> bool {
     class(code).is_failure()
 }
 
+/// **The codes that belong on the edge rather than in the record** — the ⚠ and `/status`,
+/// never a row in the conversation.
+///
+/// # The rule, because the next person needs it to place a new code
+///
+/// **An event in the record goes in the record; a note about the weather goes on the
+/// edge.** A compaction *changes the conversation*: `compacted` and `auto_compact` are
+/// `Class::Routine` and are drawn as rows, and the operator has repeatedly wanted to see
+/// them happen. A slow first byte changes nothing about the conversation — it is a fact
+/// about the provider's latency, and it is the same fact whether or not anybody read the
+/// sentence. Their words, on `model_slow_first_byte`: *"it is important diagnostics -
+/// we have a yellow triangle for that. both heads should not emit it inside
+/// conversation."*
+///
+/// So this is **not** "all of `Class::Routine`", and widening it to that would hide
+/// compactions from the people who asked to see them. `Class` answers *how bad is it*
+/// (routine, refused, failure) and this answers *where does it go* — two axes, and a code
+/// has to answer both. A code here is still counted, still reachable, still unable to be
+/// lost: the triangle is a pointer at `/status`, which is where the number lives.
+///
+/// **A `Failure` or a `Refused` can never be here**, and that is asserted below rather
+/// than left to whoever adds the next row: hiding a fault on the edge would make it a
+/// fault nobody sees, which is the one direction this whole module exists to close.
+pub const ALARM_ONLY: &[&str] = &[
+    // A first byte slower than the head's patience. The turn is running and nothing is
+    // wrong with it; what the reader would learn from a row is that the provider was
+    // slow once, which is what the triangle is for.
+    "model_slow_first_byte",
+];
+
+/// Whether this code is drawn on the edge rather than in the conversation — see
+/// [`ALARM_ONLY`], whose docstring is the rule.
+pub fn to_the_alarm(code: &str) -> bool {
+    ALARM_ONLY.contains(&code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Nothing that is a fault may hide on the edge.**
+    ///
+    /// [`ALARM_ONLY`] moves a code out of the conversation and onto the triangle, where it is
+    /// a number in `/status` and not a sentence in the record. That is right for weather and
+    /// wrong for a fault: a failure drawn only as a counter is a failure nobody reads, which
+    /// is the one direction this module exists to close. So the table is checked against the
+    /// class table rather than trusted, and the check lives beside the rule so that adding a
+    /// row is when it runs.
+    #[test]
+    fn an_alarm_only_code_is_never_a_failure_or_a_refusal() {
+        for code in ALARM_ONLY {
+            assert_eq!(
+                class(code),
+                Class::Routine,
+                "`{code}` is alarm-only and is not Routine — a fault or a refusal drawn \
+                 only as a triangle is a fault nobody reads"
+            );
+            assert!(to_the_alarm(code), "the table is what `to_the_alarm` reads");
+        }
+        // **And the rule was not widened to all of `Class::Routine`.** These change the
+        // conversation, so they are rows in it; the operator has asked to see compactions
+        // happen more than once, and moving them to the edge would answer that request
+        // with silence.
+        for code in ["compacted", "auto_compact", "compact_half", "reseated"] {
+            assert!(
+                !to_the_alarm(code),
+                "`{code}` changes the conversation and belongs in the record"
+            );
+        }
+    }
 
     /// The four the operator was met by, and the one that must never go quiet.
     ///
@@ -441,26 +519,32 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 72 codes, of which **7** are the reader's own input refused.
+    /// **The census, pinned.** 73 codes, of which **7** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_25_routine_7_refused_and_40_failures() {
+    fn the_table_is_25_routine_7_refused_and_41_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **72, not the 70 the census was taken at**, because `model_slow_first_byte` —
-        // a provider that has not started answering, said while it is still silent — is
-        // Routine and therefore moves THIS register rather than the red one, and because
-        // `compact_half` does the same for a fold that is running. Counted rather than left
-        // implicit, because a census that quietly moves is not a census.
-        assert_eq!(TABLE.len(), 72, "the table's size");
+        // **73, not the 70 the census was taken at.** Three arrivals, each counted rather than
+        // left implicit, because a census that quietly moves is not a census:
+        //
+        //   · `model_slow_first_byte` — a provider that has not started answering, said while it
+        //     is still silent — is Routine and therefore moves THIS register rather than the red
+        //     one;
+        //   · `compact_half` does the same for a fold that is running;
+        //   · **`alarm_only_unregistered` is the first code here that the HEAD names rather than
+        //     the daemon**, and it is a Failure by the same argument that keeps `anchor_lost`: the
+        //     diagnostic reaches neither the conversation nor the triangle, so a reader who is not
+        //     told has been told nothing at all.
+        assert_eq!(TABLE.len(), 73, "the table's size");
         assert_eq!(count(Class::Routine), 25);
         assert_eq!(count(Class::Refused), 7, "the seven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 40);
+        assert_eq!(count(Class::Failure), 41);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 40 of 72 and the middle is 7**, which is why the third register is a
+        // register is 41 of 73 and the middle is 7**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

@@ -1525,6 +1525,14 @@ pub struct App {
     /// exists" is a fact an operator should not have to infer from a gap in a
     /// conversation.
     pub orphan_bodies: u64,
+    /// **Times the provider was slow to send its first byte**, and it said so.
+    ///
+    /// `model_slow_first_byte` — a fact about the weather rather than an event in the
+    /// conversation, which is why it is a counter here and not a row in the transcript.
+    /// See `letibot_sessionlog::warning::ALARM_ONLY` for the rule that puts it here. The
+    /// operator's ruling: *"it is important diagnostics - we have a yellow triangle for
+    /// that. both heads should not emit it inside conversation."*
+    pub slow_first_byte: u64,
     /// **The counter values this reader has already been shown** — R51 item 17.
     ///
     /// The `⚠` on the composer's edge is a pointer at `/status`, and this is what makes it
@@ -2668,6 +2676,7 @@ impl App {
             gaps: 0,
             behind: 0,
             orphan_bodies: 0,
+            slow_first_byte: 0,
             acked: Counters::default(),
             scroll: 0,
             editor: Editor::new(),
@@ -5006,6 +5015,36 @@ impl App {
                     v.loading = false;
                     v.error = Some(detail.clone());
                     self.redraw = true;
+                }
+                // **A note about the weather goes on the edge, not in the record.**
+                //
+                // The operator, on `model_slow_first_byte`: *"it is important diagnostics -
+                // we have a yellow triangle for that. both heads should not emit it inside
+                // conversation."* So the diagnostic is kept and its PLACEMENT is moved: the
+                // count moves a counter, the triangle comes up, and `/status` is where the
+                // number lives. `warning::ALARM_ONLY` is the rule and the docstring there
+                // says why a compaction stays a row and this does not.
+                //
+                // **Counted, and `Filtered` rather than dropped.** `Filtered` is what makes
+                // "I chose not to show this" different from "nothing happened" — the same
+                // distinction the `turn_failed` arm above is refused for. And if this head
+                // has no register for a code the tree says is edge-bound, it says so rather
+                // than swallowing it: a note that reaches neither the record nor a counter
+                // is a note nobody has.
+                if letibot_sessionlog::warning::to_the_alarm(&code) {
+                    if !self.count_edge_note(&code) {
+                        self.note(Note::Warned(Warned {
+                            code: "alarm_only_unregistered".into(),
+                            detail: format!(
+                                "`{code}` is classified as edge-bound and this head has no \
+                                 counter for it, so the diagnostic above is the only copy. \
+                                 See `warning::ALARM_ONLY`."
+                            ),
+                            ts,
+                        }));
+                    }
+                    self.redraw = true;
+                    return Disposition::Filtered;
                 }
                 self.note(Note::Warned(Warned { code, detail, ts }));
                 Disposition::Rendered
@@ -13743,6 +13782,7 @@ struct Counters {
     unreadable: u64,
     gaps: u64,
     orphan_bodies: u64,
+    slow_first_byte: u64,
 }
 
 impl Counters {
@@ -13759,6 +13799,7 @@ impl Counters {
             || self.unreadable > seen.unreadable
             || self.gaps > seen.gaps
             || self.orphan_bodies > seen.orphan_bodies
+            || self.slow_first_byte > seen.slow_first_byte
     }
 }
 
@@ -13788,6 +13829,7 @@ impl App {
             unreadable: self.unreadable,
             gaps: self.gaps,
             orphan_bodies: self.orphan_bodies,
+            slow_first_byte: self.slow_first_byte,
         }
     }
 
@@ -13799,6 +13841,23 @@ impl App {
     /// conversation over.
     fn acknowledge_counters(&mut self) {
         self.acked = self.counters();
+    }
+
+    /// **Move the counter that belongs to an edge-bound code**, or say this head has none.
+    ///
+    /// One place, so the arm that handles a `Warning` and the test that checks every
+    /// `ALARM_ONLY` row is registered both read the same table. `false` is the case worth
+    /// having: the tree says a code belongs on the triangle and this head has nowhere to put
+    /// it, which the arm above then *says* rather than swallowing — a note that reaches
+    /// neither the record nor a counter is a note nobody has.
+    fn count_edge_note(&mut self, code: &str) -> bool {
+        match code {
+            "model_slow_first_byte" => {
+                self.slow_first_byte += 1;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The alarm line for the **unboxed** composer — the degenerate short-screen
@@ -14023,6 +14082,27 @@ impl App {
             "Bodies that arrived for rows this head is not holding. The words cannot be \
              drawn — a snapshot replaced the rows and this one was not in it — so the \
              count is the only trace they leave.",
+        );
+        // **A diagnostic that is not an event in the conversation.** `model_slow_first_byte`
+        // is the provider being slow to start answering; nothing about the turn is wrong
+        // and nothing about the conversation changed, so it is a number to look at when the
+        // triangle is up rather than a sentence between two messages — the operator's
+        // ruling, and the rule is written down in `warning::ALARM_ONLY`.
+        //
+        // **The code is in the gloss, and that is not decoration.** Moving the note off the
+        // screen took the one place the daemon's own name for this fact appeared — and the code
+        // is the word a reader greps the session log for, so the row that replaced it owes
+        // them the spelling. Every other row here is named by its code already
+        // (`unreadable`, `orphan`, `gaps`); this is the one that had to move, so this is the
+        // one that has to say where it went.
+        row(
+            "first byte",
+            self.slow_first_byte.to_string(),
+            "Times the provider took longer than this head's patience to send the first \
+             byte of an answer — the daemon's code for it is `model_slow_first_byte`. \
+             Nothing is wrong with the turn, which is why this is a count here and not a row \
+             in the conversation: the latency is a fact about the provider now, and the \
+             conversation is not different because of it.",
         );
 
         // **And the NAMES, which is the pair `orphan` was missing.**
@@ -22648,7 +22728,12 @@ mod tests {
             a.notes
         );
         a.command("status");
-        let status = a.screen(120, 72).join("\n");
+        // **Taller than it was, again.** `/status` is a scrolling pane, and the row this test
+        // reads is near its end: R17 added three rows (gaps, behind, orphan) and this change
+        // added a fourth (`first byte`, the counter `model_slow_first_byte` now lands in) plus
+        // its gloss. A frame that used to reach the bottom of the list does not, and the
+        // failure is a missing row rather than a wrong one.
+        let status = a.screen(120, 96).join("\n");
         let row = status
             .lines()
             .find(|l| l.contains("protocol"))
@@ -22709,7 +22794,8 @@ mod tests {
         // **Taller than it was**: `/status` gained three rows in R17 (gaps, behind,
         // orphan), and a fixed-height frame that used to reach the bottom of the list
         // no longer does.
-        let status = a.screen(120, 72).join("\n");
+        // **And the same height for the same reason.**
+        let status = a.screen(120, 96).join("\n");
         let row = status
             .lines()
             .find(|l| l.contains("protocol"))
@@ -27159,6 +27245,7 @@ mod tests {
             "s1",
             vec![daemon_job("j1", &format!("cargo test{HOSTILE}"), false)],
         ));
+
         b.jobs_pane = true;
         b.apply(ServerFrame::Event(env(
             1,
@@ -38362,6 +38449,145 @@ mod tests {
         assert!(
             matches!(b.key(Key::Enter), Some(Action::Prompt(t)) if t == "\\"),
             "with no pane open, Enter sends the line"
+        );
+    }
+
+    /// **Every code the tree says belongs on the edge has a register in this head.**
+    ///
+    /// `warning::ALARM_ONLY` moves a code off the conversation; this head has to have
+    /// somewhere for it to land, or the diagnostic is drawn nowhere at all. The two halves
+    /// live in different crates and cannot be checked by the compiler, so the check is a test
+    /// — and it is written to fail when somebody adds a row to the classification without
+    /// wiring it here, which is the only moment the omission is cheap to fix.
+    #[test]
+    fn every_edge_bound_code_has_a_counter_in_this_head() {
+        for code in letibot_sessionlog::warning::ALARM_ONLY {
+            let mut a = App::new(plain_cfg(80));
+            assert!(
+                a.count_edge_note(code),
+                "`{code}` is classified edge-bound and this head has no counter for it, so \
+                 the diagnostic would be drawn nowhere"
+            );
+        }
+        // And the register it moved is the one the alarm reads: a counter outside
+        // `Counters` would be a number nobody is pointed at.
+        let mut a = App::new(plain_cfg(80));
+        a.count_edge_note("model_slow_first_byte");
+        assert!(
+            a.alarmed(),
+            "counting an edge-bound note must raise the ⚠ — the mark is the whole reason it \
+             is not a row in the conversation"
+        );
+        // **And a code this head has no register for is REFUSED, not counted into a
+        // neighbour's cell.** The false half is the one the arm acts on: it is what makes
+        // `alarm_only_unregistered` a sentence rather than a silent deletion.
+        assert!(
+            !a.count_edge_note("something_this_head_has_never_heard_of"),
+            "an unknown code must not be counted into a counter that means something else"
+        );
+    }
+
+    /// **The ruling itself, driven end to end: the diagnostic moves to the edge and does not
+    /// stop existing.**
+    ///
+    /// The operator, on `model_slow_first_byte`: *"it is important diagnostics - we have a
+    /// yellow triangle for that. both heads should not emit it inside conversation."* Both
+    /// halves have to hold at once, and either alone is a defect this tree has already paid
+    /// for: **kept and drawn as a row** is the wall they are reading, and **kept and drawn
+    /// nowhere** is a disclosure that has been deleted rather than moved.
+    ///
+    /// So this drives the event and asserts the four things that have to be true together —
+    /// the arm's `Filtered` rather than `Rendered`, the sentence absent from the screen, the
+    /// counter moved, the triangle up, and the number named on `/status` — plus the control
+    /// that keeps them from being satisfied by a head that swallows every warning it is sent.
+    /// The arm's docstring is the argument; this is the assertion, because a docstring over
+    /// an arm nothing tests is exactly the shape R53 §1.2 found in this file.
+    #[test]
+    fn an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row() {
+        let mut a = App::new(plain_cfg(80));
+        assert_eq!(a.slow_first_byte, 0);
+        assert!(!a.alarmed(), "the premise: a clean head has a clean edge");
+
+        let said = "4210ms to the first byte (the provider, not the turn)";
+        assert_eq!(
+            a.apply(ServerFrame::Event(env(
+                1,
+                SessionEvent::Warning {
+                    code: "model_slow_first_byte".into(),
+                    detail: said.into(),
+                    compaction: None,
+                },
+            ))),
+            // **`Filtered`, not `Control` and not `Rendered`.** It is an event in the record —
+            // it is read, and it is counted in the number that says what this head chose not to
+            // show — and it is not a row. The arm's own comment argues it; `Control` would be
+            // the third thing, and a frame this head is given is not a frame it is not given.
+            Disposition::Filtered,
+            "an edge-bound note is read and not drawn, and it is counted as filtered"
+        );
+        let screen = a.screen(80, 24).join("\n");
+        assert!(
+            !screen.contains(said),
+            "the sentence is in the conversation, which is the ruling reversed:\n{screen}"
+        );
+        // **And it is still there.** The count moved, the triangle is up, and the reader is one
+        // verb from the number.
+        assert_eq!(
+            a.slow_first_byte, 1,
+            "the diagnostic was dropped, not moved"
+        );
+        assert!(
+            a.alarmed(),
+            "a diagnostic on the edge must raise the ⚠, or nothing points at it"
+        );
+        assert!(
+            screen.contains('⚠'),
+            "the edge says nothing while a counter has moved:\n{screen}"
+        );
+
+        // `/status`: the row is named, it is countable, and it carries the daemon's own code —
+        // because moving the note off the screen took away the one place that spelling
+        // appeared, and the code is the word a reader greps the session log for.
+        a.command("status");
+        // Tall, because `/status` is a scrolling pane and this row sits near its end.
+        let stats = a.screen(120, 96).join("\n");
+        let row = stats
+            .lines()
+            .find(|l| l.trim_start().starts_with("first byte"))
+            .unwrap_or_else(|| panic!("`/status` does not carry the counter: {stats}"));
+        assert!(
+            row.contains('1'),
+            "the row does not carry the count: {row:?}"
+        );
+        assert!(
+            stats.contains("model_slow_first_byte"),
+            "the code the reader greps the log for is not on the screen at all:\n{stats}"
+        );
+
+        // **The control: a code that changes the conversation is still a row in it.** Without
+        // this, a head that swallowed every warning would pass everything above — and R19's own
+        // argument is that compactions are the rows the operator asked to keep seeing.
+        let mut b = App::new(plain_cfg(80));
+        assert_eq!(
+            b.apply(ServerFrame::Event(env(
+                1,
+                SessionEvent::Warning {
+                    code: "compacted".into(),
+                    detail: "compacted: 940188 → 9181 tokens".into(),
+                    compaction: None,
+                },
+            ))),
+            Disposition::Rendered,
+            "a compaction changes the conversation and is a row in it"
+        );
+        assert!(
+            b.screen(80, 24).join("\n").contains("940188"),
+            "the compaction's own sentence is not drawn"
+        );
+        assert_eq!(b.slow_first_byte, 0, "a compaction is not the weather");
+        assert!(
+            !b.alarmed(),
+            "and it raises no triangle, because nothing is wrong"
         );
     }
 
