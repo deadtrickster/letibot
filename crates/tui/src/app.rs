@@ -17122,6 +17122,7 @@ fn outcome_why(o: &letibot_transcript::ToolOutcome) -> Option<String> {
 ///   **omitted entirely when the row carries no `ts`** — a snapshot from a log
 ///   recorded before the field existed. The same rule as a replayed tool call
 ///   showing no duration.
+
 /// **A row this SESSION appended, drawn as the session's** — R42.
 ///
 /// The operator: *"why job completion events arrive as my messages?"* Because every one of
@@ -17168,6 +17169,83 @@ fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
         ));
     }
     out
+}
+
+/// **The daemon's completion notices, folded to one line per settlement.**
+///
+/// The operator's ask, reading a settled job and a finished child: *"too much … i dont want to
+/// see that message to you 'This is the completion…' I also dont care about 'sabagent you
+/// started…' it must be something like Job <id> <command summary or wrap> finished <result
+/// result summary or wrap> same for agents."* leticl folds these and this head drew the whole
+/// paragraph, and the paragraph is the half that is **addressed to the model**: *"you do not
+/// need to wait for it, and `job_wait` would only block you…"* is R7's promise being made to the
+/// model, which is exactly why a person should not have to read it.
+///
+/// What is kept is every fact, one per line: the job, how it ended, what it wrote and what it
+/// ran — `Job j57 exited 0 after 7m06s, wrote 508 bytes: <command>` — and, for a child, the
+/// handle and what it said — `Agent s-…-sub-… · done: 3529`. The heading is dropped, because a
+/// line that names its own kind does not need *"a job you backgrounded has ended:"* above it,
+/// and a group of three becomes three lines rather than one heading and a count.
+///
+/// # Only the sentence this head KNOWS is hidden
+///
+/// **A fold that swallows text it does not recognise is a fold that loses information**, and
+/// this one has an obvious way to do it: a notice whose shape changes under it would have its
+/// new half silently dropped. So every part has to be accounted for — the opening has to be one
+/// of the two known ones, every settlement line has to be a bullet with a handle in backticks,
+/// and the only text that may follow them is the promise, which must be the promise by
+/// name. Anything else returns `None` and the row is drawn raw, exactly as before this existed.
+/// The failure of a future change here is then *"the notices got long again"*, which is visible,
+/// rather than *"a notice lost a line"*, which is not.
+///
+/// **The record is untouched.** This is a rendering: the transcript still holds the daemon's
+/// words verbatim, and the model still reads the whole of them. That is also what makes dropping
+/// the promise here honest rather than a loss — what the operator cannot see is on the row they
+/// are looking at, not deleted from it. Opening it on demand is the half leticl has and this head
+/// does not; it is **not** in this change (see TODO.md, the notice-fold row).
+fn folded_notice(text: &str) -> Option<String> {
+    /// The promise to the model, by a phrase that is in it and not in any fact line.
+    const PROMISE: &str = "you do not need to wait for it";
+    let mut out: Vec<String> = Vec::new();
+    for group in text.split("\n\n") {
+        let (head, rest) = group.split_once('\n')?;
+        // The noun a folded line names itself with, from the opening the daemon wrote.
+        let (who, sep) = if head.starts_with("[job] ") {
+            ("Job ", " ")
+        } else if head.starts_with("[task] ") {
+            ("Agent ", " · ")
+        } else {
+            return None;
+        };
+        let mut settlements = 0usize;
+        let mut promised = false;
+        for line in rest.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Some(bullet) = line.strip_prefix("  - ") {
+                // A settlement after the promise is a shape this head does not know, and the
+                // one thing it will not do is guess which half of it is the fact.
+                if promised {
+                    return None;
+                }
+                let (handle, said) = bullet.split_once(' ')?;
+                let handle = handle.strip_prefix('`')?.strip_suffix('`')?;
+                settlements += 1;
+                out.push(format!("{who}{handle}{sep}{said}"));
+            } else if line.contains(PROMISE) {
+                promised = true;
+            } else {
+                return None;
+            }
+        }
+        // A heading with nothing under it is not a settlement, and it is not this fold's to
+        // summarise: an unknown shape goes to the renderer as it arrived.
+        if settlements == 0 {
+            return None;
+        }
+    }
+    (!out.is_empty()).then(|| out.join("\n"))
 }
 
 fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
@@ -18195,7 +18273,14 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     (RowClass::Speech, user_block(&text, it.ts, cfg))
                 }
                 letibot_transcript::Speaker::Agent => {
-                    (RowClass::Other, session_block(&text, it.ts, cfg))
+                    // **A completion notice is folded; anything else is drawn as it arrived.**
+                    // The row this replaces carried R7's promise to the model in the operator's
+                    // reading line — see [`folded_notice`], which folds only what it can
+                    // account for completely and hands back everything else untouched.
+                    match folded_notice(&text) {
+                        Some(folded) => (RowClass::Other, session_block(&folded, it.ts, cfg)),
+                        None => (RowClass::Other, session_block(&text, it.ts, cfg)),
+                    }
                 }
             }
         }
@@ -34906,6 +34991,162 @@ mod tests {
             third.notice
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A completion notice is folded to one line per settlement, and R7's promise to the
+    /// model is not drawn.**
+    ///
+    /// The operator's ask, and leticl's half of it: *"i dont want to see that message to you
+    /// 'This is the completion…'"*. The two strings below are the daemon's own text, copied out
+    /// of the store, so this asserts against what is actually on the wire and not against a
+    /// paraphrase — the trailing paragraph is the part being dropped, and it is dropped because
+    /// it is addressed to the model.
+    #[test]
+    fn a_completion_notice_folds_to_one_line_per_settlement() {
+        const JOB: &str = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 7m06s, wrote 508 bytes: sleep 3; echo done\nThis is the completion arriving on its own — you do not need to wait for it, and `job_wait` would only block you for a result you already have.";
+        const TASK: &str = "[task] a subagent you started has finished:\n  - `s-1791017230755743833-sub-1791119445423` done: 3529\nThis is the completion arriving on its own — you do not need to wait for it, and calling `task_result` to block would only hold you for a result you already have.";
+
+        let folded = folded_notice(JOB).expect("a job notice folds");
+        assert_eq!(
+            folded, "Job j57 exited 0 after 7m06s, wrote 508 bytes: sleep 3; echo done",
+            "every fact is kept and the heading is not"
+        );
+        assert!(
+            !folded.contains("you do not need to wait for it"),
+            "the promise is to the model: {folded}"
+        );
+        // The same shape, the other noun, and the child's own answer kept whole.
+        assert_eq!(
+            folded_notice(TASK).expect("a child notice folds"),
+            "Agent s-1791017230755743833-sub-1791119445423 · done: 3529"
+        );
+
+        // **Three settlements are three lines, not a heading and a count.** The daemon's
+        // heading is `3 jobs you backgrounded have ended:`, and a folded line names its own
+        // kind — which is exactly the argument for dropping it.
+        const THREE: &str = "[job] 3 jobs you backgrounded have ended:\n  - `j11` exited 0 after 12.0s, wrote 13 bytes: a\n  - `j12` exited 0 after 16.0s, wrote 13 bytes: b\n  - `j13` exited 0 after 20.0s, wrote 13 bytes: c\nThis is the completion arriving on its own — you do not need to wait for it.";
+        let three = folded_notice(THREE).expect("a group of three folds");
+        let lines: Vec<&str> = three.lines().collect();
+        assert_eq!(lines.len(), 3, "one line per settlement: {three}");
+        assert!(
+            lines.iter().all(|l| l.starts_with("Job ")),
+            "each line names its own kind: {three}"
+        );
+        assert!(
+            !three.contains("3 jobs"),
+            "the count was the heading's job, and the heading is gone: {three}"
+        );
+    }
+
+    /// **One row can hold both kinds** — the daemon coalesces what it submits, so a job group and
+    /// a child group arrive as one item — and both fold, in the order they were written.
+    #[test]
+    fn a_notice_holding_a_job_and_a_child_folds_to_both() {
+        const BOTH: &str = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 3.0s, wrote 5 bytes: sleep 3; echo done\nThis is the completion arriving on its own — you do not need to wait for it.\n\n[task] a subagent you started has finished:\n  - `s-p-sub-1` done: 3529\nThis is the completion arriving on its own — you do not need to wait for it.";
+        let folded = folded_notice(BOTH).expect("both kinds fold");
+        let lines: Vec<&str> = folded.lines().collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "one line per settlement, across both: {folded}"
+        );
+        assert_eq!(
+            lines[0], "Job j57 exited 0 after 3.0s, wrote 5 bytes: sleep 3; echo done",
+            "the job first, as the daemon wrote it"
+        );
+        assert_eq!(lines[1], "Agent s-p-sub-1 · done: 3529");
+    }
+
+    /// **What the fold cannot account for, it does not draw.**
+    ///
+    /// This is the half that matters more than the folding: a notice whose shape changes under
+    /// this function must come back **whole** rather than lose the half the parser did not
+    /// recognise. The monitor notice is the live test of it — it is the same voice, the same
+    /// bullets and the same closing sentence as a job's, and it is deliberately NOT folded,
+    /// because leticl does not fold it either and two heads folding different sets is the drift
+    /// this file has been fixed for before.
+    #[test]
+    fn the_notice_fold_refuses_anything_it_cannot_account_for() {
+        let cases: &[(&str, &str)] = &[
+            ("an ordinary session row", "job j89 exited 0 after 12.4s"),
+            (
+                "a steering line",
+                "steering: you said you would bump the retry budget",
+            ),
+            (
+                "a monitor notice — same bullets, a different kind",
+                "[monitor] 1 watch(es) fired:\n  - `w1` (process), declared by you: it ended\nOnly a FIRED watch is an answer about the world.",
+            ),
+            (
+                "a heading with nothing under it",
+                "[job] a job you backgrounded has ended:\nThis is the completion arriving on its own — you do not need to wait for it.",
+            ),
+            (
+                "a settlement line whose handle is not in backticks",
+                "[job] a job you backgrounded has ended:\n  - j57 exited 0\nThis is the completion arriving on its own — you do not need to wait for it.",
+            ),
+            (
+                "a settlement AFTER the promise",
+                "[job] a job you backgrounded has ended:\nThis is the completion arriving on its own — you do not need to wait for it.\n  - `j57` exited 0",
+            ),
+            (
+                "a line that is neither a settlement nor the promise",
+                "[job] a job you backgrounded has ended:\n  - `j57` exited 0\nSomething new the daemon has started saying.\nThis is the completion arriving on its own — you do not need to wait for it.",
+            ),
+        ];
+        for (what, text) in cases {
+            assert!(
+                folded_notice(text).is_none(),
+                "{what} was folded instead of drawn as it arrived: {:?}",
+                folded_notice(text)
+            );
+        }
+    }
+
+    /// **And the row on the glass is the folded line** — the complaint was about what the operator
+    /// was reading, so the assertion is on a frame and not only on the function.
+    #[test]
+    fn a_settled_jobs_row_draws_as_one_line_and_not_as_the_promise() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "user".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        let notice = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 3.0s, wrote 5 bytes: sleep 3; echo done\nThis is the completion arriving on its own — you do not need to wait for it, and `job_wait` would only block you for a result you already have.";
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Agent,
+                    parts: vec![letibot_transcript::UserPart::Text {
+                        text: notice.into(),
+                    }],
+                }),
+            },
+        )));
+        let screen = a.screen(120, 30).join("\n");
+        assert!(
+            screen.contains("Job j57 exited 0 after 3.0s, wrote 5 bytes: sleep 3; echo done"),
+            "the row names the job, how it ended and what it ran: {screen}"
+        );
+        assert!(
+            !screen.contains("you do not need to wait for it"),
+            "R7's promise is to the model, not to the person reading the row: {screen}"
+        );
+        assert!(
+            !screen.contains("a job you backgrounded has ended"),
+            "the heading is what a folded line replaces: {screen}"
+        );
     }
 
     /// **A row this session appended is not drawn as the operator's** — R42, and the
