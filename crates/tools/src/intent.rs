@@ -2828,6 +2828,20 @@ pub struct Baseline {
     /// disclosure: **using** the key is an ask, and the operator's own framing is that
     /// it is fine when they said so.
     pub authenticating: Option<String>,
+    /// **The directory the stage being placed actually runs in** — the session's own
+    /// workspace, until a literal `cd` moves it.
+    ///
+    /// The operator's box is the case, and they named it: *"because of nesting"*. The session
+    /// lives in `Projects/letibot` and the repository is one level down in
+    /// `Projects/letibot/letibot`, so every command they type begins `cd …/letibot/letibot &&`
+    /// — and a relative operand (`crates/ui/src/app.rs`, say) was placed against the WORKSPACE,
+    /// where that path does not exist and therefore read as *outside the project*. MEASURED
+    /// 2026-10-05: `cd /home/dead/Projects/letibot/letibot && git checkout -- crates/ui/src/card.rs`
+    /// was refused by `destruction_outside_the_project`, naming a path inside their own tree.
+    ///
+    /// `Some(workspace)` at the start of the walk, so a command that cds nowhere places its
+    /// relative operands exactly as it did before this existed.
+    cwd: Option<String>,
     /// True when the class of this action was decided from a **path** —
     /// [`Baseline::of_paths`], so `ActionClass::host` and `GateCall::path_is_inside`
     /// own the decision and the [`Region`] values here are a second classifier's
@@ -2992,6 +3006,7 @@ impl Baseline {
             flows: Vec::new(),
             findings: Vec::new(),
             authenticating: None,
+            cwd: env.workspace.clone(),
             path_decided: false,
         };
 
@@ -3124,6 +3139,34 @@ impl Baseline {
             .any(|s| stage_intents(s).contains(&Intent::Network));
         for stage in &n.stages {
             b.absorb_stage(&n, stage, env, egresses, scripts);
+            // **AND A LITERAL `cd` MOVES THE DIRECTORY FOR EVERY STAGE AFTER IT.** The
+            // operator's own shape: `cd ~/Projects/letibot/letibot && git checkout --
+            // crates/ui/src/card.rs`. The `cd` itself is placed against the directory the
+            // command STARTED in (that is what a `cd` means), and every later stage is placed
+            // against where it landed — so a relative path is judged where it will actually
+            // be opened. A `cd` with an unresolved or absent target leaves the directory
+            // alone: nothing here guesses at a directory, and a wrong cwd would place paths
+            // the operator never named.
+            //
+            // `cd` with no operand (a bare `cd`, which means `$HOME`) is left alone, and so is
+            // `cd -`: both are facts about a shell this reader does not model.
+            if stage.program_name() == Some("cd")
+                && let Some(target) = stage.argv.first().and_then(|w| w.text())
+                && !target.is_empty()
+                && target != "-"
+            {
+                // `~` first, through the same expansion every other path gets — otherwise
+                // `cd ~/Projects/letibot/letibot` would join a tilde onto the workspace and
+                // invent a directory nobody named.
+                let target = env.expand(target);
+                let base = b.cwd.clone().unwrap_or_else(|| "/".into());
+                let joined = if target.starts_with('/') {
+                    target
+                } else {
+                    format!("{base}/{target}")
+                };
+                b.cwd = Some(collapse(&joined));
+            }
         }
         // `H=192.0.2.10; curl http://$H/` — the value is known where the use is
         // not. A host in an assignment is a first contact when something in
@@ -3428,6 +3471,9 @@ impl Baseline {
             flows: Vec::new(),
             findings: Vec::new(),
             authenticating: None,
+            // A path-only action (`write`, `read`) has no `cd` to have followed: the
+            // absolute path IS the whole fact.
+            cwd: None,
             path_decided: true,
         };
         b.intents.insert(if writes {
@@ -3858,9 +3904,33 @@ impl Baseline {
             }
         }
 
+        // **THE SUBCOMMAND IS A VERB, NOT AN OPERAND.** MEASURED 2026-10-05 on the
+        // operator's own box: `cd …/letibot && git checkout -- crates/ui/src/card.rs` produced
+        // *"destroy checkout (host_other), destroy crates/ui/src/card.rs (host_other), destroy
+        // status (host_other)"* — the subcommand word itself scoped as a destroy target, and
+        // `status` from the NEXT stage's argv, which is the second half of the same loop's
+        // defect (see the per-stage clause below). A verb read as a path is a refusal that
+        // names a file nobody named.
+        //
+        // The knowledge is `git_subcommand`'s, which the `git` intent arm already uses to find
+        // the verb — one reader for one fact, so the two cannot disagree about which word in
+        // `git -C /x status` is the verb.
+        let subcommand_at: Option<usize> = if effective == "git" {
+            let mut i = 0usize;
+            let (sub, _) = git_subcommand(&stage.argv);
+            while let Some(t) = stage.argv.get(i).and_then(|w| w.text()) {
+                if t == sub {
+                    break;
+                }
+                i += 1;
+            }
+            (i < stage.argv.len()).then_some(i)
+        } else {
+            None
+        };
         let mut secret_positional: Vec<(String, String)> = Vec::new();
         for (i, word) in stage.argv.iter().enumerate() {
-            if inline_script == Some(i) {
+            if inline_script == Some(i) || subcommand_at == Some(i) {
                 continue;
             }
             for w in word.flatten() {
@@ -3894,7 +3964,23 @@ impl Baseline {
                     self.regions.insert(Region::None);
                     continue;
                 }
-                let mut region = env.region_of(text);
+                // **A RELATIVE PATH IS RELATIVE TO WHERE THE COMMAND RUNS.** `text` is what
+                // the program receives; on disk that is `cwd`/`text` when a cwd is known and
+                // the path is not absolute. See [`Baseline::cwd`] for the measurement — the
+                // operator's own `cd <repo> && git checkout -- crates/…`.
+                // **A HOST IS NOT A PATH.** `nc 192.0.2.10 4444` must keep its bare address
+                // for the network arm below to recognise — joining it to the cwd would turn a
+                // first contact into a path under the workspace and lose the egress entirely
+                // (MEASURED: it did, and `a_bare_address_given_to_a_network_program_is_a_host`
+                // caught it). So only an operand that is not remote-shaped is joined.
+                let joinable = !looks_remote(text) && !is_ipv4(text);
+                let placed = match (&self.cwd, text.starts_with('/') || text.starts_with('~')) {
+                    (Some(cwd), false) if joinable => {
+                        format!("{}/{text}", cwd.trim_end_matches('/'))
+                    }
+                    _ => text.to_string(),
+                };
+                let mut region = env.region_of(&placed);
                 // `nc 192.0.2.10 4444`, `ping 192.0.2.10`: a bare address is a
                 // host when the program reaches the network. (`host:port` and
                 // URLs are placed by `region_of` for any program.)
@@ -3925,8 +4011,16 @@ impl Baseline {
                 // The scoped intent: the verb AND its target. This is the line layer B
                 // checks against what the operator said, and it is why `destroy
                 // target/debug` and `destroy the project` are not the same request.
-                for verb in [Intent::Destroy, Intent::WriteFile, Intent::Network] {
-                    if self.intents.contains(&verb) && !identity.contains(&i) {
+                // **THE STAGE'S INTENTS, NOT THE LINE'S.** This read `self.intents`, which is
+                // the union over every stage — so one stage's `Destroy` (a `git checkout --`)
+                // scoped the NEXT stage's operands too: the measured card listed *"destroy
+                // status"*, a word from `git status`, whose own intents are `[inspect]`. An
+                // intent belongs to the stage that has it; the union is for the verdict
+                // (`Tier::strictest`), which must never relax.
+                for verb in stage_intents(stage) {
+                    if matches!(verb, Intent::Destroy | Intent::WriteFile | Intent::Network)
+                        && !identity.contains(&i)
+                    {
                         self.scoped.push(ScopedIntent {
                             intent: verb,
                             target: text.to_string(),
@@ -5481,6 +5575,52 @@ mod tests {
     /// own screen: `cd /home/dead/Projects/letibot && git diff --stat && …` went to
     /// them with a 0 ms verdict and `[environment_mutation]` as the reason.
     #[test]
+    /// **THE OPERATOR'S OWN COMMAND, WHICH WAS REFUSED BY NAME** — 2026-10-05, on a card that
+    /// read *"destroy checkout (host_other), destroy crates/ui/src/card.rs (host_other),
+    /// destroy status (host_other)"* for
+    /// `cd /home/dead/Projects/letibot/letibot && git checkout -- crates/ui/src/card.rs`.
+    ///
+    /// Three defects in one card, and this pins all three:
+    ///
+    /// * **the subcommand word is a VERB, not an operand** — `checkout` was scoped as a destroy
+    ///   target, a path nobody named;
+    /// * **the stage's intents, not the line's** — `status` came from the NEXT stage's argv,
+    ///   which had no destroy intent of its own (it is `[inspect]`); the union gave it one;
+    /// * **the nesting** — the operator's *"because of nesting"* — the relative path resolved
+    ///   against the workspace, where it does not exist, so their own repository read as
+    ///   outside the project. Following the literal `cd` is what places it in the repo.
+    #[test]
+    fn the_nested_layouts_own_command_is_inside_the_project() {
+        let cmd = "cd /home/dead/Projects/letibot/letibot && git checkout -- crates/ui/src/card.rs";
+        let x = Baseline::of_command(cmd, &env());
+        assert!(
+            x.intents.contains(&Intent::Destroy),
+            "`git checkout -- <path>` throws away uncommitted work and is a destroy: {:?}",
+            x.intents
+        );
+        assert_eq!(
+            x.tier,
+            Tier::MayApprove,
+            "the target is inside the project, so this is an ordinary gate and not \
+             `destruction_outside_the_project`: {:?}",
+            x.scoped
+        );
+        // Every scoped target is the path, and none of them is the subcommand.
+        let targets: Vec<&str> = x.scoped.iter().map(|s| s.target.as_str()).collect();
+        assert!(
+            targets.contains(&"crates/ui/src/card.rs"),
+            "the path itself: {targets:?}"
+        );
+        assert!(
+            !targets.iter().any(|t| *t == "checkout" || *t == "--"),
+            "a verb was scoped as a target: {targets:?}"
+        );
+        assert!(
+            !targets.iter().any(|t| *t == "status"),
+            "a word from the NEXT stage was scoped by the line's union: {targets:?}"
+        );
+    }
+
     fn a_leading_cd_does_not_put_a_command_outside_every_oracles_reach() {
         let x = b("cd /home/dead/Projects/letibot && git diff --stat");
         assert!(
@@ -5511,10 +5651,23 @@ mod tests {
             "the directory it moved to is still classified: {:?}",
             risky.regions
         );
+        // **AND WHERE THE RELATIVE PATH LANDS IS THE DIRECTORY IT RUNS IN** — the operator's
+        // ruling of 2026-10-05, *"i want this nesting thing to be handled properly"*, which
+        // this assertion used to contradict: it pinned *"a relative target reads the same with
+        // and without the `cd`"*, so a command that had moved to `/etc` had its `x` read
+        // against the workspace and its `rm -f x` refused as a destruction outside the
+        // project, while the same `cf` in `/home/dead/Projects/letibot/letibot` — this box's
+        // nested layout, where every command cds one level down — read as outside the project
+        // too. Following the `cd` is what makes both lines name what they will actually open.
         assert_eq!(
             b("rm -f x").scoped.first().map(|s| s.region.clone()),
+            Some(Region::Workspace),
+            "with no `cd`, a relative path is the workspace's — where the command runs"
+        );
+        assert_eq!(
             risky.scoped.first().map(|s| s.region.clone()),
-            "a relative target reads the same with and without the `cd`"
+            Some(Region::SystemConfig),
+            "and after `cd /etc` it is /etc's, which is the fact the old assertion hid"
         );
     }
 
