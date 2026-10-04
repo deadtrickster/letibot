@@ -6896,9 +6896,53 @@ pub fn derive_title(text: &str) -> String {
     let words: Vec<&str> = line.split_whitespace().take(6).collect();
     let mut out = words.join(" ");
     // Long enough to recognise, short enough for a picker row and a header.
+    //
+    // **This is a NAMING rule and its bound is the ADDRESS**, which is why it is small and
+    // why nothing about a terminal belongs here: the title is also the fabric alias
+    // (`@seat/title`), and a person has to be able to type it. A string that is only ever
+    // *displayed* takes a different rule — see [`subagent_title`].
     const MAX: usize = 48;
     if out.chars().count() > MAX {
         out = out.chars().take(MAX - 1).collect::<String>();
+        out.push('…');
+    }
+    out
+}
+
+/// **How long a subagent's title may be** — a display bound, not an address bound.
+///
+/// The operator, 2026-10-03: *"subagents list has everything capped at 48 chars. but this
+/// cap is a ui concern — for example my terminal is 160 cells wide, make the cap 256."*
+///
+/// 256, and the head trims the row to the width it actually has. The number is generous on
+/// purpose: the daemon does not know the terminal, so the only job left for a bound here is
+/// stopping something pathological, and 256 is far past any width a row can show.
+pub const SUBAGENT_TITLE_MAX: usize = 256;
+
+/// **The subtask, as the subagent's title.**
+///
+/// **Not [`derive_title`], and the difference is the whole of a defect.** That one is a
+/// naming rule whose bound is the fabric ADDRESS — six words, 48 characters, a string a
+/// person types — while a subagent's title is *not* an address (nothing addresses a child
+/// by name; a child hears the room through its parent) but **a row in the pane**, and the
+/// only cap that belongs on a row is the width of the terminal, which the daemon cannot
+/// know. Reusing the address rule here cut every row to a name's length; the operator read
+/// the result as *"everything capped at 48 chars"*.
+///
+/// So the task's first line is kept whole up to [`SUBAGENT_TITLE_MAX`] and the head trims.
+/// The row the operator actually reads is drawn from
+/// [`letibot_sessionlog::SessionEvent::Subagent::task`] — whole, on every state — so this
+/// title is what names the child's own session and appears in the picker; it is generous
+/// for the same reason.
+fn subagent_title(prompt: &str) -> String {
+    let line = prompt
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let mut out = line.to_string();
+    if out.chars().count() > SUBAGENT_TITLE_MAX {
+        out = out.chars().take(SUBAGENT_TITLE_MAX - 1).collect::<String>();
         out.push('…');
     }
     out
@@ -7284,7 +7328,7 @@ impl HarnessTaskRunner {
         // the subagent was for.
         let spawned = std::time::Instant::now();
         let sub_id = sub_id.to_string();
-        let title = derive_title(prompt);
+        let title = subagent_title(prompt);
         // The subagent seats the role it was asked for — any seat this build knows
         // — and coder when none was named, which is the `task` tool's own default.
         // A role this build does not know is refused by name rather than seated
@@ -7807,6 +7851,46 @@ mod tests {
         // A cap of 0 refuses even a root — *no nesting*, read honestly rather than as
         // *unlimited*.
         assert!(super::subagent_depth_refusal(0, 0).is_some());
+    }
+
+    /// **The subagent's title is not the session's name, and the two have different bounds.**
+    ///
+    /// A session name is an **address** — `@seat/title`, which somebody types — so
+    /// `derive_title` holds it to six words and 48 characters. A subagent's title is a **row**,
+    /// and the operator's ruling is that a row's cap is the UI's: *"subagents list has
+    /// everything capped at 48 chars. but this cap is a ui concern — for example my terminal is
+    /// 160 cells wide, make the cap 256."* Reusing the address rule for the row cut every
+    /// subagent line to a name's length. This pins both, so a later reader cannot quietly merge
+    /// them again.
+    #[test]
+    fn a_subagent_title_is_a_row_and_a_session_name_is_an_address() {
+        let long = "audit the session store and say which rows are never read by anything at \
+                    all in the whole tree, and then propose a fix for each";
+        // The ADDRESS rule: six words and no more, 48 characters at the outside.
+        assert_eq!(
+            super::derive_title(long),
+            "audit the session store and say",
+            "a name is six words, so it stays a name somebody can type"
+        );
+        // The DISPLAY rule: the whole first line, and the six-word rule does not apply.
+        let title = super::subagent_title(long);
+        assert_eq!(
+            title, long,
+            "a title long enough to matter must survive whole"
+        );
+        assert!(
+            title.split_whitespace().count() > 6,
+            "the naming rule must not reach a title: {title}"
+        );
+        // Only the first line — a row is one line — and only past the generous bound.
+        assert_eq!(
+            super::subagent_title("audit the store\nand the reader"),
+            "audit the store"
+        );
+        let huge = "x".repeat(400);
+        let cut = super::subagent_title(&huge);
+        assert_eq!(cut.chars().count(), super::SUBAGENT_TITLE_MAX);
+        assert!(cut.ends_with('…'), "{cut}");
     }
 
     /// **A stored pair measures ONE conversation, and it is used only for that
