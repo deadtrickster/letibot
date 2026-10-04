@@ -2203,9 +2203,38 @@ impl AdjudicatedGate {
     /// (`ToolRuntime::invoke`), and this changes what the gate *says*, not whether it is
     /// asked. A read outside the workspace is still outside it — R18's axis, and the
     /// ruling names it as untouched.
+    ///
+    /// # And the same narrowing for a WRITE, which is the 2026-10-05 ruling
+    ///
+    /// The operator: *"since we try to catch python heredoc edits and render them with diffs -
+    /// they have to be classified as edits for permission mechanics"*. Symmetric to the read
+    /// and for the identical reason — the interpreter is a vehicle and the body layer A read is
+    /// the work. So an exec call whose body was read, whose only consequential act is writing
+    /// files nobody had to guess at, and none of them outside the boundary, is
+    /// [`Access::Write`] ([`crate::intent::Baseline::writes_only`], which is where every
+    /// conjunct and every refusal live).
+    ///
+    /// **This is what the mode's own allowed set is for.** In allow-edits the write
+    /// disposition is `Admit` for a call inside the workspace, so a python heredoc that rewrites
+    /// a file in the project stops asking — which is the operator's *"there is certain permission
+    /// set that is allowed and doesnt need oracle. this is to be kept"*. In an ask mode it still
+    /// asks, as a write, and the oracle is shown it as one; a write outside the workspace is
+    /// outside it in both modes, exactly as a read is.
+    ///
+    /// It is also the narrower half of the pair: `reads_only` is checked first, so an
+    /// interpreter handed a body that only reads keeps `Access::Read` rather than becoming a
+    /// write of nothing. `Write` is less consequential than `Exec` and more than `Read`, so both
+    /// arms narrow, and neither can widen an `edit`-declared call or a `network` one: the tool's
+    /// own answer is only consulted when `call.access == Access::Exec`.
     fn judged_access(call: &GateCall<'_>, baseline: &crate::intent::Baseline) -> Access {
         if call.access == Access::Exec && baseline.reads_only() {
             Access::Read
+        } else if call.access == Access::Exec && baseline.writes_only() {
+            // **The class the edit path already knows how to judge.** `path_is_inside` is
+            // asked of the write targets below, and the tier the card is drawn at is
+            // unchanged: layer A settled that before this, and this is the access and not
+            // the verdict.
+            Access::Write
         } else {
             call.access
         }
@@ -5839,6 +5868,125 @@ mod tests {
         }
     }
 
+    /// **A python heredoc that only writes rides the EDIT path** — the operator's ruling of
+    /// 2026-10-05, asserted where *"permission mechanics"* actually live.
+    ///
+    /// The ruling, in their words: *"since we try to catch python heredoc edits and render them
+    /// with diffs - they have to be classified as edits for permission mechanics"*, and the mode
+    /// they are running answers the other half: *"so we are in allow-edits mode now. there is
+    /// certain permission set that is allowed and doesnt need oracle. this is to be kept."* So
+    /// the assertions are (a) the class is `write` and the headline says so, (b) in allow-edits
+    /// that is the mode's own allowed set and nobody is asked, and (c) in an ask mode the same
+    /// call asks as a WRITE — while every shape that is not a placed write keeps `exec` and goes
+    /// on asking in both.
+    #[test]
+    fn a_python_heredoc_that_only_writes_is_an_edit_at_the_gate() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let gate = |mode: crate::mode::Mode| {
+            let asked = std::sync::Arc::new(AtomicUsize::new(0));
+            let a = asked.clone();
+            let g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+                "human:test",
+                move |req: &AdjudicationRequest| {
+                    a.fetch_add(1, Ordering::Relaxed);
+                    Some(AdjudicationDecision::selected(
+                        req,
+                        "allow_once",
+                        "human:test",
+                        "fine",
+                    ))
+                },
+            )))
+            .with_mode(mode)
+            .with_exec_follows_mode(false)
+            .with_surroundings(pinned());
+            (g, asked)
+        };
+
+        let write = json!({
+            "command": "python3 - <<'PY'\nopen('/w/src/lib.rs', 'w').write('hi')\nPY"
+        });
+
+        // **The class, and the headline a person reads.** This call was `exec access` over
+        // intents that said `write_file`, which is the same defect as the read one with the
+        // consequence the other way round: exec asks at EVERY point, so the edit path — the
+        // mode's write rules, the shape cache, the grant vocabulary — was unreachable.
+        let (mut g, asked) = gate(crate::mode::Mode::AUTO_EDITS);
+        let row = g.request_for(&bash(&write));
+        assert_eq!(row.class.access, Access::Write, "{}", row.summary);
+        assert!(
+            row.summary.contains("write access"),
+            "the headline says: {}",
+            row.summary
+        );
+        // **And in allow-edits that is the mode's allowed set.** Nobody is consulted, which is
+        // the operator's *"certain permission set that is allowed and doesnt need oracle"*.
+        assert_eq!(g.admit(&bash(&write)), GateDecision::Admit);
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            0,
+            "an edit inside the workspace asked its owner"
+        );
+        let last = g.log.last().expect("a row");
+        assert_eq!(last.decision.by, "gate:mode");
+        assert!(
+            last.decision.basis.contains("admits write calls"),
+            "{}",
+            last.decision.basis
+        );
+
+        // **In ask mode it still asks, and it asks as a write.** The oracle is shown a write
+        // and the card says so, which is the point of classifying it rather than of admitting
+        // it.
+        let (mut g, asked) = gate(crate::mode::Mode::ALWAYS_ASK);
+        let row = g.request_for(&bash(&write));
+        assert_eq!(row.class.access, Access::Write, "{}", row.summary);
+        assert_eq!(g.admit(&bash(&write)), GateDecision::Admit);
+        assert_eq!(asked.load(Ordering::Relaxed), 1, "nobody was asked");
+
+        // **Every shape that is not a placed write keeps exec, in both modes.** Each is one of
+        // `writes_only`'s guardrails, and each is asserted at the gate because the guardrail is
+        // what keeps this narrowing from becoming "any interpreter is an edit".
+        for (cmd, why) in [
+            (
+                "python3 - <<'PY'\nimport subprocess\nsubprocess.run(['ls'])\nPY",
+                "a body that shells out",
+            ),
+            (
+                "python3 - <<'PY'\nimport requests\nrequests.get('http://example.com')\nPY",
+                "a body that reaches the network",
+            ),
+            (
+                "python3 - <<'PY'\nopen(sys.argv[1], 'w').write('x')\nPY",
+                "a write target nobody can place",
+            ),
+            (
+                "python3 - <<'PY'\nopen('/etc/cron.d/x', 'w').write('x')\nPY",
+                "a write outside the workspace",
+            ),
+            ("python3 deploy.py", "a body nobody read"),
+            (
+                "bash -c 'echo x > /w/src/lib.rs'",
+                "a shell doing the write itself",
+            ),
+        ] {
+            let (mut g, asked) = gate(crate::mode::Mode::AUTO_EDITS);
+            let args = json!({"command": cmd});
+            let row = g.request_for(&bash(&args));
+            assert_eq!(
+                row.class.access,
+                Access::Exec,
+                "{why} was called an edit: {cmd}"
+            );
+            assert_eq!(g.admit(&bash(&args)), GateDecision::Admit, "{cmd}");
+            assert_eq!(
+                asked.load(Ordering::Relaxed),
+                1,
+                "{why} stopped asking: {cmd}"
+            );
+        }
+    }
+
     fn bash<'a>(args: &'a Value) -> GateCall<'a> {
         GateCall {
             name: "bash",
@@ -5895,7 +6043,6 @@ mod tests {
         assert_eq!(g.log[0].request.tier.as_str(), "blocked");
     }
 
-    #[test]
     /// **R21 — a shell that only reads is judged on the work, and the four ways it is
     /// not.**
     ///
@@ -6089,6 +6236,12 @@ mod tests {
         );
     }
 
+    /// **`rm -rf /` is not refused on the strength of the string.** This is the operator's
+    /// own case, and the test carries no attribute for a while — an insertion landed between
+    /// its `#[test]` and its `fn`, which left the attribute on the next test's doc comment and
+    /// this function unreachable. The compiler said so (`never used`) and nobody read it. It is
+    /// back, because a test that stopped running is worse than a test that fails.
+    #[test]
     fn rm_rf_slash_is_not_blocked_by_the_gate_and_reaches_a_decision() {
         // The operator's case: `rm -rf /` can be allowed if it is the intent. What the
         // gate must NOT do is refuse it on the strength of the string.

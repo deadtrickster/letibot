@@ -2828,6 +2828,26 @@ pub struct Baseline {
     /// disclosure: **using** the key is an ask, and the operator's own framing is that
     /// it is fine when they said so.
     pub authenticating: Option<String>,
+    /// **The code this call runs was READ, not merely named** — the fact that makes an
+    /// interpreter a vehicle rather than the work.
+    ///
+    /// `python3 - <<'PY'` and `python3 foo.py` are the same act, and layer A reads both the
+    /// same way (step 2b/2c): the body goes to `scan_script`, which finds the writes and the
+    /// capability scan. What it could not say until this field existed is that it HAD read the
+    /// body — so the interpreter's own `execute_code` still outranked the work inside it,
+    /// exactly the defect R21 fixed for reads (`head` is a read whatever vehicle carried it; a
+    /// body that only writes is an edit whatever interpreter runs it).
+    ///
+    /// **The operator named both halves of this**, 2026-10-05: *"since we try to catch python
+    /// heredoc edits and render them with diffs — they have to be classified as edits for
+    /// permission mechanics"*. Catching it was never the gap (`write_targets` has been filled
+    /// since R35); riding the edit permission path instead of the exec one was.
+    ///
+    /// `false` for a shell body (`cat <<'EOF' | bash`): the shell grammar reads that one itself
+    /// and its redirects are placed by the same arm that places `echo x > y`, which keeps the
+    /// exec access it has today. Widening the shell too is a separate decision and this field
+    /// is deliberately not the place it happens.
+    body_read: bool,
     /// **The directory the stage being placed actually runs in** — the session's own
     /// workspace, until a literal `cd` moves it.
     ///
@@ -2970,6 +2990,78 @@ impl Baseline {
             && !self.regions.iter().any(Region::is_outside)
     }
 
+    /// **Is this call an edit, and nothing else, inside the boundary?** — the write half of R21.
+    ///
+    /// The operator, 2026-10-05, ruling on what a caught python heredoc edit should ride:
+    /// *"since we try to catch python heredoc edits and render them with diffs - they have to be
+    /// classified as edits for permission mechanics"*. Catching was never the gap — R35 has filled
+    /// `write_targets` since it landed and the workspace sweep turns any changed file into an edit
+    /// card with a diff. What was missing is the **class**: the call still read as `exec`, so it rode
+    /// the exec permission path (ask at every point, its own grant vocabulary, its own corpus class)
+    /// instead of the edit path the same bytes would have taken had the file been rewritten by
+    /// `write` or by a redirection.
+    ///
+    /// # What qualifies, conjunct by conjunct
+    ///
+    /// * **The body was READ** — [`Baseline::body_read`]. This is the conjunct that makes the whole
+    ///   thing honest: the claim being narrowed is about a body layer A actually read, not about an
+    ///   interpreter that might do anything. `python3 deploy.py` whose file was never opened (no
+    ///   reader, or a body past the read limit) computes no write targets and does not qualify.
+    /// * **Every computed intent is a write, a read or a look.** `ExecuteCode` is allowed and is
+    ///   expected: it is the interpreter VEHICLE, and it is present precisely because the body was
+    ///   read (step 2b/2c insert it). What is not allowed is `Destroy`, `Network`,
+    ///   `PrivilegeEscalation`, `Persist`, `Power`, `EnvironmentMutation`, `Unknown` — a body that
+    ///   shells out (`SHELLS_OUT`) or imports a network module is `capable` and gets `Network` on the
+    ///   line, which voids this. A body that deletes qualifies for nothing.
+    /// * **At least one write**, so that an interpreter handed a body which only reads is not
+    ///   suddenly an EDit; that case is [`Baseline::reads_only`]'s, and it stays there.
+    /// * **Every write target resolved to a literal path.** `WriteTarget::Runtime` is
+    ///   `open(sys.argv[1], 'w')` — a path decided while the body runs, which could be anywhere on
+    ///   the box. A write nobody can point at keeps the exec access it has today and goes on asking;
+    ///   this is [`Baseline::reads_only`]'s boundary conjunct applied to the other side.
+    /// * **No region this classifier can point at and call outside** — the same conjunct, the same
+    ///   one function ([`Region::is_outside`]), and the same deliberate exception: `HostOther` is
+    ///   *unplaceable* and not *outside*, and with [`Baseline::cwd`] a relative path inside the
+    ///   session's own repository now places as `Workspace` rather than as an outside one.
+    /// * **Not `NotRun`** — a body with a parse error or a program nobody can name has no meaning to
+    ///   narrow.
+    ///
+    /// # What it deliberately does not do
+    ///
+    /// It does not make the body safe: an interpreter is a general-purpose machine and this reads
+    /// it with a token scan, not a proof. That is the SAME standard [`Baseline::reads_only`] works
+    /// to — the difference is where the authority sits (there, the program table; here, the body
+    /// scan) — and both narrow what runs unasked rather than widening it. A body the scan could not
+    /// read, a computed path, a shell-out and a write outside the workspace all keep the exec
+    /// access they have today.
+    ///
+    /// **And it does not widen the shell.** `cat <<'EOF' | bash` and `bash -c 'echo x > y'` place
+    /// their writes through the grammar and keep exec access, because `body_read` is not set for a
+    /// shell body. Nothing here changes what an ordinary shell command is judged as.
+    pub fn writes_only(&self) -> bool {
+        self.body_read
+            && !self.intents.is_empty()
+            && self.intents.iter().all(|i| {
+                matches!(
+                    i,
+                    // The vehicle. It is here because the body was read — and it is allowed
+                    // precisely then: an interpreter handed a body whose only consequential
+                    // act is a write it placed is a vehicle carrying an edit.
+                    Intent::ExecuteCode
+                        | Intent::WriteFile
+                        | Intent::ReadFile
+                        | Intent::Inspect
+                )
+            })
+            && self.intents.contains(&Intent::WriteFile)
+            && !self.write_targets.is_empty()
+            && self.write_targets.iter().all(WriteTarget::resolved)
+            && !matches!(self.verdict, BaselineVerdict::NotRun { .. })
+            // **One function, exhaustively matched** — see [`Region::is_outside`], the same
+            // conjunct [`Baseline::reads_only`] applies and for the same reason.
+            && !self.regions.iter().any(Region::is_outside)
+    }
+
     /// The deterministic reading of a shell command.
     pub fn of_command(command: &str, env: &Surroundings) -> Baseline {
         Self::of_command_with(command, env, &[])
@@ -3006,6 +3098,7 @@ impl Baseline {
             flows: Vec::new(),
             findings: Vec::new(),
             authenticating: None,
+            body_read: false,
             cwd: env.workspace.clone(),
             path_decided: false,
         };
@@ -3471,6 +3564,9 @@ impl Baseline {
             flows: Vec::new(),
             findings: Vec::new(),
             authenticating: None,
+            // A path-only action (`write`, `read`) runs no body for an interpreter to have
+            // been handed.
+            body_read: false,
             // A path-only action (`write`, `read`) has no `cd` to have followed: the
             // absolute path IS the whole fact.
             cwd: None,
@@ -3718,6 +3814,7 @@ impl Baseline {
                     );
                 }
                 ScriptLang::Other(_) => {
+                    self.body_read = true;
                     self.scan_script(&script.body, env, &effective);
                 }
             }
@@ -3768,6 +3865,7 @@ impl Baseline {
                 "program text read as {effective}: the `-c`/`-e` argument ({} bytes)",
                 text.len()
             ));
+            self.body_read = true;
             self.scan_script(text, env, &effective);
         }
 
@@ -3812,6 +3910,11 @@ impl Baseline {
             // here-document body is, and "scanned the way a heredoc body is" means that
             // dispatch and not only the call to `scan_script`.
             let handed = scripts.iter().find(|s| s.path == path).map(|s| &s.body);
+            // **`Truncated` is not `Read`** — the arm below says so in as many words (*"what is
+            // past that is not covered by anything here"*), so a body whose tail was never
+            // opened cannot make this call a write. A write the scan could not see is exactly
+            // the case the exec access is there for.
+            let wholly_read = matches!(handed, Some(ScriptBody::Read(_)));
             let (text, note) = match handed {
                 Some(ScriptBody::Read(text)) => (
                     Some(text.as_str()),
@@ -3860,7 +3963,10 @@ impl Baseline {
                                 true,
                             );
                         }
-                        ScriptLang::Other(_) => self.scan_script(text, env, &effective),
+                        ScriptLang::Other(_) => {
+                            self.body_read = wholly_read;
+                            self.scan_script(text, env, &effective);
+                        }
                     }
                 }
                 // **Unreadable is not absent, and the two must not collapse.** This is the
@@ -4365,7 +4471,21 @@ impl Baseline {
         for w in &writes {
             match w {
                 WriteTarget::Literal(path) => {
-                    let region = env.region_of(path);
+                    // **Placed where it will actually be written.** A body run after
+                    // `cd …/letibot/letibot` writes `crates/x.rs` in the repository, not under the
+                    // workspace — the same nesting the operand loop follows [`Baseline::cwd`] for,
+                    // and a script's write must be judged by the same directory a command's
+                    // argument is. A `~` goes through the same expansion too.
+                    let placed = {
+                        let expanded = env.expand(path);
+                        match (&self.cwd, expanded.starts_with('/')) {
+                            (Some(cwd), false) => {
+                                format!("{}/{expanded}", cwd.trim_end_matches('/'))
+                            }
+                            _ => expanded,
+                        }
+                    };
+                    let region = env.region_of(&placed);
                     if let Region::Secret(store) = &region {
                         // **Recorded, and it does NOT promote the tier.** The same
                         // judgement the redirect arm makes, in the same words: writing into
@@ -5273,17 +5393,6 @@ mod tests {
         }
     }
 
-    /// **A shell that only reads** (R21) — the positive, and the four ways it must not
-    /// fire.
-    ///
-    /// The ruling: when every segment of a shell call resolves to a program this table
-    /// knows, nothing in the line is an execution vehicle, and every computed intent is a
-    /// read, the call is judged on the work and not on the wrapper. It is **paid for by**
-    /// the parser's own refusals, so the guardrails are the point of the test as much as
-    /// the yes is: an unknown program is not a read, a pipeline into a writer is not a
-    /// read, a substitution the parser would have refused is not a read, and a read
-    /// **outside the workspace** is not this rule's business at all (R18's axis).
-    #[test]
     /// **`Intent::ALL` is the enum, and nothing but the enum.** — a source-reading guard.
     ///
     /// `ALL` is not decoration: `Intent::parse` is *derived from it*
@@ -5434,6 +5543,17 @@ mod tests {
         );
     }
 
+    /// **A shell that only reads** (R21) — the positive, and the four ways it must not
+    /// fire.
+    ///
+    /// The ruling: when every segment of a shell call resolves to a program this table
+    /// knows, nothing in the line is an execution vehicle, and every computed intent is a
+    /// read, the call is judged on the work and not on the wrapper. It is **paid for by**
+    /// the parser's own refusals, so the guardrails are the point of the test as much as
+    /// the yes is: an unknown program is not a read, a pipeline into a writer is not a
+    /// read, a substitution the parser would have refused is not a read, and a read
+    /// **outside the workspace** is not this rule's business at all (R18's axis).
+    #[test]
     fn a_shell_that_only_reads_is_a_read_and_the_four_ways_it_is_not() {
         // The yes, in the shapes this corpus is actually made of: a `cd` then a reader,
         // which is what the operator's own 117-times-asked example was.
@@ -5482,6 +5602,135 @@ mod tests {
         assert!(!sed.reads_only());
         assert!(sed.intents.contains(&Intent::ExecuteCode));
         assert!(sed.intents.contains(&Intent::ReadFile));
+    }
+
+    /// **A python heredoc that only writes is an EDIT** — the operator's ruling of
+    /// 2026-10-05, and the five ways it is not.
+    ///
+    /// *"since we try to catch python heredoc edits and render them with diffs - they have to be
+    /// classified as edits for permission mechanics"*. The catching was already there (R35); the
+    /// permission mechanics were not, because `python3`'s own `execute_code` outranked the write
+    /// inside its body. This is R21's defect on the write side of the same coin, so the guardrails
+    /// are asserted as loudly as the yes: a body that shells out, a path nobody can place, a write
+    /// outside the boundary, a body nobody read and a shell body all keep the exec access they have
+    /// today.
+    #[test]
+    fn a_python_heredoc_that_only_writes_is_an_edit_and_the_five_ways_it_is_not() {
+        // **The yes**, in the shapes the operator's own box produces — including the nested
+        // layout, where every command cds one level down into the repository first.
+        for cmd in [
+            "python3 - <<'PY'\nopen('src/x.rs', 'w').write('hi')\nPY",
+            "cd /home/dead/Projects/letibot/letibot && python3 - <<'PY'\nimport pathlib\n\np = pathlib.Path('crates/ui/src/card.rs')\np.write_text('hi')\nPY",
+            "python3 -c 'open(\"a.txt\",\"w\").write(\"x\")'",
+            "node -e 'require(\"fs\").writeFileSync(\"a.js\", \"x\")'",
+        ] {
+            let x = b(cmd);
+            assert!(
+                x.writes_only(),
+                "{cmd} :: intents {:?} writes {:?} regions {:?}",
+                x.intents,
+                x.write_targets,
+                x.regions
+            );
+            assert!(
+                x.intents.contains(&Intent::ExecuteCode),
+                "the vehicle is still recorded, it just no longer outranks the work: {cmd}"
+            );
+            assert!(x.intents.contains(&Intent::WriteFile), "{cmd}");
+        }
+
+        // 1. **A body that shells out is not an edit.** `capable` puts `Network` on the
+        //    line for `subprocess`, `os.system`, `popen` and the rest, and a line that
+        //    reaches the network is judged for it whatever else it does.
+        for body in [
+            "import subprocess\nsubprocess.run(['ls'])\nopen('a.txt','w').write('x')",
+            "import os\nos.system('ls')",
+            "import requests\nrequests.get('http://example.com')",
+        ] {
+            let cmd = format!("python3 - <<'PY'\n{body}\nPY");
+            assert!(
+                !b(&cmd).writes_only(),
+                "a body that can run something else qualified: {body}"
+            );
+        }
+
+        // 2. **A path nobody can place is not an edit.** `open(sys.argv[1], 'w')` is a
+        //    `WriteTarget::Runtime`, and what it writes could be `/etc/shadow`.
+        let runtime = b("python3 - <<'PY'\nopen(sys.argv[1], 'w').write('x')\nPY");
+        assert!(runtime.intents.contains(&Intent::WriteFile));
+        assert!(
+            !runtime.writes_only(),
+            "a computed write target qualified: {:?}",
+            runtime.write_targets
+        );
+
+        // 3. **A write outside the workspace is not this rule's business** — R18's axis,
+        //    the same one `reads_only` keeps. `cat /etc/passwd` is the read twin of this.
+        let outside = b("python3 - <<'PY'\nopen('/etc/cron.d/x', 'w').write('x')\nPY");
+        assert!(
+            !outside.writes_only(),
+            "a write outside the boundary qualified: {:?}",
+            outside.regions
+        );
+        assert!(outside.intents.contains(&Intent::WriteFile));
+
+        // 4. **A body nobody read is not an edit.** `python3 deploy.py` with no reader
+        //    handed in computes no write targets at all and keeps exec access — which is
+        //    the whole reason `body_read` is a field rather than an assumption.
+        assert!(!b("python3 deploy.py").writes_only());
+        assert!(!b("python3 deploy.py").body_read);
+
+        // 5. **And the shell is not widened.** `bash -c 'echo x > y'` writes a file through
+        //    the grammar and keeps the exec access it has today; `body_read` is set by the
+        //    interpreter arms, and a shell body is not one of them.
+        assert!(!b("bash -c 'echo x > /home/dead/Projects/letibot/y'").writes_only());
+        assert!(
+            !b("cat <<'EOF' | bash\necho x > /home/dead/Projects/letibot/y\nEOF").writes_only()
+        );
+    }
+
+    /// **A script's write is placed where the command runs**, the same nesting the operand
+    /// loop follows [`Baseline::cwd`] for.
+    ///
+    /// Before this, `scan_script` placed every write against [`Surroundings::region_of`] and
+    /// nothing else, so a body run after a `cd` was judged as though it had not moved — and a
+    /// body writing `crates/x.rs` from a directory below the workspace read as an outside write.
+    #[test]
+    fn a_scripts_write_is_placed_where_the_command_runs() {
+        // No `cd`: the body runs in the workspace, and a relative write is the workspace's.
+        let here = b("python3 - <<'PY'\nopen('x.txt', 'w').write('x')\nPY");
+        assert!(
+            here.regions.contains(&Region::Workspace),
+            "{:?}",
+            here.regions
+        );
+        assert!(here.writes_only(), "{:?}", here.regions);
+
+        // A `cd` into the repository, one level down: still inside, and still an edit.
+        let nested = b(
+            "cd /home/dead/Projects/letibot/letibot && python3 - <<'PY'\n\
+             open('crates/ui/src/card.rs', 'w').write('x')\nPY",
+        );
+        assert!(
+            nested.regions.contains(&Region::Workspace),
+            "the repository is under the workspace: {:?}",
+            nested.regions
+        );
+        assert!(nested.writes_only());
+
+        // And a `cd` to a directory this classifier can name as OUTSIDE moves it there —
+        // which is the fact that stops the narrowing, exactly as it does for an operand.
+        let outside = b("cd /etc && python3 - <<'PY'\nopen('cron.d/x', 'w').write('x')\nPY");
+        assert!(
+            outside.regions.contains(&Region::SystemConfig),
+            "the body wrote under /etc: {:?}",
+            outside.regions
+        );
+        assert!(
+            !outside.writes_only(),
+            "a body run from /etc qualified as an edit: {:?}",
+            outside.regions
+        );
     }
 
     fn b(cmd: &str) -> Baseline {
@@ -5567,14 +5816,6 @@ mod tests {
         );
     }
 
-    /// **`cd PROJECT && …` is the ordinary shape of a shell command.**
-    ///
-    /// `cd` carried `environment_mutation`, which is outside every oracle's
-    /// built-in scope, so the guard could not answer about any compound command
-    /// that opened with one — and that is most of them. Measured on the operator's
-    /// own screen: `cd /home/dead/Projects/letibot && git diff --stat && …` went to
-    /// them with a 0 ms verdict and `[environment_mutation]` as the reason.
-    #[test]
     /// **THE OPERATOR'S OWN COMMAND, WHICH WAS REFUSED BY NAME** — 2026-10-05, on a card that
     /// read *"destroy checkout (host_other), destroy crates/ui/src/card.rs (host_other),
     /// destroy status (host_other)"* for
@@ -5621,6 +5862,14 @@ mod tests {
         );
     }
 
+    /// **`cd PROJECT && …` is the ordinary shape of a shell command.**
+    ///
+    /// `cd` carried `environment_mutation`, which is outside every oracle's
+    /// built-in scope, so the guard could not answer about any compound command
+    /// that opened with one — and that is most of them. Measured on the operator's
+    /// own screen: `cd /home/dead/Projects/letibot && git diff --stat && …` went to
+    /// them with a 0 ms verdict and `[environment_mutation]` as the reason.
+    #[test]
     fn a_leading_cd_does_not_put_a_command_outside_every_oracles_reach() {
         let x = b("cd /home/dead/Projects/letibot && git diff --stat");
         assert!(
