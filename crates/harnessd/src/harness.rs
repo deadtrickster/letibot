@@ -7128,6 +7128,66 @@ fn subagent_depth_refusal(depth: u32, max: u32) -> Option<String> {
     ))
 }
 
+/// **A subagent's session id, minted so that two children cannot share one.**
+///
+/// leticl found this one on the wire and diagnosed it without reading this tree: three `task`
+/// calls minted in a loop got ONE id, *"so they cost one pane row, no subagent counter, one
+/// `[task]` notice — and **two of the three answers never reach me at all**"*. The id was
+/// `"{parent}-sub-{milliseconds}"`, and a millisecond clock is not an id source at all: three
+/// calls in one round land in the same millisecond trivially. It is now the entropy this daemon
+/// already mints its own session id from ([`crate::config::now_ns`], the value behind
+/// [`crate::config::Config::session_id`]) with the counter loop `server.rs::mint_session_id`
+/// already uses for a root session — the same shape one prefix along, rather than a second
+/// scheme.
+///
+/// **Why a duplicate is not cosmetic.** The id is the HANDLE the model collects by
+/// (`task_result`) and the key every head folds on, and `task_result` finds the FIRST slot
+/// under a handle — so the other replies exist, settle, and are unreachable. That is the same
+/// failure `ToolOutcome` refuses to collapse into *success with an empty payload*, one layer
+/// down: a child's whole reply, silently unaddressable.
+///
+/// **A finer clock would not fix it; the guard is what does.** The operator's framing: *"a
+/// timestamp is enough for a browser, not for a harness with automated loops"*, and *"nanos
+/// would shrink the window and keep the race; a counter, a per-session sequence, or a random
+/// suffix removes it"*. So there are two checks, because either alone misses the case that was
+/// actually hit:
+///
+///   * the **registry** catches an id whose child has been adopted;
+///   * `handed_out` catches one whose child is still being OPENED — and that is the ordinary
+///     shape, not an edge: `adopt` happens inside the child's thread, after a whole harness has
+///     been opened, while the mint returns immediately. Three `task` calls in one round
+///     therefore all mint before any of them adopts.
+///
+/// **The timestamp stays and an ordinal disambiguates.** The timestamp is what keeps a subagent
+/// minted after a daemon restart from colliding with one already in the STORE — a counter
+/// resets, and `adopt` checks only the live registry, so a collision there would RESUME the old
+/// child instead of spawning a new one. So the nanosecond is the starting point and the suffix
+/// is added while the id is taken.
+fn mint_sub_id(
+    registry: &letibot_sessionlog::registry::Registry,
+    parent: &str,
+    handed_out: impl Fn(&str) -> bool,
+) -> String {
+    mint_sub_id_at(registry, parent, crate::config::now_ns(), handed_out)
+}
+
+/// [`mint_sub_id`] with the clock stated rather than read, so the collision can be driven in a
+/// test without racing a nanosecond.
+fn mint_sub_id_at(
+    registry: &letibot_sessionlog::registry::Registry,
+    parent: &str,
+    ns: u128,
+    handed_out: impl Fn(&str) -> bool,
+) -> String {
+    let mut id = format!("{parent}-sub-{ns}");
+    let mut n = 1u32;
+    while registry.get(&id).is_some() || handed_out(&id) {
+        n += 1;
+        id = format!("{parent}-sub-{ns}-{n}");
+    }
+    id
+}
+
 impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     /// **Start the child and come back.** The body below is the work, and it
     /// runs on its own thread: the daemon executes a round's calls in order on
@@ -7154,13 +7214,16 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         if let Some(why) = subagent_depth_refusal(self.base.depth, self.base.max_subagent_depth) {
             return Err(why);
         }
-        // The id is minted here rather than inside the body, because it is what
-        // this call returns and the body has not run yet.
-        let sub_id = format!(
-            "{}-sub-{}",
-            self.base.session_id,
-            letibot_sessionlog::registry::now_ms()
-        );
+        // **The id is minted here rather than inside the body** — it is what this call returns
+        // and the body has not run yet — **and it is minted UNIQUELY, which is the half that
+        // was missing.** See [`mint_sub_id`] for the three-children-one-id defect.
+        let sub_id = mint_sub_id(&self.registry, &self.base.session_id, |id| {
+            self.slots
+                .lock()
+                .expect("task slots")
+                .iter()
+                .any(|(h, _)| h == id)
+        });
         // The seat is checked NOW: a role this build does not know is a fact
         // about the call, and answering it from a thread would report "started"
         // for something that never could.
@@ -7320,12 +7383,16 @@ impl HarnessTaskRunner {
         // fails, named — never a subagent run on the host and called a VM.
         let placement = spec.placement;
         let _ = Placement::Host;
-        // A subagent is a real session: mint its id and create its hub. The id is a
-        // nanosecond timestamp suffix rather than a counter, so a subagent minted
-        // after a daemon restart cannot collide with a persisted one (a counter
-        // resets, and a collision would resume the old subagent instead of spawning a
-        // new one). The title is the subtask's first line, so a picker row says what
-        // the subagent was for.
+        // A subagent is a real session: mint its id and create its hub. **The id was already
+        // minted by [`HarnessTaskRunner::start`]** — it is what that call returned — so what
+        // arrives here is a handle, and it is unique because [`mint_sub_id`] made it so. The
+        // nanosecond in it is what keeps a subagent minted after a daemon restart from
+        // colliding with a persisted one (a bare counter resets, and `adopt` checks only the
+        // live registry, so a collision would RESUME the old subagent instead of spawning a
+        // new one); the ordinal the mint can append is what keeps two children of one
+        // millisecond — or of one nanosecond — from sharing the handle `task_result`
+        // collects by. The title is the subtask's first line, so a picker row says what the
+        // subagent was for.
         let spawned = std::time::Instant::now();
         let sub_id = sub_id.to_string();
         let title = subagent_title(prompt);
@@ -7474,7 +7541,21 @@ impl HarnessTaskRunner {
         // own watcher rings the child.
         self.registry
             .adopt(sub_hub, title.clone(), wiring, Some(parent.clone()))
-            .map_err(|e| fail(e.to_string()))?;
+            // **A taken id here is a MINTING bug, and it says so.** `mint_sub_id` is supposed
+            // to make this unreachable; if it is reached, the sentence has to name the id and
+            // say what it costs, because the quiet symptom is a child's whole reply that
+            // cannot be collected — `task_result` finds the first slot under a handle, so the
+            // second child under one id is unaddressable (leticl, 2026-10-04). Reported as
+            // what it is rather than as the child failing, which would look like the child's
+            // own fault.
+            .map_err(|e| {
+                fail(format!(
+                    "the id `{sub_id}` was already taken ({e}). That is a MINTING bug, not \
+                     this child failing: the id is the handle `task_result` collects by, so a \
+                     duplicate makes a reply unreachable. The mint has to be made unique — see \
+                     `mint_sub_id` — rather than the reply written off."
+                ))
+            })?;
         self.tasks.record(crate::tasks::TaskEntry {
             name: sub_id.clone(),
             role: seat.as_str().to_string(),
@@ -7891,6 +7972,67 @@ mod tests {
         let cut = super::subagent_title(&huge);
         assert_eq!(cut.chars().count(), super::SUBAGENT_TITLE_MAX);
         assert!(cut.ends_with('…'), "{cut}");
+    }
+
+    /// **Three children minted at one instant get three ids.**
+    ///
+    /// leticl found this on the wire and could not read this tree: three `task` calls in a
+    /// loop, one id — *"one pane row, no subagent counter, one `[task]` notice — and two of
+    /// the three answers never reach me at all"*. The id is the handle `task_result`
+    /// collects by, and it finds the FIRST slot under a handle, so the other replies exist,
+    /// settle, and are unreachable.
+    ///
+    /// The DEFECT was a millisecond clock, which three calls in one round share trivially;
+    /// this drives the same instant down to a nanosecond, because the guard has to hold at
+    /// the resolution the mint now uses and not merely at the one it was found at.
+    ///
+    /// **Both halves of the guard are exercised, because either alone misses the real
+    /// case.** The handed-out check is the one that catches the ordinary shape: `adopt`
+    /// happens inside the child's thread, after a whole harness has been opened, while the
+    /// mint returns at once — so three calls in one round all mint before any of them
+    /// adopts, and a check against the registry alone finds nothing.
+    #[test]
+    fn three_children_minted_at_one_instant_get_three_ids() {
+        use letibot_sessionlog::registry::{Registry, SessionWiring};
+
+        const NS: u128 = 1_700_000_000_000_000_000;
+        let r = Registry::new();
+        let mut handed: Vec<String> = Vec::new();
+        let mint = |handed: &Vec<String>| {
+            super::mint_sub_id_at(&r, "s-parent", NS, |id| handed.iter().any(|h| h == id))
+        };
+
+        let a = mint(&handed);
+        handed.push(a.clone());
+        let b = mint(&handed);
+        handed.push(b.clone());
+        let c = mint(&handed);
+        assert_eq!(
+            a,
+            format!("s-parent-sub-{NS}"),
+            "the first keeps the plain form"
+        );
+        assert_eq!(b, format!("s-parent-sub-{NS}-2"));
+        assert_eq!(c, format!("s-parent-sub-{NS}-3"));
+        assert_ne!(
+            a, b,
+            "two children, one id, is two answers nobody can collect"
+        );
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+
+        // And the registry half: an id whose child is already ADOPTED is refused too, even
+        // by a caller that believes nothing has been handed out.
+        let adopted = super::mint_sub_id_at(&r, "s-parent", NS, |_| false);
+        r.adopt(
+            r.new_hub(adopted.clone()),
+            "",
+            SessionWiring::default(),
+            None,
+        )
+        .expect("the first child adopts");
+        let next = super::mint_sub_id_at(&r, "s-parent", NS, |_| false);
+        assert_ne!(next, adopted);
     }
 
     /// **A stored pair measures ONE conversation, and it is used only for that
