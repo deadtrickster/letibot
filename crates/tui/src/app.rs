@@ -4052,6 +4052,26 @@ impl App {
             self.last_timings = Some(*timings);
         }
         self.items = s.items;
+        // **And the fill's bar goes with the stream that carried it.**
+        //
+        // A `Filling` tick rides the event stream and its ONLY exit is a tick whose `done` has
+        // reached `total` — so a stream that stops carrying ticks leaves the bar standing for
+        // the rest of the session. That is not hypothetical: a republish of 2000 rows overruns
+        // a head's 1024-event queue, the hub **demotes** the head rather than blocking
+        // (`Inner::append_and_fan`), and from that moment every tick is skipped — the final one
+        // included, because a demoted head is not written to at all. The head is handed a
+        // snapshot instead, and this line is the head taking it: **the view it was watching is
+        // gone, so the progress it was reporting belongs to a stream that no longer exists.**
+        // Measured on the operator's own head, 2026-10-04: it stood at `897 of 2000 rows —
+        // restoring the stored conversation` and did not move.
+        //
+        // **A fill that is genuinely still running is not lost by this.** Its next tick re-arms
+        // the line, and ticks come one per 64 rows — so clearing here can cost one tick of a
+        // bar that is still going, and buys the end of one that never will. The bar must end by
+        // FACT rather than by a clock (that is why `republish_after` publishes its completion
+        // unconditionally), and the fact here is that the head was just told its queue was
+        // thrown away.
+        self.filling = None;
         // **A snapshot records the bulk announcement; a live append never does.**
         //
         // The rows a snapshot carries without bodies are a *carry* — a fork, a reseat, a
@@ -30090,6 +30110,72 @@ mod tests {
         assert!(
             !done.contains("carrying the conversation"),
             "the fill is done, so nothing is drawn: {done}"
+        );
+    }
+
+    /// **A fill's bar goes when the view that was measuring it is replaced.**
+    ///
+    /// Measured on the operator's own head, 2026-10-04: it stood at `897 of 2000 rows —
+    /// restoring the stored conversation` and did not move.
+    ///
+    /// A `Filling` tick's only exit is a tick whose `done` has reached `total`, and a republish
+    /// of 2000 rows **overruns the head's 1024-event queue**. The hub does not block — it
+    /// demotes the head (`Inner::append_and_fan`) and stops writing to it altogether, so every
+    /// later tick is skipped, the completing one included. The head is handed a snapshot
+    /// instead. Without this, the head sat waiting for a tick it had already been told would
+    /// not come, and the bar outlived the operation by the rest of the session.
+    #[test]
+    fn a_snapshot_ends_a_fill_whose_ticks_were_thrown_away() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", true)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Filling {
+                what: "restoring the stored conversation".into(),
+                unit: "rows".into(),
+                done: 897,
+                total: 2000,
+            },
+        )));
+        assert!(a.filling.is_some(), "the tick armed the bar");
+        let armed = a.screen(100, 30).join("\n");
+        assert!(armed.contains("897 of 2000 rows"), "{armed}");
+
+        // **The demotion's own delivery**: a snapshot, with the reason it happened.
+        a.apply(ServerFrame::Resync {
+            reason: "queue of 1024 overflowed at seq 1800".into(),
+            dropped: 0,
+            snapshot: Box::new(Hub::new("s").snapshot()),
+            scrubbed: Default::default(),
+        });
+        assert!(
+            a.filling.is_none(),
+            "the bar must not outlive the stream that fed it"
+        );
+        let after = a.screen(100, 30).join("\n");
+        assert!(
+            !after.contains("of 2000 rows"),
+            "and it must leave the screen: {after}"
+        );
+        // A fill that is still running re-arms itself on its next tick, which is what makes
+        // clearing here safe rather than lossy.
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::Filling {
+                what: "restoring the stored conversation".into(),
+                unit: "rows".into(),
+                done: 960,
+                total: 2000,
+            },
+        )));
+        let again = a.screen(100, 30).join("\n");
+        assert!(
+            again.contains("960 of 2000 rows"),
+            "a fill still going comes back on its next tick: {again}"
         );
     }
 
