@@ -10095,7 +10095,20 @@ impl App {
         } else {
             format!("{s}{}", p.paint(Role::Faint, &format!(" · {tail}")))
         };
-        trim_to(&joined, w)
+        // **Centred — the operator's ask of 2026-10-04: *"please center the keymap bottom line"*.**
+        // Escape-aware on the VISIBLE width (`visible_width` skips the sequences), because the
+        // bar is already painted — the editor's half in its own register and the tail in faint —
+        // and a centring that measured bytes would sit half a screen off. The pad is prepended as
+        // plain spaces and the paint is left alone.
+        //
+        // **An over-long bar centres to itself** (pad 0) and keeps the head, which is the half
+        // naming the first keys — the same degradation the left-aligned bar had. And the bar's
+        // own rule survives one note down: the *content* still moves when a turn starts or a pane
+        // opens, because the editor's half and the tail change; the centring moves the whole line
+        // with them, which is the look asked for rather than the fixed left edge the old comment
+        // argued for.
+        let pad = w.saturating_sub(visible_width(&joined)) / 2;
+        trim_to(&format!("{}{joined}", " ".repeat(pad)), w)
     }
 
     /// **Render the tail of a conversation instead of all of it.**
@@ -23069,6 +23082,32 @@ mod tests {
             None,
             "`/tools` is the listing verb, not a second fold"
         );
+    }
+
+    /// **The keymap line is centred** — the operator's ask of 2026-10-04: *"please center the
+    /// keymap bottom line."*
+    ///
+    /// The bar arrives already painted, so the centring is measured on the visible width and the
+    /// assertion is a BALANCE within one column — an odd remainder has to sit on one side, and
+    /// naming a side would be a rule nobody asked for. **An over-long bar centres to itself**
+    /// (pad 0) and keeps its head, which is the half naming the first keys: the same degradation
+    /// the left-aligned bar had, so a narrow screen loses the same end it always did.
+    #[test]
+    fn the_keymap_line_is_centred() {
+        let mut a = app();
+        for w in [40usize, 60, 80, 100, 120, 210] {
+            let bar = a.hint_bar(w);
+            let left = bar.chars().take_while(|c| *c == ' ').count();
+            let right = w.saturating_sub(visible_width(&bar));
+            assert!(
+                left.abs_diff(right) <= 1,
+                "w={w}: {left} left, {right} right — the bar is not centred: {bar:?}"
+            );
+        }
+        // And the over-long case keeps its head rather than losing both ends to the middle.
+        let narrow = a.hint_bar(20);
+        assert_eq!(visible_width(&narrow), 20, "{narrow:?}");
+        assert!(narrow.starts_with("ctrl-s"), "the head went: {narrow:?}");
     }
 
     /// **R40: the bar says what `ctrl-t` does, and names the verb that does the rest.**
