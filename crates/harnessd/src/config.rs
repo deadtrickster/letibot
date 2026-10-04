@@ -1097,6 +1097,32 @@ impl Config {
             ),
             &["on", "off"],
         ));
+        // **And which of those rows this box can actually use** — the operator's ask of
+        // 2026-10-04: *"model peeker should green models we have keys for. — if i choose a model
+        // without key picker should ask for the key"*.
+        //
+        // **Only the daemon can answer it, and that is why it is a row.** Whether a preset
+        // resolves a key is a fact about this box — an environment variable, a stored key, or the
+        // key opencode filed under its own provider id — and a head that guessed would green a row
+        // that refuses at the first turn. It travels as a row for the reason `daemon.verbs` does:
+        // the half that owns the fact publishes it, and the half that draws it reads it rather
+        // than keeping a copy that drifts.
+        //
+        // `local` is absent on purpose: it needs no credential, so its presence in this list
+        // would be a claim about a key rather than about reachability.
+        {
+            let keyed: Vec<&str> = letibot_provider::presets::ALL
+                .iter()
+                .filter(|p| letibot_provider::keys::resolve(p, None, None).is_ok())
+                .map(|p| p.name)
+                .collect();
+            out.push(row(
+                letibot_sessionlog::protocol::MODEL_KEYS_KEY,
+                keyed.join(","),
+                "each preset's own file, variable or opencode's auth.json",
+                "/models PROVIDER/MODEL --key PASTE",
+            ));
+        }
         // **The names an operator may run themselves** — R24 part two, decision 3.
         //
         // Carried on the wire rather than compiled into a head, and that is the whole
@@ -2069,6 +2095,58 @@ pub fn now_ns() -> u128 {
 
 #[cfg(test)]
 mod tests {
+
+    /// **The picker's greening comes from a row, and the row names the presets this box can
+    /// actually authenticate.**
+    ///
+    /// The operator, 2026-10-04: *"model peeker should green models we have keys for."* Whether a
+    /// preset resolves a key is a fact about this box — a file, a variable, or what opencode filed
+    /// under its own provider id — so only the daemon can answer it, and the answer travels as a
+    /// row rather than as a head's guess.
+    ///
+    /// **The assertion is the agreement**, because that is the property that matters and not a
+    /// list: every name in the row resolves a key, every preset NOT named does not, and no name is
+    /// anything but a preset `ALL` carries. A row that disagreed with the check the daemon makes
+    /// when it refuses a switch would green exactly the rows that fail at the first turn.
+    #[test]
+    fn the_box_publishes_which_providers_it_holds_a_key_for() {
+        let cfg = Config::for_this_box("/tmp");
+        let rows = cfg.settings("default", false, &[]);
+        let row = rows
+            .iter()
+            .find(|r| r.key == letibot_sessionlog::protocol::MODEL_KEYS_KEY)
+            .expect("the keyed-providers row is published");
+        assert!(
+            !row.value.contains(' '),
+            "the list is comma-joined with no spaces, so a head splits on one thing: {:?}",
+            row.value
+        );
+        let named: Vec<&str> = if row.value.is_empty() {
+            Vec::new()
+        } else {
+            row.value.split(',').collect()
+        };
+        for n in &named {
+            assert!(
+                letibot_provider::presets::ALL.iter().any(|p| p.name == *n),
+                "`{n}` is not a preset this build knows"
+            );
+        }
+        // **`local` is absent on purpose**: it needs no credential, and its presence here would
+        // be a claim about a key rather than about reachability.
+        assert!(!named.contains(&"local"), "{named:?}");
+        for p in letibot_provider::presets::ALL {
+            let resolves = letibot_provider::keys::resolve(p, None, None).is_ok();
+            assert_eq!(
+                resolves,
+                named.contains(&p.name),
+                "`{}` disagrees with the answer `keys::resolve` gives it",
+                p.name
+            );
+        }
+        // A plain value row: a head COLOURS with it, it does not choose from it.
+        assert!(row.choices.is_empty(), "{row:?}");
+    }
 
     /// **The consented point describes itself, not the one that was asked for.**
     ///

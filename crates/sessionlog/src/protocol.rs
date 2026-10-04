@@ -360,6 +360,22 @@ pub const HEAD_RUN_TOOLS_KEY: &str = "head-run.tools";
 /// than this one, which a head reads as *my own verbs only* rather than guessing.
 pub const DAEMON_VERBS_KEY: &str = "daemon.verbs";
 
+/// **Which providers this box holds a key for** — the fact a model picker needs to know which
+/// of its rows can actually be taken.
+///
+/// The operator, 2026-10-04: *"model peeker should green models we have keys for."* The
+/// question is [`letibot_provider::keys::resolve`]'s — an environment variable, a stored key,
+/// or the key opencode filed under its own provider id — so **only the daemon can answer it**,
+/// and a head that guessed would green a row that refuses at the first turn.
+///
+/// `value` is the preset names, comma-joined with no spaces, in [`PRESETS`](letibot_provider::presets::ALL)
+/// order. **`local` is deliberately absent**: there is nothing to authenticate, and a name in
+/// this list means *this row has a credential behind it* rather than *this row is usable*.
+///
+/// An absent row is a daemon older than this one, which a head reads as *no greening* rather
+/// than as *no keys* — the same rule [`DAEMON_VERBS_KEY`] follows, and for the same reason.
+pub const MODEL_KEYS_KEY: &str = "models.keys";
+
 /// **One door-tool as the daemon describes it to a head** — R31 and R32.
 ///
 /// The head must be able to turn `/web_search blabla` into the JSON the wire wants *without
