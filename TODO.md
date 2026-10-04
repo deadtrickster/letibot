@@ -837,7 +837,7 @@ thinking count drawn twice, leticl's three file lists, `BINARIES`, the weather l
 **done when** a peeked child is drawn by the same renderer as any session in both heads, and neither
 `sub_out_lines` nor `subagent-out-lines` exists.
 
-## Completion notices are one-liners in leticl and full prose here — **measured 2026-10-04, filed as parity**
+## Completion notices are one-liners in leticl and full prose here — **CLOSED on this side 2026-10-04 by `1f0146a`; two pieces named below are not in it**
 
 **(No R-number: the series is yours to number.)**
 
@@ -871,10 +871,34 @@ Three details worth copying rather than rediscovering:
 
 leticl's commit: the one-liner is `9b22de3`'s shape and the coalesced-count fix is in the commit after it.
 
-**still open?** `grep -n "you do not need to wait for it" crates/tui/src/app.rs` — a head that still
-prints the paragraph in its rows.
+**CLOSED on letibot's side: `1f0146a`.** `folded_notice` (`app.rs`) folds a `[job]`/`[task]` notice
+at DRAW time, in the `Speaker::Agent` arm, and the paragraph is simply not drawn. It keeps every
+fact, one per line — `Job j57 exited 0 after 7m06s, wrote 508 bytes: sleep 3; echo done`,
+`Agent s-…-sub-… · done: 3529`. **The refusal is the half worth keeping**: the opening must be one
+of the two known ones, a settlement line must be a bullet with its handle in backticks, and the
+only text that may follow is the promise, by name — anything else returns `None` and the row draws
+raw, so a notice whose shape changes fails visibly (*"the notices got long again"*) rather than
+silently (*"a notice lost a line"*). The `[monitor]` notice is the live case: same voice, same
+bullets, deliberately not folded, because leticl does not fold it either.
 
-**THE PLAN, MEASURED 2026-10-04, so this is not rediscovered.** The render site is
+**still open?** `grep -n "you do not need to wait for it" crates/tui/src/app.rs` — the phrase now
+appears only in `folded_notice`'s refusal check and its tests, so a *drawing* reference is what this
+is looking for.
+
+**TWO PIECES ARE NOT IN `1f0146a`**, and they are the remainder of this row:
+
+  · **the child's own task in the `Agent` line.** leticl draws `Agent <id> · <task> · done: <answer>`
+    and the task is LOOKED UP — the notice carries only what the child answered, and the title lives
+    on the subagent row. This head draws the handle and the answer, no task. Threading it means one
+    more field on `ItemCtx` (`subagents: &'a [SubagentState]`, four construction sites) — not done,
+    and **not to be parsed out of the notice**: a second source for the same fact is how the row and
+    the pane come to disagree;
+  · **opening the whole message on demand.** leticl's folded line says `· /t opens it` and its `/t`
+    reaches a `User` row. letibot's `/t` is *all tool rows*, so this needs a verb or nothing. Ruled:
+    nothing for now — the transcript and the model's own copy are untouched, which is what makes the
+    fold a rendering rather than a loss.
+
+**THE PLAN AS MEASURED, 2026-10-04** (kept because it is what the two pieces above are against). The render site is
 `app.rs:18197`, the `Speaker::Agent` arm of `item_lines` — `(RowClass::Other,
 session_block(&text, its.ts, cfg))`, the raw paragraph. The two shapes on the wire, read
 out of the store (`transcript_item.item_json`, `"type":"user"`, `"speaker":"agent"`):
