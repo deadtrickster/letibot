@@ -6706,9 +6706,52 @@ fn http_retry_after(
         // The two exceptions are the 4xx that are about timing rather than
         // content: 408 is the server saying it waited too long, 429 is it saying
         // not yet.
-        letibot_turn::HttpError::Status { code, .. } => matches!(code, 408 | 429) || *code >= 500,
+        //
+        // **And a 429 is not always "not yet".** It is also the status a provider uses
+        // when the account behind the key cannot pay for the call, and that one no retry
+        // can lift — the body is the only place the difference is written. MEASURED
+        // 2026-10-04 on the operator's GLM account: `http 429: 余额不足或无可用资源包,请充值。`
+        // (insufficient balance, please top up), and the daemon took the round again six
+        // times, the waits doubling to 32 seconds, on identical bytes against an account
+        // with no credit — while the person watching pressed interrupt on a turn that
+        // could not succeed.
+        letibot_turn::HttpError::Status { code, body } => {
+            !refused_for_want_of_credit(body) && (matches!(code, 408 | 429) || *code >= 500)
+        }
     };
     worth_it.then(|| std::time::Duration::from_secs(1u64 << attempt))
+}
+
+/// **A refusal no retry can lift: the account cannot pay for the call.**
+///
+/// A 429 is the status a provider uses for both *not yet* (a rate limit) and *not ever until
+/// somebody tops up* (a billing refusal), so the status alone cannot tell them apart and the
+/// body can. MEASURED 2026-10-04: GLM answered `http 429: 余额不足或无可用资源包,请充值。` and
+/// the retry loop took the round again six times — waits of 1, 2, 4, 8, 16 then 32 seconds —
+/// while the operator pressed interrupt on a turn that could not succeed either way.
+///
+/// **Narrow on purpose.** Only phrases that name MONEY are here. A bare `quota` is left out
+/// deliberately: *rate* quota is exactly the transient thing this retry path exists for, and
+/// a list that swallowed it would stop retrying the case the whole exception was written
+/// around. Nor is it a status code: the same 429 means both things, which is why the body is
+/// the instrument.
+fn refused_for_want_of_credit(body: &str) -> bool {
+    const FILLED: &[&str] = &[
+        "insufficient balance",
+        "insufficient_quota",
+        "insufficient funds",
+        "insufficient credit",
+        "please recharge",
+        "no available resource package",
+        "billing",
+        // The provider's own words, which are what actually arrived: a reader who cannot
+        // decode them would otherwise be told only that the endpoint "did not answer".
+        "余额不足",
+        "请充值",
+        "资源包",
+    ];
+    let b = body.to_ascii_lowercase();
+    FILLED.iter().any(|p| b.contains(p))
 }
 
 /// **The host a retry warning names, for the route this turn is on.**
@@ -9273,6 +9316,7 @@ mod endpoint_retry {
                 "{code} should be waited out"
             );
         }
+
         // No answer at all, and a body that did not parse — both likeliest to be
         // a server going down mid-answer.
         assert!(
@@ -9296,6 +9340,59 @@ mod endpoint_retry {
         );
     }
 
+    /// **A 429 that names money is not taken again** — MEASURED 2026-10-04, the operator's GLM
+    /// account, and the screen they were looking at while it happened:
+    ///
+    /// ```text
+    /// · model_endpoint_retry — the model endpoint at open.bigmodel.cn did not answer:
+    ///   http 429: 余额不足或无可用资源包,请充值。. Taking this round again in 1s (attempt 1 of 6).
+    /// ```
+    ///
+    /// Six attempts, waits doubling to 32 seconds, on identical bytes, against an account that
+    /// cannot pay — and the sentence was wrong twice over: the endpoint *did* answer, and what it
+    /// said was actionable. The rate-limit half must survive, which is the assertion this test
+    /// would be worthless without.
+    #[test]
+    fn a_billing_refusal_is_not_taken_again_and_a_rate_limit_still_is() {
+        let said = |code: u16, body: &str| HttpError::Status {
+            code,
+            body: body.to_string(),
+        };
+        // The provider's own words, verbatim off the operator's screen.
+        let credit = said(429, "http 429: 余额不足或无可用资源包,请充值。");
+        assert!(
+            http_retry_after(&credit, 0, MAX_HTTP_RETRIES).is_none(),
+            "a billing refusal was taken again: no retry can top up an account"
+        );
+        // OpenAI's own billing code, which arrives as a 429 too.
+        assert!(
+            http_retry_after(
+                &said(
+                    429,
+                    r#"{"error":{"code":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details"}}"#
+                ),
+                0,
+                MAX_HTTP_RETRIES
+            )
+            .is_none()
+        );
+        // **The case the exception exists for, and it must survive.** A rate limit names
+        // requests-per-minute, not money, and it is transient by construction.
+        assert!(
+            http_retry_after(
+                &said(
+                    429,
+                    r#"{"error":{"type":"requests","message":"Rate limit reached for requests"}}"#
+                ),
+                0,
+                MAX_HTTP_RETRIES
+            )
+            .is_some(),
+            "a rate limit stopped being retried — this is the whole reason 429 is an exception"
+        );
+        // A status with no body at all is the old behaviour, unchanged.
+        assert!(http_retry_after(&status(429), 0, MAX_HTTP_RETRIES).is_some());
+    }
     /// **The budget is the caller's, and `1` means do not retry.**
     ///
     /// The ladder is right for a server that might be reloading and wrong for one

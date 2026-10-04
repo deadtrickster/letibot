@@ -1180,6 +1180,47 @@ colliding with a persisted one — a bare counter resets and `adopt` would RESUM
 spawning a new one. And a duplicate that ever does happen is no longer reported as the child failing: it
 names the id, says the mint is what is wrong, and says what it costs.
 
+## A 429 that names money was retried six times — and the interrupt did not reach the retry — **MEASURED 2026-10-04 20:43**
+
+The operator, on a session they had just put on `glm/glm-5.3` with `/model glm/glm-5.3`:
+
+    · model_endpoint_retry — the model endpoint at open.bigmodel.cn did not answer:
+      http 429: 余额不足或无可用资源包,请充值。. Taking this round again in 1s (attempt 1 of 6).
+      Nothing was recorded, so the retry sends exactly the bytes this one did.
+    coulnt interrupt too
+
+**THE BILLING HALF IS FIXED — `http_retry_after` now reads the body.** It keyed on the status alone
+(`matches!(code, 408 | 429) || *code >= 500`), so every 429 was "not yet" — and a 429 is also the status
+a provider uses when the account behind the key cannot pay. The body says which: a refusal naming money
+is terminal and is no longer taken again, and a rate limit still is (the assertion the fix would be
+worthless without). The sentence was wrong twice over, which is the same shape as `retry_host`'s note one
+function below: **the endpoint did answer**, and what it said was actionable — 请充值 is a thing to do,
+and "did not answer" sends the reader to a network problem.
+
+**THE INTERRUPT HALF IS OPEN, and it is the half the operator actually complained about.** Two candidates,
+and this needs a live head to separate them:
+
+  * **the daemon cannot hear it while it waits.** The retry sleeps in `sleep_unless_closed`
+    (`harness.rs:6429`), which watches **only `self.hub.is_closed()`** — a daemon shutdown, not a
+    person. The one channel an interrupt rides is the hub's steering command queue, which the loop
+    reads at the top of the NEXT iteration (`let mut steering = self.steering()`), into a round that
+    hits the same 429 within milliseconds: so the interrupt is either honoured there or consumed by a
+    round that fails before it can matter;
+  * **the head never sent it.** Esc-esc to `Action::Interrupt` is gated on `turn_busy()`, and during a
+    retry the round's own `TurnFinished` may already have been published — the exact gap R51 item 16
+    fixed for a running *call*, one state further along.
+
+**The measurement that separates them**: with the endpoint refusing, watch the daemon's log for the
+`interrupt` line (`hub.rs:1079`) while pressing esc-esc. Present means the daemon heard it and the sleep
+ignored it — and then the fix is that the wait has to watch the same door the tool-call path watches.
+Absent means the head's own gate, and the fix is in `turn_busy`.
+
+**still open?** the screen above, on a build with the classifier fix: a billing 429 now fails the turn
+once and says whose money it is; whether the interrupt lands during a *transient* wait is still open.
+
+**done when** a person who presses interrupt during a retry's wait gets the turn back, however the
+retry was classified.
+
 ## R18 — every hand-rolled lexer replaced by rano + tree-sitter — **given 2026-09-20**
 
 > lets extend todo with this task - completely replace handrolled code with rano and
