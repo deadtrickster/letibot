@@ -108,6 +108,128 @@ const GITHUB_SITE_SEGMENTS: &[&str] = &[
     "trending",
 ];
 
+/// The `gh` argv that answers a github.com page **better than the page** —
+/// the shapes whose value is the discussion or the diff, not the chrome.
+///
+/// The operator, 2026-10-04: *"regarding issues and pulls and commits — we have
+/// gh tool here. so maybe if it is present and authenticated it is worth using
+/// it for fetching pull requests and issues and commits."* `gh issue view` and
+/// `gh pr view` render the title, the body AND the comments as markdown, which
+/// is exactly what a reader of an issue wants and exactly what the HTML page
+/// buries under navigation; `gh api` answers a commit as the structured JSON
+/// the model reads natively. A tree has no such view — the ref and the path
+/// share one path component list and cannot be split without asking the API
+/// which branches exist — so trees stay the page they are, said rather than
+/// silently guessed.
+///
+/// Returns the argv and a word for the note ("issue", "pull request",
+/// "commit"), or `None` when the address is not one of these. `/pull/N/files`
+/// and its siblings view the PR itself, because the suffix tabs are chrome too.
+fn gh_args(url: &UrlParts) -> Option<(Vec<String>, &'static str)> {
+    if url.host != "github.com" && url.host != "www.github.com" {
+        return None;
+    }
+    let path = url.path_query.split(['?', '#']).next().unwrap_or("");
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segs.len() < 4 || GITHUB_SITE_SEGMENTS.contains(&segs[0]) {
+        return None;
+    }
+    let repo = format!(
+        "{}/{}",
+        segs[0],
+        segs[1].strip_suffix(".git").unwrap_or(segs[1])
+    );
+    match (segs[2], segs[3].parse::<u64>().ok()) {
+        ("issues", Some(n)) => Some((
+            vec![
+                "issue".into(),
+                "view".into(),
+                n.to_string(),
+                "-R".into(),
+                repo,
+            ],
+            "issue",
+        )),
+        ("pull" | "pulls", Some(n)) => Some((
+            vec!["pr".into(), "view".into(), n.to_string(), "-R".into(), repo],
+            "pull request",
+        )),
+        // No `gh commit view` exists; the API's JSON is the commit — message,
+        // parents, and every hunk as a `patch` field the model reads as text.
+        ("commit", _) if !segs[3].is_empty() => Some((
+            vec!["api".into(), format!("repos/{repo}/commits/{}", segs[3])],
+            "commit",
+        )),
+        _ => None,
+    }
+}
+
+/// `gh` on PATH or not. Asked only for the shapes that want it, so the common
+/// fetch pays nothing for a tool it will never spawn.
+fn gh_present() -> bool {
+    Command::new("gh")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Run `gh`, capped and timed out the way curl is capped and timed out.
+///
+/// A hang is a dead child and a refusal, not a dead turn — the same rule the
+/// crate's transport doc states for curl, held for the second binary it is
+/// willing to spawn. `Err` carries gh's own stderr, which is where "not
+/// authenticated" says itself.
+fn run_gh(argv: &[String], cap: usize) -> Result<(Vec<u8>, bool), String> {
+    let mut child = Command::new("gh")
+        .args(argv)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawning gh: {e}"))?;
+    // stdout is drained on its own thread, capped at the reader: a gh that
+    // streams past the cap cannot outlive the deadline through a full pipe.
+    let mut stdout = child.stdout.take().expect("piped");
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let mut limited = (&mut stdout).take(cap as u64 + 1);
+        let _ = limited.read_to_end(&mut out);
+        out
+    });
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50))
+            }
+            _ => {
+                let _ = child.kill();
+                return Err(format!("gh did not answer in {}s", TIMEOUT.as_secs()));
+            }
+        }
+    };
+    let mut out = reader.join().unwrap_or_default();
+    if !status.success() {
+        let mut err = String::new();
+        if let Some(mut s) = child.stderr.take() {
+            let _ = s.read_to_string(&mut err);
+        }
+        let err = err.trim();
+        return Err(if err.is_empty() {
+            format!("gh exited {status}")
+        } else {
+            err.to_string()
+        });
+    }
+    let truncated = out.len() > cap;
+    if truncated {
+        out.truncate(cap);
+    }
+    Ok((out, truncated))
+}
+
 /// Rewrite a github.com address to the raw file it names — or, for a bare
 /// repo, its README.
 ///
@@ -287,6 +409,38 @@ impl Fetcher for CurlFetcher {
             }
             None => (vec![url.to_string()], Vec::new()),
         };
+        // **Issues, PRs and commits go to `gh` when it is on the box** — the
+        // operator's call, and the same bargain as the raw rewrite: the page's
+        // value is the discussion or the diff, `gh` renders exactly that, and
+        // the note says which door answered. gh absent leaves the page untouched;
+        // gh present but refusing (not authenticated says itself in gh's stderr)
+        // still answers with the HTML page, and a note carries why gh did not —
+        // never silently.
+        if let Some((argv, kind)) = gh_args(&url) {
+            if gh_present() {
+                match run_gh(&argv, self.cap) {
+                    Ok((body, truncated)) => {
+                        let body = String::from_utf8_lossy(&body).to_string();
+                        return Ok(FetchedPage {
+                            final_url: url.to_string(),
+                            status: 200,
+                            content_type: "text/markdown".into(),
+                            bytes: body.len(),
+                            body,
+                            truncated,
+                            notes: vec![format!(
+                                "answered by `gh {}` — the {kind}'s own view, without \
+                                 the page's navigation chrome",
+                                argv.join(" ")
+                            )],
+                        });
+                    }
+                    Err(why) => notes.push(format!(
+                        "gh was tried and refused ({why}); the HTML page follows"
+                    )),
+                }
+            }
+        }
         // The README case carries two candidates; only a 404 tries the next, and
         // the 404 that survives names the FIRST — a repo with no readme in either
         // spelling answers with the spelling everybody uses, not the fallback.
@@ -315,8 +469,9 @@ impl Fetcher for CurlFetcher {
 
     fn describe(&self) -> String {
         format!(
-            "{}, reader-mode extraction to markdown, github.com pages rewritten to their \
-             raw files, private addresses refused, same-origin redirects only, {} KiB cap",
+            "{}, reader-mode extraction to markdown, github.com files rewritten to their \
+             raw form and issues/pulls/commits answered by gh when it is on the box, \
+             private addresses refused, same-origin redirects only, {} KiB cap",
             self.version,
             self.cap / 1024
         )
@@ -1016,6 +1171,66 @@ mod tests {
             note.contains("chrome"),
             "and says WHY, in a sentence a reader can weigh: {note}"
         );
+    }
+
+    /// **`gh` answers the shapes whose value is the discussion, not the page**
+    /// — and the shapes that don't go to gh stay pages, named.
+    ///
+    /// The operator, 2026-10-04: *"we have gh tool here. so maybe if it is
+    /// present and authenticated it is worth using it for fetching pull requests
+    /// and issues and commits."* The table pins which addresses reach gh at all;
+    /// whether gh runs is presence-and-auth at fetch time, and the note on the
+    /// result says which door answered.
+    #[test]
+    fn issues_pulls_and_commits_reach_gh_and_the_rest_do_not() {
+        let argv = |url: &str| gh_args(&parse_url(url).unwrap());
+
+        let (a, kind) = argv("https://github.com/romkatv/gitstatus/issues/49").unwrap();
+        assert_eq!(a, vec!["issue", "view", "49", "-R", "romkatv/gitstatus"]);
+        assert_eq!(kind, "issue");
+
+        // `/pull/N` and its `/files` tab are the same PR; `pulls` too.
+        for spelling in [
+            "https://github.com/o/r/pull/5",
+            "https://github.com/o/r/pull/5/files",
+            "https://github.com/o/r/pulls/5/commits",
+        ] {
+            let (a, kind) = argv(spelling).unwrap();
+            assert_eq!(
+                a,
+                vec!["pr", "view", "5", "-R", "o/r"],
+                "{spelling} is the PR, not its tabs"
+            );
+            assert_eq!(kind, "pull request");
+        }
+
+        // A commit: the API's JSON — message, parents, and every hunk as a
+        // `patch` field. No `gh commit view` exists to render it prettier.
+        let (a, kind) = argv("https://github.com/o/r/commit/abc123").unwrap();
+        assert_eq!(a, vec!["api", "repos/o/r/commits/abc123"]);
+        assert_eq!(kind, "commit");
+
+        // **Everything else stays a page, and the list is deliberate**: a tree's
+        // ref and path cannot be split without asking the API which branches
+        // exist; a release and a wiki have no gh view; an issue by name (not
+        // number) and a bare repo are not these shapes; github's own pages are
+        // never a repo; and hosts that are not github never reach gh at all.
+        for page in [
+            "https://github.com/o/r/tree/main/src",
+            "https://github.com/o/r/releases",
+            "https://github.com/o/r/wiki/How-it-works",
+            "https://github.com/o/r/issues/new",
+            "https://github.com/o/r",
+            "https://github.com/settings/profile",
+            "https://example.com/o/r/issues/1",
+            "https://gist.github.com/o/r/pull/1",
+        ] {
+            assert_eq!(
+                argv(page),
+                None,
+                "{page} must not reach gh — it stays the page it is"
+            );
+        }
     }
 
     // -- the private set ----------------------------------------------------
