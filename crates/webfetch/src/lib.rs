@@ -74,6 +74,114 @@ use letibot_tools::builtins::external::web::{
     FetchError, FetchRequest, FetchedPage, Fetcher, PageFormat,
 };
 
+// ---------------------------------------------------------------------------
+// github.com: the page is chrome, the file is the page
+// ---------------------------------------------------------------------------
+
+/// github.com's own first path segments — never an owner, always a site page.
+/// Not the whole of github's reserved list (which github does not publish in
+/// full); the site's own surfaces, which is the part a model is ever handed.
+/// A name on this list means "there is no repo here", so the rewrite stops
+/// before it can build `raw…/settings/profile/HEAD/README.md` — an address
+/// nobody asked for and nothing serves.
+const GITHUB_SITE_SEGMENTS: &[&str] = &[
+    "about",
+    "billing",
+    "campaigns",
+    "collections",
+    "dashboard",
+    "enterprise",
+    "events",
+    "explore",
+    "features",
+    "join",
+    "login",
+    "marketplace",
+    "notifications",
+    "orgs",
+    "pricing",
+    "security",
+    "sessions",
+    "settings",
+    "site",
+    "topics",
+    "trending",
+];
+
+/// Rewrite a github.com address to the raw file it names — or, for a bare
+/// repo, its README.
+///
+/// MEASURED, 2026-10-04, on this harness's own tooling: fetching a repo page
+/// returned 262 KB of navigation chrome with the README below the cap, while
+/// the same document from `raw.githubusercontent.com` came back as 26 KB of
+/// actual text. Every path here was chosen against that:
+///
+/// * `/OWNER/REPO/blob/REF/PATH` (and github's own `/raw/` alias) → the same
+///   `REF` and `PATH` on `raw.githubusercontent.com`, query and fragment
+///   stripped — `?plain=1` is a rendering hint for the HTML view and noise for
+///   a raw file.
+/// * `/OWNER/REPO` → `HEAD/README.md`: `HEAD` is raw's own spelling of the
+///   default branch, so the master/main guess is not ours to make. The file
+///   name is case-sensitive there, so a second candidate `readme.md` follows,
+///   tried only on a 404 — and if both miss, the 404 that comes back names the
+///   first, which is the honest answer for a repo with no readme at all.
+/// * Everything else — `/tree/…` (a directory listing), `/issues/N`, `/pull/N`,
+///   `/releases`, `/wiki`, `/commit/…` — is left as the HTML page it is. Those
+///   have no raw spelling, and a rewrite that guessed one would be a fetch of
+///   something the caller did not name.
+///
+/// Returns `None` when nothing about the address is ours to change. The
+/// rewrite is a **named decision, not a redirect**: it happens at the front
+/// door, the note says what was asked for and what was fetched instead, and
+/// every check that guards an ordinary fetch (host pinning, the redirect
+/// policy on the new origin) runs on the rewritten address exactly as it
+/// would have on the original.
+fn github_raw(url: &UrlParts) -> Option<Vec<String>> {
+    if url.host != "github.com" && url.host != "www.github.com" {
+        return None;
+    }
+    let path = url.path_query.split(['?', '#']).next().unwrap_or("");
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segs.len() < 2 {
+        return None; // github.com's own pages — the feed, the login, the search
+    }
+    // **A site page is not a repo**, even when it wears two segments:
+    // `settings/profile` must not become a readme lookup on a "settings" owner
+    // that does not exist.
+    if GITHUB_SITE_SEGMENTS.contains(&segs[0]) {
+        return None;
+    }
+    let (owner, repo) = (segs[0], segs[1].strip_suffix(".git").unwrap_or(segs[1]));
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    let raw = |rest: String| format!("https://raw.githubusercontent.com/{owner}/{repo}/{rest}");
+    match segs.len() {
+        // The repo root: its README, on the default branch, in two spellings.
+        2 => Some(vec![
+            raw("HEAD/README.md".into()),
+            raw("HEAD/readme.md".into()),
+        ]),
+        // A file at a ref. `blob` is the HTML view, `raw` github's own alias.
+        _ if (segs[2] == "blob" || segs[2] == "raw") && segs.len() >= 5 => {
+            Some(vec![raw(segs[3..].join("/"))])
+        }
+        // A tree, an issue, a PR, a release, a wiki — a page, not a file.
+        _ => None,
+    }
+}
+
+/// The note that names a rewrite: both addresses and the reason. A silent
+/// rewrite is the defect the quarantine exists to make visible; this is the
+/// visibility, and it is a function so a test can hold it to exactly that.
+fn rewrite_note(asked: &UrlParts, first: &str) -> String {
+    format!(
+        "rewrote the github.com page to the raw file it names: {} → {first} \
+         (the repo page is navigation chrome around this file)",
+        asked.to_string()
+    )
+}
+
 /// How long one hop may take before it is a transport failure. A page the
 /// model is waiting on is a turn nobody can interrupt, so this is short; a
 /// slow print view is still a page, and 30s covers one.
@@ -167,6 +275,60 @@ impl Fetcher for CurlFetcher {
         // explicit that a fetcher does its own checks, because the tool's
         // are one refactor away from gone.
         let mut url = parse_url(&request.url).map_err(FetchError::Refused)?;
+        // **A github.com address becomes the raw file it names, before anything
+        // else runs.** The note goes on the result rather than in a log: a silent
+        // rewrite is the defect the quarantine exists to make visible, and the
+        // caller should be able to cite what they asked for against what came
+        // back. `final_url` shows the raw address; the note shows the original.
+        let (candidates, mut notes) = match github_raw(&url) {
+            Some(raws) => {
+                let note = rewrite_note(&url, &raws[0]);
+                (raws, vec![note])
+            }
+            None => (vec![url.to_string()], Vec::new()),
+        };
+        // The README case carries two candidates; only a 404 tries the next, and
+        // the 404 that survives names the FIRST — a repo with no readme in either
+        // spelling answers with the spelling everybody uses, not the fallback.
+        let mut first_404 = None;
+        for candidate in &candidates {
+            url = parse_url(candidate).map_err(FetchError::Refused)?;
+            match self.fetch_one(&url, request.format) {
+                Ok(mut page) => {
+                    let mut all = notes;
+                    all.append(&mut page.notes);
+                    page.notes = all;
+                    return Ok(page);
+                }
+                Err(e) => {
+                    let lost = matches!(&e, FetchError::Status { code: 404, .. });
+                    if lost && first_404.is_none() && candidates.len() > 1 {
+                        first_404 = Some(e);
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Err(first_404.expect("an empty candidate list cannot reach here"))
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "{}, reader-mode extraction to markdown, github.com pages rewritten to their \
+             raw files, private addresses refused, same-origin redirects only, {} KiB cap",
+            self.version,
+            self.cap / 1024
+        )
+    }
+}
+
+impl CurlFetcher {
+    /// One address through the hop loop — pin, fetch, redirect policy, render.
+    /// Everything in the trait impl above is the decision about WHICH address;
+    /// this is everything that happens once it is decided.
+    fn fetch_one(&self, url: &UrlParts, format: PageFormat) -> Result<FetchedPage, FetchError> {
+        let mut url = url.clone();
         let mut hops = 0usize;
         loop {
             let pin = if self.check_hosts {
@@ -200,7 +362,7 @@ impl Fetcher for CurlFetcher {
                 });
             }
 
-            let (body, notes) = render_body(&hop.body, &hop.content_type, &hop.url, request.format);
+            let (body, notes) = render_body(&hop.body, &hop.content_type, &hop.url, format);
             return Ok(FetchedPage {
                 final_url: hop.url,
                 status: hop.status,
@@ -211,15 +373,6 @@ impl Fetcher for CurlFetcher {
                 notes,
             });
         }
-    }
-
-    fn describe(&self) -> String {
-        format!(
-            "{}, reader-mode extraction to markdown, private addresses refused, \
-             same-origin redirects only, {} KiB cap",
-            self.version,
-            self.cap / 1024
-        )
     }
 }
 
@@ -528,6 +681,17 @@ struct UrlParts {
     path_query: String,
 }
 
+impl Clone for UrlParts {
+    fn clone(&self) -> Self {
+        UrlParts {
+            scheme: self.scheme.clone(),
+            host: self.host.clone(),
+            port: self.port,
+            path_query: self.path_query.clone(),
+        }
+    }
+}
+
 impl std::fmt::Display for UrlParts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let host = if self.host.contains(':') {
@@ -753,6 +917,105 @@ mod tests {
         assert!(parse_url("ftp://example.com/").is_err());
         assert!(parse_url("https://user:secret@example.com/").is_err());
         assert!(parse_url("https:///no-host").is_err());
+    }
+
+    // -- the github.com rewrite ----------------------------------------------
+
+    /// **The rewrite is a table, and the table is the whole policy.** Every rule
+    /// in one place: what becomes raw, what stays a page, what the README guess
+    /// is. Measured motive in `github_raw`'s own doc — 262 KB of chrome against
+    /// 26 KB of document, on this harness's own tooling, the day this was written.
+    #[test]
+    fn github_pages_become_the_raw_files_they_name() {
+        let raws = |url: &str| github_raw(&parse_url(url).unwrap());
+
+        // A file at a ref: same ref, same path, raw host, query gone.
+        assert_eq!(
+            raws("https://github.com/romkatv/gitstatus/blob/master/README.md"),
+            Some(vec![
+                "https://raw.githubusercontent.com/romkatv/gitstatus/master/README.md".into()
+            ])
+        );
+        // `?plain=1` is an HTML rendering hint; a raw file has no use for it.
+        assert_eq!(
+            raws("https://github.com/o/r/blob/v1/src/x.rs?plain=1#L3"),
+            Some(vec![
+                "https://raw.githubusercontent.com/o/r/v1/src/x.rs".into()
+            ])
+        );
+        // github's own `/raw/` alias, and a `.git` suffix on the repo name.
+        assert_eq!(
+            raws("https://www.github.com/o/r.git/raw/main/a/b.md"),
+            Some(vec![
+                "https://raw.githubusercontent.com/o/r/main/a/b.md".into()
+            ])
+        );
+        // The repo root: its README, on HEAD — raw's own spelling of the default
+        // branch, so the master/main guess is not ours — with the lowercase
+        // spelling as a 404-only fallback, because raw is case-sensitive.
+        assert_eq!(
+            raws("https://github.com/romkatv/gitstatus"),
+            Some(vec![
+                "https://raw.githubusercontent.com/romkatv/gitstatus/HEAD/README.md".into(),
+                "https://raw.githubusercontent.com/romkatv/gitstatus/HEAD/readme.md".into(),
+            ])
+        );
+        // A trailing slash on the root is the same address.
+        assert_eq!(
+            raws("https://github.com/o/r/"),
+            raws("https://github.com/o/r")
+        );
+
+        // **Pages stay pages.** A tree is a directory listing, an issue is a
+        // conversation, a wiki and a release have no raw spelling — and a rewrite
+        // that guessed one would fetch something the caller did not name.
+        for page in [
+            "https://github.com/o/r/tree/master/src",
+            "https://github.com/o/r/issues/49",
+            "https://github.com/o/r/pull/5/files",
+            "https://github.com/o/r/releases",
+            "https://github.com/o/r/wiki/How-it-works",
+            "https://github.com/o/r/commit/abc123",
+            // github's own pages, not a repo's
+            "https://github.com/login",
+            "https://github.com/settings/profile",
+            // and hosts that are not github at all
+            "https://example.com/o/r/blob/main/x.md",
+            "https://gist.github.com/o/abc123",
+        ] {
+            assert_eq!(
+                raws(page),
+                None,
+                "{page} is not ours to rewrite — it stays the page it is"
+            );
+        }
+    }
+
+    /// **The rewrite is NAMED on the result, never silent** — the crate's own
+    /// rule, applied to itself. A model that cites what it fetched must be able
+    /// to see what it asked for against what came back, and the note is where
+    /// the two meet.
+    ///
+    /// The note is the unit here rather than an end-to-end fetch: the loopback
+    /// stand-in cannot answer for `raw.githubusercontent.com` (the rewrite names
+    /// that host by design, and dialing the real one from a test is a test that
+    /// needs the network), so the table above pins WHICH address and this pins
+    /// WHAT THE CALLER IS TOLD — the two halves of the policy, each where it
+    /// can be checked without a wire.
+    #[test]
+    fn the_rewrite_is_named_with_both_addresses_and_never_silent() {
+        let asked = parse_url("https://github.com/o/r/blob/main/README.md").unwrap();
+        let first = github_raw(&asked).unwrap()[0].clone();
+        let note = rewrite_note(&asked, &first);
+        assert!(
+            note.contains("github.com/o/r/blob/main/README.md")
+                && note.contains("raw.githubusercontent.com/o/r/main/README.md"),
+            "the note names what was asked and what was fetched: {note}"
+        );
+        assert!(
+            note.contains("chrome"),
+            "and says WHY, in a sentence a reader can weigh: {note}"
+        );
     }
 
     // -- the private set ----------------------------------------------------
