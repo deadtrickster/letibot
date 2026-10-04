@@ -32,6 +32,23 @@ pub struct HeadPrefs {
     /// `split` — two panels — or `unified` always. The toggle is the whole
     /// choice; the width is the renderer's business.
     pub diff: DiffPref,
+    /// **A new project's starter todos** — leticl's `todo_template`, copied. `false` is off (the
+    /// default); `true` reads the default template file beside this file
+    /// (`todo-template.md`); a path string names another file. See `app`'s `seed_todos` — the
+    /// items of that TODO.md are copied onto the operator's half of the board once per project.
+    pub todo_template: TodoTemplate,
+    /// **The projects that have had their starter todos**, hashed workspace paths — leticl's
+    /// `todo_seed` table, held here as the same comma-list shape `retired` uses because this head
+    /// has no database of its own. A record and not an *is the list empty* test: a starter row the
+    /// operator deletes must not come back, and a project that re-seeds is the duplicate defect
+    /// leticl extracted this feature from.
+    pub todo_seed: Vec<String>,
+    /// **The git field's template** — leticl's `git_format`, copied: `None` is the shipped
+    /// default (`app::gitfield::GIT_FORMAT_DEFAULT`), `Some(t)` is the operator's own. A QUOTED
+    /// template in the file; `false` for the default; `true` is refused by name, because it is
+    /// a switch's word in a template's place and reading it as anything would be a guess at
+    /// what somebody meant.
+    pub git_format: Option<String>,
     /// `open` or `folded`.
     pub thinking: String,
     /// `open` or `folded`.
@@ -67,6 +84,41 @@ pub enum DiffPref {
     Unified,
 }
 
+/// `todo_template`'s three shapes, as one type: off, the default file beside this one, or a path
+/// the operator named. An enum and not a string so `true` cannot be mistaken for a path called
+/// "true" — leticl's ruling, in its own reader: *"`todo_template = "typo.md"` must not silently
+/// mean `on, using the default`"*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TodoTemplate {
+    Off,
+    /// The default: `todo-template.md` beside `head.toml`.
+    Default,
+    Path(String),
+}
+
+impl TodoTemplate {
+    /// The words the file holds. A path is written quoted like every other value; `true` and
+    /// `false` are written bare because they are the words a person types for a switch.
+    pub fn as_str(&self) -> String {
+        match self {
+            TodoTemplate::Off => "false".into(),
+            TodoTemplate::Default => "true".into(),
+            TodoTemplate::Path(p) => p.clone(),
+        }
+    }
+
+    pub fn parse(v: &str) -> Option<TodoTemplate> {
+        match v.trim() {
+            "false" | "no" | "off" => Some(TodoTemplate::Off),
+            "true" | "yes" | "on" => Some(TodoTemplate::Default),
+            // An empty value is neither off nor a file: it is a line that says nothing, and the
+            // reader reports it rather than guessing which side of the switch nothing means.
+            "" => None,
+            other => Some(TodoTemplate::Path(other.to_string())),
+        }
+    }
+}
+
 impl DiffPref {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -99,6 +151,9 @@ impl Default for HeadPrefs {
             // The rung the head has always started at when nothing said otherwise.
             verbosity: "normal".into(),
             retired: Vec::new(),
+            todo_template: TodoTemplate::Off,
+            todo_seed: Vec::new(),
+            git_format: None,
         }
     }
 }
@@ -166,6 +221,21 @@ pub fn merge_retired(path: &Path, ours: &[String]) -> Vec<String> {
     out
 }
 
+/// The seeded-projects record, unioned with whatever the file already holds — `merge_retired`'s
+/// twin, for the same reason: two heads share this file, each loads once, and a replacement write
+/// from either drops the other's projects. A dropped record is a project that re-seeds, which is
+/// the duplicate defect this feature exists to avoid, so the union is not a courtesy.
+pub fn merge_todo_seed(path: &Path, ours: &[String]) -> Vec<String> {
+    let (existing, _) = load(path);
+    let mut out = existing.todo_seed;
+    for k in ours {
+        if !out.contains(k) {
+            out.push(k.clone());
+        }
+    }
+    out
+}
+
 /// Read the file. A missing file is the defaults; a line this build does not
 /// understand is reported by name and otherwise ignored, never a refusal to
 /// start the head.
@@ -216,6 +286,39 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                     ));
                 }
             }
+            // **The starter-todo switch, in its three shapes** — see `TodoTemplate`. A value this
+            // build cannot read is reported and left in the file, exactly as `verbosity`'s is.
+            "todo_template" => match TodoTemplate::parse(&v) {
+                Some(t) => p.todo_template = t,
+                None => notes.push(
+                    "head.toml: todo_template = \"\" is true, false, or a quoted path".to_string(),
+                ),
+            },
+            // The once-per-project record. Same comma-list shape as `retired`, same cap, and the
+            // cap is the same trade: a key that falls off after `RETIRED_CAP` projects would
+            // re-seed that project — 512 projects in, on a box whose operator runs a handful at
+            // a time, is a corner rather than a plan.
+            "todo_seed" => {
+                p.todo_seed = v
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|k| !k.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
+            // **The git field's template: a quoted template, or `false` for the default.** leticl's
+            // own refusal is copied with it — `true` is a switch's word in a template's place, and
+            // a reader that took it for `the default, please` would be guessing at a sentence
+            // somebody may have mistyped. An empty value is the default too (a blank line is no
+            // template), and is not reported — it is indistinguishable from the key's absence.
+            "git_format" => match v.trim() {
+                "" | "false" | "no" | "off" => p.git_format = None,
+                "true" | "yes" | "on" => notes.push(
+                    "head.toml: git_format = true is a QUOTED template, or false for the default"
+                        .into(),
+                ),
+                other => p.git_format = Some(other.to_string()),
+            },
             // R10. An empty value is a real value — "nothing is retired" — and not
             // a key this build does not know, so it is not reported as one.
             "retired" => {
@@ -240,7 +343,7 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
 /// key from a newer build — where it was. Creates the directory.
 pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let ours: [(&str, String); 6] = [
+    let ours: [(&str, String); 9] = [
         ("diff", format!("\"{}\"", p.diff.as_str())),
         ("thinking", format!("\"{}\"", p.thinking)),
         ("tools", format!("\"{}\"", p.tools)),
@@ -249,6 +352,24 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
         // Quoted like the rest, and never multi-line: no key contains a comma or a
         // space, which is what keeps a hand-edited file honest.
         ("retired", format!("\"{}\"", p.retired.join(","))),
+        // The switch's own words — a path is quoted, `true`/`false` are bare — and the record,
+        // which is hashed keys for the same reason `retired`'s are.
+        (
+            "todo_template",
+            match &p.todo_template {
+                TodoTemplate::Path(s) => format!("\"{}\"", s),
+                other => other.as_str(),
+            },
+        ),
+        ("todo_seed", format!("\"{}\"", p.todo_seed.join(","))),
+        // The template itself quoted, or `false` bare — the two words the file may hold.
+        (
+            "git_format",
+            match &p.git_format {
+                Some(t) => format!("\"{}\"", t),
+                None => "false".into(),
+            },
+        ),
     ];
     let mut written: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut out: Vec<String> = Vec::new();
@@ -397,6 +518,7 @@ mod tests {
             // R10's half of the round trip, in one key: the comma is the separator
             // and the key contains none, which is what makes this one line.
             retired: vec!["w|gate-timeout|1789000000000|5f2c9a0b1d3e4f67".into()],
+            ..Default::default()
         };
         save(&p, &changed).unwrap();
         let (back, notes) = load(&p);
@@ -438,5 +560,66 @@ mod tests {
         assert!(text.contains("future_key = \"x\""), "{text}");
         assert_eq!(text.matches("diff =").count(), 1, "{text}");
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// **`todo_template`'s three shapes round-trip**, and a shape this build cannot read is
+    /// reported rather than guessed at — leticl's own refusal, copied: an empty value is
+    /// neither off nor a path.
+    #[test]
+    fn todo_template_round_trips_its_three_shapes() {
+        let dir = std::env::temp_dir().join(format!("letibot-tpl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("head.toml");
+        for (value, parsed) in [
+            ("false", TodoTemplate::Off),
+            ("true", TodoTemplate::Default),
+            (
+                "\"~/checklists/x.md\"",
+                TodoTemplate::Path("~/checklists/x.md".into()),
+            ),
+        ] {
+            std::fs::write(&p, format!("todo_template = {value}\n")).unwrap();
+            let (prefs, notes) = load(&p);
+            assert_eq!(prefs.todo_template, parsed, "reading {value}: {notes:?}");
+            save(&p, &prefs).unwrap();
+            let (again, notes) = load(&p);
+            assert_eq!(again.todo_template, parsed, "round trip {value}: {notes:?}");
+        }
+        // The words this build refuses.
+        std::fs::write(&p, "todo_template = \"\"\n").unwrap();
+        let (prefs, notes) = load(&p);
+        assert_eq!(prefs.todo_template, TodoTemplate::Off, "off, not a guess");
+        assert!(
+            notes.iter().any(|n| n.contains("todo_template")),
+            "said: {notes:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The seeded-projects record unions on write** — `merge_retired`'s twin, and for its
+    /// reason: two heads share this file, and a dropped record is a project that re-seeds.
+    #[test]
+    fn todo_seed_unions_across_heads() {
+        let dir = std::env::temp_dir().join(format!("letibot-seedrec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("head.toml");
+        std::fs::write(&p, "todo_seed = \"aaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbb\"\n").unwrap();
+        let ours = vec![
+            "cccccccccccccccc".to_string(),
+            "aaaaaaaaaaaaaaaa".to_string(),
+        ];
+        let merged = merge_todo_seed(&p, &ours);
+        assert_eq!(
+            merged,
+            vec![
+                "aaaaaaaaaaaaaaaa".to_string(),
+                "bbbbbbbbbbbbbbbb".to_string(),
+                "cccccccccccccccc".to_string(),
+            ],
+            "the file's keys survived a head that never saw them"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

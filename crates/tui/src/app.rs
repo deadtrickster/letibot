@@ -728,6 +728,13 @@ enum HeadSetting {
     Thinking,
     Tools,
     RawCalls,
+    /// **The git field's template** — cycles three stops: the shipped default, a spaced
+    /// one, and the branch alone. leticl's own cycle (`%flip-head-setting`: *"Three stops:
+    /// the shipped default, a spaced one, and the branch alone. `nil` is the default rather
+    /// than a fourth string, because the default has to stay one value in one place"*). A
+    /// FREE template stays the file's business — `git_format` takes any of them, and the
+    /// pane cycles presets rather than pretending to edit text.
+    GitFormat,
 }
 
 #[derive(Debug, Clone)]
@@ -1666,6 +1673,20 @@ pub struct App {
     /// `key` returns before the composer sees anything while this is `Some`, and every key that is
     /// not `Tab`/`Enter`/`Esc` is the editor's.
     todo_draft: Option<(String, String, bool)>,
+    /// **`todo_template` as this head loaded it** — the starter-todo switch, leticl's own key,
+    /// carried on `App` because the seed runs at the attach, long after `load_prefs`. Off by
+    /// default; see `prefs::TodoTemplate` for the three shapes.
+    todo_template: crate::prefs::TodoTemplate,
+    /// **The projects that have had their starter todos** — hashed workspace paths, leticl's
+    /// `todo_seed` table in the only store this head has (`head.toml`, beside `retired`). A record
+    /// and not an *is the list empty* test: a starter row the operator deletes must not come back.
+    todo_seed: Vec<String>,
+    /// **A seed is waiting for the board.** Set by the attach when the switch is on and this
+    /// project has not been seeded; the next `TodosUpdated` — the answer to the `ListTodos` the
+    /// attach queued — copies the template's items onto the operator's half. The board must be
+    /// read first because this head keeps no second list: seeding against a stale `todos` would
+    /// send a half that omits rows the daemon holds, and `SetOperatorTodos` replaces the half.
+    todo_seed_pending: bool,
     /// **The quit card**, opened by the second Ctrl+C instead of leaving at
     /// once. Two answers, because `Ctrl+C Ctrl+C` had one meaning and an
     /// operator often wants the other: leave the head and let the daemon keep
@@ -1904,7 +1925,20 @@ pub struct App {
     /// **The workspace's branch, or `None`** — see `crate::gitfield`. Read by the driver's tick
     /// (a process, never a paint), drawn beside the workspace path, and `None` when the directory
     /// is not a repository this head can read: an absence, not a clean tree.
-    pub git: Option<String>,
+    /// **The workspace's git field, as the pieces the format in force asks for** — leticl's
+    /// `*git-cache*` half: `(text, role)` pairs, rendered by the header and painted per role.
+    /// FITTING happens at the draw, where the width is; the branch is the floor and the marks
+    /// fall off the right (`gitfield::git_fit`).
+    pub git: Option<Vec<(String, crate::gitfield::GitRole)>>,
+    /// **The reading the pieces were rendered from** — the FACTS, not the text, so a format
+    /// changed on `/config` re-renders from the cache rather than waiting out the reader's
+    /// interval. leticl caches state and pieces for the same reason.
+    git_state: Option<crate::gitfield::GitState>,
+    /// **The git field's template, as loaded** — `None` is the shipped default
+    /// (`gitfield::GIT_FORMAT_DEFAULT`); `Some(t)` is the operator's `git_format`. Held on the
+    /// App because the field renders on the reader thread (`refresh_git`), long after
+    /// `load_prefs`.
+    git_format: Option<String>,
     /// **Which workspace that reading was of, and when.** A switch to another session carries
     /// another path, and a field left over from the previous tree would be drawn as this one's
     /// branch — the same class of lie as inventing one.
@@ -2792,6 +2826,9 @@ impl App {
             pick: None,
             mode_confirm: None,
             todo_draft: None,
+            todo_template: crate::prefs::TodoTemplate::Off,
+            todo_seed: Vec::new(),
+            todo_seed_pending: false,
             quit_card: false,
             quit_sel: 0,
             mode_sel: 0,
@@ -2833,6 +2870,8 @@ impl App {
             now_ms: 0,
             last_event_at: 0,
             git: None,
+            git_state: None,
+            git_format: None,
             git_read: (String::new(), 0),
             live_join: None,
             marker_counts: (0, 0, 0),
@@ -3653,6 +3692,17 @@ impl App {
                         self.session_label(&self.session_id)
                     ));
                 }
+                // **AND THE STARTER TODOS** — leticl's `%seed-operator-todos`, on the one moment
+                // leticl runs it: the HELLO, where a head learns its project (its own docstring:
+                // *"this is the one function where a head learns its list, so it is the one place
+                // a list can be STARTED"*). A switch lands here too, so each project is checked
+                // in its own right. The seed itself waits for the board — see `todo_seed_pending`
+                // — because this head keeps no second list and must not send a half it has not
+                // read.
+                if self.todo_seed_due() {
+                    self.queued.push(Action::ListTodos);
+                    self.todo_seed_pending = true;
+                }
                 Disposition::Control
             }
             ServerFrame::Sessions {
@@ -3703,6 +3753,14 @@ impl App {
             ServerFrame::Todos { session_id, todos } => {
                 if session_id == self.session_id {
                     self.todos = todos;
+                    // **A waiting seed runs here too** — this is the REPLY to the `ListTodos` the
+                    // attach queues when a seed is due, and it reads the board as whole as the
+                    // event does. One seed, two arrivals, because the wire has two: the reply and
+                    // the announcement.
+                    if self.todo_seed_pending {
+                        self.todo_seed_pending = false;
+                        self.seed_todos();
+                    }
                     self.redraw = true;
                 }
                 Disposition::Control
@@ -4351,6 +4409,14 @@ impl App {
             // lives.
             SessionEvent::TodosUpdated { todos } => {
                 self.todos = todos;
+                // **AND A WAITING SEED RUNS HERE** — the board has just been read whole, which is
+                // the only moment this head may add rows to its own half without risking a wipe:
+                // `SetOperatorTodos` REPLACES the operator half, so seeding against a stale list
+                // would take rows off the board rather than add to it.
+                if self.todo_seed_pending {
+                    self.todo_seed_pending = false;
+                    self.seed_todos();
+                }
                 self.redraw = true;
                 if self.todos_pane {
                     Disposition::Rendered
@@ -8671,6 +8737,150 @@ impl App {
         self.redraw = true;
     }
 
+    /// **Is a starter-todo seed due for THIS project?** The three-part gate, in one place
+    /// because the attach and the seed itself both ask it — a second spelling is how a project
+    /// gets seeded by one reading and skipped by the other.
+    ///
+    /// The gate is leticl's `%seed-operator-todos` verbatim: the switch is on, the workspace is
+    /// known (a project it cannot name is not a project it may put rows into — a head loads
+    /// before the socket exists), and the record does not hold this workspace. **The record, not
+    /// the list**: a starter row the operator deleted must not come back, which is what an *is
+    /// the list empty* test would do on every restart.
+    fn todo_seed_due(&self) -> bool {
+        self.todo_template != crate::prefs::TodoTemplate::Off
+            && !self.wiring.workspace.is_empty()
+            && !self
+                .todo_seed
+                .contains(&todo_seed_key(&self.wiring.workspace))
+    }
+
+    /// Where the starter todos come from: `todo_template`'s three shapes as a path — leticl's
+    /// `todo-template-path`, which its own docstring rules: *“one function because the setting
+    /// has three shapes and two callers must not spell them differently.”* `None` when the
+    /// switch is off or this head has no config directory to read a default from.
+    fn todo_template_file(&self) -> Option<std::path::PathBuf> {
+        match &self.todo_template {
+            crate::prefs::TodoTemplate::Off => None,
+            crate::prefs::TodoTemplate::Path(p) => Some(std::path::PathBuf::from(p)),
+            crate::prefs::TodoTemplate::Default => self
+                .prefs_path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(|d| d.join("todo-template.md")),
+        }
+    }
+
+    /// **Copy the template TODO.md's items onto the operator's half of the board** — leticl's
+    /// `%seed-operator-todos`, run where leticl runs it: the moment the head has learned its
+    /// list. The behaviour copied, piece by piece:
+    ///
+    /// * **The template is a `TODO.md`, parsed by the same reader the repo section uses**
+    ///   (`render_todo_md`) — a starter list is written in the format the operator already
+    ///   writes by hand, boxes and indented bodies included, and there is no second syntax
+    ///   to learn.
+    /// * **ITEMS ONLY are copied**: the checkbox rows, not the headings and their roll-ups.
+    ///   What is copied is what leticl copies — the text, the body, and the mark: `[x]`
+    ///   seeds a completed row (how a template carries something already settled), anything
+    ///   else seeds an open one.
+    ///
+    ///   The one place this cannot be leticl: **the body rides in `content`, joined `“ · ”`**.
+    ///   leticl keeps a `:detail` beside its rows in its own sqlite; this head keeps no second
+    ///   list, and the wire's `TodoEntry` is `content`/`status`/`by` — leticl's own push drops
+    ///   the detail at the same door. The card already made this head's choice for a typed
+    ///   detail (`title “ — ” detail`); body LINES join with `·` so each continuation stays a
+    ///   segment rather than merging into one sentence.
+    ///
+    /// * **ONCE PER PROJECT, marked even when nothing was added** — an empty template records
+    ///   the seeding and says so, because the alternative re-reads it on every start. A
+    ///   MISSING file is not marked: leticl says why and leaves the project unseeded, so the
+    ///   file the operator was going to write still gets its chance.
+    /// * **Refusals are notes, not silences** — from the operator's side *the feature did not
+    ///   work* and *I never turned it on* look identical otherwise.
+    ///
+    /// The rows go out through the same door `/todo TEXT` uses — `echo_operator_todos` for the
+    /// optimistic view, `SetOperatorTodos` for the whole half — so a seed and a typed row cannot
+    /// become different acts.
+    fn seed_todos(&mut self) {
+        if !self.todo_seed_due() {
+            return;
+        }
+        let Some(path) = self.todo_template_file() else {
+            self.say("todo_template is on but this head has no config directory to read it from");
+            return;
+        };
+        let body = match std::fs::read_to_string(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                // Not marked — see the docstring: the file may still be written.
+                self.say(&format!(
+                    "todo_template is on but {} is not there: {e}",
+                    path.display()
+                ));
+                return;
+            }
+        };
+        let rows = render_todo_md(&body);
+        let items: Vec<&TodoRow> = rows
+            .iter()
+            .filter(|r| r.item && !r.text.trim().is_empty())
+            .collect();
+        if items.is_empty() {
+            self.mark_seeded();
+            self.say(&format!(
+                "{} has no items in it, so nothing was added",
+                path.display()
+            ));
+            return;
+        }
+        let mut mine = self.operator_todos();
+        for r in &items {
+            let mut content = r.text.trim().to_string();
+            if !r.body.is_empty() {
+                content.push_str(" — ");
+                content.push_str(&r.body.join(" · "));
+            }
+            mine.push(letibot_sessionlog::event::TodoEntry {
+                content,
+                status: if r.mark == Some(TodoMark::Done) {
+                    letibot_sessionlog::event::TodoStatus::Completed
+                } else {
+                    letibot_sessionlog::event::TodoStatus::Pending
+                },
+                by: letibot_sessionlog::event::TodoBy::Operator,
+            });
+        }
+        let n = items.len();
+        self.mark_seeded();
+        self.echo_operator_todos(mine.clone());
+        self.queued.push(Action::SetOperatorTodos(mine));
+        self.say(&format!(
+            "{n} starter todo{} from {}",
+            if n == 1 { "" } else { "s" },
+            path.display()
+        ));
+    }
+
+    /// **Record that this project has had its starter todos** — and do it BEFORE the send, for
+    /// leticl's own reason: a record that waits for an acknowledgement re-fires on the next
+    /// start if the write failed quietly, and the operator gets the duplicates this feature
+    /// exists to avoid. The write is a UNION with whatever the file holds
+    /// (`merge_todo_seed`) because two heads share one `head.toml` and a dropped record is a
+    /// project that re-seeds.
+    fn mark_seeded(&mut self) {
+        let key = todo_seed_key(&self.wiring.workspace);
+        if !self.todo_seed.contains(&key) {
+            self.todo_seed.push(key);
+        }
+        if let Some(path) = self.prefs_path.clone() {
+            let mut p = self.prefs();
+            p.todo_seed = crate::prefs::merge_todo_seed(&path, &self.todo_seed);
+            self.todo_seed = p.todo_seed.clone();
+            if let Err(e) = crate::prefs::save(&path, &p) {
+                self.say(&format!("seed not recorded: {e}"));
+            }
+        }
+    }
+
     fn todo_command(&mut self, rest: &str) -> Option<Action> {
         let rest = rest.trim();
         if self.session_id.is_empty() {
@@ -12406,17 +12616,27 @@ impl App {
                 left.push_str(&p.paint(Role::Faint, &format!("  {shown}")));
                 left_cols += 2 + visible_width(&shown);
             }
-            // **The branch, beside the path it is a fact about** — the operator's ask of
-            // 2026-10-04, matched to leticl's row by row. It is one field from
-            // `gitfield::read`, refreshed by the driver's tick and never here, and an
-            // unreadable repository draws NOTHING rather than a blank that reads like a
+            // **The workspace's repository, in gitstatus's own segments and colours** — the
+            // operator's port of leticl's field, beside the path it is a fact about. Drawn
+            // from the pieces the READER rendered (`refresh_git` applies the format; a paint
+            // never formats), fitted here where the width is: the branch is the floor and the
+            // marks fall off the right, so a narrow screen loses `?4` and not the branch. The
+            // segments carry their own styles — a green branch, a yellow `!`, a red `~` — and
+            // the parens are the row's own faint, so the field still reads as one thing.
+            // An unreadable repository draws NOTHING rather than a blank that reads like a
             // clean tree (`gitfield`'s own rule).
-            if let Some(git) = self.git.as_deref() {
+            if let Some(pieces) = self.git.as_deref() {
                 let room = w.saturating_sub(left_cols + tail_cols + 4);
-                if room >= 4 {
-                    let shown = trim_to(git, room);
-                    left.push_str(&p.paint(Role::Faint, &format!("  {shown}")));
-                    left_cols += 2 + visible_width(&shown);
+                let fit = crate::gitfield::git_fit(pieces, room);
+                if !fit.is_empty() {
+                    left.push_str(&p.paint(Role::Faint, " ("));
+                    let mut cols = 3usize;
+                    for (text, role) in fit {
+                        cols += visible_width(text);
+                        left.push_str(&git_paint(&self.cfg, *role, text));
+                    }
+                    left.push_str(&p.paint(Role::Faint, ")"));
+                    left_cols += cols;
                 }
             }
         }
@@ -12456,10 +12676,17 @@ impl App {
     ///
     /// A workspace that CHANGED is read at once rather than waiting out the interval, because a
     /// session switch carries another path and the cached field would be the old tree's branch.
+    ///
+    /// **THE FORMAT IS APPLIED HERE, ON THE READER, AND NOWHERE ELSE** — leticl's `%git-refresh`
+    /// rule: a paint draws cached pieces, it never parses and never formats, so a mistyped
+    /// template stays a bad line rather than becoming a header that fails to draw. The STATE is
+    /// kept beside the pieces for the one thing that changes the format without a new reading:
+    /// `/config`'s cycle re-renders from the cache (`apply_git_format`).
     pub fn refresh_git(&mut self) {
         let ws = self.wiring.workspace.clone();
         if ws.is_empty() {
             self.git = None;
+            self.git_state = None;
             return;
         }
         let (last_of, at) = &self.git_read;
@@ -12467,8 +12694,23 @@ impl App {
         if last_of == &ws && !stale {
             return;
         }
-        self.git = crate::gitfield::read(&ws);
+        self.git_state = crate::gitfield::read_state(&ws);
+        self.apply_git_format();
         self.git_read = (ws, self.now_ms);
+    }
+
+    /// **Render the cached state through the format in force** — the whole of what a format
+    /// change needs to do, and the reason the state is cached: no process, no interval, the
+    /// same facts re-said in the new template's words.
+    fn apply_git_format(&mut self) {
+        let format = self
+            .git_format
+            .clone()
+            .unwrap_or_else(|| crate::gitfield::GIT_FORMAT_DEFAULT.to_string());
+        self.git = self
+            .git_state
+            .as_ref()
+            .map(|s| crate::gitfield::git_pieces(s, &format));
     }
 
     pub fn load_prefs(&mut self) {
@@ -12496,6 +12738,17 @@ impl App {
             Fold::Folded
         };
         self.raw_calls = p.raw_calls;
+        // **The starter-todo switch and its record come with the rest** — the seed runs at the
+        // attach, which is long after this, and a switch or record that lived only in this run
+        // would re-seed every project on every restart, which is the duplicate defect the record
+        // exists to prevent.
+        self.todo_template = p.todo_template;
+        self.todo_seed = p.todo_seed;
+        self.git_format = p.git_format;
+        // A format that was loaded before the first reading still has nothing to render
+        // over — but a head that RESUMES into a session renders the header at once, so the
+        // format is applied here too and not only on the reader's first tick.
+        self.apply_git_format();
         // **R10's retired notes come from the file, not from the process.** A head
         // restart is one of the two things that used to replant the wall, so a
         // dismissal that lived only in this run would be a dismissal that lasts
@@ -12519,6 +12772,9 @@ impl App {
             raw_calls: self.raw_calls,
             verbosity: self.verbosity.as_str().to_string(),
             retired: self.dismissed.clone(),
+            todo_template: self.todo_template.clone(),
+            todo_seed: self.todo_seed.clone(),
+            git_format: self.git_format.clone(),
         }
     }
 
@@ -12618,6 +12874,17 @@ impl App {
             },
             ConfigEdit::Head(HeadSetting::RawCalls),
         ));
+        // **THE GIT FIELD'S FORMAT IS HERE BECAUSE THE OPERATOR LOOKED FOR IT HERE** —
+        // leticl's `72a4314` finding, and the row names the template IN FORCE (so the pane
+        // and the row can never disagree), with the first stop of the cycle the built-in
+        // default.
+        rows.push(head(
+            "git format",
+            self.git_format
+                .clone()
+                .unwrap_or_else(|| format!("default ({})", crate::gitfield::GIT_FORMAT_DEFAULT)),
+            ConfigEdit::Head(HeadSetting::GitFormat),
+        ));
         for r in &self.settings {
             rows.push(ConfigRow {
                 section: "session — the daemon",
@@ -12697,6 +12964,21 @@ impl App {
                     HeadSetting::RawCalls => {
                         self.raw_calls = !self.raw_calls;
                         self.invalidate_history();
+                    }
+                    HeadSetting::GitFormat => {
+                        // **Three stops, and the default is `None` rather than a fourth
+                        // string** — the default has to stay one value in one place
+                        // (`GIT_FORMAT_DEFAULT`), so the cycle passes through `None` and
+                        // not through a copy of it.
+                        self.git_format = match self.git_format.as_deref() {
+                            None => Some("%b %!%+".into()),
+                            Some("%b %!%+") => Some("%b".into()),
+                            _ => None,
+                        };
+                        // **Re-rendered from the cache at once** — the reading is the
+                        // reader's business and the template is this head's, so a change
+                        // must not wait out the interval to be seen (`apply_git_format`).
+                        self.apply_git_format();
                     }
                 }
                 // **Union.** A fold or a raw-call toggle is not a statement about the retired
@@ -15320,6 +15602,43 @@ fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
         format!("{code}{s}{}", sgr::RESET)
     } else {
         s.to_string()
+    }
+}
+
+/// **One git segment, painted for its role** — leticl's `+git-styles+`, one colour per
+/// segment, chosen to say what the segment SAYS: green branch when the tree is clean and
+/// yellow when it is not (the one fact a person reads at a glance), staged green, unstaged
+/// yellow, conflicts red and bold because nothing else on that row is a demand, the action
+/// magenta and bold, untracked dim because it is usually noise.
+///
+/// `colour`'s one-code shape is kept — bold is spelled as a second SGR rather than a composed
+/// `1;35`, the same way `sgr::BOLD_ITALIC` composes exactly the pairs that recur — because
+/// two escapes reset once and read the same as the composed ones in every terminal this row
+/// has been drawn on.
+fn git_paint(cfg: &RenderConfig, role: crate::gitfield::GitRole, s: &str) -> String {
+    use crate::gitfield::GitRole as R;
+    match role {
+        R::BranchClean => colour(cfg, sgr::GREEN, s),
+        R::BranchDirty => colour(cfg, sgr::YELLOW, s),
+        R::Behind | R::Ahead => colour(cfg, sgr::CYAN, s),
+        R::Stash => colour(cfg, sgr::MAGENTA, s),
+        R::Action => {
+            if cfg.color {
+                format!("{}{}{s}{}", sgr::BOLD, sgr::MAGENTA, sgr::RESET)
+            } else {
+                s.to_string()
+            }
+        }
+        R::Conflict => {
+            if cfg.color {
+                format!("{}{}{s}{}", sgr::BOLD, sgr::RED, sgr::RESET)
+            } else {
+                s.to_string()
+            }
+        }
+        R::Staged => colour(cfg, sgr::GREEN, s),
+        R::Unstaged => colour(cfg, sgr::YELLOW, s),
+        R::Untracked => colour(cfg, sgr::DIM, s),
     }
 }
 
@@ -19256,6 +19575,14 @@ fn note_key(n: &Note) -> String {
         Note::NotRun(w) => format!("n|{}|{}|{:016x}", w.code, w.ts, fnv1a(&w.detail)),
         Note::Decided(d) => format!("d|{}", d.req_id),
     }
+}
+
+/// **A workspace's key in the seeded-projects record** — its FNV-1a hash, in `note_key`'s
+/// shape: the record lives in `head.toml` as a comma list, so a key that contains a comma or
+/// whitespace (as a path can) would corrupt the list, and hashing is the same answer
+/// `note_key` gives for the same reason.
+fn todo_seed_key(ws: &str) -> String {
+    format!("{:016x}", fnv1a(ws))
 }
 
 /// **Is this announcement already one this head holds?**
@@ -24713,9 +25040,9 @@ mod tests {
             screen.contains("verbosity") && screen.contains("normal"),
             "the pane does not show the rung: {screen}"
         );
-        // Down to the mode row (five head rows first: diff view, verbosity, thinking, tool
-        // output, raw tool calls).
-        for _ in 0..5 {
+        // Down to the mode row (six head rows first: diff view, verbosity, thinking, tool
+        // output, raw tool calls, git format).
+        for _ in 0..6 {
             a.key(Key::Down);
         }
         // The next name after `writes allowed` in the DAEMON's list — the head
@@ -24757,6 +25084,7 @@ mod tests {
                 raw_calls: true,
                 verbosity: "loud".into(),
                 retired: vec!["w|gate|1|0000000000000000".into()],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -26005,9 +26333,25 @@ mod tests {
         let mut a = app();
         a.session_id = "s".into();
         a.wiring.workspace = "/home/dead/Projects/letibot".into();
-        a.git = Some("main* ↑2".into());
+        // The field as the READER leaves it: the state, rendered through the format in force.
+        a.git_state = Some(crate::gitfield::GitState {
+            branch: "main".into(),
+            detached: false,
+            behind: None,
+            ahead: Some(2),
+            stash: None,
+            action: None,
+            conflict: None,
+            staged: None,
+            unstaged: Some(1),
+            untracked: None,
+        });
+        a.apply_git_format();
         let header = a.header_line(200);
-        assert!(header.contains("main* ↑2"), "{header}");
+        assert!(
+            header.contains("main") && header.contains("⇡2") && header.contains("!1"),
+            "the segments are on the row, gitstatus's own glyphs: {header}"
+        );
         // Beside the path and not instead of it: the path is still on the row.
         assert!(header.contains("letibot"), "{header}");
 
@@ -26017,18 +26361,83 @@ mod tests {
         b.wiring.workspace = "/home/dead/Projects/letibot".into();
         b.git = None;
         assert!(
-            !b.header_line(200).contains('*'),
+            !b.header_line(200).contains('⇡'),
             "a header with no reading claims nothing: {}",
             b.header_line(200)
         );
         // And a workspace that is not set draws none of it either.
         let mut c = app();
         c.session_id = "s".into();
-        c.git = Some("main*".into());
+        c.git_state = a.git_state.clone();
+        c.apply_git_format();
         assert!(
-            !c.header_line(200).contains("main*"),
+            !c.header_line(200).contains("main"),
             "{}",
             c.header_line(200)
+        );
+    }
+
+    /// **The format is the operator's, and changing it re-renders the SAME reading** — the
+    /// `/config` cycle through its three stops, each persisted, none of them re-reading the
+    /// repository.
+    #[test]
+    fn the_git_format_cycles_three_stops_and_re_renders_without_a_new_reading() {
+        let mut a = app();
+        a.git_state = Some(crate::gitfield::GitState {
+            branch: "main".into(),
+            detached: false,
+            behind: Some(1),
+            ahead: Some(2),
+            stash: None,
+            action: None,
+            conflict: None,
+            staged: Some(7),
+            unstaged: Some(8),
+            untracked: None,
+        });
+        a.apply_git_format();
+        let said = |a: &App| -> Option<Vec<String>> {
+            a.git
+                .as_ref()
+                .map(|p| p.iter().map(|(t, _)| t.clone()).collect())
+        };
+        assert_eq!(
+            said(&a),
+            Some(
+                vec!["main", "⇣1", "⇡2", "+7", "!8"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            ),
+            "the default: gitstatus's segments, in gitstatus's order"
+        );
+        // The cycle, three presses: default → spaced → branch alone → default.
+        for (press, want) in [
+            ("first", vec!["main", " !8", "+7"]),
+            ("second", vec!["main"]),
+            ("third", vec!["main", "⇣1", "⇡2", "+7", "!8"]),
+        ] {
+            a.git_format = match a.git_format.as_deref() {
+                None => Some("%b %!%+".into()),
+                Some("%b %!%+") => Some("%b".into()),
+                _ => None,
+            };
+            a.apply_git_format();
+            assert_eq!(
+                said(&a),
+                Some(want.into_iter().map(String::from).collect::<Vec<_>>()),
+                "the {press} stop re-rendered the same state"
+            );
+        }
+        // And the row names the template in force, default included.
+        let rows = a.config_rows();
+        let row = rows
+            .iter()
+            .find(|r| r.key == "git format")
+            .expect("the git format row is on /config");
+        assert_eq!(
+            row.value,
+            format!("default ({})", crate::gitfield::GIT_FORMAT_DEFAULT)
         );
     }
 
@@ -41251,5 +41660,256 @@ mod tests {
         // A jobs frame for a session this head is not in is ignored.
         a.apply(jobs_frame("s", vec![daemon_job("j9", "old", false)]));
         assert!(a.jobs.is_empty(), "another session's table was folded in");
+    }
+
+    // ---- the starter todos: leticl's `todo_template`, copied ----
+
+    /// A head seated in `workspace`, its prefs in `dir`, and a template written to
+    /// `dir/todo-template.md` — the arrangement the switch names. The workspace rides the
+    /// Hello itself, because the seed's gate reads it at the attach, where the arm has just
+    /// set it.
+    fn seeded_head(dir: &std::path::Path, template: &str, workspace: &str) -> App {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("todo-template.md"), template).unwrap();
+        let mut a = app();
+        a.prefs_path = Some(dir.join("head.toml"));
+        a.load_prefs();
+        a.todo_template = crate::prefs::TodoTemplate::Default;
+        let snap = Hub::new("s1").snapshot();
+        a.apply(ServerFrame::Hello {
+            protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+            session_id: "s1".into(),
+            head_id: "h1".into(),
+            dropped: 0,
+            snapshot: Some(Box::new(snap)),
+            resumed_from: None,
+            scrubbed: Default::default(),
+            wiring: SessionWiring {
+                model: String::new(),
+                dialect: String::new(),
+                endpoint: String::new(),
+                workspace: workspace.into(),
+            },
+            sessions: Vec::new(),
+        });
+        a
+    }
+
+    /// **The attach queues the board read when a seed is due, and the template's items land
+    /// on the operator's half — text, body and mark copied, the daemon's rows kept.**
+    #[test]
+    fn starter_todos_copy_onto_the_operators_half() {
+        let dir = std::env::temp_dir().join(format!("letibot-seed-{}", std::process::id()));
+        let mut a = seeded_head(
+            &dir,
+            "## Phase 0\n\n- [x] T1 git init\n- [ ] T2 vendor the deps\n  pinned at abc\n- [~] T3 the card\n",
+            "/home/dead/Projects/x",
+        );
+        assert!(
+            a.todo_seed_pending,
+            "the attach saw a due seed and is waiting for the board"
+        );
+        assert_eq!(
+            a.queued.iter().any(|q| matches!(q, Action::ListTodos)),
+            true,
+            "the board read the seed waits on was queued: {:?}",
+            a.queued
+        );
+        // The daemon's answer carries both halves — an operator row it already holds and a
+        // model row — so the seed can be seen to ADD to the one and leave the other alone.
+        a.apply(ServerFrame::Todos {
+            session_id: "s1".into(),
+            todos: vec![
+                letibot_sessionlog::event::TodoEntry {
+                    content: "keep me".into(),
+                    status: letibot_sessionlog::event::TodoStatus::Pending,
+                    by: letibot_sessionlog::event::TodoBy::Operator,
+                },
+                letibot_sessionlog::event::TodoEntry {
+                    content: "a model row".into(),
+                    status: letibot_sessionlog::event::TodoStatus::Pending,
+                    by: letibot_sessionlog::event::TodoBy::Model,
+                },
+            ],
+        });
+        let Some(Action::SetOperatorTodos(sent)) = a
+            .queued
+            .iter()
+            .find(|q| matches!(q, Action::SetOperatorTodos(_)))
+            .cloned()
+        else {
+            panic!("the seed sent nothing: {:?}", a.queued);
+        };
+        assert_eq!(
+            sent.iter().map(|t| t.content.as_str()).collect::<Vec<_>>(),
+            vec![
+                "keep me",
+                "T1 git init",
+                "T2 vendor the deps — pinned at abc",
+                "T3 the card",
+            ],
+            "text and body copied, the daemon's operator row kept"
+        );
+        assert_eq!(
+            sent[1].status,
+            letibot_sessionlog::event::TodoStatus::Completed
+        );
+        assert_eq!(
+            sent[2].status,
+            letibot_sessionlog::event::TodoStatus::Pending
+        );
+        // `[~]` seeds open — leticl's own rule: only `[x]` seeds a done row.
+        assert_eq!(
+            sent[3].status,
+            letibot_sessionlog::event::TodoStatus::Pending
+        );
+        assert!(
+            sent.iter()
+                .all(|t| t.by == letibot_sessionlog::event::TodoBy::Operator)
+        );
+        // The model's half is untouched in the optimistic view, and the head's own record
+        // holds the project now.
+        assert!(a.todos.iter().any(|t| t.content == "a model row"));
+        assert!(
+            a.todo_seed
+                .contains(&todo_seed_key("/home/dead/Projects/x"))
+        );
+        let (on_disk, _) = crate::prefs::load(&dir.join("head.toml"));
+        assert_eq!(
+            on_disk.todo_seed, a.todo_seed,
+            "the record was written, not just held"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **ONCE PER PROJECT.** A second board read — the pane opening, a switch landing —
+    /// finds the record and adds nothing; a deleted starter row must not come back.
+    #[test]
+    fn a_seed_runs_once_per_project() {
+        let dir = std::env::temp_dir().join(format!("letibot-seed-once-{}", std::process::id()));
+        let mut a = seeded_head(
+            &dir,
+            "## Phase 0\n\n- [ ] only row\n",
+            "/home/dead/Projects/y",
+        );
+        a.apply(ServerFrame::Todos {
+            session_id: "s1".into(),
+            todos: Vec::new(),
+        });
+        assert_eq!(a.operator_todos().len(), 1);
+        // The operator deletes the starter row — the record is what must keep it dead.
+        let sent = a
+            .queued
+            .iter()
+            .filter(|q| matches!(q, Action::SetOperatorTodos(_)))
+            .count();
+        a.apply(ServerFrame::Todos {
+            session_id: "s1".into(),
+            todos: Vec::new(),
+        });
+        assert_eq!(
+            a.queued
+                .iter()
+                .filter(|q| matches!(q, Action::SetOperatorTodos(_)))
+                .count(),
+            sent,
+            "no second seed was queued"
+        );
+        assert_eq!(
+            a.operator_todos().len(),
+            0,
+            "a deleted starter row stays deleted"
+        );
+        // And a restarted head reads the record from the file and skips the project.
+        let mut b = app();
+        b.prefs_path = Some(dir.join("head.toml"));
+        b.load_prefs();
+        b.todo_template = crate::prefs::TodoTemplate::Default;
+        b.wiring.workspace = "/home/dead/Projects/y".into();
+        assert!(!b.todo_seed_due(), "the record outlives the head");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The refusals are notes.** A template with no items seeds nothing and is MARKED
+    /// (the alternative re-reads it on every start); a missing template is said and NOT
+    /// marked, so the file the operator was going to write still gets its chance.
+    #[test]
+    fn template_refusals_are_notes() {
+        let dir = std::env::temp_dir().join(format!("letibot-seed-refuse-{}", std::process::id()));
+        // No items — a heading is not a checkbox row.
+        let mut a = seeded_head(&dir, "## Phase 0\n\nprose only\n", "/home/dead/Projects/z");
+        a.apply(ServerFrame::Todos {
+            session_id: "s1".into(),
+            todos: Vec::new(),
+        });
+        assert!(a.operator_todos().is_empty(), "nothing to add from prose");
+        assert!(
+            a.todo_seed
+                .contains(&todo_seed_key("/home/dead/Projects/z")),
+            "an empty template is still a seeding"
+        );
+        assert!(
+            a.notice
+                .as_deref()
+                .is_some_and(|s| s.ends_with("has no items in it, so nothing was added")),
+            "said, not silent: {:?}",
+            a.notice
+        );
+        // Missing — the Default template with the file taken away.
+        let mut b = seeded_head(&dir, "- [ ] row\n", "/home/dead/Projects/w");
+        std::fs::remove_file(dir.join("todo-template.md")).unwrap();
+        // A project not yet seeded: clear the record the first head wrote.
+        b.todo_seed.clear();
+        b.todo_seed_pending = true;
+        b.seed_todos();
+        assert!(
+            b.todo_seed.is_empty(),
+            "a missing file is not a seeding — it may still be written"
+        );
+        assert!(
+            b.notice
+                .as_deref()
+                .is_some_and(|s| s.contains("is not there")),
+            "said: {:?}",
+            b.notice
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The switch off is off** — an ordinary head, template at its default, attaches and
+    /// queues no board read for a seed and adds nothing.
+    #[test]
+    fn the_starter_todos_switch_is_off_by_default() {
+        let dir = std::env::temp_dir().join(format!("letibot-seed-off-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut a = app();
+        a.prefs_path = Some(dir.join("head.toml"));
+        a.load_prefs();
+        assert_eq!(a.todo_template, crate::prefs::TodoTemplate::Off);
+        let snap = Hub::new("s1").snapshot();
+        a.apply(ServerFrame::Hello {
+            protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+            session_id: "s1".into(),
+            head_id: "h1".into(),
+            dropped: 0,
+            snapshot: Some(Box::new(snap)),
+            resumed_from: None,
+            scrubbed: Default::default(),
+            wiring: SessionWiring {
+                model: String::new(),
+                dialect: String::new(),
+                endpoint: String::new(),
+                workspace: "/home/dead/Projects/x".into(),
+            },
+            sessions: Vec::new(),
+        });
+        assert!(!a.todo_seed_pending, "off is off");
+        assert!(
+            !a.queued.iter().any(|q| matches!(q, Action::ListTodos)),
+            "no board read queued for a seed that is not due"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
