@@ -1100,6 +1100,27 @@ neither notice is in `#t2`, and neither is in `#t3` either. The daemon's wake su
 user item and runs a turn; if the turn has not run when the transcript forks, the queued item goes with
 the transcript it was addressed to — and nothing re-arms it against the new one.
 
+**What READING establishes, so the experiment starts where it should** (all cited, no live head needed):
+
+  · **`Harness::wake` is the only road a settlement takes to the model, and it DRAINS before it
+    submits** — `jobwatch::JobWatchers::take_completions` (`:303`) is a `g.drain(..).collect()` from
+    the shared pen, and `harness.rs:4553` is the `submit_item` that turns it into a row. Nothing
+    re-arms the pen, so *drained and not delivered* is a loss with no second chance;
+  · **the pen is per TREE and shared** (`Parts::tree_watch`, R58) — which is exactly why a child's
+    notice keeps arriving while a job's does not: they are two settlements in ONE pen, and the
+    asymmetry the stall entry spent four hours on cannot come from two queues, because there is one;
+  · **a compaction does not rebuild the harness at this level**: `Sessions::compact_if_at_the_wall`
+    (`sessions.rs:1296`) reads `self.open.get(session_id)` and returns — so a pen held by a live
+    `Harness` survives a compaction.
+
+**Which leaves the fork as the suspect and not the compaction**: if the session's harness is
+RE-OPENED across a fork under a fresh `Parts`, the pen goes with the old one and an undrained
+completion is gone — and that is a question about `Harness::open`'s callers, not about the wake.
+**The experiment decides between them**: start a job on an idle session and fork that session before
+the notice's turn runs, then look in the NEW transcript. Absent means the pen is per-open and has to
+be re-armed at the fork; present means the loss is inside the wake itself and the drain above is
+where to look.
+
 **The shape to build:** the queue is the session's and the transcript is the conversation's, so a fork
 has to either flush the queue first or carry it across, and the daemon already knows the moment (it is
 the same `auto_compact`/`compacted` pair the head marks its echoes with — see
