@@ -161,10 +161,25 @@ impl Tier {
         matches!(self, Tier::Blocked { .. })
     }
 
-    /// Whether an oracle may be consulted at all. False for both of the tiers it
-    /// cannot move, and false for `Auto`, which needs nobody.
+    /// Whether an oracle may be consulted at all — **and now decides**.
+    ///
+    /// **THE OPERATOR'S RULING, 2026-10-05, and it reverses what this said before**:
+    /// *"so we are in allow-edits mode now. there is certain permission set that is allowed
+    /// and doesnt need oracle. this is to be kept. the rest is oracle."* — and, for why:
+    /// *"like the alterantive is allow-all and i dont want it. i want oracle."*
+    ///
+    /// So the split is: `Auto` needs nobody (the mode's own allowed set, untouched), `Blocked`
+    /// is nobody's to move, and **everything else that reaches a gate is the oracle's** —
+    /// `MayApprove` and `AlwaysAsk` both. What this replaces is the sentence that stood here
+    /// and on `AlwaysAsk`: *"the point of the fixed list is that no amount of model
+    /// confidence substitutes for the operator"*. True as a principle and wrong as a
+    /// practice on this box: the cards a list like that produces are the ones that teach an
+    /// operator to press allow-all.
+    ///
+    /// `Auto` is false for the other reason — nothing is being asked, so there is nobody to
+    /// ask an oracle about.
     pub fn is_adjudicable_by_model(&self) -> bool {
-        matches!(self, Tier::MayApprove)
+        matches!(self, Tier::MayApprove | Tier::AlwaysAsk { .. })
     }
 
     /// The stricter of two tiers. Layer A combines findings across the stages of one
@@ -908,12 +923,20 @@ pub const BRIEF_FORMAT: &str = "brief/2026-09-14";
 impl AdjudicationRequest {
     /// The witness that layer A found this adjudicable **and** readable.
     ///
-    /// The only way to obtain an [`Adjudicable`], and therefore the only way anything
-    /// can be admitted by an oracle. `None` for an blocked action and `None`
-    /// for an unresolved one — see [`Adjudicable`] for why that is a type rather than
-    /// a check.
+    /// The only way to obtain an [`Adjudicable`], and therefore the only way anything can be
+    /// admitted by an oracle. `None` for a blocked action — see [`Adjudicable`] for why that
+    /// is a type rather than a check.
+    ///
+    /// **`self.resolved` is no longer part of the gate**, and that is the operator's ruling
+    /// arriving twice: an unresolved action is exactly the one whose reading layer A could not
+    /// produce, so a second opinion is the only opinion there is (*"we have to ask oracle for
+    /// this stuff"*), and once asked its verdict is the verdict (*"i want to follow oracle
+    /// verdict"*). The witness still means something: it is what makes an ALLOW able to admit,
+    /// so `Blocked` — the rules nobody may move — still mints none.
     pub fn adjudicable(&self) -> Option<Adjudicable> {
-        (self.resolved && self.tier.is_adjudicable_by_model()).then_some(Adjudicable(()))
+        self.tier
+            .is_adjudicable_by_model()
+            .then_some(Adjudicable(()))
     }
     /// **The CARD a person reads — not the brief a model is shown.** These are two
     /// renderings of one request, and this comment used to claim the second while
@@ -2082,6 +2105,20 @@ impl AdjudicatedGate {
                  rewording does either: this is refused by the harness itself, \
                  before any adjudicator and overridable by none."
                     .to_string()
+            } else if decision.by.starts_with("model") {
+                // **THE GUARD DECIDED THIS ONE, AND THERE IS NO PENDING DECISION.** The
+                // sentence below is written for a refusal a PERSON made — *"or answer the
+                // pending decision"* — and since 2026-10-05 an oracle's refusal is a decision
+                // in its own right (`i want to follow oracle verdict`), so no card was raised
+                // and telling the model to go and answer one sends it looking for a question
+                // that does not exist. The remedy that does exist is the operator's grant: the
+                // row is on `/gate`, and `grant` lifts it.
+                format!(
+                    "the guard refused this one — no card was raised for it, and nothing is \
+                     waiting for an answer. Nothing was executed and nothing changed. The \
+                     operator saw it on `/gate` and can lift it: `grant {}` ({}).",
+                    req.id, req.tool
+                )
             } else {
                 format!(
                     "grant `{}` ({}) for this session, or answer the pending decision. \
@@ -6025,11 +6062,13 @@ mod tests {
         // boundary conjunct in `reads_only` voids — so it keeps its exec access and the
         // mode is consulted exactly as it would be for the literal spelling.
         //
-        // **What must NOT change is that no model is asked.** `resolved` is carried
-        // separately from the verdict now and is still `false`, so `Adjudicable` is never
-        // minted and the only thing that can answer is a person. That is what the second
-        // assertion is for; the first is that this reached a human at all rather than
-        // being refused out of hand.
+        // **AND THE MODEL IS THE ONE ASKED** — the operator's ruling of 2026-10-05 overrules
+        // what stood here (*"a meaning nobody could read is never handed to a model to
+        // approve"*): *"we have to ask oracle for this stuff"*, and *"i want to follow oracle
+        // verdict … the rest is oracle."* An unresolved line is now the case a second opinion
+        // exists for, so `Adjudicable` IS minted and the oracle answers it — the person is
+        // asked when the oracle is unsure (or refuses nothing and has no answer), never
+        // because the parser gave up.
         let (mut g, asked) = gate();
         let unresolved = json!({"command": "cd /w && cat $(ls) src/lib.rs"});
         let row = g.request_for(&bash(&unresolved));
@@ -6039,14 +6078,14 @@ mod tests {
             "the meaning was never resolved and the row says so"
         );
         assert!(
-            row.adjudicable().is_none(),
-            "a meaning nobody could read is never handed to a model to approve"
+            row.adjudicable().is_some(),
+            "the model IS asked about a meaning nobody could read — the ruling of 2026-10-05"
         );
         assert_eq!(g.admit(&bash(&unresolved)), GateDecision::Admit);
         assert_eq!(
             asked.load(Ordering::Relaxed),
             1,
-            "an action nobody could read must reach a person, exactly once"
+            "an action nobody could read is answered by the oracle, exactly once"
         );
     }
 
@@ -6643,12 +6682,22 @@ mod tests {
             resolved_row.class, opaque_row.class,
             "the pair must differ only in resolution, or this test proves nothing"
         );
-        assert!(opaque_row.adjudicable().is_none(), "and no model is asked");
+        // **THE MODEL IS ASKED NOW**, which is the 2026-10-05 ruling and the reason this
+        // assertion changed: a session grant covers a RESOLVED call, and the unresolved twin
+        // is answered by the oracle rather than by the point or the person. What the pair
+        // still proves is that `resolved` is carried separately — the two requests differ in
+        // nothing else — and that the grant itself does not silently cover it.
+        assert!(
+            opaque_row.adjudicable().is_some(),
+            "an adjudicator may answer the unresolved twin — this gate's adjudicator is a \
+             person, which is the fixture's wiring and not the ruling"
+        );
         let _ = g.admit(&bash(&opaque));
         assert_eq!(
             asked.load(Ordering::Relaxed),
             2,
-            "the grant must not have settled the unresolved call; nothing but a person may"
+            "the session grant must not have settled the unresolved call: it is asked again, \
+             and whatever this gate wires answers it"
         );
     }
 
@@ -6662,26 +6711,37 @@ mod tests {
     ///
     /// * **`resolved` is still `false`.** It is carried on its own now rather than read
     ///   off the verdict, so no corpus row claims a resolution that never happened.
-    /// * **`adjudicable()` is still `None`.** A meaning nobody could read is never handed
-    ///   to a MODEL to approve; the point decides, and a point that does not admit asks a
-    ///   person. See the narrow-point half below, which is the other side of the ruling:
-    ///   *"a narrow mode finds the widened scope outside its grant and refuses"*.
+    /// * **`adjudicable()` is `Some` now** — the operator's ruling of 2026-10-05 (*"the rest
+    ///   is oracle"*) overrules the sentence that stood here (*"a meaning nobody could read
+    ///   is never handed to a MODEL to approve"*). At a permissive point the action is
+    ///   admitted before any gate, so nothing is asked; at a narrow one the oracle answers,
+    ///   and only its UNSURE reaches a person.
     #[test]
     fn an_unresolvable_command_reaching_the_gate_is_admitted_at_a_permissive_point() {
         let mut g = permissive_gate();
         let args = json!({"command": "/bin/cat $FILE"});
         assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
         assert!(!g.log[0].request.resolved);
-        assert!(g.log[0].request.adjudicable().is_none());
+        assert!(
+            g.log[0].request.adjudicable().is_some(),
+            "the oracle may answer an unread meaning — the ruling of 2026-10-05"
+        );
     }
 
-    /// **And the same command at a point that does not admit it asks a PERSON.**
+    /// **And the same command at a point that does not admit it asks whoever this gate
+    /// wires** — a person, in this fixture.
     ///
     /// The other half of the ruling, and the half that keeps it from being a bypass: the
     /// widening is not an admission, it is a *scope*, and a narrow point finds an unbounded
     /// scope outside its grant for the same reason it refuses the literal. MEASURED here —
     /// `always-ask` with `exec_follows_mode` off, which is the strongest form of the
     /// assertion because no point admits exec there.
+    ///
+    /// **What changed on 2026-10-05 is only whose adjudicator may answer.** The witness is
+    /// minted for an unresolved action now (the operator: *"the rest is oracle"*), so
+    /// `adjudicable()` is `Some` — and in THIS gate the adjudicator is `AskAdjudicator`, a
+    /// person. That is why the test still reads as it does: the witness says *an adjudicator
+    /// may answer this*, and which adjudicator is the gate's wiring, not the witness's.
     #[test]
     fn an_unresolvable_command_at_a_narrow_point_reaches_a_person_and_not_a_model() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6717,7 +6777,10 @@ mod tests {
             Access::Exec,
             "not a read: the path is unknown"
         );
-        assert!(row.adjudicable().is_none(), "no model is asked about it");
+        assert!(
+            row.adjudicable().is_some(),
+            "an adjudicator may answer it — here that adjudicator is the person below"
+        );
         // A person is, and their yes is what admits it.
         assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
         assert_eq!(asked.load(Ordering::Relaxed), 1);

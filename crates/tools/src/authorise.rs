@@ -438,8 +438,10 @@ pub struct ModelBrief {
     /// tier is layer A's, and history cannot promote out of `AlwaysAsk` or
     /// `Blocked` for the same reason a glob cannot (§4f).
     pub prior: Vec<crate::adjudicate::PriorAnswer>,
-    /// Present only when layer A found the action adjudicable AND resolved. The
-    /// oracle takes it by value to build a [`Widening`]; there is no other source.
+    /// Present when an oracle may decide this action at all — the tier is adjudicable by a
+    /// model (which now includes an unresolved reading, the ruling of 2026-10-05). The
+    /// oracle takes it by value to build a [`Widening`]; there is no other source, and no
+    /// witness exists for a blocked boundary.
     witness: Option<Adjudicable>,
     /// **The reading did not resolve** — the operator's ruling, 2026-10-05: *"we have
     /// to ask oracle for this stuff."* An unresolved action is the exact case the oracle
@@ -2146,21 +2148,21 @@ impl Adjudicator for Budgeted {
 /// the gap that is fail-closed without it.
 ///
 /// 1. **The action did not resolve** → the oracle is CONSULTED, with the brief saying
-///    the reading failed. The operator's ruling, 2026-10-05, on a card that read
-///    *"no model verdict — the action did not resolve … No oracle was consulted"* at
-///    `0 ms`: *"we have to ask oracle for this stuff."* An unresolved action is the
-///    exact case the oracle exists for — the deterministic reader failed, and the
-///    model's reading of the brief is the only second opinion there is. The witness
-///    rule stands unchanged ([`AdjudicationRequest::adjudicable`] mints nothing for an
-///    unread action), so an oracle's ALLOW cannot admit it; what the oracle says rides
-///    the card to the person instead of the classifier's failure alone.
-/// 2. **The tier is blocked** → `Denied`. Layer A decided; nothing promotes it.
-/// 3. **The tier is always-ask** → escalate to a human. The oracle is not consulted at
-///    all, because the point of the fixed list is that no amount of model confidence
-///    substitutes for the operator. There is no code path from here to `Admit`, and
-///    [`AdjudicationRequest::adjudicable`] mints no witness for one either — two
-///    mechanisms, because a safety property with one ships broken the first time
-///    somebody refactors the mechanism.
+///    the reading failed, and **its verdict decides**. The operator's rulings, 2026-10-05:
+///    *"we have to ask oracle for this stuff"* and then *"i want to follow oracle
+///    verdict … the rest is oracle."* An unresolved action is the exact case the oracle
+///    exists for — the deterministic reader failed, and the model's reading of the brief
+///    is the only second opinion there is.
+/// 2. **The tier is blocked** → `Denied`. Layer A decided; nothing promotes it, and no
+///    witness is minted for one.
+/// 3. **The tier is always-ask** → **the oracle is consulted too**, and its verdict
+///    decides. This clause used to read *"escalate to a human; the oracle is not consulted
+///    at all, because the point of the fixed list is that no amount of model confidence
+///    substitutes for the operator"* — overruled 2026-10-05: *"there is certain permission
+///    set that is allowed and doesnt need oracle … the rest is oracle"*, with the cost of
+///    the old shape named — *"like the alterantive is allow-all and i dont want it."* The
+///    list still keeps an action out of the mode's allowed set, so a gate exists; it no
+///    longer decides whose gate it is.
 /// 4. **The tier is auto** → not this seam's business; clause 4 means it never reached
 ///    a gate. Answered `Unavailable` rather than admitted, because admitting something
 ///    is not this adjudicator's job either.
@@ -2168,9 +2170,10 @@ impl Adjudicator for Budgeted {
 ///    gathered would be a claim about a conversation nobody read.
 /// 6. **The action is outside the oracle's earned scope** → escalate, oracle not
 ///    consulted. It cannot be wrong about a question it was not asked.
-/// 7. Otherwise the oracle answers the one question, inside its budget. `Authorised`
-///    admits **once** — never a session grant, because *"yeah restart"* authorises a
-///    restart, not a standing permission to restart.
+/// 7. Otherwise the oracle answers the one question, inside its budget: `ALLOW` admits
+///    **once** (never a session grant — *"yeah restart"* authorises a restart, not a
+///    standing permission to restart), `DENY` refuses and no card is raised, `UNSURE`
+///    escalates to the person — which is the only path left to them.
 pub struct ModelAdjudicator {
     oracle: Box<dyn AuthorisationOracle>,
     baseline: Box<dyn Fn(&AdjudicationRequest) -> Baseline + Send + Sync>,
@@ -2343,27 +2346,19 @@ impl Adjudicator for ModelAdjudicator {
         // The old arm here answered `Unavailable` at `0 ms` with "No oracle was
         // consulted", which put the one case a second opinion exists for in front of
         // the person with no second opinion on it.
-        if let Tier::AlwaysAsk { rule, why } = &req.tier {
-            return self.note(
-                AdjudicationDecision {
-                    request_id: req.id.clone(),
-                    outcome: DecisionOutcome::Escalate {
-                        to: "human".into(),
-                        why: format!("`{rule}` is on the always-ask list"),
-                    },
-                    by: "boundary:always_ask".into(),
-                    basis: format!(
-                        "`{rule}`: {why}. The operator decides this one every time; the \
-                     oracle was not consulted, and no answer it could have given would \
-                     have changed that"
-                    ),
-                    latency_ms: started.elapsed().as_millis() as u64,
-                },
-                false,
-                "ask",
-                Vec::new(),
-            );
-        }
+        // **AN ALWAYS-ASK RULE NO LONGER SHORT-CIRCUITS TO THE PERSON.** It used to, with
+        // *"the operator decides this one every time; the oracle was not consulted"* as the
+        // basis, and the operator overruled that on 2026-10-05: *"there is certain permission
+        // set that is allowed and doesnt need oracle. this is to be kept. the rest is
+        // oracle"* — and, naming the cost of the old shape: *"like the alterantive is
+        // allow-all and i dont want it. i want oracle."* So the rule's own sentence travels
+        // with the request and its verdict decides like any other's. What the rule still does
+        // is exactly what its name says: it keeps the action out of the mode's allowed set,
+        // so a gate exists to be decided. It no longer decides WHOSE gate it is.
+        let always_ask_rule = match &req.tier {
+            Tier::AlwaysAsk { rule, why } => Some((*rule, why.clone())),
+            _ => None,
+        };
         if let Tier::Blocked { rule, evidence } = &req.tier {
             return self.note(
                 AdjudicationDecision {
@@ -2468,10 +2463,19 @@ impl Adjudicator for ModelAdjudicator {
         // one is starting.
         (self.notice)(
             req,
-            &format!(
-                "asking {} whether this follows from what you asked for",
-                self.oracle.describe()
-            ),
+            &match &always_ask_rule {
+                // **The rule still says itself**, so a reader who knows the list can see it
+                // was invoked — what changed is only whose decision it is.
+                Some((rule, _)) => format!(
+                    "`{rule}` is on the always-ask list, so {} is deciding it: whether this \
+                     follows from what you asked for",
+                    self.oracle.describe()
+                ),
+                None => format!(
+                    "asking {} whether this follows from what you asked for",
+                    self.oracle.describe()
+                ),
+            },
         );
         let answer = self.oracle.authorised(&mut brief);
         // **The reply, taken the moment it exists** (R11), and before the answer is read
@@ -2510,24 +2514,26 @@ impl Adjudicator for ModelAdjudicator {
                 "admit",
                 quoted(&brief.trail, &w.cites),
             ),
-            // Neither of these denies. The oracle found no authorisation, which leaves
-            // the baseline where it was — asking — and with one adjudicator attached
-            // there is nobody else here to ask, so it escalates. The gate turns that
-            // into `NotRun`, which is the honest outcome: nobody decided this was
-            // forbidden, and nobody decided it was wanted.
+            // **A REFUSAL FROM THE ORACLE IS THE DECISION** — the operator's ruling of
+            // 2026-10-05: *"i want to follow oracle verdict … the rest is oracle."* This arm
+            // used to escalate with *"neither of these denies … nobody decided this was
+            // forbidden, and nobody decided it was wanted"*, which is the honest shape for a
+            // gate with ONE adjudicator and no human behind it — and here there is a human,
+            // and the whole complaint was that they were being asked things the guard had
+            // already answered. So a `DENY` now refuses: the call does not run, the reason
+            // travels to the model, and no card is raised.
             OracleAnswer::NotAuthorised { why } => self.note(
                 AdjudicationDecision {
                     request_id: req.id.clone(),
-                    outcome: DecisionOutcome::Escalate {
-                        to: "human".into(),
-                        why: format!("nothing in the trail authorises this: {why}"),
+                    outcome: DecisionOutcome::Selected {
+                        option_id: "deny_and_tell".into(),
                     },
                     by: me,
-                    basis: why,
+                    basis: format!("the guard refused this: {why}"),
                     latency_ms: started.elapsed().as_millis() as u64,
                 },
                 true,
-                "ask",
+                "refuse",
                 Vec::new(),
             ),
             // **Unsure is its own verdict and its own row.** The operator named this
@@ -2897,15 +2903,29 @@ mod tests {
         );
         assert!(d.basis.contains("citing trail entry 0"), "{}", d.basis);
 
-        // The identical command with nothing said is not a decision anybody made.
+        // The identical command with nothing asked for is the guard's to refuse — and it
+        // refuses, which is the operator's ruling of 2026-10-05: *"i want to follow oracle
+        // verdict … the rest is oracle."* This arm used to escalate to the person (*"nobody
+        // decided this was forbidden, and nobody decided it was wanted"*), and the cost of
+        // that shape is the one they named: a gate that hands back what the guard already
+        // answered is what teaches an operator to press allow-all.
         let unprompted = request(
             "/usr/bin/systemctl restart harnessd",
             trail_saying("what does the tokenizer do", 1),
         );
-        assert!(matches!(
-            adj.decide(&unprompted).outcome,
-            DecisionOutcome::Escalate { .. }
-        ));
+        let refused = adj.decide(&unprompted);
+        assert_eq!(
+            refused.outcome,
+            DecisionOutcome::Selected {
+                option_id: "deny_and_tell".into()
+            },
+            "an oracle's refusal is the decision: {refused:?}"
+        );
+        assert!(
+            refused.basis.contains("nothing about a restart"),
+            "the oracle's own sentence is the reason the model reads: {}",
+            refused.basis
+        );
     }
 
     #[test]
@@ -2962,50 +2982,84 @@ mod tests {
         }
     }
 
+    /// **An unresolved action is the ORACLE'S, and its verdict is followed** — the
+    /// operator's ruling of 2026-10-05, in two halves on one day:
+    ///
+    /// * *"we have to ask oracle for this stuff"* — the deterministic reader's failure is
+    ///   exactly the case a second opinion exists for, so the oracle IS consulted (this test
+    ///   used to assert it was not consulted at all, at `0 ms`, with *"no oracle was
+    ///   consulted"* on the card);
+    /// * *"i want to follow oracle verdict … the rest is oracle"* — and its ALLOW admits. The
+    ///   witness step that used to stand between the two is gone: it now mints for anything
+    ///   but a blocked boundary, so an oracle that reads the brief and grounds its answer can
+    ///   authorise an action layer A could not read. The alternative the operator named is the
+    ///   one that must not happen — *"like the alterantive is allow-all and i dont want it"*:
+    ///   a gate that hands back what the guard already answered is what teaches an operator to
+    ///   press allow-all.
+    ///
+    /// Both directions of the verdict are asserted, because "follow the verdict" cannot be
+    /// tested with one of them.
     #[test]
-    fn an_unresolved_action_reaches_the_oracle_and_its_allow_does_not_admit() {
-        // The one `if` two surveyed harnesses got opposite ways, ruled by the operator
-        // 2026-10-05: *"we have to ask oracle for this stuff."* The deterministic
-        // reader's failure is the exact case the second opinion exists for, so the
-        // oracle IS consulted — and the witness rule is what keeps an ALLOW from
-        // admitting an action layer A could not read: no witness exists, so the
-        // ALLOW cannot become a widening and the action escalates to the person
-        // with the verdict on the card.
+    fn an_unresolved_action_is_the_oracles_and_its_verdict_is_followed() {
         let called = Arc::new(AtomicUsize::new(0));
         let c = called.clone();
         let adj = adjudicator(move |b: &mut ModelBrief| {
             c.fetch_add(1, Ordering::Relaxed);
-            // The witness is gone whatever the oracle does with it — and an ALLOW
-            // attempt on nothing is NotAuthorised by the HttpOracle's own rule.
-            assert!(
-                b.adjudicable().is_none(),
-                "an unresolved action mints no witness"
-            );
-            OracleAnswer::NotAuthorised {
-                why: "read the brief, refused it".into(),
-            }
+            // **The witness EXISTS for an unread action now**, which is the ruling: the
+            // oracle may not merely be shown the request, it may answer it.
+            let Some(w) = b.adjudicable() else {
+                return OracleAnswer::NotAuthorised {
+                    why: "no witness".into(),
+                };
+            };
+            OracleAnswer::Authorised(Widening::new(
+                w,
+                b.request_id.clone(),
+                vec![0],
+                "the operator said go ahead",
+            ))
         });
         let req = request("/bin/cat $FILE", trail_saying("go ahead", 0));
-        assert!(!req.resolved);
-        assert!(req.adjudicable().is_none());
+        assert!(!req.resolved, "the premise: layer A could not read it");
+        assert!(
+            req.adjudicable().is_some(),
+            "an unread action is the oracle's — the ruling of 2026-10-05"
+        );
         let d = adj.decide(&req);
         assert_eq!(called.load(Ordering::Relaxed), 1, "the oracle was asked");
-        assert!(
-            matches!(d.outcome, DecisionOutcome::Escalate { .. }),
-            "a refusal of an unread action escalates rather than deciding it: {:?}",
-            d.outcome
+        assert_eq!(
+            d.outcome,
+            DecisionOutcome::Selected {
+                option_id: "allow_once".into()
+            },
+            "an ALLOW on an unresolved action admits it: {d:?}"
         );
-        assert!(
-            d.basis.contains("read the brief, refused it"),
-            "{}",
-            d.basis
-        );
+        assert!(d.basis.contains("go ahead"), "{}", d.basis);
         let advice = adj
             .last_advice()
             .expect("the advice records a real consult");
         assert!(
             advice.consulted,
             "the card's verdict line is the oracle's own"
+        );
+
+        // **And a REFUSAL refuses**, with the oracle's sentence as the reason — the other
+        // direction of the same ruling.
+        let adj2 = adjudicator(|_b: &mut ModelBrief| OracleAnswer::NotAuthorised {
+            why: "nothing in your words asks for this file".into(),
+        });
+        let refused = adj2.decide(&request("/bin/cat $FILE", trail_saying("go ahead", 0)));
+        assert_eq!(
+            refused.outcome,
+            DecisionOutcome::Selected {
+                option_id: "deny_and_tell".into()
+            },
+            "the guard's refusal is the decision: {refused:?}"
+        );
+        assert!(
+            refused.basis.contains("asks for this file"),
+            "{}",
+            refused.basis
         );
     }
 
@@ -3390,16 +3444,68 @@ mod tests {
         assert!(row.operator.is_none());
     }
 
+    /// **An always-ask rule is the oracle's now** — the operator's ruling of 2026-10-05:
+    /// *"there is certain permission set that is allowed and doesnt need oracle. this is to be
+    /// kept. the rest is oracle."* The set is the MODE's (nothing outside it is admitted
+    /// without a gate); the gate itself is answered by the guard.
+    ///
+    /// This test was `the_same_verb_outside_the_project_goes_to_the_operator_however_sure_the
+    /// _model_is`, and it asserted the opposite in the words the ruling overrules: the oracle
+    /// was not consulted at all, and the refusal said *escalated*. Both halves are inverted
+    /// here, in both directions of the verdict.
     #[test]
-    fn the_same_verb_outside_the_project_goes_to_the_operator_however_sure_the_model_is() {
-        // The always-ask list, end to end. The oracle here authorises everything it can,
-        // and it is not consulted at all.
+    fn an_always_ask_rule_is_answered_by_the_oracle_and_its_verdict_is_followed() {
+        // The same list, end to end, with an oracle that refuses what it cannot ground.
         let consulted = Arc::new(AtomicUsize::new(0));
         let c = consulted.clone();
         let sink = Arc::new(RecordingDenialSink::default());
         let mut g = wired_gate(
             move |b: &mut ModelBrief| {
                 c.fetch_add(1, Ordering::Relaxed);
+                OracleAnswer::NotAuthorised {
+                    why: "no witness".into(),
+                }
+            },
+            AuthorisationTrail::from_messages(
+                vec![Utterance::operator("delete everything in my home dir", 0)],
+                3,
+            ),
+            sink.clone(),
+        );
+        let args = serde_json::json!({"command": "/bin/rm -rf /home/dead/elsewhere"});
+        match g.admit(&exec_call(&args)) {
+            crate::runtime::GateDecision::Refuse {
+                outcome: ToolOutcome::Denied { .. },
+                tell,
+            } => {
+                // The oracle's own sentence reaches the model, and the remedy says there is
+                // NO pending decision — a model refusal raises no card, so the prose that told
+                // the model to "answer the pending decision" would send it looking for a
+                // question that does not exist.
+                assert!(tell.contains("REFUSED"), "{tell}");
+                assert!(tell.contains("no witness"), "{tell}");
+                assert!(tell.contains("the guard refused this one"), "{tell}");
+                assert!(
+                    !tell.contains("answer the pending decision"),
+                    "a model's refusal has no card behind it: {tell}"
+                );
+            }
+            other => panic!("an always-ask is the oracle's to answer: {other:?}"),
+        }
+        assert_eq!(
+            consulted.load(Ordering::Relaxed),
+            1,
+            "the oracle IS consulted about an always-ask — the ruling of 2026-10-05"
+        );
+
+        // **And an ALLOW admits it**, which is the ruling's point: the witness is minted for an
+        // always-ask tier, so an authorisation grounded in the operator's words is acted on
+        // rather than converted into a card.
+        let consulted2 = Arc::new(AtomicUsize::new(0));
+        let c2 = consulted2.clone();
+        let mut g2 = wired_gate(
+            move |b: &mut ModelBrief| {
+                c2.fetch_add(1, Ordering::Relaxed);
                 match b.adjudicable() {
                     Some(w) => OracleAnswer::Authorised(Widening::new(
                         w,
@@ -3416,27 +3522,14 @@ mod tests {
                 vec![Utterance::operator("delete everything in my home dir", 0)],
                 3,
             ),
-            sink.clone(),
+            Arc::new(RecordingDenialSink::default()),
         );
-        let args = serde_json::json!({"command": "/bin/rm -rf /home/dead/elsewhere"});
-        match g.admit(&exec_call(&args)) {
-            crate::runtime::GateDecision::Refuse {
-                outcome: ToolOutcome::NotRun { why },
-                tell,
-            } => {
-                assert!(why.contains("escalated"), "{why}");
-                assert!(tell.contains("REFUSED"), "{tell}");
-            }
-            other => panic!("an always-ask must reach a human: {other:?}"),
-        }
         assert_eq!(
-            consulted.load(Ordering::Relaxed),
-            0,
-            "the oracle is not consulted about an always-ask"
+            g2.admit(&exec_call(&args)),
+            crate::runtime::GateDecision::Admit,
+            "an always-ask an oracle grounds in the operator's words IS admitted"
         );
-        // And the operator was told, at the moment it happened.
-        assert_eq!(sink.len(), 1);
-        assert_eq!(sink.last().unwrap().tier, "always_ask");
+        assert_eq!(consulted2.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -3475,7 +3568,7 @@ mod tests {
         assert!(g.breaker.open_directions().is_empty());
         let row = &g.corpus()[2];
         assert!(row.is_disagreement());
-        assert!(row.model_verdict.as_deref().unwrap().contains("escalate"));
+        assert!(row.model_verdict.as_deref().unwrap().contains("refuse"));
         assert_eq!(row.operator.as_ref().unwrap().as_str(), "granted");
         // An override against a row that does not exist is refused rather than dropped.
         assert!(!g.record_override(
