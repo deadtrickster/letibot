@@ -739,10 +739,19 @@ fn render_body(
     if !is_textual(content_type) {
         return (String::new(), Vec::new());
     }
-    let html = String::from_utf8_lossy(raw).into_owned();
+    let body = String::from_utf8_lossy(raw).into_owned();
+    // **A body that is not HTML is already plain — pass it through.** The
+    // reader-mode pipeline is for documents; a `text/plain` body (a raw file, a
+    // `.md` from raw.githubusercontent, a curl of an API endpoint) that goes
+    // through it comes out ESCAPED — `\#`, `\*\*` — which is a corruption of
+    // exactly the bodies the github rewrite exists to serve. Found by running
+    // the crate's own example against a real repo the day the rewrite landed.
+    if !content_type.to_lowercase().contains("html") {
+        return (body, Vec::new());
+    }
     match format {
-        PageFormat::Html => (html, Vec::new()),
-        PageFormat::Markdown | PageFormat::Text => extract_and_convert(&html, final_url, format),
+        PageFormat::Html => (body, Vec::new()),
+        PageFormat::Markdown | PageFormat::Text => extract_and_convert(&body, final_url, format),
     }
 }
 
@@ -1376,6 +1385,36 @@ mod tests {
         assert!(text.contains("Heading"), "{text}");
         assert!(text.contains("one two three"), "{text}");
         assert!(!text.contains('<'), "{text}");
+    }
+
+    /// **A body that is not HTML passes through UNTOUCHED.** Found live: the
+    /// github rewrite serves a README as `text/plain`, the pipeline escaped its
+    /// markdown (`\#`, `\*\*`), and the file the rewrite existed to deliver
+    /// arrived corrupted. An HTML body still converts, in the same test, so the
+    /// fix cannot rot into "nothing converts".
+    #[test]
+    fn a_plain_body_passes_through_and_an_html_body_still_converts() {
+        let readme = "# gitstatus\n\n**10x faster** than `git status`.\n";
+        let (body, notes) = render_body(
+            readme.as_bytes(),
+            "text/plain; charset=utf-8",
+            "https://raw.githubusercontent.com/o/r/HEAD/README.md",
+            PageFormat::Markdown,
+        );
+        assert_eq!(body, readme, "a plain body is not a document to convert");
+        assert!(
+            notes.is_empty(),
+            "and pass-through is not a decision to name: {notes:?}"
+        );
+
+        let html = "<html><body><h1>Hi</h1></body></html>";
+        let (body, _) = render_body(
+            html.as_bytes(),
+            "text/html; charset=utf-8",
+            "https://e.com/",
+            PageFormat::Markdown,
+        );
+        assert!(body.contains("# Hi"), "an HTML body still converts: {body}");
     }
 
     #[test]
