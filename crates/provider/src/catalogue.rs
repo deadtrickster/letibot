@@ -104,6 +104,38 @@ pub fn default_path() -> Option<PathBuf> {
     Some(Path::new(&home).join(".cache/opencode/models.json"))
 }
 
+/// **A model name's version, and how much is written after it** — the two rungs that ask which
+/// model is the newer one, and which name is a plain model rather than a variant of it.
+///
+/// `glm-5.3` → `([5, 3], 0)`; `glm-5.3-flash` → `([5, 3], 1)`; `glm-5` → `([5], 0)`;
+/// `grok-4.20-0309-reasoning` → `([4, 20], 2)`; `deepseek-flash` → `([], 0)`.
+///
+/// **The version is read from the FIRST segment that carries a digit** — `v4`, `4.20`, `5.3` — and
+/// every segment after it counts as written-after, which is what makes a dated snapshot
+/// (`-0309-reasoning`), a variant (`-flash`) and a tuned sibling (`-highspeed`) all lose to the
+/// plain name, while `glm-5.3` still beats `glm-5.2` on the version rung. A name with no digit in
+/// it at all is a plain name with no version to compare.
+fn model_version(name: &str) -> (Vec<u64>, usize) {
+    let mut version: Vec<u64> = Vec::new();
+    let mut written_after = 0usize;
+    let mut seen = false;
+    for seg in name.split('-') {
+        if !seen {
+            if seg.chars().any(|c| c.is_ascii_digit()) {
+                version = seg
+                    .split(|c: char| !c.is_ascii_digit())
+                    .filter(|s| !s.is_empty())
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+                seen = true;
+            }
+            continue;
+        }
+        written_after += 1;
+    }
+    (version, written_after)
+}
+
 impl Catalogue {
     /// Read the catalogue, or an empty one. **Never an error**: a missing
     /// catalogue is a fact about this box, not a reason for a session to refuse to
@@ -217,11 +249,23 @@ impl Catalogue {
     /// way, so the constant is the bug and not its value.
     ///
     /// The rule, in order: the largest context window, then the cheapest input
-    /// rate, then the SHORTEST name, then the name itself. That is *"each
-    /// provider's general coding model"* as
+    /// rate, then **the name that writes the least after its version** (a plain model before a
+    /// variant or a dated snapshot of it), then **the newest version**, then the SHORTEST name,
+    /// then the name itself. That is *"each provider's general coding model"* as
     /// the presets already describe it — the flagship reasoning model is pricier
     /// and stays a `--model` away, and an image or video model loses on context
     /// long before price is reached.
+    ///
+    /// **The two middle rungs are the operator's, 2026-10-04**, on the coding plan's pick:
+    /// *"I want default to be not shortest name lol but the latest model."* They were right about
+    /// their own case — five of that plan's models are a 1M window at zero, `glm-5.2` and
+    /// `glm-5.3` are both seven characters, and the length rung picked `glm-5.2` on
+    /// `"glm-5.2" < "glm-5.3"`. And the qualifier rung comes FIRST so that asking for the
+    /// newest is safe: `grok-4.3` sits beside `grok-4.20-0309-reasoning` at the same window and
+    /// price, and a bare version comparison would hand every grok session a dated snapshot whose
+    /// own name says *reasoning* — and the dated name is the one that gets retired. Measured
+    /// across this box's catalogue, the change moves ONE provider's pick (`glm-coding`:
+    /// `glm-5.2` → `glm-5.3`) and leaves the other five where they were.
     ///
     /// A model with no price is skipped: unpriced and free are different, and a
     /// default that silently picked an unpriced model would report every metered
@@ -242,6 +286,16 @@ impl Catalogue {
                         );
                         x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal)
                     })
+                    // **A PLAIN NAME BEATS A DECORATED ONE.** Fewest segments written after the
+                    // version: the model itself, or a provider's rolling alias for it, before a
+                    // variant (`-flash`, `-reasoning`, `-highspeed`) or a dated snapshot
+                    // (`-0309-…`). Without this rung *newest wins* would hand a grok session
+                    // `grok-4.20-0309-reasoning` instead of `grok-4.3`, and a deepseek one
+                    // `deepseek-v4-flash-vision-exp` instead of the name the account offers.
+                    .then_with(|| model_version(&a.0).1.cmp(&model_version(&b.0).1))
+                    // **And the newer model wins among the equally plain** — the rung the operator
+                    // asked for by name, and the one that moves `glm-5.2` aside for `glm-5.3`.
+                    .then_with(|| model_version(&b.0).0.cmp(&model_version(&a.0).0))
                     // **Shortest name wins a tie.** A provider publishes the same
                     // model under a rolling alias and under dated snapshots —
                     // `grok-4.3` beside `grok-4.20-0309-non-reasoning`, identical
@@ -289,6 +343,65 @@ mod tests {
         }
       }
     }"#;
+
+    /// **The newest model wins — and a PLAIN name still beats a decorated one.**
+    ///
+    /// The operator, 2026-10-04, on the coding plan's pick: *"I want default to be not shortest
+    /// name lol but the latest model."* Their case is the first pair below (`5.2` vs `5.3`, both a
+    /// 1M window at zero, both seven characters), and the two other pairs are the guards that keep
+    /// the rule safe — written together so neither can be "fixed" into the other:
+    ///
+    ///   * a **variant of the same version** (`m-5.3-flash`) loses to the plain name;
+    ///   * a **dated snapshot whose version sorts higher** (`g-4.20-0309-reasoning` against
+    ///     `g-4.3`) also loses — which is the real catalogue's grok shape, and the name that gets
+    ///     retired next.
+    #[test]
+    fn the_default_is_the_newest_model_and_not_a_dated_snapshot_of_it() {
+        const FIXTURE: &str = r#"{
+          "p": {"id": "p", "models": {
+            "m-4.7":       {"limit": {"context": 204800},  "cost": {"input": 0}},
+            "m-5.2":       {"limit": {"context": 1000000}, "cost": {"input": 0}},
+            "m-5.3":       {"limit": {"context": 1000000}, "cost": {"input": 0}},
+            "m-5.3-flash": {"limit": {"context": 1000000}, "cost": {"input": 0}}
+          }},
+          "g": {"id": "g", "models": {
+            "g-4.3":                {"limit": {"context": 1000000}, "cost": {"input": 1.25}},
+            "g-4.20-0309-reasoning": {"limit": {"context": 1000000}, "cost": {"input": 1.25}}
+          }}
+        }"#;
+        let cat = read_fixture(FIXTURE);
+        // Newer wins where both names are equally plain: `m-5.3`, not `m-5.2` (which the length
+        // rung picked on `"m-5.2" < "m-5.3"`) — and not `m-4.7`, which loses on the window first.
+        assert_eq!(cat.default_model("p").as_deref(), Some("m-5.3"));
+        // A dated snapshot does NOT win for sorting higher: `g-4.20` > `g-4.3` numerically, and the
+        // plain alias is what survives the next catalogue refresh.
+        assert_eq!(cat.default_model("g").as_deref(), Some("g-4.3"));
+        // And the rungs themselves, where they are easier to read than through a pick.
+        assert_eq!(model_version("glm-5.3"), (vec![5, 3], 0));
+        assert_eq!(model_version("glm-5.3-flash"), (vec![5, 3], 1));
+        assert_eq!(model_version("glm-5"), (vec![5], 0));
+        assert_eq!(model_version("grok-4.20-0309-reasoning"), (vec![4, 20], 2));
+        assert_eq!(model_version("deepseek-flash"), (vec![], 0));
+        assert_eq!(model_version("deepseek-v4-flash"), (vec![4], 1));
+    }
+
+    /// A catalogue read from a JSON string this test owns, at a path per CALL — these tests run as
+    /// parallel threads of one process, and a name keyed on the pid had them deleting each other's
+    /// fixture mid-read.
+    fn read_fixture(json: &str) -> Catalogue {
+        // A counter of this function's OWN: `sample`'s is inside `sample`, and two helpers sharing
+        // one would still be two files per call, which is what the name is for.
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "letibot-catalogue-fixture-{}-{}.json",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::write(&d, json).expect("writing");
+        let c = Catalogue::read(&d).expect("parsing");
+        let _ = std::fs::remove_file(&d);
+        c
+    }
 
     /// A file per CALL, not per process: these tests run as parallel threads of
     /// one process, and a name keyed on the pid had them deleting each other's

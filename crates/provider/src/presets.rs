@@ -143,14 +143,12 @@ pub const GLM_CODING: Preset = Preset {
     url: "https://api.z.ai/api/coding/paas/v4/chat/completions",
     key_env: "ZHIPUAI_API_KEY",
     alt_envs: &["ZHIPU_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"],
-    // **`glm-5.2`, which is what the catalogue's own rule picks** — largest window, then
-    // cheapest, then shortest name, then the name: five of this plan's models are a 1M window at
-    // zero, `-highspeed` and `-flash` lose on length, and `"glm-5.2" < "glm-5.3"` decides. A
-    // fallback naming `glm-5.3` would put a box WITHOUT a catalogue on a different model from
-    // this one, which is the divergence this field's own test exists for — and the test only
-    // catches a longer spelling of the same model, so it did not catch this. MEASURED 2026-10-04
-    // off the picker: `4  glm-coding/glm-5.2`.
-    fallback_model: "glm-5.2",
+    // **`glm-5.3`, which is what the catalogue's rule picks — and it took a rule change to get
+    // here.** Five of this plan's models are a 1M window at a zero price, so the window and the
+    // price leave all five; the qualifier rung then drops `-highspeed` and `-flash`, and the
+    // version rung picks `glm-5.3` over `glm-5.2`. Before that rung existed the length tie-break
+    // picked `glm-5.2` on `"glm-5.2" < "glm-5.3"` — the answer the operator rejected by name.
+    fallback_model: "glm-5.3",
     thinking_field: Some("thinking"),
     catalogue_id: "zai-coding-plan",
 };

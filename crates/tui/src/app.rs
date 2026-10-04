@@ -2572,7 +2572,8 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "models",
-        "which model answers: /models is a menu, /models PROVIDER/MODEL switches",
+        "which model answers: /models is a menu, /models PROVIDER/MODEL switches \
+         (/models glm-coding --key PASTE stores the key)",
     ),
     (
         "resync",
