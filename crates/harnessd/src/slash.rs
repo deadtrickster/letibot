@@ -905,7 +905,7 @@ mod tests {
         assert!(letibot_provider::keys::default_choice(Some(&f)).is_none());
         let (none, _) = models_choice("local", None, None, Some(&f)).unwrap();
         assert!(none.is_none());
-        assert!(models_choice("openai", None, None, Some(&f)).unwrap_err()[0].contains("three"));
+        assert!(models_choice("openai", None, None, Some(&f)).unwrap_err()[0].contains("five"));
     }
 
     #[test]

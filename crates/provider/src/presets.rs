@@ -99,6 +99,70 @@ pub const GLM: Preset = Preset {
     catalogue_id: "zhipuai",
 };
 
+/// **The subscriptions, not the meter — and opencode's own box is where the difference was read.**
+///
+/// MEASURED 2026-10-04. The operator put a session on `glm/glm-5.3` and the endpoint answered
+///
+/// ```text
+/// http 429: 余额不足或无可用资源包,请充值。
+/// ```
+///
+/// — *insufficient balance or no available resource package, please top up* — for an account that
+/// is **not** out of money: their key is for a **coding plan**, and [`GLM`] sends every GLM turn to
+/// the raw pay-as-you-go API at `open.bigmodel.cn/api/paas/v4`, which sees a key with no balance
+/// behind it.
+///
+/// **The reference distinguishes them, and so does the catalogue.** opencode's `auth.json` on this
+/// box files the key under `zai-coding-plan` (`type: api`), its log says
+/// `providerID=zai-coding-plan modelID=glm-5.3`, and models.dev carries four entries rather than
+/// one product:
+///
+/// ```text
+/// zai                  https://api.z.ai/api/paas/v4              18 models
+/// zai-coding-plan      https://api.z.ai/api/coding/paas/v4        7 models
+/// zhipuai              https://open.bigmodel.cn/api/paas/v4      17 models
+/// zhipuai-coding-plan  https://open.bigmodel.cn/api/coding/paas/v4 4 models
+/// ```
+///
+/// A plan is a different product on the same host — `/api/coding/paas/v4` rather than
+/// `/api/paas/v4` — with **its own model list** (the plan serves `glm-5.3`, `glm-5.3-flash`,
+/// `glm-5.3-highspeed` and a few more, and nothing else), its own billing (the plan's models are
+/// priced at **zero**, because the subscription has already paid for them — a metered reading would
+/// invent a bill nobody is charged) and the same key variable, because what a key can reach is a
+/// fact about the account and not about a second secret.
+///
+/// **Two presets and not a base-URL override**, because all three of those facts live on the
+/// catalogue row, and a free-form URL would leave the window, the picker and the derived default
+/// pointing at the raw product. `glm-coding` is Z.AI's (global — what this box's key is for) and
+/// `glm-coding-cn` is Zhipu's (mainland): same product, different host, different model list.
+///
+/// **The money meter stays quiet on these**, which is honest rather than broken: nothing here is
+/// metered per token.
+pub const GLM_CODING: Preset = Preset {
+    name: "glm-coding",
+    url: "https://api.z.ai/api/coding/paas/v4/chat/completions",
+    key_env: "ZHIPUAI_API_KEY",
+    alt_envs: &["ZHIPU_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"],
+    // `glm-5.3` and not the `-flash`: the plan's biggest models all cost zero, so the
+    // catalogue's rule picks the SHORTEST of them, and a fallback naming another would make a box
+    // with a catalogue and a box without one choose differently — the failure this field's own
+    // test exists for. It must also be a name the plan's OWN row carries, not the family's.
+    fallback_model: "glm-5.3",
+    thinking_field: Some("thinking"),
+    catalogue_id: "zai-coding-plan",
+};
+
+/// Zhipu's coding plan — the mainland host of the same product as [`GLM_CODING`].
+pub const GLM_CODING_CN: Preset = Preset {
+    name: "glm-coding-cn",
+    url: "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+    key_env: "ZHIPUAI_API_KEY",
+    alt_envs: &["ZHIPU_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"],
+    fallback_model: "glm-5.3",
+    thinking_field: Some("thinking"),
+    catalogue_id: "zhipuai-coding-plan",
+};
+
 pub const GROK: Preset = Preset {
     name: "grok",
     url: "https://api.x.ai/v1/chat/completions",
@@ -109,11 +173,11 @@ pub const GROK: Preset = Preset {
     catalogue_id: "xai",
 };
 
-pub const ALL: &[&Preset] = &[&DEEPSEEK, &GLM, &GROK];
+pub const ALL: &[&Preset] = &[&DEEPSEEK, &GLM, &GLM_CODING, &GLM_CODING_CN, &GROK];
 
 impl Preset {
-    /// `deepseek` | `glm` (`zhipu`, `bigmodel`) | `grok` (`xai`). Anything else
-    /// names the three rather than guessing.
+    /// `deepseek` | `glm` (`zhipu`, `bigmodel`) | `glm-coding` (`zai-coding`) |
+    /// `glm-coding-cn` | `grok` (`xai`). Anything else names them rather than guessing.
     /// **The context window to plan compaction against**, from the catalogue.
     ///
     /// `None` when the catalogue has no figure for this model — which happens for
@@ -141,10 +205,15 @@ impl Preset {
         match s.trim().to_ascii_lowercase().as_str() {
             "deepseek" => Ok(&DEEPSEEK),
             "glm" | "zhipu" | "bigmodel" | "z.ai" => Ok(&GLM),
+            // **The subscription is named separately and must be**, because the failure of
+            // reaching for it with the other name is a 429 that reads like an empty account:
+            // see [`GLM_CODING`].
+            "glm-coding" | "zai-coding" | "coding-plan" => Ok(&GLM_CODING),
+            "glm-coding-cn" | "zhipu-coding" | "bigmodel-coding" => Ok(&GLM_CODING_CN),
             "grok" | "xai" | "x.ai" => Ok(&GROK),
             other => Err(format!(
-                "`{other}` is not a provider this build knows; there are three: deepseek, \
-                 glm, grok"
+                "`{other}` is not a provider this build knows; there are five: deepseek, \
+                 glm, glm-coding, glm-coding-cn, grok"
             )),
         }
     }
@@ -185,7 +254,7 @@ mod tests {
         // 400*1 + 600*0.1 + 100*2 = 660 per million → 0.00066 USD = 660 micro-USD
         assert_eq!(p.micros(1000, 600, 100), 660);
         assert_eq!(Preset::parse("Zhipu").unwrap().name, "glm");
-        assert!(Preset::parse("openai").unwrap_err().contains("three"));
+        assert!(Preset::parse("openai").unwrap_err().contains("five"));
     }
 
     /// **Every `fallback_model` must be a name the catalogue also carries, and must be
@@ -228,7 +297,13 @@ mod tests {
             );
             return;
         }
-        for (preset, catalogue_id) in [(&DEEPSEEK, "deepseek"), (&GLM, "zhipuai"), (&GROK, "xai")] {
+        for (preset, catalogue_id) in [
+            (&DEEPSEEK, "deepseek"),
+            (&GLM, "zhipuai"),
+            (&GLM_CODING, "zai-coding-plan"),
+            (&GLM_CODING_CN, "zhipuai-coding-plan"),
+            (&GROK, "xai"),
+        ] {
             let Some(facts) = cat.model(catalogue_id, preset.fallback_model) else {
                 panic!(
                     "{}: fallback_model `{}` is not a model {} carries — this is the \

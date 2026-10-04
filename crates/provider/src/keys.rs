@@ -237,6 +237,11 @@ fn opencode_key(provider: &str) -> Option<String> {
         "deepseek" => &["deepseek"],
         "grok" => &["xai", "grok"],
         "glm" => &["zhipuai", "zai", "glm", "bigmodel"],
+        // **The coding plans are provider ids of their own in `auth.json`**, which is where
+        // this file's keys are read from: this box's key is filed as `zai-coding-plan`, and a
+        // lookup that only knew the family name would miss the key that is actually there.
+        "glm-coding" => &["zai-coding-plan", "zai", "zhipuai-coding-plan", "zhipuai"],
+        "glm-coding-cn" => &["zhipuai-coding-plan", "zhipuai", "zai-coding-plan", "zai"],
         _ => &[],
     };
     for id in ids {

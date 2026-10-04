@@ -1207,7 +1207,7 @@ pub fn parse_seat(args: &[String]) -> Result<(Seat, Vec<String>), String> {
                 i += 2;
             }
             "--provider" => {
-                let v = need("--provider NAME   (deepseek, glm, grok)")?;
+                let v = need("--provider NAME   (deepseek, glm, glm-coding, glm-coding-cn, grok)")?;
                 seat.extra.push("--provider".into());
                 seat.extra.push(v.clone());
                 seat.provider = Some(v);

@@ -153,7 +153,8 @@ fn usage() -> String {
      \x20                           file, else http://127.0.0.1:8787\n\
      \x20 --flowy-token-file PATH   the token, else the seat's file\n\
      \x20 --provider NAME           send the turns to a cloud provider instead of the\n\
-     \x20                           local server: deepseek | glm | grok. --model names\n\
+     \x20                           local server: deepseek | glm | glm-coding |\n\
+     \x20                           glm-coding-cn | grok. --model names\n\
      \x20                           the provider's model (default: the preset's).\n\
      \x20                           The key: $DEEPSEEK_API_KEY / $ZHIPUAI_API_KEY /\n\
      \x20                           $XAI_API_KEY, --api-key, or [NAME] key= in\n\
@@ -585,7 +586,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     if let Some(p) = cfg.provider.as_mut() {
         if p.name.is_empty() {
             return Err(
-                "--api-key / --thinking need --provider NAME (deepseek | glm | grok)".into(),
+                "--api-key / --thinking need --provider NAME (deepseek | glm | glm-coding | \
+                 glm-coding-cn | grok)"
+                    .into(),
             );
         }
         p.model = model_given.clone();
