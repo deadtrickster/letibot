@@ -6580,6 +6580,7 @@ impl App {
                                 };
                         }
                         self.say("toggled");
+                        self.echo_operator_todos(mine.clone());
                         return Some(Action::SetOperatorTodos(mine));
                     }
                     TodoStop::Repo(i) => {
@@ -8646,6 +8647,30 @@ impl App {
     /// `set_operator_states` draws: a finished row is a record of work, and only `rm` takes one off
     /// the board. The model may move a row's STATUS (by quoting its words) and may not remove it,
     /// which is the operator's ruling recorded on `TodoBoard`.
+    /// **THE OPERATOR'S OWN ROWS, DRAWN FROM THE MOMENT THEY ARE SENT** — their half of what
+    /// `pending_prompts` does for their words.
+    ///
+    /// The operator: *"when i send todos they appear in the todo pane some time later — it feels
+    /// like their appearance depend on the turn state. but to me - im not sure if i lost them or
+    /// not."* They did not lose them: the write publishes at once (`set_operator_todos` has a
+    /// retry for exactly that), but the COMMAND reaches the worker behind whatever is running
+    /// and is injected at the next step boundary (`harness.rs`: *"the step boundary is the only
+    /// place any of the three can be injected"*), and until `TodosUpdated` arrives the pane drew
+    /// only what the daemon had published — nothing, for the whole of a running turn.
+    ///
+    /// So the head applies the list it is about to send, the same trust `pending_prompts` places:
+    /// show what I sent until the daemon answers. `mine` is the operator's whole half (the
+    /// command replaces it), so the optimistic state is the model's rows as they stand with this
+    /// half in their place — and `TodosUpdated` replaces the union wholesale when it lands, in
+    /// the daemon's own order, which is why nothing here needs to guess at that order for longer
+    /// than the boundary.
+    fn echo_operator_todos(&mut self, mine: Vec<letibot_sessionlog::event::TodoEntry>) {
+        self.todos
+            .retain(|t| t.by != letibot_sessionlog::event::TodoBy::Operator);
+        self.todos.extend(mine);
+        self.redraw = true;
+    }
+
     fn todo_command(&mut self, rest: &str) -> Option<Action> {
         let rest = rest.trim();
         if self.session_id.is_empty() {
@@ -8697,6 +8722,7 @@ impl App {
                 return None;
             }
         }
+        self.echo_operator_todos(mine.clone());
         Some(Action::SetOperatorTodos(mine))
     }
 
@@ -25582,17 +25608,21 @@ mod tests {
             "Tab came back to the title, with what was typed into it"
         );
 
-        // **Enter adds both, tagged as the operator's.**
+        // **Enter adds both, tagged as the operator's.** The list carries TWO rows now — the
+        // one added at the top of this test and this one — because the head echoes its own send
+        // (`echo_operator_todos`): the pane shows a row from the moment it is sent, so a second
+        // add sees the first. Before the echo the daemon's answer never arrived in a test and
+        // the count stayed behind.
         let act = a.key(Key::Enter);
         match act {
             Some(Action::SetOperatorTodos(items)) => {
-                assert_eq!(items.len(), 1);
-                assert_eq!(items[0].by, TodoBy::Operator);
+                assert_eq!(items.len(), 2, "the echoed first row plus this one");
+                assert_eq!(items[1].by, TodoBy::Operator);
                 assert!(
-                    items[0].content.contains("and the cache too")
-                        && items[0].content.contains("the note the model needs"),
+                    items[1].content.contains("and the cache too")
+                        && items[1].content.contains("the note the model needs"),
                     "the detail was lost: {:?}",
-                    items[0].content
+                    items[1].content
                 );
             }
             other => panic!("expected the add, got {other:?}"),
@@ -34594,6 +34624,79 @@ mod tests {
             other => panic!("local needs no key: {other:?}"),
         }
         assert!(d.key_ask.is_none());
+    }
+
+    /// **An operator's todo is on the pane from the MOMENT IT IS SENT** — not from the step
+    /// boundary.
+    ///
+    /// The operator: *"when i send todos they appear in the todo pane some time later — it feels
+    /// like their appearance depend on the turn state. but to me - im not sure if i lost them or
+    /// not."* The write was never lost (`set_operator_todos` publishes at once, with a retry);
+    /// what was late was the DRAWING — the pane showed only what the daemon had published, and
+    /// `TodosUpdated` is injected behind a running turn. The head now applies its own send, the
+    /// same trust `pending_prompts` places in the words it shows until their row lands.
+    ///
+    /// Two claims asserted: the row is on screen BEFORE any `TodosUpdated` arrives (add, and the
+    /// toggle under the cursor — both doors into one act), and the daemon's answer still WINS —
+    /// the echo is a drawing, not a second board, and a `TodosUpdated` replaces it wholesale.
+    #[test]
+    fn an_operators_todo_is_on_the_pane_the_moment_it_is_sent() {
+        let mut a = app();
+        a.session_id = "s1".into();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // A model row on the board, so the union has both halves and the echo can be seen to
+        // keep the model's half where it was. Sent under the session id the head actually
+        // holds — the `Todos` arm answers only for the session it is in.
+        let sid = a.session_id.clone();
+        a.apply(ServerFrame::Todos {
+            session_id: sid,
+            todos: vec![letibot_sessionlog::event::TodoEntry {
+                content: "a model row".into(),
+                status: letibot_sessionlog::event::TodoStatus::Pending,
+                by: letibot_sessionlog::event::TodoBy::Model,
+            }],
+        });
+        // Add one of ours. No `TodosUpdated` is applied afterwards — the row must be on the
+        // pane off the back of the send alone.
+        a.key(Key::CtrlT);
+        assert!(matches!(
+            a.command("todo check the parity row"),
+            Some(Action::SetOperatorTodos(_))
+        ));
+        let screen = a.screen(110, 30).join("\n");
+        assert!(
+            screen.contains("check the parity row"),
+            "the row is drawn before the daemon has published it:\n{screen}"
+        );
+        assert!(
+            screen.contains("a model row"),
+            "the echo replaces only the operator's half; the model's stays:\n{screen}"
+        );
+
+        // **The daemon's answer still wins.** The echo is a drawing, not a second board: when
+        // `TodosUpdated` lands — in the daemon's own order, possibly reordered — it replaces
+        // the union wholesale.
+        a.apply(ServerFrame::Todos {
+            session_id: a.session_id.clone(),
+            todos: vec![letibot_sessionlog::event::TodoEntry {
+                content: "the daemon's row".into(),
+                status: letibot_sessionlog::event::TodoStatus::Pending,
+                by: letibot_sessionlog::event::TodoBy::Operator,
+            }],
+        });
+        let after = a.screen(110, 30).join("\n");
+        assert!(
+            after.contains("the daemon's row"),
+            "the daemon's publish replaces the echo:\n{after}"
+        );
+        assert!(
+            !after.contains("check the parity row"),
+            "and the echo does not outlive the answer it was standing in for:\n{after}"
+        );
     }
 
     /// **`/models` is a menu now.** It printed a wall of provider rows in which
