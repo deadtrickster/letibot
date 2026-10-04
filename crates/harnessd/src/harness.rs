@@ -6486,6 +6486,101 @@ impl<'a> Harness<'a> {
             )
             .map_err(|e| HarnessError::Store(format!("context: {e}")))
     }
+
+    /// **THE SWITCH, ON THE SESSION ROW** — so a restart brings the session back on
+    /// what it was switched to rather than on the daemon's own default.
+    ///
+    /// Called from the `/models` arm the moment the in-memory switch has taken, the
+    /// same place `publish_settings` is: the two are one act's two halves, and a
+    /// switch that reached the screen but not the row was a choice that expired with
+    /// the process. `local` is stored BY NAME rather than left NULL, because the two
+    /// answer different questions at a resume — *no opinion* against *the local
+    /// server, deliberately* — and a daemon whose own default is a provider would
+    /// otherwise hand a switched-back session straight back to it.
+    pub fn persist_provider_choice(&self) -> std::result::Result<(), String> {
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        let stored = match &self.cfg.provider {
+            None => "local".to_string(),
+            Some(pc) => match &pc.model {
+                Some(m) => format!("{}/{}", pc.name, m),
+                None => pc.name.clone(),
+            },
+        };
+        store
+            .set_provider_choice(&self.cfg.session_id, Some(&stored))
+            .map_err(|e| format!("the choice was not written to the session row: {e}"))
+    }
+
+    /// **A RESUME RESTORES THE SESSION'S OWN MODEL**, from the row the switch wrote.
+    ///
+    /// The defect, in one sentence: a session switched to a cloud provider came back
+    /// on the CLI default after a restart, because `set_provider` was in-memory and
+    /// the session row had nowhere to record the choice. Called at both open paths —
+    /// the first session a `--continue` resumes and the lazy `harness()` a head's
+    /// switch reaches — before any turn runs.
+    ///
+    /// Three spellings of the row, three behaviours, and the distinction is the
+    /// point:
+    ///
+    /// * `None` — never switched, so the daemon's own default stands, which is what
+    ///   such a session always did;
+    /// * `local` — the deliberate switch back, restored as an ACT (`set_provider(None)`)
+    ///   rather than skipped, because a daemon whose default is a provider would
+    ///   otherwise hand the session straight back to it;
+    /// * `name` or `name/model` — resolved through the SAME door the switch went
+    ///   through (`models_choice`), so a restore cannot build a provider the verb
+    ///   would refuse. A preset this build no longer knows fails the restore and the
+    ///   daemon default stands — said rather than silent, and the row is left alone so
+    ///   a build that does know the preset still finds it.
+    ///
+    /// Returns the sentence a resume should say, or `None` when there was nothing to
+    /// restore.
+    pub fn restore_provider_choice(&mut self) -> Option<String> {
+        let stored = self
+            .store
+            .as_ref()
+            .and_then(|s| s.provider_choice(&self.cfg.session_id).ok())
+            .flatten()?;
+        if stored == "local" {
+            if self.cfg.provider.is_none() {
+                return None;
+            }
+            return match self.set_provider(None) {
+                Ok(_) => Some("restored to the local server".into()),
+                Err(e) => Some(format!("could not restore the local server: {e}")),
+            };
+        }
+        let (name, model) = match stored.split_once('/') {
+            Some((n, m)) => (n.to_string(), Some(m.to_string())),
+            None => (stored.clone(), None),
+        };
+        // Already there: a live session's second caller (a head switching IN, not a
+        // resume) must not re-switch it and repaint the settings.
+        let already = self
+            .cfg
+            .provider
+            .as_ref()
+            .is_some_and(|pc| pc.name == name && pc.model == model);
+        if already {
+            return None;
+        }
+        match crate::slash::models_choice(&name, model.as_deref(), None, None) {
+            Ok((Some(choice), _)) => match self.set_provider(Some(choice)) {
+                Ok(_) => Some(format!("restored to {stored}")),
+                Err(e) => Some(format!("could not restore {stored}: {e}")),
+            },
+            // `Ok((None, _))` is `models_choice("local")`, and `local` is handled
+            // by name above — a row that reached here as `None` would mean the store
+            // spelled a switch to the local server some other way, and the honest
+            // answer is the daemon default rather than a panic on a fact nobody wrote.
+            Ok((None, _)) | Err(_) => Some(format!(
+                "could not restore {stored}: this build does not know that provider, so the \
+                 daemon's own default answers"
+            )),
+        }
+    }
 }
 
 /// **The stored ledger-to-provider pair, or `None` when it does not measure the

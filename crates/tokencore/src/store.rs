@@ -285,7 +285,7 @@ pub struct ShapelessAdmit {
 /// (R12) — `oracle_reading`, additive, described at its migration arm below. **10** since it
 /// records whether an oracle was consulted and what it answered (R11), and **9** added
 /// `oracle_reply` for the same requirement.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -334,6 +334,16 @@ CREATE TABLE IF NOT EXISTS session (
                                      -- attaching head can show the context at once.
     context_cached INTEGER,          -- v8; the last turn's cached_tokens, for the
                                      -- cache %. NULL with context_tokens.
+    provider_choice TEXT,            -- v13; the provider THIS session was switched to,
+                                     -- and before v12's column only because the store's
+                                     -- own fixtures walk a current store BACKWARDS, and
+                                     -- this is the drop order sqlite accepts — the v7
+                                     -- fixture drops provider_choice before context_ledger.
+                                     -- `name` or `name/model`. NULL = never switched, so
+                                     -- the daemon's own default. Survives a restart for
+                                     -- the same reason context_tokens does: a session's
+                                     -- facts belong to the session, not to the process
+                                     -- that happens to be holding it.
     context_ledger INTEGER           -- v12; the LEDGER tokens that context_tokens was
                                      -- measured against. A provider count on its own is
                                      -- not a ratio: the daemon used to recover
@@ -730,6 +740,13 @@ pub struct StoredSession {
     /// which is *unverifiable* rather than wrong: such a pair is refused rather than
     /// guessed at, and the next turn measures afresh.
     pub context_ledger: Option<u64>,
+    /// **The provider this session was switched to**, `name` or `name/model`, or
+    /// `None` for a session that never chose one — which resumes on the daemon's
+    /// own default, as it always did. `Some("local")` is the deliberate switch
+    /// BACK to the local server, kept distinct from `None` because the two answer
+    /// different questions at a resume: *no opinion* against *the local server,
+    /// by name*.
+    pub provider_choice: Option<String>,
 }
 
 /// One line of a session's todo list, as the model wrote it.
@@ -1153,6 +1170,26 @@ impl Store {
                     .execute_batch("ALTER TABLE session ADD COLUMN context_ledger INTEGER")?;
             }
         }
+        if from < 13 {
+            // v13: the provider this session was switched to. The operator switched a session
+            // to a cloud provider, restarted the daemon, and the session came back on the CLI
+            // default — `set_provider` was in-memory and the session row had nowhere to record
+            // the choice. NULL in every existing row is exactly "never switched": such a
+            // session resumes on the daemon's own default, which is what it always did.
+            // Idempotent for the same reason v6 and v12 are: a fixture can walk the version
+            // back over a store that already has the column.
+            let has: bool = self
+                .conn
+                .prepare(
+                    "SELECT 1 FROM pragma_table_info('session') WHERE name = 'provider_choice'",
+                )
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn
+                    .execute_batch("ALTER TABLE session ADD COLUMN provider_choice TEXT")?;
+            }
+        }
         Ok(())
     }
 
@@ -1542,7 +1579,8 @@ impl Store {
                     s.parent_session_id,
                     s.context_tokens,
                     s.context_cached,
-                    s.context_ledger
+                    s.context_ledger,
+                    s.provider_choice
                FROM session s",
         )?;
         let mut out: Vec<StoredSession> = stmt
@@ -1565,6 +1603,7 @@ impl Store {
                     context_tokens: r.get::<_, Option<i64>>(12)?.map(|v| v as u64),
                     context_cached: r.get::<_, Option<i64>>(13)?.map(|v| v as u64),
                     context_ledger: r.get::<_, Option<i64>>(14)?.map(|v| v as u64),
+                    provider_choice: r.get(15)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -1640,6 +1679,39 @@ impl Store {
                 cached.map(|c| c as i64),
                 ledger.map(|l| l as i64)
             ],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("session {id}")));
+        }
+        Ok(())
+    }
+
+    /// The provider this session was switched to, or `None` for one that never
+    /// chose. Read rather than remembered for the reason [`Store::title`] is: a
+    /// second connection can write the row while a harness holds an older idea.
+    pub fn provider_choice(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT provider_choice FROM session WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .filter(|s: &String| !s.is_empty()))
+    }
+
+    /// Record the provider this session was switched to, or clear it with `None`.
+    ///
+    /// **The choice is a session's fact, not the daemon process's.** Before this
+    /// column a switch lived in `Harness::provider` alone, so a restart brought the
+    /// session back on the CLI default and the first turn quietly went to a model
+    /// nobody chose for that conversation.
+    pub fn set_provider_choice(&self, id: &str, choice: Option<&str>) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE session SET provider_choice = ?2 WHERE id = ?1",
+            params![id, choice],
         )?;
         if n == 0 {
             return Err(StoreError::NotFound(format!("session {id}")));
@@ -2766,6 +2838,14 @@ mod tests {
             // (`has = true`) and its `ALTER` — the one line a real pre-v12 store
             // needs — was never run by any test. Same reasoning as the v6 arm's own
             // note about the fixtures, pointed the other way.
+            // **v13's first, and the order is not taste.** The store is walked backwards,
+            // so both columns are here and neither arm's `ALTER` would run without this —
+            // and dropping provider_choice while context_ledger still follows is the drop
+            // sqlite accepts; the other order dies reconstructing the table's CREATE text
+            // ("incomplete input"), which is also why the column sits before v12's in
+            // SCHEMA_SQL rather than at the end.
+            c.execute("ALTER TABLE session DROP COLUMN provider_choice", [])
+                .unwrap();
             c.execute("ALTER TABLE session DROP COLUMN context_ledger", [])
                 .unwrap();
             c.execute("UPDATE schema_version SET version = 7", [])
@@ -2804,6 +2884,103 @@ mod tests {
         assert_eq!(got.context_tokens, Some(12_000));
         assert_eq!(got.context_cached, Some(11_000));
         assert_eq!(got.context_ledger, Some(11_800));
+    }
+
+    /// **The provider a session was SWITCHED TO is a fact on the session row, and it
+    /// round-trips** — `name`, `name/model`, `local`, and NULL for one that never chose.
+    ///
+    /// The four spellings are four different claims at a resume, and the `local` one is
+    /// the easy to get wrong: `None` says *no opinion, the daemon's default stands*, while
+    /// `Some("local")` says *the local server, deliberately* — and a daemon whose own default
+    /// is a provider would hand a switched-back session straight back to it if the two were
+    /// collapsed.
+    #[test]
+    fn the_provider_choice_round_trips_with_its_four_spellings() {
+        let s = store();
+        let _ = seeded(&s);
+        // Never switched: NULL, not the empty string — `set_title`'s own rule, so an
+        // unset choice reads as an absence and not as a name that is blank.
+        assert_eq!(s.provider_choice("sess-1").unwrap(), None);
+        assert_eq!(s.session("sess-1").unwrap().unwrap().provider_choice, None);
+
+        s.set_provider_choice("sess-1", Some("deepseek")).unwrap();
+        assert_eq!(
+            s.provider_choice("sess-1").unwrap().as_deref(),
+            Some("deepseek")
+        );
+        s.set_provider_choice("sess-1", Some("glm-coding/glm-5.3"))
+            .unwrap();
+        // Also on the listing, which is what a resume reads.
+        assert_eq!(
+            s.session("sess-1")
+                .unwrap()
+                .unwrap()
+                .provider_choice
+                .as_deref(),
+            Some("glm-coding/glm-5.3")
+        );
+        // The deliberate switch back is BY NAME, not NULL.
+        s.set_provider_choice("sess-1", Some("local")).unwrap();
+        assert_eq!(
+            s.provider_choice("sess-1").unwrap().as_deref(),
+            Some("local")
+        );
+        s.set_provider_choice("sess-1", None).unwrap();
+        assert_eq!(s.provider_choice("sess-1").unwrap(), None);
+        // And a session that does not exist is refused, not invented.
+        assert!(s.set_provider_choice("no-such", Some("deepseek")).is_err());
+    }
+
+    /// **A v12 store gains the column as NULL**, which is exactly "never switched": a
+    /// session recorded before this column existed resumes on the daemon's own default,
+    /// which is what it always did. Walked back from a current store, for the same reason
+    /// the v12 fixture walks back from one: the conversation's rows stay, so the migration
+    /// is exercised against rows that already exist rather than against an empty file.
+    #[test]
+    fn a_v12_store_gains_the_provider_column_as_never_switched() {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-v13-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _clean = Clean(path.clone());
+
+        {
+            let s = Store::open(&path).unwrap();
+            let _ = seeded(&s);
+        }
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute("ALTER TABLE session DROP COLUMN provider_choice", [])
+                .unwrap();
+            c.execute("UPDATE schema_version SET version = 12", [])
+                .unwrap();
+        }
+
+        let s = Store::open(&path).unwrap();
+        assert_eq!(
+            s.provider_choice("sess-1").unwrap(),
+            None,
+            "a session recorded before the column existed has no choice, and NULL says so"
+        );
+        // And the column is there to be written: the migration is not a no-op that
+        // merely bumps the version.
+        s.set_provider_choice("sess-1", Some("glm-coding/glm-5.3"))
+            .unwrap();
+        assert_eq!(
+            s.provider_choice("sess-1").unwrap().as_deref(),
+            Some("glm-coding/glm-5.3")
+        );
     }
 
     #[test]

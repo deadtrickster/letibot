@@ -215,7 +215,13 @@ impl<'a> Sessions<'a> {
         };
         let (tool, cond) = sessions.seat_tool(&id);
         let cfg = sessions.with_fabric(&id, cfg, cond.is_some());
-        let harness = Harness::open_with_registry(parts, cfg, hub, None, tool, registry.clone())?;
+        let mut harness =
+            Harness::open_with_registry(parts, cfg, hub, None, tool, registry.clone())?;
+        // **A `--continue` resumes the session on the model it was switched to.** The
+        // first session is the common resume: without this call the row this change
+        // writes would only be read on the lazy path a head's switch reaches, and the
+        // one resume everybody types would go on ignoring it.
+        harness.restore_provider_choice();
         sessions.open.insert(id.clone(), harness);
         sessions.declare_flowy_monitor(&id, cond);
         // **AND THE DAEMON'S OWN FIRST SESSION ARMS ITS CLOCK TOO.** This constructor inserts into
@@ -498,6 +504,13 @@ impl<'a> Sessions<'a> {
                 };
                 match h.set_provider(choice) {
                     Ok(line) => {
+                        // **The choice goes to the session row in the same breath** —
+                        // `persist_provider_choice`'s own doc is why. A switch that
+                        // reached the screen but not the row was a choice that expired
+                        // with the process, which is the defect this whole change is.
+                        if let Err(why) = h.persist_provider_choice() {
+                            lines.push(why);
+                        }
                         lines.push(line);
                         SlashReply { lines, ok: true }
                     }
@@ -866,7 +879,7 @@ impl<'a> Sessions<'a> {
             };
             let (tool, cond) = self.seat_tool(session_id);
             let cfg = self.with_fabric(session_id, cfg, cond.is_some());
-            let h = Harness::open_with_registry(
+            let mut h = Harness::open_with_registry(
                 self.parts,
                 cfg,
                 hub,
@@ -874,6 +887,11 @@ impl<'a> Sessions<'a> {
                 tool,
                 self.registry.clone(),
             )?;
+            // **The lazy open is the resume a head reaches** — `/resume`, a switch
+            // from the picker, a subagent's parent coming back. The row the switch
+            // wrote is read here, so a session this daemon did not start running
+            // still comes back on its own model rather than the CLI default.
+            h.restore_provider_choice();
             self.open.insert(session_id.to_string(), h);
             self.declare_flowy_monitor(session_id, cond);
         }
