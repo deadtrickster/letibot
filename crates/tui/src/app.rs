@@ -12736,7 +12736,10 @@ impl App {
     /// appears. That costs a failed `open` per draw in the case where there is
     /// nothing to show, which is the case nobody is watching.
     fn refresh_repo_todos(&mut self) {
-        let path = std::path::Path::new(&self.wiring.workspace).join("TODO.md");
+        // **Resolved, like the read it guards** — the mtime watch and the parse must look at the
+        // same file, or a nested layout re-reads on every draw (the watch misses, so `now` is
+        // None, so the cache never holds).
+        let path = crate::gitfield::project_dir(&self.wiring.workspace).join("TODO.md");
         let now = std::fs::metadata(&path)
             .ok()
             .and_then(|m| Some((m.modified().ok()?, m.len())));
@@ -16495,7 +16498,11 @@ fn turn_footer(cfg: &RenderConfig, state: &TurnState) -> Vec<String> {
 /// nobody has filled in, and org does not mark it either. It carries no cookie
 /// and no box.
 fn repo_todos_map(workspace: &str) -> Vec<TodoRow> {
-    let path = std::path::Path::new(workspace).join("TODO.md");
+    // **The project directory, not the workspace** — the same resolution the git field uses
+    // (`gitfield::project_dir`), so a nested layout (session in `Projects/x`, repo in
+    // `Projects/x/x`) loads one tree's TODO.md in the pane and one tree's branch in the header,
+    // and never one of each.
+    let path = crate::gitfield::project_dir(workspace).join("TODO.md");
     let body = match std::fs::read_to_string(&path) {
         Ok(b) => b,
         Err(e) => {
@@ -25120,7 +25127,40 @@ mod tests {
     /// What makes it work is the row the pane RECORDED as it drew, not arithmetic at the click's
     /// end: a click has a screen row and nothing else, and a second computation of where a row went
     /// is the defect both reports came from.
+    /// **The todos pane reads a nested layout's `TODO.md`** — the operator's own box: the session
+    /// lives in `Projects/letibot`, the repository in `Projects/letibot/letibot`, and neither the
+    /// pane nor the git field found anything at the workspace itself. The pane resolves through
+    /// the same `project_dir` the header's branch does, so one layout feeds both and neither can
+    /// read a different tree.
     #[test]
+    fn the_todos_pane_reads_a_nested_layouts_todo_md() {
+        let base = std::env::temp_dir().join(format!(
+            "letibot-nested-pane-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let ws = base.join("letibot");
+        let repo = ws.join("letibot");
+        // The child is a real-enough repository for the resolver (a `.git` directory), because
+        // that is the marker both consumers share — the file alone would not mark it.
+        std::fs::create_dir_all(repo.join(".git")).expect("scratch");
+        std::fs::write(
+            repo.join("TODO.md"),
+            "## Phase 0\n\n- [ ] **T1** nested item\n",
+        )
+        .expect("write");
+        let mut a = app();
+        a.wiring.workspace = ws.display().to_string();
+        a.key(Key::CtrlT);
+        let screen = a.screen(110, 40).join("\n");
+        assert!(
+            screen.contains("T1 nested item"),
+            "the pane did not reach one level down:\n{screen}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// **The pane says which of its two lists the model is told about** — the operator's ruling,
     /// 2026-09-29: *"host specific todo is actionable but shared todo.md items are promotable."*
     ///
@@ -25173,6 +25213,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // **Restored.** This test had lost its `#[test]` to a stray attribute that sat before the
+    // *next* test's doc — so it never ran. Found while inserting the nested-layout test beside
+    // it; running it is the only way to know whether it passes.
+    #[test]
     fn a_click_on_the_todos_pane_puts_the_cursor_on_the_row_it_is_on() {
         let dir = std::env::temp_dir().join(format!(
             "letibot-todo-click-{}-{:?}",

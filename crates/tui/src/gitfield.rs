@@ -124,17 +124,74 @@ pub fn git_action(workspace: &str) -> Option<&'static str> {
     }
 }
 
+/// **One directory down, when the repository is not the workspace itself** — the nested layout.
+///
+/// The operator's own box is the case: the session lives in `Projects/letibot` and the repository
+/// in `Projects/letibot/letibot` — **the same name one level down** — so neither the git field nor
+/// the todos pane found anything at the workspace, and both drew nothing (their honest absence,
+/// working exactly as designed on a layout nobody had told them about).
+///
+/// The rule, in order, and it is a RESOLUTION rather than a guess at every step:
+///
+/// 1. **the workspace itself**, when it is a repository (`.git` present — a directory, or a file
+///    for a linked worktree) or carries a `TODO.md` — the ordinary layout, unchanged;
+/// 2. **the same-named child** (`<workspace>/<basename>`), when that is a repository — the nested
+///    naming above, and the reason this function exists;
+/// 3. **the one repository child**, when exactly one child is one — a parent holding two
+///    repositories is a parent nobody chose between, and picking one would be the absent-field
+///    rule broken by the very code that exists to keep it;
+/// 4. otherwise **the workspace unchanged**, so whatever reads it fails as it always did and the
+///    field stays absent rather than wrong.
+///
+/// A workspace that is merely *inside* a repository needs none of this: `git` walks up on its
+/// own, and step 1 not matching simply leaves it to git.
+///
+/// Shared by the git field and the todos pane so the two cannot disagree about which directory is
+/// the project — a branch from one tree and a `TODO.md` from another would each be true alone.
+pub fn project_dir(ws: &str) -> std::path::PathBuf {
+    let dir = std::path::Path::new(ws);
+    let is_repo = |d: &std::path::Path| d.join(".git").exists();
+    if dir.join("TODO.md").is_file() || is_repo(dir) || dir.read_dir().is_err() {
+        return dir.to_path_buf();
+    }
+    // The same-named child first: nested naming is a convention, not a coincidence.
+    let own_name = dir.file_name().map(std::ffi::OsStr::to_owned);
+    if let Some(name) = own_name
+        && is_repo(&dir.join(&name))
+    {
+        return dir.join(name);
+    }
+    // Then a single repository child — and only one. Two is a choice this function does not make.
+    let repos: Vec<std::path::PathBuf> = dir
+        .read_dir()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| is_repo(p))
+        .collect();
+    match repos.as_slice() {
+        [only] => only.clone(),
+        _ => dir.to_path_buf(),
+    }
+}
+
 /// **One reading of the workspace, or `None`.** The process call, kept apart from the parse so the
 /// parse is testable without a repository.
 pub fn read(workspace: &str) -> Option<String> {
     if workspace.is_empty() {
         return None;
     }
+    // **Resolved, not assumed** — the workspace may be the parent of the repository rather than
+    // the repository (`project_dir`), which is the nested layout both this field and the todos
+    // pane were drawing nothing over.
+    let dir = project_dir(workspace);
     let out = Command::new("timeout")
         .arg(GIT_TIMEOUT_SECS.to_string())
         .arg("git")
         .args(["status", "--porcelain=v2", "--branch"])
-        .current_dir(workspace)
+        .current_dir(&dir)
         .output()
         .ok()?;
     if !out.status.success() {
@@ -188,6 +245,99 @@ mod tests {
     }
 
     /// **Not a repository is ABSENT, not empty** — the honesty rule this file exists to keep.
+    /// **The nested layout, resolved step by step** — the operator's own box is the case: the
+    /// session lives in `Projects/letibot` and the repository in `Projects/letibot/letibot`, the
+    /// same name one level down, so both consumers drew nothing at the workspace itself.
+    #[test]
+    fn the_same_named_child_is_the_project_when_the_workspace_is_not_a_repository() {
+        let base = std::env::temp_dir().join(format!(
+            "letibot-nested-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let ws = base.join("letibot");
+        let repo = ws.join("letibot");
+        std::fs::create_dir_all(repo.join(".git")).expect("scratch");
+        // **The same-named child wins**, and it wins over a sibling repository too: nested naming
+        // is a convention, checked before the count.
+        std::fs::create_dir_all(ws.join("other").join(".git")).expect("scratch");
+        assert_eq!(
+            project_dir(ws.to_str().unwrap()),
+            repo,
+            "the same-named child is the project"
+        );
+
+        // **A single differently-named repository child** is still the project — there is only one.
+        let one = base.join("one");
+        std::fs::create_dir_all(one.join("only-repo").join(".git")).expect("scratch");
+        assert_eq!(
+            project_dir(one.to_str().unwrap()),
+            one.join("only-repo"),
+            "exactly one repository child is the project"
+        );
+
+        // **Two differently-named repositories is nobody's choice to make** — a parent holding two
+        // is a parent nobody chose between, and guessing would be the absent-field rule broken by
+        // the code that exists to keep it.
+        let two = base.join("two");
+        std::fs::create_dir_all(two.join("a").join(".git")).expect("scratch");
+        std::fs::create_dir_all(two.join("b").join(".git")).expect("scratch");
+        assert_eq!(
+            project_dir(two.to_str().unwrap()),
+            two,
+            "two repositories and no name match: the workspace stands"
+        );
+
+        // **The workspace's own `TODO.md` outranks a nested repository** — a file that is there is
+        // a stronger fact than a directory that might be the project.
+        let flat = base.join("flat");
+        std::fs::create_dir_all(flat.join("flat").join(".git")).expect("scratch");
+        std::fs::write(flat.join("TODO.md"), "## x\n").expect("write");
+        assert_eq!(
+            project_dir(flat.to_str().unwrap()),
+            flat,
+            "the workspace's own TODO.md wins"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// **End to end, through `read`**: a real repository under the same-named child, read from
+    /// its parent — the operator's exact layout, proven on a real `git` rather than on a `.git`
+    /// directory that only looks like one.
+    #[test]
+    fn a_nested_repository_is_read_through_its_parent() {
+        let base = std::env::temp_dir().join(format!(
+            "letibot-nested-read-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let ws = base.join("letibot");
+        let repo = ws.join("letibot");
+        std::fs::create_dir_all(&repo).expect("scratch");
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+                .args(args)
+                .output()
+                .expect("git runs")
+                .status
+                .success();
+            assert!(ok, "git {args:?} in {}", repo.display());
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["commit", "--allow-empty", "-q", "-m", "x"]);
+        assert_eq!(
+            read(ws.to_str().unwrap()).as_deref(),
+            Some("main"),
+            "the parent's git field is the nested repository's branch"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// Git's own complaint, a partial reading, and an empty string all say nothing about a branch,
     /// and each of them must be `None` rather than a blank field that looks like `main` with no
     /// marks.
