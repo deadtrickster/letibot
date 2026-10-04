@@ -292,9 +292,9 @@ mod tests {
                 "SKIPPED: no catalogue at {}, so the fallback names cannot be checked \
                  against it — run scripts/check-provider-models.sh with a key for the \
                  check that matters",
-                crate::catalogue::default_path()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "(no path)".into())
+                crate::catalogue::Catalogue::load()
+                    .source()
+                    .unwrap_or_else(|| "(no source at all)".into())
             );
             return;
         }

@@ -22,12 +22,28 @@
 //!
 //! [models.dev]: https://models.dev
 //!
-//! # Why not vendor a copy
+//! # Three places it can come from, and one rule: opencode is read, never depended on
 //!
-//! A vendored table is a table that goes stale silently, and a stale context
-//! window is not a cosmetic error: it decides when a conversation is summarised.
-//! Reading a file somebody else keeps fresh has a real failure mode — it can be
-//! absent — and that failure is loud and recoverable, which the stale one is not.
+//! 1. **`LETIBOT_MODELS_JSON`** — the operator's explicit pointer, which wins outright.
+//! 2. **This harness's own cache**, `~/.cache/letibot/models.json` — a copy somebody put
+//!    there on purpose, kept by whatever they keep it with (`scripts/refresh-models-snapshot.sh`
+//!    writes it; anything that can `curl` can too).
+//! 3. **opencode's cache**, `~/.cache/opencode/models.json` — read when present because
+//!    it is fresh and correct, as a courtesy and not as a dependency. The operator,
+//!    2026-10-04, on learning the loader read this and nothing else: *"so we depend on
+//!    opencode here? not good."* They were right: a box without opencode had NO windows
+//!    at all, silently, and every cloud session on it planned compaction against nothing.
+//! 4. **The vendored snapshot**, `data/models-snapshot.json` — the five providers a preset
+//!    can switch to, fetched the day it was committed ([`SNAPSHOT_FETCHED`]).
+//!
+//! The first version of this file argued against vendoring — *"a vendored table is a
+//! table that goes stale silently"* — and that argument was written when the alternative
+//! was three constants and the file belonged to nobody. With the loader reading exactly
+//! one other program's cache, the trade flipped: staleness is a defect with a remedy
+//! (re-run the script), while absence-with-no-floor is a defect nobody notices until a
+//! conversation dies at the provider's real limit. The snapshot's age is not silent
+//! either — [`Catalogue::source`] names it with its fetch date wherever the source is
+//! disclosed.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -86,7 +102,16 @@ struct RawCost {
 pub struct Catalogue {
     providers: BTreeMap<String, RawProviderFacts>,
     /// Where it was read from, for the disclosure.
-    source: Option<PathBuf>,
+    source: Option<Origin>,
+}
+
+/// Which of the four places a catalogue came from — the fact the disclosure names.
+#[derive(Debug)]
+enum Origin {
+    File(PathBuf),
+    /// The vendored snapshot. Carries nothing extra because its date lives beside
+    /// it as [`SNAPSHOT_FETCHED`], and the two are regenerated together.
+    Snapshot,
 }
 
 #[derive(Debug, Default)]
@@ -94,15 +119,43 @@ struct RawProviderFacts {
     models: BTreeMap<String, ModelFacts>,
 }
 
-/// Where opencode keeps it. Overridable, because a box without opencode can point
-/// at its own copy rather than doing without.
-pub fn default_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("LETIBOT_MODELS_JSON") {
-        return Some(PathBuf::from(p));
-    }
+/// The operator's explicit pointer, which wins over every other source.
+fn override_path() -> Option<PathBuf> {
+    std::env::var("LETIBOT_MODELS_JSON").ok().map(PathBuf::from)
+}
+
+/// **This harness's own cache** — the first place `load` looks after the override.
+///
+/// `$XDG_CACHE_HOME/letibot/models.json`, falling back to `~/.cache/letibot/models.json`.
+/// Ours, refreshed by `scripts/refresh-models-snapshot.sh` or by anything else that can
+/// write a file — a box with no opencode and no operator override still gets a catalogue
+/// somebody meant to put there.
+pub fn cache_path() -> Option<PathBuf> {
+    let base = match std::env::var("XDG_CACHE_HOME") {
+        Ok(x) if !x.is_empty() => PathBuf::from(x),
+        _ => Path::new(&std::env::var("HOME").ok()?).join(".cache"),
+    };
+    Some(base.join("letibot/models.json"))
+}
+
+/// Where opencode keeps its copy. **Read as a courtesy, never depended on** — see the
+/// module doc for the rule and the report that made it one.
+pub fn opencode_path() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     Some(Path::new(&home).join(".cache/opencode/models.json"))
 }
+
+/// The vendored snapshot's provenance, beside the data it describes. Written by
+/// `scripts/refresh-models-snapshot.sh`, which is also what keeps the two honest
+/// with each other: the script regenerates the file and prints this string.
+pub const SNAPSHOT_FETCHED: &str = "2026-10-04";
+
+/// **The floor**: every provider a preset can switch to, as models.dev carried
+/// them on [`SNAPSHOT_FETCHED`]. 5 KB rather than the whole 222-provider file,
+/// because this is not a browsing catalogue — it is the answer to *"a box with
+/// nothing else still plans against the right window"*, and the providers that
+/// matter are the ones `crate::presets` can name.
+const SNAPSHOT: &str = include_str!("../data/models-snapshot.json");
 
 /// **A model name's version, and how much is written after it** — the two rungs that ask which
 /// model is the newer one, and which name is a plain model rather than a variant of it.
@@ -140,18 +193,61 @@ impl Catalogue {
     /// Read the catalogue, or an empty one. **Never an error**: a missing
     /// catalogue is a fact about this box, not a reason for a session to refuse to
     /// open, and every caller already handles `None` for an unknown model.
+    ///
+    /// The chain is the module doc's: the operator's pointer, then this harness's
+    /// own cache, then opencode's, then the snapshot. **Each step falls through on
+    /// any failure** — a broken file at the front must not hide a working one
+    /// behind it, and the operator's report was about a chain with no floor at all.
     pub fn load() -> Catalogue {
-        match default_path() {
-            Some(p) => Catalogue::read(&p).unwrap_or_default(),
-            None => Catalogue::default(),
+        if let Some(p) = override_path()
+            && let Ok(c) = Catalogue::read(&p)
+        {
+            return c;
         }
+        if let Some(p) = cache_path()
+            && let Ok(c) = Catalogue::read(&p)
+        {
+            return c;
+        }
+        if let Some(p) = opencode_path()
+            && let Ok(c) = Catalogue::read(&p)
+        {
+            return c;
+        }
+        Catalogue::snapshot()
+    }
+
+    /// **The floor, on its own** — what a box with no opencode, no cache and no
+    /// override gets. A method rather than an arm of `load` so a test can ask for
+    /// exactly the floor, without inventing an environment for `load` to run in.
+    pub fn snapshot() -> Catalogue {
+        Catalogue::read_text(SNAPSHOT)
+            .ok()
+            .map(|c| Catalogue {
+                source: Some(Origin::Snapshot),
+                ..c
+            })
+            .unwrap_or_default()
     }
 
     pub fn read(path: &Path) -> Result<Catalogue, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("reading {}: {e}", path.display()))?;
+        let c = Catalogue::read_text(&text).map_err(|e| format!("{e} ({})", path.display()))?;
+        // The origin is the file's; `read_text` names none because a text is not
+        // a place, and the snapshot arm is the one caller with no path to name.
+        Ok(Catalogue {
+            source: Some(Origin::File(path.to_path_buf())),
+            ..c
+        })
+    }
+
+    /// Parse a catalogue's text. The file-naming half of [`Catalogue::read`],
+    /// split out so the snapshot — which has no path — goes through the same
+    /// parse, the same filters and the same honesty rather than a second reader.
+    fn read_text(text: &str) -> Result<Catalogue, String> {
         let raw: BTreeMap<String, RawProvider> =
-            serde_json::from_str(&text).map_err(|e| format!("parsing {}: {e}", path.display()))?;
+            serde_json::from_str(text).map_err(|e| format!("parsing the models catalogue: {e}"))?;
         let mut providers = BTreeMap::new();
         for (id, p) in raw {
             let mut models = BTreeMap::new();
@@ -182,7 +278,7 @@ impl Catalogue {
         }
         Ok(Catalogue {
             providers,
-            source: Some(path.to_path_buf()),
+            source: None,
         })
     }
 
@@ -190,8 +286,16 @@ impl Catalogue {
         self.providers.is_empty()
     }
 
-    pub fn source(&self) -> Option<&Path> {
-        self.source.as_deref()
+    /// Which of the four places the catalogue came from, named for the disclosure —
+    /// a file by its path, the snapshot by what it is AND the day it was fetched,
+    /// because a snapshot's age is the one fact about it that can go stale.
+    pub fn source(&self) -> Option<String> {
+        self.source.as_ref().map(|o| match o {
+            Origin::File(p) => p.display().to_string(),
+            Origin::Snapshot => {
+                format!("the vendored snapshot (fetched {SNAPSHOT_FETCHED})")
+            }
+        })
     }
 
     /// One model's facts, by the catalogue's own provider id.
@@ -417,6 +521,99 @@ mod tests {
         let c = Catalogue::read(&d).expect("parsing");
         let _ = std::fs::remove_file(&d);
         c
+    }
+
+    /// **The floor is real, current, and honest about its age.**
+    ///
+    /// The operator, 2026-10-04: *"so we depend on opencode here? not good."* The
+    /// chain's answer is the snapshot — and a snapshot nobody checks is the stale
+    /// table the module's first version argued against. So the test pins the three
+    /// things that make a floor honest: it carries every provider a preset can name,
+    /// the numbers in it are the ones models.dev published (glm-5.3's 1M is the
+    /// number a switched session plans compaction against), and its source names
+    /// itself WITH ITS DATE, so the age is on every disclosure the source feeds.
+    #[test]
+    fn the_snapshot_floor_carries_the_preset_providers_and_names_its_age() {
+        let c = Catalogue::snapshot();
+        for provider in [
+            "deepseek",
+            "zhipuai",
+            "zai-coding-plan",
+            "zhipuai-coding-plan",
+            "xai",
+        ] {
+            assert!(
+                !c.model_names(provider).is_empty(),
+                "the snapshot has no models for {provider} — a preset names it, so the \
+                 floor must carry it (scripts/refresh-models-snapshot.sh)"
+            );
+        }
+        let glm = c
+            .model("zai-coding-plan", "glm-5.3")
+            .expect("glm-5.3 on the coding plan");
+        assert_eq!(
+            glm.context, 1_000_000,
+            "glm-5.3's window is the number a switched session plans compaction against"
+        );
+        // **And the floor says what it is, with its date.** A snapshot whose age is
+        // silent is the stale table the first version of this file refused to ship.
+        let src = c.source().expect("the floor names itself");
+        assert!(
+            src.contains("vendored snapshot") && src.contains(SNAPSHOT_FETCHED),
+            "the source disclosure must name the snapshot AND its fetch date: {src}"
+        );
+    }
+
+    /// **A file read names the file; a bare text names nothing.** The origin is
+    /// what the disclosure draws, so `read` stamping the snapshot's name on a file
+    /// (or vice versa) would be a lie with a path in it.
+    #[test]
+    fn a_file_read_names_the_file_and_a_bare_text_names_nothing() {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-cat-origin-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"only": {"models": {"m": {"limit": {"context": 1000}}}}}"#,
+        )
+        .expect("write");
+        let c = Catalogue::read(&path).expect("parses");
+        let _ = std::fs::remove_file(&path);
+        let src = c.source().expect("a file read names the file");
+        assert!(src.contains(&path.display().to_string()), "named {src}");
+        assert!(!src.contains("snapshot"), "a file is not the floor: {src}");
+        assert_eq!(c.model("only", "m").unwrap().context, 1_000);
+
+        // A bare text carries no origin at all: the caller that has one stamps it.
+        let bare = Catalogue::read_text(SNAPSHOT).expect("the snapshot parses");
+        assert!(bare.source.is_none(), "a text is not a place");
+    }
+
+    /// **The fallbacks name real models against the floor itself** — the snapshot's
+    /// whole job, asked as the question a box with nothing else asks it.
+    #[test]
+    fn the_fallback_models_are_real_on_the_floor_alone() {
+        let cat = Catalogue::snapshot();
+        // The five fallbacks exactly as `crate::presets` spells them — read from the
+        // presets themselves rather than re-typed, so a fallback change moves this
+        // test with it instead of leaving it to drift into a second list.
+        for (preset, provider) in [
+            (crate::presets::DEEPSEEK, "deepseek"),
+            (crate::presets::GLM, "zhipuai"),
+            (crate::presets::GLM_CODING, "zai-coding-plan"),
+            (crate::presets::GLM_CODING_CN, "zhipuai-coding-plan"),
+            (crate::presets::GROK, "xai"),
+        ] {
+            assert!(
+                cat.model_names(provider)
+                    .contains(&preset.fallback_model.to_string()),
+                "{}/{} is a preset's fallback and the floor does not carry it",
+                provider,
+                preset.fallback_model
+            );
+        }
     }
 
     #[test]
