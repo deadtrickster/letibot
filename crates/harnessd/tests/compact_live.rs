@@ -122,7 +122,7 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
     let cfg = config(&path, "compact-live");
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     let hub = Hub::new(&cfg.session_id);
-    let mut h = Harness::open(&parts, cfg.clone(), hub).expect("the session must open");
+    let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session must open");
 
     // Two real turns, so the summary has facts to record and the summary turn has
     // a previous request to carry. Deterministic sampling from the config: the
@@ -143,6 +143,26 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
 
     let before = h.ledger_len();
     let report = h.compact().expect("the compaction");
+    // **EVERY ROW THE SUMMARY TURN ANNOUNCED CARRIES ITS BODY.** The instruction and
+    // the answer are appended to this session through a capturing sink, which
+    // announces them; `reconcile` is what hands the hub their bodies, and nothing
+    // called it — so the two rows sat in the daemon's own view as `item: None` and
+    // every snapshot served them that way. The operator ran `/resync` three times
+    // and the `2 row(s) announced … and never filled` line did not move, because
+    // `/resync` serves that same view. This is that measurement as a pin.
+    let snap = hub.snapshot();
+    let unfilled: Vec<&str> = snap
+        .items
+        .iter()
+        .filter(|r| r.item.is_none())
+        .map(|r| r.item_id.as_str())
+        .collect();
+    assert!(
+        unfilled.is_empty(),
+        "{} row(s) announced and never filled (the compaction's own instruction and \
+         answer are the usual pair): {unfilled:?}",
+        unfilled.len()
+    );
     let sum = &report.summary_turn;
     eprintln!(
         "  compacted: base {before} -> {} tokens (transcript {})",

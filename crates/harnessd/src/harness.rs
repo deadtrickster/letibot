@@ -356,6 +356,34 @@ impl EventSink for CapturingSink {
     }
 }
 
+/// **Pair every id a sink captured with its row's body** — the free half of
+/// `Harness::reconcile`, so the summary-turn helper (which cannot borrow `&self`,
+/// see [`Harness::run_summary_turn`]) pairs rows by the same rule and cannot drift
+/// from it.
+///
+/// The ids come off the events rather than being recomputed; see point 1 in the
+/// module header. A count mismatch is a bug in the pairing, not something to paper
+/// over, so it is announced as a warning on the same log the head reads.
+fn reconcile_rows(hub: &Arc<Hub>, sink: &mut CapturingSink, items: &[TranscriptItem]) {
+    let ids = sink.take_ids();
+    if ids.len() != items.len() {
+        hub.publish(letibot_sessionlog::SessionEvent::Warning {
+            code: "record_item_pairing".into(),
+            detail: format!(
+                "{} TranscriptAppended events for {} items; the head will show \
+                 empty rows. This is a daemon bug, not a transport one.",
+                ids.len(),
+                items.len()
+            ),
+
+            compaction: None,
+        });
+    }
+    for (id, item) in ids.iter().zip(items) {
+        hub.record_item(id, item.clone());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The authorisation trail
 // ---------------------------------------------------------------------------
@@ -4961,8 +4989,13 @@ impl<'a> Harness<'a> {
         let out = (|| -> Result<ReseatReport, HarnessError> {
             let mut sink = CapturingSink::new(self.hub.clone());
             let answerer = Self::answerer(&self.provider, &self.prefix);
-            let outcome = run_compaction(&mut self.engine, &mut self.session, &mut sink, &answerer)
-                .map_err(HarnessError::Turn)?;
+            let outcome = Self::run_summary_turn(
+                &self.hub,
+                &mut self.engine,
+                &mut self.session,
+                &mut sink,
+                &answerer,
+            )?;
             if outcome.tool_calls > 0 {
                 return Err(HarnessError::Setup(format!(
                     "the summary turn proposed {} tool call(s); a summary is a record, not                      an action, so nothing was re-seated.",
@@ -5057,9 +5090,13 @@ impl<'a> Harness<'a> {
                 // same one the overrun arm takes and for the same reason.
                 let items: Vec<TranscriptItem> = self.session.items.clone();
                 let answerer = Self::answerer(&self.provider, &self.prefix);
-                let outcome =
-                    run_compaction(&mut self.engine, &mut self.session, &mut sink, &answerer)
-                        .map_err(HarnessError::Turn)?;
+                let outcome = Self::run_summary_turn(
+                    &self.hub,
+                    &mut self.engine,
+                    &mut self.session,
+                    &mut sink,
+                    &answerer,
+                )?;
                 if outcome.tool_calls > 0 {
                     return Err(HarnessError::Setup(format!(
                         "the summary turn proposed {} tool call(s); a summary is a record, \
@@ -6361,23 +6398,50 @@ impl<'a> Harness<'a> {
         // `messages_scanned` has to be what was **looked at**, and this is the one
         // place that knows how much there is.
         self.trail.note_items(items.len());
-        let ids = sink.take_ids();
-        if ids.len() != items.len() {
-            self.hub.publish(letibot_sessionlog::SessionEvent::Warning {
-                code: "record_item_pairing".into(),
-                detail: format!(
-                    "{} TranscriptAppended events for {} items; the head will show \
-                         empty rows. This is a daemon bug, not a transport one.",
-                    ids.len(),
-                    items.len()
-                ),
+        reconcile_rows(&self.hub, sink, items);
+    }
 
-                compaction: None,
-            });
-        }
-        for (id, item) in ids.iter().zip(items) {
-            self.hub.record_item(id, item.clone());
-        }
+    /// **Run the summary turn and pair every row it appended** — the one door both
+    /// callers go through, because the two of them forgetting is exactly the defect
+    /// this closes.
+    ///
+    /// `run_compaction` appends the summary INSTRUCTION and the model's ANSWER to the
+    /// session through the sink, and a sink announces each row it is handed.
+    /// `reconcile` is the only thing that hands the hub the row's BODY. Two callers
+    /// (`compact_inner`'s ordinary arm and `reseat`) ran `run_compaction` against this
+    /// session's own sink and never reconciled it — the ids stayed in the sink and
+    /// were dropped with it, so the two rows were announced and never filled.
+    ///
+    /// **The hole was in the DAEMON's view, so nothing on a head could repair it**:
+    /// every later snapshot announced the same two rows with `item: None`, and
+    /// `/resync` serves that same view — which is why the operator ran it three times
+    /// and the `2 row(s) announced … and never filled` line did not move. MEASURED on
+    /// their live session 2026-10-05: rows `#t45.510` (the instruction) and `#t45.511`
+    /// (the summary), both stored with their bodies and both served body-less, until
+    /// the daemon was restarted and the resume's republish filled them.
+    ///
+    /// The slice is taken from the session AFTER the turn, so the pairing is the
+    /// session's own order — the same positional zip `reconcile` documents, and it
+    /// covers the salvage notices a say-nothing summary turn appends as well as the
+    /// instruction and the answer.
+    ///
+    /// An associated function rather than a method, and the reason is the borrow:
+    /// `answerer` already holds `&self.provider` and `&self.prefix` for the call, so
+    /// a `&self` receiver here would overlap it. `hub` is passed in for the same
+    /// reason the row pairing is a free function.
+    fn run_summary_turn(
+        hub: &Arc<Hub>,
+        engine: &mut TurnEngine<'_>,
+        session: &mut Session,
+        sink: &mut CapturingSink,
+        answerer: &letibot_turn::compaction::Answerer<'_>,
+    ) -> Result<CompactionOutcome, HarnessError> {
+        let mark = session.items.len();
+        let outcome =
+            run_compaction(engine, session, sink, answerer).map_err(HarnessError::Turn)?;
+        let added: Vec<TranscriptItem> = session.items[mark..].to_vec();
+        reconcile_rows(hub, sink, &added);
+        Ok(outcome)
     }
 
     /// Write every ledger row that has not reached the store yet.
@@ -8074,6 +8138,55 @@ fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
 
 #[cfg(test)]
 mod tests {
+    /// **A row announced through a capturing sink is filled by the pairing rule, and
+    /// body-less without it** — the compaction defect at the smallest size there is.
+    ///
+    /// This is the free half of `Harness::reconcile` (`reconcile_rows`), driven the way
+    /// the summary-turn helper drives it. The false-first direction is the assertion that
+    /// matters: a sink announces on `emit` and carries the id, so a caller that drops the
+    /// sink has announced a row it never filled — which is what the daemon's view then
+    /// serves to every head and to every `/resync`.
+    #[test]
+    fn an_announced_row_is_filled_by_the_pairing_rule_and_body_less_without_it() {
+        use super::*;
+        let item = || TranscriptItem::System {
+            text: "the summary instruction".into(),
+            origin: letibot_transcript::SystemOrigin::Update,
+        };
+        let announce = |sink: &mut CapturingSink| {
+            sink.emit(letibot_turn::TurnEvent::TranscriptAppended {
+                item_id: "s#t0.9".into(),
+                kind: "system",
+                ledger_head: "beef".into(),
+                tokens: 3,
+            });
+        };
+
+        // The defect: announced, sink dropped, no body. The view holds the row.
+        let hub = Hub::new("s");
+        let mut sink = CapturingSink::new(hub.clone());
+        announce(&mut sink);
+        drop(sink);
+        let snap = hub.snapshot();
+        assert_eq!(snap.items.len(), 1, "the announcement reached the log");
+        assert!(
+            snap.items[0].item.is_none(),
+            "the premise: nothing filled it"
+        );
+
+        // The rule: same announcement, paired. The row carries its body.
+        let hub = Hub::new("s");
+        let mut sink = CapturingSink::new(hub.clone());
+        announce(&mut sink);
+        reconcile_rows(&hub, &mut sink, std::slice::from_ref(&item()));
+        let snap = hub.snapshot();
+        assert_eq!(snap.items.len(), 1);
+        assert!(
+            snap.items[0].item.is_some(),
+            "announced and never filled: {:?}",
+            snap.items[0].item_id
+        );
+    }
     /// **The scratch is per-user and per-process, never the flat world-readable
     /// `/tmp/letibot-scratch-<pid>`** — the operator's ask, 2026-10-05: *"job output
     /// should go to your scratch directory."* The path is checked by SHAPE rather than
