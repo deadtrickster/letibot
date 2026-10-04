@@ -10253,6 +10253,7 @@ impl App {
                         raw,
                         targets: &targets,
                         answered: &answered,
+                        subagents: &self.subagents,
                         drawn_live: in_flight.contains(self.items[k].item_id.as_str()),
                         elapsed_ms: self.call_ms.get(&self.items[k].item_id).copied(),
                         edit: self.call_edits.get(&self.items[k].item_id),
@@ -11175,6 +11176,7 @@ impl App {
                                 raw,
                                 targets: call_targets,
                                 answered: &answered,
+                                subagents: &self.subagents,
                                 drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
                                 elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
                                 edit: call_edits.get(&items[*hist_upto].item_id),
@@ -12868,17 +12870,9 @@ impl App {
                 == self
                     .subagents_sel
                     .min(self.subagents.len().saturating_sub(1));
-            // **The task, drawn whole; `prompt` is the pre-field fallback.** A `done` row
-            // drawn from `prompt` showed the child's ANSWER where the operator was looking
-            // for what they asked — measured, 122 characters of answer with the two-line
-            // task nowhere on the wire. Newlines are collapsed because the pane row is one
-            // line, and the whole task is one Enter away (the peek), which is the unfold
-            // the ask allowed.
-            let asked: String = if s.task.is_empty() {
-                s.prompt.clone()
-            } else {
-                s.task.split_whitespace().collect::<Vec<_>>().join(" ")
-            };
+            // **The task, drawn whole; `prompt` is the pre-field fallback.** See
+            // [`subagent_asked`] — the notice folds to the same words.
+            let asked: String = subagent_asked(s);
             let left = format!(
                 "{} {} {}",
                 if picked { "▸" } else { " " },
@@ -12970,6 +12964,7 @@ impl App {
                 raw: false,
                 targets: &targets,
                 answered: &answered,
+                subagents: &self.subagents,
                 // No durations, no diffs and no approvals: this head did not watch these calls run,
                 // and the maps that carry them are keyed by THIS session's item ids. The renderer
                 // already says *replayed* for all three rather than inventing one.
@@ -17171,6 +17166,25 @@ fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
     out
 }
 
+/// **What a child was asked, as one line** — the rule the subagents pane and the folded
+/// completion notice share.
+///
+/// `task` is the subtask in full and `prompt` is the pre-field fallback: a `done` row drawn from
+/// `prompt` showed the child's ANSWER where the operator was looking for what they asked
+/// (measured: 122 characters of answer with a two-line task nowhere on the wire). Newlines are
+/// collapsed because both callers draw one line — the pane's row, and a notice's settlement line.
+///
+/// **One function because a row and the pane it points at must not disagree.** The notice looks
+/// the task up *by handle*; a second spelling of this rule over there is exactly the drift that
+/// would have them say different things about one child.
+fn subagent_asked(s: &SubagentState) -> String {
+    if s.task.is_empty() {
+        s.prompt.clone()
+    } else {
+        s.task.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+}
+
 /// **The daemon's completion notices, folded to one line per settlement.**
 ///
 /// The operator's ask, reading a settled job and a finished child: *"too much … i dont want to
@@ -17203,7 +17217,7 @@ fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
 /// the promise here honest rather than a loss — what the operator cannot see is on the row they
 /// are looking at, not deleted from it. Opening it on demand is the half leticl has and this head
 /// does not; it is **not** in this change (see TODO.md, the notice-fold row).
-fn folded_notice(text: &str) -> Option<String> {
+fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<String> {
     /// The promise to the model, by a phrase that is in it and not in any fact line.
     const PROMISE: &str = "you do not need to wait for it";
     let mut out: Vec<String> = Vec::new();
@@ -17232,6 +17246,19 @@ fn folded_notice(text: &str) -> Option<String> {
                 let (handle, said) = bullet.split_once(' ')?;
                 let handle = handle.strip_prefix('`')?.strip_suffix('`')?;
                 settlements += 1;
+                // **A child's own task, LOOKED UP rather than parsed.** The notice carries only
+                // what the child answered; what it was asked is on the subagent row, and a
+                // second source for that fact is how the row and the pane come to disagree.
+                // Absent — an older daemon, or a child this head never watched spawn — the line
+                // still names the handle and the answer.
+                let said = if who == "Agent " {
+                    match subagents.iter().find(|s| s.session_id == handle) {
+                        Some(s) => format!("{} · {said}", subagent_asked(s)),
+                        None => said.to_string(),
+                    }
+                } else {
+                    said.to_string()
+                };
                 out.push(format!("{who}{handle}{sep}{said}"));
             } else if line.contains(PROMISE) {
                 promised = true;
@@ -17954,6 +17981,10 @@ struct ItemCtx<'a> {
     /// Call ids in this round that already have a settled result row below.
     /// Their card is that row; the assistant row does not draw them again.
     answered: &'a std::collections::HashSet<String>,
+    /// **The children this head has watched**, for the one fact a completion notice cannot say
+    /// for itself: what a child was asked. Looked up by handle — see [`subagent_asked`], which
+    /// the subagents pane and the notice share so the two cannot describe one child differently.
+    subagents: &'a [SubagentState],
     /// This row belongs to the turn the live pane is still drawing, so the pane
     /// below owns whatever has not settled and this row draws none of it.
     drawn_live: bool,
@@ -18179,6 +18210,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         echo_mark,
         echo_open,
         rung,
+        subagents,
     } = *ctx;
     // **The rung, before anything else** (R37). A row this rung does not keep renders to
     // nothing, and the walk already treats a row that renders to nothing as no row at all —
@@ -18277,7 +18309,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     // The row this replaces carried R7's promise to the model in the operator's
                     // reading line — see [`folded_notice`], which folds only what it can
                     // account for completely and hands back everything else untouched.
-                    match folded_notice(&text) {
+                    match folded_notice(&text, subagents) {
                         Some(folded) => (RowClass::Other, session_block(&folded, it.ts, cfg)),
                         None => (RowClass::Other, session_block(&text, it.ts, cfg)),
                     }
@@ -27892,6 +27924,7 @@ mod tests {
             raw: true,
             targets: &targets,
             answered: &answered,
+            subagents: &[],
             drawn_live: false,
             elapsed_ms: None,
             edit,
@@ -35006,7 +35039,7 @@ mod tests {
         const JOB: &str = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 7m06s, wrote 508 bytes: sleep 3; echo done\nThis is the completion arriving on its own — you do not need to wait for it, and `job_wait` would only block you for a result you already have.";
         const TASK: &str = "[task] a subagent you started has finished:\n  - `s-1791017230755743833-sub-1791119445423` done: 3529\nThis is the completion arriving on its own — you do not need to wait for it, and calling `task_result` to block would only hold you for a result you already have.";
 
-        let folded = folded_notice(JOB).expect("a job notice folds");
+        let folded = folded_notice(JOB, &[]).expect("a job notice folds");
         assert_eq!(
             folded, "Job j57 exited 0 after 7m06s, wrote 508 bytes: sleep 3; echo done",
             "every fact is kept and the heading is not"
@@ -35017,7 +35050,7 @@ mod tests {
         );
         // The same shape, the other noun, and the child's own answer kept whole.
         assert_eq!(
-            folded_notice(TASK).expect("a child notice folds"),
+            folded_notice(TASK, &[]).expect("a child notice folds"),
             "Agent s-1791017230755743833-sub-1791119445423 · done: 3529"
         );
 
@@ -35025,7 +35058,7 @@ mod tests {
         // heading is `3 jobs you backgrounded have ended:`, and a folded line names its own
         // kind — which is exactly the argument for dropping it.
         const THREE: &str = "[job] 3 jobs you backgrounded have ended:\n  - `j11` exited 0 after 12.0s, wrote 13 bytes: a\n  - `j12` exited 0 after 16.0s, wrote 13 bytes: b\n  - `j13` exited 0 after 20.0s, wrote 13 bytes: c\nThis is the completion arriving on its own — you do not need to wait for it.";
-        let three = folded_notice(THREE).expect("a group of three folds");
+        let three = folded_notice(THREE, &[]).expect("a group of three folds");
         let lines: Vec<&str> = three.lines().collect();
         assert_eq!(lines.len(), 3, "one line per settlement: {three}");
         assert!(
@@ -35043,7 +35076,7 @@ mod tests {
     #[test]
     fn a_notice_holding_a_job_and_a_child_folds_to_both() {
         const BOTH: &str = "[job] a job you backgrounded has ended:\n  - `j57` exited 0 after 3.0s, wrote 5 bytes: sleep 3; echo done\nThis is the completion arriving on its own — you do not need to wait for it.\n\n[task] a subagent you started has finished:\n  - `s-p-sub-1` done: 3529\nThis is the completion arriving on its own — you do not need to wait for it.";
-        let folded = folded_notice(BOTH).expect("both kinds fold");
+        let folded = folded_notice(BOTH, &[]).expect("both kinds fold");
         let lines: Vec<&str> = folded.lines().collect();
         assert_eq!(
             lines.len(),
@@ -35055,6 +35088,54 @@ mod tests {
             "the job first, as the daemon wrote it"
         );
         assert_eq!(lines[1], "Agent s-p-sub-1 · done: 3529");
+    }
+
+    /// **A child's own task rides the folded line** — the piece leticl has and this head did
+    /// not, and it is LOOKED UP rather than parsed.
+    ///
+    /// The notice carries only what the child answered; what it was asked is on the subagent
+    /// row, so this is `subagent_asked`'s own words and not a second reading of the notice. The
+    /// two fallbacks are asserted with it, because both are real: a child this head never
+    /// watched spawn (a head that attached after the spawn), and a daemon older than the `task`
+    /// field, whose `prompt` still holds the row.
+    #[test]
+    fn the_folded_agent_line_names_the_task_it_was_asked() {
+        const TASK: &str = "[task] a subagent you started has finished:\n  - `s-p-sub-1` done: 3529\nThis is the completion arriving on its own — you do not need to wait for it.";
+
+        let sub = SubagentState {
+            session_id: "s-p-sub-1".into(),
+            state: "done".into(),
+            // The legacy meaning on the finish: the ANSWER's first line. Which is why the task
+            // field exists, and why the fallback below is not this.
+            prompt: "ready.".into(),
+            role: "coder".into(),
+            task: "Answer with one word:\n  ready.".into(),
+            answer: Some("ready".into()),
+        };
+        assert_eq!(
+            folded_notice(TASK, std::slice::from_ref(&sub)).unwrap(),
+            "Agent s-p-sub-1 · Answer with one word: ready. · done: 3529",
+            "the task is flattened to one line, the answer kept whole"
+        );
+
+        // **No row for the handle**: the line still names the handle and the answer. A fold that
+        // dropped the line instead would lose a settlement for being un-describable.
+        assert_eq!(
+            folded_notice(TASK, &[]).unwrap(),
+            "Agent s-p-sub-1 · done: 3529"
+        );
+
+        // **A daemon older than `task`**: `prompt` is the fallback, and this is the one place a
+        // reader could be shown the answer twice — which is why the task is preferred when it is
+        // there and `prompt` only stands in when it is not.
+        let older = SubagentState {
+            task: String::new(),
+            ..sub
+        };
+        assert_eq!(
+            folded_notice(TASK, std::slice::from_ref(&older)).unwrap(),
+            "Agent s-p-sub-1 · ready. · done: 3529"
+        );
     }
 
     /// **What the fold cannot account for, it does not draw.**
@@ -35096,9 +35177,9 @@ mod tests {
         ];
         for (what, text) in cases {
             assert!(
-                folded_notice(text).is_none(),
+                folded_notice(text, &[]).is_none(),
                 "{what} was folded instead of drawn as it arrived: {:?}",
-                folded_notice(text)
+                folded_notice(text, &[])
             );
         }
     }
