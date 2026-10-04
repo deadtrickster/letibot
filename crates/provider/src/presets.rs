@@ -143,11 +143,14 @@ pub const GLM_CODING: Preset = Preset {
     url: "https://api.z.ai/api/coding/paas/v4/chat/completions",
     key_env: "ZHIPUAI_API_KEY",
     alt_envs: &["ZHIPU_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"],
-    // `glm-5.3` and not the `-flash`: the plan's biggest models all cost zero, so the
-    // catalogue's rule picks the SHORTEST of them, and a fallback naming another would make a box
-    // with a catalogue and a box without one choose differently — the failure this field's own
-    // test exists for. It must also be a name the plan's OWN row carries, not the family's.
-    fallback_model: "glm-5.3",
+    // **`glm-5.2`, which is what the catalogue's own rule picks** — largest window, then
+    // cheapest, then shortest name, then the name: five of this plan's models are a 1M window at
+    // zero, `-highspeed` and `-flash` lose on length, and `"glm-5.2" < "glm-5.3"` decides. A
+    // fallback naming `glm-5.3` would put a box WITHOUT a catalogue on a different model from
+    // this one, which is the divergence this field's own test exists for — and the test only
+    // catches a longer spelling of the same model, so it did not catch this. MEASURED 2026-10-04
+    // off the picker: `4  glm-coding/glm-5.2`.
+    fallback_model: "glm-5.2",
     thinking_field: Some("thinking"),
     catalogue_id: "zai-coding-plan",
 };
