@@ -874,8 +874,45 @@ leticl's commit: the one-liner is `9b22de3`'s shape and the coalesced-count fix 
 **still open?** `grep -n "you do not need to wait for it" crates/tui/src/app.rs` — a head that still
 prints the paragraph in its rows.
 
+**THE PLAN, MEASURED 2026-10-04, so this is not rediscovered.** The render site is
+`app.rs:18197`, the `Speaker::Agent` arm of `item_lines` — `(RowClass::Other,
+session_block(&text, its.ts, cfg))`, the raw paragraph. The two shapes on the wire, read
+out of the store (`transcript_item.item_json`, `"type":"user"`, `"speaker":"agent"`):
+
+    [job] a job you backgrounded has ended:
+      - `j57` exited 0 after 7m06s, wrote 508 bytes: <the command>
+    <the paragraph, from `completion_notice`, harness.rs:691 — `job_output` verb>
+
+    [task] a subagent you started has finished:
+      - `s-…-sub-…` done: 3529
+    <the paragraph, from `subagent_notice`, harness.rs:732 — `task_result` verb>
+
+and **one row can hold BOTH groups**, joined by a blank line (measured: a `[job] 3 jobs …`
+heading with three settlements, then a `[task]` heading under it) — which is why the group
+counts have to be per GROUP and not per row.
+
+**Three things make it more than a pure function here, and they are the whole cost:**
+
+  · the TASK line wants the child's own task in it (`Agent <id> · <task> · done: <answer>`),
+    and leticl LOOKS IT UP — the notice carries only what the child answered, and the title
+    (the task's first line) is on the subagent row. `item_lines` is given `ItemCtx` and not
+    the subagents pane, so the title has to be threaded in or the row resigned to the id
+    alone. Do not parse it out of the notice: a second source for the same fact is how the
+    row and the pane come to disagree;
+  · **leticl's row keeps the whole message one verb away** (`/t` on the row, and its folded
+    line says `· /t opens it`). letibot has no such verb for a `User` row — `/t` is *all tool
+    rows* — so either the paragraph is simply not drawn (the text stays the row's in the
+    transcript and the model still reads it) or a verb is added. **Ruled: do not add a key
+    for this yet.** Draw the fold, and say in the row's own doc that the record is intact;
+  · **the fold must not touch what the MODEL gets.** The paragraph is the half of R7 that
+    tells the model not to `job_wait` — it is a promise to the model, which is exactly why
+    the operator does not want to read it. Display only, and a test that asserts the raw
+    text is unchanged by the fold.
+
 **done when** both heads draw a settled job or a finished subagent as one row that names it, drops the
-model-facing paragraph, and opens the whole message on demand.
+model-facing paragraph, and opens the whole message on demand. **leticl's half is landed, `/t` and all;
+letibot's is the plan above, with that last clause deliberately not in this change — and the raw text
+staying in the transcript, and in the model's context, is what makes that honest rather than a loss.**
 
 ## The notice rows stopped on the daemon rebuilt at ~14:2x — **CLOSED 2026-10-04: they never stopped; two heads render one row two ways**
 
