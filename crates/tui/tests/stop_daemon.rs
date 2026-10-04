@@ -35,15 +35,25 @@
 //! `reconnect.rs` gives in its own header, plus one more: this test has to *withhold* the
 //! daemon's answer and hold a socket open over a process that is not there, and a real
 //! server cannot be made to do either.
+//!
+//! **And because a scripted peer is a CLAIM about the daemon, one test here stands a real
+//! `ServerHandle` up beside it** —
+//! [`the_peer_sends_the_frames_a_real_daemon_sends_on_a_stop`] asks both the same question
+//! and requires the same frames back. The claim was wrong once, in the mode that models
+//! *what a real daemon does*: it closed silently with a comment asserting the daemon sends
+//! no `Bye`, so the farewell this head prints on nearly every orderly stop had never been
+//! exercised against the frame it actually gets.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use letibot_sessionlog::ScrubReport;
-use letibot_sessionlog::protocol::{ClientFrame, PROTOCOL_VERSION, ServerFrame};
+use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
+use letibot_sessionlog::registry::{Registry, SessionWiring};
+use letibot_sessionlog::server::serve_registry;
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 use letibot_tui::app::App;
 use letibot_tui::driver::Link;
@@ -544,6 +554,122 @@ fn the_daemons_goodbye_is_the_stop_being_answered() {
          that had already left."
     );
     let _ = std::fs::remove_file(&peer.path);
+}
+
+/// **The scripted peer is pinned against a real daemon, so it cannot go on modelling
+/// something the daemon does not do.**
+///
+/// The peer in this file is scripted on purpose — it has to withhold an answer and hold a
+/// socket open over a process that is not there. But a scripted peer is a **claim about the
+/// daemon**, and this one's `OnStop::Accepted` mode was written from a guess: it closed
+/// silently with a comment asserting the real daemon sends no `Bye`. That is backwards, and
+/// because it was the only model of an orderly stop in this file, the farewell the head
+/// prints — *"the daemon ended this head — daemon shutting down"* — had **never once been
+/// exercised against the frame it actually gets**, which is how the operator came to read
+/// that line and *"the daemon was asked to stop and had not gone"* four lines apart on
+/// nearly every stop.
+///
+/// So this test does not argue about the peer: it stands a real `ServerHandle` up
+/// (`serve_registry`), asks it and the peer the same question over a socket, reduces each
+/// connection to the frames a stop is made of, and requires them equal — and equal to the
+/// two frames named below, so a failure says what a stop is rather than only that two things
+/// disagree.
+///
+/// **One honest difference is dropped by the reduction.** A real daemon publishes a
+/// `daemon_stopping` warning into every session before it acks, and a scripted peer has no
+/// hub to publish into. That warning is a fact about the sessions and is asserted where it
+/// belongs (`crates/sessionlog/tests/sessions.rs`); it is not what a stop *is* on the wire. A
+/// stop is the ack, and then the farewell.
+#[test]
+fn the_peer_sends_the_frames_a_real_daemon_sends_on_a_stop() {
+    // The real one, over a real socket, with a real registry behind it.
+    let real_path = socket_path("realstop");
+    let registry = Registry::new();
+    registry
+        .create(SESSION, "the stop", SessionWiring::default())
+        .expect("a session to attach to");
+    let server = serve_registry(registry.clone(), &real_path).expect("bind");
+    let real = stop_frames(&real_path);
+    server.shutdown();
+
+    // The scripted one, asked exactly the same way.
+    let peer_path = socket_path("peerstop");
+    let peer = Peer::start_with(peer_path.clone(), OnStop::AcceptedThenBye);
+    let scripted = stop_frames(&peer_path);
+
+    let expected = vec![
+        "accepted: stopping".to_string(),
+        "bye: daemon shutting down".to_string(),
+    ];
+    assert_eq!(
+        real, expected,
+        "the real daemon's answer to a stop is the ack and the farewell, in that order"
+    );
+    assert_eq!(
+        scripted, real,
+        "the scripted peer has drifted from the daemon it stands in for. Every test in this \
+         file that reads the head's stop state through it is reading a model, and this is the \
+         one place that model is checked against the thing itself"
+    );
+    let _ = std::fs::remove_file(&peer.path);
+}
+
+/// **One stop, read off the socket, reduced to the frames a stop is made of.**
+///
+/// Attach, take the `Hello`, ask to stop, then read to the end of the connection. The read
+/// has a deadline so a daemon that answers nothing ends the read instead of the test run — the
+/// comparison above then fails with the short list, which is a better failure than a hang.
+fn stop_frames(path: &std::path::Path) -> Vec<String> {
+    let stream = UnixStream::connect(path).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("a read deadline");
+    let mut reader = FrameReader::new(stream.try_clone().expect("clone"));
+    let mut writer = FrameWriter::new(stream);
+    writer
+        .write(&ClientFrame::Attach {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: SESSION.into(),
+            since_seq: 0,
+            kind: "tui".into(),
+            identity: "dead".into(),
+            caps: Caps::default(),
+        })
+        .expect("attach");
+    // The `Hello` first: a `Stop` from a connection that has not been seated is a different
+    // question, and the real daemon is entitled to refuse it.
+    match reader.read::<ServerFrame>() {
+        Ok(ServerFrame::Hello { .. }) => {}
+        other => panic!("expected the Hello, got {other:?}"),
+    }
+    writer
+        .write(&ClientFrame::Stop {
+            client_request_id: "r1".into(),
+            expected_seq: 0,
+            who: "dead".into(),
+        })
+        .expect("stop");
+
+    let mut seen = Vec::new();
+    while let Ok(f) = reader.read::<ServerFrame>() {
+        if let Some(named) = stop_frame(&f) {
+            seen.push(named);
+        }
+        if matches!(f, ServerFrame::Bye { .. }) {
+            break;
+        }
+    }
+    seen
+}
+
+/// **A frame of a stop, named** — `None` for everything a stop is not made of: the `Hello`,
+/// a snapshot, the `daemon_stopping` event, a turn still finishing and reporting itself.
+fn stop_frame(f: &ServerFrame) -> Option<String> {
+    match f {
+        ServerFrame::Accepted { note, .. } => Some(format!("accepted: {note}")),
+        ServerFrame::Bye { reason } => Some(format!("bye: {reason}")),
+        _ => None,
+    }
 }
 
 /// **`SO_PEERCRED` names the process on the other end of this socket**, which is what makes
