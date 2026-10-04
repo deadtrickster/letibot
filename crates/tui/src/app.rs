@@ -17250,9 +17250,10 @@ fn subagent_asked(s: &SubagentState) -> String {
 /// **A fold that swallows text it does not recognise is a fold that loses information**, and
 /// this one has an obvious way to do it: a notice whose shape changes under it would have its
 /// new half silently dropped. So every part has to be accounted for — the opening has to be one
-/// of the two known ones, every settlement line has to be a bullet with a handle in backticks,
-/// and the only text that may follow them is the promise, which must be the promise by
-/// name. Anything else returns `None` and the row is drawn raw, exactly as before this existed.
+/// of the known ones, every settlement line has to be a bullet (a backticked handle for the two
+/// that are collected by an id, the line itself for the plan's nudge), and the only text that may
+/// follow them is one of the named promises. Anything else returns `None` and the row is drawn
+/// raw, exactly as before this existed.
 /// The failure of a future change here is then *"the notices got long again"*, which is visible,
 /// rather than *"a notice lost a line"*, which is not.
 ///
@@ -17262,16 +17263,33 @@ fn subagent_asked(s: &SubagentState) -> String {
 /// are looking at, not deleted from it. Opening it on demand is the half leticl has and this head
 /// does not; it is **not** in this change (see TODO.md, the notice-fold row).
 fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<String> {
-    /// The promise to the model, by a phrase that is in it and not in any fact line.
-    const PROMISE: &str = "you do not need to wait for it";
+    /// **The sentences that prove the rest of a row is advice TO THE MODEL rather than a fact
+    /// about the thing reported.** One per opening, because a nag's advice is not a completion's
+    /// — and named as phrases rather than by position, so a row whose shape changed under this
+    /// head stops folding instead of losing the half it did not recognise.
+    const PROMISES: &[&str] = &[
+        "you do not need to wait for it",
+        // The plan's nudge, whose two closings are the operator's row and the model's own
+        // (`unfinished_plan`): the first is *do it or mark it done, quoting the text*, the
+        // second is *do this one, or mark it done, or drop it*.
+        "mark it done with `todo_write`",
+        "mark it done, or drop it",
+    ];
     let mut out: Vec<String> = Vec::new();
     for group in text.split("\n\n") {
         let (head, rest) = group.split_once('\n')?;
-        // The noun a folded line names itself with, from the opening the daemon wrote.
-        let (who, sep) = if head.starts_with("[job] ") {
-            ("Job ", " ")
+        // **The noun a folded line names itself with, and whether its bullet is a HANDLE or the
+        // line itself.** A job and a child are collected by an id — it is what `job_output` and
+        // `task_result` take — so their bullets are backticked handles. A todo nag is not
+        // collected by anything: its bullet is the item's own words and whose row it is, which is
+        // the HEAD the operator asked to see (`in read verbosity todo nag shouldnt show me model
+        // prompt only todo head`).
+        let (who, sep): (&str, Option<&str>) = if head.starts_with("[job] ") {
+            ("Job ", Some(" "))
         } else if head.starts_with("[task] ") {
-            ("Agent ", " · ")
+            ("Agent ", Some(" · "))
+        } else if head.starts_with("[todo check] ") {
+            ("Todo ", None)
         } else {
             return None;
         };
@@ -17287,24 +17305,30 @@ fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<String> {
                 if promised {
                     return None;
                 }
-                let (handle, said) = bullet.split_once(' ')?;
-                let handle = handle.strip_prefix('`')?.strip_suffix('`')?;
                 settlements += 1;
-                // **A child's own task, LOOKED UP rather than parsed.** The notice carries only
-                // what the child answered; what it was asked is on the subagent row, and a
-                // second source for that fact is how the row and the pane come to disagree.
-                // Absent — an older daemon, or a child this head never watched spawn — the line
-                // still names the handle and the answer.
-                let said = if who == "Agent " {
-                    match subagents.iter().find(|s| s.session_id == handle) {
-                        Some(s) => format!("{} · {said}", subagent_asked(s)),
-                        None => said.to_string(),
+                let body = match sep {
+                    Some(sep) => {
+                        let (handle, said) = bullet.split_once(' ')?;
+                        let handle = handle.strip_prefix('`')?.strip_suffix('`')?;
+                        // **A child's own task, LOOKED UP rather than parsed.** The notice carries
+                        // only what the child answered; what it was asked is on the subagent row,
+                        // and a second source for that fact is how the row and the pane come to
+                        // disagree. Absent — an older daemon, or a child this head never watched
+                        // spawn — the line still names the handle and the answer.
+                        let said = if who == "Agent " {
+                            match subagents.iter().find(|s| s.session_id == handle) {
+                                Some(s) => format!("{} · {said}", subagent_asked(s)),
+                                None => said.to_string(),
+                            }
+                        } else {
+                            said.to_string()
+                        };
+                        format!("{handle}{sep}{said}")
                     }
-                } else {
-                    said.to_string()
+                    None => bullet.trim().to_string(),
                 };
-                out.push(format!("{who}{handle}{sep}{said}"));
-            } else if line.contains(PROMISE) {
+                out.push(format!("{who}{body}"));
+            } else if PROMISES.iter().any(|p| line.contains(p)) {
                 promised = true;
             } else {
                 return None;
@@ -35193,6 +35217,48 @@ mod tests {
             !three.contains("3 jobs"),
             "the count was the heading's job, and the heading is gone: {three}"
         );
+    }
+
+    /// **The plan's nudge is the same shape — and the operator asked for its HEAD alone.**
+    ///
+    /// Their words, on the row they have been reading all evening: *"in read verbosity todo nag
+    /// shouldnt show me model prompt only todo head."* The row is `[todo check] …` and its closing
+    /// paragraph is advice **addressed to the model** — *do this one, or mark it done, or drop
+    /// it* — so it folds like a completion notice does, to the item and whose row it is.
+    ///
+    /// **Both closings are named**, because the operator's row and the model's own are different
+    /// sentences (`unfinished_plan`), and a nag the fold cannot account for is drawn whole rather
+    /// than halved.
+    #[test]
+    fn the_todo_nag_folds_to_the_item_and_not_to_the_advice() {
+        const MINE: &str = "[todo check] this turn is finished and one item is not done (1 more open):\n  - T2 · the launcher — yours\ndo this one, or mark it done, or drop it — a plan left open is a plan nobody is following.";
+        assert_eq!(
+            folded_notice(MINE, &[]).unwrap(),
+            "Todo T2 · the launcher — yours"
+        );
+        const THEIRS: &str = "[todo check] this turn is finished and one item is not done:\n  - git status in the status line — look how leticl did it — the operator's\nthe operator asked for this one, so do it — or mark it done with `todo_write`'s `operator` field, quoting the text above exactly.";
+        assert_eq!(
+            folded_notice(THEIRS, &[]).unwrap(),
+            "Todo git status in the status line — look how leticl did it — the operator's"
+        );
+        // **No advice reaches the screen**, which is the whole of the ask.
+        for nag in [MINE, THEIRS] {
+            let folded = folded_notice(nag, &[]).expect("a nag folds");
+            for advice in [
+                "mark it done",
+                "plan nobody is following",
+                "quoting the text above",
+                "do this one",
+            ] {
+                assert!(
+                    !folded.contains(advice),
+                    "`{advice}` is addressed to the model, not to the reader: {folded}"
+                );
+            }
+        }
+        // And a nag whose closing is not one this head knows is drawn whole.
+        const STRANGE: &str = "[todo check] this turn is finished and one item is not done:\n  - T2 · the launcher — yours\nSomething new the daemon has started saying.";
+        assert!(folded_notice(STRANGE, &[]).is_none());
     }
 
     /// **One row can hold both kinds** — the daemon coalesces what it submits, so a job group and
