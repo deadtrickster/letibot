@@ -1609,7 +1609,22 @@ impl<'a> Harness<'a> {
         // that cannot reach it — a confined session rooted at the workspace — simply
         // has no scratch, and a tool that wants one gets a refusal rather than a guess.
         let scratch = scratch_dir();
-        let _ = std::fs::create_dir_all(&scratch);
+        // **0700, not the process umask's default.** `create_dir_all` cannot take a
+        // mode, and the default 0755 leaves the scratch world-readable wherever the
+        // parent already existed — which is every later start once the runtime dir is
+        // there. The mode applies to every component this creates; the ones that
+        // already exist were 0700 when they were made, or are the runtime dir itself.
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut b = std::fs::DirBuilder::new();
+            b.mode(0o700).recursive(true);
+            if let Err(e) = b.create(&scratch) {
+                // stderr rather than a log framework: this crate has none, and a
+                // scratch that cannot be made is a start-up fact the operator sees
+                // beside the daemon's own banner or nowhere.
+                eprintln!("letibot: scratch dir {}: {e}", scratch.display());
+            }
+        }
         let backend = backend.with_scratch_dir(&scratch);
         // One boxed backend from here on, whichever substrate: the host one built
         // above, or a firecode VM booted on a copy of the workspace.
@@ -7989,7 +8004,29 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
 /// session id in the path would make the directory unfindable from the one place
 /// that has to clean it up.
 pub fn scratch_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("letibot-scratch-{}", std::process::id()))
+    // **THE HEAD'S OWN RULE, APPLIED TO THE DAEMON'S HALF.** This used to be
+    // `/tmp/letibot-scratch-<pid>` — `temp_dir()` at a predictable name, world-readable
+    // — and it holds what the jobs write, the web pages fetch spills, the peek logs:
+    // anything the model read. The TUI's `head_runtime_dir` already ruled that shape
+    // wrong for its own spills ("a world-readable file at a name anyone can predict is
+    // both a disclosure and the classic symlink target"), and the operator's ask,
+    // 2026-10-05, was the same ruling one layer down: *"job output should go to your
+    // scratch directory."* `$XDG_RUNTIME_DIR` is per-user, mode 0700 and tmpfs by
+    // construction; the fallback creates its per-user directory at 0700 rather than
+    // inheriting `/tmp`'s 0755 (the creation site sets the mode — `create_dir_all`
+    // cannot).
+    //
+    // Still per daemon process, and still no session id in the path, for the reason
+    // above: findable from the one place that has to clean it up.
+    let pid = std::process::id();
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(d) => std::path::PathBuf::from(d)
+            .join("letibot")
+            .join(format!("scratch-{pid}")),
+        None => std::env::temp_dir()
+            .join(format!("letibot-{}", unsafe { libc::getuid() }))
+            .join(format!("scratch-{pid}")),
+    }
 }
 
 pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
@@ -8037,6 +8074,34 @@ fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
 
 #[cfg(test)]
 mod tests {
+    /// **The scratch is per-user and per-process, never the flat world-readable
+    /// `/tmp/letibot-scratch-<pid>`** — the operator's ask, 2026-10-05: *"job output
+    /// should go to your scratch directory."* The path is checked by SHAPE rather than
+    /// by resolving `$XDG_RUNTIME_DIR`, which a test must not mutate process-wide: the
+    /// old spelling is refused outright, and the directory component the process's
+    /// scratch sits in is the per-user one either environment names.
+    #[test]
+    fn the_scratch_dir_is_per_user_and_never_the_flat_tmp_spelling() {
+        let s = super::scratch_dir();
+        let said = s.display().to_string();
+        assert!(
+            !said.contains("letibot-scratch"),
+            "the old world-readable spelling: {said}"
+        );
+        assert!(
+            s.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("scratch-")),
+            "the last component is the process's own: {said}"
+        );
+        // Under the runtime dir when there is one — both components of it.
+        if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR") {
+            assert!(
+                s.starts_with(std::path::Path::new(&rt).join("letibot")),
+                "the runtime dir's letibot, where the socket already lives: {said}"
+            );
+        }
+    }
+
     /// **The depth cap refuses by NAME, and at the right boundary** (R58).
     ///
     /// `task` is seated on `m2_coder` at every depth, so the seat table is not where the

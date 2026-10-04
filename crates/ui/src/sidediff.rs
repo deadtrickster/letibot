@@ -131,14 +131,18 @@ pub fn render_split(old: &[&str], new: &[&str], sc: &SplitConfig) -> Vec<String>
 
     let mut budget = sc.cfg.max_rows;
     let mut dropped = 0usize;
-    for (hi, h) in hs.iter().enumerate() {
-        if hi > 0 || hs.len() > 1 {
+    for h in hs.iter() {
+        // **A HEADER BEFORE EVERY HUNK, INCLUDING THE ONLY ONE** — the same
+        // correction `diff::render_from` records, and for the same reported
+        // defect: the single-hunk edit is the common one, and `hi > 0 ||
+        // hs.len() > 1` drew it with no `@@` at all.
+        {
             if budget == 0 {
                 dropped += 1;
-                continue;
+            } else {
+                budget -= 1;
+                out.push(hunk_header(h, sc, p));
             }
-            budget -= 1;
-            out.push(hunk_header(h, sc, p));
         }
         for pair in pair_rows(&h.rows) {
             let lines = render_pair(&pair, old, new, &old_classes, &new_classes, sc, &g);
@@ -597,14 +601,39 @@ pub fn render_edit_view(
     cfg: &DiffConfig,
     view: EditView,
 ) -> Vec<String> {
+    // **THE FILE'S OWN NAME, ON EVERY EDIT.** The operator, 2026-10-05: *"sometimes
+    // your Edited card doesnt have file name and the `@@` tags."* Sometimes is the
+    // word: the CARD's target line names the file when the call carried one, and
+    // then a card that did not — a call first seen as `ToolStarted`, a log older
+    // than `display_target` — drew a diff with no file name on it anywhere, and a
+    // diff with no file name is a change to nothing in particular. Git's own shape
+    // names the file above every diff however the caller found it; one faint line,
+    // in the `@@` header's own register, is that rule at card scale. It sits in the
+    // ONE seam both views pass through, so split and unified cannot disagree about
+    // whether the name is there.
+    let mut out = vec![cfg.palette.paint(Role::Faint, path)];
     match view {
-        EditView::Split => render_edit(path, before, after, before_start, after_start, cfg),
+        EditView::Split => out.extend(render_edit(
+            path,
+            before,
+            after,
+            before_start,
+            after_start,
+            cfg,
+        )),
         EditView::Unified => {
             let old: Vec<&str> = before.lines().collect();
             let new: Vec<&str> = after.lines().collect();
-            crate::diff::render_from(&old, &new, cfg, before_start, after_start)
+            out.extend(crate::diff::render_from(
+                &old,
+                &new,
+                cfg,
+                before_start,
+                after_start,
+            ))
         }
     }
+    out
 }
 
 #[cfg(test)]
@@ -697,11 +726,13 @@ mod tests {
         let new = ["fn a() {", "    new();", "}"];
         let rows = render_split(&old, &new, &sc(120, Palette::None, 1, 1));
         let p = plain(&rows);
-        assert_eq!(p.len(), 3, "{p:?}");
-        assert!(p[0].contains("fn a() {") && p[0].contains("│"), "{p:?}");
-        assert!(p[1].contains('-') && p[1].contains("old();"), "{p:?}");
-        assert!(p[1].contains('+') && p[1].contains("new();"), "{p:?}");
-        assert!(p[2].contains('}'), "{p:?}");
+        // The hunk header precedes the only hunk, as it does in a real diff.
+        assert_eq!(p.len(), 4, "{p:?}");
+        assert!(p[0].starts_with("@@"), "the hunk is unheaded: {p:?}");
+        assert!(p[1].contains("fn a() {") && p[1].contains("│"), "{p:?}");
+        assert!(p[2].contains('-') && p[2].contains("old();"), "{p:?}");
+        assert!(p[2].contains('+') && p[2].contains("new();"), "{p:?}");
+        assert!(p[3].contains('}'), "{p:?}");
     }
 
     #[test]
@@ -740,8 +771,9 @@ mod tests {
             &["x", "y"],
             &sc(80, Palette::None, 1, 1),
         ));
-        assert_eq!(rows.len(), 2, "{rows:?}");
-        for r in rows {
+        assert_eq!(rows.len(), 3, "header plus the two lines: {rows:?}");
+        assert!(rows[0].starts_with("@@"), "{rows:?}");
+        for r in rows.iter().skip(1) {
             let (left, right) = r.split_once('│').unwrap();
             assert!(left.trim().is_empty(), "{r:?}");
             assert!(right.contains('+'), "{r:?}");
@@ -851,8 +883,9 @@ mod tests {
         let new = [long.as_str()];
         let rows = plain(&render_split(&old, &new, &sc(60, Palette::None, 1, 1)));
         assert!(rows.len() >= 2, "{rows:?}");
-        // The continuation row's right panel carries code; its left is blank.
-        let cont = &rows[1];
+        // Row 0 is the hunk header; the continuation row's right panel carries
+        // code and its left is blank.
+        let cont = &rows[2];
         let (left, right) = cont.split_once('│').unwrap();
         assert!(left.trim().is_empty(), "{cont:?}");
         assert!(right.contains('y'), "{cont:?}");
@@ -1059,7 +1092,12 @@ mod tests {
         // A tab is four columns on both panels, so the code starts at the
         // same offset in each half and the pair aligns. (`SEP` is " │ ", so
         // the right half carries one leading space that is not the panel's.)
-        let changed = rows.iter().find(|r| r.contains('-')).unwrap();
+        // The finder names the code, not the sign: the hunk header carries a
+        // `-` of its own.
+        let changed = rows
+            .iter()
+            .find(|r| r.contains('-') && r.contains("fn a"))
+            .unwrap();
         let (left, right) = changed.split_once('│').unwrap();
         assert_eq!(
             left.find("fn").unwrap(),

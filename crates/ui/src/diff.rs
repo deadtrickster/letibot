@@ -443,8 +443,16 @@ pub fn render_from(
     };
     let mut rows_left = cfg.max_rows;
     let mut dropped = 0usize;
-    for (hi, h) in hs.iter().enumerate() {
-        if hi > 0 || hs.len() > 1 {
+    for h in hs.iter() {
+        // **A HEADER BEFORE EVERY HUNK, INCLUDING THE ONLY ONE.** This used to read
+        // `if hi > 0 || hs.len() > 1`, which is git's diff *between* hunks and not
+        // git's diff: a real `@@ -a,b +c,d @@` precedes the FIRST hunk too, and the
+        // condition meant the common small edit — one hunk — drew with no `@@` at
+        // all. The operator, 2026-10-05: *"sometimes your Edited card doesnt have
+        // file name and the `@@` tags."* The single-hunk case was the *sometimes*.
+        // `hi` stays in scope for nothing here now; the enumerate is kept for the
+        // count the seam below wants.
+        {
             let count_old = h
                 .rows
                 .iter()
@@ -455,16 +463,21 @@ pub fn render_from(
                 .iter()
                 .filter(|r| matches!(r, Row::Context { .. } | Row::Added { .. }))
                 .count();
-            out.push(cfg.palette.paint(
-                Role::Faint,
-                &format!(
-                    "@@ -{},{} +{},{} @@",
-                    old_base + h.old_start + 1,
-                    count_old,
-                    new_base + h.new_start + 1,
-                    count_new
-                ),
-            ));
+            if rows_left == 0 {
+                dropped += 1;
+            } else {
+                rows_left -= 1;
+                out.push(cfg.palette.paint(
+                    Role::Faint,
+                    &format!(
+                        "@@ -{},{} +{},{} @@",
+                        old_base + h.old_start + 1,
+                        count_old,
+                        new_base + h.new_start + 1,
+                        count_new
+                    ),
+                ));
+            }
         }
         let paired = if cfg.intra_line {
             pair_rows(&h.rows, old, new)
@@ -791,10 +804,17 @@ mod tests {
         let rows = render_from(&old, &new, &cfg, 310, 310);
         // Pinned whole rather than probed: the gutter's shape *is* the requirement,
         // so `310  a` / `311 -b` / `311 +B` / `312  c` — three columns of number,
-        // then the sign, then the code — is the assertion.
+        // then the sign, then the code — is the assertion. The `@@` now precedes
+        // the only hunk, as it does in a real diff (see `render_from`).
         assert_eq!(
             rows,
-            vec!["310  a", "311 -b", "311 +B", "312  c"],
+            vec![
+                "@@ -310,3 +310,3 @@",
+                "310  a",
+                "311 -b",
+                "311 +B",
+                "312  c"
+            ],
             "{:?}",
             rows.join("\n")
         );
@@ -802,7 +822,7 @@ mod tests {
         let from_one = render(&old, &new, &cfg);
         assert_eq!(
             from_one,
-            vec!["1  a", "2 -b", "2 +B", "3  c"],
+            vec!["@@ -1,3 +1,3 @@", "1  a", "2 -b", "2 +B", "3  c"],
             "{from_one:?}"
         );
     }
@@ -875,22 +895,23 @@ mod tests {
             };
             let rows = render(&old, &new, &cfg);
             assert!(rows.len() > 2, "width {width} must wrap: {rows:?}");
-            // Row 0 is `<num> -<code>`; a continuation is the same gutter's width of
-            // blanks, then a space where the sign was, then the code — so the code
-            // stays in its column and only the sign's does not. Both widths are
-            // derived from the gutter, so neither is written down here: the
-            // assertion is that the two agree at a width where wrapping happens.
-            let body_col = rows[0].find('x').expect("code on row 0");
+            // Row 0 is the hunk header; row 1 is `<num> -<code>`; a continuation is
+            // the same gutter's width of blanks, then a space where the sign was,
+            // then the code — so the code stays in its column and only the sign's
+            // does not. Both widths are derived from the gutter, so neither is
+            // written down here: the assertion is that the two agree at a width
+            // where wrapping happens.
+            let body_col = rows[1].find('x').expect("code on the first diff row");
             assert_eq!(
-                rows[1].find('x').expect("code on the continuation"),
+                rows[2].find('x').expect("code on the continuation"),
                 body_col,
                 "width {width}: {rows:?}"
             );
             // And the sign's column is blank rather than a second number.
             assert!(
-                !rows[1].chars().take(body_col).any(|c| c.is_ascii_digit()),
+                !rows[2].chars().take(body_col).any(|c| c.is_ascii_digit()),
                 "a continuation carries no number: {:?}",
-                rows[1]
+                rows[2]
             );
         }
     }

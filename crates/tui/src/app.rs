@@ -13963,22 +13963,71 @@ impl App {
                  reattaches to it"
                     .to_string(),
             ),
-            (
-                "leave and stop the daemon",
+            ("leave and stop the daemon", {
+                // **AND THE WORK THAT DIES WITH IT, SAID FIRST** — the operator's
+                // ask, 2026-10-05: stopping the daemon stops the jobs and the
+                // subagents with it, and a card that named only the cold prefill
+                // made the cheap row and the killing row read alike. A running
+                // job is `cargo test --release` an hour in; a running subagent is
+                // a session mid-task. Neither survives the stop, and the
+                // consequence is the one fact that decides the answer.
+                //
+                // Only the RUNNING count, on both: a settled job is history the
+                // store keeps, and `opening` is a subagent that has not started —
+                // nothing that dies. The first row needs no such clause: leaving
+                // the head stops nothing (its own text says the daemon keeps
+                // running).
+                let running_jobs = self.jobs.iter().filter(|j| j.running).count();
+                let running_subs = self
+                    .subagents
+                    .iter()
+                    .filter(|s| s.state == "running")
+                    .count();
+                let mut dies = String::new();
+                if running_jobs > 0 && running_subs > 0 {
+                    dies = format!(
+                        "{running_jobs} job{} and {running_subs} subagent{} are \
+                             running and stop with the daemon. ",
+                        if running_jobs == 1 { "" } else { "s" },
+                        if running_subs == 1 { "" } else { "s" },
+                    );
+                } else if running_jobs > 0 {
+                    dies = format!(
+                        "{running_jobs} job{} running — {} stop with the daemon. ",
+                        if running_jobs == 1 { "is" } else { "s are" },
+                        if running_jobs == 1 {
+                            "it stops"
+                        } else {
+                            "they stop"
+                        },
+                    );
+                } else if running_subs > 0 {
+                    dies = format!(
+                        "{running_subs} subagent{} running — {} stop with the daemon. ",
+                        if running_subs == 1 { "is" } else { "s are" },
+                        if running_subs == 1 {
+                            "it stops"
+                        } else {
+                            "they stop"
+                        },
+                    );
+                }
                 match others {
-                    0 => "the session is written to disk and `letibot --continue` \
-                          reopens it — but its prompt leaves the model server's cache, \
-                          so the next turn prefills cold"
-                        .to_string(),
-                    1 => "one other head is attached and will be told. The session is \
-                          on disk; the next turn after reopening prefills cold"
-                        .to_string(),
-                    n => format!(
-                        "{n} other heads are attached and will be told. The session is \
-                         on disk; the next turn after reopening prefills cold"
+                    0 => format!(
+                        "{dies}the session is written to disk and `letibot --continue` \
+                             reopens it — but its prompt leaves the model server's cache, \
+                             so the next turn prefills cold"
                     ),
-                },
-            ),
+                    1 => format!(
+                        "{dies}one other head is attached and will be told. The session \
+                             is on disk; the next turn after reopening prefills cold"
+                    ),
+                    n => format!(
+                        "{dies}{n} other heads are attached and will be told. The session \
+                             is on disk; the next turn after reopening prefills cold"
+                    ),
+                }
+            }),
         ]
     }
 
@@ -27645,6 +27694,14 @@ mod tests {
         // The consequence is ON the row, not in a footnote: the two answers are
         // not alike and the card must not make them look it.
         assert!(screen.contains("prefills cold"), "{screen}");
+        // **AND NO WORK IS CLAIMED TO BE RUNNING** — the warning is the running
+        // work's, not the row's furniture, so an idle session's card reads as
+        // idle. The words below are the warning's own; their absence here is
+        // the assertion.
+        assert!(
+            !screen.contains("stop with the daemon"),
+            "nothing is running, so nothing is claimed to die: {screen}"
+        );
         // And the footer names the keys this card actually takes — it used to
         // say "ctrl+c again to exit", which a third press no longer does.
         assert!(screen.contains("esc stays"), "{screen}");
@@ -27652,6 +27709,71 @@ mod tests {
 
         // Enter on an untouched card takes the smaller exit.
         assert_eq!(a.key(Key::Enter), Some(Action::Quit));
+    }
+
+    /// **Stopping the daemon stops the work, and the card says so** — the operator's
+    /// ask, 2026-10-05. A running job is an hour of `cargo test --release`; a running
+    /// subagent is a session mid-task; both die with the daemon, and the stop row named
+    /// only the cold prefill — the cost that reverses itself — while omitting the one
+    /// that does not.
+    #[test]
+    fn the_stop_row_names_the_jobs_and_subagents_that_die_with_the_daemon() {
+        let mut a = app();
+        a.clock(1_000);
+        a.session_id = "s".into();
+        // A running job and a running subagent, beside a settled one of each: only
+        // the RUNNING count is the warning's, and settled work must not inflate it.
+        a.apply(jobs_frame(
+            "s",
+            vec![
+                daemon_job("j1", "cargo test --release", true),
+                daemon_job("j2", "wc -l notes", false),
+            ],
+        ));
+        a.subagents = vec![
+            SubagentState {
+                session_id: "s-sub-1".into(),
+                state: "running".into(),
+                prompt: "audit the store".into(),
+                role: "coder".into(),
+                task: String::new(),
+                answer: None,
+            },
+            SubagentState {
+                session_id: "s-sub-2".into(),
+                state: "done".into(),
+                prompt: "finished".into(),
+                role: "coder".into(),
+                task: String::new(),
+                answer: None,
+            },
+        ];
+        a.key(Key::CtrlC);
+        a.key(Key::CtrlC);
+        assert!(a.quit_card, "two presses open the card");
+        let card = a.quit_choices();
+        assert!(
+            card[1]
+                .1
+                .contains("1 job and 1 subagent are running and stop with the daemon"),
+            "the running pair is named on the stop row:\n{:?}",
+            card[1].1
+        );
+        // And drawn: the card is where the operator reads it, and a warning that
+        // wraps off the glass is a warning nobody saw.
+        let screen = a.screen(110, 30).join("\n");
+        assert!(
+            screen.contains("stop with the daemon"),
+            "the warning reached the glass:\n{screen}"
+        );
+        // And the cheap row is unchanged by any of it — leaving the head stops
+        // nothing, and a card that blurred that would be the defect this one exists
+        // to prevent.
+        assert!(
+            !card[0].1.contains("stop with the daemon"),
+            "the cheap row names no dying work: {:?}",
+            card[0].1
+        );
     }
 
     #[test]
