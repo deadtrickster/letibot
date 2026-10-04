@@ -441,6 +441,13 @@ pub struct ModelBrief {
     /// Present only when layer A found the action adjudicable AND resolved. The
     /// oracle takes it by value to build a [`Widening`]; there is no other source.
     witness: Option<Adjudicable>,
+    /// **The reading did not resolve** — the operator's ruling, 2026-10-05: *"we have
+    /// to ask oracle for this stuff."* An unresolved action is the exact case the oracle
+    /// exists for (the deterministic reader failed; the model's reading of the brief is
+    /// the only second opinion there is), so the brief says so rather than passing the
+    /// attempted structure off as a reading. Rendered, never acted on: the witness rule
+    /// is unchanged and an ALLOW on an unread action cannot admit it.
+    unresolved: bool,
 }
 
 impl ModelBrief {
@@ -512,6 +519,7 @@ impl ModelBrief {
             trail: req.trail.clone(),
             prior: req.prior.clone(),
             witness: req.adjudicable(),
+            unresolved: !req.resolved,
         }
     }
 
@@ -612,6 +620,20 @@ impl ModelBrief {
         ));
         s.push_str(&format!("what it is: {}\n", self.summary));
         s.push_str(&format!("baseline (already decided): {}\n", self.baseline));
+        // **THE ONE CASE THE ORACLE EXISTS FOR, SAID RATHER THAN HIDDEN.** When the
+        // deterministic reading did not resolve, the structure below is layer A's
+        // best attempt — `<unresolved>` where a construct could not be read — and a
+        // model asked to judge it must know that, or it judges a tentative reading
+        // as though it were the action. The witness rule still mints nothing for an
+        // unread action, so an ALLOW here cannot admit it; what the oracle says
+        // reaches the card instead of the classifier's failure alone.
+        if self.unresolved {
+            s.push_str(
+                "the deterministic reading DID NOT RESOLVE — the structure below is \
+                 layer A's best attempt, with `<unresolved>` where a construct could not \
+                 be read. Judge from the operator's words, not from the structure.\n",
+            );
+        }
         s.push_str(&format!("effect lands: {}\n", self.effect_scope.as_str()));
         s.push_str(&format!("intents: {}\n", self.intents.join(", ")));
         if !self.scoped.is_empty() {
@@ -2123,8 +2145,15 @@ impl Adjudicator for Budgeted {
 /// classifier also uses: every deterministic layer first, the model last, filling only
 /// the gap that is fail-closed without it.
 ///
-/// 1. **The action did not resolve** → `Unavailable`. The oracle is not consulted;
-///    there is nothing to consult it about.
+/// 1. **The action did not resolve** → the oracle is CONSULTED, with the brief saying
+///    the reading failed. The operator's ruling, 2026-10-05, on a card that read
+///    *"no model verdict — the action did not resolve … No oracle was consulted"* at
+///    `0 ms`: *"we have to ask oracle for this stuff."* An unresolved action is the
+///    exact case the oracle exists for — the deterministic reader failed, and the
+///    model's reading of the brief is the only second opinion there is. The witness
+///    rule stands unchanged ([`AdjudicationRequest::adjudicable`] mints nothing for an
+///    unread action), so an oracle's ALLOW cannot admit it; what the oracle says rides
+///    the card to the person instead of the classifier's failure alone.
 /// 2. **The tier is blocked** → `Denied`. Layer A decided; nothing promotes it.
 /// 3. **The tier is always-ask** → escalate to a human. The oracle is not consulted at
 ///    all, because the point of the fixed list is that no amount of model confidence
@@ -2301,22 +2330,19 @@ impl Adjudicator for ModelAdjudicator {
         let started = Instant::now();
         let me = self.oracle.describe();
 
-        if !req.resolved {
-            return self.note(
-                AdjudicationDecision {
-                    request_id: req.id.clone(),
-                    outcome: DecisionOutcome::Unavailable,
-                    by: me,
-                    basis: "the action did not resolve, so there is nothing to be authorised \
-                        ABOUT. No oracle was consulted"
-                        .into(),
-                    latency_ms: started.elapsed().as_millis() as u64,
-                },
-                false,
-                "unavailable",
-                Vec::new(),
-            );
-        }
+        // **An unresolved action is no longer turned away at the door.** It falls
+        // through the same clauses as a resolved one — always-ask and blocked still
+        // stand on their own, the trail and the scope still have to be there — and
+        // reaches the oracle with a brief that names the failure. The witness rule is
+        // the safety property that stays: `adjudicable()` mints nothing for an unread
+        // action, so an ALLOW cannot admit one, and the HttpOracle's conversion turns
+        // that ALLOW into an escalate whose sentence says the model allowed it — the
+        // verdict visible, the admission still a person's.
+        //
+        // The operator's ruling, 2026-10-05: *"we have to ask oracle for this stuff."*
+        // The old arm here answered `Unavailable` at `0 ms` with "No oracle was
+        // consulted", which put the one case a second opinion exists for in front of
+        // the person with no second opinion on it.
         if let Tier::AlwaysAsk { rule, why } = &req.tier {
             return self.note(
                 AdjudicationDecision {
@@ -2937,25 +2963,87 @@ mod tests {
     }
 
     #[test]
-    fn an_unresolved_action_never_reaches_the_oracle() {
-        // The one `if` two surveyed harnesses got opposite ways. Here there is no
-        // branch to invert: the witness does not exist, and the oracle is not called.
+    fn an_unresolved_action_reaches_the_oracle_and_its_allow_does_not_admit() {
+        // The one `if` two surveyed harnesses got opposite ways, ruled by the operator
+        // 2026-10-05: *"we have to ask oracle for this stuff."* The deterministic
+        // reader's failure is the exact case the second opinion exists for, so the
+        // oracle IS consulted — and the witness rule is what keeps an ALLOW from
+        // admitting an action layer A could not read: no witness exists, so the
+        // ALLOW cannot become a widening and the action escalates to the person
+        // with the verdict on the card.
         let called = Arc::new(AtomicUsize::new(0));
         let c = called.clone();
         let adj = adjudicator(move |b: &mut ModelBrief| {
             c.fetch_add(1, Ordering::Relaxed);
-            match b.adjudicable() {
-                Some(w) => {
-                    OracleAnswer::Authorised(Widening::new(w, b.request_id.clone(), vec![], "sure"))
-                }
-                None => OracleAnswer::NotAuthorised { why: "n".into() },
+            // The witness is gone whatever the oracle does with it — and an ALLOW
+            // attempt on nothing is NotAuthorised by the HttpOracle's own rule.
+            assert!(
+                b.adjudicable().is_none(),
+                "an unresolved action mints no witness"
+            );
+            OracleAnswer::NotAuthorised {
+                why: "read the brief, refused it".into(),
             }
         });
         let req = request("/bin/cat $FILE", trail_saying("go ahead", 0));
         assert!(!req.resolved);
         assert!(req.adjudicable().is_none());
-        assert_eq!(adj.decide(&req).outcome, DecisionOutcome::Unavailable);
-        assert_eq!(called.load(Ordering::Relaxed), 0);
+        let d = adj.decide(&req);
+        assert_eq!(called.load(Ordering::Relaxed), 1, "the oracle was asked");
+        assert!(
+            matches!(d.outcome, DecisionOutcome::Escalate { .. }),
+            "a refusal of an unread action escalates rather than deciding it: {:?}",
+            d.outcome
+        );
+        assert!(
+            d.basis.contains("read the brief, refused it"),
+            "{}",
+            d.basis
+        );
+        let advice = adj
+            .last_advice()
+            .expect("the advice records a real consult");
+        assert!(
+            advice.consulted,
+            "the card's verdict line is the oracle's own"
+        );
+    }
+
+    /// **The brief says the reading failed**, so a model asked to judge an unresolved
+    /// action knows the structure it is shown is layer A's attempt and not the action —
+    /// the operator's second finding on the same card: *"also here we had not resolved
+    /// `exec`"*.
+    #[test]
+    fn the_brief_tells_the_oracle_the_reading_did_not_resolve() {
+        let seen = Arc::new(Mutex::new(String::new()));
+        let s = seen.clone();
+        let adj = adjudicator(move |b: &mut ModelBrief| {
+            *s.lock().unwrap() = b.render();
+            OracleAnswer::NotAuthorised { why: "n".into() }
+        });
+        let req = request("/bin/cat $FILE", trail_saying("go ahead", 0));
+        let _ = adj.decide(&req);
+        let shown = seen.lock().unwrap().clone();
+        assert!(
+            shown.contains("DID NOT RESOLVE"),
+            "the oracle was not told the reading failed:\n{shown}"
+        );
+        // And a resolved action carries no such line — the marker is the failure's,
+        // not the brief's furniture.
+        let seen2 = Arc::new(Mutex::new(String::new()));
+        let s2 = seen2.clone();
+        let adj2 = adjudicator(move |b: &mut ModelBrief| {
+            *s2.lock().unwrap() = b.render();
+            OracleAnswer::NotAuthorised { why: "n".into() }
+        });
+        let ok = request("/bin/ls /etc", trail_saying("have a look", 0));
+        assert!(ok.resolved);
+        let _ = adj2.decide(&ok);
+        let shown2 = seen2.lock().unwrap().clone();
+        assert!(
+            !shown2.contains("DID NOT RESOLVE"),
+            "a resolved reading is not marked failed:\n{shown2}"
+        );
     }
 
     #[test]

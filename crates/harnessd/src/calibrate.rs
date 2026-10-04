@@ -383,9 +383,11 @@ pub fn replay_rows(
 
         // **The surroundings a real session declares.** Without them the shell is
         // `ShellTrust::Unknown`, under which a bare command name does not resolve —
-        // and an unresolved action short-circuits before the oracle, so the guard
-        // is never asked and the replay measures nothing at all. Measured: 26 of 28
-        // rows came back "the action did not resolve … No oracle was consulted",
+        // and an unresolved reading is a worse measurement even now the oracle is
+        // consulted on one (2026-10-05): the guard is judging layer A's attempt
+        // rather than the action, so a verdict moved by the prompt is a verdict
+        // moved on the wrong input. Measured, before the consult was added: 26 of
+        // 28 rows came back "the action did not resolve … No oracle was consulted",
         // which is why no change to the guard's prompt moved a single verdict.
         //
         // Built from the same function `Harness::open` uses, so the replay asks the
