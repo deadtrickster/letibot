@@ -295,6 +295,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             prompt: "summarize ~/bin/letibot".into(),
             role: "coder".into(),
             task: "summarize ~/bin/letibot".into(),
+            model: String::new(),
             answer: None,
         },
         SessionEvent::JobSettled {

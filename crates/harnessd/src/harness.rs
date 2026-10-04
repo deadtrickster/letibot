@@ -1015,6 +1015,11 @@ pub struct Harness<'a> {
     /// "never switched" and "switched away from a server with no window" the same
     /// state, and only one of them should restore anything.
     local_window: Option<Option<u64>>,
+    /// **The same fact, shared with the subagent runner** — so a child spawned with
+    /// `model: "local"` plans its compaction against the daemon's own server window
+    /// rather than the cloud model's number the parent is carrying. Written wherever
+    /// [`Harness::local_window`] is written; see [`HarnessTaskRunner::local_window`].
+    local_window_cell: Arc<std::sync::Mutex<Option<Option<u64>>>>,
 }
 
 /// What a resume actually rebuilt.
@@ -1815,6 +1820,11 @@ impl<'a> Harness<'a> {
         // below — see `HarnessTaskRunner::tree_watch`.
         let tree_watch_slot: Arc<std::sync::Mutex<Option<Arc<crate::jobwatch::JobWatchers>>>> =
             Default::default();
+        // **The daemon's own server window, shared with the runner.** A spawn may ask for
+        // `model: "local"` while this session is on a cloud provider; the child then plans
+        // its compaction against the SERVER's window, which is this cell. See
+        // `HarnessTaskRunner::local_window`.
+        let local_window_cell: Arc<std::sync::Mutex<Option<Option<u64>>>> = Default::default();
         let task_runner: Arc<dyn letibot_tools::builtins::task::TaskRunner> =
             Arc::new(HarnessTaskRunner {
                 vocab: parts.vocab.clone(),
@@ -1828,6 +1838,7 @@ impl<'a> Harness<'a> {
                 slots: parts.tree_slots.clone().unwrap_or_default(),
                 // Filled below, once this harness has built its own `job_watch` (R58).
                 tree_watch: tree_watch_slot.clone(),
+                local_window: local_window_cell.clone(),
             });
         // Cloned before `with_session_tools` takes it: `digest` folds its findings
         // through the same subagent runner `task` uses, so the two must be the
@@ -2974,6 +2985,7 @@ impl<'a> Harness<'a> {
             // that started on a provider has no local window to go back to, and
             // `None` here says exactly that.
             local_window: None,
+            local_window_cell: local_window_cell.clone(),
         };
         h.publish_settings();
         h.publish_jobs();
@@ -4088,6 +4100,12 @@ impl<'a> Harness<'a> {
         // restores the server's own number rather than keeping a cloud model's.
         if self.local_window.is_none() {
             self.local_window = Some(self.cfg.context_window);
+            // **And mirrored to the runner**, which needs it for a `local` child spawned
+            // while THIS session is on a provider. One write site, so the two cannot
+            // remember different windows.
+            if let Ok(mut g) = self.local_window_cell.lock() {
+                *g = self.local_window;
+            }
         }
         let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
             return String::new();
@@ -7315,6 +7333,98 @@ struct HarnessTaskRunner {
     /// already carries the tree's root as its ring target — so a `Parts` built for a
     /// grandchild inherits the root all the way down without a parent-chain walk.
     tree_watch: Arc<std::sync::Mutex<Option<Arc<crate::jobwatch::JobWatchers>>>>,
+    /// **The daemon's own server window, as this session last knew it** — `None` until
+    /// the session first switches away from local, and the server's window once it has.
+    ///
+    /// A cell shared with the [`Harness`] because a spawn may ask for `model: "local"`
+    /// while the parent is on a cloud provider: the child then runs on the daemon's
+    /// server and must plan its compaction against THAT window, not the cloud model's —
+    /// the same mistake `retune_window` exists to prevent, one direction over. The
+    /// harness writes it wherever it updates its own copy; the runner reads it at spawn.
+    local_window: Arc<std::sync::Mutex<Option<Option<u64>>>>,
+}
+
+/// **A subagent's model, resolved from the `task` tool's `model` argument.**
+///
+/// The operator's ask, 2026-10-05: *"I want to be able to have subagents using different
+/// models. say you deepseek should be able to run local model"*, and the other direction
+/// too: *"local qwen in main session should be able to run cloud glm"*. **Symmetric on
+/// purpose** — the child's model has nothing to do with the parent's, so the two names are
+/// resolved by one function and neither direction is special.
+///
+/// The resolution goes through [`crate::slash::models_choice`], the same door `/models`
+/// uses, and that is the point rather than a convenience: a name a person can type is a
+/// name a child can run on, the key lookup is the same one the picker's green rows use,
+/// and a name neither accepts is refused by the SAME sentence. A separate resolver here
+/// would be a second answer to *what is this provider* — the class of defect this tree
+/// keeps finding by looking for it.
+///
+/// `local_window` is the daemon's own server window as the parent last knew it
+/// ([`HarnessTaskRunner::local_window`]), used for `local`; a cloud name takes its window
+/// from the catalogue, and a name the catalogue has no row for leaves the number alone
+/// rather than inventing one.
+#[derive(Debug)]
+pub struct SubagentModel {
+    /// What the record says: `local`, or `PROVIDER/MODEL`.
+    pub label: String,
+    /// `None` is the daemon's own server; `Some` a cloud provider, its key already found.
+    pub provider: Option<crate::config::ProviderConfig>,
+    /// The window to plan compaction against, `None` when nobody knows one.
+    pub window: Option<u64>,
+}
+
+/// See [`SubagentModel`]. `want` is `local` or `PROVIDER[/MODEL]`.
+pub fn subagent_model(
+    want: &str,
+    local_window: Option<Option<u64>>,
+) -> Result<SubagentModel, Vec<String>> {
+    let want = want.trim();
+    if want == "local" {
+        return Ok(SubagentModel {
+            label: "local".into(),
+            provider: None,
+            // The daemon's own server window: the number the parent remembered on its way
+            // out to a provider, or whatever `None` means — *nobody measured one* — rather
+            // than the cloud model's number wearing the local child's name.
+            window: local_window.flatten(),
+        });
+    }
+    let (provider, model) = match want.split_once('/') {
+        Some((p, m)) if !p.is_empty() && !m.is_empty() => (p, Some(m)),
+        _ => (want, None),
+    };
+    let (pc, _notes) =
+        crate::slash::models_choice(provider, model, None, None).map_err(|lines| {
+            let mut out = lines;
+            out.push(format!(
+                "nothing was spawned on `{want}`; `local` needs no name, and a provider's \
+                 name is the one `/models` lists"
+            ));
+            out
+        })?;
+    // `models_choice` answers `None` only for `local`, handled above — so reaching here
+    // without a provider would be a resolver bug rather than a user error, and the honest
+    // answer is to refuse rather than to run the child on the parent's model.
+    let Some(pc) = pc else {
+        return Err(vec![format!(
+            "`{want}` resolved to no provider and no model"
+        )]);
+    };
+    let preset = letibot_provider::Preset::parse(&pc.name).map_err(|e| vec![e])?;
+    let cat = letibot_provider::catalogue::Catalogue::load();
+    let window = preset.window(pc.model.as_deref(), &cat);
+    let label = format!(
+        "{}/{}",
+        pc.name,
+        pc.model
+            .clone()
+            .unwrap_or_else(|| preset.default_model(&cat))
+    );
+    Ok(SubagentModel {
+        label,
+        provider: Some(pc),
+        window,
+    })
 }
 
 /// **The R58 depth refusal, as one pure function so it is testable without a harness.**
@@ -7460,6 +7570,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             role: spec.role.clone(),
             downgrade: spec.downgrade.clone(),
             placement: spec.placement,
+            model: spec.model.clone(),
         };
         let id = sub_id.clone();
         let spawned = std::thread::Builder::new()
@@ -7633,6 +7744,28 @@ impl HarnessTaskRunner {
         // (title on the opening states, the answer's first line on the finish) so a head
         // older than the field sees exactly what it saw before. A new head reads the row
         // from `task` and the subtitle from `answer` — see `SessionEvent::Subagent`.
+        // **THE CHILD'S OWN MODEL, when it was given one** — the operator's ask, 2026-10-05:
+        // *"I want to be able to have subagents using different models. say you deepseek
+        // should be able to run local model"*, and the other way: *"local qwen in main
+        // session should be able to run cloud glm"*. Resolved through `models_choice`, the
+        // same door `/models` uses, so a name a person can type is a name a child can run
+        // on and a key the picker finds is a key the spawn finds. A refusal is the tool's
+        // own sentence and the spawn does not happen — never a child quietly run on the
+        // parent's model while the record says otherwise.
+        let mut sub_model = String::new();
+        let mut sub_provider: Option<crate::config::ProviderConfig> = None;
+        let mut sub_window: Option<Option<u64>> = None;
+        if let Some(want) = spec.model.as_deref() {
+            let local_window = *self.local_window.lock().unwrap_or_else(|e| e.into_inner());
+            match subagent_model(want, local_window) {
+                Ok(m) => {
+                    sub_model = m.label.clone();
+                    sub_provider = m.provider.clone();
+                    sub_window = Some(m.window);
+                }
+                Err(why) => return Err(why.join("; ")),
+            }
+        }
         let task = prompt.to_string();
         let publish = |state: &str, said: &str, answer: Option<String>| {
             if let Some(hub) = self.registry.get(&parent) {
@@ -7642,6 +7775,7 @@ impl HarnessTaskRunner {
                     prompt: said.to_string(),
                     role: seat.as_str().to_string(),
                     task: task.clone(),
+                    model: sub_model.clone(),
                     answer,
                 });
             }
@@ -7690,8 +7824,15 @@ impl HarnessTaskRunner {
             why
         };
 
-        let wiring = letibot_sessionlog::registry::SessionWiring {
-            model: self.base.model.clone(),
+        #[allow(unused_mut)]
+        let mut wiring = letibot_sessionlog::registry::SessionWiring {
+            // **The child's own model when it has one**, so its session row and the
+            // picker name what actually answers it; the parent's otherwise.
+            model: if sub_model.is_empty() {
+                self.base.model.clone()
+            } else {
+                sub_model.clone()
+            },
             dialect: self.base.dialect.name().to_string(),
             endpoint: self.base.endpoint.authority(),
             workspace: self.base.workspace.display().to_string(),
@@ -7700,7 +7841,7 @@ impl HarnessTaskRunner {
         // told to open it, until `open_with_registry` below has succeeded.
         let sub_hub = self.registry.new_hub(sub_id.clone());
 
-        let sub_cfg = Config {
+        let mut sub_cfg = Config {
             session_id: sub_id.clone(),
             title: title.clone(),
             seat,
@@ -7713,8 +7854,18 @@ impl HarnessTaskRunner {
             depth: self.base.depth + 1,
             downgrade,
             placement,
+            // **The child's own model, when it has one.** `provider` is the whole switch:
+            // `None` is the daemon's own server, exactly as `/models local` means, and a
+            // `ProviderConfig` is a cloud preset whose key `models_choice` already checked.
+            provider: sub_provider,
             ..self.base.clone()
         };
+        if let Some(w) = sub_window {
+            sub_cfg.context_window = w;
+            // The child's ledger is its own conversation, so it has no measured ratio:
+            // the provider's number stands rather than the parent's scaled one.
+            sub_cfg.ledger_scale = None;
+        }
 
         // Reassemble the shared parts so the sub harness can borrow them for the
         // duration of this call. Cheap: the vocabs and the wiring are already `Arc`.
@@ -8134,6 +8285,72 @@ fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
         ),
     };
     Ok(Spiller::new(budget, store))
+}
+
+#[cfg(test)]
+mod subagent_model_tests {
+    use super::*;
+
+    /// **`local` is the daemon's own server and needs no key** — the deepseek→local half of
+    /// the operator's ask, and the half that could never fail for a missing credential.
+    #[test]
+    fn local_resolves_to_no_provider_and_the_servers_own_window() {
+        let m = subagent_model("local", Some(Some(262_144))).expect("local needs no key");
+        assert_eq!(m.label, "local");
+        assert!(m.provider.is_none(), "local is the daemon's own server");
+        assert_eq!(
+            m.window,
+            Some(262_144),
+            "the child on the local server plans against the SERVER's window, not the \
+             cloud model's the parent was carrying"
+        );
+        // A session that never switched away has no remembered server window, and `None`
+        // is *nobody measured one* rather than the parent's cloud number.
+        let unknown = subagent_model("local", None).expect("still local");
+        assert_eq!(unknown.window, None);
+    }
+
+    /// **A name neither `/models` nor the catalogue knows is refused, and nothing is
+    /// spawned** — with the sentence naming `local` and the verb that lists providers, so
+    /// the model can correct itself rather than guess.
+    #[test]
+    fn an_unknown_provider_is_refused_by_name_with_the_fix() {
+        let err = subagent_model("definitely-not-a-provider", None)
+            .expect_err("an unknown provider must not resolve");
+        let said = err.join(" | ");
+        assert!(said.contains("definitely-not-a-provider"), "{said}");
+        assert!(said.contains("/models"), "{said}");
+    }
+
+    /// **The other direction: a cloud model on a child, resolved through the door `/models`
+    /// uses.** Guarded on the box actually holding the key — a test that invented one would
+    /// be asserting the catalogue rather than the resolver, and skipping is said out loud
+    /// rather than passed off as green.
+    #[test]
+    fn a_cloud_model_resolves_when_the_box_holds_its_key() {
+        let has = letibot_provider::Preset::parse("deepseek")
+            .ok()
+            .is_some_and(|p| letibot_provider::keys::resolve(p, None, None).is_ok());
+        if !has {
+            eprintln!(
+                "SKIPPED: this box holds no deepseek key, so the resolver's cloud arm cannot \
+                 be exercised here and THIS IS NOT A PASS."
+            );
+            return;
+        }
+        let m = subagent_model("deepseek/deepseek-flash", None).expect("the key is held");
+        assert_eq!(m.label, "deepseek/deepseek-flash");
+        assert!(m.provider.is_some(), "a cloud child carries its provider");
+        assert_eq!(
+            m.provider.as_ref().and_then(|p| p.model.clone()).as_deref(),
+            Some("deepseek-flash")
+        );
+        // **A bare provider takes the preset's default model**, the same rule `/models
+        // PROVIDER` follows — one resolver, so the child and the session cannot disagree
+        // about what a bare name means.
+        let bare = subagent_model("deepseek", None).expect("the key is held");
+        assert!(bare.label.starts_with("deepseek/"), "{}", bare.label);
+    }
 }
 
 #[cfg(test)]

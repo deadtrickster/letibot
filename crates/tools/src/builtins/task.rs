@@ -67,6 +67,17 @@ pub struct TaskSpec {
     pub role: String,
     pub downgrade: Downgrade,
     pub placement: Placement,
+    /// **Which model the child runs on** — the operator's ask, 2026-10-05: *"I want to be
+    /// able to have subagents using different models. say you deepseek should be able to
+    /// run local model"*, and the other direction too: *"local qwen in main session
+    /// should be able to run cloud glm"*.
+    ///
+    /// `None` inherits the parent's model, which is what every earlier build did and stays
+    /// the default. `Some("local")` is the daemon's own server; `Some("provider/model")` a
+    /// cloud preset, resolved by the daemon through the same door `/models` uses — so a
+    /// name a person can type is a name a child can run on, and a key the picker finds is
+    /// a key the spawn finds.
+    pub model: Option<String>,
 }
 
 /// Where a spawned subagent has got to.
@@ -163,8 +174,11 @@ impl Tool for TaskTool {
             "Start a subtask in a subagent. Give `prompt` (the subtask); optionally \
              `role` to pick the subagent's toolset (defaults to coder), `access` to \
              narrow it BELOW your own permissions (`read-only` for a survey that must \
-             not write; or `no-write`, `no-exec`, `no-network`), and `where` (`host`, \
-             the default, or `firecode` for a VM). A subagent inherits your \
+             not write; or `no-write`, `no-exec`, `no-network`), `where` (`host`, \
+             the default, or `firecode` for a VM), and `model` to run the child on a \
+             different model than yours (`local`, or `PROVIDER/MODEL` — an unknown \
+             name or a missing key is refused at the spawn, naming the fix). A \
+             subagent inherits your \
              permissions and can only be given less, never more. This returns as soon \
              as the subagent has STARTED, with a handle — a subagent is minutes of \
              work and this call does not wait for it, so the rest of your calls run \
@@ -224,6 +238,11 @@ impl Tool for TaskTool {
             role: role.to_string(),
             downgrade,
             placement,
+            model: args
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty()),
         };
         let handle = match self.runner.start(prompt, &spec) {
             Ok(h) => h,
@@ -240,12 +259,18 @@ impl Tool for TaskTool {
             letibot_transcript::Backgrounding::Asked,
             format!("call `task_result` with task=\"{handle}\" and a `timeout_ms`"),
             format!(
-                "started subagent `{handle}` as a `{}`.\n  subtask: {}\n\nIt is working \
+                "started subagent `{handle}` as `{}`.\n  subtask: {}\n\nIt is working \
                  now, and this call did not wait for it — the rest of this round runs \
                  while it does. `task_result` with task=\"{handle}\" and a `timeout_ms` \
                  blocks until it answers and returns what it said; with no `timeout_ms` \
                  it reports where the subagent has got to without waiting.",
-                spec.role,
+                match &spec.model {
+                    // **The model is named when the child was given one** — a spawn that
+                    // prints only the role would leave the reader to guess which model is
+                    // answering, and the whole point of the argument is that they chose.
+                    Some(m) => format!("{m} (as a {})", spec.role),
+                    None => spec.role.clone(),
+                },
                 first_line(prompt),
             ),
         )

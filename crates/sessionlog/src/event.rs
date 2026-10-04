@@ -1277,6 +1277,18 @@ pub enum SessionEvent {
         /// pre-field behaviour rather than a blank row.
         #[serde(default)]
         task: String,
+        /// **The model this child runs on, as `PROVIDER/MODEL` or `local`** — the operator's
+        /// ask, 2026-10-05: *"I want to be able to have subagents using different models.
+        /// say you deepseek should be able to run local model"*, and the other direction
+        /// too: *"local qwen in main session should be able to run cloud glm"*.
+        ///
+        /// Empty when the child inherited its parent's model, which is the default and the
+        /// behaviour every earlier build had — so the pane draws no model clause on such a
+        /// row, and a reader sees exactly what they saw before. `#[serde(default)]` for the
+        /// same reason this event's `task` has it: a daemon older than this field answers
+        /// with an empty string and the row simply says nothing about a model.
+        #[serde(default)]
+        model: String,
         /// **The child's answer's first line, on the finishing state and nowhere else.**
         ///
         /// `None` while the child is opening, running, or has failed. The same string

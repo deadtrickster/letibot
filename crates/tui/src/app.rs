@@ -671,6 +671,10 @@ struct SubagentState {
     /// **The subtask in full, from the event's `task`.** Empty against a daemon that
     /// predates the field, and the pane then falls back to `prompt`.
     task: String,
+    /// **The model this child runs on**, from the event's `model` — `local`, or
+    /// `PROVIDER/MODEL`. Empty when the child inherited its parent's model, which is the
+    /// default: the pane then draws no model clause rather than claiming one.
+    model: String,
     /// **The child's answer's first line**, `Some` only once it has finished — the
     /// subtitle, kept apart from the row so a completion cannot be mistaken for the
     /// question.
@@ -4432,6 +4436,7 @@ impl App {
                 prompt,
                 role,
                 task,
+                model,
                 answer,
             } => {
                 if let Some(row) = self
@@ -4443,6 +4448,7 @@ impl App {
                     row.prompt = prompt;
                     row.role = role;
                     row.task = task;
+                    row.model = model;
                     row.answer = answer;
                 } else {
                     self.subagents.push(SubagentState {
@@ -4451,6 +4457,7 @@ impl App {
                         prompt,
                         role,
                         task,
+                        model,
                         answer,
                     });
                 }
@@ -10614,10 +10621,20 @@ impl App {
             // renders newest first, so the prose this marker continues has not been reached
             // yet when the row is built. See [`hidden_run_marker`].
             let marker = unseen.filter(|(start, _)| *start == k).map(|(start, end)| {
-                // **Does this run hold one of the TURN's rows** — the `live_here` question. A run
-                // made only of an earlier turn's rows is history, and folding the in-flight work
-                // into it is the defect `marker_carries_live` already records.
-                let live_here = (start..end).any(|r| turn_rows.contains(&self.items[r].item_id));
+                // **Does this run hold one of the TURN's rows, AND reach the live edge** —
+                // the `live_here` question, and it is two clauses because one is not enough.
+                //
+                // A run made only of an earlier turn's rows is history, and folding the
+                // in-flight work into it is the defect `marker_carries_live` already records.
+                // But *this turn's rows* is not the discriminator either, and that is what the
+                // operator saw: one long turn of forty rounds is forty runs, every one of them
+                // holding this turn's rows — so every marker folded the live counts (inflating
+                // each) and every marker went yellow. *"old tool calls stayed yellow for some
+                // reason."* The work in flight happens AFTER every committed row, so it belongs
+                // to the run that REACHES THE TAIL (`end == items.len()`) and to no other; every
+                // earlier run of the same turn is settled history and draws plain.
+                let live_here = newest_run == Some(start)
+                    && (start..end).any(|r| turn_rows.contains(&self.items[r].item_id));
                 hidden_run_marker(
                     &self.items,
                     start,
@@ -11519,8 +11536,11 @@ impl App {
                     let tight = unseen.is_some() && joinable;
                     let (class, rows) = match unseen {
                         Some((start, end)) if start == *hist_upto => {
-                            let live_here =
-                                (start..end).any(|r| turn_rows.contains(items[r].item_id.as_str()));
+                            // See the backward walk's note: the run holding the turn's
+                            // NEWEST row, which is the one the in-flight work continues.
+                            let live_here = newest_run == Some(start)
+                                && (start..end)
+                                    .any(|r| turn_rows.contains(items[r].item_id.as_str()));
                             let marker = hidden_run_marker(
                                 items,
                                 start,
@@ -13392,9 +13412,19 @@ impl App {
             out.push(dim(
                 &self.cfg,
                 &format!(
-                    "       {} · role {} · {}{}{}",
+                    "       {} · role {}{} · {}{}{}",
                     short_id(&s.session_id),
                     without_control_lines(&s.role),
+                    // **The child's own model, when it has one** — the operator's ask,
+                    // 2026-10-05: a tree of children on different models is a fact the pane
+                    // has to show, or a reader cannot tell which child ran on what. Empty on
+                    // a child that inherited its parent's model, which is most of them, and
+                    // the clause goes with it rather than claiming one.
+                    if s.model.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" on {}", without_control_lines(&s.model))
+                    },
                     without_control_lines(&s.state),
                     // **The answer as the SUBTITLE, where it belongs** — its own dim clause
                     // rather than the row, which is the question.
@@ -25203,6 +25233,7 @@ mod tests {
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
                 task: String::new(),
+                model: String::new(),
                 answer: None,
             },
         )));
@@ -25239,6 +25270,7 @@ mod tests {
             prompt: "find the bug".into(),
             role: "coder".into(),
             task: String::new(),
+            model: String::new(),
             answer: None,
         };
         a.apply(ServerFrame::Event(env(1, spawn.clone())));
@@ -25291,6 +25323,7 @@ mod tests {
                 prompt: "find the bug".into(),
                 role: "coder".into(),
                 task: String::new(),
+                model: String::new(),
                 answer: None,
             },
         )));
@@ -25318,6 +25351,7 @@ mod tests {
                 prompt: "find the bug".into(),
                 role: "coder".into(),
                 task: String::new(),
+                model: String::new(),
                 answer: None,
             },
         )));
@@ -25341,6 +25375,7 @@ mod tests {
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
                 task: String::new(),
+                model: String::new(),
                 answer: None,
             },
         )));
@@ -25558,6 +25593,7 @@ mod tests {
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
                 task: String::new(),
+                model: String::new(),
                 answer: None,
             },
         )));
@@ -25600,6 +25636,7 @@ mod tests {
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
                 task: String::new(),
+                model: String::new(),
                 answer: None,
             },
         )));
@@ -25611,6 +25648,7 @@ mod tests {
                 prompt: "Here is the summary.".into(),
                 role: "coder".into(),
                 task: String::new(),
+                model: String::new(),
                 answer: None,
             },
         )));
@@ -25644,6 +25682,7 @@ mod tests {
                 prompt: "twelve rows have no reader".into(),
                 role: "coder".into(),
                 task: "audit the session store\nand say which rows are never read".into(),
+                model: String::new(),
                 answer: Some("twelve rows have no reader".into()),
             },
         )));
@@ -27737,6 +27776,7 @@ mod tests {
                 prompt: "audit the store".into(),
                 role: "coder".into(),
                 task: String::new(),
+                model: String::new(),
                 answer: None,
             },
             SubagentState {
@@ -27745,6 +27785,7 @@ mod tests {
                 prompt: "finished".into(),
                 role: "coder".into(),
                 task: String::new(),
+                model: String::new(),
                 answer: None,
             },
         ];
@@ -29187,6 +29228,7 @@ mod tests {
                 prompt: format!("summarise{HOSTILE}"),
                 role: "coder".into(),
                 task: String::new(),
+                model: String::new(),
                 answer: None,
             },
         )));
@@ -34436,6 +34478,7 @@ mod tests {
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
                 task: String::new(),
+                model: String::new(),
                 answer: None,
             },
         )));
@@ -34454,6 +34497,7 @@ mod tests {
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
                 task: String::new(),
+                model: String::new(),
                 answer: None,
             },
         )));
@@ -36504,6 +36548,7 @@ mod tests {
             prompt: "ready.".into(),
             role: "coder".into(),
             task: "Answer with one word:\n  ready.".into(),
+            model: String::new(),
             answer: Some("ready".into()),
         };
         assert_eq!(
@@ -37288,6 +37333,155 @@ mod tests {
         assert!(
             text.contains("1 tool") && text.contains("1 thinking"),
             "the single marker does not carry both counts:\n{text}"
+        );
+    }
+
+    /// **ONE TURN OF MANY ROUNDS WEARS ONE YELLOW MARKER, NOT FORTY** — the operator,
+    /// on this session's own screen while a long turn ran: *"old tool calls stayed yellow
+    /// for some reason."*
+    ///
+    /// The `live_here` question was *does this run hold a row of THIS TURN*, and a turn of
+    /// forty rounds is forty runs, every one of them holding this turn's rows — so every
+    /// marker folded the in-flight counts (inflating each, so the numbers were wrong as
+    /// well as the colour) and every marker was painted pending. The work in flight happens
+    /// after every committed row, so it continues the NEWEST run and no other; the turn
+    /// clause stays, because a run of an EARLIER turn is still not this turn's.
+    ///
+    /// Both directions are asserted here: two rounds of one turn, a call in flight, exactly
+    /// one yellow marker with the in-flight count folded in and the other run plain.
+    #[test]
+    fn only_the_newest_runs_marker_is_yellow_in_a_turn_of_many_rounds() {
+        let mut a = App::new(RenderConfig {
+            color: true,
+            ..plain_cfg(110)
+        });
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", true)],
+            Hub::new("s").snapshot(),
+        ));
+        a.verbosity = Verbosity::Conversation;
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        // **Two rounds, each: the model's prose, then a call and its result row.** At the
+        // conversation rung the prose is drawn and the result row is hidden, so each round
+        // is its own run of hidden rows with its own marker — which is the shape the defect
+        // needed and the shape a long turn has.
+        for (i, (seq, row_id, text, call_id)) in [
+            (2u64, "s.0", "round one says a thing", "c1"),
+            (8, "s.2", "round two says a thing", "c2"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::appended(&format!("{row_id}.a"), "assistant"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                seq + 1,
+                testing::content(&format!("{row_id}.a"), text),
+            )));
+            a.apply(ServerFrame::Event(env(
+                seq + 2,
+                testing::proposed("t1", call_id, "bash"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                seq + 3,
+                SessionEvent::ToolStarted {
+                    turn_id: "t1".into(),
+                    call_id: call_id.into(),
+                    name: "bash".into(),
+                    access: "exec".into(),
+                },
+            )));
+            a.apply(ServerFrame::Event(env(
+                seq + 4,
+                SessionEvent::ToolFinished {
+                    turn_id: "t1".into(),
+                    call_id: call_id.into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload_digest: "d".into(),
+                    inline_bytes: 12,
+                    full_bytes: 12,
+                    spill: None,
+                    repairs: 0,
+                    edit: None,
+                },
+            )));
+            a.apply(ServerFrame::Event(env(
+                seq + 5,
+                testing::appended(row_id, "tool_result"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                seq + 6,
+                SessionEvent::TranscriptContent {
+                    item_id: row_id.into(),
+                    item: Box::new(TranscriptItem::ToolResult {
+                        call_id: call_id.into(),
+                        name: "bash".into(),
+                        outcome: letibot_transcript::ToolOutcome::Ok,
+                        payload: format!("result for round {i}"),
+                        edit: None,
+                        origin: None,
+                        media: None,
+                    }),
+                },
+            )));
+        }
+        // **Work in flight: a third round's call, proposed and running, with no row yet.**
+        // That is what the newest marker carries, and what no other marker may.
+        a.apply(ServerFrame::Event(env(
+            20,
+            testing::proposed("t1", "c3", "bash"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            21,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c3".into(),
+                name: "bash".into(),
+                access: "exec".into(),
+            },
+        )));
+        let live = a.live_work_now();
+        assert!(live.running > 0, "the premise: a call is executing");
+
+        let frame = a.screen(110, 40);
+        let yellow = "\u{1b}[33m";
+        let marker_rows: Vec<&String> = frame
+            .iter()
+            .filter(|l| l.contains("tool call") || l.contains("tool calls"))
+            .collect();
+        assert!(
+            marker_rows.len() >= 2,
+            "the fixture must draw two runs' markers, got {marker_rows:?}"
+        );
+        let yellow_rows: Vec<&&String> =
+            marker_rows.iter().filter(|l| l.contains(yellow)).collect();
+        assert_eq!(
+            yellow_rows.len(),
+            1,
+            "exactly the newest run's marker is pending; the rest are settled history:\
+             \n{}",
+            frame.join("\n")
+        );
+        // The NUMBER is `calls` (the run's own row plus the one in flight), and `running`
+        // is what lights the colour — see `LiveWork`. So the yellow marker carries two and
+        // the settled one carries one, and that difference is the in-flight work.
+        assert!(
+            yellow_rows[0].contains('2'),
+            "the yellow marker does not carry the in-flight call: {:?}",
+            yellow_rows[0]
+        );
+        // **And the numbers are not double-counted**: the older run's marker carries only
+        // its own one call, which is the other half of the same defect.
+        let older = marker_rows
+            .iter()
+            .find(|l| !l.contains(yellow))
+            .expect("an older marker");
+        assert!(
+            older.contains("[1 tool call]") || older.contains("1 tool"),
+            "an older run's marker is inflated by the in-flight work: {older:?}"
         );
     }
 
