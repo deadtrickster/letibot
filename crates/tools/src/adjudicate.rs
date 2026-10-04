@@ -5964,6 +5964,10 @@ mod tests {
                 "python3 - <<'PY'\nopen('/etc/cron.d/x', 'w').write('x')\nPY",
                 "a write outside the workspace",
             ),
+            (
+                "python3 - <<'PY'\nopen('/srv/x.txt', 'w').write('x')\nPY",
+                "a write this classifier cannot place",
+            ),
             ("python3 deploy.py", "a body nobody read"),
             (
                 "bash -c 'echo x > /w/src/lib.rs'",

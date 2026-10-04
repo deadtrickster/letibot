@@ -3019,10 +3019,24 @@ impl Baseline {
     ///   `open(sys.argv[1], 'w')` — a path decided while the body runs, which could be anywhere on
     ///   the box. A write nobody can point at keeps the exec access it has today and goes on asking;
     ///   this is [`Baseline::reads_only`]'s boundary conjunct applied to the other side.
-    /// * **No region this classifier can point at and call outside** — the same conjunct, the same
-    ///   one function ([`Region::is_outside`]), and the same deliberate exception: `HostOther` is
-    ///   *unplaceable* and not *outside*, and with [`Baseline::cwd`] a relative path inside the
-    ///   session's own repository now places as `Workspace` rather than as an outside one.
+    /// * **Every written path is INSIDE the boundary** — `Workspace` or `Scratch`, and nothing
+    ///   else. This is the conjunct that makes the first sentence of this doc true: the operator's
+    ///   words for what the narrowing may cover are *"there is certain permission set that is
+    ///   allowed and doesnt need oracle"*, and that set is edits in the project — `Mode::AUTO_EDITS`'s
+    ///   own doc says the same thing in the same place (*"an edit **inside the boundary** takes
+    ///   effect with nobody consulted at all"*).
+    ///
+    ///   **It is `inside`, and NOT "not outside", and the difference is a hole that was MEASURED
+    ///   rather than imagined.** `reads_only` gets away with `!is_outside` because `Region::HostOther`
+    ///   means *unplaceable* and a relative read is the ordinary case it exists for. For a WRITE the
+    ///   same leniency would admit one this classifier cannot place: `open('/srv/x.txt', 'w')`
+    ///   regions as `host_other` (measured, and `/opt/…` and `/home/…` are `system_binaries` and
+    ///   `home`, which `is_outside` catches), so "not outside" would let a body write into `/srv`
+    ///   with the write path's disposition — which in allow-edits is `Admit`, with nobody consulted.
+    ///   Before this narrowing that call was `exec` and always asked. A rule whose whole purpose is
+    ///   to make an ordinary edit cheaper to run may not be the way a new directory becomes
+    ///   writable, so the conjunct is the strict one and the cost is named: a write this classifier
+    ///   cannot place keeps the exec access it has today and goes on asking.
     /// * **Not `NotRun`** — a body with a parse error or a program nobody can name has no meaning to
     ///   narrow.
     ///
@@ -3057,9 +3071,13 @@ impl Baseline {
             && !self.write_targets.is_empty()
             && self.write_targets.iter().all(WriteTarget::resolved)
             && !matches!(self.verdict, BaselineVerdict::NotRun { .. })
-            // **One function, exhaustively matched** — see [`Region::is_outside`], the same
-            // conjunct [`Baseline::reads_only`] applies and for the same reason.
-            && !self.regions.iter().any(Region::is_outside)
+            // **Inside, not "not outside"** — see the conjunct's note above for the measurement.
+            // Exhaustively matched rather than negated on purpose: a new `Region` fails to compile
+            // here rather than arriving as an inside one.
+            && self
+                .regions
+                .iter()
+                .all(|r| matches!(r, Region::Workspace | Region::Scratch))
     }
 
     /// The deterministic reading of a shell command.
@@ -5679,6 +5697,25 @@ mod tests {
         //    the whole reason `body_read` is a field rather than an assumption.
         assert!(!b("python3 deploy.py").writes_only());
         assert!(!b("python3 deploy.py").body_read);
+
+        // 4b. **A write this classifier cannot PLACE is not an edit either** — and this one
+        //     was measured rather than reasoned about. `/srv/x.txt` regions as `host_other`,
+        //     which `is_outside` does not catch (it means *unplaceable*), so a conjunct
+        //     copied from `reads_only` would have admitted it; and in allow-edits the write
+        //     disposition is `Admit` with nobody consulted, so the narrowing would have been
+        //     the way `/srv` became writable for a caller that used to ask every time. Inside
+        //     means Workspace or Scratch, and nothing else.
+        let unplaceable = b("python3 - <<'PY'\nopen('/srv/x.txt', 'w').write('x')\nPY");
+        assert!(
+            unplaceable.regions.contains(&Region::HostOther),
+            "the premise of this case: {:?}",
+            unplaceable.regions
+        );
+        assert!(
+            !unplaceable.writes_only(),
+            "a write nobody can place qualified as an edit: {:?}",
+            unplaceable.regions
+        );
 
         // 5. **And the shell is not widened.** `bash -c 'echo x > y'` writes a file through
         //    the grammar and keeps the exec access it has today; `body_read` is set by the
