@@ -837,6 +837,205 @@ thinking count drawn twice, leticl's three file lists, `BINARIES`, the weather l
 **done when** a peeked child is drawn by the same renderer as any session in both heads, and neither
 `sub_out_lines` nor `subagent-out-lines` exists.
 
+## Completion notices are one-liners in leticl and full prose here — **measured 2026-10-04, filed as parity**
+
+**(No R-number: the series is yours to number.)**
+
+The operator, reading a settled job and a finished subagent: *"too much, for example i dont want to see
+that message to you 'This is the completion…' I also dont care about 'sabagent you started…' it must be
+something like Job <id> <command summary or wrap> finished <result result summary or wrap> same for
+agents."*
+
+**leticl folds them, and the whole of it is existing machinery you already have on your side**: the
+notice arrives as a `User` row with `speaker: agent`, the fact lines are the `- ` lines under the
+daemon's own heading, and **the closing paragraph is a promise TO THE MODEL** — which is exactly what the
+operator does not want to read. leticl drops it, keeps the daemon's words verbatim otherwise, and the
+full message stays one verb away (`/t` on the row that has one). Its row, read off the operator's live
+screen:
+
+    session · Job j83 exited 0 after 3.0s, wrote 5 bytes: sleep 3; echo done
+    session · Agent …-sub-1791065633114 · Answer with one word: ready. · done: ready.
+
+Three details worth copying rather than rediscovering:
+
+  · **the vocabulary is TWO openings, and it was one.** `[job] ` was folded and `[task] ` was not, so an
+    agent's completion — the same shape, the same speaker, the same paragraph — drew as full prose while
+    a job's was a line. It is a list now (`[job] `, `[task] `), and the agent's row is named
+    `Agent <id> · <task> · done: <answer>`;
+  · **the agent's own task is LOOKED UP, not parsed.** The notice carries only what the child answered;
+    what it was asked is on the subagent row (the title — its task's first line), so the row and the
+    subagents pane cannot disagree;
+  · **counts are per GROUP, not per opening.** `[job] 3 jobs … have ended:` is ONE heading with three
+    settlements under it — counting headings read `1 job ended (j12, j15, j19)` — and a coalesced row
+    can hold a job's and an agent's, where "2 jobs ended" calls a subagent a job.
+
+leticl's commit: the one-liner is `9b22de3`'s shape and the coalesced-count fix is in the commit after it.
+
+**still open?** `grep -n "you do not need to wait for it" crates/tui/src/app.rs` — a head that still
+prints the paragraph in its rows.
+
+**done when** both heads draw a settled job or a finished subagent as one row that names it, drops the
+model-facing paragraph, and opens the whole message on demand.
+
+## The notice rows stopped on the daemon rebuilt at ~14:2x — **CLOSED 2026-10-04: they never stopped; two heads render one row two ways**
+
+**(No R-number: the series is yours to number.)**
+
+The operator, watching for the two things this file asked for: *"interesting - the job finished but i dont
+see notification about it"*, and then *"subagent finished too - no notification. i think we had that
+before restart"* — and the second sentence is the diagnosis.
+
+**Measured, on the daemon rebuilt at ~14:2x (leticl head 1700841 attached to it):**
+
+  · **the EVENTS are fine**: the head's jobs list holds `(("j19" "exited 0"))` — the `job_settled` event
+    arrived and updated the row — and the `Subagent` events arrive too, so the subagents pane and the
+    completion cards' inputs are all there;
+  · **the NOTICE ROW is absent**: no `User { speaker: Agent }` row for either settlement — not on the
+    glass, and not delivered to the model either. Both were present for every job and child before the
+    restart (`Job j83 exited 0 …`, `Agent … · done: …`).
+
+**CORRECTED THE SAME HOUR — THE PUBLISH PATH IS FINE, AND THE STORE PROVES IT.** Querying the daemon's own
+store (`~/.local/share/letibot/sessions.db`, `transcript_item.item_json`):
+
+    120138 | 2026-10-04 14:44:58 | {"type":"user","parts":[{"kind":"text","text":"[job] a job you backgrounded has ended:
+    120012 | 2026-10-04 14:40:48 | {"type":"user","parts":[{"kind":"text","text":"[job] a job you backgrounded has ended:
+
+Both written AFTER the ~14:2x restart. So `completion_notice` publishes, the row is in the model's
+transcript, and **the operator's other head receives it** — *"yet a newly restarted letibot gets job
+completion event"*. What does NOT have it is **leticl's attached head**: its newest agent-speaker row is
+`j111`, from before the restart, and no notice row since appears in its items at all.
+
+**So this is per-head DELIVERY, not the publish path** — one connection gets those rows and the other
+does not — and the question is now narrow: what differs between the two heads' attaches (identity, hub
+membership, or the seq they are served from) such that a `User { speaker: Agent }` row written to the
+store reaches one and not the other. leticl's folding half is known good: given such a row its parser
+turns it into the right card (measured on the pre-restart rows, `Job …, result …`).
+
+**RESOLVED THE SAME HOUR, AND THERE WAS NO DEFECT.** A child was spawned to land a notice while the
+operator watched, and leticl's own screen, read seconds later:
+
+    session · Agent Report the number of lines in /home/dead/Projects/leticl/src/head.lisp, as one number, with no other words.
+                  result  done: 2201 · /t opens it
+
+The notice is delivered to leticl, folded and drawn. What the operator had been seeing was **letibot's
+rendering of the same row**: `letibot_transcript::Speaker::Agent => (RowClass::Other,
+session_block(&text, its.ts, cfg))` — the raw paragraph, unchanged, which is exactly the text they
+pasted. leticl folds that row into a card; letibot wraps it whole. **Two heads, one row, two
+renderings — and the parity question is whether letibot wants the card too**, not whether anything
+is broken. Everything in this entry above is superseded: the publish path was fine, the delivery was
+fine, and the one real finding was mine looking at the wrong pane.
+
+**AND THE ONE FIELD THAT DIFFERS BETWEEN THE TWO CONNECTIONS IS THE IDENTITY.** leticl attaches with
+`:identity "leticl"` (`src/head.lisp`, `%try-reconnect`'s `make-attach`), and the letibot head the
+operator watches attaches with `--identity dead`. Everything else about them is the same daemon, the same
+store, the same session, the same moment — and one of them is served a `User { speaker: Agent }` row and
+the other is not. That is worth a look before anything else: **what the hub does differently for a
+connection whose identity is not the one the row is addressed to** is the whole question now, and it is
+one word to test from either side.
+
+**still open?** start a background job or a `task` child on this box and watch for the `[job]`/`[task]`
+row in the parent's transcript — absent means it is still open.
+
+**done when** a settled job and a finished child each produce one notice row on the parent's hub, on a
+daemon built from the current tip.
+
+## A session's JOB notices STALL — 29 s late, or never — while its CHILD notices keep coming — **MEASURED 2026-10-04, 14:09 → 15:09**
+
+**(This supersedes the CLOSED heading on the notice-rows entry above; that closure was too broad.)**
+
+Two background jobs on this box, twenty minutes apart, both started by the model through the same path:
+
+    j19  45009 ms  exited 0  -> its `[job]` notice IS in the store (14:44, and leticl drew it)
+    j56   5012 ms  exited 0  -> NO `[job]` row anywhere in the store, minutes later
+
+**And leticl's head saw BOTH settlements** — its jobs list reads
+`(("j19" "exited 0" 45009) ("j56" "exited 0" 5012))` — so the `JobSettled` hop is fine for both. What
+differs is the WAKE: the notice row reaches the transcript for one and not the other.
+
+**The shape to look at is the queue-take**, and your own words point at it: *`wake()` is left with the
+part that is not a decision: taking the queue and submitting what this returns* — and *an empty queue
+returns nothing* rather than running a turn with nothing to say. A settlement that lands at, or after,
+the moment the queue is taken has no second chance: nothing re-arms. Same family as D26 (*a wake spends a
+generation*).
+
+**What is NOT broken, so nobody re-tests it:**
+
+  · **child completions publish**: one landed minutes ago and leticl drew the card off it, verified on
+    the glass (`session · Agent Report the number of lines in head.lisp…` over `result done: 2201`);
+  · **the publish path writes the store** (j19's row is there);
+  · **leticl's fold is correct** on every row it receives, and the head is served them.
+
+**still open?** start two background jobs a few minutes apart and query the store for both notices:
+`select ... from transcript_item where item_json like '%<job id>%'`. One missing is this entry.
+
+**MEASURED FURTHER THE SAME HOUR — THE SPLIT IS PER SESSION, NOT PER KIND.** Job notices are being
+published on this daemon all day: 12 today, 21 yesterday, 25 the day before; the newest is 14:54:43.
+**8 went to `s-1789462738453908838#t41` (newest 14:54:43) and 4 to `s-1791017230755743833`, whose newest
+is 14:09:14** — that is the session which started `j19` and `j56`, and which has received no job notice
+since 14:09. Its `[task]` child notices kept arriving throughout the same window (newest 14:56:50), so
+this is not one session going deaf: **in one session one kind stops and the other kind keeps coming.**
+Three jobs settled after 14:09: `j19` (~14:44), `j56` (~14:57), `j2` (`sleep 8; echo job-demo-two-settled`,
+launched 15:08:30). **`j2`'s notice did arrive — 29 seconds late**, written 15:09:07 and handed to the model
+right after; a store query one second before that read 6 notices, newest 14:09:14, which is why it first
+looked lost. So the shape is a **stall, not a hole**: 29 s for `j2`, while `j19` and `j56` are still absent
+12 and 25 minutes on. Latency against settlement, measured: `j2` 29 s; `j19`, `j56` unbounded so far.
+
+**And the head was restarted at ~15:0x** — the operator's doing. The restarted head's job registry holds
+**only `j2`**: `j19` and `j56` are not in it at all. So the restart is a concrete drop point: a settlement
+whose notice is still queued when the head reattaches never gets submitted, and its job leaves the client's
+registry with it. `j2`, started and settled after the restart, got its notice 29 s late — when the session
+next went idle, not at the settlement.
+
+**Prediction to test:** start a job and restart the head before the session next goes idle — the notice is
+lost. A job that settles while the session stays continuously busy is delivered at the next idle turn,
+however long that is. **Take every reading twice**: this defect has been misread four times here, each time
+from one query treated as final.
+**Take the reading twice before calling anything missing** — this defect has been misread four times here,
+every time from a single query treated as final. So the wake is not dropping settlements at random — it
+**keeps publishing job notices for one session and stops for another**, while children keep getting
+through in the same session. Look at what makes a session eligible at the moment of the take, rather
+than at the settlement itself.
+
+**done when** every settlement that `JobSettled` reports is also submitted as a wake item, once, however
+the timing falls.
+
+## Subagents launched in ONE ROUND share a single id — **CLOSED 2026-10-04: `79d1165` mints a unique id at creation**
+
+Three `task` launches in a single round (counting lines of `panes.lisp`, `cards.lisp`, `chrome.lisp`) came
+back with the **same** subagent id — `s-1791017230755743833-sub-1791119445423`, three times over. What that
+costs, all measured on leticl's head at 15:10:
+
+  · the head held **seven `Subagent` events, every one under that one `:subagent-id`** (states mixed
+    `running` / `done` / `failed`), so any fold keyed on the id collapses three children into one row whose
+    state is whichever event arrived last — leticl's fold does this, and so does letibot's own
+    (`tui/src/app.rs:1846`), so the reference is not better off;
+  · the running count drawn on the box's top edge therefore read **no subagents at all while three were
+    live** (`composer-title` counts `(subagent-rows head)` filtered to `running`);
+  · `task_result` listing this session's subagents prints three identical lines — so they cannot be
+    addressed individually there either, and a `[task]` notice naming that id names three children at once.
+
+**The fix belongs at creation**: a per-subagent id (counter or random suffix) rather than something derived
+from the round's timestamp. A smarter fold downstream is not the fix — leticl keys on the id because the id
+is what the wire offers, and guessing a better key here would paper over the wire.
+
+**And it costs ANSWERS, not just rows.** Measured at 15:12, when the round's notices were released: three
+children produced a single `[task]` line — `- `s-1791017230755743833-sub-1791119445423` done: 3529` — so
+the model is told that one child finished and receives one answer. **The other two children's answers are
+never delivered at all**, to the model or to any head. Per-subagent ids fix the pane and the notices
+together, which is one more reason not to patch the fold instead.
+
+**Closed by `79d1165`**, and the fix is the one this entry asked for, one prefix along: the id is minted
+from `crate::config::now_ns()` — the entropy this daemon already names its own sessions with — followed by
+`server.rs::mint_session_id`'s counter loop, so the same-shape collision is answered where every other id
+in the tree already answers it. **Two checks, because the check this entry first implies is the wrong
+one**: a registry lookup alone still lets three children in a round share an id, since the mint returns
+while `adopt` is still inside the child's thread opening a whole harness. So the caller also carries what
+it has handed out, and the two together are what `three_children_minted_at_one_instant_get_three_ids`
+drives at one nanosecond. The timestamp stays in front because it is what stops a post-restart child from
+colliding with a persisted one — a bare counter resets and `adopt` would RESUME the old child rather than
+spawning a new one. And a duplicate that ever does happen is no longer reported as the child failing: it
+names the id, says the mint is what is wrong, and says what it costs.
+
 ## R18 — every hand-rolled lexer replaced by rano + tree-sitter — **given 2026-09-20**
 
 > lets extend todo with this task - completely replace handrolled code with rano and
