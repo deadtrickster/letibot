@@ -263,9 +263,23 @@ impl JobWatchers {
     /// tree the three things that must be one per tree: the **completions queue** the
     /// root's `Harness::wake` drains, the **watching/settled sets** that make
     /// `delivering` tree-wide and stop one settlement being queued twice, and the
-    /// **stop flag** so a tree closes together. And the **ring target**, so a
-    /// grandchild's settlement rings the root rather than the child — which is what
-    /// turns `Sessions::wake`'s `Ignored` into a turn the daemon actually runs.
+    /// **ring target**, so a grandchild's settlement rings the root rather than the child —
+    /// which is what turns `Sessions::wake`'s `Ignored` into a turn the daemon actually
+    /// runs.
+    ///
+    /// **The `stop` flag is deliberately NOT shared, and it was, and that was a defect.**
+    /// The reasoning was *"a tree closes together"*, and it is wrong about when `stop` is
+    /// set: `Harness::close_backend` runs at the end of a **child's** turn — *"release its
+    /// substrate now, not when the harness is dropped"* — so the first subagent to finish
+    /// set the ROOT's stop flag and every watcher in the tree broke out of its wait at the
+    /// next chunk. The root then stopped being told about its own background jobs. Measured
+    /// by the operator, 2026-10-04: *"it suddenly stopped getting job completion events"* —
+    /// and the shape is in the same measurement, because a job that settles inside one
+    /// [`WATCH_CHUNK`] still raced through the `Happened` arm and reported, which is why
+    /// three- and four-second demo jobs kept arriving and a forty-five-second one did not.
+    ///
+    /// `stop` means *this session's backend has closed*, which is a fact about one session;
+    /// a child's turn ending is not that fact for its parent.
     ///
     /// `tree` is the root's set (its own `wake_target` is its own id), so this needs no
     /// parent-chain walk: the set it is built from already knows its root.
@@ -276,7 +290,7 @@ impl JobWatchers {
             tasks: self.tasks.clone(),
             completions: Arc::clone(&tree.completions),
             bell: self.bell.clone(),
-            stop: Arc::clone(&tree.stop),
+            stop: Arc::clone(&self.stop),
             watching: Arc::clone(&tree.watching),
             settled: Arc::clone(&tree.settled),
             wake_target: tree.wake_target.clone(),
@@ -317,8 +331,18 @@ impl JobWatchers {
     /// Stop every watcher this set has spawned. Called when the session's backend
     /// closes: the threads wake within [`WATCH_CHUNK`], fail to upgrade their
     /// handles, and exit without publishing.
+    ///
+    /// **Per set, and the set is per session** — see [`JobWatchers::shares_tree`] for the
+    /// defect that came of sharing this across a tree.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// **Has this set been stopped?** The property [`JobWatchers::shares_tree`] is asserted
+    /// against: a child joining a tree must not take the tree's stop, or a child's turn
+    /// ending silences every watcher the root has.
+    pub fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
     }
 
     /// Watch one backgrounded thing. Idempotent: one already watched, or already
@@ -362,7 +386,6 @@ impl JobWatchers {
                         hub,
                         completions,
                         bell,
-                        stop,
                         watching,
                         settled,
                         wake_for_task,
@@ -497,12 +520,15 @@ fn watch_one(
 /// head-facing fact and the pane's row. Publishing a second event for one settlement
 /// would be the duplication this tree keeps finding under other names, and the two
 /// would drift the moment either changed.
+/// **No `stop` here, and that is the point** (2026-10-04): a subagent is not a process, so
+/// there is no cgroup to release and nothing this thread holds that a closing backend must
+/// free. Its liveness test is the `hub` upgrade in the loop below. Passing `stop` in anyway
+/// is what killed a child's watcher for its own grandchild at the end of the child's turn.
 fn watch_task(
     runner: Arc<dyn TaskRunner>,
     hub: Weak<Hub>,
     completions: Arc<Mutex<VecDeque<JobCompletion>>>,
     bell: Option<Arc<Bell>>,
-    stop: Arc<AtomicBool>,
     watching: Arc<Mutex<HashSet<String>>>,
     settled: Arc<Mutex<HashSet<String>>>,
     wake_target: String,
@@ -545,15 +571,23 @@ fn watch_task(
                 );
                 break;
             }
-            // Still working, or a handle this runner never minted. `Unknown` used to be
-            // unreachable here — it is what sends a handle down the job path — but a
-            // slot can be forgotten while a watcher sleeps, so it ends the wait rather
-            // than spinning on a name nobody owns.
-            TaskStatus::Running { .. } | TaskStatus::Unknown => {
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
-            }
+            // Still working, or a handle this runner never minted.
+            //
+            // **`Unknown` ends the wait and `Running` does not end on `stop`** (2026-10-04).
+            // The old arm broke on `stop` for BOTH, and that was `close_backend`'s shutdown
+            // re-check borrowed for a job that is not a process: a subagent needs no host,
+            // nothing here holds a cgroup, and the thread's liveness test is the `hub`
+            // upgrade at the top of this loop. What the `stop` check actually did was kill a
+            // CHILD's watcher for its own grandchild — `Harness::close_backend` runs at the
+            // end of the child's turn, while the grandchild is still working — so R58's
+            // promise (*a settlement rings a bell that has a worker*) lasted exactly one
+            // turn.
+            //
+            // `Unknown` is the handle this runner does not know at all, which the paragraph
+            // above has always claimed ends the wait: a name nobody owns is not something to
+            // keep asking about, and nothing will ever settle it.
+            TaskStatus::Running { .. } => {}
+            TaskStatus::Unknown => break,
         }
     }
     watching.lock().expect("job watchers").remove(&job);
@@ -1158,6 +1192,55 @@ mod tests {
             matches!(r.next_work(), Some(Work::Woken(id)) if id == "s-root"),
             "a grandchild's settlement must ring the tree's root, or Sessions::wake \
              answers `Ignored` and the condition is discarded"
+        );
+    }
+
+    /// **A child's turn ending does not silence its tree's watchers** — measured 2026-10-04.
+    ///
+    /// [`JobWatchers::shares_tree`] shared the `stop` flag along with the queue, on the
+    /// reasoning that *"a tree closes together"*. It does not: `Harness::close_backend` runs at
+    /// the end of a **child's** turn — *"release its substrate now, not when the harness is
+    /// dropped"* — so the first subagent to finish set the ROOT's stop flag and every watcher in
+    /// the tree broke out of its wait at its next chunk. The operator, on their own head: *"it
+    /// suddenly stopped getting job completion events"* — and the shape is in the same
+    /// measurement, because a job that settles inside one [`WATCH_CHUNK`] still raced through
+    /// the `Happened` arm, so three- and four-second demo jobs kept reporting and a
+    /// forty-five-second one did not.
+    #[test]
+    fn a_childs_close_does_not_stop_its_trees_watchers() {
+        use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
+
+        let r = Registry::new();
+        let root = r
+            .create("s-root", "", SessionWiring::default())
+            .expect("the root registers");
+        let child = r
+            .create_under(
+                "s-child",
+                "",
+                SessionWiring::default(),
+                Some("s-root".into()),
+            )
+            .expect("the child registers");
+        assert!(matches!(r.next_work(), Some(Work::Open(_))));
+        assert!(matches!(r.next_work(), Some(Work::Open(_))));
+
+        let root_watch = JobWatchers::watching_tasks(&root, Some(Arc::clone(r.bell())));
+        let child_watch = JobWatchers::watching_tasks(&child, Some(Arc::clone(r.bell())))
+            .shares_tree(&root_watch);
+        assert!(
+            !root_watch.stopped() && !child_watch.stopped(),
+            "neither set is stopped to begin with"
+        );
+
+        // The child's turn ends and it releases its substrate — which is the moment the tree's
+        // job notices used to die.
+        child_watch.stop();
+        assert!(child_watch.stopped(), "the child's own set is stopped");
+        assert!(
+            !root_watch.stopped(),
+            "a child's turn ending must not stop the ROOT's watchers: that is every job \
+             notice the root was going to get, and it is what the operator saw stop"
         );
     }
 
