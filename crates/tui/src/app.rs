@@ -7643,6 +7643,41 @@ impl App {
     }
 
     /// The verbs the daemon published, from its settings row. Empty when it sent none.
+    /// **The providers this box holds a key for**, from the daemon's own row —
+    /// [`letibot_sessionlog::protocol::MODEL_KEYS_KEY`].
+    ///
+    /// Empty when the row is absent, which is a daemon older than this one: **no greening**
+    /// rather than every row greened, the same rule `daemon_verbs` follows. The head keeps no list
+    /// of its own because it *cannot* have one — whether a preset resolves a key is a fact about
+    /// this box's files and environment (`keys::resolve`), and the daemon is the half that reads
+    /// them.
+    fn keyed_providers(&self) -> Vec<String> {
+        self.settings
+            .iter()
+            .find(|r| r.key == letibot_sessionlog::protocol::MODEL_KEYS_KEY)
+            .map(|r| {
+                r.value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// **Whether a picker row is one this box can actually take.**
+    ///
+    /// The operator, 2026-10-04: *"model peeker should green models we have keys for. — if i
+    /// choose a model without key picker should ask for the key."* So the colour answers *will this
+    /// work if I press enter* — which is why **`local` is ready for a reason of its own**: it needs
+    /// no credential, and leaving it uncoloured would read as *this row has no key* about the one
+    /// row that never wanted one.
+    fn choice_ready(&self, name: &str) -> bool {
+        let provider = name.split('/').next().unwrap_or(name).trim();
+        provider == "local" || self.keyed_providers().iter().any(|k| k == provider)
+    }
+
     fn daemon_verbs(&self) -> Vec<String> {
         self.settings
             .iter()
@@ -13602,11 +13637,18 @@ impl App {
             let here = *name == current;
             let picked = i == self.mode_sel.min(values.len().saturating_sub(1));
             let mark = if picked { "▸" } else { " " };
-            let left = format!(
-                "{mark} {:>2}  {}",
-                i + 1,
-                p.paint(if here { Role::Strong } else { Role::Plain }, name),
-            );
+            // **Greened when this box can actually take the row** — the operator's ask. Only the
+            // model card: a mode has nothing to authenticate, and a green rung would be a claim
+            // about a key on a row that has none.
+            let ready = subject == Pick::Model && self.choice_ready(name);
+            let role = if ready {
+                Role::Success
+            } else if here {
+                Role::Strong
+            } else {
+                Role::Plain
+            };
+            let left = format!("{mark} {:>2}  {}", i + 1, p.paint(role, name),);
             let right = if here {
                 p.paint(Role::Faint, "← now")
             } else {
@@ -13633,6 +13675,17 @@ impl App {
             &self.cfg,
             "  ↑↓ moves · enter takes · or type a name or the row number · esc leaves it alone",
         ));
+        // **What the colour means, in words** — because `Palette::None` is not a monochrome theme
+        // but the `--replay`, pipe and CI case, and there a colour says nothing at all. The legend
+        // carries exactly the claim the green does and no more: the *ask for the key* half is not
+        // built yet, and a line promising an act that does not happen is the defect this tree
+        // keeps naming (a hint that names the wrong key).
+        if subject == Pick::Model {
+            out.push(dim(
+                &self.cfg,
+                "  green: this box holds a key for it; the others need `/models NAME --key PASTE`",
+            ));
+        }
         for line in subject.consequence() {
             out.push(dim(&self.cfg, &format!("  {line}")));
         }
@@ -34024,6 +34077,115 @@ mod tests {
                 tools: Vec::new(),
             }],
         }
+    }
+
+    /// **The model picker greens the rows this box can actually take** — the operator's ask of
+    /// 2026-10-04: *"model peeker should green models we have keys for."*
+    ///
+    /// The fact is the daemon's (`MODEL_KEYS_KEY`), because whether a preset resolves a key is a
+    /// fact about this box's files and environment — a head that guessed would green exactly the
+    /// rows that refuse at the first turn. Beyond the colour, two honesty rules are asserted:
+    /// **`local` is green for a reason of its own** (nothing to authenticate, and an uncoloured
+    /// `local` would read as *no key* about the one row that never wanted one), and **the meaning
+    /// is said in words**, because `Palette::None` is the `--replay`, pipe and CI case where a
+    /// colour says nothing at all.
+    #[test]
+    fn the_model_picker_greens_the_providers_this_box_holds_a_key_for() {
+        use letibot_sessionlog::protocol::{MODEL_KEYS_KEY, SettingRow};
+        let row = |r: &str, v: &str, choices: &[&str]| SettingRow {
+            key: r.into(),
+            value: v.into(),
+            source: String::new(),
+            editable: "/models PROVIDER/MODEL".into(),
+            choices: choices.iter().map(|s| (*s).to_string()).collect(),
+            tools: Vec::new(),
+        };
+        let mut a = App::new(RenderConfig {
+            width: 110,
+            color: true,
+            ..RenderConfig::default()
+        });
+        a.session_id = "s1".into();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Settings {
+            rows: vec![
+                row(
+                    "model",
+                    "local (glm-5.3-flash)",
+                    &["local", "glm-coding/glm-5.3", "deepseek/deepseek-flash"],
+                ),
+                row(MODEL_KEYS_KEY, "glm-coding", &[]),
+            ],
+        });
+        assert_eq!(a.command("models"), Some(Action::Settings));
+        let screen = a.screen(110, 30).join("\n");
+        let line = |needle: &str| {
+            screen
+                .lines()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("no row with {needle:?} in:\n{screen}"))
+                .to_string()
+        };
+        assert!(
+            line("glm-coding/glm-5.3").contains(&format!("{}", sgr::GREEN)),
+            "a provider this box holds a key for is not greened: {:?}",
+            line("glm-coding/glm-5.3")
+        );
+        assert!(
+            !line("deepseek/deepseek-flash").contains(sgr::GREEN),
+            "a provider with no key is greened: {:?}",
+            line("deepseek/deepseek-flash")
+        );
+        // **`local` is green for a reason of its own**, and the row is found by its number rather
+        // than by the words: the colour sits between the number and the name, so a needle spanning
+        // both does not exist in the bytes.
+        let local_row = screen
+            .lines()
+            .find(|l| l.contains(" 1  ") && l.contains("local"))
+            .unwrap_or_else(|| panic!("the local row is drawn:\n{screen}"))
+            .to_string();
+        assert!(
+            local_row.contains(sgr::GREEN),
+            "`local` needs no key, so it must not read as one of the unkeyed rows: {local_row:?}"
+        );
+        assert!(
+            screen.contains("green: this box holds a key for it"),
+            "the meaning is not on the card in words, so a colourless head is told nothing:\n{screen}"
+        );
+
+        // **A daemon that sends no such row greens nothing** — older than the field, and the head
+        // reads an absent row as *no greening* rather than as *no keys*. `local` stays green,
+        // which is its own rule and not this row's.
+        let mut b = App::new(RenderConfig {
+            width: 110,
+            color: true,
+            ..RenderConfig::default()
+        });
+        b.session_id = "s1".into();
+        b.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        b.apply(model_settings(
+            "local (glm-5.3-flash)",
+            &["local", "glm-coding/glm-5.3"],
+        ));
+        b.command("models");
+        let older = b.screen(110, 30).join("\n");
+        let provider = older
+            .lines()
+            .find(|l| l.contains("glm-coding/glm-5.3"))
+            .expect("the row is drawn")
+            .to_string();
+        assert!(
+            !provider.contains(sgr::GREEN),
+            "an absent keys row greened a provider anyway: {provider:?}"
+        );
     }
 
     /// **`/models` is a menu now.** It printed a wall of provider rows in which
