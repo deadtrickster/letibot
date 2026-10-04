@@ -494,17 +494,33 @@ impl TrailMirror {
 
     /// Seed from a transcript rebuilt out of the store.
     ///
-    /// Every `User` row comes back as [`Speaker::Operator`] and that is the honest
-    /// reading available here: the store does not record which of them the harness
-    /// injected. It is the **conservative** direction for the denominator and the
-    /// permissive one for authorisation, so it is called out in the resume notes
-    /// rather than left as a property nobody knows about.
+    /// **The speaker comes off the row** — R42. Until 2026-10-05 this called every
+    /// `User` row the operator's, on a reading that was honest when it was written:
+    /// *"the store does not record which of them the harness injected"*. Then R42 added
+    /// `TranscriptItem::User::speaker` and nothing came back here to read it, so the
+    /// claim outlived the code that made it true.
+    ///
+    /// What it cost: a resumed session put its own job settlements, salvage notices and
+    /// intent checks into the authorisation trail **as the operator's utterances**.
+    /// Measured on the live corpus, 280 of the 715 briefs the oracle answered carried a
+    /// `[job] a job you backgrounded has ended` notice rendered under `[operator · …]`,
+    /// numbered, and citable as `ALLOW <n>`.
+    ///
+    /// The guard that was defeated is built and correct:
+    /// [`AuthorisationTrail::cited_operator_words`] already refuses an ALLOW citing an
+    /// agent line — *"the agent authorising itself… the exact move the trail exists to
+    /// make impossible"* — and it cannot refuse what arrives relabelled. So the fix
+    /// belongs here rather than there: the check was never wrong, its input was.
+    ///
+    /// A row written before the field existed deserialises as `Operator`
+    /// (`#[serde(default)]`), which is what a head already drew for it, so an old
+    /// transcript reads exactly as it did.
     fn seed(&self, items: &[TranscriptItem]) {
         let mut g = self.lock();
         g.items = items.len();
         g.said.clear();
         for (i, item) in items.iter().enumerate() {
-            if let TranscriptItem::User { parts, .. } = item {
+            if let TranscriptItem::User { parts, speaker } = item {
                 let text: String = parts
                     .iter()
                     .filter_map(|p| match p {
@@ -517,7 +533,15 @@ impl TrailMirror {
                     continue;
                 }
                 g.said.push(Said {
-                    speaker: Speaker::Operator,
+                    // **The two `Speaker` enums meet here and nowhere else**: the
+                    // row's (`letibot_transcript`, two variants) and the trail's
+                    // (`letibot_tools::authorise`, which also has `Tool`). Matched
+                    // inline rather than behind a `From`, so the one place they touch
+                    // is the one place a reader has to look for the mapping.
+                    speaker: match speaker {
+                        letibot_transcript::Speaker::Operator => Speaker::Operator,
+                        letibot_transcript::Speaker::Agent => Speaker::Agent,
+                    },
                     text,
                     // Item index as a stand-in turn: the ordering is right and the
                     // distances are monotone, which is what `turns_ago` is read for.
@@ -8770,6 +8794,15 @@ mod tests {
         }
     }
 
+    /// A `User` row **this session appended** — a job settlement, a salvage notice,
+    /// an intent check. The same variant on the wire and never the operator's words.
+    fn agent_row(text: &str) -> TranscriptItem {
+        TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
+            parts: vec![UserPart::Text { text: text.into() }],
+        }
+    }
+
     /// A ledger with an encoder attached, which is what every session has.
     ///
     /// Constructing the decorator is the *only* way to say so — the flag is
@@ -9094,7 +9127,7 @@ mod tests {
         assert!(by("recent").seconds_ago.is_some());
     }
 
-    /// A rebuilt transcript seeds the trail, and the reading is the permissive one.
+    /// A rebuilt transcript seeds the trail, and the clock does not come back with it.
     /// Asserted so that the resume note beside it is describing something true.
     #[test]
     fn a_resumed_trail_is_seeded_with_no_clock() {
@@ -9114,6 +9147,58 @@ mod tests {
             t.utterances.iter().all(|u| u.seconds_ago.is_none()),
             "nothing recorded when a stored row was said; a reconstructed clock \
              would be a guess presented as a measurement"
+        );
+    }
+
+    /// **A resumed session does not promote its own words to the operator's.**
+    ///
+    /// The regression this closes was live and measurable: `seed` destructured
+    /// `TranscriptItem::User { parts, .. }` and stamped `Speaker::Operator` on every
+    /// row, so a job settlement came back as an operator utterance and
+    /// [`AuthorisationTrail::cited_operator_words`] — which exists precisely to refuse
+    /// an ALLOW citing agent text — had nothing left to refuse. 280 of 715 briefs the
+    /// oracle answered carried one.
+    ///
+    /// Both halves are asserted, because only one of them is the bug: the agent row is
+    /// still **carried** (it is context, and `Speaker::Agent` says what it is), and it
+    /// is no longer **counted** as something that could authorise anything.
+    #[test]
+    fn a_resumed_trail_does_not_call_the_harnesss_own_rows_the_operators() {
+        let m = TrailMirror::default();
+        m.seed(&[
+            user("fix the compaction"),
+            agent_row("[job] a job you backgrounded has ended:\n  - `j6` exited 0"),
+            user("restarted it"),
+        ]);
+        let t = m.trail();
+
+        assert_eq!(
+            t.utterances.len(),
+            3,
+            "the agent row is carried — it is context the operator's reply may lean on"
+        );
+        assert_eq!(
+            t.operator_words().len(),
+            2,
+            "but it is not one of the operator's words"
+        );
+
+        // The citation check is the thing that was defeated, so assert it directly
+        // rather than trusting the count above to stand in for it.
+        let job = t
+            .utterances
+            .iter()
+            .position(|u| u.text.starts_with("[job]"))
+            .expect("the job row is on the page");
+        assert_eq!(
+            t.cited_operator_words(&[job]),
+            Vec::<usize>::new(),
+            "an ALLOW citing the harness's own job notice authorises nothing"
+        );
+        assert_eq!(
+            t.cited_operator_words(&[0, job, 2]),
+            vec![0, 2],
+            "the operator's own lines still survive beside it"
         );
     }
 
