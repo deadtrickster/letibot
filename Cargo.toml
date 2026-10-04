@@ -51,7 +51,7 @@ members = [
 # break invisible in a number that promised compatibility. leticl pins this tree by tag
 # (`LETIBOT_REF`) and must move that pin either way, so the number costs nobody a
 # mechanism; it is read by a human, and it has exactly one job.
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
