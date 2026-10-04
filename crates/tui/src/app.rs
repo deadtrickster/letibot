@@ -1894,6 +1894,14 @@ pub struct App {
     /// what time it is, and then it says nothing about stalls rather than guessing.
     now_ms: u64,
     last_event_at: u64,
+    /// **The workspace's branch, or `None`** — see `crate::gitfield`. Read by the driver's tick
+    /// (a process, never a paint), drawn beside the workspace path, and `None` when the directory
+    /// is not a repository this head can read: an absence, not a clean tree.
+    pub git: Option<String>,
+    /// **Which workspace that reading was of, and when.** A switch to another session carries
+    /// another path, and a field left over from the previous tree would be drawn as this one's
+    /// branch — the same class of lie as inventing one.
+    git_read: (String, u64),
     /// **The live marker's join, as the pair that lets it be UNDONE.**
     ///
     /// The marker is glued to the end of the sentence that introduces the work — *"…the last
@@ -2815,6 +2823,8 @@ impl App {
             expanded: Vec::new(),
             now_ms: 0,
             last_event_at: 0,
+            git: None,
+            git_read: (String::new(), 0),
             live_join: None,
             marker_counts: (0, 0, 0),
             body_len: 0,
@@ -12221,6 +12231,19 @@ impl App {
                 left.push_str(&p.paint(Role::Faint, &format!("  {shown}")));
                 left_cols += 2 + visible_width(&shown);
             }
+            // **The branch, beside the path it is a fact about** — the operator's ask of
+            // 2026-10-04, matched to leticl's row by row. It is one field from
+            // `gitfield::read`, refreshed by the driver's tick and never here, and an
+            // unreadable repository draws NOTHING rather than a blank that reads like a
+            // clean tree (`gitfield`'s own rule).
+            if let Some(git) = self.git.as_deref() {
+                let room = w.saturating_sub(left_cols + tail_cols + 4);
+                if room >= 4 {
+                    let shown = trim_to(git, room);
+                    left.push_str(&p.paint(Role::Faint, &format!("  {shown}")));
+                    left_cols += 2 + visible_width(&shown);
+                }
+            }
         }
         let pad = w.saturating_sub(left_cols + tail.chars().count());
         trim_to(
@@ -12253,6 +12276,26 @@ impl App {
     /// survives a restart has to be able to point a head at the file it wrote; forcing
     /// the reader to reach into `$HOME` would have made the round trip untestable and
     /// left the property asserted nowhere.
+    /// **Take a git reading, from the LOOP.** See `crate::gitfield` for why this is not done where
+    /// the frame is drawn: it spawns a process.
+    ///
+    /// A workspace that CHANGED is read at once rather than waiting out the interval, because a
+    /// session switch carries another path and the cached field would be the old tree's branch.
+    pub fn refresh_git(&mut self) {
+        let ws = self.wiring.workspace.clone();
+        if ws.is_empty() {
+            self.git = None;
+            return;
+        }
+        let (last_of, at) = &self.git_read;
+        let stale = self.now_ms.saturating_sub(*at) >= crate::gitfield::GIT_REFRESH_MS;
+        if last_of == &ws && !stale {
+            return;
+        }
+        self.git = crate::gitfield::read(&ws);
+        self.git_read = (ws, self.now_ms);
+    }
+
     pub fn load_prefs(&mut self) {
         self.prefs_path = self.prefs_path.clone().or_else(crate::prefs::path);
         let Some(path) = self.prefs_path.clone() else {
@@ -25612,11 +25655,91 @@ mod tests {
         assert!(all.contains("[x] Phase 0  [1/1]"), "{all}");
     }
 
+    /// **The branch is on the header, beside the workspace it is a fact about** — the operator's
+    /// ask of 2026-10-04, and leticl's row (`src/chrome.lisp:644`) matched rather than reinvented.
+    ///
+    /// Both halves, because the second is the one that matters: a field that is set draws, and a
+    /// repository this head could not read draws **nothing** rather than a blank that reads like a
+    /// clean tree — *"a header that said `main` over a directory that is not a repository would be
+    /// a lie in the one row nobody checks"*.
+    #[test]
+    fn the_header_carries_the_workspace_branch_and_nothing_when_there_is_none() {
+        let mut a = app();
+        a.session_id = "s".into();
+        a.wiring.workspace = "/home/dead/Projects/letibot".into();
+        a.git = Some("main* ↑2".into());
+        let header = a.header_line(200);
+        assert!(header.contains("main* ↑2"), "{header}");
+        // Beside the path and not instead of it: the path is still on the row.
+        assert!(header.contains("letibot"), "{header}");
+
+        // **Absent draws nothing at all**, which is the whole rule: no marks, no placeholder.
+        let mut b = app();
+        b.session_id = "s".into();
+        b.wiring.workspace = "/home/dead/Projects/letibot".into();
+        b.git = None;
+        assert!(
+            !b.header_line(200).contains('*'),
+            "a header with no reading claims nothing: {}",
+            b.header_line(200)
+        );
+        // And a workspace that is not set draws none of it either.
+        let mut c = app();
+        c.session_id = "s".into();
+        c.git = Some("main*".into());
+        assert!(
+            !c.header_line(200).contains("main*"),
+            "{}",
+            c.header_line(200)
+        );
+    }
+
+    /// **A reading of a directory that is not a repository is ABSENT, and the head remembers
+    /// which directory it read** — so a session switch re-reads at once and the interval applies
+    /// only within one workspace.
+    #[test]
+    fn a_refresh_of_something_that_is_not_a_repository_draws_nothing_and_is_remembered() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-git-none-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let mut a = app();
+        a.clock(1_000);
+        a.wiring.workspace = dir.display().to_string();
+        a.refresh_git();
+        assert!(
+            a.git.is_none(),
+            "a directory that is not a repository must draw nothing, not a bare field: {:?}",
+            a.git
+        );
+        assert_eq!(a.git_read.0, dir.display().to_string());
+        assert_eq!(
+            a.git_read.1, 1_000,
+            "the reading is stamped with the loop's clock"
+        );
+        // A second call inside the interval does not re-read — which is the point of the stamp —
+        // and a workspace that CHANGED is read at once rather than waiting it out.
+        a.clock(1_500);
+        a.refresh_git();
+        assert_eq!(a.git_read.1, 1_000, "re-read inside the interval");
+        a.clock(1_600);
+        a.wiring.workspace = "/home/dead/Projects/letibot".into();
+        a.refresh_git();
+        assert_eq!(
+            a.git_read.1, 1_600,
+            "a workspace that changed is read at once"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// **The head asks for the settings on attach.** The daemon answers
     /// `ClientFrame::Settings` and never pushes the rows, so a head that had not
     /// opened `/mode` or `/config` had none — and the header, which reads the
     /// live `model` row, fell back to the model `Hello` named. The operator, on a
     /// session answered by deepseek: *"restarted the letibot - still qwen"*.
+
     #[test]
     fn attaching_asks_for_the_settings_so_the_header_is_not_stale() {
         let mut a = app();

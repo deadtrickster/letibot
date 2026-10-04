@@ -403,6 +403,11 @@ impl Link {
     /// with it, for a daemon that had merely restarted.
     pub fn tick(&mut self, app: &mut App, size: (usize, usize), keys: &[Key], draw: &mut Draw<'_>) {
         app.clock(now_ms());
+        // **The workspace's branch, read from the LOOP and never from a paint.** See
+        // `gitfield`: it spawns a process, and the rule is the dash collectors' — a
+        // measurement never runs where the frame is drawn. Two seconds between readings
+        // (`GIT_REFRESH_MS`) is leticl's own interval, kept so the process rate stays low.
+        app.refresh_git();
 
         // 1. Drain. Nothing is sent in this phase.
         let mut rendered = 0u64;
