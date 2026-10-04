@@ -1400,6 +1400,13 @@ pub struct App {
     /// dot per character while this is `Some`.
     secret: Option<SecretAsk>,
     secret_buf: String,
+    /// **A key the model picker asked for** — the operator's row: *"if i choose a model without
+    /// key picker should ask for the key."* The greening told them WHICH rows need one; this is
+    /// the row that collects it. Its own state and never the sudo path's: a provider key is
+    /// stored, not spent, and borrowing `SecretAsk` would tie a head-side ask to a daemon
+    /// `req_id` that does not exist.
+    key_ask: Option<KeyAsk>,
+    key_buf: String,
     /// Screen requests this head has not answered yet. Answered by the DRIVER,
     /// after the frame is built, with the rows it actually drew.
     screen_requests: Vec<String>,
@@ -2743,6 +2750,8 @@ impl App {
             open: Vec::new(),
             secret: None,
             secret_buf: String::new(),
+            key_ask: None,
+            key_buf: String::new(),
             screen_requests: Vec::new(),
             term_cols: 0,
             sel: 0,
@@ -5632,6 +5641,54 @@ impl App {
             self.redraw = true;
             return None;
         }
+        // **A key the picker asked for owns the keyboard**, exactly as the password field
+        // does and for the same reason: characters and pastes go into the buffer, Enter does
+        // both things in one verb — `/models CHOICE --key K` stores the key (mode 600, the
+        // file the daemon reads) AND takes the row, which is the round trip the typed
+        // spelling already is — and Esc cancels with nothing stored. Nothing reaches the
+        // composer, so a key cannot land in a prompt, and the composer's own box draws a dot
+        // per character while this is up (`composer_rows`).
+        if let Some(ask) = self.key_ask.clone() {
+            match k {
+                Key::Char(c) => self.key_buf.push(c),
+                Key::Paste(s) => self.key_buf.push_str(s.trim_end_matches(['\n', '\r'])),
+                Key::Backspace => {
+                    self.key_buf.pop();
+                }
+                Key::KillToStart | Key::KillToEnd => self.key_buf.clear(),
+                Key::Enter => {
+                    let key = std::mem::take(&mut self.key_buf);
+                    self.key_ask = None;
+                    self.redraw = true;
+                    // **An empty enter is a cancelled ask, not a stored empty key** — the
+                    // daemon would refuse it and the row was not taken.
+                    if key.is_empty() {
+                        self.say("no key given — the row was not taken");
+                        return None;
+                    }
+                    self.say(&format!(
+                        "storing the {} key and switching to {}…",
+                        ask.provider, ask.choice
+                    ));
+                    // The switch, then a re-read of the rows it changed — the same order the
+                    // plain switch keeps, so the header names what answers now.
+                    self.queued.push(Action::Settings);
+                    return Some(Action::Slash {
+                        line: format!("models {} --key {}", ask.choice, key),
+                    });
+                }
+                Key::Esc | Key::CtrlC => {
+                    self.key_buf.clear();
+                    self.key_ask = None;
+                    self.say("cancelled — nothing was stored and the row was not taken");
+                    self.redraw = true;
+                    return None;
+                }
+                _ => {}
+            }
+            self.redraw = true;
+            return None;
+        }
         match k {
             Key::CtrlR => {
                 self.reasoning = self.reasoning.flip();
@@ -7327,6 +7384,30 @@ impl App {
                     self.say("not attached to a session yet");
                     return None;
                 }
+                // **A row this box holds no key behind ASKS rather than switching.**
+                //
+                // The operator's row: *"if i choose a model without key picker should ask for the key."*
+                // Left as it was, the switch went to the daemon and came back as its refusal
+                // (`NO KEY — /models … --key PASTE`) — the picker telling the operator to type a
+                // command it could have collected on the spot.
+                //
+                // **Only when the daemon named the keyless row** (`models.keys` present): an
+                // absent row is *no greening*, never *no keys*, and asking on its absence would
+                // block every switch behind a prompt for a key this box may well hold. `local`
+                // never asks — it needs no credential, and `choice_ready` says so.
+                if self.keys_row_present() && !self.choice_ready(&name) {
+                    let provider = name.split('/').next().unwrap_or(&name).trim().to_string();
+                    self.say(&format!(
+                        "no key held for {provider} — paste it below; enter stores it (mode 600) \
+                         and takes the row, esc cancels"
+                    ));
+                    self.key_ask = Some(KeyAsk {
+                        choice: name,
+                        provider,
+                    });
+                    self.key_buf.clear();
+                    return None;
+                }
                 self.say(&format!("switching to {name}…"));
                 // The switch, then a re-read of the rows it changed — in that order, which
                 // the daemon honours, so the header names what answers now rather than what
@@ -7676,6 +7757,16 @@ impl App {
     fn choice_ready(&self, name: &str) -> bool {
         let provider = name.split('/').next().unwrap_or(name).trim();
         provider == "local" || self.keyed_providers().iter().any(|k| k == provider)
+    }
+
+    /// **Did the daemon publish its key row at all?** An absent `models.keys` is a daemon
+    /// older than the field and reads as *no greening* — never as *no keys* — so the ask is
+    /// gated on the row being present rather than on the key list being empty, and an older
+    /// daemon never finds its switches blocked behind a prompt.
+    fn keys_row_present(&self) -> bool {
+        self.settings
+            .iter()
+            .any(|r| r.key == letibot_sessionlog::protocol::MODEL_KEYS_KEY)
     }
 
     fn daemon_verbs(&self) -> Vec<String> {
@@ -9477,6 +9568,10 @@ impl App {
         {
             (Some(ask), _) => (self.secret_lines(ask, w), Vec::new()),
             (None, Some(d)) => self.decision_card(d, w),
+            // **A key the picker asked for rides in the ask card's slot too**, ahead of the
+            // pickers and the todo card: it is the newest question, it owns the keyboard
+            // while it is up, and a list under it is a list nobody is going to use.
+            (None, None) if self.key_ask.is_some() => (self.key_ask_lines(w), Vec::new()),
             // **The new-todo card rides in the ask card's slot too**, and ahead of the quit card:
             // it is the newest question and the one the keyboard belongs to while it is up.
             (None, None) if self.todo_draft.is_some() => (self.todo_card_lines(w), Vec::new()),
@@ -9939,6 +10034,12 @@ impl App {
             // A dot per character, and the caret after the last one. The text
             // itself is never rendered, not even to compute a width.
             let n = self.secret_buf.chars().count();
+            (vec!["•".repeat(n)], (0, n))
+        } else if self.key_ask.is_some() {
+            // **A provider key is masked exactly as a password is** — a dot per character,
+            // the text never rendered, not even to compute a width. The card above the
+            // composer says what the dots are for; this is the surface they are typed on.
+            let n = self.key_buf.chars().count();
             (vec!["•".repeat(n)], (0, n))
         } else {
             self.editor.render(inner, self.cfg.palette())
@@ -13693,17 +13794,48 @@ impl App {
         ));
         // **What the colour means, in words** — because `Palette::None` is not a monochrome theme
         // but the `--replay`, pipe and CI case, and there a colour says nothing at all. The legend
-        // carries exactly the claim the green does and no more: the *ask for the key* half is not
-        // built yet, and a line promising an act that does not happen is the defect this tree
-        // keeps naming (a hint that names the wrong key).
+        // carries exactly the claim the green does and the ask backs: taking a row without one
+        // opens the key-ask card, so the sentence the operator's own row asked for is on the card
+        // itself rather than only in the colour.
         if subject == Pick::Model {
             out.push(dim(
                 &self.cfg,
-                "  green: this box holds a key for it; the others need `/models NAME --key PASTE`",
+                "  green: this box holds a key for it; the others ask for one when you take them",
             ));
         }
         for line in subject.consequence() {
             out.push(dim(&self.cfg, &format!("  {line}")));
+        }
+        out
+    }
+
+    /// **The key-ask card**: what is asking, and where the key goes.
+    ///
+    /// The dots are not drawn here — the COMPOSER's box draws them (`composer_rows`), which is
+    /// the same arrangement the sudo password card uses: the one text surface this head has is
+    /// the thing being typed into, and the card above it is the question it is being typed for.
+    fn key_ask_lines(&self, w: usize) -> Vec<String> {
+        let Some(ask) = &self.key_ask else {
+            return Vec::new();
+        };
+        let mut out = vec![colour(
+            &self.cfg,
+            sgr::YELLOW,
+            &trim_to(
+                &format!("{} needs a key this box does not hold", ask.provider),
+                w,
+            ),
+        )];
+        for l in wrap(
+            &format!(
+                "paste the {} key below — shown as dots, sent once to the daemon, stored at \
+                 mode 600; it never enters the conversation or the transcript. Enter stores it \
+                 and takes the row; Esc cancels",
+                ask.provider
+            ),
+            w,
+        ) {
+            out.push(dim(&self.cfg, &l));
         }
         out
     }
@@ -19000,6 +19132,22 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
 /// screen fits.
 pub fn line_width(s: &str) -> usize {
     visible_width(s)
+}
+
+/// **A provider key the picker is collecting, for a row this box holds no key behind.**
+///
+/// `choice` is the whole `PROVIDER/MODEL`, because Enter does both things in one verb —
+/// `/models CHOICE --key K` stores the key (mode 600, the file the daemon reads) AND takes the
+/// row, which is the round trip the typed spelling already is. `provider` is the name alone, for
+/// the sentence the card asks with.
+///
+/// **Only asked when the daemon named the keyless row.** `models.keys` absent means *no
+/// greening*, never *no keys* — an older daemon — and asking on its absence would block every
+/// switch behind a prompt for a key the box may well hold.
+#[derive(Debug, Clone)]
+struct KeyAsk {
+    choice: String,
+    provider: String,
 }
 
 /// An open password request, as the head shows it.
@@ -34269,6 +34417,183 @@ mod tests {
             !provider.contains(sgr::GREEN),
             "an absent keys row greened a provider anyway: {provider:?}"
         );
+    }
+
+    /// **Taking a keyless row from the picker ASKS for the key** — the operator's row, second
+    /// sentence: *"if i choose a model without key picker should ask for the key."*
+    ///
+    /// The ask is a card and a masked buffer of their own — never the composer, so the key
+    /// cannot land in a prompt, and never the sudo path, whose `req_id` belongs to the daemon.
+    /// Enter does both things in one verb, `models CHOICE --key K`, which is the round trip the
+    /// typed spelling already is: store (mode 600) and switch. Esc cancels with nothing stored
+    /// and the row not taken; an EMPTY enter is a cancelled ask rather than a stored empty key.
+    ///
+    /// Two honesty rules, both the same rules the greening keeps:
+    /// * **No ask when the daemon did not name the keyless row** (`models.keys` absent is *no
+    ///   greening*, never *no keys*), so an older daemon never has its switches blocked behind
+    /// a prompt for a key the box may hold.
+    /// * **`local` never asks** — it needs no credential, and `choice_ready` says so.
+    #[test]
+    fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
+        use letibot_sessionlog::protocol::{MODEL_KEYS_KEY, SettingRow};
+        let row = |r: &str, v: &str, choices: &[&str]| SettingRow {
+            key: r.into(),
+            value: v.into(),
+            source: String::new(),
+            editable: "/models PROVIDER/MODEL".into(),
+            choices: choices.iter().map(|s| (*s).to_string()).collect(),
+            tools: Vec::new(),
+        };
+        let mut a = App::new(RenderConfig {
+            width: 110,
+            color: true,
+            ..RenderConfig::default()
+        });
+        a.session_id = "s1".into();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Settings {
+            rows: vec![
+                row(
+                    "model",
+                    "local (glm-5.3-flash)",
+                    &["local", "deepseek/deepseek-flash"],
+                ),
+                // The daemon names NO provider as keyed, so `deepseek` is keyless by its word.
+                row(MODEL_KEYS_KEY, "", &[]),
+            ],
+        });
+        assert_eq!(a.command("models"), Some(Action::Settings));
+        // Take the keyless row by its number: Enter on the card, the row the daemon named keyless.
+        assert_eq!(a.key(Key::Down), None);
+        assert_eq!(a.key(Key::Enter), None);
+        assert!(
+            a.key_ask.is_some(),
+            "a row the daemon named keyless opens the ask rather than switching"
+        );
+        let screen = a.screen(110, 30).join("\n");
+        assert!(
+            screen.contains("deepseek needs a key this box does not hold"),
+            "the card names the provider the ask is for:\n{screen}"
+        );
+        // **Typed characters are dots and never on the screen as text** — the key cannot be
+        // read off the glass by anything else that sees it.
+        for c in "sk-live-12345".chars() {
+            a.key(Key::Char(c));
+        }
+        let masked = a.screen(110, 30).join("\n");
+        assert!(
+            masked.contains("•••"),
+            "the composer masks the key: no dots on screen"
+        );
+        assert!(
+            !masked.contains("sk-live-12345"),
+            "the key itself is never rendered:\n{masked}"
+        );
+        // **Enter does both things in one verb**, and nothing is sent before it.
+        let act = a.key(Key::Enter).expect("enter acts");
+        assert!(a.key_ask.is_none(), "the ask is closed");
+        match act {
+            Action::Slash { line } => assert_eq!(
+                line, "models deepseek/deepseek-flash --key sk-live-12345",
+                "one verb stores the key and takes the row"
+            ),
+            other => panic!("enter on the ask sends a slash, not {other:?}"),
+        }
+
+        // **Esc cancels with nothing stored and the row not taken.**
+        let mut b = App::new(RenderConfig {
+            width: 110,
+            color: true,
+            ..RenderConfig::default()
+        });
+        b.session_id = "s1".into();
+        b.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        b.apply(ServerFrame::Settings {
+            rows: vec![
+                row(
+                    "model",
+                    "local (glm-5.3-flash)",
+                    &["local", "deepseek/deepseek-flash"],
+                ),
+                row(MODEL_KEYS_KEY, "", &[]),
+            ],
+        });
+        b.command("models");
+        b.key(Key::Down);
+        b.key(Key::Enter);
+        assert!(b.key_ask.is_some());
+        b.key(Key::Char('k'));
+        assert_eq!(b.key(Key::Esc), None);
+        assert!(b.key_ask.is_none(), "esc closes the ask");
+        // **Nothing was SENT for the key** — the queue may hold the attach's own asks
+        // (`Settings`, `ListJobs`, planted by the `Hello` arm), but no `Slash` left the head.
+        assert!(
+            b.take_actions()
+                .into_iter()
+                .all(|act| !matches!(act, Action::Slash { .. })),
+            "esc sent nothing for the key"
+        );
+
+        // **An older daemon — no `models.keys` row at all — never asks**, and the switch goes
+        // through as it always did. Absent is *no greening*, never *no keys*.
+        let mut c = App::new(RenderConfig {
+            width: 110,
+            color: true,
+            ..RenderConfig::default()
+        });
+        c.session_id = "s1".into();
+        c.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        c.apply(ServerFrame::Settings {
+            rows: vec![row(
+                "model",
+                "local (glm-5.3-flash)",
+                &["local", "deepseek/deepseek-flash"],
+            )],
+        });
+        c.command("models");
+        c.key(Key::Down);
+        match c.key(Key::Enter).expect("the switch still goes out") {
+            Action::Slash { line } => assert_eq!(line, "models deepseek/deepseek-flash"),
+            other => panic!("no row, no ask: {other:?}"),
+        }
+        assert!(c.key_ask.is_none(), "an absent keys row blocks nothing");
+
+        // **And `local` never asks** — it needs no credential, which is `choice_ready`'s own rule.
+        let mut d = App::new(RenderConfig {
+            width: 110,
+            color: true,
+            ..RenderConfig::default()
+        });
+        d.session_id = "s1".into();
+        d.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        d.apply(ServerFrame::Settings {
+            rows: vec![
+                row("model", "local (glm-5.3-flash)", &["local"]),
+                row(MODEL_KEYS_KEY, "", &[]),
+            ],
+        });
+        d.command("models");
+        match d.key(Key::Enter).expect("local switches straight through") {
+            Action::Slash { line } => assert_eq!(line, "models local"),
+            other => panic!("local needs no key: {other:?}"),
+        }
+        assert!(d.key_ask.is_none());
     }
 
     /// **`/models` is a menu now.** It printed a wall of provider rows in which
