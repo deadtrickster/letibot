@@ -1000,7 +1000,7 @@ row in the parent's transcript — absent means it is still open.
 **done when** a settled job and a finished child each produce one notice row on the parent's hub, on a
 daemon built from the current tip.
 
-## A session's JOB notices STALL — 29 s late, or never — while its CHILD notices keep coming — **MEASURED 2026-10-04, 14:09 → 15:09**
+## A session's JOB notices STALL — 29 s late, or never — while its CHILD notices keep coming — **CORRECTED AND CLOSED 2026-10-04 15:40: it was never per-KIND; two settlements were swept by a transcript FORK**
 
 **(This supersedes the CLOSED heading on the notice-rows entry above; that closure was too broad.)**
 
@@ -1060,6 +1060,60 @@ than at the settlement itself.
 **done when** every settlement that `JobSettled` reports is also submitted as a wake item, once, however
 the timing falls.
 
+**CORRECTED AND CLOSED — THE FIFTH READING, AND IT IS THE ONE THE ENTRY ASKED FOR TWICE.** The mistake
+was the dimension the query grouped by: **`transcript_id` is not stable, and every reading above crossed a
+fork without saying so.** Read per transcript, out of the store (`transcript_item`, `"type":"user"`):
+
+    s-1791017230755743833#t2   14 job notices, newest 2026-10-04 14:09:14   tasks newest 14:56:50
+    s-1791017230755743833#t3    3 job notices, newest 2026-10-04 15:34:36   tasks newest 15:35:05
+
+`#t3` begins at **14:58:48**, and its first rows are a CARRY of the last few rows of `#t2` (`what child`,
+a `[task]` notice, `ok now do job`) all stamped 14:58:48 by the copy — so the session forked 79 seconds
+before that stamp, which is the context wall firing (`Your previous turn was stopped at the context wall`
+is the first row of every fork on this box, mine included: `s-1789462738453908838#t42` at 15:18:17).
+
+**So the two missing settlements were not a channel going deaf: they were swept by the fork.** `j19`
+settled ~14:44 and `j56` ~14:57, both while `#t2` was current; the fork at ~14:57–14:58 replaced the
+conversation, and **a wake that was queued for a turn that had not run yet does not survive its
+transcript being replaced** — the same family as `7fc4cec` (a fill's bar ends when the snapshot replaces
+the stream) and R16's echoes, which is why those two were fixed the same way and this was not noticed.
+Everything the entry read as *jobs stop, tasks continue* is that fork: **`#t3` receives BOTH kinds, and
+has all afternoon** — 3 job notices (15:09:07 `j2`, 15:12:32 and 15:34:36, both `3 jobs … have ended`)
+and 4 task notices, the newest 15:35:05.
+
+**And the entry's own prediction is FALSIFIED, which is what closes it.** *"Start a job and restart the
+head before the session next goes idle — the notice is lost."* The operator restarted twice in that
+window (`yeah I irestartred you`, 15:09:29, and `restarted, lets tet 3 jobs and 3 agents again`,
+15:33:46) and **every job notice after each restart arrived**, `j2`'s 29 s later and the 3-job group 5 s
+after the second. The restart is not the drop point; the fork is. The one thing that would falsify THAT
+is a settlement whose notice is absent while its transcript was never replaced — one job, one query, no
+fork in between, **and the `transcript_id` read the second time as well as the first**.
+
+**What is left is narrow and it is still a defect**: a settlement that lands while a turn is queued and
+whose transcript is then replaced loses its notice to nobody's decision. Filed below as the wake's own
+half of R16 rather than as the stall this entry spent four hours naming wrongly.
+
+## A wake that has not run yet does not survive its transcript being replaced — **NEW 2026-10-04, split out of the stall entry**
+
+`j19` and `j56` are the two measured cases: both settled while `s-1791017230755743833#t2` was current,
+neither notice is in `#t2`, and neither is in `#t3` either. The daemon's wake submits the notice as a
+user item and runs a turn; if the turn has not run when the transcript forks, the queued item goes with
+the transcript it was addressed to — and nothing re-arms it against the new one.
+
+**The shape to build:** the queue is the session's and the transcript is the conversation's, so a fork
+has to either flush the queue first or carry it across, and the daemon already knows the moment (it is
+the same `auto_compact`/`compacted` pair the head marks its echoes with — see
+`a_compaction_resolves_the_echoes_it_supersedes`). **The falsifiable form:** start a job on an idle
+session, fork it (a `/compact`) before the notice's turn runs, and look for the notice in the NEW
+transcript. Present means this entry is wrong too, and the answer is somewhere in the wake's own
+eligibility rule — which is where the previous four readings were looking.
+
+**still open?** the query above, grouped by `transcript_id` — a reading that does not do that cannot
+see a fork, and this entry is the fifth measurement to prove it.
+
+**done when** a settlement whose turn has not run yet is either delivered after the fork or reported as
+lost, in both cases with the transcript it belongs to named.
+
 ## Subagents launched in ONE ROUND share a single id — **CLOSED 2026-10-04: `79d1165` mints a unique id at creation**
 
 Three `task` launches in a single round (counting lines of `panes.lisp`, `cards.lisp`, `chrome.lisp`) came
@@ -1084,6 +1138,14 @@ children produced a single `[task]` line — `- `s-1791017230755743833-sub-17911
 the model is told that one child finished and receives one answer. **The other two children's answers are
 never delivered at all**, to the model or to any head. Per-subagent ids fix the pane and the notices
 together, which is one more reason not to patch the fold instead.
+
+**VERIFIED ON THE GLASS 2026-10-04, after `79d1165`** (leticl head `1776144`): a second round of three children
+came back with three ids (`…146225190`, `…146494815`, `…146744031`); the head held eleven `Subagent` events
+across them rather than one collapsed row; the box's top edge drew **`1 subagent running · 2 jobs running`**
+while one child and two jobs were live; and the completion notice named **each child with its own id and its
+own answer** (`done: 2633`, `done: 2201`, `done: 2904`), drawn as a card with each answer on its own row.
+`2201` is `src/head.lisp`'s line count — the same number a child asked that question returned before the fix
+— so the separated answers are the right ones, not merely distinct.
 
 **Closed by `79d1165`**, and the fix is the one this entry asked for, one prefix along: the id is minted
 from `crate::config::now_ns()` — the entropy this daemon already names its own sessions with — followed by
