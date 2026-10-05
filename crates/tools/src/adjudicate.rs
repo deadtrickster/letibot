@@ -127,6 +127,18 @@ impl FlowRule {
 /// bears the consequence and whether they can consent in-session — the operator owns
 /// a deletion and chose it, and cannot un-disclose a key afterwards.
 ///
+/// **And it is not the oracle's to move.** Asked directly, on 2026-10-05, whether an oracle
+/// ALLOW should be able to override this tier, the operator ruled in as many words:
+///
+/// > *"Blocked is Blocked — i want my .ssh to stay protected"*
+///
+/// So the refusal at step 1b stands **above every adjudicator**: the oracle is never asked
+/// about a `Blocked` call, [`Tier::is_adjudicable_by_model`] is true only for `MayApprove`
+/// and `AlwaysAsk`, and `Adjudicable` is minted for those two alone. A guard that can be
+/// talked into an exfiltration is not a guard, and a boundary whose whole value is that it
+/// does not depend on a judgement call must not be handed to one — the point of the hardcode
+/// is that it holds whatever the model, the transcript, or a confident sentence in either says.
+///
 /// # Why this is a type and not a check
 ///
 /// [`Adjudicable`] is minted only for [`Tier::MayApprove`], so a function that could

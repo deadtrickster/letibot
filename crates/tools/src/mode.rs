@@ -432,13 +432,24 @@ impl Mode {
     ///
     /// This point is the honest way to have what that operator wanted: the write
     /// disposition of [`Mode::WRITES_ALLOWED`] with the decider of
-    /// [`Mode::AUTO`]. **What it trades** is stated rather than implied: an edit
-    /// inside the boundary takes effect with nobody consulted at all — not the
-    /// operator, and not the model either. §3's asymmetry is why that is
-    /// defensible while the same move on `exec` is not: the boundary guards the
-    /// filesystem view, a `write` result is shaped by the tool, and `bash` is the
-    /// one tool whose result is an arbitrary byte stream. So exec and network
-    /// still ask, and the oracle still answers them.
+    /// [`Mode::AUTO`]. **What it trades** is stated rather than implied, and the operator
+    /// ruled on it directly (2026-10-05) after being shown that
+    /// `write({path: "/etc/cron.d/x"})` is admitted here with nobody consulted:
+    ///
+    /// > *"yes, writes allowed means writes allowed — but Blocked is Blocked — i want my .ssh
+    /// > to stay protected"*
+    ///
+    /// So the write disposition is **deliberately not path-aware**: this point admits a WRITE
+    /// wherever it lands, and what keeps the operator's secrets safe is not this dial but the
+    /// tier above it — a write into the never-write list or a secret store is [`Tier::Blocked`]
+    /// before this point is read, and neither a point nor an adjudicator may promote one. The
+    /// wording that stood here said *"an edit inside the boundary takes effect with nobody
+    /// consulted"*, which was the intent rather than the code; the ruling is what closes that gap.
+    ///
+    /// §3's asymmetry is why the same move on `exec` would not be defensible: the boundary
+    /// guards the filesystem view, a `write` result is shaped by the tool, and `bash` is the one
+    /// tool whose result is an arbitrary byte stream. So exec and network still ask, and the
+    /// oracle still answers them.
     ///
     /// Unchanged from every other point: the always-ask list still reaches the
     /// operator, and nothing promotes a blocked action. A write into a secret
