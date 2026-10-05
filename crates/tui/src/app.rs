@@ -1331,6 +1331,30 @@ struct SubagentState {
     answer: Option<String>,
 }
 
+impl SubagentState {
+    /// **Whether this child is done** — the one thing the pane's two groups are made of.
+    ///
+    /// Anything that is not `running` or `opening` is finished, and that includes a row the
+    /// daemon's list rebuilt with no state word at all: a child this head did not watch, whose
+    /// brief said only *a turn is not generating here* — which a running child would have
+    /// contradicted.
+    fn is_finished(&self) -> bool {
+        !matches!(self.state.as_str(), "running" | "opening")
+    }
+}
+
+/// **One row of the subagent pane** — the ONE enumeration the arrows, Enter, `p`, the drawn
+/// `▸` and the scroll all read. A pane whose cursor comes from one list and whose rows come
+/// from another is the defect leticl's `todos-stops` docstring names; see [`App::subagent_stops`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubStop {
+    /// A child in [`App::subagents`], by index.
+    Agent(usize),
+    /// **The `finished` group row.** The finished children live under it, collapsed by
+    /// default; Enter unfolds them.
+    Finished,
+}
+
 /// What one subagent's read key opens — `p` on a row, and `/peek ID` typed: its tool
 /// output, read out of the subagent's own scrollback by a `Peek`, shown without moving
 /// the head out of the session it is in. The pane behaves like a terminal — the tail shows
@@ -2419,9 +2443,21 @@ pub struct App {
     /// Which job row the cursor is on. Arrows move it, Enter asks the daemon for
     /// that job's output — the pane counted the bytes and had no way to show them.
     jobs_sel: usize,
-    /// Which subagent row the cursor is on. Arrows move it, Enter switches to that
-    /// subagent's session — the same two acts the picker keeps separate.
+    /// **Which row of the pane the cursor is on** — an index into [`App::subagent_stops`],
+    /// not into [`App::subagents`]. Arrows move it, Enter switches into the child it names
+    /// (or folds the `finished` group) — the same two acts the picker keeps separate.
     subagents_sel: usize,
+    /// **Whether the `finished` group is unfolded.** Collapsed by default, because a session
+    /// that has spawned twenty subagents has one or two still running and eighteen finished,
+    /// and the eighteen pushed the one the operator opened the pane for off the bottom of the
+    /// screen: *"i went to subagents panel and dont see it here"*. Enter on the group row
+    /// toggles it.
+    subagents_finished_open: bool,
+    /// **The pane row each stop was DRAWN on** — the same record [`App::todos_stop_rows`]
+    /// keeps for its own pane, and for the same reason: the arrows scroll the cursor into
+    /// view by an `aref` of what the pane wrote, never by arithmetic over the lists it drew
+    /// from. See [`App::subagents_row_of`].
+    subagents_stop_rows: Vec<usize>,
     /// The output view `p` opens on a subagent row, until Esc closes it.
     sub_out: Option<SubOut>,
     /// The subagent whose output was asked for and not yet answered. Esc cancels.
@@ -3534,6 +3570,8 @@ impl App {
             jobs_pane: false,
             jobs_sel: 0,
             subagents_sel: 0,
+            subagents_finished_open: false,
+            subagents_stop_rows: Vec::new(),
             sub_out: None,
             sub_out_pending: None,
             up_from: None,
@@ -7310,62 +7348,88 @@ impl App {
         // argument for the `Peek` frame), and it must not be the thing Enter does when the
         // operator means to go there. It is neither Enter nor Esc, which is what the two
         // gestures had to be kept apart from.
-        if self.subagents_pane && !self.subagents.is_empty() {
-            let n = self.subagents.len();
-            match k {
-                Key::Up => {
-                    self.subagents_sel = if self.subagents_sel == 0 {
-                        n - 1
-                    } else {
-                        self.subagents_sel - 1
-                    };
-                    self.redraw = true;
-                    return None;
-                }
-                Key::Down => {
-                    self.subagents_sel = (self.subagents_sel + 1) % n;
-                    self.redraw = true;
-                    return None;
-                }
-                // **Enter takes the row, and `o` is the same act as the alias this pane
-                // has always used.** One arm for one behaviour: Enter is unconditional (a
-                // pane owns Enter), and `o` keeps the composer's claim on a letter that is
-                // being typed — half a word on the line falls through to the composer, which
-                // is why the guard is here rather than in a second copy of these six lines.
-                Key::Enter | Key::Char('o')
-                    if matches!(k, Key::Enter) || self.editor.text().is_empty() =>
-                {
-                    // **Moving, not reading.** The row is a session and Enter goes to it;
-                    // one that is not open yet is refused here, by name, rather than
-                    // bounced off the daemon.
-                    let row = &self.subagents[self.subagents_sel.min(n - 1)];
-                    if row.state == "opening" {
-                        // Nothing to attach to yet, and the daemon would refuse the
-                        // switch by name anyway; saying it here keeps the operator in
-                        // the pane they were using rather than bouncing them through a
-                        // rejection.
-                        self.say("that subagent is still opening — nothing to attach to yet");
+        //
+        // **And the group row is the third thing Enter means here.** The finished children live
+        // under a fold (see [`App::subagent_stops`]); Enter on that row unfolds them, which is
+        // the same *Enter acts on what the cursor is on* rule the todos pane keeps. The arrows
+        // also scroll the cursor into view now — the fix for the operator's other report,
+        // *"subagents panel doesnt scroll"*, which was a child appended below the fold and no
+        // key that would bring it up.
+        if self.subagents_pane {
+            let stops = self.subagent_stops();
+            if !stops.is_empty() {
+                let n = stops.len();
+                let at = self.subagents_sel.min(n - 1);
+                match k {
+                    Key::Up => {
+                        self.subagents_sel = if at == 0 { n - 1 } else { at - 1 };
+                        self.scroll_into_view(self.subagents_row_of());
                         self.redraw = true;
                         return None;
                     }
-                    let id = row.session_id.clone();
-                    self.subagents_pane = false;
-                    return self.switch_to(id);
-                }
-                // **Reading, not moving: the output pane opens on the `Peeked` reply and
-                // this head never leaves the session it is in.**
-                Key::Char('p') if self.editor.text().is_empty() => {
-                    let row = &self.subagents[self.subagents_sel.min(n - 1)];
-                    if row.state == "opening" {
-                        self.say("that subagent is still opening — nothing to read yet");
+                    Key::Down => {
+                        self.subagents_sel = (at + 1) % n;
+                        self.scroll_into_view(self.subagents_row_of());
                         self.redraw = true;
                         return None;
                     }
-                    let id = row.session_id.clone();
-                    self.sub_out_pending = Some(id.clone());
-                    return Some(Action::Peek(id));
+                    // **Enter takes the row, and `o` is the same act as the alias this pane
+                    // has always used.** One arm for one behaviour: Enter is unconditional (a
+                    // pane owns Enter), and `o` keeps the composer's claim on a letter that is
+                    // being typed — half a word on the line falls through to the composer, which
+                    // is why the guard is here rather than in a second copy of these six lines.
+                    Key::Enter | Key::Char('o')
+                        if matches!(k, Key::Enter) || self.editor.text().is_empty() =>
+                    {
+                        match stops[at] {
+                            // **The group row is a fold, not a session**: nobody to switch into,
+                            // so Enter is the unfold.
+                            SubStop::Finished => {
+                                self.subagents_finished_open = !self.subagents_finished_open;
+                                self.redraw = true;
+                                return None;
+                            }
+                            SubStop::Agent(i) => {
+                                // **Moving, not reading.** The row is a session and Enter goes to
+                                // it; one that is not open yet is refused here, by name, rather
+                                // than bounced off the daemon.
+                                let row = &self.subagents[i];
+                                if row.state == "opening" {
+                                    // Nothing to attach to yet, and the daemon would refuse the
+                                    // switch by name anyway; saying it here keeps the operator in
+                                    // the pane they were using rather than bouncing them through
+                                    // a rejection.
+                                    self.say(
+                                        "that subagent is still opening — nothing to attach to yet",
+                                    );
+                                    self.redraw = true;
+                                    return None;
+                                }
+                                let id = row.session_id.clone();
+                                self.subagents_pane = false;
+                                return self.switch_to(id);
+                            }
+                        }
+                    }
+                    // **Reading, not moving: the output pane opens on the `Peeked` reply and
+                    // this head never leaves the session it is in.** Nothing to read under the
+                    // fold header, so `p` on it falls through.
+                    Key::Char('p') if self.editor.text().is_empty() => match stops[at] {
+                        SubStop::Finished => {}
+                        SubStop::Agent(i) => {
+                            let row = &self.subagents[i];
+                            if row.state == "opening" {
+                                self.say("that subagent is still opening — nothing to read yet");
+                                self.redraw = true;
+                                return None;
+                            }
+                            let id = row.session_id.clone();
+                            self.sub_out_pending = Some(id.clone());
+                            return Some(Action::Peek(id));
+                        }
+                    },
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
@@ -10071,6 +10135,54 @@ impl App {
         self.redraw = true;
     }
 
+    /// **The pane's rows, as ONE enumeration** — the arrows, Enter, `p`, the drawn `▸` and the
+    /// scroll all read this and nothing else.
+    ///
+    /// # The two groups, and why `finished` is folded
+    ///
+    /// The operator, 2026-10-06: *"i went to subagents panel and dont see it here"* — a subagent
+    /// just started, and the pane drew the finished ones and pushed the running one off the
+    /// bottom, because a child this head WATCHED spawn is appended after the durable rows
+    /// ([`App::fold_subagents`]) and so lands LAST. (It is not a delay: the daemon publishes the
+    /// child within a fraction of a second of the spawn — `subagent … open after 0.3s — running`
+    /// is its own progress line — so the row is there and simply below the fold.) And then:
+    /// *"please group finished separately in the finished group which will be collapsed"*.
+    ///
+    /// So the children still going come first, then one `finished (N)` row, then — only when it
+    /// is unfolded — the finished children themselves. The active half is never empty for a live
+    /// spawn, which is the whole point: the row the operator opened the pane to see is at the top.
+    fn subagent_stops(&self) -> Vec<SubStop> {
+        let mut out = Vec::with_capacity(self.subagents.len() + 1);
+        for (i, s) in self.subagents.iter().enumerate() {
+            if !s.is_finished() {
+                out.push(SubStop::Agent(i));
+            }
+        }
+        if self.subagents.iter().any(SubagentState::is_finished) {
+            out.push(SubStop::Finished);
+            if self.subagents_finished_open {
+                for (i, s) in self.subagents.iter().enumerate() {
+                    if s.is_finished() {
+                        out.push(SubStop::Agent(i));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// **The pane row the stop at the cursor was DRAWN on**, read out of
+    /// [`App::subagents_stop_rows`] — the record the pane wrote while drawing, and not arithmetic
+    /// over the lists it drew from. The sibling of [`App::todos_row_of`], and the clamp is the
+    /// same: the list can change under the cursor, and an arrow pressed against a shorter list
+    /// must land on a row rather than on an index that no longer exists.
+    fn subagents_row_of(&self) -> usize {
+        let at = self
+            .subagents_sel
+            .min(self.subagents_stop_rows.len().saturating_sub(1));
+        self.subagents_stop_rows.get(at).copied().unwrap_or(0)
+    }
+
     /// **The subagent rows: this session's children, as the DAEMON's list has them.**
     ///
     /// # Why this exists, and the two halves it joins
@@ -10181,18 +10293,32 @@ impl App {
         }
         self.subagents = rows;
         // **The child this head climbed up out of**, by id, once the rebuild has happened
-        // — an index taken before it would point at whatever the new list has there.
-        if let Some(at) = self
-            .up_from
-            .as_deref()
-            .and_then(|from| self.subagents.iter().position(|r| r.session_id == from))
-        {
-            self.subagents_sel = at;
-            self.up_from = None;
+        // — a stop index taken before it would point at whatever the new list has there.
+        //
+        // **A finished child is unfolded to land on.** The cursor is an index into the stops
+        // ([`App::subagent_stops`]), and a finished child is not one of them while the group is
+        // collapsed — so coming back up out of a child that has since ended opens the group it
+        // went into, rather than dropping the cursor on the fold and hiding the row the operator
+        // just left.
+        let up_from = self.up_from.clone();
+        if let Some(from) = up_from {
+            if let Some(i) = self.subagents.iter().position(|r| r.session_id == from) {
+                if self.subagents[i].is_finished() && !self.subagents_finished_open {
+                    self.subagents_finished_open = true;
+                }
+                if let Some(k) = self
+                    .subagent_stops()
+                    .iter()
+                    .position(|s| matches!(s, SubStop::Agent(j) if *j == i))
+                {
+                    self.subagents_sel = k;
+                }
+                self.up_from = None;
+            }
         }
         self.subagents_sel = self
             .subagents_sel
-            .min(self.subagents.len().saturating_sub(1));
+            .min(self.subagent_stops().len().saturating_sub(1));
     }
 
     /// **The session that spawned this one, or `None` when this head is not in a subagent.**
@@ -11545,7 +11671,7 @@ impl App {
         } else if self.config_pane {
             "arrows move · enter changes a row marked ✎ · esc closes"
         } else if self.subagents_pane {
-            "↑↓ moves · enter (or o) switches into that subagent · p reads its output · esc closes"
+            "↑↓ moves · enter (or o) opens a subagent, or unfolds finished · p reads its output · esc closes"
         } else if self.job_out.is_some() {
             "↑↓ scroll · → next page · ← back · esc back to jobs"
         } else if self.jobs_pane {
@@ -14610,7 +14736,17 @@ impl App {
     /// The subagent tree: the subagents this session spawned, their state and their
     /// prompt. A subagent is also a session, so `enter` goes to it and the last line says
     /// so — along with `p` (read it without moving) and `esc` (up to the parent).
-    fn subagents_lines(&self, w: usize) -> Vec<String> {
+    ///
+    /// **One enumeration, two groups.** The rows come from [`App::subagent_stops`] — the same
+    /// list the arrows, Enter and `p` read — so the drawn `▸` and the key that acts cannot
+    /// disagree about which row is selected, which is the defect leticl's `todos-stops`
+    /// docstring names. The children still going are drawn first; the finished ones live under
+    /// a `finished (N)` row that stays folded unless the operator unfolded it.
+    ///
+    /// **The pane records where each stop landed**, in [`App::subagents_stop_rows`], which is
+    /// what the arrows scroll to: a list longer than the screen can be walked without the cursor
+    /// leaving it. Takes `&mut self` for that record alone — the sibling of [`App::todos_lines`].
+    fn subagents_lines(&mut self, w: usize) -> Vec<String> {
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "subagents")];
         out.push(String::new());
         if self.subagents.is_empty() {
@@ -14619,7 +14755,43 @@ impl App {
                 "    none spawned yet. The model spawns them with the task tool.",
             ));
         }
-        for (i, s) in self.subagents.iter().enumerate() {
+        let stops = self.subagent_stops();
+        let cursor = self.subagents_sel.min(stops.len().saturating_sub(1));
+        let mut stop_rows: Vec<usize> = Vec::with_capacity(stops.len());
+        for (k, stop) in stops.iter().enumerate() {
+            stop_rows.push(out.len());
+            let picked = k == cursor;
+            // **The `finished` fold, when the cursor is on it.** A group row and not a child:
+            // there is nobody to switch into, and Enter folds or unfolds the children under it.
+            let i = match *stop {
+                SubStop::Finished => {
+                    let n = self.subagents.iter().filter(|s| s.is_finished()).count();
+                    let fold = if self.subagents_finished_open {
+                        "[-]"
+                    } else {
+                        "[+]"
+                    };
+                    let left =
+                        format!("{} {} finished ({n})", if picked { "▸" } else { " " }, fold);
+                    let left = if picked {
+                        colour(&self.cfg, sgr::REVERSE, &left)
+                    } else {
+                        left
+                    };
+                    out.push(left);
+                    out.push(dim(
+                        &self.cfg,
+                        if self.subagents_finished_open {
+                            "       the ones that have ended · enter folds them away"
+                        } else {
+                            "       enter shows the ones that have ended"
+                        },
+                    ));
+                    continue;
+                }
+                SubStop::Agent(i) => i,
+            };
+            let s = &self.subagents[i];
             let (mark, state_colour) = match s.state.as_str() {
                 // Not a session yet: the child is copying its workspace or booting.
                 // Enter does nothing here, and the row says so below.
@@ -14635,10 +14807,6 @@ impl App {
                 // report. See [`App::fold_subagents`].
                 _ => ("[?]", ""),
             };
-            let picked = i
-                == self
-                    .subagents_sel
-                    .min(self.subagents.len().saturating_sub(1));
             // **The task, drawn whole; `prompt` is the pre-field fallback.** See
             // [`subagent_asked`] — the notice folds to the same words.
             let asked: String = subagent_asked(s);
@@ -14688,6 +14856,9 @@ impl App {
             }
             out.push(dim(&self.cfg, &format!("       {}", facts.join(" · "))));
         }
+        // **The rows the stops landed on, taken as they went out** — the record the arrows
+        // scroll by. Assigned at the end because the loop above holds `&self.subagents`.
+        self.subagents_stop_rows = stop_rows;
         out.push(String::new());
         // **The keys, said where they are used** — and the last clause is the one that cannot be
         // learned anywhere else, because the gesture only exists while the head is standing
@@ -14699,8 +14870,9 @@ impl App {
         // in the list they are looking at it in is worse than no row.
         out.push(dim(
             &self.cfg,
-            "    arrows move · enter switches into the subagent (o does the same) · p reads its \
-             output · esc closes this, and from inside a subagent esc goes up to the parent",
+            "    arrows move · enter switches into the subagent (o does the same), or folds the \
+             finished group · p reads its output · esc closes this, and from inside a subagent \
+             esc goes up to the parent",
         ));
         out.into_iter().map(|l| trim_to(&l, w)).collect()
     }
@@ -26893,16 +27065,110 @@ mod tests {
         a.key(Key::CtrlG);
         let screen = a.screen(100, 24).join("\n");
         assert!(screen.contains("find the bug in the reader"), "{screen}");
-        assert!(screen.contains("audit the store"), "{screen}");
         assert!(screen.contains("running"), "{screen}");
         assert!(
             !screen.contains("someone else's child"),
             "another conversation's child is in this session's tree:\n{screen}"
         );
-        // **And the state word is not invented.** The list says whether a turn is
-        // generating; it says nothing about how a settled child ended, so the row this head
-        // did not watch says so rather than claiming `done`.
+        // **The finished child is folded, and the pane says how many** — the group the operator
+        // asked for. `s-sub-2` is `running: false` in the list, so it is a finished row.
+        assert!(screen.contains("finished (1)"), "{screen}");
+        assert!(
+            !screen.contains("audit the store"),
+            "a finished child is drawn though its group is folded:\n{screen}"
+        );
+        // **And the state word is not invented.** The list says whether a turn is generating;
+        // it says nothing about how a settled child ended, so the row this head did not watch
+        // says so rather than claiming `done` — unfolded, where a `done` would be a lie.
+        a.key(Key::Down);
+        a.key(Key::Enter);
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("audit the store"), "{screen}");
         assert!(screen.contains("state unknown"), "{screen}");
+    }
+
+    /// **THE ONE THAT IS RUNNING IS AT THE TOP OF THE PANE, NOT BELOW THE FOLD.**
+    ///
+    /// The operator, 2026-10-06: *"i went to subagents panel and dont see it here"* — a subagent
+    /// just started, and a long list of finished ones. **It is not a delay**, which is the
+    /// question they asked next (*"after some time (which?) it appears"*): the daemon publishes the
+    /// child's `opening` state at the spawn and `running` once its harness is open — 0.3s for that
+    /// one, its own progress line — so the row is on the wire at once. It landed BELOW THE FOLD,
+    /// because a child this head watched spawn is appended after the durable rows, and the pane had
+    /// drawn nothing that would scroll it up. With the finished children folded, the running child
+    /// is the first row, which is the whole point.
+    #[test]
+    fn the_running_subagent_is_drawn_above_the_folded_finished_ones() {
+        let mut a = app();
+        let mut fam = vec![brief("s", "parent", false)];
+        for i in 0..26 {
+            let mut b = brief(&format!("s-sub-{i:02}"), &format!("finished {i}"), false);
+            b.parent_session_id = Some("s".into());
+            fam.push(b);
+        }
+        a.apply(hello("s", fam, Hub::new("s").snapshot()));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-run".into(),
+                state: "running".into(),
+                prompt: "the one that is running".into(),
+                role: "coder".into(),
+                task: "the one that is running".into(),
+                model: String::new(),
+                answer: None,
+            },
+        )));
+        a.key(Key::CtrlG);
+        let screen = a.screen(214, 60);
+        let joined = screen.join("\n");
+        assert!(joined.contains("the one that is running"), "{joined}");
+        assert!(joined.contains("finished (26)"), "{joined}");
+        // **At the TOP** — the running child's row is above the group row, so it is the first
+        // thing on the pane rather than the twenty-seventh.
+        let run_at = screen
+            .iter()
+            .position(|l| l.contains("the one that is running"))
+            .expect("the running child's row");
+        let fold_at = screen
+            .iter()
+            .position(|l| l.contains("finished (26)"))
+            .expect("the group row");
+        assert!(
+            run_at < fold_at,
+            "the running child is below the fold:\n{joined}"
+        );
+        // And the finished ones are not drawn, which is what makes the whole list fit.
+        assert!(!joined.contains("finished 25"), "{joined}");
+    }
+
+    /// **THE ARROWS BRING THE CURSOR'S ROW INTO VIEW** — the operator's *"subagents panel doesnt
+    /// scroll"*. A pane longer than the screen was walkable only by PageDown or the wheel: the
+    /// arrows moved a cursor that then left the window, so a child below the fold looked
+    /// unreachable, which is how the running one stayed hidden even once it was the last row.
+    #[test]
+    fn the_arrows_scroll_the_subagent_cursor_into_view() {
+        let mut a = app();
+        let mut fam = vec![brief("s", "parent", false)];
+        for i in 0..40 {
+            let mut b = brief(&format!("s-sub-{i:02}"), &format!("child {i}"), true);
+            b.parent_session_id = Some("s".into());
+            fam.push(b);
+        }
+        a.apply(hello("s", fam, Hub::new("s").snapshot()));
+        a.key(Key::CtrlG);
+        // All forty are generating, so all forty are stops and nothing is folded.
+        a.screen(100, 20);
+        assert_eq!(a.pane_scroll, 0, "the pane opens at its head");
+        for _ in 0..30 {
+            a.key(Key::Down);
+        }
+        let screen = a.screen(100, 20).join("\n");
+        assert!(a.pane_scroll > 0, "the window never followed the cursor");
+        assert!(
+            screen.contains("child 30"),
+            "the cursor walked off the bottom and the pane did not follow:\n{screen}"
+        );
     }
 
     /// A parent with two subagents, plus a second conversation with a child of its own —
@@ -27632,11 +27898,13 @@ mod tests {
     #[test]
     fn esc_leaves_the_output_and_enter_and_o_both_switch_into_the_subagent() {
         let mut a = app();
+        // **`running`, not `done`** — a finished child is under the folded `finished` group and is
+        // not a stop, and this test is about the keys acting on a child that is one.
         a.apply(ServerFrame::Event(env(
             1,
             SessionEvent::Subagent {
                 subagent_id: "s-sub-1".into(),
-                state: "done".into(),
+                state: "running".into(),
                 prompt: "summarize ~/bin/letibot".into(),
                 role: "coder".into(),
                 task: String::new(),
@@ -27711,6 +27979,11 @@ mod tests {
         assert_eq!(a.subagents.len(), 1, "done replaces running, not appends");
         assert_eq!(a.subagents[0].state, "done");
         a.key(Key::CtrlG);
+        // A `done` child is finished, so it is under the folded group: the pane says how many
+        // before it says which, and Enter on that row is what shows them.
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("finished (1)"), "{screen}");
+        a.key(Key::Enter);
         let screen = a.screen(100, 24).join("\n");
         assert!(screen.contains("done"), "{screen}");
         assert!(screen.contains("Here is the summary."), "{screen}");
@@ -27742,6 +28015,9 @@ mod tests {
                 answer: Some("twelve rows have no reader".into()),
             },
         )));
+        // **Unfold the `finished` group**, where a `done` child lives; the cursor starts on the
+        // group row because it is the only stop.
+        a.key(Key::Enter);
         let frame = a.screen(120, 40);
         let screen = frame.join("\n");
         // **The whole task, flattened to the row** — both of its lines are there, and *both*
