@@ -1329,6 +1329,20 @@ struct SubagentState {
     /// subtitle, kept apart from the row so a completion cannot be mistaken for the
     /// question.
     answer: Option<String>,
+    /// **When this child was spawned, for the pane's order** — the *"most recent agents must be on
+    /// top"* the operator asked for on 2026-10-05.
+    ///
+    /// Two sources, and the daemon's wins: `SessionBrief::created_ms`, which is the session's own
+    /// creation time and therefore the spawn, and — for a row this head watched appear before the
+    /// list carried it — the `Subagent` event's own `ts`, which is when this head *heard* about the
+    /// child rather than when it was made. A later finish event does not overwrite either: recency
+    /// in this pane is *when the agent started*, so a child that has run for an hour does not jump
+    /// above one spawned a minute ago for having ended last.
+    ///
+    /// **`0` is *not known*** — a replay, or a brief from a daemon that did not stamp the row — and
+    /// it sorts LAST, below every row somebody can date. That is the honest place for it: a row
+    /// nobody can order belongs at the bottom, not at the top pretending to be new.
+    spawned_ms: u64,
 }
 
 impl SubagentState {
@@ -5278,6 +5292,10 @@ impl App {
                         task,
                         model,
                         answer,
+                        // When this head heard of it, which is the best a spawn event can say.
+                        // `fold_subagents` replaces it with the daemon's own `created_ms` the
+                        // moment a list carrying the child arrives.
+                        spawned_ms: ts,
                     });
                 }
                 self.redraw = true;
@@ -10391,6 +10409,12 @@ impl App {
                     } else {
                         k.state
                     };
+                    // **The daemon's own stamp wins over the event's**, when the list carries one:
+                    // that is the session's creation time, and an event's `ts` is only when this
+                    // head heard about the child.
+                    if b.created_ms > 0 {
+                        k.spawned_ms = b.created_ms;
+                    }
                     rows.push(k);
                 }
                 None => rows.push(SubagentState {
@@ -10418,6 +10442,7 @@ impl App {
                     role: String::new(),
                     model: b.status.model.clone(),
                     answer: None,
+                    spawned_ms: b.created_ms,
                 }),
             }
         }
@@ -10426,6 +10451,19 @@ impl App {
                 rows.push(k);
             }
         }
+        // **NEWEST FIRST** — the operator's ask, 2026-10-05: *"fix agents pane - the ordering is
+        // off - most recent agents must be on top"*.
+        //
+        // The rows above are built in the daemon's list order, which is creation order — oldest
+        // first — with the children this head watched spawn appended after them, so without this
+        // the pane drew a child that had just been started at the BOTTOM of its group: the worst
+        // place for the one row the operator opened the pane to see.
+        //
+        // **`sort_by` and not `sort_unstable_by`**: the sort is STABLE, so rows nobody can date
+        // (all the zeroes — a replay, a brief with no stamp) keep the order they arrived in rather
+        // than being shuffled into an order that means nothing. A dated row still comes before an
+        // undated one whatever the stability, because zero sorts last descending.
+        rows.sort_by(|a, b| b.spawned_ms.cmp(&a.spawned_ms));
         self.subagents = rows;
         // **The child this head climbed up out of**, by id, once the rebuild has happened
         // — a stop index taken before it would point at whatever the new list has there.
@@ -27465,6 +27503,81 @@ mod tests {
         assert!(screen.contains("state unknown"), "{screen}");
     }
 
+    /// **The newest agent is on top** — the operator's ask, 2026-10-05: *"fix agents pane - the
+    /// ordering is off - most recent agents must be on top"*.
+    ///
+    /// The daemon's list is in creation order, **oldest first** (the store's own `created_ms`),
+    /// and the children this head watched spawn were *appended* after it — so the pane drew the
+    /// child that had just been started at the BOTTOM of its group, which for an agent pane is the
+    /// one row anybody opened it to see.
+    ///
+    /// **Two running children, so the groups do the ordering for nobody.** The pane already draws
+    /// running rows above the finished group (`the_running_subagent_is_drawn_above_…`), so a
+    /// fixture that mixed the two would pass on the group's own rule and say nothing at all about
+    /// recency. Both are `running` in the list — the one thing a brief states about a live child —
+    /// and both the list's order and the rows' order on the glass are asserted.
+    #[test]
+    fn the_newest_agent_is_at_the_top_of_the_pane() {
+        let mut a = app();
+        let mut older = brief("s-sub-old", "the older one", true);
+        older.parent_session_id = Some("s".into());
+        older.created_ms = 1_000;
+        let mut newer = brief("s-sub-new", "the newer one", true);
+        newer.parent_session_id = Some("s".into());
+        newer.created_ms = 2_000;
+        // **The daemon's order, which is the order the pane must not keep**: oldest first.
+        a.apply(hello(
+            "s",
+            vec![brief("s", "parent", true), older, newer],
+            Hub::new("s").snapshot(),
+        ));
+        assert_eq!(
+            a.subagents
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["s-sub-new", "s-sub-old"],
+            "the newest child is not first in the pane's list"
+        );
+        a.key(Key::CtrlG);
+        let screen = a.screen(100, 24);
+        let at = |needle: &str| {
+            screen
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} is not on the pane:\n{}", screen.join("\n")))
+        };
+        assert!(
+            at("the newer one") < at("the older one"),
+            "the pane drew the older agent above the newer one:\n{}",
+            screen.join("\n")
+        );
+
+        // **A row nobody can date sorts LAST**, not first: `created_ms` is `0` for a replay and for
+        // a brief from a daemon that does not stamp the row, and an undated row belongs at the
+        // bottom rather than at the top pretending to be the newest thing in the pane.
+        let mut b = app();
+        let mut dated = brief("s-sub-dated", "the dated one", true);
+        dated.parent_session_id = Some("s".into());
+        dated.created_ms = 5;
+        let mut undated = brief("s-sub-undated", "the undated one", true);
+        undated.parent_session_id = Some("s".into());
+        // `created_ms` stays `0`, which is the whole of this half.
+        b.apply(hello(
+            "s",
+            vec![brief("s", "parent", true), undated, dated],
+            Hub::new("s").snapshot(),
+        ));
+        assert_eq!(
+            b.subagents
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["s-sub-dated", "s-sub-undated"],
+            "a row nobody can date sorted above one somebody can"
+        );
+    }
+
     /// **THE ONE THAT IS RUNNING IS AT THE TOP OF THE PANE, NOT BELOW THE FOLD.**
     ///
     /// The operator, 2026-10-06: *"i went to subagents panel and dont see it here"* — a subagent
@@ -30505,6 +30618,7 @@ mod tests {
                 task: String::new(),
                 model: String::new(),
                 answer: None,
+                spawned_ms: 0,
             },
             SubagentState {
                 session_id: "s-sub-2".into(),
@@ -30514,6 +30628,7 @@ mod tests {
                 task: String::new(),
                 model: String::new(),
                 answer: None,
+                spawned_ms: 0,
             },
         ];
         a.key(Key::CtrlC);
@@ -39571,6 +39686,7 @@ mod tests {
             task: "Answer with one word:\n  ready.".into(),
             model: String::new(),
             answer: Some("ready".into()),
+            spawned_ms: 0,
         };
         assert_eq!(
             folded_notice(TASK, std::slice::from_ref(&sub)).unwrap(),
