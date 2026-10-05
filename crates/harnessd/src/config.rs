@@ -1080,11 +1080,13 @@ impl Config {
                 // row the operator is on rather than the bare word `local`. Matched on
                 // the address, because that is what the switch actually moved: two
                 // blocks can name one alias and only the endpoint says which is live.
-                None => match letibot_provider::keys::local_models(None).into_iter().find(|m| {
-                    crate::harness::local_url_authority(&m.url).as_deref()
-                        == Some(self.endpoint.authority().as_str())
-                        && m.model == self.model
-                }) {
+                None => match letibot_provider::keys::local_models(None)
+                    .into_iter()
+                    .find(|m| {
+                        crate::harness::local_url_authority(&m.url).as_deref()
+                            == Some(self.endpoint.authority().as_str())
+                            && m.model == self.model
+                    }) {
                     Some(m) => format!("{} ({} at {})", m.name, m.model, m.url),
                     None => format!("local ({})", self.model),
                 },
@@ -2160,10 +2162,7 @@ mod tests {
     fn the_model_row_offers_every_declared_local_model() {
         let cfg = Config::for_this_box("/tmp");
         let rows = cfg.settings("", false, &[]);
-        let model = rows
-            .iter()
-            .find(|r| r.key == "model")
-            .expect("a model row");
+        let model = rows.iter().find(|r| r.key == "model").expect("a model row");
         for m in letibot_provider::keys::local_models(None) {
             assert!(
                 model.choices.contains(&m.name),

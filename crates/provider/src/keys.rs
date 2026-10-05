@@ -626,10 +626,7 @@ pub fn model_profile(family: &str, alias: &str, file: Option<&Path>) -> ModelPro
 /// `[model."qwen-3.8-27b"]` arrives as the section `model."qwen-3.8-27b` — the
 /// same asymmetry `prices."…"` already lives with a few lines up, handled the
 /// same way rather than differently.
-fn model_section<'a>(
-    parsed: &'a ProvidersFile,
-    key: &str,
-) -> Option<&'a BTreeMap<String, String>> {
+fn model_section<'a>(parsed: &'a ProvidersFile, key: &str) -> Option<&'a BTreeMap<String, String>> {
     parsed.sections.iter().find_map(|(sec, kv)| {
         let rest = sec.strip_prefix("model.")?;
         (rest.trim_matches('"') == key).then_some(kv)
@@ -640,10 +637,13 @@ fn number(v: &str, kind: Num) -> Option<serde_json::Value> {
     let v = v.trim();
     match kind {
         Num::Int => v.parse::<i64>().ok().map(Into::into),
-        Num::Float => v.parse::<f64>().ok().and_then(serde_json::Number::from_f64).map(Into::into),
+        Num::Float => v
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Into::into),
     }
 }
-
 
 /// **One model this fleet hosts**, as `/models` offers it.
 ///
@@ -772,7 +772,9 @@ mod tests {
             p.unknown
         );
         assert!(
-            p.unknown.iter().any(|u| u.contains("top_p") && u.contains("not a number")),
+            p.unknown
+                .iter()
+                .any(|u| u.contains("top_p") && u.contains("not a number")),
             "a known key with an unreadable value says which it was: {:?}",
             p.unknown
         );
@@ -798,7 +800,10 @@ mod tests {
             m.model, "qwen-3.8-27b",
             "the served alias, not the block's label"
         );
-        assert_eq!(m.profile.sampling.get("temperature").unwrap().as_f64(), Some(0.7));
+        assert_eq!(
+            m.profile.sampling.get("temperature").unwrap().as_f64(),
+            Some(0.7)
+        );
     }
 
     /// The block name is the alias when the block did not say otherwise, because

@@ -4319,12 +4319,7 @@ impl<'a> Harness<'a> {
     /// config's word for *no wall* rather than for a large one — the same reading
     /// `cli` takes for a local endpoint that will not say. It is said out loud,
     /// because planning against nothing is a decision the operator should see.
-    fn retune_window_local(
-        &mut self,
-        want: &Endpoint,
-        name: &str,
-        stated: Option<u64>,
-    ) -> String {
+    fn retune_window_local(&mut self, want: &Endpoint, name: &str, stated: Option<u64>) -> String {
         // Remembered on the way out, so `/models local` restores the server this
         // daemon was started against rather than keeping another box's number. Same
         // write site and same mirror as `retune_window`, so the two cannot disagree.
@@ -8923,11 +8918,9 @@ impl HarnessTaskRunner {
         // window is probed here rather than allowed to inherit.
         let (sub_endpoint, sub_window) = match &sub_local {
             Some(m) => {
-                let want_at = parse_local_url(&m.url)
-                    .map_err(|e| format!("[model.\"{}\"] {e}", m.name))?;
-                if let Some(why) =
-                    local_model_vocab_refusal(&want_at, m, &self.base.vocab_gguf)
-                {
+                let want_at =
+                    parse_local_url(&m.url).map_err(|e| format!("[model.\"{}\"] {e}", m.name))?;
+                if let Some(why) = local_model_vocab_refusal(&want_at, m, &self.base.vocab_gguf) {
                     return Err(why);
                 }
                 let w = match sub_window {
@@ -9280,7 +9273,6 @@ fn steer_for_turn(
         ledger.reconcile(turn_id, "").steering()
     }
 }
-
 
 /// **Do the weights at this address match the vocabulary we tokenize with?** — the
 /// refusal, or `None` to go ahead.
@@ -9733,7 +9725,8 @@ mod subagent_model_tests {
             "a_local_model_without_a_window",
             "[model.\"dense78\"]\nurl = \"http://192.168.1.78:8082\"\nmodel = \"qwen-3.8-27b\"\n",
         );
-        let m = super::subagent_model_in(Some(&f), "dense78", Some(Some(262_144))).expect("resolving");
+        let m =
+            super::subagent_model_in(Some(&f), "dense78", Some(Some(262_144))).expect("resolving");
         assert_eq!(
             m.window, None,
             "nobody has asked that server yet, and the parent's number is about another box"
@@ -9752,7 +9745,11 @@ mod subagent_model_tests {
         assert_eq!(fleet.len(), 1);
         assert_eq!(fleet[0].profile.window, None);
         assert!(
-            fleet[0].profile.unknown.iter().any(|u| u.contains("window")),
+            fleet[0]
+                .profile
+                .unknown
+                .iter()
+                .any(|u| u.contains("window")),
             "{:?}",
             fleet[0].profile.unknown
         );
@@ -10965,7 +10962,6 @@ mod tests {
         assert_eq!(Harness::one_line("ls   -la\t-h", 60), "ls -la -h");
     }
 
-
     /// **The url is written the way it is curled.** A scheme and the chat-completions
     /// path both appear in what the operator pastes, and both have to come off: the
     /// client appends its own route, so a kept path would post to
@@ -10976,12 +10972,16 @@ mod tests {
             .expect("a curl's url");
         assert_eq!(e.authority(), "192.168.1.78:8082");
         assert_eq!(
-            super::parse_local_url("192.168.1.78:8082").unwrap().authority(),
+            super::parse_local_url("192.168.1.78:8082")
+                .unwrap()
+                .authority(),
             "192.168.1.78:8082",
             "a bare authority is the same address"
         );
         assert_eq!(
-            super::parse_local_url("https://box.lan:443/").unwrap().authority(),
+            super::parse_local_url("https://box.lan:443/")
+                .unwrap()
+                .authority(),
             "box.lan:443"
         );
     }
