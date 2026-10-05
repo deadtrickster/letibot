@@ -4233,6 +4233,105 @@ impl<'a> Harness<'a> {
         self.monitors.as_ref()
     }
 
+    /// **Switch to a model this fleet hosts** — `/models dense78`.
+    ///
+    /// Declared in `providers.toml` as a `[model."…"]` block with an address; see
+    /// [`letibot_provider::keys::FleetModel`]. These are `local` in every sense that
+    /// matters here: no key, no meter, an OpenAI-compatible or llama.cpp server on the
+    /// LAN. So this takes the local path — `provider` cleared — and moves where that
+    /// path points.
+    ///
+    /// # Why it verifies the vocabulary before it moves
+    ///
+    /// The engine tokenizes HERE, with this daemon's GGUF, and sends token ids. Point
+    /// it at a server holding different weights and nothing fails: the ids are valid
+    /// numbers and mean other words. That is silent corruption of the one thing a
+    /// transcript is for, so a switch that cannot show the weights match does not
+    /// happen.
+    ///
+    /// Three outcomes, and each is a sentence rather than a shrug:
+    ///
+    ///   * `/props` names the same GGUF this daemon tokenizes with — switch.
+    ///   * `/props` names a different one — refuse, and print both names.
+    ///   * nothing answers, or `/props` names no model at all (a proxy, a server
+    ///     without it) — refuse, and name the block key that asserts it by hand.
+    ///     An operator saying *"I know these are the same weights"* is a decision on
+    ///     the record; this guessing it would not be.
+    pub fn set_fleet_model(
+        &mut self,
+        m: &letibot_provider::keys::FleetModel,
+    ) -> Result<String, HarnessError> {
+        let want = parse_fleet_endpoint(&m.url)
+            .map_err(|e| HarnessError::Setup(format!("[model.\"{}\"] {e}", m.name)))?;
+        let mine = vocab_basename(&self.cfg.vocab_gguf);
+        let asserted = m
+            .profile
+            .unknown
+            .iter()
+            .any(|u| u == "same_vocab" || u.starts_with("same_vocab "));
+        match letibot_turn::serving::served_model(&want) {
+            Ok(theirs) => {
+                let theirs_base = vocab_basename(std::path::Path::new(&theirs));
+                if theirs_base != mine && !asserted {
+                    return Err(HarnessError::Setup(format!(
+                        "{} serves `{theirs}` and this daemon tokenizes with `{}`. The ids are \
+                         computed here and sent as numbers, so pointing them at other weights \
+                         is silent corruption rather than an error. Start a daemon on those \
+                         weights, or put `same_vocab = true` in [model.\"{}\"] to say you know \
+                         they match.",
+                        want.authority(),
+                        self.cfg.vocab_gguf.display(),
+                        m.name
+                    )));
+                }
+            }
+            Err(why) if !asserted => {
+                return Err(HarnessError::Setup(format!(
+                    "{} did not answer /props with a model ({why}), so this cannot check that \
+                     its weights are the ones `{}` tokenizes for. Put `same_vocab = true` in \
+                     [model.\"{}\"] to assert it.",
+                    want.authority(),
+                    self.cfg.vocab_gguf.display(),
+                    m.name
+                )));
+            }
+            Err(_) => {}
+        }
+
+        // Off any metered provider first, and by the same door, so the ledger scale
+        // and the restored window are handled in the one place that knows how.
+        let mut line = self.set_provider(None)?;
+
+        // **The engine is what actually holds the address** — `cfg.endpoint` is the
+        // record and `engine.endpoint` is where `/completion` is posted. Writing one
+        // and not the other is how a switch reports a move it did not make.
+        self.cfg.endpoint = want.clone();
+        self.engine.endpoint = want.clone();
+        self.cfg.model = m.model.clone();
+        self.engine.model = m.model.clone();
+        if !m.profile.sampling.is_empty() {
+            let sampling = serde_json::Value::Object(m.profile.sampling.clone());
+            self.cfg.sampling = sampling.clone();
+            self.engine.sampling = sampling;
+        }
+        // A different box is a different KV cache and a different window; the ratio
+        // measured on the old one is not evidence about this one. `set_provider(None)`
+        // restored the window this daemon started with, which is the honest value
+        // until this server's own `/props` is read.
+        self.cfg.ledger_scale = None;
+        line = format!(
+            "turns go to `{}` at {} from the next one on (fleet, no meter){}",
+            m.model,
+            want.authority(),
+            if m.profile.sampling.is_empty() {
+                String::new()
+            } else {
+                format!(", sampling {}", render_sampling(&m.profile.sampling))
+            }
+        );
+        Ok(line)
+    }
+
     /// **Switch what answers this session's turns**, underneath the conversation.
     /// `None` is the local server. The transcript, the ledger and the tools are
     /// untouched: the next turn simply goes elsewhere. Returns a line saying what
@@ -6962,15 +7061,26 @@ impl<'a> Harness<'a> {
             return None;
         }
         match crate::slash::models_choice(&name, model.as_deref(), None, None) {
-            Ok((Some(choice), _)) => match self.set_provider(Some(choice)) {
+            Ok((crate::slash::ModelChoice::Metered(choice), _)) => {
+                match self.set_provider(Some(choice)) {
+                    Ok(_) => Some(format!("restored to {stored}")),
+                    Err(e) => Some(format!("could not restore {stored}: {e}")),
+                }
+            }
+            // **A fleet model is restored through its own door**, which re-checks the
+            // vocabulary. That check is not ceremony on a resume: the daemon being
+            // resumed INTO may have been started on different weights than the one
+            // that stored the row, and a restore that skipped it would be the one
+            // path into exactly the corruption `set_fleet_model` exists to refuse.
+            Ok((crate::slash::ModelChoice::Fleet(m), _)) => match self.set_fleet_model(&m) {
                 Ok(_) => Some(format!("restored to {stored}")),
                 Err(e) => Some(format!("could not restore {stored}: {e}")),
             },
-            // `Ok((None, _))` is `models_choice("local")`, and `local` is handled
-            // by name above — a row that reached here as `None` would mean the store
+            // `ModelChoice::Local` is `models_choice("local")`, and `local` is handled
+            // by name above — a row that reached here as local would mean the store
             // spelled a switch to the local server some other way, and the honest
             // answer is the daemon default rather than a panic on a fact nobody wrote.
-            Ok((None, _)) | Err(_) => Some(format!(
+            Ok((crate::slash::ModelChoice::Local, _)) | Err(_) => Some(format!(
                 "could not restore {stored}: this build does not know that provider, so the \
                  daemon's own default answers"
             )),
@@ -8185,13 +8295,36 @@ pub fn subagent_model(
             ));
             out
         })?;
-    // `models_choice` answers `None` only for `local`, handled above — so reaching here
-    // without a provider would be a resolver bug rather than a user error, and the honest
-    // answer is to refuse rather than to run the child on the parent's model.
-    let Some(pc) = pc else {
-        return Err(vec![format!(
-            "`{want}` resolved to no provider and no model"
-        )]);
+    let pc = match pc {
+        crate::slash::ModelChoice::Metered(pc) => pc,
+        // **A fleet model cannot seat a child yet, and that is said rather than
+        // approximated.** A child needs a context window and a label before it has
+        // run a round, and a preset supplies both from the catalogue; a fleet entry's
+        // window is its own server's and nothing here has asked it. Falling back to
+        // the parent's model would start a child on weights the operator did not
+        // name, which is the one outcome worse than refusing.
+        crate::slash::ModelChoice::Fleet(m) => {
+            return Err(vec![
+                format!(
+                    "`{want}` is a fleet model ({} at {}), and a subagent cannot be seated on \
+                     one yet: a child is given its context window before its first round and \
+                     this does not ask that server for one.",
+                    m.model, m.url
+                ),
+                format!(
+                    "  `/models {}` switches THIS session to it; for a child, name a cloud \
+                     preset or leave it on the parent's model",
+                    m.name
+                ),
+            ]);
+        }
+        // `local` is handled above by name, so reaching here means the store spelled a
+        // local switch some other way — a resolver bug, refused rather than guessed.
+        crate::slash::ModelChoice::Local => {
+            return Err(vec![format!(
+                "`{want}` resolved to no provider and no model"
+            )]);
+        }
     };
     let preset = letibot_provider::Preset::parse(&pc.name).map_err(|e| vec![e])?;
     let cat = letibot_provider::catalogue::Catalogue::load();
@@ -9000,6 +9133,52 @@ fn steer_for_turn(
     } else {
         ledger.reconcile(turn_id, "").steering()
     }
+}
+
+
+/// `http://192.168.1.78:8082` or `192.168.1.78:8082` into an [`Endpoint`].
+///
+/// A scheme is accepted and discarded rather than refused: the operator writes the
+/// url they `curl`, and `[model."x"] url = "http://…"` is the shape that reads
+/// naturally beside a key block's `url`. A path is accepted and discarded too —
+/// `/v1/chat/completions` is what the curl carries and the client appends its own
+/// route, so keeping it would produce `/v1/chat/completions/completion`.
+fn parse_fleet_endpoint(url: &str) -> Result<Endpoint, String> {
+    let rest = url
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let authority = rest.split('/').next().unwrap_or("").trim();
+    if authority.is_empty() {
+        return Err(format!("`{url}` names no host"));
+    }
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| format!("`{url}` names no port; write it as HOST:PORT"))?;
+    let port: u16 = port
+        .parse()
+        .map_err(|_| format!("`{port}` in `{url}` is not a port"))?;
+    if host.is_empty() {
+        return Err(format!("`{url}` names no host"));
+    }
+    Ok(Endpoint::new(host, port))
+}
+
+/// The GGUF's own file name, which is what two servers holding one model agree on
+/// even when the directories differ. A split GGUF's `-00001-of-00006` suffix is kept:
+/// two servers that disagree about the shard count are not serving the same file.
+fn vocab_basename(p: &std::path::Path) -> String {
+    p.file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// Sampling as one short line for a reply the operator reads, in the file's own order.
+fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) -> String {
+    s.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A provider backend from its config: the preset, the key (a missing one is a
@@ -10377,6 +10556,54 @@ mod tests {
         // Internal runs of whitespace collapse, so the width asked for is the
         // width drawn.
         assert_eq!(Harness::one_line("ls   -la\t-h", 60), "ls -la -h");
+    }
+
+
+    /// **The url is written the way it is curled.** A scheme and the chat-completions
+    /// path both appear in what the operator pastes, and both have to come off: the
+    /// client appends its own route, so a kept path would post to
+    /// `/v1/chat/completions/completion`.
+    #[test]
+    fn a_fleet_url_is_read_the_way_the_operator_writes_it() {
+        let e = super::parse_fleet_endpoint("http://192.168.1.78:8082/v1/chat/completions")
+            .expect("a curl's url");
+        assert_eq!(e.authority(), "192.168.1.78:8082");
+        assert_eq!(
+            super::parse_fleet_endpoint("192.168.1.78:8082").unwrap().authority(),
+            "192.168.1.78:8082",
+            "a bare authority is the same address"
+        );
+        assert_eq!(
+            super::parse_fleet_endpoint("https://box.lan:443/").unwrap().authority(),
+            "box.lan:443"
+        );
+    }
+
+    /// A port is not optional and the refusal says so, because the alternative is
+    /// guessing 8080 — which is the port the three LOCAL units share, so the guess
+    /// would land on this box while the operator was naming another one.
+    #[test]
+    fn a_fleet_url_without_a_port_is_refused_by_name() {
+        let e = super::parse_fleet_endpoint("http://192.168.1.78").unwrap_err();
+        assert!(e.contains("no port"), "{e}");
+        assert!(super::parse_fleet_endpoint("http://").is_err());
+    }
+
+    /// The GGUF's file name is the comparison, so two boxes holding one model in
+    /// different directories agree, and a split file's shard count still has to match.
+    #[test]
+    fn the_vocab_comparison_is_the_file_name_not_the_path() {
+        use std::path::Path;
+        assert_eq!(
+            super::vocab_basename(Path::new("/home/dead/models/Qwen3.8-27B-UD-Q6_K_XL.gguf")),
+            super::vocab_basename(Path::new("/srv/weights/Qwen3.8-27B-UD-Q6_K_XL.gguf")),
+            "one model in two places is one model"
+        );
+        assert_ne!(
+            super::vocab_basename(Path::new("/m/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf")),
+            super::vocab_basename(Path::new("/m/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00008.gguf")),
+            "a different shard count is a different file"
+        );
     }
 
     fn user(text: &str) -> TranscriptItem {

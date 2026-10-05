@@ -502,7 +502,14 @@ impl<'a> Sessions<'a> {
                     lines.push(format!("session {session_id} is not open"));
                     return SlashReply { lines, ok: false };
                 };
-                match h.set_provider(choice) {
+                let applied = match choice {
+                    crate::slash::ModelChoice::Local => h.set_provider(None),
+                    crate::slash::ModelChoice::Metered(pc) => h.set_provider(Some(pc)),
+                    // Its own door, because it verifies the vocabulary before it
+                    // moves anything — see `Harness::set_fleet_model`.
+                    crate::slash::ModelChoice::Fleet(m) => h.set_fleet_model(&m),
+                };
+                match applied {
                     Ok(line) => {
                         // **The choice goes to the session row in the same breath** —
                         // `persist_provider_choice`'s own doc is why. A switch that

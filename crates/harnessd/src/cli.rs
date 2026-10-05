@@ -707,6 +707,44 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         },
     };
 
+    // **The per-model profile out of `providers.toml`** — `[model.<family>]` for the
+    // dialect's effort, `[model."<alias>"]` for this model's sampling.
+    //
+    // This is the wire that was missing. The file has documented the two blocks, the
+    // precedence and a worked example since 2026-09-19, and nothing in the tree parsed
+    // either: `cfg.sampling` was assigned nowhere, so every daemon ran the
+    // `Config::default` greedy literal and every number written in that file did
+    // nothing. A documented knob that is silently ignored is worse than an absent one,
+    // because the operator has no way to tell the difference from the outside.
+    //
+    // **Flag beats file beats built-in**, as the file says: `--effort` is read before
+    // this and keeps its value, and sampling has no flag yet, so a block wins over the
+    // built-in whenever it says anything at all.
+    //
+    // **A block replaces the built-in rather than merging onto it.** Merging would
+    // leave `temperature = 0.0` in force under a block that set only
+    // `presence_penalty`, which is the built-in deciding the most consequential knob
+    // in a profile the operator wrote — a surprise in the one direction nobody would
+    // look for.
+    {
+        let profile = letibot_provider::keys::model_profile(cfg.dialect.family(), &cfg.model, None);
+        if !profile.sampling.is_empty() {
+            cfg.sampling = serde_json::Value::Object(profile.sampling.clone());
+        }
+        if cfg.effort.is_none() {
+            cfg.effort = profile.effort.clone();
+        }
+        // **Said, not swallowed.** The defect above was a number nobody read; a
+        // misspelled key is the same defect one line lower, so it gets a line.
+        for u in &profile.unknown {
+            eprintln!(
+                "  providers.toml: [model] carries `{u}`, which nothing here reads. \
+                 Sampling keys are temperature, top_p, top_k, min_p, presence_penalty, \
+                 frequency_penalty, repeat_penalty, seed, max_tokens, thinking_budget_tokens."
+            );
+        }
+    }
+
     // **The image marker, read off the server for the same reason the window is.**
     //
     // It is a per-instance random value published on `/props`, so `None` means *this endpoint takes
