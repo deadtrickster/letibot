@@ -14521,6 +14521,11 @@ impl App {
             "modes.tsv",
             "permission.json",
             "providers.toml",
+            // **The system prompt's per-model overrides** — a file the operator edits by hand
+            // like the three above it, and the one they would never find: nothing else in the
+            // tree names it, and an override that is silently not read looks exactly like an
+            // override that is. See `harnessd::config::Prompts`.
+            "prompts.toml",
             "sensitive.json",
         ] {
             let path = self
