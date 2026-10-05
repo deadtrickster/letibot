@@ -255,6 +255,20 @@ impl Show {
     /// One entry for both, because a name in one table and a key in another is exactly how a
     /// chord comes to be advertised and do nothing — and the key dispatch asks this table rather
     /// than matching chords by hand ([`Key::show`]).
+    ///
+    /// **Why these two keys, kept from the arms they were written in.** `ctrl-r` for the thinking
+    /// is the fold this head has always had. `ctrl-x` for the raw markup is not one of the obvious
+    /// letters, and each of the obvious ones is taken: `ctrl-r` is the thinking — and the operator
+    /// ruled it out for this one by name, *"I want to save the ability to see raw tool calls but
+    /// it should be behind some chord, different to C-r"* — `ctrl-c`, `ctrl-d`, `ctrl-z`, `ctrl-s`
+    /// and `ctrl-q` are the terminal's own (two of them flow control that would freeze a pane),
+    /// `ctrl-l`, `ctrl-t` and `ctrl-s` are already this head's, and `ctrl-a/e/w/u/y/k/b/f` are the
+    /// composer's readline keys, which are muscle memory and not available. `alt-r` would read
+    /// better in the hint bar and is not safe: a lone `Esc` followed by a typed `r` arrives in the
+    /// same read as `ESC r`, and the composer's interrupt is `Esc` twice. What is left and is
+    /// mnemonic is **`x` for the XML-ish markup** — `<function=…><parameter=…>` — which is exactly
+    /// what the chord shows; `0x18` is unbound here, is not one of the tty's control characters,
+    /// and readline uses it only as a prefix, so nothing is waiting for a second byte.
     pub fn chord(self) -> Option<(&'static str, Key)> {
         match self {
             Show::Thinking => Some(("ctrl-r", Key::CtrlR)),
@@ -1249,6 +1263,17 @@ impl Key {
                 return None;
             }
         })
+    }
+
+    /// **The switch this key is the chord of, read from [`Show::chord`]** — the reverse lookup the
+    /// key dispatch uses, so a chord is advertised and acts from ONE entry rather than from a pair
+    /// of hand-written arms that each spelled their key twice. A key no switch has a chord for, and
+    /// a switch whose chord no longer matches, both come out of here as `None`, which is what makes
+    /// the drift impossible instead of merely unlikely.
+    fn show(&self) -> Option<Show> {
+        Show::ALL
+            .into_iter()
+            .find(|s| s.chord().is_some_and(|(_, k)| &k == self))
     }
 }
 
@@ -6511,10 +6536,27 @@ impl App {
             return None;
         }
         match k {
-            Key::CtrlR => {
-                self.reasoning = self.reasoning.flip();
-                self.refold();
-                return None;
+            // **A switch's chord, from the table that advertises it — and through `/verbosity`
+            // its own self.**
+            //
+            // The two arms this replaces named their keys by hand, twice each: `ctrl-r` flipped
+            // `self.reasoning` and `ctrl-x` flipped `self.raw_calls` — both of them the MIRROR the
+            // drawing reads rather than the SET — so a press moved the field under the picture
+            // while `Visibility` (the status row, `head.toml`, `keeps`, `rung()`) went on saying
+            // the old set. `read-edits` plus `ctrl-r` was the sharp end: the thinking appeared
+            // while the ladder still hid everything the thinking belongs with.
+            //
+            // The word is spelled and handed to [`App::set_verbosity`] rather than the fields
+            // being written here, because that function is the ONE writer: it refuses a set no
+            // rung can draw, moves the folds with the set, reanchors off a row the change hid,
+            // closes what the change invalidates, writes the preference file, and says what
+            // changed. So a chord is `/verbosity thinking=open` under a shorter spelling — which
+            // is the operator's own ask, *"some toggled by shortcuts some by /commands"* — and it
+            // cannot drift from the verb, because it IS the verb.
+            k if k.show().is_some() => {
+                let s = k.show().expect("the guard just asked the same question");
+                let next = s.by_chord(self.visibility.level(s))?;
+                return self.set_verbosity(&format!("{}={}", s.name(), next.as_str()));
             }
             Key::CtrlV => {
                 // **One row, not a switch — R10's ruling on the overload.**
@@ -6557,26 +6599,6 @@ impl App {
                 // announces the fold state, and neither happened here.
                 self.invalidate_history();
                 self.redraw = true;
-                return None;
-            }
-            // Ctrl+X, and the reason it is not one of the obvious letters is worth
-            // writing down. Ctrl+R is taken (thinking) and the operator ruled it
-            // out by name. Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+S and Ctrl+Q are the
-            // terminal's own — two of them are flow control that would freeze a
-            // pane. Ctrl+L, Ctrl+T and Ctrl+S are already this head's, and
-            // Ctrl+A/E/W/U/Y/K/B/F are the composer's readline keys, which are
-            // muscle memory and not available. Alt+R would read better in the hint
-            // bar and is not safe: a lone Esc followed by a typed `r` arrives in
-            // the same read as `ESC r`, and the composer's interrupt is Esc twice.
-            //
-            // What is left and is mnemonic: **x for the XML-ish markup** —
-            // `<function=…><parameter=…>` — which is exactly what the chord shows.
-            // 0x18 is unbound here, is not one of the tty's control characters, and
-            // readline uses it only as a prefix, so nothing is waiting for a second
-            // byte.
-            Key::CtrlX => {
-                self.raw_calls = !self.raw_calls;
-                self.refold();
                 return None;
             }
             Key::CtrlL => {
@@ -8387,12 +8409,50 @@ impl App {
         // that changes nothing is worse than an unfinished rewrite, because it lies about the
         // screen."* The refusal names the switch that cannot be honoured and the way round it.
         if let Some(s) = next.undrawable() {
+            // **And the sentence names the way round that actually works — with the REMEDY
+            // FIRST, because a notice is trimmed to the frame.**
+            //
+            // Two faults in one line, and the second was found by the test below rather than by
+            // reading it. It read *"`{s}` cannot be off while something above it is on"*, which
+            // is backwards in BOTH cases this can fire: the ladder turns `tools`, `thinking` and
+            // `system` on in that order, so what cannot be drawn is a switch **on** with one below
+            // it **off** — `thinking=open` while `tools=hidden` (which is `read-edits` and then the
+            // thinking's chord), or `system=open` while the thinking is hidden. The old wording
+            // named the switch the reader had just turned ON as the one to turn off, so the only
+            // way to follow it was to make the set worse.
+            //
+            // And when it was fixed the other way round, the test failed: `say` draws the sentence
+            // through `trim_to(…, w)`, so at 100 columns a refusal that opened by explaining the
+            // ladder was cut off **before the verb that undoes it** — an R29 remedy the reader
+            // cannot see is the same as no remedy. So the one word that always works comes first,
+            // then which switch is drawn while which is off, then the profiles.
+            //
+            // **And the switches it names are only the ones BELOW the offending one**, which is a
+            // third fault the same test found: the first cut collected every switch that was off,
+            // so `read-edits`' thinking refusal read *"`tools` and `system` is off"* — the verb
+            // agreeing with nothing, and `system` named as a requirement when it sits ABOVE
+            // `thinking` and is nothing of the kind. The ladder is a prefix, so what a switch that
+            // is ON needs is the ones below it: the statement is now true, and with one name it
+            // reads as a sentence.
+            const LADDER: [Show; 3] = [Show::Tools, Show::Thinking, Show::System];
+            let below = LADDER.iter().position(|l| *l == s).unwrap_or(0);
+            let missing: Vec<String> = LADDER[..below]
+                .iter()
+                .filter(|l| !next.shows(**l))
+                .map(|l| format!("`{}`", l.name()))
+                .collect();
+            // `undrawable` only fires when one of those IS off, so the list is never empty — but
+            // the sentence is built to read as a sentence anyway rather than to rely on it.
+            let verb = if missing.len() == 1 { "is" } else { "are" };
             self.say(&format!(
-                "`{}` is a set this head cannot draw yet: the ladder turns `tools`, `thinking` \
-                 and `system` on in that order, so `{}` cannot be off while something above it \
-                 is on. Turn the higher one off with it, or choose a profile — {}",
-                next.as_str(),
+                "`/verbosity {}=hidden` undoes it: `{}` {} drawn while {} {} off, and no rung \
+                 draws that set — the ladder turns `tools`, `thinking` and `system` on in one \
+                 order. Or choose a profile — {}",
                 s.name(),
+                s.name(),
+                "is",
+                names(&missing),
+                verb,
                 Profile::ALL
                     .iter()
                     .map(|p| p.name)
@@ -33340,6 +33400,97 @@ mod tests {
         assert!(a.raw_calls, "ctrl-x did not toggle the raw view");
         assert_eq!(a.reasoning, Fold::Folded, "ctrl-x moved the thinking fold");
         assert_eq!(a.tools, Fold::Folded, "ctrl-x moved the tool-output fold");
+    }
+
+    /// **Every chord in the table is reachable from a press, and a press IS a `/verbosity`.**
+    ///
+    /// `Show::chord` is the one entry that advertises a key AND binds it, and this is what keeps it
+    /// that way: `Key::show` is the lookup the dispatch uses, so a chord added to the table that no
+    /// key press reaches — or a key bound by hand with nothing in the table — fails here. The two
+    /// hand-written arms this replaces are the reason: each named its key twice, and one of them
+    /// moved the MIRROR the drawing reads (`self.reasoning`) instead of the set, so the picture
+    /// changed while the status row, `head.toml`, `keeps` and `rung()` went on saying the old set.
+    #[test]
+    fn a_chords_key_is_found_from_the_table_and_a_press_moves_the_set() {
+        for s in Show::ALL {
+            let Some((_, key)) = s.chord() else {
+                continue;
+            };
+            assert_eq!(key.show(), Some(s), "{} is advertised as {key:?}", s.name());
+        }
+        let mut a = app();
+        assert_eq!(
+            a.visibility.level(Show::Thinking),
+            Level::Folded,
+            "normal starts with the thinking folded"
+        );
+        a.key(Key::CtrlR);
+        assert_eq!(
+            a.visibility.level(Show::Thinking),
+            Level::Open,
+            "the SET moved"
+        );
+        assert_eq!(
+            a.reasoning,
+            Fold::Open,
+            "and the mirror the drawing reads moved with it — the defect was these two disagreeing"
+        );
+        assert!(
+            a.visibility.as_str().contains("thinking=open"),
+            "the set reads as what it is, so it can be typed back: {}",
+            a.visibility.as_str()
+        );
+        a.key(Key::CtrlR);
+        assert_eq!(
+            a.visibility.level(Show::Thinking),
+            Level::Folded,
+            "and back"
+        );
+        assert_eq!(a.reasoning, Fold::Folded);
+    }
+
+    /// **And where the ladder cannot draw the result, the chord says why instead of lying** — the
+    /// operator's rule for the whole rewrite: a state that changes nothing is worse than an
+    /// unfinished one, because it lies about the screen.
+    ///
+    /// `read-edits` is `{edits: open}` and nothing else, so the thinking's chord there would be
+    /// `thinking=open` with `tools=hidden` — no rung draws it, and the set must not be stored. The
+    /// refusal has to name the switch AND the way back, which is one word of the same verb.
+    #[test]
+    fn the_thinking_chord_in_read_edits_says_why_rather_than_storing_it() {
+        let mut a = app();
+        a.visibility = Visibility::of(Profile::READ_EDITS);
+        a.key(Key::CtrlR);
+        assert_eq!(
+            a.visibility,
+            Visibility::of(Profile::READ_EDITS),
+            "a set no rung can draw must not be stored"
+        );
+        assert_eq!(
+            a.reasoning,
+            Fold::Folded,
+            "and the mirror must not move either"
+        );
+        let screen = a.screen(100, 30).join("\n");
+        // **The whole clause, and it has to fit inside the notice's 100 columns.** `say` draws the
+        // sentence through `trim_to(…, w)`, so a refusal whose facts sit past the frame is a
+        // refusal that lost them — measured here first, when the ladder came before the remedy.
+        assert!(
+            screen.contains("`thinking` is drawn while `tools` is off"),
+            "the refusal must say which switch and which way round, inside the frame:\n{screen}"
+        );
+        assert!(
+            screen.contains("thinking=hidden"),
+            "and the way back, in the verb's own words — INSIDE the notice's own width, which \
+             is why the remedy is the first clause:\n{screen}"
+        );
+        // **And only the switch BELOW it.** `system` sits above `thinking` and is not something
+        // `thinking=open` needs, so naming it would be a requirement that is not one — the third
+        // fault this test found, and the reason the assertion is a negative as well.
+        assert!(
+            !screen.contains("`system`"),
+            "the refusal named a switch ABOVE the one it is about:\n{screen}"
+        );
     }
 
     /// The second defect: *"no margins for the main output — things are hard left
