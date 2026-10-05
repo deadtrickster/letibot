@@ -15084,12 +15084,38 @@ impl App {
             } else {
                 s.title.clone()
             };
-            // **The fold is its own glyph beside the mark**, and only on a conversation that has
-            // children — a row without any keeps the exact columns it had before sub-sessions were
-            // listed, which is what keeps this screen looking unchanged until you expand something.
+            // **The fold is its own glyph beside the mark, and its COLUMN IS RESERVED either
+            // way** — R58's tree is why. An empty string for a childless row reads as one column
+            // saved, and that is what this did, with a comment arguing that *"a row without any
+            // keeps the exact columns it had before sub-sessions were listed"*: true of a list
+            // that had no tree in it at all, and the whole of the defect the moment one exists.
+            //
+            // MEASURED on this box 2026-10-05 with the instrument beside this pane's tests
+            // (`show_the_sessions_pane_tree`), on a root with two children of which only one has
+            // a child of its own:
+            //
+            // ```text
+            //   ▸▾  1  this conversation      name at col 7    depth 0, has children
+            //      ▾  2  the first child       name at col 9    depth 1, has a child
+            //         3  the grandchild        name at col 10   depth 2, no children
+            //       4  the second child        name at col 8    depth 1, NO children
+            // ```
+            //
+            // **Two siblings at ONE depth, one column apart** (9 against 8), so the name column
+            // was a function of *has children* and not of *depth* — a list that cannot be read as
+            // a tree, which is the one thing this pane is for. And 174 of the store's 280
+            // sessions are down there. With the column reserved the step is the indent's own two
+            // columns at every level, which is the same two **this head already steps by
+            // everywhere else** (`card::REASONING_RAIL_WIDTH`, and the frame's own gutter): the
+            // page reads as one repeated step rather than as a second, unrelated one.
+            //
+            // What it costs, said rather than left to be discovered: a screen with no children on
+            // it moves one column right, because the column is now reserved for a glyph that is
+            // not there. That is the trade — a flat list one column in, against a tree that can be
+            // read.
             let kids = kids_of(&s.session_id);
             let fold = if kids == 0 {
-                ""
+                " "
             } else if self.family_open(&s.session_id, row.depth)
                 || self.expanded.iter().any(|e| *e == s.session_id)
             {
@@ -15097,9 +15123,16 @@ impl App {
             } else {
                 "▸"
             };
+            // **And the number's field is as wide as the list is long.** `{:>2}` is right for the
+            // nine-row lists this was written against and wrong for this box, whose header reads
+            // `1/106`: row 100 renders `100` in a two-wide field, so **every row from 100 on sits
+            // one column right of every row before it** — the same defect as the fold above, in the
+            // same frame, and MEASURED there too (rows 3–99 at column 6, rows 100–104 at column 7).
+            // `max(2)` keeps a short list's frame exactly as it was.
+            let digit_w = rows.len().to_string().len().max(2);
             let indent = "  ".repeat(row.depth.min(3));
             let left = format!(
-                "{indent}{mark}{fold} {:>2}  {}",
+                "{indent}{mark}{fold} {:>digit_w$}  {}",
                 at + 1,
                 p.paint(
                     if here { Role::Strong } else { Role::Plain },
@@ -25283,6 +25316,92 @@ mod tests {
         // tree* on the row you just arrived at rather than nothing at all.
         a.key(Key::Left);
         assert_eq!(a.session_rows().len(), 1, "left did not fold the tree");
+    }
+
+    /// **The sessions pane's tree, as a picture** — an instrument, not an assertion.
+    ///
+    /// MEASURED on this box 2026-10-05, because the numbers are not what the tests' fixtures
+    /// imply: **174 of the store's 280 sessions carry a `parent_session_id`**, this session has
+    /// 95 children of its own, the header reads `1/106`, and every one of those 174 is **one
+    /// level down** — there is no depth-2 row in the store at all. So the tree is the pane's
+    /// majority case rather than a corner, and the two things the fixtures do not exercise are
+    /// the ones an instrument is for: the **grandchild** (reached by a child's own `task`, which
+    /// no fixture on this box has produced) and the **three-digit row number** (106 roots, where
+    /// `{:>2}` gives rows 100+ one column more than rows 1–9).
+    ///
+    /// Print it, do not assert it:
+    ///
+    /// ```text
+    /// cargo test -p letibot-tui --lib -- --ignored --nocapture show_the_sessions_pane_tree
+    /// ```
+    #[test]
+    #[ignore]
+    fn show_the_sessions_pane_tree() {
+        let mut grand = brief("s-grand", "the grandchild", false);
+        grand.parent_session_id = Some("s-child-a".into());
+        let mut child_a = brief("s-child-a", "the first child", true);
+        child_a.parent_session_id = Some("s-root".into());
+        let mut child_b = brief("s-child-b", "the second child", false);
+        child_b.parent_session_id = Some("s-root".into());
+        let mut far = brief("s-other-sub", "somebody else's child", false);
+        far.parent_session_id = Some("s-other".into());
+        // A hundred roots, so the numbering reaches three digits — the state this box is in.
+        //
+        // **`grand` IS IN THIS LIST, and the first draft of this instrument forgot it** — the
+        // fixture built the grandchild, set its parent, and then never pushed it, so the depth-2
+        // frame drew the whole daemon and the family frame drew 104 roots: two frames that looked
+        // like pane defects and were the fixture lying. Which is the argument for an instrument
+        // that prints rather than asserts — an assertion would have been written to match.
+        let mut family = vec![
+            brief("s-root", "this conversation", false),
+            child_a,
+            grand,
+            child_b,
+            brief("s-other", "another conversation", false),
+            far,
+        ];
+        for i in 0..100 {
+            family.push(brief(&format!("s-filler-{i:03}"), "a conversation", false));
+        }
+
+        let mut a = app();
+        a.apply(hello(
+            "s-root",
+            family.clone(),
+            Hub::new("s-root").snapshot(),
+        ));
+        a.picker = true;
+        // **A ruler, because the question here is COLUMNS.** *Does the pane render the tree*
+        // is a question about which column a row's name starts in, and an eyeball on a frame
+        // answers it wrongly at one column per level — which is what the first look did.
+        let ruler: String = (0..96)
+            .map(|i| char::from_digit((i % 10) as u32, 10).unwrap())
+            .collect();
+        let show = |label: &str, a: &App| {
+            eprintln!("\n──── {label} ────");
+            eprintln!("|{ruler}");
+            for l in a.picker_lines(96) {
+                eprintln!("|{l}");
+            }
+        };
+
+        show(
+            "collapsed — 104 roots, and this one has two children folded into it",
+            &a,
+        );
+        a.expanded.push("s-child-a".into());
+        show("s-child-a expanded — the grandchild at depth 2", &a);
+        a.expanded.push("s-root".into());
+        show(
+            "the root expanded too — both children, then the grandchild",
+            &a,
+        );
+        a.expanded.clear();
+        a.session_id = "s-grand".into();
+        show(
+            "standing IN the grandchild — the family view, not the daemon",
+            &a,
+        );
     }
 
     /// **R56: while the view is held, the head writes NOTHING** — so a mouse selection survives
