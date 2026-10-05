@@ -1136,6 +1136,14 @@ struct TurnPane {
     /// its payload under it, and drawing it a second time in the live pane is the
     /// wall the operator was looking at: eight `● Read …` rows above eight
     /// `▸ Read … · ok · N lines` rows, no added fact between them.
+    ///
+    /// **And the mark is not the pane's alone.** Three readers ask which calls are still the live
+    /// one's, and they have to agree: the live cards drawn below (`calls.get(*settled_calls..)`),
+    /// the marker's NUMBER (`live_work`), and — since the stuck yellow — the marker's COLOUR, which
+    /// asks which of the calls still executing have no result row yet ([`round_answered`]). A call
+    /// the transcript has taken over is not executing, and a colour that kept asking the whole pane
+    /// stayed yellow for the rest of the session on a call whose `ToolFinished` this head never
+    /// received.
     settled_calls: usize,
     /// **How much of `reasoning` has already landed as a row** — bytes of `reasoning.raw()`.
     ///
@@ -10860,6 +10868,7 @@ impl App {
         // it still has to count the work in flight against the run it belongs to.
         let live = live_work(
             self.turn.as_ref(),
+            &self.items,
             &self.cfg,
             !matches!(
                 self.turn.as_ref().and_then(|t| t.state.as_ref()),
@@ -11183,7 +11192,7 @@ impl App {
                     .iter()
                     .all(|c| matches!(c.state, CallState::Finished { .. }))
         });
-        live_work(self.turn.as_ref(), &self.cfg, superseded)
+        live_work(self.turn.as_ref(), &self.items, &self.cfg, superseded)
     }
 
     /// The newest transcript row that has a payload to page: a tool result with more
@@ -11632,7 +11641,7 @@ impl App {
         // was interrupted in the middle of from vanishing off the screen entirely:
         // nothing is drawing it, so the assistant row draws it, and says it never
         // came back.
-        let live = live_work(self.turn.as_ref(), &self.cfg, superseded);
+        let live = live_work(self.turn.as_ref(), &self.items, &self.cfg, superseded);
         // **A CHANGE IN THE LIVE COUNTS PUTS THEM IN A CACHED ROW, SO IT INVALIDATES THAT ROW.**
         //
         // The walk bakes its marker — the counts and all — into `hist_lines`, which is the cache of
@@ -16388,10 +16397,20 @@ struct LiveWork {
     ///   still a frame away keeps the number and must lose the colour, because the yellow says
     ///   *happening* and nothing is.
     ///
+    /// **And the same handover in the other direction, which is the half that stuck the yellow ON
+    /// for the rest of the session:** a call whose row HAS landed is over, whatever its state says,
+    /// so `running` is never counted over the whole pane — a call this round's transcript has
+    /// answered is not asked ([`round_answered`]). The two numbers are then about one set of calls,
+    /// which is what lets the marker's colour be a fact about the marker's own number.
+    ///
     /// leticl keeps both and says exactly why: *"The colour is a different fact — is a call still
     /// executing — and that is `:running`, which `marker-rising-p` reads. A finished call whose row
     /// is still in flight keeps the number and drops the yellow, which is what the screen should
-    /// say about it."*
+    /// say about it."* Its own version of the two cares only about the calls with no result row yet
+    /// either: `:calls` is `%hidden-run-live-work`'s count over `call-answered-p`, whose answer is
+    /// *this call has a row* — set when the row's BODY lands and from a snapshot's rows
+    /// (`src/cards/hidden-run.lisp:173-177`, `src/cards/roles.lisp:374`, `src/session/seq-gap.lisp:319`,
+    /// `src/cards/targets.lisp:433`).
     running: usize,
     /// Display lines of reasoning streamed this turn and not yet a row.
     think_lines: usize,
@@ -16712,6 +16731,43 @@ fn marker_seam_rung(newest: bool, rung: usize) -> &'static str {
     if newest { chord } else { verb }
 }
 
+/// **The calls THIS ROUND's result rows have answered** — the ids of the `tool_result` rows the
+/// round published whose bodies this head holds.
+///
+/// The daemon appends a round's results after every call in it has run, so a `tool_result` among
+/// [`TurnPane::appended`] is the answer to one of that round's calls — and this is the fact the
+/// marker's colour reads ([`LiveWork::running`]), because a call whose result row is on the screen
+/// is not executing. leticl's `call-answered-p` is the same answer, set when the row's BODY lands
+/// (`src/session/seq-gap.lisp:315-319`) and from a snapshot's own rows
+/// (`src/cards/targets.lisp:433`).
+///
+/// **Scoped to the round, and keyed on the row's own id.** Scoped, because the ids are
+/// round-positional — `crates/turn/src/items.rs` mints `call_0`, `call_1`, … for a wire format that
+/// carries none, and [`TurnPane::settled_calls`] already records that *"the ids repeat"* — so
+/// asking the whole transcript whether any row ever carried this id would answer YES for a call
+/// that has just started in the round after the last one's row landed, and put the yellow out while
+/// a command ran. Keyed on the id, because the positional handover counts ROWS and a row can land
+/// for a call the pane does not hold (R31 deposits an operator's own result row, and its
+/// `TranscriptAppended` reaches this head like any other) — a counter that ran ahead would claim
+/// the next call of the round for it, which is the same false negative from the other side.
+///
+/// A row whose body has not arrived yet carries no `call_id` and claims nothing: the row is the
+/// answer once it can be read, which is also the moment the walk starts counting it as a row.
+fn round_answered<'a>(t: &TurnPane, items: &'a [SnapshotItem]) -> Vec<&'a str> {
+    t.appended
+        .iter()
+        .filter_map(|id| {
+            items
+                .iter()
+                .find(|it| &it.item_id == id)
+                .and_then(|it| match &it.item {
+                    Some(TranscriptItem::ToolResult { call_id, .. }) => Some(call_id.as_str()),
+                    _ => None,
+                })
+        })
+        .collect()
+}
+
 /// **How the live pane knows what is in flight** — calls proposed or running with no result
 /// row yet, and reasoning streamed and not yet committed.
 ///
@@ -16722,7 +16778,12 @@ fn marker_seam_rung(newest: bool, rung: usize) -> &'static str {
 /// **And it is the correct reading of *is the model working*** (R51's preamble): it asks the
 /// CALLS rather than the turn's state name, so a call running under a `finished` round counts.
 /// [`App::turn_busy`] asks the same question of the same facts; this is the rendering half.
-fn live_work(turn: Option<&TurnPane>, cfg: &RenderConfig, superseded: bool) -> LiveWork {
+fn live_work(
+    turn: Option<&TurnPane>,
+    items: &[SnapshotItem],
+    cfg: &RenderConfig,
+    superseded: bool,
+) -> LiveWork {
     let Some(t) = turn else {
         return LiveWork::default();
     };
@@ -16741,10 +16802,32 @@ fn live_work(turn: Option<&TurnPane>, cfg: &RenderConfig, superseded: bool) -> L
     // **Executing, and `Proposed` is not executing yet.** A call the model has written but the
     // daemon has not started is work the marker counts and is not work that is happening — the
     // screen has a `◐ Running` card for the second and would show `proposed` for the first.
+    //
+    // **AND ONLY THE CALLS THIS ROUND'S TRANSCRIPT HAS NOT ANSWERED** — the same boundary the live
+    // pane refuses to draw its cards across (`calls.get(*settled_calls..)`), applied to the colour,
+    // and the reason the two have to agree: **the yellow says one of THIS NUMBER's calls is
+    // executing**, so asking the whole pane puts the colour on calls the number beside it has
+    // already stopped counting. That is the stuck yellow, exactly — the operator: *"yellow tool
+    // calls are not resolved unfortunately"*, a marker like `[4 tool calls, 72 thinking lines]`
+    // whose digits stay pending on a turn whose calls have all finished and whose daemon has
+    // published every row.
+    //
+    // A call whose result ROW the transcript holds is over, and this head holds that fact itself:
+    // the daemon appends a round's results after every call in it has run, so a `tool_result` row
+    // among [`TurnPane::appended`] IS the answer to one of this round's calls. **The row is the
+    // head's own record that the call is over** — nothing else clears a `CallState::Running` it
+    // never received a `ToolFinished` for, the pane is the daemon's to correct, and a daemon that
+    // never published the finish reports the same `running` in its own view — so the colour has to
+    // read it.
+    //
+    // **It cannot make the marker quieter on a healthy round**: a call leaves that set only at the
+    // moment the row that answers it lands, which is after every call of its round has returned.
+    let answered = round_answered(t, items);
     let running = t
         .calls
         .iter()
         .filter(|c| matches!(c.state, CallState::Running))
+        .filter(|c| !answered.contains(&c.call_id.as_str()))
         .count();
     // **Only the reasoning no row has taken over** — `reasoned_upto` is the mark, and the slice is
     // what is left of the stream. `get` rather than an index so a mark from a longer text (a
@@ -38816,6 +38899,335 @@ mod tests {
         assert!(
             settled.contains("1 tool call"),
             "and the number left with the colour:\n{settled}"
+        );
+    }
+
+    /// **A call whose result ROW this head holds is not executing, whatever the pane says.**
+    ///
+    /// The operator, on a long round: *"yellow tool calls are not resolved unfortunately"* — a marker
+    /// whose digits stay pending on a turn whose calls have all finished and whose daemon has published
+    /// every row, and it never clears. The pane says `Running` and only a `ToolFinished` corrects it, so
+    /// a finish this head never received leaves one call pending **for the rest of the session**: no
+    /// later event clears it, `App::turn_busy` goes on saying `Responding` over it, and the daemon's own
+    /// view holds the same `running` because the finish it never published is the finish nobody heard.
+    ///
+    /// **What this head does hold is the result row** — and a result row for a call is the call being
+    /// over. This is the half `live_work`'s `running` was missing: the NUMBER already counts only the
+    /// calls the transcript has not taken over, so the colour must be counted over those same calls or
+    /// it goes on colouring a number that has stopped counting them.
+    ///
+    /// **The state is deliberately NOT fixed up here**, and the assertion in the middle says so: the
+    /// pane is the daemon's to correct. This is the colour reading the head's own record of the same
+    /// fact, not a head inventing a `ToolFinished` it never received.
+    #[test]
+    fn a_call_the_transcript_has_answered_is_not_drawn_executing() {
+        const PENDING: &str = "\u{1b}[33m1\u{1b}[0m tool call";
+        let mut a = app();
+        a.cfg.color = true;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.verbosity = Verbosity::Conversation;
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::appended("s.0", "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "Running the tests:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
+        )));
+        a.apply(ServerFrame::Event(env(
+            5,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
+        // The control, so the assertions below are about the colour leaving and not about a marker
+        // that never drew: one call executing, and both registers say so.
+        let running = a.screen(100, 30).join("\n");
+        assert!(
+            running.contains(PENDING),
+            "the premise: a call that is executing is drawn pending:\n{running}"
+        );
+
+        // **The row the daemon appended when the call returned — and NO `ToolFinished`.** This is the
+        // whole premise: the event this head never receives is the one thing that could have corrected
+        // the pane, and the row is everything it has left to read.
+        a.apply(ServerFrame::Event(env(
+            6,
+            testing::appended("s.1", "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            7,
+            SessionEvent::TranscriptContent {
+                item_id: "s.1".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "c1".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "test result: ok. 481 passed".into(),
+                    edit: None,
+                    origin: None,
+                    media: None,
+                }),
+            },
+        )));
+        // **The pane is still `Running`, and that stays true** — the state is the daemon's to correct
+        // and this head has not been told. It is why these assertions cannot be passing because the
+        // call was quietly finished off.
+        assert!(
+            matches!(
+                a.turn.as_ref().expect("the turn").calls[0].state,
+                CallState::Running
+            ),
+            "this test is not about a call whose state was corrected: {:?}",
+            a.turn.as_ref().expect("the turn").calls[0].state
+        );
+        // And the transcript's own record of the same call: the row landed, so the call is answered.
+        assert_eq!(
+            a.turn.as_ref().expect("the turn").settled_calls,
+            1,
+            "the row that landed did not hand the call over to the transcript"
+        );
+        assert_eq!(
+            a.live_work_now().running,
+            0,
+            "a call the transcript has answered is still counted as executing"
+        );
+        let settled = a.screen(100, 30).join("\n");
+        assert!(
+            !settled.contains(PENDING),
+            "the transcript has answered this call and the marker is still pending:\n{settled}"
+        );
+        // **And the number did not go with the colour** — the operator's requirement is that the count
+        // of work done never falls. The row claims the call and the marker counts the row.
+        assert!(
+            settled.contains("1 tool call"),
+            "the number left with the colour:\n{settled}"
+        );
+    }
+
+    /// **A call id reused in the next round does not inherit the last round's answer.**
+    ///
+    /// The claim has to be read of THIS ROUND's rows, and this is the shape that punishes asking the
+    /// whole transcript. The harness assigns `call_0`, `call_1`, … to a model whose wire format
+    /// carries no call id (`crates/turn/src/items.rs`: *"GLM's wire format carries no call id, so the
+    /// harness assigns one. Positional and stable within the turn"*), and the head's own handover says
+    /// so: *"the ids repeat"* ([`TurnPane::settled_calls`]). So a rule that asks the transcript *has
+    /// any row ever carried this id* answers YES for a call that has just started in the round after
+    /// the last one's row landed — and the yellow, which is the only thing on the screen that says a
+    /// command is running, would go out exactly while it ran. That is a report this colour has already
+    /// had once: *"running tool is no longer yellow the counter, wtf why it regressed."*
+    ///
+    /// The rows a claim may be read from are the ones [`TurnPane::appended`] names — this round's —
+    /// which `TurnStarted` empties for the next one.
+    #[test]
+    fn a_reused_call_id_does_not_inherit_the_last_rounds_answer() {
+        /// A round's turn start, with the `began_ms` the emitter stamps once per prompt — which is
+        /// what tells the head that a second round is the SAME turn and not a new one.
+        fn round(turn_id: &str) -> SessionEvent {
+            SessionEvent::TurnStarted {
+                turn_id: turn_id.into(),
+                model: "m".into(),
+                ledger_head: String::new(),
+                began_ms: Some(1_000),
+            }
+        }
+        let mut a = app();
+        a.cfg.color = true;
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.verbosity = Verbosity::Conversation;
+        a.apply(ServerFrame::Event(env(1, round("t1"))));
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::appended("s.0", "assistant"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: "First round:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        // Round 1's call, with the positional id an id-less wire format gets — and its row.
+        a.apply(ServerFrame::Event(env(
+            4,
+            testing::proposed_on("t1", "call_0", "bash", "\"cargo test\""),
+        )));
+        a.apply(ServerFrame::Event(env(
+            5,
+            SessionEvent::ToolStarted {
+                turn_id: "t1".into(),
+                call_id: "call_0".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            6,
+            SessionEvent::ToolFinished {
+                turn_id: "t1".into(),
+                call_id: "call_0".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload_digest: "d".into(),
+                inline_bytes: 1,
+                full_bytes: 1,
+                spill: None,
+                repairs: 0,
+                edit: None,
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            7,
+            testing::appended("s.1", "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            8,
+            SessionEvent::TranscriptContent {
+                item_id: "s.1".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "call_0".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "test result: ok".into(),
+                    edit: None,
+                    origin: None,
+                    media: None,
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(9, testing::turn_finished("t1"))));
+
+        // Round 2 of the SAME turn: the same id, and a call that is executing right now.
+        a.apply(ServerFrame::Event(env(10, round("t2"))));
+        a.apply(ServerFrame::Event(env(
+            11,
+            testing::proposed_on("t2", "call_0", "bash", "\"cargo test\""),
+        )));
+        a.apply(ServerFrame::Event(env(
+            12,
+            SessionEvent::ToolStarted {
+                turn_id: "t2".into(),
+                call_id: "call_0".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
+        let live = a.live_work_now();
+        assert_eq!(live.calls, 1, "the premise: one call to count");
+        assert_eq!(
+            live.running, 1,
+            "a call in the new round is executing, and round 1's row is not its answer"
+        );
+        assert!(
+            marker_carries_live(live),
+            "the executing count is not pending"
+        );
+        let screen = a.screen(120, 30).join("\n");
+        assert!(
+            screen.contains("\u{1b}[33m2\u{1b}[0m tool calls"),
+            "a call executing in round 2 is drawn plain because round 1 used the same id:\n{screen}"
+        );
+    }
+
+    /// **A snapshot that carries a finished call is seated, and counts as nothing executing.**
+    ///
+    /// The late-join and resync path, and the brief for this work named it as the lead: *"the head
+    /// learns each call's state at the one moment the daemon hands it over"*. `App::load` does exactly
+    /// that — `self.turn = s.turn.map(…)` seats the pane's state and every call's own state out of the
+    /// daemon's folded turn — so this is a RECORD of that seating rather than a fix for it. The daemon
+    /// half is asserted first, because the head half would pass on a snapshot that carried nothing:
+    /// a `Hub` that published `ToolFinished` reports the call `Finished` in its own view.
+    ///
+    /// The second half is the control and it is not decoration — a snapshot whose call is genuinely
+    /// executing, with no result row yet, must count as executing, or the first half would pass on a
+    /// colour that never lights.
+    #[test]
+    fn a_snapshot_that_carries_a_finished_call_is_seated_and_counts_as_nothing_executing() {
+        /// The call as the daemon proposes and starts it.
+        fn started(hub: &Hub) {
+            hub.publish(testing::turn_started("r1"));
+            hub.publish(testing::proposed_on("r1", "c1", "bash", "\"cargo test\""));
+            hub.publish(SessionEvent::ToolStarted {
+                turn_id: "r1".into(),
+                call_id: "c1".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            });
+        }
+
+        /// **The daemon's own session, whose one call has finished** — the `ToolFinished` the runtime
+        /// publishes from inside the call (`crates/tools/src/runtime.rs`), with no result row appended
+        /// yet, which is the frame a call's row is one frame away from.
+        let hub = Hub::new("s");
+        started(&hub);
+        hub.publish(SessionEvent::ToolFinished {
+            turn_id: "r1".into(),
+            call_id: "c1".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload_digest: "d".into(),
+            inline_bytes: 36,
+            full_bytes: 36,
+            spill: None,
+            repairs: 0,
+            edit: None,
+        });
+        let snap = hub.snapshot();
+        let turn = snap.turn.as_ref().expect("the daemon keeps the turn");
+        assert!(
+            matches!(turn.calls[0].state, CallState::Finished { .. }),
+            "the daemon did not fold the finish: {:?}",
+            turn.calls[0].state
+        );
+        let mut a = app();
+        a.apply(hello("s", vec![brief("s", "one", true)], snap));
+        assert!(
+            matches!(
+                a.turn.as_ref().expect("the seated pane").calls[0].state,
+                CallState::Finished { .. }
+            ),
+            "the snapshot's call state was not seated at all"
+        );
+        assert_eq!(
+            a.live_work_now().running,
+            0,
+            "a finished call out of a snapshot is counted as executing"
+        );
+
+        // The control: the same daemon one event earlier, with the call still executing.
+        let hub = Hub::new("s");
+        started(&hub);
+        let mut b = app();
+        b.apply(hello("s", vec![brief("s", "one", true)], hub.snapshot()));
+        assert_eq!(
+            b.live_work_now().running,
+            1,
+            "a snapshot's executing call is not counted, so the assertion above is vacuous"
         );
     }
 
