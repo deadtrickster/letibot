@@ -801,10 +801,9 @@ impl Prompts {
         if !path.is_file() {
             return Ok(Prompts::default());
         }
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        let file: PromptsFile = toml::from_str(&text)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let file: PromptsFile =
+            toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(Prompts {
             base: file.base.and_then(|b| b.system),
             models: file
@@ -1143,9 +1142,7 @@ impl Config {
                 let model = pc.model.clone().unwrap_or_else(|| {
                     letibot_provider::Preset::parse(&pc.name)
                         .ok()
-                        .map(|p| {
-                            p.default_model(&letibot_provider::catalogue::Catalogue::load())
-                        })
+                        .map(|p| p.default_model(&letibot_provider::catalogue::Catalogue::load()))
                         .unwrap_or_default()
                 });
                 if model.is_empty() {
@@ -1272,11 +1269,13 @@ impl Config {
                 // row the operator is on rather than the bare word `local`. Matched on
                 // the address, because that is what the switch actually moved: two
                 // blocks can name one alias and only the endpoint says which is live.
-                None => match letibot_provider::keys::local_models(None).into_iter().find(|m| {
-                    crate::harness::local_url_authority(&m.url).as_deref()
-                        == Some(self.endpoint.authority().as_str())
-                        && m.model == self.model
-                }) {
+                None => match letibot_provider::keys::local_models(None)
+                    .into_iter()
+                    .find(|m| {
+                        crate::harness::local_url_authority(&m.url).as_deref()
+                            == Some(self.endpoint.authority().as_str())
+                            && m.model == self.model
+                    }) {
                     Some(m) => format!("{} ({} at {})", m.name, m.model, m.url),
                     None => format!("local ({})", self.model),
                 },
@@ -2352,10 +2351,7 @@ mod tests {
     fn the_model_row_offers_every_declared_local_model() {
         let cfg = Config::for_this_box("/tmp");
         let rows = cfg.settings("", false, &[]);
-        let model = rows
-            .iter()
-            .find(|r| r.key == "model")
-            .expect("a model row");
+        let model = rows.iter().find(|r| r.key == "model").expect("a model row");
         for m in letibot_provider::keys::local_models(None) {
             assert!(
                 model.choices.contains(&m.name),
@@ -2621,6 +2617,219 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     use super::*;
+
+    // --- prompts.toml: per-model system-prompt composition -------------------
+
+    /// A temp dir for a `prompts.toml` fixture, unique per test so parallel tests
+    /// do not share a file. The caller removes it.
+    fn prompts_dir(test: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-prompts-{}-{}", std::process::id(), test));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    /// (a) **No file: the composed prompt is `DEFAULT_SYSTEM` byte for byte.**
+    ///
+    /// The safety property that makes the feature safe to land: a daemon with no
+    /// `prompts.toml` composes the built-in prompt, unchanged, for every model.
+    #[test]
+    fn no_prompts_file_composes_the_default_byte_for_byte() {
+        let dir = prompts_dir("no_file");
+        let path = dir.join("prompts.toml");
+        let prompts = Prompts::load(&path).expect("a missing file is Ok, not an error");
+        assert_eq!(prompts.compose("deepseek/deepseek-flash"), DEFAULT_SYSTEM);
+        assert_eq!(prompts.compose("qwen-3.8-flash-next"), DEFAULT_SYSTEM);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (b) **An empty file: the composed prompt is `DEFAULT_SYSTEM` byte for byte.**
+    ///
+    /// A file that overrides nothing is the same as no file: the default is
+    /// unchanged.
+    #[test]
+    fn an_empty_prompts_file_composes_the_default_byte_for_byte() {
+        let dir = prompts_dir("empty");
+        let path = dir.join("prompts.toml");
+        std::fs::write(&path, "").expect("fixture");
+        let prompts = Prompts::load(&path).expect("an empty file is Ok");
+        assert_eq!(prompts.compose("deepseek/deepseek-flash"), DEFAULT_SYSTEM);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (c) **A `[model."NAME"]` override applies to that model's session and not to
+    /// another's.**
+    ///
+    /// The named model gets the extra, appended to the base; every other model does
+    /// not. The override is scoped to the name, not global.
+    #[test]
+    fn a_model_override_applies_to_its_model_and_not_another() {
+        let dir = prompts_dir("model_override");
+        let path = dir.join("prompts.toml");
+        std::fs::write(
+            &path,
+            r#"
+[model."deepseek/deepseek-flash"]
+system_extra = "You are a deepseek specialist."
+"#,
+        )
+        .expect("fixture");
+        let prompts = Prompts::load(&path).expect("parse");
+        // The named model gets the extra, appended to the base.
+        assert_eq!(
+            prompts.compose("deepseek/deepseek-flash"),
+            format!("{DEFAULT_SYSTEM}\n\nYou are a deepseek specialist.")
+        );
+        // Another model under the same provider does not.
+        assert_eq!(prompts.compose("deepseek/deepseek-chat"), DEFAULT_SYSTEM);
+        // A model under a different provider does not.
+        assert_eq!(prompts.compose("glm-coding/glm-5.3"), DEFAULT_SYSTEM);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A provider glob matches every model under that provider, and the exact
+    /// name wins when both are present.**
+    ///
+    /// `deepseek/*` is the operator's way of saying "any deepseek model" without
+    /// naming each one. An exact name is a more specific instruction, so it wins
+    /// when both are present for the same model.
+    #[test]
+    fn a_provider_glob_matches_its_models_and_the_exact_name_wins() {
+        let dir = prompts_dir("glob");
+        let path = dir.join("prompts.toml");
+        std::fs::write(
+            &path,
+            r#"
+[model."deepseek/*"]
+system_extra = "DeepSeek house style."
+
+[model."deepseek/deepseek-flash"]
+system_extra = "Flash is special."
+"#,
+        )
+        .expect("fixture");
+        let prompts = Prompts::load(&path).expect("parse");
+        // The exact name wins for the model it names.
+        assert_eq!(
+            prompts.compose("deepseek/deepseek-flash"),
+            format!("{DEFAULT_SYSTEM}\n\nFlash is special.")
+        );
+        // The glob covers the rest of the provider's models.
+        assert_eq!(
+            prompts.compose("deepseek/deepseek-chat"),
+            format!("{DEFAULT_SYSTEM}\n\nDeepSeek house style.")
+        );
+        // Another provider is untouched.
+        assert_eq!(prompts.compose("glm-coding/glm-5.3"), DEFAULT_SYSTEM);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (d) **The `[base]` section replaces `DEFAULT_SYSTEM` wholesale.**
+    ///
+    /// Present, the base is the operator's text, not the built-in. A model extra
+    /// still appends to it.
+    #[test]
+    fn the_base_section_replaces_the_default_wholesale() {
+        let dir = prompts_dir("base");
+        let path = dir.join("prompts.toml");
+        std::fs::write(
+            &path,
+            r#"
+[base]
+system = "A wholly different base prompt."
+
+[model."deepseek/deepseek-flash"]
+system_extra = "And a model extra on top."
+"#,
+        )
+        .expect("fixture");
+        let prompts = Prompts::load(&path).expect("parse");
+        // The base replaces DEFAULT_SYSTEM for a model with no extra.
+        assert_eq!(
+            prompts.compose("glm-coding/glm-5.3"),
+            "A wholly different base prompt."
+        );
+        // A model extra appends to the new base.
+        assert_eq!(
+            prompts.compose("deepseek/deepseek-flash"),
+            "A wholly different base prompt.\n\nAnd a model extra on top."
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (e) **A malformed file is reported with the path and the parser's message,
+    /// and the session still runs on `DEFAULT_SYSTEM`.**
+    ///
+    /// The report is the parser's own message, prefixed with the path, so the
+    /// operator can see which file said what. The "session still runs" half is the
+    /// `Err` case in `run`: a refused file leaves `Config.prompts` at `Default`,
+    /// which composes `DEFAULT_SYSTEM` — asserted here directly.
+    #[test]
+    fn a_malformed_prompts_file_is_reported_and_the_session_runs_on_the_default() {
+        let dir = prompts_dir("malformed");
+        let path = dir.join("prompts.toml");
+        std::fs::write(&path, "this is not [valid toml").expect("fixture");
+        let err = Prompts::load(&path).expect_err("a malformed file is Err");
+        // The report names the path.
+        let path_str = path.to_str().expect("utf-8 path");
+        assert!(err.contains(path_str), "the path is in the report: {err}");
+        // And it carries the parser's own message, not a bare "failed".
+        assert!(
+            err.len() > path_str.len() + 4,
+            "the parser's message is in the report: {err}"
+        );
+        // The session still runs: a refused file leaves the prompts at `Default`,
+        // which composes `DEFAULT_SYSTEM` byte for byte.
+        let cfg = Config::for_this_box("/tmp");
+        assert_eq!(
+            cfg.prompts.compose("deepseek/deepseek-flash"),
+            DEFAULT_SYSTEM
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A section the daemon does not know is a parse error, not a silent ignore.**
+    ///
+    /// `deny_unknown_fields` is the report: a `[foo]` section, or a key this daemon
+    /// does not read, is refused with the parser's own message rather than dropped.
+    #[test]
+    fn an_unknown_section_is_refused_not_ignored() {
+        let dir = prompts_dir("unknown_section");
+        let path = dir.join("prompts.toml");
+        std::fs::write(&path, "[foo]\nbar = \"baz\"\n").expect("fixture");
+        let err = Prompts::load(&path).expect_err("an unknown section is Err");
+        let path_str = path.to_str().expect("utf-8 path");
+        assert!(err.contains(path_str), "the path is in the report: {err}");
+        assert!(err.contains("foo"), "the unknown section is named: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **`Config::compose_system` composes from the file and the session's model,
+    /// and `prompt_model_name` names the model the way the operator sees it.**
+    ///
+    /// This is the wiring: the composition runs on the session's config, using the
+    /// model name the operator would write in `prompts.toml`.
+    #[test]
+    fn compose_system_uses_the_session_model_name() {
+        // A local session: the model name is the bare alias.
+        let mut cfg = Config::for_this_box("/tmp");
+        cfg.model = "qwen-3.8-flash-next".into();
+        assert_eq!(cfg.prompt_model_name(), "qwen-3.8-flash-next");
+        cfg.compose_system();
+        assert_eq!(cfg.system, DEFAULT_SYSTEM);
+
+        // A metered session: the model name is `provider/model`.
+        let mut cfg = Config::for_this_box("/tmp");
+        cfg.provider = Some(ProviderConfig {
+            name: "deepseek".into(),
+            model: Some("deepseek-flash".into()),
+            ..Default::default()
+        });
+        assert_eq!(cfg.prompt_model_name(), "deepseek/deepseek-flash");
+        cfg.compose_system();
+        assert_eq!(cfg.system, DEFAULT_SYSTEM);
+    }
 
     /// **The model row names the provider when there is one.**
     ///

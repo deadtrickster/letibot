@@ -758,7 +758,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         let path = crate::config::Prompts::path();
         match crate::config::Prompts::load(&path) {
             Ok(prompts) => cfg.prompts = prompts,
-            Err(why) => eprintln!("  prompts.toml: {why} — the session runs on the built-in prompt"),
+            Err(why) => {
+                eprintln!("  prompts.toml: {why} — the session runs on the built-in prompt")
+            }
         }
     }
 
