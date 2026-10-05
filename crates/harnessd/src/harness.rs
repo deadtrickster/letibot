@@ -7544,6 +7544,57 @@ pub struct SubagentModel {
     pub window: Option<u64>,
 }
 
+/// **The child's window, or the refusal that names the knob** — pure, so both halves are
+/// testable without a harness, and beside [`subagent_depth_refusal`] because it is the same
+/// shape of decision: *refuse by NAME rather than by absence*, so the model always sees `task`
+/// and the sentence says which knob moves.
+///
+/// **Why this exists, measured 2026-10-05.** Three children of one session ran on this daemon's
+/// own server (`qwen-3.8-27b`, 256k) while their config carried the PARENT's `context_window`
+/// (deepseek's catalogue ~1M) and the parent's `ledger_scale`, which [`Config::planning_window`]
+/// scales that window by — so their wall was computed four times their own, `should_compact` was
+/// faithful to it and therefore never fired, and they reached 911,522 / 910,486 / 911,708
+/// resident tokens **with no compaction item in their logs at all**. The spawn resolved a model
+/// only when one was NAMED, and an absent `model:` was assumed to mean "the parent's" — but what
+/// answers such a child is the daemon's own server whenever this session sits on a provider.
+///
+/// `Some(Some(n))` is a named window. `Some(None)` is *somebody looked and the server did not
+/// say*, and `None` is *nobody has an opinion*: for the child those are the same answer, because
+/// `None` is not a large window — it is no wall at all, and every check that would compact reads
+/// `let Some(window) = …` and is skipped.
+fn child_window_refusal(label: &str, window: Option<Option<u64>>) -> Option<String> {
+    match window {
+        Some(Some(_)) => None,
+        _ => Some(format!(
+            "nothing was spawned on `{label}`: nobody can name a window for it — not this \
+             daemon's own server and not the catalogue `/models` reads — and a child planned \
+             against no window is not a child with room: nothing would compact it and it would \
+             run to the server's own limit. Name a model that has one"
+        )),
+    }
+}
+
+/// **Whether a child will be answered by the same model as its parent** — the one condition
+/// under which the parent's window is the child's window rather than a number belonging to a
+/// different server. `None` on both sides is the daemon's own server, which is the same server
+/// for both.
+///
+/// This exists so the refusal above is not BROADER than the defect it was written for. The
+/// defect was a child inheriting a window from a model it was not running on; a child that runs
+/// on exactly the parent's provider and model inherits nothing foreign, and it is the case the
+/// catalogue cannot answer at all: a session started with an explicit `--context-window` for a
+/// model the catalogue does not carry has a real number, and the operator stated it.
+fn runs_on_the_parents_model(
+    child: &Option<crate::config::ProviderConfig>,
+    parent: &Option<crate::config::ProviderConfig>,
+) -> bool {
+    match (child, parent) {
+        (None, None) => true,
+        (Some(c), Some(p)) => c.name == p.name && c.model == p.model,
+        _ => false,
+    }
+}
+
 /// See [`SubagentModel`]. `want` is `local` or `PROVIDER[/MODEL]`.
 pub fn subagent_model(
     want: &str,
@@ -7978,19 +8029,45 @@ impl HarnessTaskRunner {
         // on and a key the picker finds is a key the spawn finds. A refusal is the tool's
         // own sentence and the spawn does not happen — never a child quietly run on the
         // parent's model while the record says otherwise.
-        let mut sub_model = String::new();
-        let mut sub_provider: Option<crate::config::ProviderConfig> = None;
-        let mut sub_window: Option<Option<u64>> = None;
-        if let Some(want) = spec.model.as_deref() {
-            let local_window = *self.local_window.lock().unwrap_or_else(|e| e.into_inner());
-            match subagent_model(want, local_window) {
-                Ok(m) => {
-                    sub_model = m.label.clone();
-                    sub_provider = m.provider.clone();
-                    sub_window = Some(m.window);
-                }
-                Err(why) => return Err(why.join("; ")),
+        // **EVERY spawn goes through the model door — the absent `model:` case included.**
+        //
+        // This resolved a model only when one was NAMED, and a spawn without one kept
+        // `sub_cfg`'s inherited window and `ledger_scale`: the PARENT's, which for a session on
+        // a provider is the cloud model's number, while what answers the child is the daemon's
+        // own server. Three children died that way (see [`child_window_refusal`]). `local` is
+        // not a guess about the absent case — it is what `models_choice` and `/models local`
+        // already mean by it, and the child's `provider: None` below is that same door.
+        let want = spec.model.as_deref().unwrap_or("local");
+        // **And measure the local window when nobody remembered one.** `retune_window` fills it
+        // *on the way out to a first provider*, so a session that STARTED on one has never
+        // measured its own server — this session had not. `served_ctx` is the same `/props`
+        // read the daemon's own start makes, so a `local` child is given the server's number
+        // rather than `None`, which is no wall at all.
+        let local_window = {
+            let remembered = *self.local_window.lock().unwrap_or_else(|e| e.into_inner());
+            match remembered {
+                Some(w) => Some(w),
+                None => Some(letibot_turn::serving::served_ctx(&self.base.endpoint)),
             }
+        };
+        let (sub_model, sub_provider, sub_window) = match subagent_model(want, local_window) {
+            Ok(m) => (m.label, m.provider, Some(m.window)),
+            Err(why) => return Err(why.join("; ")),
+        };
+        // **And a window nobody can name may still be the parent's own — if the child runs on
+        // the parent's own MODEL.** Same model, same window: that is the one case where the
+        // parent's number is not a guess about a different server, and it is the case the
+        // catalogue cannot answer (an explicit `--context-window` on an uncatalogued model).
+        // A child on a DIFFERENT model never inherits it, which is the defect being fixed.
+        let sub_window = match sub_window {
+            Some(Some(w)) => Some(Some(w)),
+            _ if runs_on_the_parents_model(&sub_provider, &self.base.provider) => {
+                Some(self.base.context_window)
+            }
+            _ => sub_window,
+        };
+        if let Some(why) = child_window_refusal(want, sub_window) {
+            return Err(why);
         }
         let task = prompt.to_string();
         let publish = |state: &str, said: &str, answer: Option<String>| {
@@ -8024,13 +8101,23 @@ impl HarnessTaskRunner {
             parent: parent.clone(),
         });
         publish("opening", &title, None);
+        // **And say which wall the child plans against**, in the line a person is already
+        // reading. `config.rs` records the other half of this bug in its own words — *"the
+        // silent half of this bug was that nobody could tell which window was in force"* —
+        // and for a child, until now, NOTHING recorded it: not the store, not the log, not
+        // this line. It is also what would have made the three dead children legible in one
+        // glance instead of after a query against the store.
+        let on_window = match sub_window {
+            Some(Some(w)) => format!(" on {sub_model} ({w} token window)"),
+            _ => format!(" on {sub_model}"),
+        };
         progress(&match placement {
             Placement::Firecode => format!(
-                "opening subagent {} in a firecode VM: copying the workspace, booting",
+                "opening subagent {} in a firecode VM: copying the workspace, booting{on_window}",
                 letibot_sessionlog::registry::short_id(&sub_id)
             ),
             _ => format!(
-                "opening subagent {}",
+                "opening subagent {}{on_window}",
                 letibot_sessionlog::registry::short_id(&sub_id)
             ),
         });
@@ -8612,6 +8699,64 @@ mod subagent_model_tests {
         // about what a bare name means.
         let bare = subagent_model("deepseek", None).expect("the key is held");
         assert!(bare.label.starts_with("deepseek/"), "{}", bare.label);
+    }
+
+    /// **A child nobody can give a window to is refused, by name, rather than run unbounded.**
+    ///
+    /// The failure this exists to stop is the one three children hit: their wall was computed
+    /// from the parent's cloud window (~1M) while the server answering them held 256k, so
+    /// nothing compacted and the server ended them. `None` and `Some(None)` are the same answer
+    /// for a child, and both are refused; a child with the server's own window is spawned.
+    #[test]
+    fn a_child_with_no_window_at_all_is_refused_by_name() {
+        for unknown in [Some(None), None] {
+            let why = child_window_refusal("local", unknown).expect("no window is a refusal");
+            assert!(why.contains("`local`"), "names the model: {why}");
+            assert!(why.contains("no window"), "says what is wrong: {why}");
+            assert!(why.contains("/models"), "and the knob: {why}");
+        }
+        assert!(
+            child_window_refusal("local", Some(Some(262_144))).is_none(),
+            "the server's own window is a child with a wall, so it is spawned"
+        );
+        assert!(child_window_refusal("deepseek/deepseek-flash", Some(Some(1_000_000))).is_none());
+    }
+
+    /// **The parent's window is the child's only on the parent's own model** — so the refusal
+    /// above stays the width of the defect it was written for, and no wider.
+    ///
+    /// A `local` child of a `local` session is the same server (and the daemon measures it, so
+    /// this branch is the fallback rather than the path). A child named for the parent's own
+    /// provider AND model is the parent's number, which is where an explicit
+    /// `--context-window` for a model the catalogue does not carry lives. **The case that must
+    /// never be true is the last one**: a child on a different model than its parent.
+    #[test]
+    fn the_parents_window_is_the_childs_only_on_the_parents_own_model() {
+        use crate::config::ProviderConfig;
+        assert!(
+            runs_on_the_parents_model(&None, &None),
+            "one server, both local"
+        );
+        let ds = |model: &str| {
+            Some(ProviderConfig {
+                name: "deepseek".into(),
+                model: Some(model.into()),
+                ..Default::default()
+            })
+        };
+        assert!(
+            runs_on_the_parents_model(&ds("deepseek-flash"), &ds("deepseek-flash")),
+            "same provider and model: the parent's stated number is the child's"
+        );
+        assert!(
+            !runs_on_the_parents_model(&ds("deepseek-chat"), &ds("deepseek-flash")),
+            "a different model's window is not the parent's to give"
+        );
+        assert!(
+            !runs_on_the_parents_model(&None, &ds("deepseek-flash")),
+            "THE DEFECT: a local child of a cloud session never inherits the cloud window"
+        );
+        assert!(!runs_on_the_parents_model(&ds("deepseek-flash"), &None));
     }
 }
 
