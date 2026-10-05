@@ -2654,6 +2654,16 @@ pub struct App {
     /// fixed the counts while the yellow stayed dead; `marker_carries_live` is `running > 0`, so any
     /// change in that pair alone has to invalidate too.
     marker_counts: (usize, usize, usize),
+    /// **Which run's marker was last painted with the yellow** — the row `newest_unseen_run` answered
+    /// when the cache of rendered rows was last built.
+    ///
+    /// The colour is a fact about NOW baked into a ROW of rendered text, so when the work moves to a
+    /// newer run, the run it has LEFT has to be rebuilt without it. Keying that on the counts alone
+    /// is what left **five** markers lit at once on the operator's screen — *"look how many tools
+    /// are yellow"*: two rounds can carry identical numbers (theirs read `[2 tool calls, 6 thinking
+    /// lines]` five times over), so nothing in that key changed, nothing was invalidated, and every
+    /// run kept the colour it had been painted with.
+    marker_run: Option<usize>,
     /// The model this session is talking to, kept past the end of a turn.
     ///
     /// It lives on `TurnPane` because that is where the event carries it, and the
@@ -3560,6 +3570,7 @@ impl App {
             git_read: (String::new(), 0),
             live_join: None,
             marker_counts: (0, 0, 0),
+            marker_run: None,
             body_len: 0,
             attaching: false,
             link: Link::Attached,
@@ -12480,9 +12491,19 @@ impl App {
         // same problem"* — and it was. The plain marker was in the cache, the call started running,
         // the counts did not move, and the yellow had nothing to rebuild it.
         let counts_now = (live.calls, live.think_lines, live.running);
-        if counts_now != self.marker_counts {
+        // **And WHICH RUN carries the work**, because the yellow is a fact about the run and not
+        // about the numbers. When the work moves to a newer run, the run it has left must be rebuilt
+        // without it — see [`App::marker_run`] for the five-lit-markers screen that cost.
+        let run_now = self.newest_run_row(&live);
+        if counts_now != self.marker_counts || run_now != self.marker_run {
             self.marker_counts = counts_now;
-            if let Some(row) = self.newest_run_row(&live)
+            let left = self.marker_run;
+            self.marker_run = run_now;
+            // **From the EARLIER of the two rows.** A rebuild is *from row k onward*, so rewinding to
+            // the row the colour was on re-renders both it and the run that now owns the work — and
+            // the rows between them, which is the price of one invalidation rather than a second
+            // mechanism for taking one colour off one row.
+            if let Some(row) = [left, run_now].into_iter().flatten().min()
                 && !self.items.is_empty()
             {
                 // **Clamped, because the run the live work belongs to may have no row yet.**
@@ -39729,6 +39750,164 @@ mod tests {
         assert!(
             older.contains("[1 tool call]") || older.contains("1 tool"),
             "an older run's marker is inflated by the in-flight work: {older:?}"
+        );
+    }
+
+    /// **A YELLOW THAT STAYS ON A RUN THE WORK HAS LEFT** — the operator's own screen, read back to
+    /// me: *"look how many tools are yellow"*, with **five** markers lit at once on one turn.
+    ///
+    /// The invariant is that ONE marker carries the yellow: it says *a call of THIS number is
+    /// executing*, so it belongs to the run the work is in, and every other run is settled history
+    /// that draws plain. `only_the_newest_runs_marker_is_yellow_in_a_turn_of_many_rounds` asserts
+    /// exactly that and passes — because it renders the FINISHED state in one walk, where the
+    /// decision is consistent by construction.
+    ///
+    /// **What breaks it is the frames in between.** A marker is painted into `hist_lines`, the cache
+    /// of RENDERED rows, and the yellow is a fact about NOW rather than about the row — so each run
+    /// is yellow while it IS the newest, and the invalidation that should take the colour away keys
+    /// on the COUNTS, which can be identical between two rounds (the operator's screen carried
+    /// `[2 tool calls, 6 thinking lines]` five times) and only ever rebuilds the newest run's row.
+    /// The runs above keep the yellow for the rest of the turn.
+    ///
+    /// So this drives the turn a frame at a time, which is what a person watches.
+    #[test]
+    fn the_yellow_does_not_stay_on_a_run_the_work_has_left() {
+        let mut a = App::new(RenderConfig {
+            color: true,
+            ..plain_cfg(110)
+        });
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", true)],
+            Hub::new("s").snapshot(),
+        ));
+        a.visibility = Visibility::of(Profile::CONVERSATION);
+        a.apply(ServerFrame::Event(env_at(
+            1,
+            1_000,
+            SessionEvent::TurnStarted {
+                turn_id: "r0".into(),
+                model: "qwen3-next-80b".into(),
+                ledger_head: "0000".into(),
+                // One prompt's stamp, carried by every round of it: the only thing on the wire that
+                // says these rounds are one turn.
+                began_ms: Some(1_000),
+            },
+        )));
+        // **Three rounds, each driven as the daemon drives them** — the model's prose, a call
+        // proposed and started, its result row — with a FRAME at every step, because a framing is
+        // what bakes a marker into the cache.
+        let mut seq = 2u64;
+        for round in 0..3u64 {
+            let prose = format!("p.{round}");
+            a.apply(ServerFrame::Event(env_at(
+                seq,
+                1_000,
+                testing::appended(&prose, "assistant"),
+            )));
+            a.record_item(
+                &prose,
+                TranscriptItem::Assistant {
+                    text: format!("round {round} of the work:"),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            );
+            seq += 1;
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::proposed_on("r0", &format!("c{round}"), "bash", "\"cargo test\""),
+            )));
+            seq += 1;
+            a.apply(ServerFrame::Event(env(
+                seq,
+                SessionEvent::ToolStarted {
+                    turn_id: "r0".into(),
+                    call_id: format!("c{round}"),
+                    name: "bash".into(),
+                    access: Default::default(),
+                },
+            )));
+            seq += 1;
+            // **A frame with this round's call executing**, which is the moment the yellow belongs
+            // to this run — and the moment the marker is painted with it.
+            a.screen(110, 40);
+            // It returns, and its row lands: this round's run is now settled history.
+            a.apply(ServerFrame::Event(env(
+                seq,
+                SessionEvent::ToolFinished {
+                    turn_id: "r0".into(),
+                    call_id: format!("c{round}"),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload_digest: "d".into(),
+                    inline_bytes: 20,
+                    full_bytes: 20,
+                    spill: None,
+                    repairs: 0,
+                    edit: None,
+                },
+            )));
+            seq += 1;
+            let result = format!("t.{round}");
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::appended(&result, "tool_result"),
+            )));
+            seq += 1;
+            a.record_item(
+                &result,
+                TranscriptItem::ToolResult {
+                    call_id: format!("c{round}"),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "test result: ok".into(),
+                    edit: None,
+                    origin: None,
+                    media: None,
+                },
+            );
+        }
+        // **And the work is in flight, which is what lights anything at all**: a fourth call
+        // proposed and started, with no row of its own. One marker may be yellow — this one.
+        a.apply(ServerFrame::Event(env(
+            seq,
+            testing::proposed_on("r0", "c3", "bash", "\"cargo test\""),
+        )));
+        a.apply(ServerFrame::Event(env(
+            seq + 1,
+            SessionEvent::ToolStarted {
+                turn_id: "r0".into(),
+                call_id: "c3".into(),
+                name: "bash".into(),
+                access: Default::default(),
+            },
+        )));
+        assert!(
+            a.live_work_now().running > 0,
+            "the premise: a call is executing, so some marker must carry the yellow"
+        );
+
+        let screen = a.screen(110, 40);
+        // **Counted by the words, not by `is_marker`** — that helper reads a digit straight after the
+        // `[`, which is true only of a frame drawn with no colour: a pending count has an escape
+        // where the digit is (`[\u{1b}[33m2\u{1b}[0m tool calls]`), which is the very thing this test
+        // is about. `tool call` is on a marker and nowhere else on this screen.
+        let drawn = screen.iter().filter(|l| l.contains("tool call")).count();
+        let lit = screen
+            .iter()
+            .filter(|l| l.contains("tool call") && l.contains("\u{1b}[33m"))
+            .count();
+        assert!(
+            drawn >= 3,
+            "the fixture must draw a marker per round, and it drew {drawn}:\n{}",
+            screen.join("\n")
+        );
+        assert_eq!(
+            lit,
+            1,
+            "the work is in ONE run and {lit} markers are yellow — every run the work has left is \
+             keeping the colour it was painted with:\n{}",
+            screen.join("\n")
         );
     }
 
