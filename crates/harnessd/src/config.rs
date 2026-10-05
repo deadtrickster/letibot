@@ -5,7 +5,8 @@
 //! workspace root together describe a session against somebody else's box, and the
 //! failure would be a running daemon rather than an error.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use letibot_turn::Endpoint;
 use serde_json::{Value, json};
