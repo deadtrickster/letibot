@@ -974,8 +974,32 @@ impl SteeringSource for HubSteering {
                     Some(SteeringMessage::operator(text))
                 }
                 CommandKind::Interrupt { reason } => Some(SteeringMessage::urgent(reason)),
-                // Nothing else here: the filter above only hands over prompts and
-                // interrupts, and anything else stays queued for the worker.
+                CommandKind::Message { from, text } => {
+                    // **A parent's live correction** — an agent's utterance in a session it is not
+                    // seated in, so it is recorded as `Speaker::Agent` and NOT as the operator.
+                    // That is the whole of the difference between this and the `Prompt` arm
+                    // above, and it is why the variant exists rather than reusing one: an
+                    // operator's words can authorise the act they race, coalesce with other
+                    // operator text, and be taken back — a parent's cannot.
+                    //
+                    // `SteeringMessage::normal` is the same door this session's own boundary
+                    // already uses for injected context, so a correction arrives as context at
+                    // the next round boundary rather than as an interruption: a child told to
+                    // change course should finish the call it is in and change, not abandon it.
+                    //
+                    // **The parent is NAMED in the text, and the trail cannot do it.** `say`
+                    // takes a speaker kind, not an identity, so *which* parent spoke survives
+                    // nowhere else — and the operator's whole point was addressability: a
+                    // correction from a named parent is actionable in a way the same sentence
+                    // from nowhere is not.
+                    let said = format!("message from your parent session `{from}`: {text}");
+                    if let Some(t) = &self.trail {
+                        t.say(Speaker::Agent, &said, Some(Instant::now()));
+                    }
+                    Some(SteeringMessage::normal(said))
+                }
+                // Nothing else here: the filter above only hands over prompts, interrupts and
+                // a parent's message, and anything else stays queued for the worker.
                 _ => None,
             };
         }
@@ -7901,6 +7925,69 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         }
     }
 
+    /// **Say something to a child that is still working** — the operator's ruling, 2026-10-06:
+    /// *"in the tree all subagents must be addressable by their parents. that is how live
+    /// corrections delivered."*
+    ///
+    /// The door is the child's own hub, exactly as [`Self::kill`]'s is, and the address is
+    /// `DAEMON_SUBMITTER` for the same reason: the parent is seated in another session's hub
+    /// entirely. What it submits is a [`letibot_sessionlog::CommandKind::Message`] rather than a
+    /// `Prompt`, and that difference is the feature — the child hears an agent's correction at
+    /// its next round boundary, recorded as an agent's, instead of something the operator is
+    /// supposed to have typed.
+    ///
+    /// **REFUSED BY NAME WHEN THE CHILD IS NOT RUNNING, and that is a measurement rather than
+    /// caution.** A message rides the same queue as every other command, so a submission against
+    /// a child whose turn has ended answers `Accepted` and then sits there: nothing drains a
+    /// child's queue between turns, so the parent would be told it had corrected a child that
+    /// never hears a word of it. The operator met the other end of this: *"message was queued
+    /// when you stopped and it didnt restart you"*. So the live turn is the precondition, and it
+    /// is checked rather than assumed — the race it cannot close (the turn ending between this
+    /// check and the drain) is named on the child's log by the worker's own arm.
+    fn send(&self, handle: &str, text: &str) -> Result<String, String> {
+        let Some(hub) = self.registry.get(handle) else {
+            return Err(format!(
+                "no subagent `{handle}` in this session, or its session is gone. `task_result` \
+                 with no argument lists the ones there are."
+            ));
+        };
+        // **The live turn is the precondition.** See this function's docstring: a message to a
+        // child between turns is `Accepted` by the hub and read by nobody.
+        if !hub.status().running {
+            return Err(format!(
+                "`{handle}` is not running a turn, so there is nothing to steer: a message is \
+                 delivered INTO the turn it is meant to correct, and a subagent between turns \
+                 would never hear one. Read it with `task_result` instead, or start a new \
+                 subagent with the correction in its prompt. Nothing was sent."
+            ));
+        }
+        let f = hub.submit(
+            letibot_sessionlog::hub::DAEMON_SUBMITTER,
+            &format!(
+                "task_message-{}",
+                letibot_sessionlog::registry::short_id(handle)
+            ),
+            0,
+            letibot_sessionlog::CommandKind::Message {
+                from: self.base.session_id.clone(),
+                text: text.to_string(),
+            },
+        );
+        match &f {
+            letibot_sessionlog::ServerFrame::Accepted { .. } => Ok(format!(
+                "`{handle}` was told, as `{}`: it hears this at its next round boundary and \
+                 keeps working.",
+                self.base.session_id
+            )),
+            // The same rule `kill` follows, and for the same reason: a tool may not report a
+            // state change the daemon refused.
+            other => Err(format!(
+                "`task_message` did NOT reach `{handle}`: the daemon answered {other:?}. \
+                 Nothing was sent."
+            )),
+        }
+    }
+
     fn collect(
         &self,
         handle: &str,
@@ -9661,6 +9748,75 @@ mod tests {
         );
     }
 
+    /// **A parent's correction reaches a running child as steering, and NOT as the
+    /// operator's words** — the operator's ruling, 2026-10-06: *"in the tree all subagents
+    /// must be addressable by their parents. that is how live corrections delivered."*
+    ///
+    /// The path, end to end and without a daemon: the runner submits under the **daemon's**
+    /// name (the parent is seated in another session's hub), the kind carries the parent's
+    /// identity, and the child's own steering poll takes it at its next round boundary. What
+    /// this pins is the pair of facts a correction cannot afford to get wrong — it is not
+    /// `from_operator`, so it cannot authorise the act it races, coalesce with the operator's
+    /// text, or be taken back by a recall; and it is not `urgent`, so a child told to change
+    /// course finishes the call it is in rather than abandoning it.
+    ///
+    /// The parent is named in the text because the trail cannot name it: `say` takes a
+    /// speaker kind, not an identity, and *which* parent spoke is the whole of what
+    /// addressability means.
+    #[test]
+    fn a_parents_message_is_the_childs_steering_and_not_the_operators_words() {
+        let hub = Hub::new("s-child");
+        let mut steering = HubSteering {
+            hub: hub.clone(),
+            // No trail: what is asserted is the message the child reads and how it is
+            // scoped, and a trail would only add a second place for the same words.
+            trail: None,
+            injected: Arc::new(Mutex::new(VecDeque::new())),
+            monitors: None,
+            monitor_cursor: Arc::new(AtomicUsize::new(0)),
+            job_watch: None,
+        };
+
+        // **What `HarnessTaskRunner::send` does**, exactly: the daemon's own name at the
+        // door, the parent's id in the kind.
+        let f = hub.submit(
+            letibot_sessionlog::hub::DAEMON_SUBMITTER,
+            "task_message-1",
+            0,
+            letibot_sessionlog::CommandKind::Message {
+                from: "s-parent".into(),
+                text: "stop and report what you have".into(),
+            },
+        );
+        assert!(
+            matches!(f, letibot_sessionlog::ServerFrame::Accepted { .. }),
+            "the child's hub refused the daemon's relay: {f:?}"
+        );
+
+        let got = steering
+            .try_next()
+            .expect("the child's next round boundary takes it");
+        assert!(
+            !got.from_operator,
+            "a parent's correction was recorded as the operator's own words: {got:?}"
+        );
+        assert!(
+            !got.urgent,
+            "a correction is context for the next round, not an interrupt: {got:?}"
+        );
+        assert!(
+            got.text.contains("s-parent") && got.text.contains("stop and report what you have"),
+            "the child cannot tell which parent spoke, or what it said: {}",
+            got.text
+        );
+        // Taken, not peeked: a correction delivered twice is a child told the same thing
+        // at two round boundaries, which reads as insistence.
+        assert!(
+            steering.try_next().is_none(),
+            "the same message was handed over twice"
+        );
+    }
+
     #[test]
     fn flowy_is_a_door_for_every_root_session_and_for_no_subagent() {
         let mut cfg = Config::for_this_box(std::env::temp_dir());
@@ -9673,8 +9829,11 @@ mod tests {
         cfg.flowy = Some(crate::config::FlowyConfig::default());
         let root = role_for(&cfg);
         assert!(root.tools.iter().any(|t| t == "flowy"));
-        // The whole opencode union plus the room fits the ceiling exactly; a tool
-        // added to leticode after this has to take a seat from something.
+        // The whole opencode union plus the room fits the ceiling, which moved to
+        // twenty-four when `task_message` joined the delegation trio — see leticode's own
+        // note on `max_tools` for why it took a seat rather than trading for one. A tool
+        // added after this has to do the same: take a seat from something, or declare its
+        // own number where somebody deciding can read it.
         assert!(
             root.tools.len() <= root.max_tools,
             "{} > {}",

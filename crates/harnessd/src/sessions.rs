@@ -2058,6 +2058,30 @@ impl<'a> Sessions<'a> {
                     Err(e) => Outcome::Failed(e),
                 }
             }
+            // **A parent's message that lost its race with the child's turn.** The runner
+            // refuses these by name when the child is not running (`HarnessTaskRunner::send`),
+            // so reaching the between-turn worker means the turn ended between that check and
+            // this drain. Said rather than dropped: the parent was told the message was
+            // accepted, and this sentence is the only thing that corrects that.
+            CommandKind::Message { from, text } => {
+                if let Some(hub) = &hub {
+                    let said = match text.chars().count() > 200 {
+                        true => format!("{}…", text.chars().take(200).collect::<String>()),
+                        false => text.clone(),
+                    };
+                    hub.publish(SessionEvent::Warning {
+                        code: "message_idle".into(),
+                        detail: format!(
+                            "a message from `{from}` arrived after the turn it was meant to \
+                             steer had ended, so nothing will deliver it: {said}. The parent's \
+                             `task_message` was accepted and did not land — its child's answer \
+                             is what `task_result` reads."
+                        ),
+                        compaction: None,
+                    });
+                }
+                Outcome::Ignored
+            }
             CommandKind::Promote => {
                 if let Some(hub) = &hub {
                     hub.take_promote_request();

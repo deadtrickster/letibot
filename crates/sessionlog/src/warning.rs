@@ -192,6 +192,12 @@ pub const TABLE: &[(&str, Class)] = &[
     // stop or move. The operator's own act, and a no-op.
     ("interrupt_idle", Class::Routine),
     ("promote_idle", Class::Routine),
+    // **A parent's message to a subagent that had already finished** — see
+    // `CommandKind::Message`. The runner refuses these by name before submitting
+    // (`HarnessTaskRunner::send`), so this arm is the race it cannot close: the child's turn
+    // ended between that check and this drain. Routine, because nothing went wrong in the
+    // session — the parent's next `task_result` reads a finished child and says so.
+    ("message_idle", Class::Routine),
     // **A FAILURE, and the one code here that is a claim about the corpus rather than about
     // the session.** An operator's own call was admitted and the head that asked went away
     // before reporting what it did, so the record holds an `admit` whose outcome nobody
@@ -519,14 +525,14 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 73 codes, of which **7** are the reader's own input refused.
+    /// **The census, pinned.** 74 codes, of which **7** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_25_routine_7_refused_and_41_failures() {
+    fn the_table_is_26_routine_7_refused_and_41_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
         // **73, not the 70 the census was taken at.** Three arrivals, each counted rather than
         // left implicit, because a census that quietly moves is not a census:
@@ -539,12 +545,12 @@ mod the_register_census {
         //     the daemon**, and it is a Failure by the same argument that keeps `anchor_lost`: the
         //     diagnostic reaches neither the conversation nor the triangle, so a reader who is not
         //     told has been told nothing at all.
-        assert_eq!(TABLE.len(), 73, "the table's size");
-        assert_eq!(count(Class::Routine), 25);
+        assert_eq!(TABLE.len(), 74, "the table's size");
+        assert_eq!(count(Class::Routine), 26);
         assert_eq!(count(Class::Refused), 7, "the seven in READER_INPUT");
         assert_eq!(count(Class::Failure), 41);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 41 of 73 and the middle is 7**, which is why the third register is a
+        // register is 41 of 74 and the middle is 7**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

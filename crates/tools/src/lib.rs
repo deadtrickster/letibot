@@ -194,7 +194,15 @@ pub fn with_session_tools(
     reg.register(Box::new(builtins::task::TaskTool::new(task_runner.clone())))?;
     // `task_result` is seated with `task` and never without it: a handle that
     // nothing can collect is worse than no handle.
-    reg.register(Box::new(builtins::task::TaskResultTool::new(task_runner)))?;
+    reg.register(Box::new(builtins::task::TaskResultTool::new(
+        task_runner.clone(),
+    )))?;
+    // **And so is `task_message`** — the ruling that produced it, 2026-10-06: *"in the tree all
+    // subagents must be addressable by their parents. that is how live corrections delivered."*
+    // A seat that can start work, read it and stop it — and cannot correct it — has only two
+    // remedies when a child goes down the wrong path: wait out a wrong answer, or throw the
+    // work away with `job_kill`.
+    reg.register(Box::new(builtins::task::TaskMessageTool::new(task_runner)))?;
     Ok(reg)
 }
 

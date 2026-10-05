@@ -756,9 +756,12 @@ pub mod roles {
             // `task_result` beside `task`: `task` hands back a handle now rather
             // than blocking on the child, so a seat with `task` and no way to
             // collect it would be a seat that can start work and never read it.
+            // `task_message` completes the trio for the same reason one step on: a seat
+            // that can read a child and not correct it can only wait for the wrong answer.
             &[
                 "task",
                 "task_result",
+                "task_message",
                 "read",
                 "grep",
                 "glob",
@@ -810,6 +813,7 @@ pub mod roles {
                 "lsp",
                 "task",
                 "task_result",
+                "task_message",
                 // The background-job surface, so a `bash` call that is backgrounded
                 // (asked, promoted, or by the operator) can be waited, read, killed
                 // and listed — and a condition can be watched across turns. Seated
@@ -851,7 +855,16 @@ pub mod roles {
         // which are one capability seated as two tools; twenty-three since
         // `decisions`, which is the gate's half of the same "read what was
         // already recorded instead of asking" move.
-        r.max_tools = 23;
+        // **Twenty-four since `task_message`, and this one takes its own seat rather than
+        // trading for it** — the operator's ruling, 2026-10-06: *"in the tree all subagents
+        // must be addressable by their parents. that is how live corrections delivered."*
+        // The seat was already at its ceiling, so nothing was displaced to make room, and
+        // that is stated rather than hidden: `task` starts a child, `task_result` reads it
+        // and `job_kill` stops it, and without this a parent's only remedies when its child
+        // goes down the wrong path are to wait out a wrong answer or throw the work away.
+        // Declared here, like `m2_runner`'s ninth, because a ceiling quietly raised for
+        // everybody is not a ceiling.
+        r.max_tools = 24;
         r
     }
 
@@ -1017,15 +1030,16 @@ pub mod roles {
             // seat's own ceiling is `DEFAULT_MAX_TOOLS` (16), so both fit. `goal` is
             // still not here: a separate capability is a separate decision.
             //
-            // **`task` and `task_result` are seated here for R58** — *"subagents are
-            // absolutely allowed to spawn subagents up to configured nesting level"* — and
+            // **`task`, `task_result` and `task_message` are seated here for R58** — *"subagents
+            // are absolutely allowed to spawn subagents up to configured nesting level"* — and
             // they are seated rather than stripped at the limit **on purpose**: the
             // depth cap is enforced where the call is made (`HarnessTaskRunner::start`,
             // refused by name against `--max-subagent-depth`), because a seat that simply
             // lacked `task` at the limit manufactures the workaround, which is exactly
             // what this role's own note on `todo` above records a model paying 13 calls
-            // and ~15k tokens for. The pair goes together for `orchestrator`'s reason: a
-            // seat that can start work and never read it is worse than one that cannot.
+            // and ~15k tokens for. The trio goes together for `orchestrator`'s reason, and
+            // `task_message` is the same rule one step on: a parent that can start a child,
+            // read it and stop it but not correct it has only the wrong answer to wait for.
             &[
                 "read",
                 "write",
@@ -1037,6 +1051,7 @@ pub mod roles {
                 "bash",
                 "task",
                 "task_result",
+                "task_message",
             ],
         )
     }
@@ -2092,8 +2107,9 @@ mod tests {
     ///
     /// `task` and `task_result` are listed on the seat rather than stripped at the depth
     /// limit, on purpose: the cap is enforced where the call is made
-    /// (`harnessd::harness::subagent_depth_refusal`), so the seat must name both at every
-    /// depth or a child could start work it cannot collect — `orchestrator`'s own rule.
+    /// (`harnessd::harness::subagent_depth_refusal`), so the seat must name all three at
+    /// every depth or a child could start work it cannot collect or correct —
+    /// `orchestrator`'s own rule.
     #[test]
     fn the_coder_seat_names_the_delegation_pair() {
         let seat = roles::m2_coder();
@@ -2106,6 +2122,12 @@ mod tests {
             seat.tools.iter().any(|t| t == "task_result"),
             "a seat that can start work and not collect it is worse than one that \
              cannot: {:?}",
+            seat.tools
+        );
+        assert!(
+            seat.tools.iter().any(|t| t == "task_message"),
+            "a seat that can start work and not CORRECT it has only the wrong answer to \
+             wait for: {:?}",
             seat.tools
         );
         // The pair is seated, not pushed: a role over its ceiling is refused at resolve,

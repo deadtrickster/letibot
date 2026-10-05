@@ -277,11 +277,12 @@ mod tests {
         // `resolve_role` a refusal; that is the loud path working, and it would be
         // measuring the gap instead of plan mode.
         r.register(Box::new(crate::builtins::bash::Bash)).unwrap();
-        // And the delegation pair, for the same reason one seat later: `m2_coder` seats
-        // `task` and `task_result` as of R58, and `resolve_role` refuses a role naming a
-        // tool the registry does not hold. A fixture that left them out would be
-        // measuring the gap rather than plan mode — the identical loud path the two
-        // comments above record.
+        // And the delegation trio, for the same reason one seat later: `m2_coder` seats
+        // `task`, `task_result` and `task_message` as of R58 and the 2026-10-06 ruling
+        // (*"in the tree all subagents must be addressable by their parents"*), and
+        // `resolve_role` refuses a role naming a tool the registry does not hold. A
+        // fixture that left them out would be measuring the gap rather than plan mode —
+        // the identical loud path the two comments above record.
         let no_runner: Arc<dyn crate::builtins::task::TaskRunner> =
             Arc::new(crate::builtins::task::NoTaskRunner);
         r.register(Box::new(crate::builtins::task::TaskTool::new(
@@ -289,6 +290,10 @@ mod tests {
         )))
         .unwrap();
         r.register(Box::new(crate::builtins::task::TaskResultTool::new(
+            no_runner.clone(),
+        )))
+        .unwrap();
+        r.register(Box::new(crate::builtins::task::TaskMessageTool::new(
             no_runner,
         )))
         .unwrap();

@@ -142,6 +142,27 @@ pub trait TaskRunner: Send + Sync {
              can do. Nothing was stopped."
         ))
     }
+    /// **Say something to a subagent that is still working** — the operator's ruling,
+    /// 2026-10-06: *"in the tree all subagents must be addressable by their parents. that is
+    /// how live corrections delivered."*
+    ///
+    /// `Ok` is what was done, in the words the operator gets; `Err` is why it could not be,
+    /// said rather than swallowed — the rule [`TaskRunner::kill`] follows, and for the same
+    /// reason: a message reported as delivered that nobody heard is worse than one refused,
+    /// because the parent then believes its child was corrected.
+    ///
+    /// **A message is not a second prompt.** It enters the turn the child is already
+    /// running, recorded as an agent's utterance rather than the operator's, so a child that
+    /// is off the path hears *stop, do it this way* at its next round instead of after it has
+    /// finished. A child between turns cannot be reached this way at all, and a runner says
+    /// so by name rather than accepting something nothing will drain.
+    fn send(&self, handle: &str, _text: &str) -> Result<String, String> {
+        Err(format!(
+            "this session's runner cannot message `{handle}`: a subagent is reached through \
+             the turn it is running, which only the runner that started it can do. Nothing \
+             was sent."
+        ))
+    }
 }
 
 /// The default: no runner, and it says so rather than pretending to have run.
@@ -383,6 +404,78 @@ impl Tool for TaskResultTool {
     }
 }
 
+/// `task_message` — correct a subagent while it is still working.
+///
+/// The third thing a parent does to work it handed off: `task` starts a child,
+/// `task_result` reads it, `job_kill` stops it, and this **steers** it. Sibling by shape and
+/// by reason — see [`TaskRunner::send`] for why a correction is not a second prompt in the
+/// child's session, and why a finished child is refused rather than queued.
+pub struct TaskMessageTool {
+    runner: Arc<dyn TaskRunner>,
+}
+
+impl TaskMessageTool {
+    pub fn new(runner: Arc<dyn TaskRunner>) -> Self {
+        TaskMessageTool { runner }
+    }
+}
+
+impl Tool for TaskMessageTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "task_message",
+            "Say something to a subagent that is STILL WORKING — a live correction, \
+             delivered into the turn it is running now rather than queued behind it. Give \
+             `task` (the handle `task` returned) and `text` (what to say). It is not a \
+             second prompt: the child hears it at its next round boundary, as your \
+             message, and carries on working. Refused by name if the child has already \
+             answered, because nothing would deliver it. Read a child with `task_result`; \
+             stop one with `job_kill`.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "The handle `task` returned."},
+                    "text": {"type": "string", "description": "What to say to the subagent. It keeps working; this steers what it does next."}
+                },
+                "required": ["task", "text"]
+            }),
+            // `Session`, exactly as `task` and `task_result` are: this reaches a child's own
+            // session and nothing on the host. The child's own gate governs whatever it does
+            // with what it is told — a parent cannot use a message to launder a capability.
+            Access::Session,
+        )
+    }
+
+    fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &serde_json::Value) -> Invocation {
+        let Some(handle) = args.get("task").and_then(|v| v.as_str()) else {
+            return Invocation::failed(
+                "task_message needs the `task` handle",
+                "call `task_message` with `task` set to the handle `task` returned.",
+            );
+        };
+        let Some(text) = args.get("text").and_then(|v| v.as_str()) else {
+            return Invocation::failed(
+                "task_message needs `text`",
+                "call `task_message` with `text` set to what the subagent should be told.",
+            );
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            return Invocation::failed(
+                "the message was empty",
+                "an empty message is not a correction. Nothing was sent.",
+            );
+        }
+        match self.runner.send(handle, text) {
+            Ok(said) => Invocation::ok(said),
+            // A refusal comes back unchanged, like `job_kill`'s: the runner is the only thing
+            // that knows whether the child heard it, and a tool that reformatted its refusal
+            // into a success is the defect this tree already paid for once.
+            Err(why) => Invocation::failed(format!("subagent `{handle}` was not messaged"), why),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,6 +534,107 @@ mod tests {
             role: role.into(),
             ..Default::default()
         }
+    }
+
+    /// **A correction reaches the runner, and a refusal is not an `Ok`.**
+    ///
+    /// The whole value of `task_message` is that a parent cannot be told its child was
+    /// corrected when it was not, so this pins both directions: what the runner is asked to
+    /// say, and what the caller sees when the runner refuses.
+    #[test]
+    fn a_message_reaches_the_runner_and_a_refusal_is_not_an_ok() {
+        use crate::runtime::{Registry, ToolRuntime};
+        use letibot_transcript::ToolCall;
+
+        /// Records what it was asked to say; refuses one handle by name.
+        struct Steerable(std::sync::Mutex<Vec<(String, String)>>);
+
+        impl TaskRunner for Steerable {
+            fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+                Ok("sub-1".into())
+            }
+            fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+                TaskStatus::Unknown
+            }
+            fn send(&self, handle: &str, text: &str) -> Result<String, String> {
+                if handle == "sub-finished" {
+                    return Err("`sub-finished` is not running a turn".into());
+                }
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((handle.to_string(), text.to_string()));
+                Ok(format!("`{handle}` was told"))
+            }
+        }
+
+        let runner = Arc::new(Steerable(std::sync::Mutex::new(Vec::new())));
+        let mut reg = Registry::new();
+        reg.register(Box::new(TaskMessageTool::new(runner.clone())))
+            .unwrap();
+        let d = crate::backend::tempdir::TempDir::new();
+        let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+        let mut rt = ToolRuntime::new(reg, Box::new(backend));
+        let mut sink = crate::NullToolSink;
+        let call = |rt: &mut ToolRuntime, sink: &mut crate::NullToolSink, args: &str| {
+            rt.invoke(
+                "t1",
+                &ToolCall {
+                    id: "c1".into(),
+                    name: "task_message".into(),
+                    arguments: args.into(),
+                },
+                sink,
+            )
+        };
+
+        let said = call(
+            &mut rt,
+            &mut sink,
+            r#"{"task": "sub-1", "text": "stop and report what you have"}"#,
+        );
+        assert!(
+            matches!(said.outcome, letibot_transcript::ToolOutcome::Ok),
+            "{:?}",
+            said.outcome
+        );
+        assert_eq!(
+            runner.0.lock().unwrap().as_slice(),
+            [(
+                "sub-1".to_string(),
+                "stop and report what you have".to_string()
+            )]
+        );
+
+        // **A child that has already answered is a failure, not a quiet success.** This is
+        // the defect class the kill already paid for: a tool reporting a state change that
+        // nothing made.
+        let missed = call(
+            &mut rt,
+            &mut sink,
+            r#"{"task": "sub-finished", "text": "hello"}"#,
+        );
+        assert!(
+            matches!(
+                missed.outcome,
+                letibot_transcript::ToolOutcome::Failed { .. }
+            ),
+            "{:?}",
+            missed.outcome
+        );
+        assert!(
+            missed.payload.contains("not running a turn"),
+            "{}",
+            missed.payload
+        );
+
+        // Both arguments are required, and the miss says which one.
+        let missing = call(&mut rt, &mut sink, r#"{"task": "sub-1"}"#);
+        assert!(missing.payload.contains("`text`"), "{}", missing.payload);
+
+        // And the default a session with no runner gets refuses by name.
+        let why = NoTaskRunner.send("sub-1", "x").unwrap_err();
+        assert!(why.contains("cannot message"), "{why}");
     }
 
     /// **The call returns while the child is still working.** This is the whole

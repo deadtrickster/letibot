@@ -82,7 +82,8 @@ pub struct Attached {
 /// the `Hello` this hub mints), and the vocabulary `harnessd` already used for *"a caller that
 /// is not a head at all"* when it tried to stop a subagent — where the string alone was not
 /// enough, because `submit` has to know it. See the arm in [`Hub::submit`]: this name is
-/// admitted for an [`CommandKind::Interrupt`] and for nothing else.
+/// admitted for an [`CommandKind::Interrupt`] and a relayed [`CommandKind::Message`], and for
+/// nothing else.
 pub const DAEMON_SUBMITTER: &str = "\0daemon";
 
 /// A mutating command, after validation, waiting for the session's single command
@@ -122,6 +123,26 @@ pub enum CommandKind {
     },
     Interrupt {
         reason: String,
+    },
+    /// **A parent speaking to one of its own subagents while that child is in flight** —
+    /// a live correction, delivered into the turn that is already running.
+    ///
+    /// Not a [`CommandKind::Prompt`], and the variant exists for that reason alone: a
+    /// prompt is *the operator, typing into a running turn* — it is recorded as the
+    /// operator (`Speaker::Operator`), consecutive ones coalesce into a single held
+    /// message, and a take-back drops them. A parent's correction is none of that. It is
+    /// an agent's utterance arriving in a session where that agent is not seated, and the
+    /// child's steering path already has a door for exactly that (`SteeringMessage::normal`,
+    /// recorded `Speaker::Agent`). Reusing `Prompt` would write the correction into the
+    /// child's transcript as though the operator had typed it.
+    ///
+    /// `from` is the parent's session id, carried so the child — and anyone reading its
+    /// trail afterwards — can say *which* parent spoke. It is not the submitter: the daemon
+    /// relays this from another session's hub, and [`Hub::submit`] records `from` as the
+    /// identity rather than [`DAEMON_SUBMITTER`].
+    Message {
+        from: String,
+        text: String,
     },
     /// A head asked to move the running command to the background. **Not queued
     /// like a prompt** — it is acted on by the exec backend's wait loop, which is
@@ -302,6 +323,7 @@ impl CommandKind {
             CommandKind::Compact => "compact",
             CommandKind::Reseat { .. } => "reseat",
             CommandKind::Interrupt { .. } => "interrupt",
+            CommandKind::Message { .. } => "message",
             CommandKind::Answer { .. } => "answer",
             CommandKind::Mode { .. } => "mode",
             CommandKind::Slash { .. } => "slash",
@@ -989,17 +1011,32 @@ impl Hub {
             // tool then formatted that refusal into *"interrupted the turn"*, so the defect was
             // invisible from the one place a person looks.
             //
-            // **Narrow on purpose: the daemon may INTERRUPT and nothing else.** An `Answer`
-            // needs `can_decide`, a `Prompt` speaks as a person, a `SetOperatorTodos` writes the
-            // operator's own board — each would be the daemon impersonating somebody, and none
-            // of them is needed for the thing the daemon actually asks for. The door is only as
-            // wide as that need.
+            // **Narrow on purpose: the daemon may INTERRUPT, and may RELAY a parent's message
+            // to a child, and nothing else.** An `Answer` needs `can_decide`, a `Prompt` speaks
+            // as a person, a `SetOperatorTodos` writes the operator's own board — each would be
+            // the daemon impersonating somebody, and neither of the two verbs it does have is
+            // that. The door is only as wide as the need: a subagent's turn is stopped by the
+            // first of them and steered, without being restarted or spoken over, by the second.
             let (identity, can_decide) = match g.heads.iter().find(|h| h.id == head_id) {
                 Some(h) => (h.identity.clone(), h.caps.can_decide),
                 None if head_id == DAEMON_SUBMITTER
-                    && matches!(kind, CommandKind::Interrupt { .. }) =>
+                    && matches!(
+                        kind,
+                        CommandKind::Interrupt { .. } | CommandKind::Message { .. }
+                    ) =>
                 {
-                    (DAEMON_SUBMITTER.to_string(), false)
+                    // **A relayed message keeps its own author.** The daemon is the *caller* —
+                    // the parent is seated in another session's hub, not this one — but it is
+                    // not the speaker, and the child is better off for being told so: the whole
+                    // point of being able to message a subagent is that it can tell which parent
+                    // said it, and what to do about it. So the identity written into the child's
+                    // log is `from`, never `\0daemon`. The interrupt has no such author to keep
+                    // — its reason is in the text — and stays named after the caller.
+                    let who = match &kind {
+                        CommandKind::Message { from, .. } => from.clone(),
+                        _ => DAEMON_SUBMITTER.to_string(),
+                    };
+                    (who, false)
                 }
                 None => {
                     return ServerFrame::Rejected {
@@ -1107,6 +1144,9 @@ impl Hub {
                 }
                 .into(),
                 (CommandKind::Interrupt { .. }, _) => "interrupt requested".into(),
+                (CommandKind::Message { from, .. }, _) => {
+                    format!("a message to this session from {from}")
+                }
                 (CommandKind::WithdrawPrompts, _) => "prompt take-back requested".into(),
                 (CommandKind::SetOperatorTodos { items }, _) => {
                     format!("the operator's {} todo(s) sent", items.len())
@@ -1259,8 +1299,9 @@ impl Hub {
 
     /// The next command a **running turn** can act on, leaving the rest queued.
     ///
-    /// Mid-turn steering may consume a prompt (a follow-up user item) or an
-    /// interrupt. Everything else belongs to the between-turn worker, and popping
+    /// Mid-turn steering may consume a prompt (a follow-up user item), an
+    /// interrupt, or a parent's correction to a subagent in flight. Everything else
+    /// belongs to the between-turn worker, and popping
     /// it here would lose it: the worker is inside the very turn that is polling,
     /// and would never see a command this path swallowed. Scanned rather than
     /// popped-and-dropped for exactly that reason — a [`CommandKind::Compact`]
@@ -1270,7 +1311,9 @@ impl Hub {
         let i = (0..g.commands.len()).find(|&i| {
             matches!(
                 g.commands[i].kind,
-                CommandKind::Prompt { .. } | CommandKind::Interrupt { .. }
+                CommandKind::Prompt { .. }
+                    | CommandKind::Interrupt { .. }
+                    | CommandKind::Message { .. }
             )
         })?;
         g.commands.remove(i)
@@ -1979,7 +2022,7 @@ mod mode_steering_tests {
         assert!(!hub.has_queued_prompt());
     }
 
-    /// **THE DAEMON MAY INTERRUPT, AND NOTHING ELSE.**
+    /// **THE DAEMON MAY INTERRUPT, MAY RELAY A PARENT'S MESSAGE, AND NOTHING ELSE.**
     ///
     /// `job_kill` of a subagent was refused here, every time, and the refusal was invisible:
     /// `harnessd`'s task runner submitted the interrupt under [`DAEMON_SUBMITTER`] — *"the
@@ -1988,11 +2031,43 @@ mod mode_steering_tests {
     /// `Rejected { reason: "not attached" }`. MEASURED 2026-10-05: the operator's three subagents
     /// were told they had been stopped, went on running, and their row counts grew (102 to 108)
     /// while the kill was in flight. The door is open for the daemon now — and ONLY for the
-    /// interrupt, because an `Answer` needs `can_decide`, a `Prompt` speaks as a person, and the
-    /// daemon is neither.
+    /// interrupt and the relayed message, because an `Answer` needs `can_decide`, a `Prompt`
+    /// speaks as a person, and the daemon is neither.
     #[test]
-    fn the_daemon_may_interrupt_and_nothing_else() {
+    fn the_daemon_may_interrupt_and_relay_and_nothing_else() {
         let hub = Hub::new("s-daemon-door");
+
+        // **A parent's correction to a subagent in flight** — relayed by the daemon, because
+        // the parent is seated in another session's hub entirely. Admitted like the interrupt,
+        // and it must NOT be recorded as the daemon: the child's trail has to name which parent
+        // spoke, or the correction is advice from nowhere.
+        let relay = hub.submit(
+            DAEMON_SUBMITTER,
+            "task_message-1",
+            0,
+            CommandKind::Message {
+                from: "s-parent".into(),
+                text: "stop and report what you have".into(),
+            },
+        );
+        assert!(
+            matches!(relay, ServerFrame::Accepted { .. }),
+            "the daemon's relay of a parent's message was refused: {relay:?}"
+        );
+        // Taken mid-turn, which is the only thing that makes it *live* correction: a message
+        // that waits for the worker arrives after the turn it was meant to steer.
+        let queued = hub
+            .try_steering_command()
+            .expect("a relayed message is not mid-turn steering, so it waited for the worker");
+        assert_eq!(
+            queued.identity, "s-parent",
+            "the postman was recorded as the speaker: {queued:?}"
+        );
+        assert_eq!(queued.head_id, DAEMON_SUBMITTER);
+        assert!(
+            matches!(queued.kind, CommandKind::Message { .. }),
+            "the wrong kind came back: {queued:?}"
+        );
 
         // The thing the daemon actually needs: stop a turn in a session where none of our heads
         // is seated, which is every subagent from the parent's point of view.
