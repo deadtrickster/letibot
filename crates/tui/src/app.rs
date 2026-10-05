@@ -867,7 +867,11 @@ impl Pick {
         match self {
             // The daemon's own names arrive at runtime; see `SettingPick::daemon_lists`.
             Pick::Mode | Pick::Model => &[],
-            Pick::Verbosity => VERBOSITY_VALUES,
+            // The head's own two carry their sentences from [`Pick::values`] — and the verbosity
+            // card is the PROFILE TABLE itself, built in `App::pick_values` rather than listed
+            // here. It used to be a hand-written list beside this one, and the two drifted: the
+            // copy was missing `read-edits` entirely, so a rung `/v` cycles onto had no row.
+            Pick::Verbosity => &[],
             Pick::Diff => DIFF_VALUES,
         }
     }
@@ -905,30 +909,6 @@ impl Pick {
         }
     }
 }
-
-/// **What the verbosity rung means, as the card says it** — R37's ladder, in the reader's
-/// terms rather than the head's.
-///
-/// The names are the rungs' own (`Verbosity::as_str`) and the sentences are what a person is
-/// actually choosing between: **what will be on the screen.** Written as *what you get*, not
-/// as *what is filtered*, because a reader picking a rung is not reasoning about the event
-/// stream.
-pub const VERBOSITY_VALUES: &[(&str, &str)] = &[
-    (
-        "conversation",
-        "your messages and the model's answers — nothing the head did to produce the words, \
-         and one [N tool calls, M thinking lines] where the work was, which ctrl-t opens",
-    ),
-    (
-        "terse",
-        "the above, plus one row per tool call and how it ended",
-    ),
-    ("normal", "the above, plus the model's thinking"),
-    (
-        "loud",
-        "the above, plus who attached, and who issued which command",
-    ),
-];
 
 /// **What the diff style means** — named here so both heads spell one setting one way (R38,
 /// §11.6).
@@ -8280,6 +8260,35 @@ impl App {
         let Some(subject) = self.pick else {
             return Vec::new();
         };
+        // **The verbosity card is the PROFILE TABLE, and not a second list built beside it.**
+        //
+        // The rows used to be a hand-written const (`VERBOSITY_VALUES`) and the copy drifted the way
+        // a copy does: it was missing `read-edits` — the rung that is *conversation plus the edit
+        // cards* — so a rung `/v` cycles onto had no row on the card, and the profile the operator
+        // asked for by name did not exist as far as the card was concerned. One table, so a profile
+        // added to `Profile::ALL` appears here by construction.
+        if subject == Pick::Verbosity {
+            let mut rows: Vec<(String, String)> = Profile::ALL
+                .iter()
+                .map(|p| (p.name.to_string(), p.why.to_string()))
+                .collect();
+            // **And the set in force, when no profile is it.** The rows above are the table; the set
+            // is runtime state, so a set off the ladder had no row at all — the operator, having
+            // typed one: *"it is not saved - when i do /verbosity there is no custom"*. The row is
+            // named by the set's own `custom …` string, which `as_str` writes so that it can be
+            // typed back; and since the row IS that string, it is also the row the marker lands
+            // on — `pick_current` reads the same one.
+            if self.visibility.profile().is_none()
+                && !rows.iter().any(|(v, _)| v == &self.visibility.as_str())
+            {
+                rows.push((
+                    self.visibility.as_str(),
+                    "the set in force — no profile names it, and Enter on this row keeps it"
+                        .to_string(),
+                ));
+            }
+            return rows;
+        }
         if !subject.values().is_empty() {
             return subject
                 .values()
@@ -8299,11 +8308,10 @@ impl App {
 
     /// What the open card is already on.
     ///
-    /// **The profile when the set is one, and a `custom …` name when it is not** — which
-    /// matches no row, so a custom set marks nothing and `seed_pick` starts the cursor on the
-    /// head's own start rather than on row zero. A cursor sitting on `conversation` because the
-    /// reader had turned one switch up, one Enter away from hiding everything, is the surprise
-    /// the seeding rule exists to prevent.
+    /// **The profile when the set is one, and the set's own `custom …` name when it is not** — and
+    /// since `pick_values` now draws a row under exactly that name, a custom set is marked on the
+    /// card like any other state rather than matching nothing. (It used to match no row at all,
+    /// which read as the card having lost the setting; see that function.)
     fn pick_current(&self) -> String {
         match self.pick {
             Some(Pick::Verbosity) => self.visibility.as_str(),
@@ -33607,6 +33615,49 @@ mod tests {
         assert_eq!(a.reasoning, Fold::Folded);
     }
 
+    /// **The card names the set in force when no profile is it.**
+    ///
+    /// The fixture is `loud` with the edit cards off, and it is chosen because the assertion needs a
+    /// set that is no profile: every switch is on except `edits`, which no row of `Profile::ALL`
+    /// has. The row the card must grow for it is the set's own `custom …` name — which is also what
+    /// `pick_current` reads, so it is the row the marker and the cursor land on rather than
+    /// matching nothing.
+    #[test]
+    fn the_card_names_the_set_in_force_a_reader_typed() {
+        let mut a = app();
+        a.pick = Some(Pick::Verbosity);
+
+        // A profile: the five, and no extra row.
+        a.visibility = Visibility::of(Profile::CONVERSATION);
+        let rows = a.pick_values();
+        assert_eq!(rows.len(), Profile::ALL.len(), "{rows:?}");
+        assert!(
+            !rows.iter().any(|(v, _)| v.starts_with("custom")),
+            "a profile needs no custom row: {rows:?}"
+        );
+
+        // **A set no profile is** — `loud` with the edit cards off.
+        a.visibility = Visibility::of(Profile::LOUD).with(Show::Edits, Level::Hidden);
+        let mine = a.visibility.as_str();
+        assert!(mine.starts_with("custom"), "the set in force: {mine}");
+        let rows = a.pick_values();
+        assert_eq!(rows.len(), Profile::ALL.len() + 1, "{rows:?}");
+        assert!(
+            rows.iter().any(|(v, _)| v == &mine),
+            "the card must name the set in force: {rows:?}"
+        );
+        // **And it is the row the marker and the cursor take**, because the row's name IS what
+        // `pick_current` reads — so the cursor starts on the state the reader is in rather than on
+        // the head's start.
+        assert_eq!(a.pick_current(), mine);
+        a.seed_pick();
+        assert_eq!(
+            a.mode_sel,
+            rows.len() - 1,
+            "the cursor did not land on the set in force: {rows:?}"
+        );
+    }
+
     /// **And where the ladder cannot draw the result, the chord says why instead of lying** — the
     /// operator's rule for the whole rewrite: a state that changes nothing is worse than an
     /// unfinished one, because it lies about the screen.
@@ -38546,7 +38597,79 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A completion notice is folded to one line per settlement, and R7's promise to the
+    /// **A set the card can show is a set the file keeps** — the operator's report, and both halves
+    /// of it: *"it is not saved - when i do /verbosity there is no custom"*.
+    ///
+    /// Two faults, and they compounded into one symptom:
+    ///
+    ///  * the card's rows came from a hand-written table of **four** profiles, so `read-edits` —
+    ///    *conversation plus the edit cards* — had no row at all, and neither had a set off the
+    ///    ladder. A rung `/v` cycles onto was a rung the card could not show;
+    ///  * `prefs::load` validated the saved word against that same four-name list, so `read-edits`
+    ///    and every `custom …` set were written by this head and then **refused when the file was
+    ///    read back** — the reader chose a set, the file kept it, and the next start fell back to
+    ///    `normal` in silence.
+    ///
+    /// The assertion is the round trip the operator was making: choose it, write it, read it with a
+    /// fresh head. Both spellings, because they fail in the same place — one is a profile the table
+    /// never had and the other is no profile at all.
+    #[test]
+    fn a_set_the_card_can_choose_is_a_set_the_file_keeps() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-rung-roundtrip-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("head.toml");
+
+        // **`read-edits`, which is a profile the card must be able to draw.**
+        let mut a = app();
+        a.prefs_path = Some(path.clone());
+        assert_eq!(a.command("verbosity read-edits"), None);
+        assert_eq!(a.visibility.profile(), Some(Profile::READ_EDITS));
+        let mut fresh = app();
+        fresh.prefs_path = Some(path.clone());
+        fresh.load_prefs();
+        assert_eq!(
+            fresh.visibility.profile(),
+            Some(Profile::READ_EDITS),
+            "`read-edits` was written and then refused when the file was read back"
+        );
+        assert!(
+            fresh.notice.is_none(),
+            "and nothing was reported about it: {:?}",
+            fresh.notice
+        );
+
+        // **And a set no profile is** — the `custom …` spelling, which is the one the card writes for
+        // just this case and the one the operator was looking for.
+        let mut b = app();
+        b.prefs_path = Some(path.clone());
+        assert_eq!(b.command("verbosity custom edits=hidden"), None);
+        assert!(
+            b.visibility.profile().is_none(),
+            "the premise: this set is no profile: {}",
+            b.visibility.as_str()
+        );
+        let mut fresh = app();
+        fresh.prefs_path = Some(path.clone());
+        fresh.load_prefs();
+        assert_eq!(
+            fresh.visibility,
+            b.visibility,
+            "a custom set did not survive the round trip: {}",
+            fresh.visibility.as_str()
+        );
+        assert!(
+            fresh.notice.is_none(),
+            "the set came back and was reported as unreadable: {:?}",
+            fresh.notice
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A completion notice is folded to one line per settlement, and R7's promise to the    /// **A completion notice is folded to one line per settlement, and R7's promise to the
     /// model is not drawn.**
     ///
     /// The operator's ask, and leticl's half of it: *"i dont want to see that message to you
@@ -42690,19 +42813,32 @@ mod tests {
         // Bare: the card, and nothing sent anywhere — a rung is a local setting.
         assert_eq!(a.command("verbosity"), None);
         assert!(a.pick == Some(Pick::Verbosity));
-        assert_eq!(a.mode_sel, 2, "the cursor starts on the rung in force");
+        // **The cursor's row read off the table rather than written down.** This was `2`, from when
+        // the card listed four profiles and `normal` was the third — and that hand-written list is
+        // what the card no longer keeps: `read-edits` sits after `conversation`, so every later rung
+        // moved a row down, and a literal here has to be re-counted by hand each time one is added.
+        let normal_at = Profile::ALL
+            .iter()
+            .position(|p| *p == Profile::NORMAL)
+            .expect("`normal` is a profile");
+        assert_eq!(
+            a.mode_sel, normal_at,
+            "the cursor starts on the rung in force"
+        );
         let screen = a.screen(120, 40).join("\n");
-        for (value, why) in VERBOSITY_VALUES {
+        for p in Profile::ALL {
             assert!(
-                screen.contains(value),
-                "`{value}` is not on the card:\n{screen}"
+                screen.contains(p.name),
+                "`{}` is not on the card:\n{screen}",
+                p.name
             );
             // The meaning, as a prefix of the sentence — long enough to be the sentence and
             // short enough that the card's wrap cannot have split it.
-            let lead: String = why.chars().take(30).collect();
+            let lead: String = p.why.chars().take(30).collect();
             assert!(
                 screen.contains(&lead),
-                "the card does not say what `{value}` gives you:\n{screen}"
+                "the card does not say what `{}` gives you:\n{screen}",
+                p.name
             );
         }
         let row = screen
@@ -42729,7 +42865,13 @@ mod tests {
         let mut card = app();
         assert_eq!(card.command("verbosity"), None);
         card.key(Key::Up); // normal -> terse
-        assert_eq!(card.mode_sel, 1);
+        // One row up the card's own order, which is `Profile::ALL`'s — the literal `1` was that
+        // order as it stood with four profiles in it.
+        let terse_at = Profile::ALL
+            .iter()
+            .position(|p| *p == Profile::TERSE)
+            .expect("`terse` is a profile");
+        assert_eq!(card.mode_sel, terse_at);
         assert_eq!(card.key(Key::Enter), None);
         assert!(card.pick.is_none(), "taking a value closes the card");
 

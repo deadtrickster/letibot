@@ -64,8 +64,9 @@ pub struct HeadPrefs {
     /// the reader has to keep re-making.
     ///
     /// A `String` rather than the ladder's own enum, because this module is deliberately free
-    /// of the app's vocabulary: it is a reader and writer of four words, and which words those
-    /// are is [`crate::app::VERBOSITY_VALUES`]'s to say. A name this build does not know is
+    /// of the app's vocabulary: it is a reader and writer of one word, and which words that word
+    /// may be is [`crate::app::Visibility::parse`]'s to say — the same reader this head reads the
+    /// file with, the card chooses with and the verb takes. A name this build does not know is
     /// kept in the file and reported, exactly as an unknown key is.
     pub verbosity: String,
     /// **The notes this reader has retired**, by key (R10).
@@ -267,25 +268,24 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                 "false" | "no" | "off" => p.raw_calls = false,
                 _ => notes.push(format!("head.toml: raw_calls = {v:?} is not true or false")),
             },
-            // **A rung by NAME, listed from the ladder itself.** The names live in
-            // `app::VERBOSITY_VALUES` and are not repeated here: a second list is a second
-            // answer to *what is a rung*, and this file's whole comment is about not keeping
-            // one. An unknown word is reported by name and LEFT IN THE FILE — the reader gets
-            // the default rung and a sentence saying which word this build could not read.
-            "verbosity" => {
-                if crate::app::VERBOSITY_VALUES.iter().any(|(n, _)| *n == v) {
-                    p.verbosity = v;
-                } else {
-                    notes.push(format!(
-                        "head.toml: verbosity = {v:?} is not one of {}",
-                        crate::app::VERBOSITY_VALUES
-                            .iter()
-                            .map(|(n, _)| *n)
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
-            }
+            // **A set, read by the ONE function this head reads a set with.**
+            //
+            // `Visibility::parse` takes a profile name, a bare switch, or a whole `custom …` set —
+            // and this check used to be a hand-written list of four profile names kept for the
+            // purpose. That list refused two things this head happily WRITES: `read-edits` (a
+            // profile the list never had, so the row could not even be drawn on the card) and every
+            // `custom …` set. So a reader chose a set, the file kept it, and the next start fell
+            // back to the default in silence — the operator's report, and the whole of why this is
+            // one reader rather than two: *"it is not saved - when i do /verbosity there is no
+            // custom"*.
+            //
+            // An unknown word is still reported by name and LEFT IN THE FILE — a set this build
+            // cannot read gets the default and a sentence saying which word it was, in the parse's
+            // own words.
+            "verbosity" => match crate::app::Visibility::parse(&v) {
+                Ok(_) => p.verbosity = v,
+                Err(said) => notes.push(format!("head.toml: {said}")),
+            },
             // **The starter-todo switch, in its three shapes** — see `TodoTemplate`. A value this
             // build cannot read is reported and left in the file, exactly as `verbosity`'s is.
             "todo_template" => match TodoTemplate::parse(&v) {
