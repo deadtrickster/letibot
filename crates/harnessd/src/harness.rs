@@ -2592,6 +2592,18 @@ impl<'a> Harness<'a> {
         // without anything walking a parent chain.
         if let Some(w) = &job_watch {
             *tree_watch_slot.lock().expect("tree watch") = Some(Arc::clone(w));
+            // **Where a settlement gets written down.** The watcher threads settle jobs on
+            // their own thread and cannot be handed this harness's connection — a
+            // `rusqlite::Connection` is `Send` and not `Sync` — so they are given the store's
+            // PATH and open their own; `Store::path` documents why that is ordinary here and
+            // why it answers `None` for an in-memory store. A run with no store records
+            // nothing, which is the same answer it gives for todos.
+            //
+            // **This session's own id, not the tree's**, for the reason the queue is per
+            // session: a job a child backgrounded is the child's row, in the child's session.
+            if let Some(path) = store.as_ref().and_then(|s| s.path()) {
+                w.record_jobs_into(path.to_path_buf(), cfg.session_id.clone());
+            }
         }
         let tool_sink = JobWatchSink::new(
             IntentSink::new(intent.clone(), ToolLogSink::new(hub.clone())),

@@ -958,18 +958,37 @@ impl LoadedTranscript {
 
 pub struct Store {
     conn: Connection,
+    /// **Where this store lives**, so a second connection can be opened to it — see
+    /// [`Store::path`]. `None` for `open_in_memory`, which is a store with no file to reach.
+    path: Option<std::path::PathBuf>,
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
-        Self::from_connection(Connection::open(path)?)
+        Self::from_connection(Connection::open(path)?, Some(path.to_path_buf()))
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        Self::from_connection(Connection::open_in_memory()?)
+        Self::from_connection(Connection::open_in_memory()?, None)
     }
 
-    fn from_connection(conn: Connection) -> Result<Self> {
+    /// **The file this store is**, when it has one.
+    ///
+    /// A second connection is a normal thing to want here and not a workaround: the watcher
+    /// threads settle jobs on their own thread, a `rusqlite::Connection` is `Send` and not
+    /// `Sync`, and re-opening the file is the only way to write from a thread that must not
+    /// be handed the harness's own connection. `from_connection`'s own comment already says
+    /// two connections exist by design — the worker writes rows and a second answers a head —
+    /// and WAL plus the five-second `busy_timeout` are what make a third harmless.
+    ///
+    /// `None` for an in-memory store, which nobody else can reach. That is an honest
+    /// absence rather than an error: a store with no file has no path to give, and a caller
+    /// that needs one must say so.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    fn from_connection(conn: Connection, path: Option<std::path::PathBuf>) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         // The region is volatile by design, so this file is the only copy of the
         // tokens. A lost commit is a lost turn.
@@ -982,7 +1001,7 @@ impl Store {
         // turn's `append_item` must wait a moment rather than come back as
         // SQLITE_BUSY on a database that is working exactly as intended.
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        let store = Store { conn };
+        let store = Store { conn, path };
         store.migrate()?;
         Ok(store)
     }

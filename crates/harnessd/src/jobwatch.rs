@@ -74,6 +74,7 @@ use std::time::Duration;
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::registry::Bell;
+use letibot_tokencore::store::{JobRecord, Store};
 use letibot_tools::builtins::task::{TaskRunner, TaskStatus};
 use letibot_tools::exec::{JobId, JobState, ProcessHost, Waited};
 use letibot_tools::{ToolEvent, ToolEventSink};
@@ -171,6 +172,10 @@ pub struct JobWatchers {
     /// to notice. A set with no host watches no jobs because there are none to watch;
     /// it is not an error state.
     host: Option<Weak<dyn ProcessHost>>,
+    /// **Where settlements are written down**, when this session has a store — see
+    /// [`JobRecorder`]. `None` until the harness says otherwise, which is every test and every
+    /// storeless run.
+    recorder: Arc<Mutex<Option<JobRecorder>>>,
     hub: Weak<Hub>,
     /// **The other thing that backgrounds, and the reason this file is task-aware.**
     ///
@@ -256,6 +261,7 @@ impl JobWatchers {
     pub fn new(host: &Arc<dyn ProcessHost>, hub: &Arc<Hub>, bell: Option<Arc<Bell>>) -> Arc<Self> {
         Arc::new(JobWatchers {
             host: Some(Arc::downgrade(host)),
+            recorder: Arc::new(Mutex::new(None)),
             hub: Arc::downgrade(hub),
             tasks: None,
             completions: Arc::new(Mutex::new(VecDeque::new())),
@@ -271,6 +277,20 @@ impl JobWatchers {
         })
     }
 
+    /// **Tell this set where to leave a record of what it settles.** See [`JobRecorder`].
+    ///
+    /// A setter rather than a constructor parameter: `JobWatchers::new` is called in twelve
+    /// places and all but a couple of them are tests, so a parameter would be twelve edits to
+    /// carry one value that every one of them wants to leave `None`.
+    ///
+    /// **Safe to call after construction, which is the only order the harness can offer.** The
+    /// value is read when a queue is BUILT — per watch, well after this — so a recorder set a
+    /// line after `new` reaches every queue that follows it. Nothing can be watched in between:
+    /// a watch is armed by a tool result, and no tool has run at that point in a session's life.
+    pub fn record_jobs_into(&self, path: std::path::PathBuf, session_id: String) {
+        *self.recorder.lock().expect("job recorder") = Some(JobRecorder::new(path, session_id));
+    }
+
     /// **A set for a session that cannot start processes but can still spawn a
     /// subagent.**
     ///
@@ -281,6 +301,7 @@ impl JobWatchers {
     pub fn watching_tasks(hub: &Arc<Hub>, bell: Option<Arc<Bell>>) -> Arc<Self> {
         Arc::new(JobWatchers {
             host: None,
+            recorder: Arc::new(Mutex::new(None)),
             hub: Arc::downgrade(hub),
             tasks: None,
             completions: Arc::new(Mutex::new(VecDeque::new())),
@@ -305,6 +326,11 @@ impl JobWatchers {
             host: self.host.clone(),
             hub: Weak::clone(&self.hub),
             tasks: Some(Arc::downgrade(tasks)),
+            // **Not inherited, and that is the point.** A recorder carries the SESSION its rows
+            // belong to, and this set is being built for a different session — so a copy of the
+            // parent's would file a child's job in the parent's history. It is set, if at all,
+            // by the harness that owns this session, a line after this returns.
+            recorder: Arc::new(Mutex::new(None)),
             completions: Arc::clone(&self.completions),
             parent_completions: self.parent_completions.clone(),
             me: self.me.clone(),
@@ -349,6 +375,9 @@ impl JobWatchers {
             host: self.host.clone(),
             hub: Weak::clone(&self.hub),
             tasks: self.tasks.clone(),
+            // Not inherited, for the reason `with_tasks` gives above: the recorder names the
+            // session, and this set is another session's.
+            recorder: Arc::new(Mutex::new(None)),
             // **Its own**, and the one field this constructor no longer takes from the
             // tree. The child's queue is where its own settlements are drained from.
             completions: Arc::clone(&self.completions),
@@ -532,6 +561,7 @@ impl JobWatchers {
             owner: self.me.clone(),
             bell: self.bell.clone(),
             wake_target: self.wake_target.clone(),
+            recorder: self.recorder.lock().expect("job recorder").clone(),
         });
         let watching = Arc::clone(&self.watching);
         let settled = Arc::clone(&self.settled);
@@ -576,6 +606,11 @@ struct SettlementQueue {
     owner: String,
     bell: Option<Arc<Bell>>,
     wake_target: String,
+    /// **Where a settlement is written down**, when this session has a store — `None` on a
+    /// storeless run and in every test that does not ask for one. Copied in from
+    /// [`JobWatchers::recorder`] when the queue is built, which is per watch and therefore
+    /// always after the harness has had its say.
+    recorder: Option<JobRecorder>,
 }
 
 impl SettlementQueue {
@@ -586,6 +621,13 @@ impl SettlementQueue {
     /// drain and the flag being set — which is the shape of settlement-nobody-reads this
     /// whole mechanism exists to avoid.
     fn push(&self, c: JobCompletion) {
+        // **The record goes down where the settlement is first known, not where it is read.**
+        // `own`/`parent` decide who HEARS about a settlement, and a job's fate does not depend
+        // on which session's queue it lands in — so writing after the routing would lose the row
+        // for a settlement handed up to an ancestor.
+        if let Some(rec) = &self.recorder {
+            rec.record(&c);
+        }
         let mut g = self.own.lock().expect("job completions");
         if self.stopped.load(Ordering::Relaxed)
             && let Some(parent) = &self.parent
@@ -605,6 +647,77 @@ impl SettlementQueue {
         if let Some(bell) = &self.bell {
             bell.ring_wake(&self.wake_target);
         }
+    }
+}
+
+/// **The one thing a settlement needs to leave a record of itself** — a path and a session id.
+///
+/// Not a `Store`: the harness's connection lives on another thread, and a
+/// `rusqlite::Connection` is `Send` but not `Sync`. So the watcher opens a connection of its own
+/// the first time it has something to write and keeps it — see [`Store::path`] for why a second
+/// connection is ordinary here rather than a workaround (WAL plus the five-second
+/// `busy_timeout` are what make it harmless).
+///
+/// **A failure here is reported nowhere and kills nothing.** The notice is what a run depends
+/// on; the row is the history. So a write that fails leaves a missing row — the honest state —
+/// where a panic would take the watcher thread down and lose the settlement as well.
+#[derive(Clone)]
+pub struct JobRecorder {
+    path: std::path::PathBuf,
+    session_id: String,
+    /// Opened on the first write, because the queue that holds this is built per watch and a
+    /// store opened at construction would be opened for every job that is never backgrounded.
+    store: Arc<Mutex<Option<Store>>>,
+}
+
+impl JobRecorder {
+    pub fn new(path: std::path::PathBuf, session_id: String) -> Self {
+        JobRecorder {
+            path,
+            session_id,
+            store: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// **Write one settlement's row.**
+    ///
+    /// `running` is never written here — this is the ending, and the row it updates is the one
+    /// the start would have written. **`how` is empty and that is a fact, not an oversight**: it
+    /// is a property of the START (`asked`, `operator`, `promoted`) and this is the ending. A
+    /// guess at it would be a word nobody measured.
+    fn record(&self, c: &JobCompletion) {
+        // **A subagent settles through this same queue and is not a job.** `task`'s handle is a
+        // session id, `job_list` has never heard of it, and a row here would put a child in the
+        // jobs pane — the same confusion R58 removed from the notice.
+        if c.kind != BackgroundKind::Job {
+            return;
+        }
+        let Ok(mut g) = self.store.lock() else {
+            return;
+        };
+        if g.is_none() {
+            match Store::open(&self.path) {
+                Ok(s) => *g = Some(s),
+                Err(_) => return,
+            }
+        }
+        let Some(store) = g.as_ref() else {
+            return;
+        };
+        let _ = store.put_job(
+            &self.session_id,
+            &JobRecord {
+                handle: c.job.clone(),
+                command: c.command.clone(),
+                how: String::new(),
+                state: c.state.clone(),
+                produced: c.produced,
+                elapsed_ms: c.elapsed_ms,
+                // Where the bytes went is a fact of the command, read out of it at listing time
+                // — not something a settlement carries. See `JobRecord::redirect`.
+                redirect: None,
+            },
+        );
     }
 }
 
@@ -836,6 +949,81 @@ mod tests {
     use letibot_tools::RecordingToolSink;
     use letibot_tools::exec::{HostProcesses, ScopeKind, SpawnRequest};
     use std::time::Instant;
+
+    /// **A settlement leaves a row, and a subagent does not.**
+    ///
+    /// The recorder is the piece with logic in it — a filter, a lazy connection, an upsert — and
+    /// it is reachable without a cgroup host, which the spawning tests below need. So this is the
+    /// half of the contract that runs everywhere.
+    #[test]
+    fn a_settlement_is_written_into_the_store_and_a_subagent_is_not() {
+        let dir = std::env::temp_dir().join(format!("letibot-recorder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        {
+            // The session row first: `job.session_id` is a foreign key and `foreign_keys` is on.
+            let s = Store::open(&path).unwrap();
+            s.put_session(&letibot_tokencore::store::SessionRecord {
+                id: "s-jobs".into(),
+                title: None,
+                model_id: "m".into(),
+                dialect_sha: "sha".into(),
+                workspace_root: "/w".into(),
+                owner: "dead".into(),
+                role: None,
+                approvers: vec![],
+                parent_session_id: None,
+            })
+            .unwrap();
+        }
+        let rec = JobRecorder::new(path.clone(), "s-jobs".into());
+        let done = |kind, job: &str, state: &str| JobCompletion {
+            kind,
+            owner: "s-jobs".into(),
+            job: job.into(),
+            command: "cargo test --release".into(),
+            state: state.into(),
+            produced: 4_096,
+            elapsed_ms: 8_000,
+            detail: String::new(),
+        };
+        rec.record(&done(BackgroundKind::Job, "j7", "exited 0"));
+
+        let s = Store::open(&path).unwrap();
+        let rows = s.jobs("s-jobs").unwrap();
+        assert_eq!(rows.len(), 1, "the settlement left no row: {rows:?}");
+        assert_eq!(rows[0].handle, "j7");
+        assert_eq!(rows[0].state, "exited 0");
+        assert_eq!(rows[0].produced, 4_096);
+        assert_eq!(rows[0].command, "cargo test --release");
+        // **`how` is empty, and that MEANS *not recorded*.** It is a property of the start
+        // (`asked`, `operator`, `promoted`) and this is the ending; the start's write is the
+        // other half. An empty field here is a fact, and a guessed word would not be.
+        assert!(rows[0].how.is_empty(), "{rows:?}");
+
+        // **A subagent is not a job.** `task`'s handle is a session id, `job_list` has never
+        // heard of it, and a row here would put a child in the jobs pane — the confusion R58
+        // removed from the notice, which this must not put back in the history.
+        rec.record(&done(BackgroundKind::Subagent, "s-p-sub-1", "done"));
+        assert_eq!(
+            s.jobs("s-jobs").unwrap().len(),
+            1,
+            "a subagent was filed as a job"
+        );
+
+        // **And the same handle twice is one row** — the upsert, through this path rather than
+        // through the store's own test: a job has one state at a time.
+        rec.record(&done(BackgroundKind::Job, "j7", "signalled 15"));
+        let rows = s.jobs("s-jobs").unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "a second settlement made a second row: {rows:?}"
+        );
+        assert_eq!(rows[0].state, "signalled 15");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A host over a temp root, the way `exec::host`'s own tests build one. The
     /// box needs a cgroup v2 subtree to delegate; every host-spawning test in
