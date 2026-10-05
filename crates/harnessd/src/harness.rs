@@ -4863,6 +4863,25 @@ impl<'a> Harness<'a> {
         // The sentences, and which kind gets which — [`completion_notices`], which is where that
         // decision lives so that it can be asserted without a live session.
         notices.extend(completion_notices(done, &self.hub.session_id()));
+        // **And the rows whose condition just became met.** The same door, because a condition
+        // firing is the same kind of fact as a job ending: nothing asked, and the model has to be
+        // told. What the line carries is BOTH halves — the row's own words and what the world says
+        // about its handle — because either alone is unusable: an intent with no fate is a sentence
+        // the model cannot act on, and a fate with no intent is the settlement notice it already
+        // has.
+        //
+        // **It re-reports until the condition is consumed**, which is the next piece of work and
+        // not a hole: the safe direction is to be told twice, and a row that fired once and then
+        // went quiet would be indistinguishable from one that never fired.
+        let due = self.due_todo_lines();
+        if !due.is_empty() {
+            notices.push(format!(
+                "[todo] {} row you attached a condition to is due:\n{}\nThe condition is met and \
+                 the row itself is unchanged — it is yours to act on.",
+                due.len(),
+                due.join("\n")
+            ));
+        }
         if notices.is_empty() {
             return Ok(None);
         }
@@ -7046,6 +7065,48 @@ pub struct JobWindow {
     pub next: Option<u64>,
 }
 
+/// **What the world says about one handle** — the three answers a conditioned row needs, and they
+/// are three because a reader acts differently on each.
+///
+/// **`Unknown` MEETS the condition**, and that is the operator's own requirement read literally:
+/// *"a todo conditioned on job end, and then i restart head and harnessd. once server is back it
+/// should fire - job is gone"*. A job that is not running has ended, and a handle this daemon has
+/// never heard of is what that looks like after a restart. What it does NOT say is what became of
+/// the job — which is why the sentence for it sends the reader to look, and why the operator's own
+/// split is the one to keep: *"if you want to distinguish - you either follow the job result up
+/// manually (which is more robust) if next steps depend on it or just do your things if it was just
+/// a timeline"*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobFate {
+    /// Still running **here**. The condition is not met.
+    Running,
+    /// It ended, and this is its own word — `exited 0`, `killed by job_kill`, `signalled 15`.
+    Ended { state: String },
+    /// **Not a job this session knows**: it ended before this daemon came back, or the handle is
+    /// wrong. The condition is met and the result is not here.
+    Unknown,
+}
+
+/// **One due row, as the sentence the model is handed.** Pure, so the wording is asserted without
+/// a session — the same reason [`recorded_job_lines`] is.
+///
+/// `handle` is passed rather than carried in the fate because a fate is a fact about a job and the
+/// handle is how a row names it; the two arrive from different places and only this function has
+/// both.
+fn fate_line(handle: &str, fate: &JobFate) -> String {
+    match fate {
+        // Never printed — a running job is not due — and answerable anyway, because a function
+        // that panics on the arm nobody reaches is a function whose contract is a rumour.
+        JobFate::Running => format!("`{handle}` is still running"),
+        JobFate::Ended { state } => format!("`{handle}` {state}"),
+        JobFate::Unknown => format!(
+            "`{handle}` is not a job this session knows — it ended before this daemon came back, \
+             or the handle is wrong. The result is not here: read it up yourself if the next step \
+             depends on it."
+        ),
+    }
+}
+
 /// **What a recorded job's window says**, apart from the harness that found the row.
 ///
 /// A free function so the words can be asserted without a store, a vocabulary or a session —
@@ -7082,15 +7143,10 @@ impl<'a> Harness<'a> {
     /// say where they went instead. A window that invented a page of output would be worse than
     /// an empty one; this one names the loss and, when it can, the file.
     fn recorded_job_window(&self, job: &str) -> Result<JobWindow, String> {
-        let refusal = || format!("no job `{job}` here; `/job` with no argument lists them");
-        let Some(store) = self.store.as_ref() else {
-            return Err(refusal());
-        };
-        let Ok(rows) = store.jobs(&self.cfg.session_id) else {
-            return Err(refusal());
-        };
-        let Some(row) = rows.into_iter().find(|r| r.handle == job) else {
-            return Err(refusal());
+        let Some(row) = self.recorded_job(job) else {
+            return Err(format!(
+                "no job `{job}` here; `/job` with no argument lists them"
+            ));
         };
         let lines = recorded_job_lines(&row);
         Ok(JobWindow {
@@ -7105,6 +7161,69 @@ impl<'a> Harness<'a> {
             lines,
             next: None,
         })
+    }
+
+    /// **The stored row for one handle**, or `None` — the one read the output window and the
+    /// condition evaluator share, so the two cannot look in different places.
+    fn recorded_job(&self, handle: &str) -> Option<JobRecord> {
+        let store = self.store.as_ref()?;
+        store
+            .jobs(&self.cfg.session_id)
+            .ok()?
+            .into_iter()
+            .find(|r| r.handle == handle)
+    }
+
+    /// **What the world says about one handle** — see [`JobFate`] for why there are three answers
+    /// and why `Unknown` meets a condition.
+    ///
+    /// **The live table is asked FIRST, and the order is the whole of the honesty.** Only the
+    /// process host can say whether a job runs *now*; a stored `running` row is a job the daemon
+    /// was watching when it died, which is a fact about *then*. The record is the second look
+    /// because it is what survives a restart — and it is why a conditioned row fires at all after
+    /// one, which is the case the whole mechanism exists for.
+    pub fn job_fate(&self, handle: &str) -> JobFate {
+        if let Some(host) = self.runtime.backend.processes()
+            && let Some(view) = host.job(&letibot_tools::exec::JobId(handle.to_string()))
+        {
+            return if view.state.is_running() {
+                JobFate::Running
+            } else {
+                JobFate::Ended {
+                    state: view.state.word(),
+                }
+            };
+        }
+        match self.recorded_job(handle) {
+            Some(row) => JobFate::Ended { state: row.state },
+            None => JobFate::Unknown,
+        }
+    }
+
+    /// **The rows whose condition the world now meets**, as the lines the model is handed.
+    ///
+    /// **With the fate, because the operator's own split depends on it**: *"you either follow the
+    /// job result up manually (which is more robust) if next steps depend on it or just do your
+    /// things if it was just a timeline"*. A handle that ended here can be read with `job_output`;
+    /// one this daemon never heard of cannot, and the sentence says so rather than leaving the
+    /// reader to find out by asking.
+    pub fn due_todo_lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for row in self.todos.snapshot() {
+            let Some(letibot_tokencore::store::TodoCondition::Job { handle }) = &row.when else {
+                continue;
+            };
+            let fate = self.job_fate(handle);
+            if matches!(fate, JobFate::Running) {
+                continue;
+            }
+            out.push(format!(
+                "  - {} — {}",
+                row.content,
+                fate_line(handle, &fate)
+            ));
+        }
+        out
     }
 
     /// The same read as [`Self::job_output`], as a window rather than a page of
@@ -9322,6 +9441,46 @@ mod tests {
         assert!(
             redirected.contains("/tmp/build.log"),
             "a redirected job's file is not named: {redirected}"
+        );
+    }
+
+    /// **A condition is met by a job that is GONE — including one this daemon never knew** — the
+    /// operator's restart case, as the words the model is handed.
+    ///
+    /// Three fates, three sentences, and the split is the operator's own: a handle that ended here
+    /// can be read with `job_output`, and one this daemon has never heard of cannot — so that line
+    /// says the result is not here rather than leaving the reader to find out by asking. His
+    /// words, which are the whole reason the fate is carried and not just the boolean:
+    /// *"you either follow the job result up manually (which is more robust) if next steps depend
+    /// on it or just do your things if it was just a timeline"*.
+    #[test]
+    fn a_conditions_sentence_says_which_kind_of_gone_it_was() {
+        assert_eq!(
+            fate_line(
+                "j121",
+                &JobFate::Ended {
+                    state: "exited 0".into()
+                }
+            ),
+            "`j121` exited 0",
+            "the job's own word, and nothing invented around it"
+        );
+        let unknown = fate_line("j121", &JobFate::Unknown);
+        assert!(
+            unknown.contains("not a job this session knows"),
+            "the restart case must say the result is not here: {unknown}"
+        );
+        assert!(
+            unknown.contains("read it up yourself"),
+            "and say what the reader can do about it, since following it up is the robust half: \
+             {unknown}"
+        );
+        // **A running job is not due, and the sentence exists anyway.** A function that panics on
+        // the arm nobody reaches is a function whose contract is a rumour — and this one is
+        // reachable the moment anything but `due_todo_lines` asks.
+        assert!(
+            fate_line("j7", &JobFate::Running).contains("still running"),
+            "the running arm must answer rather than be unreachable"
         );
     }
 
