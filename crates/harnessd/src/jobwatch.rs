@@ -129,6 +129,16 @@ pub struct JobCompletion {
     pub produced: u64,
     /// Wall time from spawn to settlement.
     pub elapsed_ms: u64,
+    /// **Which session's job this was.** Not always the one being told.
+    ///
+    /// MEASURED 2026-10-05, and it is the whole of why the field exists: a subagent's
+    /// `cargo test` finished, and the notice arrived in the PARENT's conversation saying *"a job
+    /// you backgrounded has ended"* — naming a job id the parent's own `job_output` did not know
+    /// (`no job called j183`, out of 54 it did have). The queue is the tree's on purpose (R58: a
+    /// child's bell rings where no worker listens, so only a root can be woken), which means
+    /// *whoever drains first* announces the settlement; without this field the announcement could
+    /// not say whose it was, and the parent was told it had backgrounded work it never started.
+    pub owner: String,
     /// **A subagent's own first word about how it ended**: the first line of its
     /// answer, or the reason it failed.
     ///
@@ -190,6 +200,14 @@ pub struct JobWatchers {
     /// ([`JobWatchers::shares_tree`]) and inherits this, so the whole tree rings one
     /// bell, and the completions queue (also shared) is what the root's wake drains.
     wake_target: String,
+    /// **Which session's jobs these are** — THIS session, and deliberately not the tree's root.
+    ///
+    /// The queue travels up to the root so that a settlement can wake somebody at all (R58),
+    /// but ownership does not travel with it: [`JobWatchers::shares_tree`] keeps this field
+    /// from `self`, so a child's job is queued where the root's wake will find it while still
+    /// saying that it is the child's. That is what lets the drain hand the child's settlement
+    /// back to the child and stop the parent being told it backgrounded work of its own.
+    owner: String,
 }
 
 impl JobWatchers {
@@ -212,6 +230,7 @@ impl JobWatchers {
             settled: Arc::new(Mutex::new(HashSet::new())),
             // A root session rings for itself — the tree's root and its own id are one.
             wake_target: hub.session_id().to_string(),
+            owner: hub.session_id().to_string(),
         })
     }
 
@@ -233,6 +252,7 @@ impl JobWatchers {
             watching: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(HashSet::new())),
             wake_target: hub.session_id().to_string(),
+            owner: hub.session_id().to_string(),
         })
     }
 
@@ -253,6 +273,7 @@ impl JobWatchers {
             watching: Arc::clone(&self.watching),
             settled: Arc::clone(&self.settled),
             wake_target: self.wake_target.clone(),
+            owner: self.owner.clone(),
         })
     }
 
@@ -283,6 +304,11 @@ impl JobWatchers {
     ///
     /// `tree` is the root's set (its own `wake_target` is its own id), so this needs no
     /// parent-chain walk: the set it is built from already knows its root.
+    ///
+    /// **`owner` is the one field that does NOT come from the tree.** It is this session's id,
+    /// because the jobs queued here are this session's work; the queue is the tree's only so that
+    /// somebody can be woken to announce them. Taking the root's id here is precisely the defect
+    /// this field closes — see [`JobCompletion::owner`].
     pub fn shares_tree(self: Arc<Self>, tree: &Arc<JobWatchers>) -> Arc<Self> {
         Arc::new(JobWatchers {
             host: self.host.clone(),
@@ -294,15 +320,49 @@ impl JobWatchers {
             watching: Arc::clone(&tree.watching),
             settled: Arc::clone(&tree.settled),
             wake_target: tree.wake_target.clone(),
+            owner: self.owner.clone(),
         })
     }
 
     /// **Take every completion the model has not been told yet.** One drain per
     /// turn: what comes back is what the harness submits, and taking it is what
     /// stops a settlement being delivered twice.
+    ///
+    /// **Everything, whoever it belongs to.** For a caller that IS the set's owner (a test, a
+    /// harness with no tree) this is the same thing as [`Self::take_completions_for`]; a session
+    /// inside a tree wants that one instead, because this would steal a live child's settlement.
     pub fn take_completions(&self) -> Vec<JobCompletion> {
         let mut g = self.completions.lock().expect("job completions");
         g.drain(..).collect()
+    }
+
+    /// **Take the completions THIS session should announce**: its own, plus any whose owner is
+    /// no longer around to be told.
+    ///
+    /// The queue is shared with the tree (R58) and this is the split that makes the sharing
+    /// honest. A job belongs to the session that backgrounded it, so a live child's completion is
+    /// LEFT for the child's own loop — the child is the one waiting on it, and a parent announcing
+    /// it is both a false claim ("you backgrounded") and unusable (the id is not in the parent's
+    /// `job_list`, so `job_output` cannot read it). One whose owner is gone is taken here, because
+    /// a settlement nobody can receive is worse than one announced in the wrong voice.
+    ///
+    /// `owner_is_gone` is the caller's judgement, because the caller is the one holding the
+    /// registry that can answer it; this function decides nothing about sessions.
+    pub fn take_completions_for(&self, owner_is_gone: impl Fn(&str) -> bool) -> Vec<JobCompletion> {
+        let mut g = self.completions.lock().expect("job completions");
+        let mut mine = Vec::new();
+        let mut theirs = VecDeque::new();
+        for c in g.drain(..) {
+            if c.owner == self.owner || owner_is_gone(&c.owner) {
+                mine.push(c);
+            } else {
+                theirs.push_back(c);
+            }
+        }
+        // Back in the order they happened, for the owner's own next drain. The queue is empty at
+        // this point — everything was taken above — so this is a restore rather than a merge.
+        g.extend(theirs);
+        mine
     }
 
     /// **Is this job's completion already on its way to the model?**
@@ -374,10 +434,14 @@ impl JobWatchers {
         let settled = Arc::clone(&self.settled);
         let runner = self.tasks.as_ref().and_then(Weak::upgrade);
         let wake_target = self.wake_target.clone();
+        // **Whose job this is, carried into the thread that will queue it.** The set's owner is
+        // this session even when the completion will be queued on the tree's shared queue.
+        let owner = self.owner.clone();
         if let Some(runner) =
             runner.filter(|r| !matches!(r.collect(&job, Duration::ZERO), TaskStatus::Unknown))
         {
             let wake_for_task = wake_target.clone();
+            let owner_for_task = owner.clone();
             let _ = std::thread::Builder::new()
                 .name(format!("subagent-watch-{}", &job[..job.len().min(20)]))
                 .spawn(move || {
@@ -389,6 +453,7 @@ impl JobWatchers {
                         watching,
                         settled,
                         wake_for_task,
+                        owner_for_task,
                         job,
                     )
                 });
@@ -413,6 +478,7 @@ impl JobWatchers {
                     watching,
                     settled,
                     wake_target,
+                    owner,
                     job,
                 )
             });
@@ -429,6 +495,7 @@ fn watch_one(
     watching: Arc<Mutex<HashSet<String>>>,
     settled: Arc<Mutex<HashSet<String>>>,
     wake_target: String,
+    owner: String,
     job: String,
 ) {
     loop {
@@ -478,6 +545,7 @@ fn watch_one(
                         state: word,
                         produced,
                         elapsed_ms,
+                        owner: owner.clone(),
                         detail: String::new(),
                     });
                 if let Some(bell) = &bell {
@@ -532,6 +600,7 @@ fn watch_task(
     watching: Arc<Mutex<HashSet<String>>>,
     settled: Arc<Mutex<HashSet<String>>>,
     wake_target: String,
+    owner: String,
     job: String,
 ) {
     loop {
@@ -552,6 +621,7 @@ fn watch_task(
                     "done",
                     first_line(&answer),
                     &job,
+                    &owner,
                     &completions,
                     &bell,
                     &settled,
@@ -564,6 +634,7 @@ fn watch_task(
                     "failed",
                     first_line(&why),
                     &job,
+                    &owner,
                     &completions,
                     &bell,
                     &settled,
@@ -600,6 +671,7 @@ fn settled_here(
     state: &str,
     detail: String,
     job: &str,
+    owner: &str,
     completions: &Arc<Mutex<VecDeque<JobCompletion>>>,
     bell: &Option<Arc<Bell>>,
     settled: &Arc<Mutex<HashSet<String>>>,
@@ -620,6 +692,7 @@ fn settled_here(
             // `job_output`'s denominator everywhere else.
             produced: 0,
             elapsed_ms: 0,
+            owner: owner.to_string(),
             detail,
         });
     if let Some(bell) = bell {
@@ -985,6 +1058,90 @@ mod tests {
         assert!(
             watchers.take_completions().is_empty(),
             "a completion is taken once, not left for the next wake"
+        );
+    }
+
+    /// **A drain takes its own and the orphans, and leaves a live child's alone.**
+    ///
+    /// This is the routing half of the 2026-10-05 defect, and it is asserted at the queue rather
+    /// than through a daemon because that is where the decision is. A subagent is a session, so its
+    /// `cargo test` is *its* job — but the queue is the tree's on purpose (R58: a child's bell rings
+    /// where no worker listens), which meant whoever drained first announced it. MEASURED twice in
+    /// one afternoon: the parent was told *"a job you backgrounded has ended"* about `j149` and
+    /// `j183`, and its own `job_output` answered *"no job called …"* for both.
+    ///
+    /// No host and no cgroup are needed for this: two sessions' watcher sets and a queue are the
+    /// whole apparatus, so it runs wherever the crate builds.
+    #[test]
+    fn a_drain_takes_its_own_completions_and_any_orphans() {
+        fn completion(job: &str, owner: &str) -> JobCompletion {
+            JobCompletion {
+                kind: BackgroundKind::Job,
+                job: job.into(),
+                command: "cargo test".into(),
+                state: "exited 0".into(),
+                produced: 1,
+                elapsed_ms: 2,
+                owner: owner.into(),
+                detail: String::new(),
+            }
+        }
+
+        let root_hub = Hub::new("s-root");
+        let child_hub = Hub::new("s-child");
+        let root = JobWatchers::watching_tasks(&root_hub, None);
+        // A child's set, built exactly the way the harness builds one: its own host, hub and
+        // runner, joining the tree only for the queue, the watching/settled sets and the ring
+        // target.
+        let child = JobWatchers::watching_tasks(&child_hub, None).shares_tree(&root);
+        assert_eq!(
+            child.owner, "s-child",
+            "the child's jobs are the child's, however the tree's queue is shared: {}",
+            child.owner
+        );
+
+        // One job each, queued straight onto the shared queue — the same `VecDeque` both sets
+        // hold, which is the thing R58 shares.
+        root.completions
+            .lock()
+            .expect("job completions")
+            .push_back(completion("j-mine", "s-root"));
+        child
+            .completions
+            .lock()
+            .expect("job completions")
+            .push_back(completion("j-child", "s-child"));
+
+        // The root drains: its own, and nothing else. The child is alive, so its completion stays
+        // for the loop that is waiting on it.
+        let taken = root.take_completions_for(|_owner| false);
+        assert_eq!(
+            taken.len(),
+            1,
+            "the root took the child's settlement: {taken:?}"
+        );
+        assert_eq!(taken[0].job, "j-mine");
+
+        // And the child's own next drain gets it — which is the half the parent's notice was
+        // standing in for.
+        let taken = child.take_completions_for(|_owner| false);
+        assert_eq!(taken.len(), 1, "the child was left nothing: {taken:?}");
+        assert_eq!(taken[0].job, "j-child");
+
+        // **An orphan is taken here, because nobody else can.** A completion whose owner has
+        // settled or closed would otherwise sit in the queue for ever, and a settlement nobody is
+        // told is worse than one announced by the wrong session — which is why R58 shares the queue
+        // at all.
+        root.completions
+            .lock()
+            .expect("job completions")
+            .push_back(completion("j-orphan", "s-gone"));
+        let taken = root.take_completions_for(|owner| owner == "s-gone");
+        assert_eq!(taken.len(), 1, "the orphan was left behind: {taken:?}");
+        assert_eq!(taken[0].job, "j-orphan");
+        assert!(
+            root.take_completions().is_empty(),
+            "and nothing was left queued for a session that is gone"
         );
     }
 

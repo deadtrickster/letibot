@@ -740,10 +740,24 @@ fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> String {
 /// footnote: *you do not need to wait for this.* The tool text is what taught the model
 /// that waiting was the only way to learn a result; see `bash`'s backgrounded result and
 /// `job_output`'s empty-job branch for the strings that did the teaching.
-fn completion_notice(done: &[JobCompletion]) -> String {
+fn completion_notice(done: &[JobCompletion], me: &str) -> String {
+    // **Whose jobs these are, which is not always the session being told** (2026-10-05). A job
+    // name with `from` beside it belongs to that session, and the sentence has to say so: the
+    // notice that said *"a job you backgrounded has ended"* about a subagent's `cargo test` was a
+    // claim the parent could not act on — its `job_output` did not know the id.
+    let foreign = done.iter().any(|c| c.owner != me);
     let mut s = String::from("[job] ");
     if done.len() == 1 {
-        s.push_str("a job you backgrounded has ended:\n");
+        if foreign {
+            s.push_str("a job backgrounded by a subagent of this session has ended:\n");
+        } else {
+            s.push_str("a job you backgrounded has ended:\n");
+        }
+    } else if foreign {
+        s.push_str(&format!(
+            "{} jobs backgrounded by subagents of this session have ended:\n",
+            done.len()
+        ));
     } else {
         s.push_str(&format!(
             "{} jobs you backgrounded have ended:\n",
@@ -756,20 +770,38 @@ fn completion_notice(done: &[JobCompletion]) -> String {
         } else {
             c.command.clone()
         };
+        let from = if c.owner == me {
+            String::new()
+        } else {
+            format!(" from `{}`", c.owner)
+        };
         s.push_str(&format!(
-            "  - `{}` {} after {}, wrote {} bytes: {}\n",
+            "  - `{}`{} {} after {}, wrote {} bytes: {}\n",
             c.job,
+            from,
             c.state,
             human_secs(c.elapsed_ms),
             c.produced,
             command,
         ));
     }
-    s.push_str(
-        "This is the completion arriving on its own — you do not need to wait for it, and \
-         `job_wait` would only block you for a result you already have. Read what it wrote \
-         with `job_output` (job=\"…\"), then carry on with what you were doing.",
-    );
+    if foreign {
+        // The closing sentence is the other half of R7, and for a foreign job it must not promise
+        // something this session cannot do: `job_output` here does not know that id at all.
+        s.push_str(
+            "This is the completion arriving on its own — you do not need to wait for it. A job \
+             named with `from …` belongs to that session, so its output is read THERE with \
+             `job_output`; this session's own jobs are read here. Its owner is a subagent of this \
+             one, and was settled or closed when the completion was queued, which is why it arrived \
+             here at all.",
+        );
+    } else {
+        s.push_str(
+            "This is the completion arriving on its own — you do not need to wait for it, and \
+             `job_wait` would only block you for a result you already have. Read what it wrote \
+             with `job_output` (job=\"…\"), then carry on with what you were doing.",
+        );
+    }
     s
 }
 
@@ -781,10 +813,24 @@ fn completion_notice(done: &[JobCompletion]) -> String {
 /// the thing the model was waiting for rather than a stream it has to go and fetch. So
 /// the notice carries the child's first line as well as naming how to collect the whole
 /// of it, which is what makes the wake actionable rather than a nudge.
-fn subagent_notice(done: &[JobCompletion]) -> String {
+fn subagent_notice(done: &[JobCompletion], me: &str) -> String {
+    // The same ownership question as `completion_notice`, one level down: a *grandchild* settling
+    // is not "a subagent you started", and saying so would be the same false claim in the other
+    // direction. Only reachable when the child that started it is gone — otherwise the child's own
+    // loop is the one told.
+    let foreign = done.iter().any(|c| c.owner != me);
     let mut s = String::from("[task] ");
     if done.len() == 1 {
-        s.push_str("a subagent you started has finished:\n");
+        if foreign {
+            s.push_str("a subagent started by a subagent of this session has finished:\n");
+        } else {
+            s.push_str("a subagent you started has finished:\n");
+        }
+    } else if foreign {
+        s.push_str(&format!(
+            "{} subagents started by subagents of this session have finished:\n",
+            done.len()
+        ));
     } else {
         s.push_str(&format!(
             "{} subagents you started have finished:\n",
@@ -792,18 +838,35 @@ fn subagent_notice(done: &[JobCompletion]) -> String {
         ));
     }
     for c in done {
-        if c.detail.is_empty() {
-            s.push_str(&format!("  - `{}` {}\n", c.job, c.state));
+        let from = if c.owner == me {
+            String::new()
         } else {
-            s.push_str(&format!("  - `{}` {}: {}\n", c.job, c.state, c.detail));
+            format!(" from `{}`", c.owner)
+        };
+        if c.detail.is_empty() {
+            s.push_str(&format!("  - `{}`{} {}\n", c.job, from, c.state));
+        } else {
+            s.push_str(&format!(
+                "  - `{}`{} {}: {}\n",
+                c.job, from, c.state, c.detail
+            ));
         }
     }
-    s.push_str(
-        "This is the completion arriving on its own — you do not need to wait for it, and \
-         calling `task_result` to block would only hold you for a result you already have. \
-         Read what it said with `task_result` (task=\"…\"), then carry on with what you \
-         were doing.",
-    );
+    if foreign {
+        s.push_str(
+            "This is the completion arriving on its own — you do not need to wait for it. A \
+             subagent named with `from …` was started by that session rather than by you, so \
+             `task_result` for it is answered in that session; it arrived here because the one \
+             that started it has settled or closed.",
+        );
+    } else {
+        s.push_str(
+            "This is the completion arriving on its own — you do not need to wait for it, and \
+             calling `task_result` to block would only hold you for a result you already have. \
+             Read what it said with `task_result` (task=\"…\"), then carry on with what you \
+             were doing.",
+        );
+    }
     s
 }
 /// **One channel, two nouns: the sentences a settlement produces, in one place.**
@@ -823,16 +886,16 @@ fn subagent_notice(done: &[JobCompletion]) -> String {
 ///
 /// An empty queue returns nothing, and that is load-bearing rather than tidy: `wake()` returns
 /// `Ok(None)` on an empty result rather than running a turn with nothing to say.
-fn completion_notices(done: Vec<JobCompletion>) -> Vec<String> {
+fn completion_notices(done: Vec<JobCompletion>, me: &str) -> Vec<String> {
     let (tasks, jobs): (Vec<JobCompletion>, Vec<JobCompletion>) = done
         .into_iter()
         .partition(|c| c.kind == BackgroundKind::Subagent);
     let mut out = Vec::new();
     if !jobs.is_empty() {
-        out.push(completion_notice(&jobs));
+        out.push(completion_notice(&jobs, me));
     }
     if !tasks.is_empty() {
-        out.push(subagent_notice(&tasks));
+        out.push(subagent_notice(&tasks, me));
     }
     out
 }
@@ -4627,14 +4690,22 @@ impl<'a> Harness<'a> {
         }
         // **The hop that did not exist (R7).** `JobSettled` reaches every head; this is
         // what reaches the model, and taking it here is what stops it arriving twice.
+        //
+        // **And only what belongs here** (2026-10-05). The queue is the tree's, so the question a
+        // drain has to answer is *whose settlement is this* — and the answer is: mine, plus any
+        // whose owner is no longer registered to be told. A live child's job is LEFT for the
+        // child's own loop, which is the one waiting on it; before this, whoever drained first
+        // announced it, and the parent was told *"a job you backgrounded has ended"* about a job
+        // id its own `job_output` did not know. MEASURED twice in one afternoon with two
+        // different children (`j149`, `j183`).
         let done = self
             .job_watch
             .as_ref()
-            .map(|w| w.take_completions())
+            .map(|w| w.take_completions_for(|owner| self.session_registry.get(owner).is_none()))
             .unwrap_or_default();
         // The sentences, and which kind gets which — [`completion_notices`], which is where that
         // decision lives so that it can be asserted without a live session.
-        notices.extend(completion_notices(done));
+        notices.extend(completion_notices(done, &self.hub.session_id()));
         if notices.is_empty() {
             return Ok(None);
         }
@@ -8762,15 +8833,19 @@ mod tests {
     /// promise that there is nothing to wait for.
     #[test]
     fn a_completion_notice_names_the_job_and_says_do_not_wait() {
-        let text = completion_notice(&[JobCompletion {
-            kind: BackgroundKind::Job,
-            job: "j7".into(),
-            command: "cargo build --release".into(),
-            state: "exited 0".into(),
-            produced: 4096,
-            elapsed_ms: 4_400,
-            detail: String::new(),
-        }]);
+        let text = completion_notice(
+            &[JobCompletion {
+                kind: BackgroundKind::Job,
+                job: "j7".into(),
+                command: "cargo build --release".into(),
+                state: "exited 0".into(),
+                produced: 4096,
+                elapsed_ms: 4_400,
+                owner: "s-me".into(),
+                detail: String::new(),
+            }],
+            "s-me",
+        );
         assert!(text.starts_with("[job]"), "labelled like a monitor: {text}");
         assert!(text.contains("`j7`"), "{text}");
         assert!(text.contains("exited 0"), "{text}");
@@ -8788,15 +8863,19 @@ mod tests {
     /// be missing, and the notice says so rather than inventing one.
     #[test]
     fn a_reaped_jobs_completion_says_the_command_was_not_recorded() {
-        let text = completion_notice(&[JobCompletion {
-            kind: BackgroundKind::Job,
-            job: "j9".into(),
-            command: String::new(),
-            state: "gone".into(),
-            produced: 0,
-            elapsed_ms: 0,
-            detail: String::new(),
-        }]);
+        let text = completion_notice(
+            &[JobCompletion {
+                kind: BackgroundKind::Job,
+                job: "j9".into(),
+                command: String::new(),
+                state: "gone".into(),
+                produced: 0,
+                elapsed_ms: 0,
+                owner: "s-me".into(),
+                detail: String::new(),
+            }],
+            "s-me",
+        );
         assert!(text.contains("command not recorded"), "{text}");
         assert!(!text.contains("``"), "an empty pair of backticks: {text}");
     }
@@ -8823,9 +8902,10 @@ mod tests {
             state: "done".into(),
             produced: 0,
             elapsed_ms: 0,
+            owner: "s-me".into(),
             detail: "two facts off a fixture".into(),
         };
-        let text = subagent_notice(&[one.clone()]);
+        let text = subagent_notice(&[one.clone()], "s-me");
         // The label, and it is what tells this row from a job's: one channel, two nouns.
         assert!(
             text.starts_with("[task]"),
@@ -8852,10 +8932,13 @@ mod tests {
         // **A child that said nothing gets no empty field.** The job side guards an empty command
         // (`` `` ``); the field that can be empty here is `detail`, and the shape it would leave is
         // a line ending in a colon with nothing after it.
-        let bare = subagent_notice(&[JobCompletion {
-            detail: String::new(),
-            ..one.clone()
-        }]);
+        let bare = subagent_notice(
+            &[JobCompletion {
+                detail: String::new(),
+                ..one.clone()
+            }],
+            "s-me",
+        );
         assert!(
             !bare.contains("done:"),
             "an empty detail drew a colon and nothing after it: {bare}"
@@ -8864,13 +8947,16 @@ mod tests {
 
         // **Two children are one notice, two lines, and the plural sentence** — a round that spawned
         // a pair reports a pair rather than making the reader count the list themselves.
-        let pair = subagent_notice(&[
-            one.clone(),
-            JobCompletion {
-                job: "s-1-sub-2".into(),
-                ..one.clone()
-            },
-        ]);
+        let pair = subagent_notice(
+            &[
+                one.clone(),
+                JobCompletion {
+                    job: "s-1-sub-2".into(),
+                    ..one.clone()
+                },
+            ],
+            "s-me",
+        );
         assert!(
             pair.contains("2 subagents you started have finished"),
             "{pair}"
@@ -8896,6 +8982,7 @@ mod tests {
             state: "exited 0".into(),
             produced: 12,
             elapsed_ms: 900,
+            owner: "s-me".into(),
             detail: String::new(),
         };
         let child = |id: &str| JobCompletion {
@@ -8905,39 +8992,69 @@ mod tests {
             state: "done".into(),
             produced: 0,
             elapsed_ms: 0,
+            owner: "s-me".into(),
             detail: "off a fixture".into(),
         };
 
         // **Nothing settled says nothing**, which is what makes a spurious wake cost no generation.
-        assert!(completion_notices(Vec::new()).is_empty());
+        assert!(completion_notices(Vec::new(), "s-me").is_empty());
 
         // **The two nouns are the point.** A reader told `[job]` about a child goes looking for it
         // with `job_output` — which is the wrong door, and is what a hand measurement had to find
         // because nothing asserted this.
-        let only_child = completion_notices(vec![child("s-1-sub-1")]);
+        let only_child = completion_notices(vec![child("s-1-sub-1")], "s-me");
         assert_eq!(only_child.len(), 1, "{only_child:?}");
         assert!(only_child[0].starts_with("[task]"), "{:?}", only_child[0]);
         assert!(only_child[0].contains("task_result"), "{:?}", only_child[0]);
-        let only_job = completion_notices(vec![job("j7")]);
+        let only_job = completion_notices(vec![job("j7")], "s-me");
         assert_eq!(only_job.len(), 1, "{only_job:?}");
         assert!(only_job[0].starts_with("[job]"), "{:?}", only_job[0]);
         assert!(only_job[0].contains("job_output"), "{:?}", only_job[0]);
 
         // **Both kinds are one wake and two sentences**, job first — the order the old inline code
         // produced, kept so the record of a session reads the same way it did.
-        let both = completion_notices(vec![job("j7"), child("s-1-sub-1")]);
+        let both = completion_notices(vec![job("j7"), child("s-1-sub-1")], "s-me");
         assert_eq!(both.len(), 2, "{both:?}");
         assert!(both[0].starts_with("[job]"), "{:?}", both[0]);
         assert!(both[1].starts_with("[task]"), "{:?}", both[1]);
 
         // **Two children are one sentence, not two** — the plural arm of the child's own wording,
         // asserted through the partition so the two functions cannot drift apart.
-        let pair = completion_notices(vec![child("s-1-sub-1"), child("s-1-sub-2")]);
+        let pair = completion_notices(vec![child("s-1-sub-1"), child("s-1-sub-2")], "s-me");
         assert_eq!(pair.len(), 1, "{pair:?}");
         assert!(
             pair[0].contains("2 subagents you started have finished"),
             "{:?}",
             pair[0]
+        );
+
+        // **AND A COMPLETION THAT IS NOT OURS IS NOT ANNOUNCED AS OURS** (2026-10-05). This is the
+        // assertion the defect needed and did not have: a child's job, taken by the parent because
+        // the child was gone, must not be introduced as "a job you backgrounded" — the parent's
+        // `job_output` does not know the id, and MEASURED twice in one afternoon it was told exactly
+        // that about `j149` and `j183`.
+        let foreign = completion_notices(
+            vec![JobCompletion {
+                owner: "s-child".into(),
+                ..job("j183")
+            }],
+            "s-me",
+        );
+        assert_eq!(foreign.len(), 1, "{foreign:?}");
+        assert!(
+            !foreign[0].contains("a job you backgrounded"),
+            "a child's job came back as the parent's own work: {:?}",
+            foreign[0]
+        );
+        assert!(
+            foreign[0].contains("backgrounded by a subagent"),
+            "{:?}",
+            foreign[0]
+        );
+        assert!(
+            foreign[0].contains("from `s-child`"),
+            "the notice must name whose job it was: {:?}",
+            foreign[0]
         );
     }
 
