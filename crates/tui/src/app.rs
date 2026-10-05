@@ -40397,7 +40397,6 @@ mod tests {
     /// "the marker does not have to say what was concluded" is worth in practice. Run with
     /// `--nocapture` to see it: the paragraph is the evidence and the three positions are the
     /// claim.
-    #[test]
     /// **A run of hidden rows neither count can describe says `[1 head event]`, never `[]`.**
     ///
     /// R53 §1.5, and it is a defect this head could put on the screen: the counts walked a run
@@ -40410,7 +40409,6 @@ mod tests {
     /// describe … falls back to their count, because `[]` is not a marker"* — `%hidden-run-counts`
     /// ends `(t (incf events))`. The clause is drawn **only** when the other two are empty, which
     /// the second half of this test pins: a run of real calls must not grow a `, 1 head event`.
-    #[test]
     /// **One call, one word, live or settled** — R53 §1.5, and the second spelling this tree kept.
     ///
     /// The live card's word came from `card::Outcome`, the settled transcript row's from a function
@@ -40542,7 +40540,6 @@ mod tests {
     /// draws `[2 tool calls]` with nothing folded in, `walk_carried_live` reads false for the same
     /// reason, and the pane draws its own copy of the reasoning as `[N thinking lines]` — for one
     /// turn.
-    #[test]
     /// **The thinking count moves as the thinking streams, not when the answer starts.**
     ///
     /// The operator: *"thinking counter is not realtime. it updated and shown once your proper
@@ -40552,7 +40549,6 @@ mod tests {
     ///
     /// So this pins the count against the deltas rather than against the end state: each reasoning
     /// chunk that arrives must be able to move it, with no answer text anywhere in the fixture.
-    #[test]
     /// **The count baked into the rendered history moves with the stream** — the operator's
     /// backfill, reproduced.
     ///
@@ -40569,7 +40565,6 @@ mod tests {
     /// So this drives exactly that: a turn whose work is inside a run of hidden rows, a frame
     /// drawn, more reasoning, another frame — and the number on the row must have moved **without
     /// any row arriving**.
-    #[test]
     /// **The yellow arrives when the call starts running, not when some row lands.**
     ///
     /// The operator, right after the backfill: *"and btw - i didnt see yellow toolcalls for a
@@ -40695,7 +40690,6 @@ mod tests {
     /// **What this test measures is the mark, because that is what the operator saw.** Their words
     /// are the assertion: after the row is announced and before its body arrives, the surface must
     /// not still be saying `queued` about words the model has already been given.
-    #[test]
     /// **The turn's own row is reserved, so a turn starting does not move the screen.**
     ///
     /// The operator: *"keep the line reserved for `Responding...` always free, or we have these ugly
@@ -40706,7 +40700,6 @@ mod tests {
     /// **What is pinned is the MOVE, not the row.** Asserting *the row is always there* would pass
     /// on a frame that reserved it in the wrong place; what the reader feels is the shove, so the
     /// test compares the rows that are not the status line across the turn boundary.
-    #[test]
     /// **A delta changes the counts and nothing else** — the operator's rule for the rendered
     /// history, as a measurement.
     ///
@@ -40722,7 +40715,6 @@ mod tests {
     /// without being asked*, and each would fail this.
     ///
     /// Not asserted here: the verbosity toggle, which is the one case where every row may change.
-    #[test]
     /// **The thinking count never falls** — including when its reasoning lands as a row.
     ///
     /// The operator: *"lol, just saw how thinking lines count went from 22 to 15."* The arithmetic
@@ -40841,6 +40833,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn a_delta_changes_the_counts_and_nothing_else_in_the_rendered_history() {
         let mut a = app();
         a.verbosity = Verbosity::Conversation;
@@ -40927,6 +40920,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn a_turn_starting_does_not_shove_the_transcript_up_a_row() {
         let mut a = app();
         a.apply(hello(
@@ -40994,6 +40988,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn a_prompt_stops_claiming_to_be_queued_when_its_row_is_announced() {
         let mut a = app();
         a.apply(hello(
@@ -41031,6 +41026,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn the_marker_in_the_rendered_history_is_not_a_backfilled_count() {
         let mut a = app();
         a.verbosity = Verbosity::Conversation;
@@ -41111,6 +41107,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn the_thinking_count_moves_while_the_thinking_streams() {
         let mut a = app();
         a.verbosity = Verbosity::Conversation;
@@ -41187,6 +41184,7 @@ mod tests {
         assert!(last >= 6, "and it is the stream's own size: {last}");
     }
 
+    #[test]
     fn a_new_round_does_not_forget_the_rows_the_turn_already_produced() {
         let mut a = app();
         a.verbosity = Verbosity::Conversation;
@@ -41274,6 +41272,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn a_run_of_rows_no_count_describes_says_what_it_is_rather_than_nothing() {
         let mut a = app();
         a.apply(hello(
@@ -41381,6 +41380,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn the_marker_reads_as_one_paragraph() {
         let mut a = app();
         a.apply(hello(
