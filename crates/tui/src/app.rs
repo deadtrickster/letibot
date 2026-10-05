@@ -161,6 +161,640 @@ impl Verbosity {
     }
 }
 
+/// **One of the things that can be shown or not** — the list the operator asked for.
+///
+/// > *"the verbositiy and visiblity toggles need a rewrite and normalization - some toggled by
+/// > shortcuts some by /commands. What I want - a list of things that can be shown and then
+/// > verbosity profiles composed by switching them on and off. For example leticl has read-edits
+/// > verbosity levels when all is hidden except edits"*
+///
+/// Five, and **[`Show::ALL`] is the only place one is added**: the row filter, the card,
+/// `/verbosity`, [`Visibility::parse`] and the key dispatch all walk that one list, so a switch
+/// in it is reachable by every one of them and a switch outside it is reachable by none.
+///
+/// # The three that are NOT on this list, and why the list must not grow them
+///
+/// **Warnings**, **decision cards** and **liveness** are not hideable, and there is no switch
+/// here to hang them on. [`Verbosity::Conversation`]'s docstring carried those three rulings
+/// and they survive: they are not repealed by putting a switch list beside the ladder, and the
+/// reasoning transfers whole.
+///
+/// * **Warnings.** *"a warning is a fact the daemon chose to interrupt with"*, and a filter
+///   applied to the whole transcript at once would *"retroactively erase a warning already
+///   read. That is not a filter but a revision."* A warning is a [`Note`] and not a row, so
+///   the list could not express one even if somebody wanted it to.
+/// * **Decision cards.** *"A gate card is not a tool row. Hiding it makes the session
+///   unanswerable while the call times out against a quiet screen."*
+/// * **Liveness.** [`App::turn_status`] is not gated by anything here, and this list is why it
+///   matters: `conversation` hides the tool rows, so a ten-minute tool-heavy turn would draw
+///   nothing at all, and the composer's border is what keeps working and wedged apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Show {
+    /// **The cards that say what the head CHANGED** — an `edit`/`write` call and its diff.
+    ///
+    /// The operator's own switch, and the one the ladder could not be told: it is off at
+    /// every rung of the ladder and on at `read-edits`, which is a set and not a rung.
+    Edits,
+    /// Tool calls, their outcomes and their payloads.
+    Tools,
+    /// The model's reasoning.
+    Thinking,
+    /// `system` rows, who attached, and who issued which command.
+    System,
+    /// The model's raw `<function=…>` markup.
+    RawCalls,
+}
+
+impl Show {
+    /// **Every switch, in the order the card and the refusal list them** — R38's one list, one
+    /// rung down. The switch names are the words `head.toml` and `/verbosity` take, so a reader
+    /// who read the name once can spell it everywhere.
+    pub const ALL: [Show; 5] = [
+        Show::Edits,
+        Show::Tools,
+        Show::Thinking,
+        Show::System,
+        Show::RawCalls,
+    ];
+
+    /// The word `/verbosity` takes and a refusal names.
+    pub fn name(self) -> &'static str {
+        match self {
+            Show::Edits => "edits",
+            Show::Tools => "tools",
+            Show::Thinking => "thinking",
+            Show::System => "system",
+            Show::RawCalls => "raw-calls",
+        }
+    }
+
+    /// What it covers, in the reader's terms rather than the head's.
+    ///
+    /// **In this slice `tools`, `thinking` and `system` are the LADDER's switches**, drawn by
+    /// the rung [`Visibility::rung`] names: they are what [`Verbosity::Terse`], `Normal` and
+    /// `Loud` each turn ON, and their `hidden` end is the bottom of the ladder — which is why
+    /// `read-edits`, *"all is hidden except edits"*, is the switch list's one new drawing and
+    /// not a fifth kind of row filter. `edits` and `raw-calls` are this list's own and are
+    /// honoured switch by switch.
+    pub fn covers(self) -> &'static str {
+        match self {
+            Show::Edits => {
+                "the cards that say what the head changed — an edit or write call, \
+                            with its diff"
+            }
+            Show::Tools => "tool calls, their outcomes and their payloads",
+            Show::Thinking => "the model's reasoning",
+            Show::System => "who attached, and who issued which command",
+            Show::RawCalls => "the model's raw <function=…> markup",
+        }
+    }
+
+    /// **The chord, as the pair that cannot drift**: the name a seam and the hint bar spell,
+    /// and the key the terminal actually sends.
+    ///
+    /// One entry for both, because a name in one table and a key in another is exactly how a
+    /// chord comes to be advertised and do nothing — and the key dispatch asks this table rather
+    /// than matching chords by hand ([`Key::show`]).
+    pub fn chord(self) -> Option<(&'static str, Key)> {
+        match self {
+            Show::Thinking => Some(("ctrl-r", Key::CtrlR)),
+            Show::RawCalls => Some(("ctrl-x", Key::CtrlX)),
+            Show::Edits | Show::Tools | Show::System => None,
+        }
+    }
+
+    /// The levels this switch holds — what `/verbosity SWITCH=LEVEL` will take for it.
+    ///
+    /// `edits`, `system` and `raw-calls` have no body to fold: an edit card is drawn with its
+    /// excerpt or it is not drawn, a system row is a sentence, and the raw markup is the raw
+    /// markup. `tools` and `thinking` have bodies, which is what `folded` is.
+    pub fn levels(self) -> &'static [Level] {
+        match self {
+            Show::Tools | Show::Thinking => &[Level::Hidden, Level::Folded, Level::Open],
+            Show::Edits | Show::System | Show::RawCalls => &[Level::Hidden, Level::Open],
+        }
+    }
+
+    /// **Where one press of this switch's chord takes it** — `None` for a switch no key
+    /// reaches.
+    ///
+    /// **The chord never lands on `hidden`**, and that is a ruling rather than a shortcut: the
+    /// chord's switch is the ladder's, the ladder hides a whole rung at a time
+    /// ([`Visibility::rung`]), and a press that put `thinking: hidden` on the status row would
+    /// name a state the screen does not carry. What a chord does is the body's — fold it and
+    /// unfold it — and hiding a row kind whole is what a profile is for.
+    pub fn by_chord(self, now: Level) -> Option<Level> {
+        self.chord()?;
+        Some(if now == Level::Open {
+            if self.levels().contains(&Level::Folded) {
+                Level::Folded
+            } else {
+                Level::Hidden
+            }
+        } else {
+            Level::Open
+        })
+    }
+}
+
+/// **How much of one kind of row reaches the screen** — the value one switch holds.
+///
+/// Three levels and not two, and the third is what makes ONE mechanism out of two. The
+/// operator: *"some toggled by shortcuts some by /commands"*. Measured, those two were `ctrl-r`
+/// folding the model's thinking and `/t` unfolding every tool row — both questions about a
+/// BODY — while the rung above them hid whole rows, a question about the ROW. `folded` and
+/// `hidden` are those two answers, spelled one way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    /// The row is not drawn at all.
+    Hidden,
+    /// The row is drawn and its body is not.
+    Folded,
+    /// The row and its body.
+    Open,
+}
+
+impl Level {
+    /// **Three words and no synonyms** — the operator's own words for the two ENDS of a switch
+    /// are *on* and *off*, and the middle one has no name in them; so `hidden`, `folded` and
+    /// `open` are what `/verbosity SWITCH=LEVEL` takes and what a refusal names, rather than
+    /// this head guessing which end somebody meant.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Level::Hidden => "hidden",
+            Level::Folded => "folded",
+            Level::Open => "open",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<Level> {
+        match word.trim().to_ascii_lowercase().as_str() {
+            "hidden" => Some(Level::Hidden),
+            "folded" => Some(Level::Folded),
+            "open" => Some(Level::Open),
+            _ => None,
+        }
+    }
+}
+
+/// **A profile IS its set** — one table, one row per profile, and the row's list is the
+/// profile.
+///
+/// **Not a variant of an enum with a `set()` beside it.** The operator asked for *"verbosity
+/// profiles composed by switching them on and off"*, and a profile that had to be DECODED into
+/// its switches would be a second definition of it — the copy this file keeps refusing to make,
+/// and the one that drifts the moment a switch is added.
+///
+/// # The table
+///
+/// | profile | the set it IS |
+/// |---|---|
+/// | `conversation` | the empty list — *"the conversation and nothing the head made"* |
+/// | `read-edits` | `{edits: open}` — **the operator's own example**: *"all is hidden except\n///   edits"*, which is `conversation` with ONE switch turned up |
+/// | `terse` | `read-edits` plus `{tools: folded}` |
+/// | `normal` | `terse` plus `{thinking: folded}` — where this head starts |
+/// | `loud` | `normal` plus `{system: open}` |
+///
+/// **Absence from a row's list is `hidden`**, which is what makes the empty list a sentence:
+/// a set is what is turned on, and everything a profile does not name is off.
+///
+/// # What a profile's levels mean here, and the one remainder
+///
+/// `edits` and `raw-calls` are honoured switch by switch ([`Visibility::keeps`], and the raw
+/// markup's own flag). `tools`, `thinking` and `system` are the LADDER's three, and the ladder
+/// turns them on together above its bottom rung, so at `terse`, `normal` and `loud` the rows of
+/// all three are drawn — as they are today — whatever level the row names. `conversation` and
+/// `read-edits` are exact: they turn none of the three on, and the bottom rung is the rung that
+/// hides them.
+///
+/// **Which is leticl's shape as well as this head's**: there, `reading-hides-p` is asked only at
+/// the two READING rungs (`:reading` and `:read-edits`) and the rungs above draw everything;
+/// what separates `:terse`, `:normal` and `:loud` there is `verbosity-at-least`'s gates, which
+/// is what separates `Terse`, `Normal` and `Loud` here (`src/session/events.lisp:120`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Profile {
+    /// The word `/verbosity` takes, the card lists and `head.toml` keeps.
+    pub name: &'static str,
+    /// **The whole definition**: what is on, at which level. Nothing else is.
+    pub set: &'static [(Show, Level)],
+    /// What it gives you, as the card says it — *what will be on the screen*, never *what is
+    /// filtered*: a reader choosing a profile is not reasoning about the event stream.
+    pub why: &'static str,
+}
+
+impl Profile {
+    pub const CONVERSATION: Profile = Profile {
+        name: "conversation",
+        set: &[],
+        why: "your messages and the model's answers — nothing the head did to produce the \
+              words",
+    };
+    pub const READ_EDITS: Profile = Profile {
+        name: "read-edits",
+        set: &[(Show::Edits, Level::Open)],
+        why: "the above, plus every edit and write — what the head CHANGED, with its diff",
+    };
+    pub const TERSE: Profile = Profile {
+        name: "terse",
+        set: &[(Show::Edits, Level::Open), (Show::Tools, Level::Folded)],
+        why: "read-edits, plus the head's other rows: one row per tool call and how it ended, \
+              and the thinking, folded",
+    };
+    pub const NORMAL: Profile = Profile {
+        name: "normal",
+        set: &[
+            (Show::Edits, Level::Open),
+            (Show::Tools, Level::Folded),
+            (Show::Thinking, Level::Folded),
+        ],
+        why: "terse, and this head's own start — the model's thinking is folded rather than \
+              absent",
+    };
+    pub const LOUD: Profile = Profile {
+        name: "loud",
+        set: &[
+            (Show::Edits, Level::Open),
+            (Show::Tools, Level::Folded),
+            (Show::Thinking, Level::Folded),
+            (Show::System, Level::Open),
+        ],
+        why: "normal, plus who attached and who issued which command",
+    };
+
+    /// **The table, in the order the card lists them.** `read-edits` sits next to
+    /// `conversation` rather than at the end because it is `conversation` with one switch up —
+    /// leticl puts it in the same place in its ring for the same reason
+    /// (`+verbosity-ladder+`, `src/session/events.lisp:113`: *"it draws everything `:reading`
+    /// draws PLUS the cards that say what the head CHANGED"*).
+    pub const ALL: [Profile; 5] = [
+        Self::CONVERSATION,
+        Self::READ_EDITS,
+        Self::TERSE,
+        Self::NORMAL,
+        Self::LOUD,
+    ];
+
+    /// **The profile whose set is exactly this set** — the table's own answer, walked rather
+    /// than written down a second time.
+    pub fn of(vis: Visibility) -> Option<Profile> {
+        Self::ALL
+            .into_iter()
+            .find(|p| Show::ALL.iter().all(|s| vis.level(*s) == p.level(*s)))
+    }
+
+    /// The level this profile's set puts one switch at — `hidden` for a switch the row does not
+    /// name, which is what makes the empty set a sentence.
+    pub fn level(self, s: Show) -> Level {
+        self.set
+            .iter()
+            .find(|(sw, _)| *sw == s)
+            .map(|(_, l)| *l)
+            .unwrap_or(Level::Hidden)
+    }
+
+    /// The profile a typed word names, if it names one.
+    pub fn parse(word: &str) -> Option<Profile> {
+        let t = word.trim().to_ascii_lowercase();
+        Self::ALL.into_iter().find(|p| p.name == t)
+    }
+}
+
+/// **The set of switches in force** — and the questions asked of it.
+///
+/// *Is this switch showing* ([`Visibility::shows`]), *which profile is this set, if any*
+/// ([`Visibility::profile`], [`Visibility::as_str`] — `custom …` when none), and the two
+/// questions the render asks of the set ([`Visibility::keeps`],
+/// [`Visibility::hides_the_working`]).
+///
+/// **The set is the state and the profile is a question asked of it.** That is the operator's
+/// ask, whole: a reader who takes `normal` and turns one switch up has a set that is no profile,
+/// and the head says `custom …` on the status row rather than pretending they are on one — which
+/// is the difference between this and the ladder, where the only state was one of four names.
+///
+/// The three questions the render used to ask of a rung are asked of this instead, and there is
+/// one place each: [`Visibility::keeps`] (is this row drawn), [`Visibility::hides_the_working`]
+/// (is anything of the head's hidden, which is what the run markers are counted for) and
+/// [`Visibility::rung`] (which rung the LADDER's own rows are drawn at).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Visibility {
+    edits: Level,
+    tools: Level,
+    thinking: Level,
+    system: Level,
+    raw_calls: Level,
+}
+
+/// What a typed word means, once [`Visibility::parse`] has read it.
+///
+/// **Two shapes and not one**, because a switch named on its own is a question about the set it
+/// is applied to and a profile is a whole set: `/verbosity tools=hidden` says *this switch, from
+/// where I am*, and `/verbosity terse` says *that set and no other*. Reading the two as one
+/// would make `edits=open` mean `{edits: open}` — every other switch hidden — which is
+/// `read-edits`, a profile, and not what a reader who already had `loud` typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    /// A whole set: a profile's, or the set a `custom …` name spells out.
+    Set(Visibility),
+    /// One switch, applied to the set in force.
+    Switch(Show, Level),
+}
+
+impl Visibility {
+    /// The set a profile IS.
+    pub fn of(p: Profile) -> Visibility {
+        let mut v = Visibility::empty();
+        for (s, l) in p.set {
+            v = v.with(*s, *l);
+        }
+        v
+    }
+
+    /// The empty set — *"the conversation and nothing the head made"* — which is
+    /// `conversation`, and where a head that has read nothing but an old `head.toml` starts.
+    pub const fn empty() -> Visibility {
+        Visibility {
+            edits: Level::Hidden,
+            tools: Level::Hidden,
+            thinking: Level::Hidden,
+            system: Level::Hidden,
+            raw_calls: Level::Hidden,
+        }
+    }
+
+    /// Where this head starts: `normal`'s set, and the one place that is said.
+    pub fn starting() -> Visibility {
+        Visibility::of(Profile::NORMAL)
+    }
+
+    /// **The set with everything the ladder draws turned on** — what an OPEN run is drawn at.
+    ///
+    /// R37 AMENDED: *"opening a run is the rung lifted for its rows and no others"* — and
+    /// "lifted" means the set that shows the lot, which is where the walk used to pass
+    /// `Verbosity::Normal` for exactly this reason (`Normal::keeps` answers `true` for every
+    /// row). It is `loud`'s set because that is the profile that shows everything the ladder
+    /// can, and it carries `edits` with it so an open run draws its edit cards too.
+    pub fn lifted() -> Visibility {
+        Visibility::of(Profile::LOUD)
+    }
+
+    pub fn level(self, s: Show) -> Level {
+        match s {
+            Show::Edits => self.edits,
+            Show::Tools => self.tools,
+            Show::Thinking => self.thinking,
+            Show::System => self.system,
+            Show::RawCalls => self.raw_calls,
+        }
+    }
+
+    /// The set with one switch moved — **the only way a set is built**, so a switch that is in
+    /// [`Show::ALL`] cannot be missing from it.
+    pub fn with(self, s: Show, l: Level) -> Visibility {
+        let mut v = self;
+        match s {
+            Show::Edits => v.edits = l,
+            Show::Tools => v.tools = l,
+            Show::Thinking => v.thinking = l,
+            Show::System => v.system = l,
+            Show::RawCalls => v.raw_calls = l,
+        }
+        v
+    }
+
+    /// **Is this switch showing at all** — `folded` is showing: the row is drawn, and its body
+    /// is the fold's.
+    pub fn shows(self, s: Show) -> bool {
+        self.level(s) != Level::Hidden
+    }
+
+    /// **Which profile this set is, if any** — `None` is `custom …`.
+    pub fn profile(self) -> Option<Profile> {
+        Profile::of(self)
+    }
+
+    /// **The name of this state**, for the status row, `/status` and `head.toml`: the profile's
+    /// name when the set is one, and `custom …` with the switches that differ from the head's
+    /// start when it is not (*"any set that is no profile reads as `custom …`"*).
+    ///
+    /// The spelling round-trips through [`Visibility::parse`], which is what makes it a name
+    /// rather than a caption — a preference written here means the same set when it is read
+    /// back, and that is the whole of *"a stored preference keeps meaning"*.
+    pub fn as_str(self) -> String {
+        if let Some(p) = self.profile() {
+            return p.name.to_string();
+        }
+        let base = Visibility::starting();
+        let mut words = vec!["custom".to_string()];
+        for s in Show::ALL {
+            if self.level(s) != base.level(s) {
+                words.push(format!("{}={}", s.name(), self.level(s).as_str()));
+            }
+        }
+        words.join(" ")
+    }
+
+    /// **The one reader of a typed word** — a profile name, a switch name, or `SWITCH=LEVEL` —
+    /// and it is the same function `head.toml` is read with ([`App::load_prefs`]) and the same
+    /// one the key dispatch's names come from.
+    ///
+    /// A bare switch name turns that switch ON: *on* and *off* are the operator's words for the
+    /// two ends of a switch and the middle level has no name in them, so `/verbosity edits` is
+    /// `edits=open` and a reader who meant `folded` says `folded`.
+    ///
+    /// The refusal is a sentence and not `None`, because the caller's answer to a word this
+    /// head does not know is to SAY what it does know — the list of profiles and of switches —
+    /// and a parse that only said *no* would put that list in a second place, which is the copy
+    /// that drifts.
+    pub fn parse(typed: &str) -> Result<Change, String> {
+        let t = typed.trim().to_ascii_lowercase();
+        if t.is_empty() {
+            return Err(VISIBILITY_REFUSAL.to_string());
+        }
+        if let Some(p) = Profile::parse(&t) {
+            return Ok(Change::Set(Visibility::of(p)));
+        }
+        // **`custom edits=hidden thinking=open …`** — the name `as_str` writes for a set that is
+        // no profile, read back against the head's own start. Without this a stored preference
+        // would be a caption: the status row would name a set no file could restore.
+        let mut words: Vec<&str> = t.split_whitespace().collect();
+        let whole = words.first() == Some(&"custom");
+        if whole {
+            words.remove(0);
+            if words.is_empty() {
+                return Err(format!(
+                    "`custom` needs a switch after it — {VISIBILITY_REFUSAL}"
+                ));
+            }
+        } else if words.len() > 1 {
+            return Err(format!("`{typed}` is not one word — {VISIBILITY_REFUSAL}"));
+        }
+        let mut named: Vec<(Show, Level)> = Vec::new();
+        for word in &words {
+            let (name, level) = match word.split_once('=') {
+                Some((n, l)) => (n, Some(l)),
+                None if !whole => (word.as_ref(), None),
+                None => {
+                    return Err(format!(
+                        "`{word}` names no level — a set is written `SWITCH=LEVEL …`"
+                    ));
+                }
+            };
+            let Some(show) = Show::ALL.into_iter().find(|s| s.name() == name) else {
+                return Err(format!(
+                    "`{typed}` is not a profile and `{name}` is not a switch — {VISIBILITY_REFUSAL}"
+                ));
+            };
+            let level = match level {
+                // Turned ON. `open` and not `folded`: a bare name is the switch's own word for
+                // itself, and every switch has an `open` end.
+                None => Level::Open,
+                Some(l) => match Level::parse(l) {
+                    Some(l) if show.levels().contains(&l) => l,
+                    Some(l) => {
+                        return Err(format!(
+                            "`{}` is not a level of `{}` — that switch holds {}",
+                            l.as_str(),
+                            show.name(),
+                            names(
+                                &show
+                                    .levels()
+                                    .iter()
+                                    .map(|l| l.as_str().to_string())
+                                    .collect::<Vec<_>>()
+                            ),
+                        ));
+                    }
+                    None => {
+                        return Err(format!(
+                            "`{l}` is not a level — the three are hidden, folded and open"
+                        ));
+                    }
+                },
+            };
+            named.push((show, level));
+        }
+        if whole {
+            // **A whole set, read against a BASE** — the head's own start, because that is what
+            // `as_str` writes a custom name as: the switches that differ from it. One word is
+            // `SWITCH=LEVEL` and is applied to the set IN FORCE; `custom …` is a set and replaces
+            // it, which is the same distinction `Change` carries.
+            let mut back = Visibility::starting();
+            for (s, l) in named {
+                back = back.with(s, l);
+            }
+            return Ok(Change::Set(back));
+        }
+        let (s, l) = named[0];
+        Ok(Change::Switch(s, l))
+    }
+
+    /// **Is this row drawn** — and it is the ladder's answer plus the one clause the ladder
+    /// cannot say.
+    ///
+    /// *"an `edit`/`write` call and its diff"* is kept when `edits` is showing, whatever the
+    /// rung says. leticl differs from it in exactly one predicate and says so in as many words —
+    /// *"`read-edits` KEEPS THE EDITS, AND THIS IS THE ONLY PLACE THAT DECIDES IT"*
+    /// (`src/cards/hidden-run.lisp:40`) — and **this is our one place**: `item_lines` and the run
+    /// finder both ask this, so a second opinion about which rows are hidden cannot put a marker
+    /// beside a row that is still on the screen.
+    pub fn keeps(self, item: &letibot_transcript::TranscriptItem) -> bool {
+        if is_edit_card(item) {
+            return self.shows(Show::Edits);
+        }
+        self.rung().keeps(item)
+    }
+
+    /// Is anything of the head's hidden — the question the run markers and the counts are
+    /// counted for.
+    pub fn hides_the_working(self) -> bool {
+        self.rung().hides_the_working()
+    }
+
+    /// **The rung the LADDER's own rows are drawn at** — `tools`, `thinking` and `system` are
+    /// [`Verbosity::Terse`], `Normal` and `Loud`'s three switches, so a set that turns them on
+    /// in the ladder's order names a rung, and a set that turns none of them on is the bottom.
+    ///
+    /// **Which is what makes `read-edits` the operator's rung.** *"all is hidden except
+    /// edits"* turns none of the three on, so the tool rows, the thinking and the system rows
+    /// are hidden by exactly the rung that has always hidden them — the ladder is still what
+    /// hides those rows, and the one thing it could not be told is the edit card.
+    pub fn rung(self) -> Verbosity {
+        if self.shows(Show::System) {
+            Verbosity::Loud
+        } else if self.shows(Show::Thinking) {
+            Verbosity::Normal
+        } else if self.shows(Show::Tools) {
+            Verbosity::Terse
+        } else {
+            Verbosity::Conversation
+        }
+    }
+
+    /// **Can the ladder draw this set, switch by switch** — and which switch it cannot, when it
+    /// cannot.
+    ///
+    /// The ladder turns its three switches on in one order: `tools`, then `thinking`, then
+    /// `system`. So a set that hides a switch BELOW one it shows (`tools=hidden` while the
+    /// thinking is on) is a set no rung can be — the rung that draws the thinking draws the tool
+    /// rows too — and the verb refuses it rather than storing a word the screen would not carry.
+    /// **This is the "a profile that changes nothing is worse than an unfinished rewrite"
+    /// rule, made mechanical**: what cannot be drawn is not stored.
+    pub fn undrawable(self) -> Option<Show> {
+        if self.shows(Show::Tools) || !self.shows(Show::Thinking) {
+            if self.shows(Show::Thinking) || !self.shows(Show::System) {
+                return None;
+            }
+            return Some(Show::System);
+        }
+        Some(Show::Thinking)
+    }
+}
+
+/// **Is this row one that says what the head CHANGED** — the one predicate `read-edits` differs
+/// by, and the only place it is decided.
+///
+/// **Two signals, both the tree's own** (leticl's `item-shows-an-edit-p`, `src/cards/hidden-run.lisp:53`):
+/// the daemon sends the excerpt on a finished call — which is the signal a `bash` command
+/// carries when the file changed under it — and the call's NAME through [`card::Verb::of`],
+/// where `edit`, `patch`, `apply_patch`, `str_replace`, `write`, `write_file` and `create` are the
+/// two verbs.
+///
+/// **An unknown tool name is not an edit**, and neither is a call whose outcome is not `Ok` —
+/// leticl: *"this predicate is allowed to be wrong in the direction of hiding, never in the
+/// direction of claiming."* A refused write changed nothing, and the renderer draws no diff for
+/// it either (`item_lines`' own gate), so the two agree about the same row.
+fn is_edit_card(item: &letibot_transcript::TranscriptItem) -> bool {
+    let letibot_transcript::TranscriptItem::ToolResult {
+        name,
+        outcome,
+        edit,
+        ..
+    } = item
+    else {
+        return false;
+    };
+    if !matches!(outcome, letibot_transcript::ToolOutcome::Ok) {
+        return false;
+    }
+    edit.is_some() || matches!(card::Verb::of(name), card::Verb::Edit | card::Verb::Write)
+}
+
+/// **What a refused word is told**, and the whole of it: the two vocabularies are named by the
+/// tables themselves in the longer refusals ([`Visibility::parse`]), and this is the half a
+/// sentence can carry on one line of a status row.
+const VISIBILITY_REFUSAL: &str = "name a profile or a switch, or SWITCH=LEVEL — `/verbosity` with nothing after it shows the \
+     profiles and what each one gives you";
+
+/// `a, b and c` — the refusal and the card name a list, and a join written per call site is a
+/// join that disagrees with the one beside it about the last comma.
+fn names(words: &[String]) -> String {
+    match words {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 /// **Which setting a card is choosing** — R38.
 ///
 /// Two of these are the daemon's (`Mode` from a `SettingRow`'s `choices`, `Model` from the
@@ -1178,7 +1812,14 @@ struct TurnPane {
 /// The head.
 pub struct App {
     pub cfg: RenderConfig,
-    pub verbosity: Verbosity,
+    /// **The set of switches in force** — the state the old rung used to be.
+    ///
+    /// It replaced a `Verbosity` field rather than joining it, because two fields that both
+    /// say *how much is on the screen* are two answers that can disagree, and the screen has
+    /// exactly one. The LADDER did not go anywhere: [`Visibility::rung`] asks this set which
+    /// rung the rows it owns are drawn at, so `tools`, `thinking` and `system` are still drawn
+    /// by `Verbosity`'s four rungs and by nothing new.
+    pub visibility: Visibility,
     /// The two-panel before/after view for file-edit cards, on when the pane
     /// is wide enough to hold both. Set in `/config` (or `head.toml`); the
     /// unified renderer is the fallback at every width, which is what makes it
@@ -2781,7 +3422,7 @@ impl App {
     pub fn new(cfg: RenderConfig) -> Self {
         App {
             cfg,
-            verbosity: Verbosity::Normal,
+            visibility: Visibility::starting(),
             diff_split: true,
             config_pane: false,
             config_sel: 0,
@@ -4849,7 +5490,11 @@ impl App {
                         // second, and it was the one the row's number could not see.
                         let text = without_control_lines(&text);
                         t.reasoning.push(&text);
-                        if self.verbosity >= Verbosity::Normal {
+                        // **The `thinking` switch, not a rung comparison** — it is the same
+                        // question (`>= Normal` meant *the reasoning rows are drawn*, and at the
+                        // bottom rung they are not) asked of the set, so a set that hides the
+                        // reasoning cannot count it as rendered.
+                        if self.visibility.shows(Show::Thinking) {
                             Disposition::Rendered
                         } else {
                             Disposition::Filtered
@@ -5301,7 +5946,10 @@ impl App {
             }
             SessionEvent::HeadAttached { .. } => {
                 self.heads += 1;
-                if self.verbosity >= Verbosity::Loud {
+                // **The `system` switch**: *"who attached, and who issued which command"* —
+                // the same three events `>= Verbosity::Loud` gated, and now the switch the
+                // three profiles name, so `loud` is the set that turns them on.
+                if self.visibility.shows(Show::System) {
                     Disposition::Rendered
                 } else {
                     Disposition::Filtered
@@ -5309,7 +5957,7 @@ impl App {
             }
             SessionEvent::HeadDetached { .. } => {
                 self.heads = self.heads.saturating_sub(1);
-                if self.verbosity >= Verbosity::Loud {
+                if self.visibility.shows(Show::System) {
                     Disposition::Rendered
                 } else {
                     Disposition::Filtered
@@ -5477,7 +6125,7 @@ impl App {
                 if head_id != self.head_id {
                     self.say(&format!("{identity} · {command}: {note}"));
                 }
-                if self.verbosity >= Verbosity::Loud {
+                if self.visibility.shows(Show::System) {
                     Disposition::Rendered
                 } else {
                     Disposition::Filtered
@@ -7612,9 +8260,15 @@ impl App {
     }
 
     /// What the open card is already on.
+    ///
+    /// **The profile when the set is one, and a `custom …` name when it is not** — which
+    /// matches no row, so a custom set marks nothing and `seed_pick` starts the cursor on the
+    /// head's own start rather than on row zero. A cursor sitting on `conversation` because the
+    /// reader had turned one switch up, one Enter away from hiding everything, is the surprise
+    /// the seeding rule exists to prevent.
     fn pick_current(&self) -> String {
         match self.pick {
-            Some(Pick::Verbosity) => self.verbosity.as_str().to_string(),
+            Some(Pick::Verbosity) => self.visibility.as_str(),
             Some(Pick::Diff) => {
                 if self.diff_split {
                     "split".into()
@@ -7695,39 +8349,89 @@ impl App {
         }
     }
 
-    /// **Set the rung by name, or refuse by name.** Returns `None` because a rung is a
-    /// local setting: nothing is sent anywhere.
+    /// **Choose the profile `typed` names — one of R38's settings, and a local one.** Returns
+    /// `None` because nothing is sent anywhere.
     ///
-    /// The one place a rung is set, called by the card's `Enter` and by the typed form alike,
-    /// so the two cannot disagree about what a name means or about what happens to the
-    /// transcript when it changes.
+    /// **The one place a set is set**, called by the card's `Enter`, by `/verbosity NAME` and
+    /// by `/v`, so the three cannot disagree about what a word means or about what happens to
+    /// the transcript when it changes. The word itself is read by [`Visibility::parse`] — the
+    /// same function `head.toml` is read with — so a name this reads here is a name the file
+    /// reads there.
     fn set_verbosity(&mut self, typed: &str) -> Option<Action> {
         let t = typed.trim().to_ascii_lowercase();
-        let rung = match (Verbosity::parse(typed), t.as_str()) {
-            (Some(r), _) => r,
-            (None, "v" | "next") => self.verbosity.next(),
-            _ => {
-                self.say(&format!(
-                    "`{typed}` is not a rung — the ladder is {}; `/verbosity` with nothing \
-                     after it shows what each one means",
-                    VERBOSITY_VALUES
-                        .iter()
-                        .map(|(v, _)| *v)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-                return None;
+        let next = if t == "v" || t == "next" {
+            // **`/v` is the next profile**, in `Profile::ALL`'s order — which is the ladder's
+            // order with `read-edits` in it — and one key's worth of cycling is a promise this
+            // head made (R38 does not revoke it: what R38 rules out is having to CYCLE to
+            // learn what the values are, and the card is where they are read).
+            let at = self
+                .visibility
+                .profile()
+                .and_then(|p| Profile::ALL.iter().position(|q| *q == p))
+                .unwrap_or(0);
+            Visibility::of(Profile::ALL[(at + 1) % Profile::ALL.len()])
+        } else {
+            match Visibility::parse(typed) {
+                Ok(Change::Set(v)) => v,
+                Ok(Change::Switch(s, l)) => self.visibility.with(s, l),
+                Err(said) => {
+                    self.say(&said);
+                    return None;
+                }
             }
         };
-        let was = self.verbosity;
-        self.verbosity = rung;
-        // **A rung that hides rows can hide the one the reader is holding** (R37's
-        // consequence for R36), so the view moves onto its nearest surviving neighbour at the
-        // moment of the change, where the fact is known for certain.
+        // **What cannot be drawn is not stored** — see [`Visibility::undrawable`]. The ladder
+        // turns its three switches on in one order, so a set that hides one below a switch it
+        // shows would put a word on the status row that the screen does not carry, and the
+        // operator's own rule for the whole rewrite is that *"a profile a person can select
+        // that changes nothing is worse than an unfinished rewrite, because it lies about the
+        // screen."* The refusal names the switch that cannot be honoured and the way round it.
+        if let Some(s) = next.undrawable() {
+            self.say(&format!(
+                "`{}` is a set this head cannot draw yet: the ladder turns `tools`, `thinking` \
+                 and `system` on in that order, so `{}` cannot be off while something above it \
+                 is on. Turn the higher one off with it, or choose a profile — {}",
+                next.as_str(),
+                s.name(),
+                Profile::ALL
+                    .iter()
+                    .map(|p| p.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            return None;
+        }
+        let was = self.visibility;
+        if next == was {
+            // Nothing to do, and the notice would be a sentence about a change that did not
+            // happen. (The card's Enter can land on the row already in force.)
+            self.pick = None;
+            return None;
+        }
+        self.visibility = next;
+        // **And the body the set names moves with it**, through the one writer: `folded` and
+        // `open` are the fold this head has always had (`ctrl-r`, `/t`), so a profile that
+        // says `tools: folded` sets the fold and not only the word. `hidden` is left alone —
+        // a fold on a row nobody draws is not a fact about the screen, and the rows are the
+        // rung's business.
+        for (show, level) in [
+            (Show::Tools, next.level(Show::Tools)),
+            (Show::Thinking, next.level(Show::Thinking)),
+        ] {
+            match level {
+                Level::Open => self.set_fold(show, Fold::Open),
+                Level::Folded => self.set_fold(show, Fold::Folded),
+                Level::Hidden => {}
+            }
+        }
+        self.raw_calls = next.shows(Show::RawCalls);
+        // **A set that hides rows can hide the one the reader is holding** (R37's consequence
+        // for R36), so the view moves onto its nearest surviving neighbour at the moment of the
+        // change, where the fact is known for certain.
         self.reanchor_off_hidden();
         // **And whatever was OPEN is closed, because it was open in the other rendering**
         // (R37 AMENDED). `payload_sel` names one thing — a payload window under every other
-        // rung, the run `ctrl-t` opened under this one — and the same id means a different
+        // rendering, the run `ctrl-t` opened under this one — and the same id means a different
         // thing on either side of the change. Carrying it across opened a payload window on
         // a row the reader had not asked about, which is the surprise this field exists to
         // avoid: *I opened a run, changed my mind about the rung, and a window appeared.*
@@ -7735,27 +8439,45 @@ impl App {
         self.payload_page = 0;
         self.invalidate_history();
         // **And it is written down**, which is what *"persists headrestarts"* asks for: the
-        // change and the file are one act from here, so a rung cannot be chosen and then
-        // forgotten. `RetiredWrite::Union` because a rung is not a statement about the retired
+        // change and the file are one act from here, so a set cannot be chosen and then
+        // forgotten. `RetiredWrite::Union` because this is not a statement about the retired
         // set — the fold and diff toggles pass it for the same reason.
         let saved = self.save_prefs(RetiredWrite::Union);
-        self.say(&if self.verbosity.hides_the_working() {
+        self.say(&if next.hides_the_working() {
             format!(
-                "verbosity conversation (was {}) — the conversation and nothing the head did \
-                 to produce it. Tool calls, reasoning and head arrivals are HIDDEN, not \
+                "verbosity {} (was {}) — the conversation and the edit cards, and nothing else \
+                 the head made. Tool calls, reasoning and head arrivals are HIDDEN, not \
                  dropped: `/verbosity` brings them back and the span you had it on is drawn \
                  again. This applies to the whole transcript, already drawn.{saved}",
+                next.as_str(),
                 was.as_str()
             )
         } else {
             format!(
                 "verbosity {} (was {}) — this applies to the whole transcript, already drawn, \
                  not only to what comes next.{saved}",
-                self.verbosity.as_str(),
+                next.as_str(),
                 was.as_str()
             )
         });
         None
+    }
+
+    /// **The one writer of the two folds** — so a switch moved by a chord, by `/t`, by the
+    /// config pane or by a profile all land in the same field, and none of them can move the
+    /// other's.
+    fn set_fold(&mut self, show: Show, fold: Fold) {
+        match show {
+            Show::Tools => {
+                self.tools = fold;
+                // **`/t` moves one key for the long rows**, and an echo's headline is one of
+                // them (R33), so the two travel together here as they did at every other
+                // writing of this field.
+                self.echo_open = fold.is_open();
+            }
+            Show::Thinking => self.reasoning = fold,
+            Show::Edits | Show::System | Show::RawCalls => {}
+        }
     }
 
     /// **Set the diff style by name, or refuse by name** — R38's second setting.
@@ -10412,7 +11134,7 @@ impl App {
             // furniture. What it buys is the reader who switched and then forgot — the rows
             // that are missing are named by the mode rather than by a placeholder on each.
             if let Some(rung) = self.rung_state() {
-                right.push(self.cfg.palette().paint(Role::Attention, rung));
+                right.push(self.cfg.palette().paint(Role::Attention, &rung));
             }
             chrome.push(self.box_edge(w, '╰', '╯', "", &right.join(" · ")));
         } else if self.alarmed() {
@@ -10879,7 +11601,7 @@ impl App {
         );
         // **The run `ctrl-t` opens**, once, for the same reason the forward walk computes it
         // once: the seam names the chord only where it acts.
-        let newest_run = newest_unseen_run(&self.items, self.verbosity, &self.bound_prompts, live);
+        let newest_run = newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, live);
         // **`carry`: the walk does not stop in the middle of a run.**
         //
         // A run's marker is drawn at its FIRST row, and this walk renders the newest rows
@@ -10921,7 +11643,7 @@ impl App {
             // them having to remember what the other drew.
             let open_run = run_open_at(
                 &self.items,
-                self.verbosity,
+                self.visibility,
                 &self.bound_prompts,
                 live,
                 self.payload_sel.as_deref(),
@@ -10932,7 +11654,7 @@ impl App {
             // marker lands in the room either of them left.
             let reserve = reserved_for_run(
                 &self.items,
-                self.verbosity,
+                self.visibility,
                 &self.bound_prompts,
                 live,
                 &cfg,
@@ -10949,7 +11671,7 @@ impl App {
             let unseen = if open_run {
                 None
             } else {
-                unseen_run_at(&self.items, self.verbosity, &self.bound_prompts, live, k)
+                unseen_run_at(&self.items, self.visibility, &self.bound_prompts, live, k)
             };
             carry = unseen.is_some_and(|(start, _)| start < k);
             let joinable = unseen.is_some_and(|(start, _)| run_continues_prose(&self.items, start));
@@ -10976,7 +11698,7 @@ impl App {
                     &self.items,
                     start,
                     end,
-                    self.verbosity,
+                    self.visibility,
                     &cfg,
                     newest_run == Some(start),
                     live,
@@ -11027,10 +11749,10 @@ impl App {
                             .unwrap_or(QUEUED),
                         echo_open: self.echo_open,
                         // See the forward walk: an open run IS the rung lifted for its rows.
-                        rung: if open_run {
-                            Verbosity::Normal
+                        vis: if open_run {
+                            Visibility::lifted()
                         } else {
-                            self.verbosity
+                            self.visibility
                         },
                         diff_split,
                         payload_view: if open_run {
@@ -11161,7 +11883,7 @@ impl App {
     fn newest_openable(&self) -> Option<String> {
         let live = self.live_work_now();
         if let Some(start) =
-            newest_unseen_run(&self.items, self.verbosity, &self.bound_prompts, live)
+            newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, live)
         {
             // **A run with no row yet is addressed by a sentinel**, because there is no id to
             // key it on: the work in flight has no item. The chord still opens something —
@@ -11453,12 +12175,16 @@ impl App {
         (!self.following()).then_some("holding")
     }
 
-    /// **The rung's name, when the rung is the one that hides things** — R37.
+    /// **Whether the row is drawn is the SET's question now**, and the name on the status row
+    /// is the SET's name: the profile when the set is one, and `custom …` when a switch has
+    /// been moved off one. **Both halves of R29's rule**: the mode is named, and the name is
+    /// also the verb (`/verbosity`) that changes it.
     ///
-    /// R29's rule for a disclosure is that it carries the act that undoes it, and this is one
-    /// half of that: the mode is named, and the name is also the verb (`/verbosity`) that
-    /// puts the working back. Drawn only under `Conversation`, because naming the ordinary
-    /// rung on every frame is the furniture this head keeps deleting.
+    /// Drawn when the set hides the working, as it was drawn at `Conversation` — and **also
+    /// whenever the set is no profile**, because a state with no name is exactly the thing a
+    /// reader cannot ask about: *"any set that is no profile reads as `custom …`"*. A profile
+    /// that does not hide anything names nothing, because a marker that is always on is the
+    /// furniture this head keeps deleting.
     ///
     /// **The other half is the marker** — R37 AMENDED, and the correction is worth keeping in
     /// view here because this comment used to argue the opposite. R37 as filed said R29 was
@@ -11468,10 +12194,9 @@ impl App {
     /// row**, and without it the rung does not hide the work — it makes the model's own prose
     /// lie, because the sentence introducing the work ends in a colon pointing at nothing.
     /// See [`hidden_run_lines`], and [`App::newest_openable`] for what opens one.
-    pub fn rung_state(&self) -> Option<&'static str> {
-        self.verbosity
-            .hides_the_working()
-            .then_some(Verbosity::Conversation.as_str())
+    pub fn rung_state(&self) -> Option<String> {
+        let v = self.visibility;
+        (v.hides_the_working() || v.profile().is_none()).then(|| v.as_str())
     }
 
     /// **Does this rung draw this row as a row** — R37, and the one place the question is
@@ -11485,7 +12210,7 @@ impl App {
     /// line, and this predicate is what says which rows are inside one — the anchor repair and
     /// the run finder both ask it, and neither should be asking the question a second way.
     pub fn hidden_by_rung(&self, row: usize) -> bool {
-        row_hidden(&self.items, self.verbosity, row)
+        row_hidden(&self.items, self.visibility, row)
     }
 
     /// **Move a held viewport off a row this rung hides** — R37's consequence for R36.
@@ -11546,7 +12271,7 @@ impl App {
     /// invalidation has to agree with it or the count would be rebuilt on one row while the marker
     /// was drawn on another.
     fn newest_run_row(&self, live: &LiveWork) -> Option<usize> {
-        newest_unseen_run(&self.items, self.verbosity, &self.bound_prompts, *live)
+        newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, *live)
     }
 
     /// The visible `room` lines of the body, and nothing else built.
@@ -11727,7 +12452,7 @@ impl App {
                 unconfirmed,
                 echo_open,
                 spans,
-                verbosity,
+                visibility,
                 dismissed,
                 ..
             } = self;
@@ -11737,7 +12462,7 @@ impl App {
             // shape `newest_payload` has above, and for the same reason — the seam names the
             // chord only on the run the chord acts on, and asking per row would be a scan of
             // the transcript for every row drawn.
-            let newest_run = newest_unseen_run(items, *verbosity, bound_prompts, live);
+            let newest_run = newest_unseen_run(items, *visibility, bound_prompts, live);
             loop {
                 // **A note from before this window is stepped over, not drawn** (R19).
                 // It is a disclosure this head holds — `/notes` lists it and `/status`
@@ -11837,7 +12562,7 @@ impl App {
                     // you do it same line - sometimes dont."*
                     let reserve = reserved_for_run(
                         items,
-                        *verbosity,
+                        *visibility,
                         bound_prompts,
                         live,
                         &cfg,
@@ -11853,7 +12578,7 @@ impl App {
                     };
                     let open_run = run_open_at(
                         items,
-                        *verbosity,
+                        *visibility,
                         bound_prompts,
                         live,
                         payload_sel.as_deref(),
@@ -11862,7 +12587,7 @@ impl App {
                     let unseen = if open_run {
                         None
                     } else {
-                        unseen_run_at(items, *verbosity, bound_prompts, live, *hist_upto)
+                        unseen_run_at(items, *visibility, bound_prompts, live, *hist_upto)
                     };
                     // **No blank line in front of a marker.** It continues the sentence above
                     // it rather than standing as a row of its own, so the separator's blank —
@@ -11882,7 +12607,7 @@ impl App {
                                 items,
                                 start,
                                 end,
-                                *verbosity,
+                                *visibility,
                                 &cfg,
                                 newest_run == Some(start),
                                 live,
@@ -11951,10 +12676,10 @@ impl App {
                                 // what "it opens" means: the reader sees the very rows the
                                 // rung was hiding, with their own headlines, payloads and
                                 // diffs, rather than a second rendering of them.
-                                rung: if open_run {
-                                    Verbosity::Normal
+                                vis: if open_run {
+                                    Visibility::lifted()
                                 } else {
-                                    *verbosity
+                                    *visibility
                                 },
                                 diff_split,
                                 // Rebuilt per row inside the walk, so it cannot be hoisted
@@ -12052,7 +12777,7 @@ impl App {
                 .rev()
                 .find_map(|k| {
                     let (s0, e0) =
-                        unseen_run_at(&self.items, self.verbosity, &self.bound_prompts, live, k)?;
+                        unseen_run_at(&self.items, self.visibility, &self.bound_prompts, live, k)?;
                     (s0 == k).then_some((s0, e0))
                 })
                 .is_some_and(|(s0, e0)| {
@@ -12065,7 +12790,7 @@ impl App {
         if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
             let runs: Vec<(usize, usize)> = (0..self.items.len())
                 .filter_map(|k| {
-                    unseen_run_at(&self.items, self.verbosity, &self.bound_prompts, live, k)
+                    unseen_run_at(&self.items, self.visibility, &self.bound_prompts, live, k)
                         .filter(|(s0, _)| *s0 == k)
                 })
                 .collect();
@@ -12097,7 +12822,7 @@ impl App {
         let live_joins = live.work() > 0
             && !superseded
             && !walk_carried_live
-            && self.verbosity.hides_the_working()
+            && self.visibility.hides_the_working()
             && self
                 .spans
                 .last()
@@ -12180,10 +12905,10 @@ impl App {
             spans,
             scroll,
             anchor,
-            verbosity,
+            visibility,
             ..
         } = self;
-        let rung = *verbosity;
+        let vis = *visibility;
         // **Room for the segments this frame will actually push.** A live frame adds the gap, the
         // echo block, the pane and the chrome — a handful — and `vec![…]` starts at capacity 1, so
         // the pushes past the first few are reallocations on a per-frame path. The number is a
@@ -12325,7 +13050,7 @@ impl App {
             // **And only when no RUN has already carried it** — see `walk_carried_live`, computed
             // above from the same fact the fold uses, so the two cannot disagree.
             if !superseded
-                && rung.hides_the_working()
+                && vis.hides_the_working()
                 && live.work() > 0
                 && !live_joins
                 && !walk_carried_live
@@ -12365,7 +13090,7 @@ impl App {
                 // is the same fact with no gap under it, so it brings its own.
                 segs.push(Seg::Owned(vec![String::new()]));
             }
-            if !superseded && !reasoning.is_empty() && !rung.hides_the_working() {
+            if !superseded && !reasoning.is_empty() && !vis.hides_the_working() {
                 // Narrower by the rail and by the step it is set in. Getting this
                 // wrong makes the block one row taller than the space reserved for
                 // it, which moves everything below it by a line every frame — which
@@ -12415,14 +13140,29 @@ impl App {
                 // above it. The rung's liveness obligation is elsewhere and unbroken — the
                 // footer says a turn is running and for how long (R13/§5.6).
                 let live_calls = calls.get(*settled_calls..).unwrap_or(&[]);
-                let live_calls = if rung.hides_the_working() {
-                    &[][..]
-                } else {
-                    live_calls
-                };
+                // **Not a blanket rung question — the `edits` SWITCH is asked per call.**
+                //
+                // This read `if vis.hides_the_working() { &[] }`, which is right for the working
+                // and wrong for the one card the operator's own profile exists to keep: a call
+                // that CHANGED a file is still "live" while its body has not landed, so
+                // `read-edits` — *"all is hidden except edits"* — hid the diff it was chosen for.
+                // MEASURED while landing this: the acceptance test failed with exactly that
+                // screen, the narration and no diff.
+                //
+                // The rule is [`Visibility::keeps`]'s, one row up: an edit card is the switches',
+                // everything else is the rung's. A call whose state says it changed something and
+                // whose `edits` switch is showing is drawn whatever the rung hides; every other
+                // live call is the working and follows the ladder as before.
+                let live_calls: Vec<_> = live_calls
+                    .iter()
+                    .filter(|c| match &c.state {
+                        CallState::Finished { edit: Some(_), .. } => vis.shows(Show::Edits),
+                        _ => !vis.hides_the_working(),
+                    })
+                    .collect();
                 if !live_calls.is_empty() {
                     let mut owned: Vec<String> = Vec::new();
-                    for c in live_calls.iter() {
+                    for c in live_calls.iter().copied() {
                         // **A running call is timed against the clock that was running
                         // when it started** (R13). `now_ms` here is `t.last_ms` — the
                         // log's clock — and that number **stops** when the daemon stops
@@ -13095,13 +13835,25 @@ impl App {
         };
         let (p, notes) = crate::prefs::load(&path);
         self.diff_split = p.diff == crate::prefs::DiffPref::Split;
-        // **The rung comes back too.** It is the one setting the card could change and the
+        // **The set comes back too.** It is the one setting the card could change and the
         // file did not keep, so a reader who chose `conversation` got `normal` on every
-        // restart. `Verbosity::parse` is the same word-to-rung rule the card and the verb use,
-        // so a name this build reads here is a name it reads there.
-        if let Some(rung) = Verbosity::parse(&p.verbosity) {
-            self.verbosity = rung;
-        }
+        // restart. [`Visibility::parse`] is the same reader the card and the verb use — and
+        // the head's own start is the BASE a `custom …` name is read against, which is what
+        // makes the name a state rather than a caption.
+        self.visibility = match Visibility::parse(&p.verbosity) {
+            Ok(Change::Set(v)) => v,
+            // A bare switch name in the file is a change against the head's start, for the
+            // same reason it is one on the verb: *this switch, from where I am*.
+            Ok(Change::Switch(s, l)) => Visibility::starting().with(s, l),
+            // **An unreadable word is REPORTED and not obeyed.** §13.2b's rule for a setting:
+            // silently starting at the default would make a typo and a deliberate `normal`
+            // the same screen. The sentence is the parse's own, so a name this refuses is a
+            // name the verb refuses with the same words.
+            Err(said) => {
+                self.say(&format!("head.toml: {said}"));
+                Visibility::starting()
+            }
+        };
         self.reasoning = if p.thinking == "open" {
             Fold::Open
         } else {
@@ -13112,7 +13864,33 @@ impl App {
         } else {
             Fold::Folded
         };
+        // **The fold keys move the switches they are, but only where the switch is SHOWING.**
+        // The three keys are older than this vocabulary and a file written before it says
+        // `verbosity = "conversation"` beside `thinking = "open"`, which is a fold on a row
+        // nobody draws — not a fact about the screen, and not a reason to raise the profile
+        // that hid it. `raw-calls` is the exception and is read straight: its level IS this
+        // boolean, and the key that already meant it keeps meaning it.
+        for (show, fold) in [(Show::Thinking, self.reasoning), (Show::Tools, self.tools)] {
+            if self.visibility.shows(show) {
+                self.visibility = self.visibility.with(
+                    show,
+                    if fold.is_open() {
+                        Level::Open
+                    } else {
+                        Level::Folded
+                    },
+                );
+            }
+        }
         self.raw_calls = p.raw_calls;
+        self.visibility = self.visibility.with(
+            Show::RawCalls,
+            if p.raw_calls {
+                Level::Open
+            } else {
+                Level::Hidden
+            },
+        );
         // **The starter-todo switch and its record come with the rest** — the seed runs at the
         // attach, which is long after this, and a switch or record that lived only in this run
         // would re-seed every project on every restart, which is the duplicate defect the record
@@ -13145,7 +13923,7 @@ impl App {
             thinking: fold_word(self.reasoning).into(),
             tools: fold_word(self.tools).into(),
             raw_calls: self.raw_calls,
-            verbosity: self.verbosity.as_str().to_string(),
+            verbosity: self.visibility.as_str(),
             retired: self.dismissed.clone(),
             todo_template: self.todo_template.clone(),
             todo_seed: self.todo_seed.clone(),
@@ -13227,7 +14005,7 @@ impl App {
         ));
         rows.push(head(
             "verbosity",
-            self.verbosity.as_str().to_string(),
+            self.visibility.as_str(),
             ConfigEdit::Head(HeadSetting::Verbosity),
         ));
         rows.push(head(
@@ -13884,7 +14662,10 @@ impl App {
                 // Nothing here is this head's own echo, so the mark never appears.
                 echo_mark: QUEUED,
                 echo_open: false,
-                rung: Verbosity::Normal,
+                // **The lifted set**, because this pane exists to show a child's rows whole: it is
+                // the same "the rung lifted" the open run draws its own rows with, so a peeked
+                // session is not filtered by whatever profile the parent happens to be in.
+                vis: Visibility::lifted(),
                 diff_split: self.diff_split,
                 payload_view: None,
                 payload_newest: None,
@@ -15520,9 +16301,9 @@ impl App {
         );
         row(
             "filtered",
-            format!("{} ({})", self.filtered, self.verbosity.as_str()),
-            "Events this head chose not to show at the current verbosity. \
-             /verbosity walks terse → normal → loud.",
+            format!("{} ({})", self.filtered, self.visibility.as_str()),
+            "Events this head chose not to show at the current filter. \
+             /verbosity with nothing after it shows every profile and what each gives you.",
         );
         // **R10: the notes this head holds, and how many the reader has retired.**
         //
@@ -15735,12 +16516,13 @@ impl App {
         );
         row(
             "verbosity",
-            self.verbosity.as_str().to_string(),
-            "What reaches the transcript at the current filter. `/verbosity` with nothing \
-             after it shows every rung and what each one gives you — conversation, terse, \
-             normal, loud — and `/verbosity NAME` sets one. It used to sit on the \
-             composer's border, which was a row of attention paid for ever for a fact \
-             read once.",
+            self.visibility.as_str(),
+            "What reaches the transcript at the current filter — a SET of switches, and the \
+             profile is the name of one. `/verbosity` with nothing after it shows every \
+             profile and what each one gives you — conversation, read-edits, terse, normal, \
+             loud — and `/verbosity NAME` sets one; a switch moved off a profile reads as \
+             `custom …`. It used to sit on the composer's border, which was a row of \
+             attention paid for ever for a fact read once.",
         );
         if !self.wiring.workspace.is_empty() {
             row(
@@ -16365,16 +17147,16 @@ fn reasoning_display_lines(text: &str, w: usize) -> usize {
         .sum::<usize>()
         .max(1)
 }
-/// **Does this rung hide this row** — R37, the row-level question in one place.
+/// **Does this set hide this row** — R37, the row-level question in one place.
 ///
-/// The item-level answer is [`Verbosity::keeps`]; this is the same test asked about a row,
+/// The item-level answer is [`Visibility::keeps`]; this is the same test asked about a row,
 /// which is what the walks, the run finder and [`App::hidden_by_rung`] all need.
 ///
 /// A row with no body yet is **not** hidden: it is drawn from this head's own echo of what
 /// the operator typed, and that is the conversation. A row the head never got an item for
 /// cannot be judged, and the honest default for unjudgeable is *show it*.
-fn row_hidden(items: &[SnapshotItem], rung: Verbosity, row: usize) -> bool {
-    row_hidden_at(rung, items.get(row))
+fn row_hidden(items: &[SnapshotItem], vis: Visibility, row: usize) -> bool {
+    row_hidden_at(vis, items.get(row))
 }
 
 /// **The same question about a row rather than about a list index** — so it can be asked
@@ -16382,13 +17164,13 @@ fn row_hidden(items: &[SnapshotItem], rung: Verbosity, row: usize) -> bool {
 ///
 /// `None` is a row with no body yet, and it is **not hidden**: it is drawn from this head's
 /// own echo of what the operator typed when it has one, and a row nobody can read is not the
-/// working this rung is about.
-fn row_hidden_at(rung: Verbosity, it: Option<&SnapshotItem>) -> bool {
-    if !rung.hides_the_working() {
+/// working this set is about.
+fn row_hidden_at(vis: Visibility, it: Option<&SnapshotItem>) -> bool {
+    if !vis.hides_the_working() {
         return false;
     }
     match it.and_then(|it| it.item.as_ref()) {
-        Some(item) => !rung.keeps(item),
+        Some(item) => !vis.keeps(item),
         None => false,
     }
 }
@@ -16484,27 +17266,27 @@ impl LiveWork {
 /// rather than toward an invisible run.
 fn row_drawn(
     items: &[SnapshotItem],
-    rung: Verbosity,
+    vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
     row: usize,
 ) -> bool {
     items
         .get(row)
-        .is_some_and(|it| row_drawn_at(rung, bound, it))
+        .is_some_and(|it| row_drawn_at(vis, bound, it))
 }
 
 /// The same question for one row, or for **the live tail**: `None` there is the work in
 /// flight, which draws nothing as a row and is therefore invisible — the whole of why the
 /// counts must carry it.
 fn row_drawn_at(
-    rung: Verbosity,
+    vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
     it: &SnapshotItem,
 ) -> bool {
-    if !rung.hides_the_working() {
+    if !vis.hides_the_working() {
         return true;
     }
-    if row_hidden_at(rung, Some(it)) {
+    if row_hidden_at(vis, Some(it)) {
         return false;
     }
     match it.item.as_ref() {
@@ -16527,23 +17309,23 @@ fn row_drawn_at(
 /// old boundary could not produce an all-visible stretch, and the new one can.
 fn unseen_run_at(
     items: &[SnapshotItem],
-    rung: Verbosity,
+    vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
     live: LiveWork,
     row: usize,
 ) -> Option<(usize, usize)> {
-    if !rung.hides_the_working() || row >= items.len() || row_drawn(items, rung, bound, row) {
+    if !vis.hides_the_working() || row >= items.len() || row_drawn(items, vis, bound, row) {
         return None;
     }
     let mut start = row;
-    while start > 0 && !row_drawn(items, rung, bound, start - 1) {
+    while start > 0 && !row_drawn(items, vis, bound, start - 1) {
         start -= 1;
     }
     let mut end = row + 1;
-    while end < items.len() && !row_drawn(items, rung, bound, end) {
+    while end < items.len() && !row_drawn(items, vis, bound, end) {
         end += 1;
     }
-    let hidden = (start..end).any(|r| row_hidden(items, rung, r));
+    let hidden = (start..end).any(|r| row_hidden(items, vis, r));
     // **The live tail is contiguous with a stretch that runs to the end of the transcript.**
     // Work in flight comes after every row there is, so it belongs to the last stretch of
     // invisible rows and to nothing else — anything else would be two markers for one run.
@@ -16565,7 +17347,7 @@ fn unseen_run_at(
 /// can only be reading one thing at a time.
 fn run_open_at(
     items: &[SnapshotItem],
-    rung: Verbosity,
+    vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
     live: LiveWork,
     open: Option<&str>,
@@ -16579,12 +17361,12 @@ fn run_open_at(
     // *"a marker that cannot be opened is the elision this document refuses everywhere else"*
     // — and what it opens is the turn's own live view, which is where that work is.
     if id == LIVE_RUN {
-        return live.work() > 0 && !live_tail_covered(items, rung, bound);
+        return live.work() > 0 && !live_tail_covered(items, vis, bound);
     }
     let Some(start) = items.iter().position(|it| it.item_id == id) else {
         return false;
     };
-    unseen_run_at(items, rung, bound, live, start).is_some_and(|(s, e)| row >= s && row < e)
+    unseen_run_at(items, vis, bound, live, start).is_some_and(|(s, e)| row >= s && row < e)
 }
 
 /// **The run with no row yet** — the sentinel [`App::newest_openable`] returns for the work in
@@ -16608,11 +17390,11 @@ pub const LIVE_RUN: &str = "<live>";
 /// every row, so when it stands alone its marker is the one that names `ctrl-t`.
 fn newest_unseen_run(
     items: &[SnapshotItem],
-    rung: Verbosity,
+    vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
     live: LiveWork,
 ) -> Option<usize> {
-    if !rung.hides_the_working() {
+    if !vis.hides_the_working() {
         return None;
     }
     // **A run with rows comes first, and the live tail only when there is none** — the order here
@@ -16626,7 +17408,7 @@ fn newest_unseen_run(
     // *"all tool call counters are yellow now"*.
     if let Some(r) = (0..items.len())
         .rev()
-        .find(|r| unseen_run_at(items, rung, bound, live, *r).is_some_and(|(start, _)| start == *r))
+        .find(|r| unseen_run_at(items, vis, bound, live, *r).is_some_and(|(start, _)| start == *r))
     {
         return Some(r);
     }
@@ -16643,10 +17425,10 @@ fn newest_unseen_run(
 /// no row to be drawn at, and the live pane draws its marker.
 fn live_tail_covered(
     items: &[SnapshotItem],
-    rung: Verbosity,
+    vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
 ) -> bool {
-    // **`rung.hides_the_working()`, NOT `!`** — the term was inverted, and that is the whole of
+    // **`vis.hides_the_working()`, NOT `!`** — the term was inverted, and that is the whole of
     // the two-marker defect. Read against the docstring above: *true when the last row is
     // invisible, because then the stretch it sits in runs to the end and `unseen_run_at` has
     // already folded the tail into its counts.* A row can only be invisible at a rung that hides
@@ -16654,10 +17436,7 @@ fn live_tail_covered(
     // the case the function exists for, so it answered `false` always, every caller took the
     // live work for a run of its own, and one turn's work was drawn by two markers: the walk's and
     // the live pane's.
-    rung.hides_the_working()
-        && items
-            .last()
-            .is_some_and(|it| !row_drawn_at(rung, bound, it))
+    vis.hides_the_working() && items.last().is_some_and(|it| !row_drawn_at(vis, bound, it))
 }
 
 /// **Does the MODEL's own sentence introduce this run.**
@@ -16694,17 +17473,17 @@ fn run_continues_prose(items: &[SnapshotItem], start: usize) -> bool {
 /// Returns the marker's own width, seam included, so the caller can take exactly that much.
 fn reserved_for_run(
     items: &[SnapshotItem],
-    rung: Verbosity,
+    vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
     live: LiveWork,
     cfg: &RenderConfig,
     row: usize,
     newest: bool,
 ) -> Option<usize> {
-    if !rung.hides_the_working() || row + 1 >= items.len() {
+    if !vis.hides_the_working() || row + 1 >= items.len() {
         return None;
     }
-    let (start, end) = unseen_run_at(items, rung, bound, live, row + 1)?;
+    let (start, end) = unseen_run_at(items, vis, bound, live, row + 1)?;
     if start != row + 1 {
         return None;
     }
@@ -17270,7 +18049,7 @@ fn hidden_run_marker(
     items: &[SnapshotItem],
     start: usize,
     end: usize,
-    rung: Verbosity,
+    vis: Visibility,
     cfg: &RenderConfig,
     newest: bool,
     live: LiveWork,
@@ -17287,7 +18066,7 @@ fn hidden_run_marker(
     // so a guard keyed on the start asked the wrong question and counted nothing. Found by
     // the interleaved test reporting `[1 thinking line]` for seven calls.
     for r in start..end {
-        if !row_hidden(items, rung, r) {
+        if !row_hidden(items, vis, r) {
             continue;
         }
         match items[r].item.as_ref() {
@@ -19182,11 +19961,15 @@ struct ItemCtx<'a> {
     echo_mark: &'a str,
     /// **Whether an echo is drawn in full or as its elided headline** (R33).
     echo_open: bool,
-    /// **Which rung of the ladder this row is being drawn for** (R37).
+    /// **Which set of switches this row is being drawn for** (R37).
     ///
     /// On the context rather than read from the app, because `item_lines` is a free function
     /// and the walk holds the app apart — the same reason every other field here is passed.
-    rung: Verbosity,
+    ///
+    /// **A set and not a rung**, and that is this slice's one new drawing: `keeps` is the
+    /// ladder's answer with the edit card's exception, and the renderer and the run finder ask
+    /// it here rather than asking the ladder and patching its answer afterwards.
+    vis: Visibility,
     /// The operator's diff-view choice (`/config`); the width decides the rest.
     diff_split: bool,
     /// How far into a row's payload the reader has paged, and which row that is.
@@ -19381,22 +20164,26 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         bound,
         echo_mark,
         echo_open,
-        rung,
+        vis,
         subagents,
     } = *ctx;
-    // **The rung, before anything else** (R37). A row this rung does not keep renders to
+    // **The set, before anything else** (R37). A row this set does not keep renders to
     // nothing, and the walk already treats a row that renders to nothing as no row at all —
     // no separator, no span, no height — so a hidden row costs this function one early
     // return.
     //
+    // **And it is the SAME question the run finder asks** ([`row_drawn_at`]): an edit card
+    // kept by `read-edits` is a row here and a drawn row there, and the two agreeing is what
+    // stops a marker being drawn beside a row that is still on the screen.
+    //
     // **R37 AMENDED, and the two are not alternatives.** A row inside an OPEN run arrives here
-    // as a `Normal` rung, because opening a run is the rung lifted for its rows and nothing
+    // as the lifted set, because opening a run is the rung lifted for its rows and nothing
     // else — so this function does not know about runs at all. A row inside a CLOSED run is
     // never drawn as a row: the walk answers that one line for the whole run, at the run's
     // first row ([`hidden_run_lines`]), and the rows behind it render to nothing here. That is
     // one line per RUN, which is what the amendment asks for and is not a placeholder per row.
     if let Some(item) = it.item.as_ref()
-        && !rung.keeps(item)
+        && !vis.keeps(item)
     {
         return (RowClass::Other, Vec::new());
     }
@@ -19546,8 +20333,8 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             let p = cfg.palette();
             // **A model's answer is the conversation; the calls it made are the working**
             // (R37). The prose above is kept and the call rows below are not, which is the
-            // same line the rung draws everywhere else.
-            for c in tool_calls.iter().filter(|_| !rung.hides_the_working()) {
+            // same line the ladder draws everywhere else.
+            for c in tool_calls.iter().filter(|_| !vis.hides_the_working()) {
                 // ONE ROW PER CALL. A call whose result is on the screen is drawn
                 // by that result and not here.
                 //
@@ -22136,13 +22923,13 @@ mod tests {
         ] {
             a.apply(ServerFrame::Event(env(seq, event)));
         }
-        a.verbosity = Verbosity::Loud;
+        a.visibility = Visibility::of(Profile::LOUD);
         let loud = a.screen(100, 40).join("\n");
         assert!(loud.contains("please read the file"), "{loud}");
         assert!(loud.contains("the file says a thing"), "{loud}");
 
         // **And the same fixture under the new rung.** The conversation is all that is left.
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         let quiet = a.screen(100, 40).join("\n");
         assert!(
@@ -22178,7 +22965,7 @@ mod tests {
         // block, and this rung removes it — so the assertion above is only worth anything if
         // the fold is open. Otherwise it passes for the wrong reason, which is the defect
         // this test exists against.
-        a.verbosity = Verbosity::Loud;
+        a.visibility = Visibility::of(Profile::LOUD);
         a.reasoning = Fold::Open;
         a.invalidate_history();
         let loud_open = a.screen(100, 200).join("\n");
@@ -22186,7 +22973,7 @@ mod tests {
             loud_open.contains("I should look at the file first"),
             "the fold is open, so the text is reachable: {loud_open}"
         );
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         assert!(
             !a.screen(100, 200)
@@ -22197,7 +22984,7 @@ mod tests {
 
         // **It is a view.** Switching back draws every row again, including the span it was
         // on, and nothing was dropped from the head's own copy.
-        a.verbosity = Verbosity::Loud;
+        a.visibility = Visibility::of(Profile::LOUD);
         a.invalidate_history();
         let back = a.screen(100, 200).join("\n");
         assert!(
@@ -22277,7 +23064,7 @@ mod tests {
                 on_timeout: letibot_sessionlog::event::OnTimeout::Deny,
             },
         )));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         let frame = a.screen(100, 40);
         let all = frame.join("\n");
@@ -22362,7 +23149,7 @@ mod tests {
         // question about the rung and asking it under `Normal` answers `false` for
         // everything. (The first draft asked it before the switch and passed on the wrong
         // side of the same mistake.)
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         assert!(
             a.hidden_by_rung(held.ordinal),
             "the fixture must hold a hidden row"
@@ -24550,7 +25337,7 @@ mod tests {
     #[test]
     fn a_head_that_filters_everything_still_says_so() {
         let mut a = app();
-        a.verbosity = Verbosity::Terse;
+        a.visibility = Visibility::of(Profile::TERSE);
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         let before = a.filtered;
         for i in 0..10 {
@@ -24609,15 +25396,35 @@ mod tests {
         );
         // …where they keep their names and their counts.
         a.command("status");
-        let stats = a.screen(120, 40).join("\n");
+        // **A taller window, because the panel is taller now.** MEASURED while landing this
+        // (2026-10-05): the `filtered` row's gloss names the profile the head is on, so several
+        // rows gained a line of wrap and the counters below `dropped` sit past a 40-row screen —
+        // the `resync` row is still on the panel (it is the tenth row of `status_lines`), it was
+        // simply under the fold. The subject of this assertion is the row, so it is given room
+        // to be drawn rather than asked for off-screen.
+        let stats = a.screen(120, 60).join("\n");
         let dropped_row = stats
             .lines()
             .find(|l| l.contains("dropped"))
             .expect("the dropped row is on the /status screen");
         assert!(dropped_row.contains("12"), "{dropped_row}");
+        // **The panel's own row, not the notice line** — MEASURED while landing this
+        // (2026-10-05). At HEAD the resync notice is live but NOT on this screen: the composer's
+        // height ladder deletes the most expendable row first, and at 24 rows the notice is the
+        // one that goes. This rewrite's row budget is one row larger, so the notice now fits on
+        // the screen (`  · resync: queue overflow`) and `find(|l| l.contains("resync"))` — which
+        // this test used to do — hit THAT line instead of the counter row it means to assert.
+        // The assertion's subject is the counter, so it looks for the row's own shape: the panel
+        // indents its rows, and the number follows the label.
         let resync_row = stats
             .lines()
-            .find(|l| l.contains("resync"))
+            .find(|l| {
+                // Painted rows carry SGR codes before the label, so the shape is read off the
+                // plain text — the same stripper the pane uses on a name.
+                let plain = without_control_lines(l);
+                plain.trim_start().starts_with("resync")
+                    && plain.chars().any(|c| c.is_ascii_digit())
+            })
             .expect("the resync row is on the /status screen");
         assert!(resync_row.contains('1'), "{resync_row}");
 
@@ -29968,7 +30775,7 @@ mod tests {
             bound: None,
             echo_mark: QUEUED,
             echo_open: false,
-            rung: Verbosity::Normal,
+            vis: Visibility::lifted(),
             diff_split: true,
             payload_view: None,
             payload_newest: None,
@@ -36465,7 +37272,7 @@ mod tests {
         ));
         // **The operator's own rung**, which is what makes the marker live at all: the counts are
         // drawn only where the working is hidden.
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         // Prose committed as a row, so the marker has a sentence to continue, and then a call in
         // flight — the shape the counts exist for.
@@ -37030,7 +37837,7 @@ mod tests {
                 },
             )));
         }
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         // Wide enough for the whole marker: at 110 columns it is trimmed, which is its own
         // rule (one line, always) and not a missing fact — but then the assertion below would
@@ -37231,7 +38038,7 @@ mod tests {
                 truncated: false,
             }),
         );
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         let screen = a.screen(110, 200).join("\n");
 
@@ -37306,7 +38113,7 @@ mod tests {
                 },
             );
         }
-        b.verbosity = Verbosity::Conversation;
+        b.visibility = Visibility::of(Profile::CONVERSATION);
         b.invalidate_history();
         let two = b.screen(110, 200).join("\n");
         assert_eq!(
@@ -37351,7 +38158,7 @@ mod tests {
                 },
             )));
         }
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         // A window far too short to hold the run, and the tail path taken on purpose by
         // walking backward over it — which is the path that used to stop short.
         a.invalidate_history();
@@ -37384,9 +38191,13 @@ mod tests {
         // The head the reader is in: they choose a rung.
         let mut a = app();
         a.prefs_path = Some(path.clone());
-        assert_eq!(a.verbosity, Verbosity::Normal, "the head starts here");
+        assert_eq!(
+            a.visibility.profile(),
+            Some(Profile::NORMAL),
+            "the head starts here"
+        );
         assert_eq!(a.command("verbosity conversation"), None);
-        assert_eq!(a.verbosity, Verbosity::Conversation);
+        assert_eq!(a.visibility.profile(), Some(Profile::CONVERSATION));
         assert!(
             path.is_file(),
             "choosing a rung did not write it down: {}",
@@ -37401,8 +38212,8 @@ mod tests {
         fresh.prefs_path = Some(path.clone());
         fresh.load_prefs();
         assert_eq!(
-            fresh.verbosity,
-            Verbosity::Conversation,
+            fresh.visibility.profile(),
+            Some(Profile::CONVERSATION),
             "the rung did not come back on a restarted head"
         );
 
@@ -37414,8 +38225,8 @@ mod tests {
         third.prefs_path = Some(path.clone());
         third.load_prefs();
         assert_eq!(
-            third.verbosity,
-            Verbosity::Normal,
+            third.visibility.profile(),
+            Some(Profile::NORMAL),
             "an unknown rung was obeyed"
         );
         assert!(
@@ -37825,7 +38636,7 @@ mod tests {
                 access: "exec".into(),
             },
         )));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         let screen = a.screen(120, 30).join("\n");
         assert!(
@@ -37878,7 +38689,7 @@ mod tests {
                 }),
             },
         )));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         let count = |a: &mut App| {
             a.invalidate_history();
             let s = a.screen(120, 30).join("\n");
@@ -38149,7 +38960,7 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         a.apply(ServerFrame::Event(env(
             2,
@@ -38233,7 +39044,7 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         // The prose that introduced the call, and the call itself.
         a.apply(ServerFrame::Event(env(
@@ -38364,7 +39175,7 @@ mod tests {
             vec![brief("s", "one", true)],
             Hub::new("s").snapshot(),
         ));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         // **Two rounds, each: the model's prose, then a call and its result row.** At the
         // conversation rung the prose is drawn and the result row is hidden, so each round
@@ -38516,7 +39327,7 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         // Prose so the turn has a live pane with a sentence of its own.
         a.apply(ServerFrame::Event(env(
@@ -38863,7 +39674,7 @@ mod tests {
             },
         )));
         a.apply(ServerFrame::Event(env(12, testing::turn_finished("t1"))));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
 
         // The premise: one call EXECUTING, so the marker that carries it is the one to colour.
@@ -38927,7 +39738,7 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         a.apply(ServerFrame::Event(env(
             2,
@@ -39030,7 +39841,7 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
         a.apply(ServerFrame::Event(env(
             2,
@@ -39158,7 +39969,7 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(ServerFrame::Event(env(1, round("t1"))));
         a.apply(ServerFrame::Event(env(
             2,
@@ -39606,7 +40417,7 @@ mod tests {
             },
         )));
         a_result_row(&mut a, 3, "s.1", "one");
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         let screen = a.screen(120, 30).join("\n");
         // **Glued to the model's sentence**: the counts in the sentence's own register, and
@@ -39673,7 +40484,7 @@ mod tests {
                 },
             )));
         }
-        b.verbosity = Verbosity::Conversation;
+        b.visibility = Visibility::of(Profile::CONVERSATION);
         b.invalidate_history();
         let screen = b.screen(120, 30);
         let line = screen
@@ -39759,7 +40570,7 @@ mod tests {
                 },
             )));
         }
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         let screen = a.screen(120, 30);
         let lines: Vec<&str> = screen.iter().map(String::as_str).collect();
@@ -39816,7 +40627,7 @@ mod tests {
         // between the prose and the counts, which is a different scene from the one this test
         // is about. Found by debug print, after the assertion failed for that reason.
         a_result_row(&mut a, 3, "s.1", "one");
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         let screen = a.screen(120, 30).join("\n");
         let line = screen
@@ -39893,7 +40704,7 @@ mod tests {
                 },
             )));
         }
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         // **Three widths, because the defect was width-dependent.** A narrow frame and a wide
         // one take different paths through the wrap, and the operator's own terminal is wider
         // than either of the widths the earlier versions of this test used.
@@ -40102,7 +40913,7 @@ mod tests {
                 },
             )));
         }
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         // **The tail path, and the fill's budget already satisfied.** `walk_limit` is the
         // head's own threshold for "too big to walk from the beginning"; `fill_backward(1)`
         // is the fill the head makes for a reader one line short of the window, and it is
@@ -40184,7 +40995,7 @@ mod tests {
                 }),
             },
         )));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         let quiet = a.screen(110, 40).join("\n");
         assert!(
@@ -40223,7 +41034,7 @@ mod tests {
                 }),
             },
         )));
-        b.verbosity = Verbosity::Conversation;
+        b.visibility = Visibility::of(Profile::CONVERSATION);
         b.invalidate_history();
         let quiet = b.screen(110, 40).join("\n");
         assert!(
@@ -40266,7 +41077,7 @@ mod tests {
             },
         )));
         a_result_row(&mut a, 30, "s.2", "second output");
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         let quiet = a.screen(110, 40).join("\n");
         // **The seam is OFF** — the operator: *"dont print \" dot /verbosity\" or ctrl-t opens
@@ -40298,7 +41109,7 @@ mod tests {
         ));
         a_result_row(&mut a, 1, "s.0", "first output");
         a_result_row(&mut a, 20, "s.1", "second output");
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         let closed = a.screen(110, 40).join("\n");
         assert!(closed.contains("[2 tool calls"), "{closed}");
@@ -40341,20 +41152,22 @@ mod tests {
             Hub::new("s").snapshot(),
         ));
         a_result_row(&mut a, 1, "s.0", "the payload");
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         assert!(a.screen(110, 40).join("\n").contains("[1 tool call]"));
-        for rung in [Verbosity::Terse, Verbosity::Normal, Verbosity::Loud] {
-            a.verbosity = rung;
+        for rung in [Profile::TERSE, Profile::NORMAL, Profile::LOUD] {
+            a.visibility = Visibility::of(rung);
             a.invalidate_history();
             let shown = a.screen(110, 40).join("\n");
             assert!(
                 !shown.contains("[1 tool call]"),
-                "a marker at {rung:?} would be a line about nothing hidden: {shown}"
+                "a marker at {} would be a line about nothing hidden: {shown}",
+                rung.name
             );
             assert!(
                 shown.contains("Ran") && shown.contains("the payload"),
-                "the row itself is drawn at {rung:?}: {shown}"
+                "the row itself is drawn at {}: {shown}",
+                rung.name
             );
         }
     }
@@ -40372,7 +41185,7 @@ mod tests {
             Hub::new("s").snapshot(),
         ));
         a_result_row(&mut a, 1, "s.0", "the payload");
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         a.key(Key::CtrlV);
         assert!(a.payload_sel.is_some(), "the run is open");
@@ -40583,7 +41396,7 @@ mod tests {
         // **Colour on, or the assertions below test nothing** — `app()` is `Palette::None`, where
         // every register paints the same empty string. The sibling yellow test does the same.
         a.cfg.color = true;
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(hello(
             "s",
             vec![brief("s", "one", false)],
@@ -40729,7 +41542,7 @@ mod tests {
     #[test]
     fn the_thinking_count_never_falls_not_even_when_its_reasoning_lands() {
         let mut a = app();
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(hello(
             "s",
             vec![brief("s", "one", false)],
@@ -40836,7 +41649,7 @@ mod tests {
     #[test]
     fn a_delta_changes_the_counts_and_nothing_else_in_the_rendered_history() {
         let mut a = app();
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(hello(
             "s",
             vec![brief("s", "one", false)],
@@ -41029,7 +41842,7 @@ mod tests {
     #[test]
     fn the_marker_in_the_rendered_history_is_not_a_backfilled_count() {
         let mut a = app();
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(hello(
             "s",
             vec![brief("s", "one", false)],
@@ -41110,7 +41923,7 @@ mod tests {
     #[test]
     fn the_thinking_count_moves_while_the_thinking_streams() {
         let mut a = app();
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(hello(
             "s",
             vec![brief("s", "one", false)],
@@ -41187,7 +42000,7 @@ mod tests {
     #[test]
     fn a_new_round_does_not_forget_the_rows_the_turn_already_produced() {
         let mut a = app();
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.apply(hello(
             "s",
             vec![brief("s", "one", false)],
@@ -41280,7 +42093,7 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         // A system row, which the rung hides and neither count can describe.
         a.apply(ServerFrame::Event(env(
             1,
@@ -41312,7 +42125,7 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        narrow.verbosity = Verbosity::Conversation;
+        narrow.visibility = Visibility::of(Profile::CONVERSATION);
         narrow.apply(ServerFrame::Event(env(
             1,
             testing::appended("s.0", "system"),
@@ -41338,7 +42151,7 @@ mod tests {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        with_calls.verbosity = Verbosity::Conversation;
+        with_calls.visibility = Visibility::of(Profile::CONVERSATION);
         for (seq, id, item) in [
             (
                 1u64,
@@ -41444,7 +42257,7 @@ mod tests {
                 },
             )));
         }
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         let screen = a.screen(100, 30);
         eprintln!("\n{}", screen.join("\n"));
@@ -41501,7 +42314,7 @@ mod tests {
             detail: "nobody answered the ask".into(),
             ts: 3,
         }));
-        a.verbosity = Verbosity::Conversation;
+        a.visibility = Visibility::of(Profile::CONVERSATION);
         a.invalidate_history();
         let quiet = a.screen(110, 40).join("\n");
         assert!(
@@ -41513,7 +42326,7 @@ mod tests {
     #[test]
     fn the_verbosity_card_shows_every_rung_with_its_meaning_and_marks_the_current_one() {
         let mut a = app();
-        assert_eq!(a.verbosity, Verbosity::Normal);
+        assert_eq!(a.visibility.profile(), Some(Profile::NORMAL));
         // Bare: the card, and nothing sent anywhere — a rung is a local setting.
         assert_eq!(a.command("verbosity"), None);
         assert!(a.pick == Some(Pick::Verbosity));
@@ -41563,8 +42376,8 @@ mod tests {
         let mut typed_app = app();
         assert_eq!(typed_app.command("verbosity terse"), None);
 
-        assert_eq!(card.verbosity, Verbosity::Terse);
-        assert_eq!(typed_app.verbosity, card.verbosity);
+        assert_eq!(card.visibility.profile(), Some(Profile::TERSE));
+        assert_eq!(typed_app.visibility.profile(), card.visibility.profile());
         assert_eq!(card.notice, typed_app.notice);
     }
 
@@ -41579,13 +42392,17 @@ mod tests {
     #[test]
     fn the_v_alias_still_cycles_the_ladder() {
         let mut a = app();
-        assert_eq!(a.verbosity, Verbosity::Normal);
+        assert_eq!(a.visibility.profile(), Some(Profile::NORMAL));
         assert_eq!(
             a.command("v"),
             None,
             "a rung is a local setting: nothing is sent"
         );
-        assert_eq!(a.verbosity, Verbosity::Loud, "`v` is the next rung");
+        assert_eq!(
+            a.visibility.profile(),
+            Some(Profile::LOUD),
+            "`v` is the next rung"
+        );
         assert!(
             a.pick.is_none(),
             "`v` cycles in place; it does not open the card"
@@ -41593,7 +42410,7 @@ mod tests {
         // The same function as the card and the long spelling, so the three cannot disagree.
         let mut named = app();
         assert_eq!(named.command("verbosity loud"), None);
-        assert_eq!(named.verbosity, a.verbosity);
+        assert_eq!(named.visibility.profile(), a.visibility.profile());
         assert_eq!(named.notice, a.notice);
     }
 
@@ -41609,9 +42426,84 @@ mod tests {
         assert_eq!(a.key(Key::Esc), None);
         assert!(a.pick.is_none(), "esc closes the card");
         assert_eq!(
-            a.verbosity,
-            Verbosity::Normal,
+            a.visibility.profile(),
+            Some(Profile::NORMAL),
             "esc changed the setting it was moving a cursor over"
+        );
+    }
+
+    /// **The operator's own example: `read-edits` draws the edits, and `conversation` does not.**
+    ///
+    /// Their words, and the reason the ladder was abandoned: *"for example leticl has read-edits
+    /// verbosity levels when all is hidden except edits"*. A ladder could not be told this — *"all
+    /// is hidden except edits"* is not a rung between two others — so the test is the pair: the
+    /// same turn's screen at `read-edits` carries the diff, and at `conversation` the diff is gone
+    /// while the conversation stays. That pair is what proves the edit SWITCH is what draws it,
+    /// rather than one of the ladder's rungs happening to.
+    #[test]
+    fn read_edits_draws_the_edits_and_conversation_does_not() {
+        let screen_for = |vis: Visibility| {
+            let mut a = app();
+            a.visibility = vis;
+            // The narration, so there is a conversation for the switch NOT to touch.
+            // **A turn first**: a call lives in a `TurnPane`, and one without a `TurnStarted`
+            // is not in `t.calls` at all — the state this test was written blind to, and found
+            // by printing them (`calls=[]` while `shows(Edits)` was already true).
+            a.apply(ServerFrame::Event(env_at(
+                0,
+                1_000,
+                testing::turn_started("t1"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                1,
+                testing::appended("s.0", "assistant"),
+            )));
+            a.record_item(
+                "s.0",
+                TranscriptItem::Assistant {
+                    text: "let me change it:".into(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            );
+            // One call that changed a file — the card the operator's rung exists for.
+            a.apply(ServerFrame::Event(env(
+                2,
+                testing::proposed("t1", "c1", "edit"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                3,
+                SessionEvent::ToolFinished {
+                    turn_id: "t1".into(),
+                    call_id: "c1".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload_digest: "fnv1a:1".into(),
+                    inline_bytes: 64,
+                    full_bytes: 64,
+                    spill: None,
+                    repairs: 0,
+                    edit: Some(edit_excerpt()),
+                },
+            )));
+            a.screen(120, 30).join("\n")
+        };
+        let read_edits = screen_for(Visibility::of(Profile::READ_EDITS));
+        assert!(
+            read_edits.contains("1 - fn a() {}"),
+            "`read-edits` hid the edit card it exists for:\n{read_edits}"
+        );
+        assert!(
+            read_edits.contains("let me change it:"),
+            "and it is still a conversation:\n{read_edits}"
+        );
+        let conversation = screen_for(Visibility::of(Profile::CONVERSATION));
+        assert!(
+            !conversation.contains("1 - fn a() {}"),
+            "`conversation` drew an edit card — the empty set is not empty:\n{conversation}"
+        );
+        assert!(
+            conversation.contains("let me change it:"),
+            "the conversation itself must survive the emptiest profile:\n{conversation}"
         );
     }
 
