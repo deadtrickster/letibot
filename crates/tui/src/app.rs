@@ -1355,6 +1355,17 @@ enum SubStop {
     Finished,
 }
 
+/// **One row of the jobs pane** — the ONE enumeration the arrows, Enter, the drawn `▸` and the
+/// scroll all read, exactly as [`SubStop`] is for the subagents pane. See [`App::job_stops`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobStop {
+    /// A job in [`App::jobs`], by index.
+    Job(usize),
+    /// **The `finished` group row.** The settled jobs live under it, collapsed by default;
+    /// Enter unfolds them.
+    Finished,
+}
+
 /// What one subagent's read key opens — `p` on a row, and `/peek ID` typed: its tool
 /// output, read out of the subagent's own scrollback by a `Peek`, shown without moving
 /// the head out of the session it is in. The pane behaves like a terminal — the tail shows
@@ -1468,6 +1479,14 @@ struct JobOut {
     /// `false` until the answer arrives, which is the reading that renders what every
     /// daemon before this field produced.
     never_ran: bool,
+    /// **Where this job's output actually went, when it did not come here** (R41) — the file the
+    /// job's `redirect` named in the list, taken from the row Enter was pressed on.
+    ///
+    /// A redirected job's window is empty BY CONSTRUCTION: the daemon gave its bytes to the file,
+    /// so an empty window here is the shape of *this pane cannot show it*, and `it wrote nothing at
+    /// all` would be a lie about a job that wrote a build log. The operator: *"entering a job never
+    /// shows me its output - whether it went to file or not"*.
+    redirect: Option<String>,
     /// The offsets of the window actually loaded: `from..to` of `produced`.
     from: u64,
     to: u64,
@@ -2442,7 +2461,17 @@ pub struct App {
     jobs_pane: bool,
     /// Which job row the cursor is on. Arrows move it, Enter asks the daemon for
     /// that job's output — the pane counted the bytes and had no way to show them.
+    ///
+    /// **An index into [`App::job_stops`]**, not into [`App::jobs`], so the drawn cursor and
+    /// Enter cannot disagree about which row is selected.
     jobs_sel: usize,
+    /// **Whether the jobs pane's `finished` group is unfolded.** Collapsed by default — the
+    /// operator's own ask: *"jobs panel - same as subagents - show list of running, group
+    /// finished"*. Enter on the group row toggles it.
+    jobs_finished_open: bool,
+    /// **The pane row each job stop was DRAWN on**, which is what the arrows scroll by — the
+    /// sibling of [`App::subagents_stop_rows`]. See [`App::jobs_row_of`].
+    jobs_stop_rows: Vec<usize>,
     /// **Which row of the pane the cursor is on** — an index into [`App::subagent_stops`],
     /// not into [`App::subagents`]. Arrows move it, Enter switches into the child it names
     /// (or folds the `finished` group) — the same two acts the picker keeps separate.
@@ -3565,6 +3594,8 @@ impl App {
             subagents_pane: false,
             jobs_pane: false,
             jobs_sel: 0,
+            jobs_finished_open: false,
+            jobs_stop_rows: Vec::new(),
             subagents_sel: 0,
             subagents_finished_open: false,
             subagents_stop_rows: Vec::new(),
@@ -4516,7 +4547,7 @@ impl App {
             ServerFrame::Jobs { session_id, jobs } => {
                 if session_id == self.session_id {
                     self.jobs = jobs;
-                    self.jobs_sel = self.jobs_sel.min(self.jobs.len().saturating_sub(1));
+                    self.jobs_sel = self.jobs_sel.min(self.job_stops().len().saturating_sub(1));
                     self.redraw = true;
                 }
                 Disposition::Control
@@ -7523,59 +7554,82 @@ impl App {
             }
         }
 
-        if self.jobs_pane && !self.jobs.is_empty() {
-            let n = self.jobs.len();
-            match k {
-                Key::Up => {
-                    self.jobs_sel = if self.jobs_sel == 0 {
-                        n - 1
-                    } else {
-                        self.jobs_sel - 1
-                    };
-                    self.redraw = true;
-                    return None;
-                }
-                Key::Down => {
-                    self.jobs_sel = (self.jobs_sel + 1) % n;
-                    self.redraw = true;
-                    return None;
-                }
-                Key::Enter => {
-                    if self.session_id.is_empty() {
-                        self.say("not attached to a session yet");
+        // **An open jobs pane owns Up and Down, and Enter reads the row it is on — or folds the
+        // group.** The same shape the subagents pane keeps, and for the same reason the
+        // operator gave: *"jobs panel - same as subagents - show list of running, group
+        // finished"*. The rows are ONE enumeration ([`App::job_stops`]), so the drawn cursor,
+        // the arrows and Enter cannot disagree — and the arrows scroll the cursor into view, so
+        // a job below the fold is reachable.
+        if self.jobs_pane {
+            let stops = self.job_stops();
+            if !stops.is_empty() {
+                let n = stops.len();
+                let at = self.jobs_sel.min(n - 1);
+                match k {
+                    Key::Up => {
+                        self.jobs_sel = if at == 0 { n - 1 } else { at - 1 };
+                        self.scroll_into_view(self.jobs_row_of());
                         self.redraw = true;
                         return None;
                     }
-                    let job = self.jobs[self.jobs_sel.min(n - 1)].id.clone();
-                    // **The output opens in a pane, not in the conversation.**
-                    // This used to return `Action::Slash { "job {job}" }`, whose
-                    // reply is a `Warning` on the session log — so the pane closed
-                    // and the operator read a build log scrolling past in the chat.
-                    // The operator, 2026-09-20: *"when i press enter on jobs pane im
-                    // not shown the job output im brought back to the main
-                    // conversation with /job <id> posted - this is not what i
-                    // want"*. Now the read is a `ReadJobOutput`: it comes back as a
-                    // `JobOutput` event with the offsets attached, and the overlay
-                    // draws it. The jobs list stays behind it, so Esc returns here.
-                    self.job_out = Some(JobOut {
-                        job: job.clone(),
-                        state: String::new(),
-                        never_ran: false,
-                        from: 0,
-                        to: 0,
-                        produced: 0,
-                        dropped: 0,
-                        lines: Vec::new(),
-                        next: None,
-                        back: Vec::new(),
-                        scroll: 0,
-                        loading: true,
-                        error: None,
-                    });
-                    self.redraw = true;
-                    return Some(Action::ReadJobOutput { job, offset: 0 });
+                    Key::Down => {
+                        self.jobs_sel = (at + 1) % n;
+                        self.scroll_into_view(self.jobs_row_of());
+                        self.redraw = true;
+                        return None;
+                    }
+                    Key::Enter => match stops[at] {
+                        // **The group row is a fold, not a job**: nobody to read.
+                        JobStop::Finished => {
+                            self.jobs_finished_open = !self.jobs_finished_open;
+                            self.redraw = true;
+                            return None;
+                        }
+                        JobStop::Job(i) => {
+                            if self.session_id.is_empty() {
+                                self.say("not attached to a session yet");
+                                self.redraw = true;
+                                return None;
+                            }
+                            let row = &self.jobs[i];
+                            let job = row.id.clone();
+                            // **Where its output went, when it did not come here** (R41). The
+                            // window for a redirected job is empty by construction, so the
+                            // pane needs the file's name to say anything true at all — see
+                            // [`JobOut::redirect`].
+                            let redirect = row.redirect.clone();
+                            // **The output opens in a pane, not in the conversation.**
+                            // This used to return `Action::Slash { "job {job}" }`, whose
+                            // reply is a `Warning` on the session log — so the pane closed
+                            // and the operator read a build log scrolling past in the chat.
+                            // The operator, 2026-09-20: *"when i press enter on jobs pane im
+                            // not shown the job output im brought back to the main
+                            // conversation with /job <id> posted - this is not what i
+                            // want"*. Now the read is a `ReadJobOutput`: it comes back as a
+                            // `JobOutput` event with the offsets attached, and the overlay
+                            // draws it. The jobs list stays behind it, so Esc returns here.
+                            self.job_out = Some(JobOut {
+                                job: job.clone(),
+                                state: String::new(),
+                                never_ran: false,
+                                redirect,
+                                from: 0,
+                                to: 0,
+                                produced: 0,
+                                dropped: 0,
+                                lines: Vec::new(),
+                                next: None,
+                                back: Vec::new(),
+                                scroll: 0,
+                                loading: true,
+                                error: None,
+                            });
+                            self.redraw = true;
+                            return Some(Action::ReadJobOutput { job, offset: 0 });
+                        }
+                    },
+                    _ => {}
                 }
-                _ => {}
             }
         }
         // **Up with an empty composer recalls the queued line.**
@@ -10316,6 +10370,44 @@ impl App {
             .min(self.subagent_stops().len().saturating_sub(1));
     }
 
+    /// **The jobs pane's rows, as ONE enumeration** — running first, then one folded
+    /// `finished (N)` row.
+    ///
+    /// The operator's own ask: *"jobs panel - same as subagents - show list of running, group
+    /// finished"*. It is [`App::subagent_stops`]' shape because that pane already learned the two
+    /// lessons this one needs: the rows the cursor walks and the rows the keys act on must be the
+    /// same list, and a settled row the reader has stopped caring about must not push a running
+    /// one off the bottom of the pane.
+    fn job_stops(&self) -> Vec<JobStop> {
+        let mut out = Vec::with_capacity(self.jobs.len() + 1);
+        for (i, j) in self.jobs.iter().enumerate() {
+            if j.running {
+                out.push(JobStop::Job(i));
+            }
+        }
+        if self.jobs.iter().any(|j| !j.running) {
+            out.push(JobStop::Finished);
+            if self.jobs_finished_open {
+                for (i, j) in self.jobs.iter().enumerate() {
+                    if !j.running {
+                        out.push(JobStop::Job(i));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// **The pane row the job stop at the cursor was DRAWN on**, read out of
+    /// [`App::jobs_stop_rows`] — the record the pane wrote while drawing, never arithmetic over
+    /// the table it drew from. The sibling of [`App::subagents_row_of`].
+    fn jobs_row_of(&self) -> usize {
+        let at = self
+            .jobs_sel
+            .min(self.jobs_stop_rows.len().saturating_sub(1));
+        self.jobs_stop_rows.get(at).copied().unwrap_or(0)
+    }
+
     /// **The session that spawned this one, or `None` when this head is not in a subagent.**
     ///
     /// Read off the daemon's list and **not** inferred from the id: ids are minted by the
@@ -11670,7 +11762,7 @@ impl App {
         } else if self.job_out.is_some() {
             "↑↓ scroll · → next page · ← back · esc back to jobs"
         } else if self.jobs_pane {
-            "background jobs this session started · ↑↓ then enter reads one · esc closes"
+            "↑↓ moves · enter reads a job, or unfolds finished · esc closes"
         } else if !self.open.is_empty() {
             "a row number answers · ↑↓ then enter · or type an option · /help"
         } else {
@@ -15110,18 +15202,31 @@ impl App {
             // `running` is still read off the state word, which is the daemon's own
             // spelling of the state it holds (`JobState::word`); that fact has no field
             // of its own on this frame.
+            // **A redirected job is a fourth case, and the third was a lie about it.**
+            // Its window is empty BY CONSTRUCTION (R41): the daemon gave the bytes to a file,
+            // so `it wrote nothing at all` describes a job that wrote a build log. The
+            // operator: *"entering a job never shows me its output - whether it went to file
+            // or not"*. The name of the file is all this pane can honestly say, and it is said
+            // where the reader is looking.
             let said = if v.never_ran {
                 // **The one sentence of this fix that is not derived from the wire**, and
                 // it is written in full so the two heads cannot hold two different
                 // sentences about one state: §11.6's ruling is *A rules the words; both
                 // heads render the same string*, and leticl renders this one verbatim.
-                "    it never ran, so there is nothing it could have written."
+                "    it never ran, so there is nothing it could have written.".to_string()
+            } else if let Some(path) = v.redirect.as_deref() {
+                let path = without_control_lines(path);
+                if v.state == "running" {
+                    format!("    it is running and writing to {path} — not to this window.")
+                } else {
+                    format!("    it wrote nothing HERE — its output went to {path}.")
+                }
             } else if v.state == "running" {
-                "    it is running and has written nothing yet."
+                "    it is running and has written nothing yet.".to_string()
             } else {
-                "    it wrote nothing at all."
+                "    it wrote nothing at all.".to_string()
             };
-            out.push(dim(&self.cfg, said));
+            out.push(dim(&self.cfg, &said));
         }
         let max_scroll = v.lines.len().saturating_sub(visible);
         v.scroll = v.scroll.min(max_scroll);
@@ -15189,7 +15294,14 @@ impl App {
         Some(out)
     }
 
-    fn jobs_lines(&self, w: usize) -> Vec<String> {
+    /// **The daemon's job table, as rows** — running first, then one folded `finished (N)` row.
+    ///
+    /// The operator's own ask: *"jobs panel - same as subagents - show list of running, group
+    /// finished"*. The rows come from [`App::job_stops`] — the same enumeration the arrows,
+    /// Enter and the drawn `▸` read — and each stop's line is recorded in
+    /// [`App::jobs_stop_rows`], which is what the arrows scroll to. Takes `&mut self` for that
+    /// record alone, the sibling of [`App::subagents_lines`].
+    fn jobs_lines(&mut self, w: usize) -> Vec<String> {
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "background jobs")];
         out.push(String::new());
         if self.jobs.is_empty() {
@@ -15199,8 +15311,43 @@ impl App {
                  true`; ctrl-o moves the running one.",
             ));
         }
-        let sel = self.jobs_sel.min(self.jobs.len().saturating_sub(1));
-        for (i, j) in self.jobs.iter().enumerate() {
+        let stops = self.job_stops();
+        let cursor = self.jobs_sel.min(stops.len().saturating_sub(1));
+        let mut stop_rows: Vec<usize> = Vec::with_capacity(stops.len());
+        for (k, stop) in stops.iter().enumerate() {
+            stop_rows.push(out.len());
+            let picked = k == cursor;
+            let i = match *stop {
+                // **The `finished` fold, when the cursor is on it.** A group row and not a job:
+                // there is nothing to read, and Enter folds or unfolds the settled ones.
+                JobStop::Finished => {
+                    let n = self.jobs.iter().filter(|j| !j.running).count();
+                    let fold = if self.jobs_finished_open {
+                        "[-]"
+                    } else {
+                        "[+]"
+                    };
+                    let left =
+                        format!("{} {} finished ({n})", if picked { "▸" } else { " " }, fold);
+                    let left = if picked {
+                        colour(&self.cfg, sgr::REVERSE, &left)
+                    } else {
+                        left
+                    };
+                    out.push(left);
+                    out.push(dim(
+                        &self.cfg,
+                        if self.jobs_finished_open {
+                            "       the ones that have settled · enter folds them away"
+                        } else {
+                            "       enter shows the ones that have settled"
+                        },
+                    ));
+                    continue;
+                }
+                JobStop::Job(i) => i,
+            };
+            let j = &self.jobs[i];
             // Every field here is the daemon's answer. The head decides colour
             // and layout and nothing else — no join against the current turn, no
             // "(command not in this head's window)", because the process table is
@@ -15212,7 +15359,6 @@ impl App {
             } else {
                 ("[!]", sgr::RED)
             };
-            let picked = i == sel;
             out.push(format!(
                 "{} {} {} {}",
                 if picked { "\u{25b8}" } else { " " },
@@ -15264,6 +15410,9 @@ impl App {
                 ));
             }
         }
+        // **The rows the stops landed on, taken as they went out** — the record the arrows
+        // scroll by. Assigned at the end because the loop above holds `&self.jobs`.
+        self.jobs_stop_rows = stop_rows;
         out.push(String::new());
         out.push(dim(
             &self.cfg,
@@ -31157,6 +31306,10 @@ mod tests {
             vec![daemon_job("j3", "cargo build", false)],
         ));
         a.key(Key::CtrlQ);
+        // **The job is settled**, so Enter on the group row unfolds it and one Down lands on
+        // it; then Enter opens the overlay the rest of this test drives.
+        a.key(Key::Enter);
+        a.key(Key::Down);
         a.key(Key::Enter);
         let lines: Vec<String> = (0..60).map(|i| format!("line {i}")).collect();
         a.apply(ServerFrame::Event(env(
@@ -44807,6 +44960,9 @@ mod tests {
                 daemon_job("j2", "sleep 30", false),
             ],
         ));
+        // **Both jobs, so the settled one is unfolded to be drawn** — it lives under the
+        // `finished` group by default (the operator's ask), and this test is about the ROW.
+        a.jobs_finished_open = true;
         let lines = a.jobs_lines(100).join("\n");
         assert!(lines.contains("cargo test --workspace"), "{lines}");
         assert!(
@@ -44820,6 +44976,111 @@ mod tests {
         assert!(
             !lines.contains("not in this head's window"),
             "the head no longer has a window to be outside of: {lines}"
+        );
+    }
+
+    /// **THE JOBS PANE GROUPS FINISHED, LIKE THE SUBAGENTS PANE** — the operator's own row:
+    /// *"jobs panel - same as subagents - show list of running, group finished"*.
+    ///
+    /// Running first, one folded `finished (N)` row, and Enter on that row unfolds it. The
+    /// reason it matters is the subagents pane's: a settled row the reader has stopped caring
+    /// about must not push a running one off the bottom of the screen.
+    #[test]
+    fn the_jobs_pane_shows_the_running_ones_first_and_folds_the_finished_ones() {
+        let mut a = App::new(plain_cfg(100));
+        a.session_id = "s1".into();
+        a.apply(jobs_frame(
+            "s1",
+            vec![
+                daemon_job("j1", "cargo build", false),
+                daemon_job("j2", "cargo test", true),
+                daemon_job("j3", "sleep 9", false),
+            ],
+        ));
+        a.jobs_pane = true;
+        let frame = a.jobs_lines(100);
+        let joined = frame.join("\n");
+        assert!(joined.contains("finished (2)"), "{joined}");
+        // **The running one is ABOVE the group row**, which is the whole point of the fold.
+        let running_at = frame
+            .iter()
+            .position(|l| l.contains("cargo test"))
+            .expect("the running job's row");
+        let fold_at = frame
+            .iter()
+            .position(|l| l.contains("finished (2)"))
+            .expect("the group row");
+        assert!(
+            running_at < fold_at,
+            "the running job is below the fold:\n{joined}"
+        );
+        assert!(
+            !joined.contains("cargo build"),
+            "a settled job is drawn though its group is folded:\n{joined}"
+        );
+        // **Enter on the group row unfolds it** — one running stop, then the fold.
+        a.key(Key::Down);
+        assert_eq!(a.jobs_sel, 1, "the cursor is not on the group row");
+        assert_eq!(
+            a.key(Key::Enter),
+            None,
+            "the group row is a fold, not a read"
+        );
+        let joined = a.jobs_lines(100).join("\n");
+        assert!(joined.contains("cargo build"), "{joined}");
+        assert!(joined.contains("sleep 9"), "{joined}");
+    }
+
+    /// **A REDIRECTED JOB'S OUTPUT PANE NAMES THE FILE** — the operator: *"entering a job never
+    /// shows me its output - whether it went to file or not"*.
+    ///
+    /// A redirected job's window is empty BY CONSTRUCTION (R41) — the daemon gave its bytes to
+    /// the file — so an empty window here must not be described as *it wrote nothing at all*
+    /// about a job that wrote a build log. The sentence names the file instead.
+    #[test]
+    fn the_job_output_pane_names_the_file_a_redirected_job_wrote_to() {
+        let mut a = App::new(plain_cfg(100));
+        a.session_id = "s1".into();
+        a.apply(jobs_frame(
+            "s1",
+            vec![daemon_job("j9", "cargo build > log", false)],
+        ));
+        a.jobs[0].redirect = Some("/tmp/build.log".into());
+        a.key(Key::CtrlQ);
+        // The job is settled: unfold the group, then take its row.
+        a.key(Key::Enter);
+        a.key(Key::Down);
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::ReadJobOutput {
+                job: "j9".into(),
+                offset: 0
+            })
+        );
+        assert_eq!(
+            a.job_out.as_ref().unwrap().redirect.as_deref(),
+            Some("/tmp/build.log"),
+            "the pane did not take the row's redirect"
+        );
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::JobOutput {
+                job: "j9".into(),
+                from: 0,
+                to: 0,
+                produced: 0,
+                dropped: 0,
+                state: "exited 0".into(),
+                never_ran: false,
+                lines: Vec::new(),
+                next: None,
+            },
+        )));
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("/tmp/build.log"), "{screen}");
+        assert!(
+            !screen.contains("it wrote nothing at all."),
+            "a job that wrote a build log is described as having written nothing:\n{screen}"
         );
     }
 
@@ -44914,6 +45175,10 @@ mod tests {
         ));
         a.key(Key::CtrlQ);
         assert!(a.jobs_pane);
+        // **The job is settled, so it sits under the folded `finished` group**: Enter on the
+        // group row (where the cursor starts) unfolds it, and one Down lands on the job.
+        a.key(Key::Enter);
+        a.key(Key::Down);
         assert_eq!(
             a.key(Key::Enter),
             Some(Action::ReadJobOutput {
@@ -45135,6 +45400,9 @@ mod tests {
                 vec![daemon_job("j3", "cargo build", false)],
             ));
             a.key(Key::CtrlQ);
+            // Unfold the `finished` group, then take the job row — see the sibling tests.
+            a.key(Key::Enter);
+            a.key(Key::Down);
             a.key(Key::Enter);
             a.apply(ServerFrame::Event(env(
                 1,
@@ -45175,6 +45443,9 @@ mod tests {
             vec![daemon_job("j3", "cargo build", false)],
         ));
         a.key(Key::CtrlQ);
+        // Unfold the `finished` group, then take the job row.
+        a.key(Key::Enter);
+        a.key(Key::Down);
         assert_eq!(
             a.key(Key::Enter),
             Some(Action::ReadJobOutput {
@@ -45249,6 +45520,9 @@ mod tests {
             vec![daemon_job("j4", "cargo build", false)],
         ));
         a.key(Key::CtrlQ);
+        // Unfold the `finished` group, then take the job row.
+        a.key(Key::Enter);
+        a.key(Key::Down);
         assert_eq!(
             a.key(Key::Enter),
             Some(Action::ReadJobOutput {
