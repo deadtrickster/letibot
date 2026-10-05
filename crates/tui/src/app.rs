@@ -7680,13 +7680,19 @@ impl App {
             return Some(Action::WithdrawPrompts);
         }
 
-        // Tab: slash-command completion. The composer's own keys run after it
-        // because Tab means nothing to the editor — its byte used to be eaten
-        // by the decoder — and every other key leaves a running completion
-        // cycle alone: it re-validates its prefix the next time Tab is
-        // pressed, so there is nothing to reset in each arm here.
+        // Tab: completion, dispatched by the line's first character. A `/` line
+        // completes a command; a `!` line completes from what this session has
+        // actually run. The composer's own keys run after it because Tab means
+        // nothing to the editor — its byte used to be eaten by the decoder — and
+        // every other key leaves a running completion cycle alone: it re-validates
+        // its prefix the next time Tab is pressed, so there is nothing to reset in
+        // each arm here.
         if let Key::Tab = k {
-            self.complete_slash();
+            if self.editor.text().starts_with('!') {
+                self.complete_shell();
+            } else {
+                self.complete_slash();
+            }
             self.redraw = true;
             return None;
         }
@@ -9133,6 +9139,123 @@ impl App {
                 self.say(&format!("no /command starts with {text:?}"));
             }
         }
+    }
+
+    /// **Tab on a `!` line completes from what this session has actually run.**
+    ///
+    /// The operator's own words for the feature: *"smart autocomplete here for ! -
+    /// you trying to suggest me commands based on conversation context"*. The
+    /// candidates are whole lines, newest first, deduped — the operator's own `!`
+    /// rows verbatim, and the model's `bash` calls as `! ` plus the command they
+    /// ran — and the match is a whole-line prefix, so `! ls` reaches `! ls .`.
+    ///
+    /// **The one recogniser for "is this a `!` line" is `operator_shell_command`**,
+    /// the same rule the daemon re-checks at the send: a bang with nothing after it
+    /// is not a `!` line, so `!` alone does nothing here, the way it is refused
+    /// there. A second list of what counts would be a second answer to the same
+    /// question.
+    ///
+    /// **The cycle is the field `complete_slash` uses, and the same rule holds**: it
+    /// only trusts a prefix that is still being typed, so a character typed on after
+    /// a completion matches fresh rather than clobbering what was typed, and a
+    /// prefix nothing matches leaves the composer exactly as it was and says so.
+    /// Nothing is ever submitted — a candidate only fills the composer.
+    fn complete_shell(&mut self) {
+        let text = self.editor.text().to_string();
+        // The one recogniser: a `!` line is what the sessionlog crate says it is,
+        // and a bang with no command after it is not one — so `!` alone does
+        // nothing, the same refusal the send makes.
+        if letibot_sessionlog::operator_shell_command(&text).is_none() {
+            return;
+        }
+        if let Some((_, lines, idx)) = &mut self.completion {
+            let live = lines.get(*idx).is_some_and(|current| text == *current);
+            if live && !lines.is_empty() {
+                *idx = (*idx + 1) % lines.len();
+                let line = lines[*idx].clone();
+                self.set_composer(&line);
+                return;
+            }
+        }
+        let lines: Vec<String> = self
+            .shell_candidates()
+            .into_iter()
+            .filter(|line| line.starts_with(&text))
+            .collect();
+        match lines.first() {
+            Some(first) => {
+                let first = first.clone();
+                self.completion = Some((text.clone(), lines, 0));
+                self.set_composer(&first);
+            }
+            None => {
+                self.completion = None;
+                self.say(&format!("no ! line from this session starts with {text:?}"));
+            }
+        }
+    }
+
+    /// The whole `!` lines this session has run, newest first, deduped: the
+    /// operator's own `!` rows verbatim, and the model's `bash` calls as `! ` plus
+    /// the command they ran.
+    ///
+    /// **Newest first, because that is what a person re-running a command wants**:
+    /// the last thing they did is the most likely thing they are about to do again.
+    /// Deduped keeping the newest, so a command run twice is offered once, as the
+    /// line it most recently was.
+    ///
+    /// **The walk is the head's own rows** — the snapshot items, `item` an
+    /// `Option` because a row can be announced before its body lands — walked the
+    /// way `targets_before` walks them. A `bash` call whose arguments do not parse,
+    /// or that carries no `command`, is skipped: a candidate that cannot be re-run
+    /// is not a candidate.
+    fn shell_candidates(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for r in self.items.iter().rev() {
+            let Some(item) = r.item.as_ref() else {
+                continue;
+            };
+            match item {
+                TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Operator,
+                    parts,
+                    ..
+                } => {
+                    // The row's text, the way the renderer reads it: the text parts
+                    // joined. A `!` line is one part, so this is the line verbatim.
+                    let text = parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            UserPart::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if text.starts_with('!') {
+                        out.push(text);
+                    }
+                }
+                TranscriptItem::Assistant { tool_calls, .. } => {
+                    for c in tool_calls {
+                        if c.name != "bash" {
+                            continue;
+                        }
+                        let Ok(v) = serde_json::from_str::<serde_json::Value>(&c.arguments) else {
+                            continue;
+                        };
+                        let Some(cmd) = v.get("command").and_then(|c| c.as_str()) else {
+                            continue;
+                        };
+                        out.push(format!("! {cmd}"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Dedupe keeping the newest (first) occurrence.
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|line| seen.insert(line.clone()));
+        out
     }
 
     /// Replace the whole composer line. Completion words are single tokens, so
@@ -45002,6 +45125,209 @@ mod tests {
             "the live completions row shows the matches:\n{}",
             screen.join("\n")
         );
+    }
+
+    /// Announce a transcript row and attach its body, the way the daemon's
+    /// append reaches a head.
+    fn shell_row(a: &mut App, seq: u64, id: &str, kind: &str, item: TranscriptItem) {
+        a.apply(ServerFrame::Event(env(seq, testing::appended(id, kind))));
+        a.apply(ServerFrame::Event(env(
+            seq + 1,
+            SessionEvent::TranscriptContent {
+                item_id: id.into(),
+                item: Box::new(item),
+            },
+        )));
+    }
+
+    /// **A `!` line completes from what this session has actually run** — the
+    /// operator's own `!` rows and the model's `bash` calls both become
+    /// candidates, which is the feature in one sentence: *"smart autocomplete
+    /// here for ! - you trying to suggest me commands based on conversation
+    /// context"*.
+    #[test]
+    fn a_bang_line_completes_from_the_sessions_own_rows() {
+        let mut a = app();
+        shell_row(
+            &mut a,
+            1,
+            "u1",
+            "user",
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: "! ls -la".into(),
+                }],
+            },
+        );
+        shell_row(
+            &mut a,
+            3,
+            "a1",
+            "assistant",
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![letibot_transcript::ToolCall {
+                    id: "c1".into(),
+                    name: "bash".into(),
+                    arguments: r#"{"command": "git status"}"#.into(),
+                }],
+                truncated: false,
+            },
+        );
+        // The operator's own row is a candidate.
+        typed(&mut a, "! ls");
+        a.key(Key::Tab);
+        assert_eq!(
+            a.input(),
+            "! ls -la",
+            "the operator's own row is a candidate"
+        );
+        // The model's bash call is a candidate, as `! ` plus the command.
+        a.set_composer("! git");
+        a.completion = None;
+        a.key(Key::Tab);
+        assert_eq!(
+            a.input(),
+            "! git status",
+            "the model's bash call is a candidate"
+        );
+    }
+
+    /// **The newest candidate wins the first Tab, and a second Tab cycles.**
+    ///
+    /// The last thing the session ran is the most likely thing the operator is
+    /// about to run again, so it is first in the cycle; Tab again walks the rest.
+    #[test]
+    fn the_newest_bang_candidate_wins_and_tab_cycles() {
+        let mut a = app();
+        shell_row(
+            &mut a,
+            1,
+            "u1",
+            "user",
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: "! ls -la".into(),
+                }],
+            },
+        );
+        shell_row(
+            &mut a,
+            3,
+            "u2",
+            "user",
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: "! ls .".into(),
+                }],
+            },
+        );
+        // `! ls` matches both; the newest (`! ls .`) wins the first Tab.
+        typed(&mut a, "! ls");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! ls .", "the newest candidate wins");
+        // A second Tab cycles to the older one.
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! ls -la", "the second Tab cycles");
+        // And the cycle wraps.
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! ls .", "the cycle wraps");
+    }
+
+    /// **A bare `!` is an empty command and does nothing** — the recogniser
+    /// (`operator_shell_command`) says so, the same rule the send refuses on.
+    /// A `!` prefix, by contrast, matches the candidates that start with it,
+    /// newest first.
+    #[test]
+    fn a_bare_bang_is_an_empty_command_and_does_nothing() {
+        let mut a = app();
+        shell_row(
+            &mut a,
+            1,
+            "u1",
+            "user",
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: "! ls -la".into(),
+                }],
+            },
+        );
+        // `!` alone is an empty command: the recogniser says so, and the
+        // completion does nothing, the way the send refuses it.
+        typed(&mut a, "!");
+        a.key(Key::Tab);
+        assert_eq!(
+            a.input(),
+            "!",
+            "a bare bang is an empty command and does nothing"
+        );
+        // A `!` prefix matches the candidates that start with it, newest first.
+        a.set_composer("! ls");
+        a.completion = None;
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! ls -la", "a ! prefix matches, newest first");
+    }
+
+    /// **A `!` line with no history match leaves the text untouched** and says
+    /// so in the notice, the way `complete_slash` does.
+    #[test]
+    fn a_bang_line_with_no_history_match_leaves_the_text_untouched() {
+        let mut a = app();
+        shell_row(
+            &mut a,
+            1,
+            "u1",
+            "user",
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: "! ls -la".into(),
+                }],
+            },
+        );
+        // `! git` matches nothing this session ran.
+        typed(&mut a, "! git");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! git", "no match, so nothing changed");
+        assert!(a.notice.is_some(), "the refusal is said, not silent");
+    }
+
+    /// **The shell path leaves plain and `/` lines alone, and the slash path
+    /// leaves `!` lines alone** — each completes only its own sigil, so a line
+    /// is never completed by the wrong one.
+    #[test]
+    fn the_shell_path_leaves_plain_and_slash_lines_alone_and_vice_versa() {
+        let mut a = app();
+        shell_row(
+            &mut a,
+            1,
+            "u1",
+            "user",
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: "! ls -la".into(),
+                }],
+            },
+        );
+        // A plain prompt line is untouched by the shell path.
+        typed(&mut a, "hello");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "hello", "a plain line is untouched");
+        // A `/` line is untouched by the shell path (it is the slash path's).
+        a.set_composer("/se");
+        a.completion = None;
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "/sessions", "a / line goes to the slash path");
+        // A `!` line is untouched by the slash path.
+        a.set_composer("! ls");
+        a.completion = None;
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! ls -la", "a ! line goes to the shell path");
     }
 
     #[test]
