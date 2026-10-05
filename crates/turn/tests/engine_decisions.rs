@@ -595,11 +595,20 @@ fn repetition_collapse_aborts_the_turn_and_raises_a_named_warning() {
 // §5.8 — steering
 // --------------------------------------------------------------------------
 
-struct Once(Option<SteeringMessage>);
+struct Once(Vec<SteeringMessage>);
 
 impl SteeringSource for Once {
     fn try_next(&mut self) -> Option<SteeringMessage> {
-        self.0.take()
+        if self.0.is_empty() {
+            None
+        } else {
+            Some(self.0.remove(0))
+        }
+    }
+    fn give_back(&mut self, msgs: Vec<SteeringMessage>) {
+        // A handed-back message goes to the front, so the next `try_next` finds it
+        // first: it was taken before anything still in the vector.
+        self.0.splice(0..0, msgs);
     }
 }
 
@@ -657,7 +666,7 @@ fn a_message_already_waiting_is_read_before_the_model_speaks() {
         .unwrap();
     let before_len = session.items.len();
 
-    let mut steering = Once(Some(SteeringMessage::normal("use 2812, not 1459")));
+    let mut steering = Once(vec![SteeringMessage::normal("use 2812, not 1459")]);
     let ok = engine
         .run_turn_steered(&mut session, &mut sink, &mut steering)
         .unwrap();
@@ -743,9 +752,9 @@ fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
 
     let mut steering = After {
         left: 2,
-        msg: Some(SteeringMessage::normal(
+        msgs: vec![SteeringMessage::normal(
             "the spec changed - RFC 2812 rather than 1459",
-        )),
+        )],
     };
     let ok = engine
         .run_turn_steered(&mut session, &mut sink, &mut steering)
@@ -771,6 +780,101 @@ fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
             .iter()
             .any(|i| matches!(i, TranscriptItem::Assistant { .. }))
     );
+}
+
+/// **A failed turn gives the operator's words back to the source, and commits
+/// nothing.**
+///
+/// MEASURED on the operator's own head: they typed a prompt while a turn was
+/// running, the daemon accepted it, and the round then failed under §5.7
+/// (`length_empty_turn`). The words were out of the hub's queue the moment
+/// `absorb` took them, and the failed turn committed nothing — so the words were
+/// lost: not in the transcript, not in the source, and the head drew `queued` for
+/// the rest of the session. This test holds the property that the words go back
+/// to the source rather than being appended, so the next round's prompt contains
+/// them.
+///
+/// The backend is the §5.7 fixture — reasoning only, at the limit — and the
+/// steering is `After`, so the words arrive mid-generation rather than before it.
+#[test]
+fn a_failed_turn_gives_the_operators_words_back_to_the_source() {
+    let _lock = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
+    let mut frames = vec![Frame::Progress {
+        total: 10,
+        processed: 10,
+    }];
+    frames.push(Frame::Token {
+        id: THINK_OPEN,
+        text: "",
+    });
+    let thought = ids_of("I should consider this at some length before answering");
+    frames.extend(token_frames(&thought));
+    // No close-think, no content, and the limit was hit: `length_empty_turn`.
+    frames.push(Frame::Final {
+        stop_type: "limit",
+        n_decoded: 1 + thought.len() as u64,
+        n_prompt: 10,
+        cache_n: 0,
+    });
+    let canned = Canned::serve(frames, 1);
+
+    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut session = session(&engine, "steer-loss");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("hello")], &mut sink)
+        .unwrap();
+    let before = session.ledger.tokens().to_vec();
+
+    // The operator's words, arriving mid-generation: the first two polls are
+    // silent, and the third (the second frame) takes them.
+    let mut steering = After {
+        left: 2,
+        msgs: vec![SteeringMessage::operator(
+            "use web_search and fetch to lookup git commands meaning",
+        )],
+    };
+    let err = engine
+        .run_turn_steered(&mut session, &mut sink, &mut steering)
+        .expect_err("§5.7: an empty length turn is a failure");
+
+    match err {
+        TurnFailure::EmptyLength { reason, .. } => {
+            assert_eq!(reason, EmptyReason::ReasoningOnly)
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // **The words are back in the source, not lost.** The failed turn committed
+    // nothing, so the operator's words — which are input, not output — go back to
+    // the source rather than being appended. The `left` counter is a test artifact
+    // (it delays the words to mid-generation); the next round starts fresh, so
+    // reset it and check that the words come out, with their flags intact.
+    steering.left = 0;
+    let back = steering
+        .try_next()
+        .expect("the operator's words are back in the source");
+    assert_eq!(
+        back.text,
+        "use web_search and fetch to lookup git commands meaning"
+    );
+    assert!(back.from_operator, "still the operator's words");
+
+    // And the failed turn committed no items: the ledger is exactly where it was,
+    // and no assistant or reasoning item was appended.
+    assert_eq!(
+        session.ledger.tokens(),
+        &before[..],
+        "a failed turn must not reach the token region"
+    );
+    assert!(session.items.iter().all(|i| !matches!(
+        i,
+        TranscriptItem::Assistant { .. } | TranscriptItem::Reasoning { .. }
+    )));
 }
 
 /// The escape hatch: an urgent message stops generation at the next token.
@@ -807,7 +911,7 @@ fn an_urgent_message_interrupts_the_generation_rather_than_waiting_for_it() {
         .append_items(&engine, &[user("explain at length")], &mut sink)
         .unwrap();
 
-    let mut steering = Once(Some(SteeringMessage::urgent("ABORT")));
+    let mut steering = Once(vec![SteeringMessage::urgent("ABORT")]);
     let result = engine.run_turn_steered(&mut session, &mut sink, &mut steering);
 
     // The turn ends early. Whether it produced a usable item depends on how far it
@@ -1377,7 +1481,7 @@ fn the_ids_after_an_unaccountable_frame_never_reach_the_ledger() {
 /// rather than before the model has said anything.
 struct After {
     left: usize,
-    msg: Option<SteeringMessage>,
+    msgs: Vec<SteeringMessage>,
 }
 
 impl SteeringSource for After {
@@ -1386,7 +1490,16 @@ impl SteeringSource for After {
             self.left -= 1;
             return None;
         }
-        self.msg.take()
+        if self.msgs.is_empty() {
+            None
+        } else {
+            Some(self.msgs.remove(0))
+        }
+    }
+    fn give_back(&mut self, msgs: Vec<SteeringMessage>) {
+        // A handed-back message goes to the front, so the next `try_next` finds it
+        // first: it was taken before anything still in the vector.
+        self.msgs.splice(0..0, msgs);
     }
 }
 
@@ -1437,7 +1550,7 @@ fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
     // Let it think for a while, then stop it.
     let mut steering = After {
         left: 12,
-        msg: Some(SteeringMessage::urgent("ABORT")),
+        msgs: vec![SteeringMessage::urgent("ABORT")],
     };
     let _ = engine.run_turn_steered(&mut session, &mut sink, &mut steering);
 
@@ -1582,7 +1695,7 @@ fn an_unreached_provider_is_an_io_failure_and_not_a_malformed_answer() {
     let provider = NeverReached(
         "io: failed to lookup address information: Temporary failure in name resolution",
     );
-    let mut steering = Once(None);
+    let mut steering = Once(vec![]);
     let err = engine
         .run_turn_messages(
             &mut session,
