@@ -9355,6 +9355,16 @@ fn local_model_vocab_refusal(
 /// naturally beside a key block's `url`. A path is accepted and discarded too —
 /// `/v1/chat/completions` is what the curl carries and the client appends its own
 /// route, so keeping it would produce `/v1/chat/completions/completion`.
+/// **A declared url's `host:port`**, or `None` when it names no usable address.
+///
+/// `config` needs it to tell which declared model a session is actually on, and it
+/// must ask the same parser the switch used: comparing the url text would make
+/// `http://192.168.1.78:8082` and `192.168.1.78:8082` two different models, and the
+/// operator may have written either.
+pub fn local_url_authority(url: &str) -> Option<String> {
+    parse_local_url(url).ok().map(|e| e.authority())
+}
+
 fn parse_local_url(url: &str) -> Result<Endpoint, String> {
     let rest = url
         .trim()

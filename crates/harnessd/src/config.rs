@@ -1049,6 +1049,25 @@ impl Config {
         {
             let cat = letibot_provider::catalogue::Catalogue::load();
             let mut names = vec!["local".to_string()];
+            // **The local models this fleet declares, right after `local`.**
+            //
+            // This row is what the head's model PICKER draws, and it was the half the
+            // first cut missed: `models_choice` resolved a declared name and
+            // `models_listing` printed one, so `/models dense78` worked and the text
+            // listing showed it — while bare `/models`, which opens the picker, built
+            // its rows from here and knew only the compiled-in presets. The operator:
+            // *"there is no dense78"*, on a daemon that had the block, the binary and
+            // the name all working.
+            //
+            // That is this row's own warning coming true from the other side — *"a head
+            // that kept its own copy of a list got it wrong"* — except the stale list
+            // was the daemon's, and a feature reachable only by typing its name exactly
+            // is a feature nobody discovers.
+            //
+            // Above the presets because they cost nothing to run: no key, no meter.
+            for m in letibot_provider::keys::local_models(None) {
+                names.push(m.name);
+            }
             for p in letibot_provider::presets::ALL {
                 names.push(format!("{}/{}", p.name, p.default_model(&cat)));
             }
@@ -1057,7 +1076,18 @@ impl Config {
                 // the read-only one that carried it and a pane that stopped
                 // naming the model the server is running would be a worse row.
                 // The first word is what a picker matches on, so it stays `local`.
-                None => format!("local ({})", self.model),
+                // **Named when it is a declared local model**, so the picker shows the
+                // row the operator is on rather than the bare word `local`. Matched on
+                // the address, because that is what the switch actually moved: two
+                // blocks can name one alias and only the endpoint says which is live.
+                None => match letibot_provider::keys::local_models(None).into_iter().find(|m| {
+                    crate::harness::local_url_authority(&m.url).as_deref()
+                        == Some(self.endpoint.authority().as_str())
+                        && m.model == self.model
+                }) {
+                    Some(m) => format!("{} ({} at {})", m.name, m.model, m.url),
+                    None => format!("local ({})", self.model),
+                },
                 Some(pc) => match letibot_provider::Preset::parse(&pc.name) {
                     Ok(preset) => format!(
                         "{}/{}",
@@ -2095,6 +2125,43 @@ pub fn now_ns() -> u128 {
 
 #[cfg(test)]
 mod tests {
+
+    /// **Every declared local model reaches the picker's row.**
+    ///
+    /// The regression this closes was live and the operator found it: `/models dense78`
+    /// worked, `models_listing` printed it, and bare `/models` — which opens the picker,
+    /// and the picker draws THIS row's `choices` — showed only the compiled-in presets.
+    /// A model reachable solely by typing its exact name is a model nobody discovers.
+    ///
+    /// **Honest about its own reach**: `Config::settings` reads the real
+    /// `providers.toml`, with no seam to point it elsewhere, so on a box that declares
+    /// nothing this test passes vacuously. It is still worth keeping — it fails loudly
+    /// on any box that HAS a declaration, which is every box the feature is for, and it
+    /// records what the row is supposed to contain. Threading a config path through
+    /// `settings` would make it unconditional and is the better fix if this ever breaks
+    /// again.
+    #[test]
+    fn the_model_row_offers_every_declared_local_model() {
+        let cfg = Config::for_this_box("/tmp");
+        let rows = cfg.settings("", false, &[]);
+        let model = rows
+            .iter()
+            .find(|r| r.key == "model")
+            .expect("a model row");
+        for m in letibot_provider::keys::local_models(None) {
+            assert!(
+                model.choices.contains(&m.name),
+                "`{}` is declared in providers.toml but the picker does not offer it: {:?}",
+                m.name,
+                model.choices
+            );
+        }
+        assert!(
+            model.choices.iter().any(|c| c == "local"),
+            "the daemon's own server stays first: {:?}",
+            model.choices
+        );
+    }
 
     /// **The picker's greening comes from a row, and the row names the presets this box can
     /// actually authenticate.**
