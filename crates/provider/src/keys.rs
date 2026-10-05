@@ -265,21 +265,68 @@ pub struct DefaultChoice {
     pub model: Option<String>,
 }
 
-pub fn default_choice(file: Option<&Path>) -> Option<DefaultChoice> {
-    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
-    let parsed = parse_file(&file).ok()?;
-    let d = parsed.sections.get("default")?;
-    let provider = d.get("provider")?.trim().to_string();
-    if provider.is_empty() || provider == "local" {
-        return None;
+/// **The file is there and the parser could not read it.**
+///
+/// A fault, not an absence. `default_choice` still means *no standing choice*
+/// — the daemon falls back to the local server exactly as it did — but the
+/// fault is carried out with the file and the parser's own message, because
+/// that is the thing the operator has to fix. A daemon that comes up local
+/// while the file says deepseek is a fault the operator cannot find from the
+/// outside, and `resolve` a few lines up already names this same fault for the
+/// keys; the two readers of one file must not disagree about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unreadable {
+    pub file: PathBuf,
+    pub why: String,
+}
+
+impl std::fmt::Display for Unreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.file.display(), self.why)
     }
-    Some(DefaultChoice {
+}
+
+impl std::error::Error for Unreadable {}
+
+/// The operator's standing choice, from `[default]` in the file: which
+/// provider and model answer when a daemon is started without `--provider`.
+///
+/// `Ok(None)` is the local server, and it is the honest answer for three
+/// different situations — no file, no `[default]` section, and a section that
+/// says `provider = "local"` or nothing at all — all of which mean *the
+/// operator wrote no standing choice*. `Err` is the fourth: the file is there
+/// and the parser could not read it, which is a fault rather than an absence.
+/// The behaviour is the same either way — no standing choice, the daemon falls
+/// back to the local server — but the fault is said rather than swallowed,
+/// because a reader that cannot tell "you wrote nothing" from "I could not
+/// read what you wrote" is a daemon that comes up local without a word.
+pub fn default_choice(file: Option<&Path>) -> Result<Option<DefaultChoice>, Unreadable> {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    let parsed = if file.is_file() {
+        Some(parse_file(&file).map_err(|why| Unreadable {
+            file: file.clone(),
+            why,
+        })?)
+    } else {
+        None
+    };
+    let Some(d) = parsed.as_ref().and_then(|p| p.sections.get("default")) else {
+        return Ok(None);
+    };
+    let Some(provider) = d.get("provider") else {
+        return Ok(None);
+    };
+    let provider = provider.trim().to_string();
+    if provider.is_empty() || provider == "local" {
+        return Ok(None);
+    }
+    Ok(Some(DefaultChoice {
         provider,
         model: d
             .get("model")
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty()),
-    })
+    }))
 }
 
 /// Record the standing choice. `provider = "local"` records the local server.
@@ -853,5 +900,85 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("$XAI_API_KEY") && e.contains("[grok]"), "{e}");
+    }
+
+    /// **A file the parser could not read is a fault, not an absence.**
+    ///
+    /// The measured defect: the operator's file said deepseek, the reader could
+    /// not read it, and every daemon since came up local without a word. The
+    /// reader that decides a daemon's provider must tell "you wrote nothing"
+    /// from "I could not read what you wrote", and the fault must carry the
+    /// path and the parser's own message, because that is the thing the
+    /// operator has to fix.
+    #[test]
+    fn a_malformed_file_is_a_fault_with_the_path_and_the_parser_message() {
+        let f = tmp_providers(
+            "malformed_default",
+            "[default]\nmodel = \"deepseek-flash\"\nprovider = \"deepseek\"\nthis line has no equals sign\n",
+        );
+        let e = default_choice(Some(&f)).unwrap_err();
+        assert_eq!(e.file, f, "the file is named");
+        assert!(
+            e.why.contains("line 4") && e.why.contains("expected `key = value`"),
+            "the parser's own message: {}",
+            e.why
+        );
+        // And the fault is a fault: the same file, read for a key, names it too.
+        let k = resolve(&crate::presets::DEEPSEEK, None, Some(&f)).unwrap_err();
+        assert!(matches!(k, KeyError::Unreadable { .. }), "{k:?}");
+    }
+
+    /// **The three silent situations stay silent.** A regression here would put
+    /// a complaint on every start of every daemon on this box: most boxes have
+    /// no file at all, and a file without `[default]` is the normal state of a
+    /// box that runs on its local server.
+    #[test]
+    fn no_file_and_no_default_section_are_a_silent_no_standing_choice() {
+        let missing = std::env::temp_dir().join(format!(
+            "letibot-prof-{}-no-such-file/providers.toml",
+            std::process::id()
+        ));
+        assert!(!missing.exists());
+        assert_eq!(default_choice(Some(&missing)), Ok(None), "no file");
+
+        let f = tmp_providers("no_default_section", "[deepseek]\nkey = \"sk-x\"\n");
+        assert_eq!(
+            default_choice(Some(&f)),
+            Ok(None),
+            "a file with no [default] section"
+        );
+
+        let g = tmp_providers("default_without_provider", "[default]\nmodel = \"deepseek-flash\"\n");
+        assert_eq!(
+            default_choice(Some(&g)),
+            Ok(None),
+            "a [default] that names no provider"
+        );
+    }
+
+    /// **`provider = "local"` is a real choice, not a fault.** The operator said
+    /// "new sessions use this daemon's own model", and the reader must not
+    /// report a complaint for a sentence the operator meant.
+    #[test]
+    fn provider_local_is_a_silent_no_standing_choice() {
+        let f = tmp_providers("local_is_a_choice", "[default]\nprovider = \"local\"\n");
+        assert_eq!(default_choice(Some(&f)), Ok(None));
+    }
+
+    /// **The well-formed file still gives the choice** — the change is about
+    /// saying the fault, not about doing something different.
+    #[test]
+    fn a_well_formed_default_is_the_choice() {
+        let f = tmp_providers(
+            "well_formed_default",
+            "[default]\nmodel = \"deepseek-flash\"\nprovider = \"deepseek\"\n",
+        );
+        assert_eq!(
+            default_choice(Some(&f)),
+            Ok(Some(DefaultChoice {
+                provider: "deepseek".into(),
+                model: Some("deepseek-flash".into()),
+            }))
+        );
     }
 }
