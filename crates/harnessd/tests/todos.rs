@@ -68,16 +68,19 @@ fn a_resume_comes_back_with_the_plan_the_model_was_working_from() {
                     content: "read the harness".into(),
                     status: TodoStatus::Completed,
                     by: TodoBy::Model,
+                    when: None,
                 },
                 TodoItem {
                     content: "seat the tool".into(),
                     status: TodoStatus::InProgress,
                     by: TodoBy::Model,
+                    when: None,
                 },
                 TodoItem {
                     content: "render the pane".into(),
                     status: TodoStatus::Pending,
                     by: TodoBy::Model,
+                    when: None,
                 },
             ],
         )
@@ -198,6 +201,7 @@ fn a_session_with_an_open_plan(tag: &str) -> (TempDir, std::path::PathBuf, Strin
             content: "finish the migration".into(),
             status: TodoStatus::InProgress,
             by: TodoBy::Model,
+            when: None,
         }],
     )
     .expect("the todo row");
@@ -242,6 +246,7 @@ fn a_reopened_session_with_a_finished_plan_arms_nothing() {
                 content: "finish the migration".into(),
                 status: TodoStatus::Completed,
                 by: TodoBy::Model,
+                when: None,
             }],
         )
         .expect("the todo row");
@@ -297,6 +302,7 @@ fn a_row_the_operator_adds_to_an_idle_session_arms_the_clock() {
                 content: "add the migration notes".into(),
                 status: WireTodoStatus::Pending,
                 by: WireTodoBy::Operator,
+                when: None,
             }],
         },
     };

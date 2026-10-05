@@ -788,6 +788,57 @@ pub struct TodoItem {
     /// that predates this field — reads back as the model's, which is what it was.
     #[serde(default)]
     pub by: TodoBy,
+    /// **What this row is WAITING FOR**, when it is waiting for something rather than simply
+    /// being undone.
+    ///
+    /// The operator's own framing, 2026-10-06: *"if you are telling me 'job ends and i do this
+    /// and that' then 'this and that' is a todo item, which is conditioned by job status
+    /// (end)"*. So the condition is not a note ABOUT the row — it is what makes the row *due*,
+    /// and the row is the intent.
+    ///
+    /// **An enum rather than a string, and tagged**, so a kind can be added without a new
+    /// field on every row and a reader that does not know one can SAY SO rather than misread
+    /// it: a condition nobody can evaluate must never read as *met*, because a row that fires
+    /// immediately makes the model act on something that did not happen — worse than a row
+    /// that never fires, since the second is visible and the first is not.
+    ///
+    /// **It is EVALUATED, not observed** — the operator, 2026-10-06: *"a todo conditioned on
+    /// job end, and then i restart head and harnessd. once server is back it should fire - job
+    /// is gone"*. A firing that needed a live `JobSettled` would be lost by exactly that
+    /// restart; a firing that asks *is this handle still running here* survives it, because a
+    /// job that is not running — **including one this session has never heard of, which is what
+    /// a handle looks like after a restart** — is a job that ended. The two are reported apart
+    /// (ended, with its word and its output; or unknown, so a reader knows the result is not
+    /// here) because *"if you want to distinguish - you either follow the job result up
+    /// manually (which is more robust) if next steps depend on it or just do your things if it
+    /// was just a timeline"*.
+    ///
+    /// `None` is the ordinary row — a thing to do, not a thing to do *when* — and
+    /// `serde(default)` makes every row already in a store read back that way.
+    #[serde(default)]
+    pub when: Option<TodoCondition>,
+}
+
+/// **What a row waits on.** See [`TodoItem::when`] for what evaluating one means.
+///
+/// Internally tagged (`kind`), so the wire is self-describing, a new kind is a new variant
+/// rather than a new field on every row, and a reader can tell *a condition I do not know*
+/// from *no condition at all*.
+///
+/// **One variant, and the next is named when something can EVALUATE it.** A condition kind is
+/// only as good as the thing that can answer it: a `time` variant with nothing holding a clock,
+/// or a `port` variant in a layer that cannot see the network, is a row that waits for ever
+/// while looking like a row that is waiting.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TodoCondition {
+    /// **Due when this job is no longer running** — the handle `bash background: true` and
+    /// `task` hand back, and the one `job_list` prints.
+    ///
+    /// **Absence is the condition, and that is what makes it survive a restart.** A handle the
+    /// session knows nothing about reads as *gone*, not as *not yet* — the job ended before the
+    /// daemon came back, or the handle is wrong, and both are reported rather than guessed at.
+    Job { handle: String },
 }
 
 /// Who authored a todo. See `TodoItem::by`.
@@ -2763,6 +2814,7 @@ mod tests {
                 content: "ship the pane".into(),
                 status: TodoStatus::InProgress,
                 by: TodoBy::Model,
+                when: None,
             }],
         )
         .unwrap();
@@ -2782,16 +2834,19 @@ mod tests {
                 content: "read the harness".into(),
                 status: TodoStatus::Completed,
                 by: TodoBy::Model,
+                when: None,
             },
             TodoItem {
                 content: "seat the tool".into(),
                 status: TodoStatus::InProgress,
                 by: TodoBy::Model,
+                when: None,
             },
             TodoItem {
                 content: "render the pane".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Model,
+                when: None,
             },
         ];
         s.put_todos("sess-1", &first).unwrap();
@@ -2807,6 +2862,7 @@ mod tests {
             content: "render the pane".into(),
             status: TodoStatus::InProgress,
             by: TodoBy::Model,
+            when: None,
         }];
         s.put_todos("sess-1", &second).unwrap();
         assert_eq!(s.todos("sess-1").unwrap(), second);

@@ -463,6 +463,11 @@ impl Tool for TodoWriteTool {
                 status,
                 // the MODEL's list, by definition: this function is the `todo` tool
                 by: letibot_tokencore::store::TodoBy::Model,
+                // **The model's own half is replaced wholesale on every call**, so a condition
+                // written here would die on the model's next `todo_write` — see
+                // `TodoItem::when`. A conditioned row belongs to the OPERATOR's half, which this
+                // tool does not own and cannot overwrite.
+                when: None,
             });
         }
         // **THE OPERATOR'S ROWS ARE MOVED BEFORE THE MODEL'S LIST IS REPLACED**, so a quote that
@@ -597,11 +602,13 @@ mod tests {
                     content: "T1 vendor the deps".into(),
                     status: TodoStatus::Pending,
                     by: TodoBy::Operator,
+                    when: None,
                 },
                 TodoItem {
                     content: "T2 wire the pane".into(),
                     status: TodoStatus::Pending,
                     by: TodoBy::Operator,
+                    when: None,
                 },
             ]
         };
@@ -647,6 +654,7 @@ mod tests {
             content: "T1 vendor the deps  #model".into(),
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
+            when: None,
         }]);
         let all = b.snapshot();
         // The renderer the model reads.
@@ -657,7 +665,10 @@ mod tests {
         );
         // And the nag, whose only edit is a trim.
         let nag = unfinished_plan(&all).expect("one row is open");
-        assert!(nag.contains("#model"), "the tag did not survive the nag: {nag}");
+        assert!(
+            nag.contains("#model"),
+            "the tag did not survive the nag: {nag}"
+        );
     }
 
     use super::*;
@@ -680,6 +691,7 @@ mod tests {
             content: "the model's".into(),
             status: TodoStatus::Pending,
             by: TodoBy::Model,
+            when: None,
         }]);
         assert_eq!(b.snapshot().len(), 1, "the model's list as given");
 
@@ -687,6 +699,7 @@ mod tests {
             content: "the operator's".into(),
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
+            when: None,
         }]);
 
         let all = b.snapshot();
@@ -707,6 +720,7 @@ mod tests {
             content: "the model's, revised".into(),
             status: TodoStatus::Pending,
             by: TodoBy::Model,
+            when: None,
         }]);
         let after = b.snapshot();
         assert_eq!(after.len(), 2, "the operator's row survived: {after:?}");
@@ -749,11 +763,13 @@ mod tests {
                 content: "m1".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Model,
+                when: None,
             },
             TodoItem {
                 content: "m2".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Model,
+                when: None,
             },
         ]);
         b.set_operator(vec![
@@ -761,11 +777,13 @@ mod tests {
                 content: "o1".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
+                when: None,
             },
             TodoItem {
                 content: "o2".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
+                when: None,
             },
         ]);
 
@@ -789,6 +807,7 @@ mod tests {
             content: "m1 rewritten".into(),
             status: TodoStatus::Pending,
             by: TodoBy::Model,
+            when: None,
         }]);
         let after = b.snapshot();
         assert_eq!(
@@ -836,7 +855,7 @@ mod tests {
     /// The words are the name — there is no id on the wire, and the operator ruled out a bump — so
     /// this also pins what happens when the name does not fit: **refused, with the candidates
     /// named**, and NOTHING written.
-        /// **THE CALL THAT MADE A DUPLICATE ROW IN THE OPERATOR'S PANE, byte for byte from the
+    /// **THE CALL THAT MADE A DUPLICATE ROW IN THE OPERATOR'S PANE, byte for byte from the
     /// transcript of a real session.**
     ///
     /// The model put `operator` one level too deep — inside a `todos` entry instead of beside it.
@@ -853,6 +872,7 @@ mod tests {
             content: "plain quoting".into(),
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
+            when: None,
         }]);
         let mut sink = RecordingToolSink::new();
 
@@ -893,7 +913,10 @@ mod tests {
             board.operator_snapshot()
         );
         assert!(
-            !board.snapshot().iter().any(|t| t.content.starts_with("plain quoting —")),
+            !board
+                .snapshot()
+                .iter()
+                .any(|t| t.content.starts_with("plain quoting —")),
             "**and no duplicate row of the model's either** — which is what the operator saw: {:?}",
             board.snapshot()
         );
@@ -908,6 +931,7 @@ mod tests {
             content: "a row".into(),
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
+            when: None,
         }]);
         let mut sink = RecordingToolSink::new();
         let r = rt.invoke(
@@ -933,7 +957,7 @@ mod tests {
         );
     }
 
-#[test]
+    #[test]
     fn a_row_the_operator_wrote_is_moved_by_its_own_words() {
         let (mut rt, board) = runtime();
         board.set_operator(vec![
@@ -941,11 +965,13 @@ mod tests {
                 content: "restart the daemon".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
+                when: None,
             },
             TodoItem {
                 content: "push leticl".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
+                when: None,
             },
         ]);
         let mut sink = RecordingToolSink::new();
@@ -1023,11 +1049,13 @@ mod tests {
                 content: "same words".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
+                when: None,
             },
             TodoItem {
                 content: "same words".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
+                when: None,
             },
         ]);
         let r = rt.invoke(
@@ -1062,6 +1090,7 @@ mod tests {
             content: "the operator's".into(),
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
+            when: None,
         }]);
         let v = b.version();
 
@@ -1103,6 +1132,7 @@ mod tests {
             content: "restart the daemon".into(),
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
+            when: None,
         }])
         .unwrap();
         assert!(theirs.contains("— the operator's"), "{theirs}");
@@ -1128,11 +1158,13 @@ mod tests {
                 content: "the model's, from the store".into(),
                 status: TodoStatus::InProgress,
                 by: TodoBy::Model,
+                when: None,
             },
             TodoItem {
                 content: "the operator's, from the store".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
+                when: None,
             },
         ];
         let b = TodoBoard::new(stored);
@@ -1155,6 +1187,7 @@ mod tests {
             content: "a fresh plan".into(),
             status: TodoStatus::Pending,
             by: TodoBy::Model,
+            when: None,
         }]);
         assert_eq!(
             b.snapshot().len(),
@@ -1252,6 +1285,7 @@ mod tests {
             content: content.into(),
             status,
             by: TodoBy::Model,
+            when: None,
         }
     }
 

@@ -1926,6 +1926,16 @@ impl<'a> Sessions<'a> {
                     .iter()
                     .map(|e| letibot_tokencore::store::TodoItem {
                         content: e.content.clone(),
+                        // **The wire's condition, as the STORE spells it** — the other half of
+                        // `todo_entry`'s conversion, and a `match` for the same reason: the two
+                        // crates own the type separately, so a new variant must be named here.
+                        when: e.when.as_ref().map(|c| match c {
+                            letibot_sessionlog::event::TodoCondition::Job { handle } => {
+                                letibot_tokencore::store::TodoCondition::Job {
+                                    handle: handle.clone(),
+                                }
+                            }
+                        }),
                         status: match e.status {
                             letibot_sessionlog::event::TodoStatus::Pending => {
                                 letibot_tokencore::store::TodoStatus::Pending

@@ -6738,10 +6738,19 @@ impl<'a> Harness<'a> {
     /// The store's todo shape, as the wire spells it. Two types because the two
     /// crates cannot share one — the protocol does not grow a storage dependency
     /// to save a `struct` — and one conversion because the fields are the same
-    /// three words.
+    /// four words.
     pub(crate) fn todo_entry(t: TodoItem) -> TodoEntry {
         TodoEntry {
             content: t.content,
+            // **The store's condition, as the WIRE spells it.** A `match` rather than a
+            // pass-through because the two crates keep their own copy of the type on purpose,
+            // so a variant has to be spelled on both sides — which is what makes an
+            // unevaluable condition a compile error instead of a row that waits for ever.
+            when: t.when.map(|c| match c {
+                letibot_tokencore::store::TodoCondition::Job { handle } => {
+                    letibot_sessionlog::event::TodoCondition::Job { handle }
+                }
+            }),
             by: match t.by {
                 letibot_tokencore::store::TodoBy::Model => letibot_sessionlog::event::TodoBy::Model,
                 letibot_tokencore::store::TodoBy::Operator => {

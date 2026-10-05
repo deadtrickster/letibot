@@ -138,6 +138,34 @@ pub struct TodoEntry {
     /// model's, which share this list, this format and this tool. See `TodoItem::by`.
     #[serde(default)]
     pub by: TodoBy,
+    /// **What the row waits on**, when it waits for something rather than simply being undone —
+    /// see `TodoItem::when` for the shape, for why a condition nobody can evaluate must never
+    /// read as *met*, and for why it is EVALUATED rather than observed (so a restart of either
+    /// side does not lose the firing).
+    ///
+    /// `serde(default)`, so a daemon older than this field and every row already written read
+    /// back as *unconditional*, which is what they were.
+    #[serde(default)]
+    pub when: Option<TodoCondition>,
+}
+
+/// **What a row waits on**, as the WIRE spells it — **a copy of
+/// `letibot_tokencore::store::TodoCondition`**, not a re-export, for the reason [`TodoBy`]
+/// above is already a copy: this crate is the wire, and a wire type that aliases a store type
+/// makes one crate's rename a protocol change. The conversion lives where the wire meets the
+/// store (harnessd's `todo_entry` and the head's `SetOperatorTodos` path), and it is a `match`,
+/// so a variant added on one side fails to compile on the other rather than arriving as a
+/// condition nobody can evaluate.
+///
+/// **The tag is the contract.** `kind` and the snake_case names are what an older head reads
+/// past and what a newer one reads by, so a new variant is additive: a reader that does not
+/// know it can say so instead of taking it for *met*.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TodoCondition {
+    /// **Due when this job is no longer running** — the handle `bash background: true` and
+    /// `task` hand back, and the one `job_list` prints.
+    Job { handle: String },
 }
 
 /// Why generation stopped.

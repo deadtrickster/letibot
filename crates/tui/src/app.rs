@@ -9973,6 +9973,7 @@ impl App {
                     letibot_sessionlog::event::TodoStatus::Pending
                 },
                 by: letibot_sessionlog::event::TodoBy::Operator,
+                when: None,
             });
         }
         let n = items.len();
@@ -10047,6 +10048,7 @@ impl App {
                     content: rest.to_string(),
                     status: letibot_sessionlog::event::TodoStatus::Pending,
                     by: letibot_sessionlog::event::TodoBy::Operator,
+                    when: None,
                 });
                 self.say(&format!("added to your list — {} row(s)", mine.len()));
             }
@@ -28437,11 +28439,13 @@ mod tests {
                 todos: vec![
                     letibot_sessionlog::event::TodoEntry {
                         by: letibot_sessionlog::event::TodoBy::Model,
+                        when: None,
                         content: "seat the tool".into(),
                         status: letibot_sessionlog::event::TodoStatus::Completed,
                     },
                     letibot_sessionlog::event::TodoEntry {
                         by: letibot_sessionlog::event::TodoBy::Model,
+                        when: None,
                         content: "render the pane".into(),
                         status: letibot_sessionlog::event::TodoStatus::InProgress,
                     },
@@ -28601,6 +28605,7 @@ mod tests {
                     content: "the model's own row".into(),
                     status: TodoStatus::Pending,
                     by: TodoBy::Model,
+                    when: None,
                 }],
             },
         )));
@@ -28631,11 +28636,13 @@ mod tests {
                         content: "the model's own row".into(),
                         status: TodoStatus::Pending,
                         by: TodoBy::Model,
+                        when: None,
                     },
                     TodoEntry {
                         content: "ship the parity row".into(),
                         status: TodoStatus::Pending,
                         by: TodoBy::Operator,
+                        when: None,
                     },
                 ],
             },
@@ -28757,6 +28764,7 @@ mod tests {
             by,
             content: content.into(),
             status: TodoStatus::Pending,
+            when: None,
         };
         let mut a = app();
         a.apply(hello(
@@ -28826,6 +28834,7 @@ mod tests {
             SessionEvent::TodosUpdated {
                 todos: vec![TodoEntry {
                     by: TodoBy::Operator,
+                    when: None,
                     content: "my own row".into(),
                     status: TodoStatus::Pending,
                 }],
@@ -29490,12 +29499,14 @@ mod tests {
                 todos: vec![
                     letibot_sessionlog::event::TodoEntry {
                         by: letibot_sessionlog::event::TodoBy::Model,
+                        when: None,
                         content: "seated".into(),
                         status: letibot_sessionlog::event::TodoStatus::Completed,
                     },
                     letibot_sessionlog::event::TodoEntry {
                         // A model's plan, which is also the field's serde default.
                         by: letibot_sessionlog::event::TodoBy::Model,
+                        when: None,
                         content: "seating".into(),
                         status: letibot_sessionlog::event::TodoStatus::InProgress,
                     },
@@ -31760,6 +31771,7 @@ mod tests {
             SessionEvent::TodosUpdated {
                 todos: vec![letibot_sessionlog::event::TodoEntry {
                     by: letibot_sessionlog::event::TodoBy::Model,
+                    when: None,
                     content: format!("tidy up{HOSTILE}"),
                     status: letibot_sessionlog::event::TodoStatus::Pending,
                 }],
@@ -37891,6 +37903,7 @@ mod tests {
                 content: "a model row".into(),
                 status: letibot_sessionlog::event::TodoStatus::Pending,
                 by: letibot_sessionlog::event::TodoBy::Model,
+                when: None,
             }],
         });
         // Add one of ours. No `TodosUpdated` is applied afterwards — the row must be on the
@@ -37919,6 +37932,7 @@ mod tests {
                 content: "the daemon's row".into(),
                 status: letibot_sessionlog::event::TodoStatus::Pending,
                 by: letibot_sessionlog::event::TodoBy::Operator,
+                when: None,
             }],
         });
         let after = a.screen(110, 30).join("\n");
@@ -45653,11 +45667,13 @@ mod tests {
                     content: "keep me".into(),
                     status: letibot_sessionlog::event::TodoStatus::Pending,
                     by: letibot_sessionlog::event::TodoBy::Operator,
+                    when: None,
                 },
                 letibot_sessionlog::event::TodoEntry {
                     content: "a model row".into(),
                     status: letibot_sessionlog::event::TodoStatus::Pending,
                     by: letibot_sessionlog::event::TodoBy::Model,
+                    when: None,
                 },
             ],
         });

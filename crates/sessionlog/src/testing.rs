@@ -270,11 +270,13 @@ pub fn one_of_each() -> Vec<SessionEvent> {
                     content: "read the harness".into(),
                     status: TodoStatus::Completed,
                     by: TodoBy::Model,
+                    when: None,
                 },
                 TodoEntry {
                     content: "render the pane".into(),
                     status: TodoStatus::Pending,
                     by: TodoBy::Model,
+                    when: None,
                 },
             ],
         },

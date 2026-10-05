@@ -1906,11 +1906,13 @@ mod tests {
                     content: "read the harness".into(),
                     status: crate::event::TodoStatus::Completed,
                     by: crate::event::TodoBy::Model,
+                    when: None,
                 },
                 crate::event::TodoEntry {
                     content: "render the pane".into(),
                     status: crate::event::TodoStatus::InProgress,
                     by: crate::event::TodoBy::Model,
+                    when: None,
                 },
             ],
         };
@@ -1920,6 +1922,53 @@ mod tests {
         assert!(json.contains(r#""status":"completed""#), "{json}");
         assert!(json.contains(r#""status":"in_progress""#), "{json}");
         assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
+    }
+
+    /// **A row's condition is TAGGED on the wire, and that tag is the contract.**
+    ///
+    /// The operator's shape: *"More like Option<TodoCondition> and then we can have many
+    /// conditions, and we can instantiate them programmatically or via a form"*. A tagged enum is
+    /// what makes a new kind ADDITIVE, and what lets a reader tell **a condition it does not know**
+    /// from **no condition at all** — the distinction `TodoItem::when` exists for, because a
+    /// condition nobody can evaluate must never read as *met*.
+    ///
+    /// Both halves of the round trip are asserted, and the literal `"kind":"job"` is the point:
+    /// this is the one fact two independently written heads have to agree about, so a rename here
+    /// is a wire change and must fail a test rather than quietly change a spelling.
+    #[test]
+    fn a_todo_condition_is_tagged_on_the_wire_and_survives_the_round_trip() {
+        let f = ServerFrame::Todos {
+            session_id: "s-1".into(),
+            todos: vec![crate::event::TodoEntry {
+                content: "push once CI lands".into(),
+                status: crate::event::TodoStatus::Pending,
+                by: crate::event::TodoBy::Operator,
+                when: Some(crate::event::TodoCondition::Job {
+                    handle: "j121".into(),
+                }),
+            }],
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(
+            json.contains(r#""when":{"kind":"job","handle":"j121"}"#),
+            "the condition's own spelling is the wire contract: {json}"
+        );
+        assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
+
+        // **And a row written before the field — no `when` at all — reads as unconditional**,
+        // which is what it was. Without this half, a head would refuse every row already in a
+        // store, and `serde(default)` would be a claim rather than a fact.
+        let old = json.replace(r#","when":{"kind":"job","handle":"j121"}"#, "");
+        assert!(!old.contains("when"), "the field was not removed: {old}");
+        let ServerFrame::Todos { todos, .. } =
+            serde_json::from_str::<ServerFrame>(&old).expect("a row with no condition reads")
+        else {
+            panic!("a todos frame")
+        };
+        assert_eq!(
+            todos[0].when, None,
+            "an absent condition is `None` — not an error, and not a default condition"
+        );
     }
 }
 
