@@ -7046,6 +7046,52 @@ impl<'a> Harness<'a> {
         let slice = host
             .output(&jid, offset, limit)
             .map_err(|e| e.to_string())?;
+        // **A job whose output was redirected to a file: the FILE is the window** (R41).
+        //
+        // The capture is empty by construction — the daemon gave the bytes to the file — so
+        // this used to answer with a sentence NAMING the path, and the operator's next ask was
+        // the obvious one: *"job pane can tail the file"*. It can, and the DAEMON does the
+        // reading: a head has no business reading the box's filesystem, and the path is this
+        // side's own record of where it sent the bytes.
+        //
+        // `offset == 0` is the TAIL — the last `limit` bytes — because that is what an output
+        // pane is for and what a fresh read means. Any other offset is a forward window from
+        // there, so the ring's own convention holds: `→` asks for the offset `next` named, and
+        // a reader can walk to the end of a long log.
+        if slice.produced == 0
+            && let Some(path) = letibot_tools::builtins::output_redirect_path(&view.command)
+        {
+            let state = view.state.word();
+            let never_ran = view.state.never_ran();
+            return Ok(match tail_file(&path, offset, limit) {
+                Some(w) => JobWindow {
+                    from: w.from,
+                    to: w.to,
+                    produced: w.produced,
+                    // Everything before the window was not shown: the pane says how much.
+                    dropped: w.from,
+                    state,
+                    never_ran,
+                    lines: progress_lines(&w.text),
+                    next: (w.to < w.produced).then_some(w.to),
+                },
+                // **The file is not there yet**, or it cannot be read. The sentence that names
+                // it is still the honest answer, and it names the command that would read it.
+                None => JobWindow {
+                    from: 0,
+                    to: 0,
+                    produced: 0,
+                    dropped: 0,
+                    state,
+                    never_ran,
+                    lines: vec![format!(
+                        "this job's output goes to `{path}` — the file is not there yet, or \
+                         could not be read. `tail -n 50 {path}`"
+                    )],
+                    next: None,
+                },
+            });
+        }
         Ok(JobWindow {
             from: slice.from,
             to: slice.to,
@@ -7054,23 +7100,68 @@ impl<'a> Harness<'a> {
             state: view.state.word(),
             never_ran: view.state.never_ran(),
             lines: if slice.produced == 0 {
-                // **Redirected: the capture is empty by construction, and the window says
-                // which file it went to** (R41) rather than an empty page the reader takes
-                // for a job that wrote nothing. The head's own empty-window cases
-                // (`job_out_lines`) cannot know this on an older daemon; this one can.
-                match letibot_tools::builtins::output_redirect_path(&view.command) {
-                    Some(path) => vec![format!(
-                        "this job's output goes to `{path}`, not to its window — the capture is \
-                         empty by construction. Read the file, or `tail -n` it."
-                    )],
-                    None => Vec::new(),
-                }
+                // **Empty, and the redirected case cannot reach here** — a job whose command
+                // redirects its output was answered from the FILE above. This used to name
+                // the path in a sentence, which was the honest answer before the pane could
+                // tail it; see the branch above.
+                Vec::new()
             } else {
                 progress_lines(&slice.text())
             },
             next: next_job_offset(&slice),
         })
     }
+}
+
+/// **The tail of a file, as the window a pane draws** — the file half of R41's redirected jobs.
+///
+/// `offset == 0` is the TAIL: the last `limit` bytes, which is what a fresh read of an output
+/// pane means. Any other offset is a forward window from there, so the caller can offer the
+/// next offset to `→` exactly as it does for a captured job.
+///
+/// `None` when the file cannot be opened or read — the job has not created it yet, or it is
+/// not this process's to read — and the caller then falls back to the sentence that names it.
+///
+/// **Bytes, not lines, and lossily decoded.** A log is a stream of bytes that happens to be
+/// mostly text; a window that refused to draw because one byte in the middle was not UTF-8
+/// would be a pane that refuses to show a build log. `progress_lines` does the rest — see it
+/// for why the carriage returns are the split's business.
+struct FileWindow {
+    from: u64,
+    to: u64,
+    /// The file's whole length, so the pane's `of N` is the file and not the window.
+    produced: u64,
+    text: String,
+}
+
+fn tail_file(path: &str, offset: u64, limit: usize) -> Option<FileWindow> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let produced = f.metadata().ok()?.len();
+    let limit = limit as u64;
+    let from = if offset == 0 {
+        produced.saturating_sub(limit)
+    } else {
+        offset.min(produced)
+    };
+    let end = if offset == 0 {
+        produced
+    } else {
+        produced.min(from.saturating_add(limit))
+    };
+    f.seek(SeekFrom::Start(from)).ok()?;
+    // **Read what is actually there**, not the length the metadata promised: a running job
+    // appends while this runs, and a file that grew between the two must not fail the read.
+    let mut buf = Vec::new();
+    f.take(end.saturating_sub(from))
+        .read_to_end(&mut buf)
+        .ok()?;
+    Some(FileWindow {
+        from,
+        to: from + buf.len() as u64,
+        produced,
+        text: String::from_utf8_lossy(&buf).into_owned(),
+    })
 }
 
 /// **The captured bytes, as lines a person can read** — and a progress bar is one line.
@@ -9481,6 +9572,52 @@ mod tests {
         assert_eq!(next_job_offset(&slice(992, 1000, 1000, 992, 8)), None);
         // And a window that stopped short of the retained tail still has a page.
         assert_eq!(next_job_offset(&slice(992, 996, 1000, 992, 8)), Some(996));
+    }
+
+    /// **THE WINDOW OF A REDIRECTED JOB IS THE FILE'S TAIL** — R41's other half, and the
+    /// operator's own next ask after the pane learned to name the file: *"job pane can tail
+    /// the file"*.
+    ///
+    /// `offset == 0` is the TAIL, because that is what a fresh read of an output pane means;
+    /// any other offset is a forward window from there, so `→` still walks to the end of a
+    /// long log the way it does for the ring.
+    #[test]
+    fn a_redirected_jobs_window_is_the_tail_of_its_file() {
+        let dir = std::env::temp_dir().join(format!("letibot-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let path = dir.join("build.log");
+        let body: String = (0..40).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&path, &body).expect("write");
+        let path = path.to_str().expect("utf-8 path");
+
+        // **A fresh read is the tail**: the last `limit` bytes, and the pane is told the
+        // FILE's length so its `of N` is the file and not the window.
+        let w = tail_file(path, 0, 20).expect("a window");
+        assert_eq!(w.produced, body.len() as u64);
+        assert_eq!(
+            w.to,
+            body.len() as u64,
+            "the tail ends at the end of the file"
+        );
+        assert_eq!(w.from, body.len() as u64 - 20);
+        assert_eq!(w.text.len(), 20);
+        assert!(w.text.ends_with("line 39\n"), "{:?}", w.text);
+
+        // **An explicit offset is a forward window**, which is what `next` hands to `→`.
+        let w2 = tail_file(path, w.from, 20).expect("a window");
+        assert_eq!(w2.from, w.from);
+        assert_eq!(w2.to, w.from + 20);
+
+        // A limit larger than the file is the whole file, not an error and not padding.
+        let all = tail_file(path, 0, 4096).expect("a window");
+        assert_eq!(all.from, 0);
+        assert_eq!(all.to, body.len() as u64);
+
+        // **A file that is not there is `None`** — the job has not created it yet — which is
+        // what the caller answers with the sentence that names the path.
+        assert!(tail_file(&dir.join("nope.log").to_string_lossy(), 0, 10).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     use super::*;
