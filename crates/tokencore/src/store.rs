@@ -279,7 +279,9 @@ pub struct ShapelessAdmit {
     pub arguments_json: String,
 }
 
-/// **14** since a session's resolved **context window** is on its row — `context_window`,
+/// **15** since the session's **job history** is a table of its own — `job`, one row per
+/// handle, described at its migration arm below and in [`JobRecord`]. **14** since a session's
+/// resolved **context window** is on its row — `context_window`,
 /// additive, described at its migration arm below. A child's window belongs to the model
 /// that answers it, and the number was otherwise knowable only at the moment it was used.
 /// **12** since the session row pairs its provider count with the LEDGER that count
@@ -288,7 +290,7 @@ pub struct ShapelessAdmit {
 /// (R12) — `oracle_reading`, additive, described at its migration arm below. **10** since it
 /// records whether an oracle was consulted and what it answered (R11), and **9** added
 /// `oracle_reply` for the same requirement.
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -390,6 +392,28 @@ CREATE TABLE IF NOT EXISTS todo (
     session_id  TEXT PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE,
     todos_json  TEXT NOT NULL,   -- JSON array of {content, status}
     updated_ms  INTEGER NOT NULL
+);
+
+-- **The job history.** The daemon's process table is memory and dies with it, so a handle
+-- the pane listed a moment ago answered `no job ... here` to the next daemon — about a job
+-- whose ending was written down. One row per handle per session, UPSERTED: a job has one
+-- state at a time and the settlement is the same job as the start. The append-only record of
+-- endings is the session's own log (`JobSettled`), which is a different question.
+--
+-- `state` is the listing's own word, and a `running` row here is **a job the daemon was
+-- watching when it died** — not a claim that it runs now. The live process host answers that;
+-- this row answers what happened.
+CREATE TABLE IF NOT EXISTS job (
+    session_id  TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+    handle      TEXT NOT NULL,
+    command     TEXT NOT NULL,
+    how         TEXT NOT NULL,
+    state       TEXT NOT NULL,
+    produced    INTEGER NOT NULL,
+    elapsed_ms  INTEGER NOT NULL,
+    redirect    TEXT,
+    updated_ms  INTEGER NOT NULL,
+    PRIMARY KEY (session_id, handle)
 );
 
 -- **The adjudication corpus.** Every decision this harness makes, and every
@@ -767,6 +791,42 @@ pub struct StoredSession {
     /// every check that would compact reads `let Some(window) = …` and is skipped, so a
     /// `None` here says the record cannot answer rather than that the session had room.
     pub context_window: Option<u64>,
+}
+
+/// **One job's row, as the session store keeps it** — the durable half of the process table.
+///
+/// The daemon's job table lives in the process host and dies with it, so a handle the pane
+/// listed a second ago answered `no job ... here` to the next daemon — *about a job whose
+/// ending was written down*. What the store holds is what the daemon cannot re-derive: that a
+/// job ran, what it was, and how it ended.
+///
+/// **Two writes, one row.** A job is on disk from the moment it is backgrounded (`state` is
+/// the listing's own word, `running` while it has not ended), and the settlement updates that
+/// same row; so a job still running when the daemon dies is on disk, and one that ended is not
+/// lost because nobody was watching.
+///
+/// **A `running` row here is a job the daemon was watching when it died — not a claim that it
+/// runs now.** Only the live process host can say that. This row answers what *happened*, which
+/// is why a reader that needs *is it running* asks the host first and reads this second.
+///
+/// `redirect` is here for R41's reason: a job whose output went to a file has a window that is
+/// empty by construction, and the path is the only thing that can say where to read instead.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct JobRecord {
+    /// The handle `bash background: true` handed back, and the one `job_list` prints.
+    pub handle: String,
+    /// What was run, verbatim — the row the model asked for and the operator reads.
+    pub command: String,
+    /// Who backgrounded it: `asked`, `operator`, `promoted`; the listing's own word.
+    pub how: String,
+    /// The listing's own word for how it ended, or `running` while it has not.
+    pub state: String,
+    /// Bytes produced, all streams together.
+    pub produced: u64,
+    /// Wall time from spawn to settlement.
+    pub elapsed_ms: u64,
+    /// Where its output went, when that was not this daemon's window (R41).
+    pub redirect: Option<String>,
 }
 
 /// One line of a session's todo list, as the model wrote it.
@@ -1289,6 +1349,31 @@ impl Store {
                 self.conn
                     .execute_batch("ALTER TABLE session ADD COLUMN context_window INTEGER")?;
             }
+        }
+        if from < 15 {
+            // v15: **the job history** — see [`JobRecord`] for what it is for.
+            //
+            // A table rather than a column, because a session has many jobs and each is its own
+            // row: the `todo` shape (one JSON blob per session) would make *one handle's fate* a
+            // whole-list read, and the reader that wants it is answering a question about one
+            // handle.
+            //
+            // `IF NOT EXISTS` for the same reason v6, v12, v13 and v14 are idempotent: a fixture
+            // walks a current store backwards, so the table can already be here.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS job (
+                     session_id  TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+                     handle      TEXT NOT NULL,
+                     command     TEXT NOT NULL,
+                     how         TEXT NOT NULL,
+                     state       TEXT NOT NULL,
+                     produced    INTEGER NOT NULL,
+                     elapsed_ms  INTEGER NOT NULL,
+                     redirect    TEXT,
+                     updated_ms  INTEGER NOT NULL,
+                     PRIMARY KEY (session_id, handle)
+                 );",
+            )?;
         }
         Ok(())
     }
@@ -1871,6 +1956,68 @@ impl Store {
             "INSERT INTO todo (session_id, todos_json, updated_ms) VALUES (?1, ?2, ?3)
              ON CONFLICT(session_id) DO UPDATE SET todos_json = ?2, updated_ms = ?3",
             params![session_id, serde_json::to_string(todos)?, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// **Every job this session has recorded**, ordered by when its row last moved — see
+    /// [`JobRecord`].
+    ///
+    /// `handle` breaks the tie, so two jobs written in the same millisecond do not come back in
+    /// an order that changes between calls: a listing that reorders itself costs the model its
+    /// prefix cache, which is the same reason the monitor registry orders by name.
+    pub fn jobs(&self, session_id: &str) -> Result<Vec<JobRecord>> {
+        let mut st = self.conn.prepare(
+            "SELECT handle, command, how, state, produced, elapsed_ms, redirect
+               FROM job WHERE session_id = ?1 ORDER BY updated_ms, handle",
+        )?;
+        let rows = st.query_map(params![session_id], |r| {
+            Ok(JobRecord {
+                handle: r.get(0)?,
+                command: r.get(1)?,
+                how: r.get(2)?,
+                state: r.get(3)?,
+                // `i64` out of SQLite and back into the `u64` the wire spells: rusqlite's
+                // `FromSql` has no `u64`, and a byte count that does not fit an `i64` is not
+                // a job this box will ever run — the same reading `Store::set_context` takes
+                // for a token count.
+                produced: r.get::<_, i64>(4)? as u64,
+                elapsed_ms: r.get::<_, i64>(5)? as u64,
+                redirect: r.get(6)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// **Write one job's row, replacing that handle's last one.**
+    ///
+    /// An upsert rather than an append: the row is a job and not a log line, so a job has one
+    /// state at a time and the settlement is the same job as the start. *The append-only record
+    /// of every ending* is the session's own log, which is a different question from *where is
+    /// this handle's row now* — and the reader that wants the second one is the pane.
+    pub fn put_job(&self, session_id: &str, job: &JobRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO job
+               (session_id, handle, command, how, state, produced, elapsed_ms, redirect, updated_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(session_id, handle) DO UPDATE SET
+               command = ?3, how = ?4, state = ?5, produced = ?6, elapsed_ms = ?7,
+               redirect = ?8, updated_ms = ?9",
+            params![
+                session_id,
+                job.handle,
+                job.command,
+                job.how,
+                job.state,
+                job.produced as i64,
+                job.elapsed_ms as i64,
+                job.redirect,
+                now_ms()
+            ],
         )?;
         Ok(())
     }
@@ -2819,6 +2966,157 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.todos("s-todo").unwrap().len(), 1);
+    }
+
+    /// **A job survives the daemon that ran it** — the whole point of the table, and the half
+    /// nothing could answer before it existed.
+    ///
+    /// The measured shape: the process table is memory, so a handle the pane listed a moment ago
+    /// answered `no job ... here` to the next daemon, *about a job whose ending was written
+    /// down*. This closes the store and reopens it, which is the only thing that proves the row
+    /// is on disk rather than in a cache the next daemon would not have.
+    #[test]
+    fn a_job_survives_the_daemon_that_ran_it() {
+        let dir = std::env::temp_dir().join(format!("letibot-jobs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+
+        let started = JobRecord {
+            handle: "j7".into(),
+            command: "cargo test --release".into(),
+            how: "asked".into(),
+            state: "running".into(),
+            produced: 0,
+            elapsed_ms: 12_000,
+            redirect: None,
+        };
+        {
+            let s = Store::open(&path).expect("a store");
+            // **The session row first**, because `job.session_id` is a foreign key and
+            // `foreign_keys` is on — a job belongs to a session the same way a transcript
+            // does. The daemon's own order gives this for free: the session row is written at
+            // open, and a job is only ever backgrounded inside a session.
+            s.put_session(&SessionRecord {
+                id: "s-jobs".into(),
+                title: Some("jobs".into()),
+                model_id: "qwen".into(),
+                dialect_sha: "sha".into(),
+                workspace_root: "/w".into(),
+                owner: "dead".into(),
+                role: None,
+                approvers: vec![],
+                parent_session_id: None,
+            })
+            .expect("the session row");
+            s.put_job("s-jobs", &started).expect("the job row");
+        }
+        {
+            let s = Store::open(&path).expect("the same store, a second daemon");
+            let back = s.jobs("s-jobs").expect("the job table reads");
+            assert_eq!(back.len(), 1, "the job did not come back: {back:?}");
+            assert_eq!(back[0], started, "the row came back changed");
+
+            // **And the settlement is the SAME row.** A job has one state at a time, so the
+            // second write updates it — a table that appended would make `jobs()` a history of
+            // states, when its caller wants one handle's fate.
+            let settled = JobRecord {
+                state: "exited 0".into(),
+                produced: 4_096,
+                ..started.clone()
+            };
+            s.put_job("s-jobs", &settled).expect("the settlement");
+            assert_eq!(
+                s.jobs("s-jobs").expect("reads"),
+                vec![settled],
+                "the settlement made a second row"
+            );
+            // **And a session that never ran a job reads empty** — "no jobs" and "the table
+            // is missing" have to be different answers or the second shows up as the first.
+            assert!(s.jobs("s-other").expect("reads").is_empty());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A store written before the job table gains one** — and this is the test that guards a
+    /// live box, which is at v14 today.
+    ///
+    /// Same fixture rule as the v1 and v2 tests: build a real store, reverse the step by hand with
+    /// `DROP TABLE`, walk the version back, and assert the migration puts back exactly what
+    /// `SCHEMA_SQL` would have. **A migration that only ever ran on an empty file would reach a
+    /// fresh checkout and no existing store** — which is the failure those tests were written for
+    /// and the reason this one exists rather than trusting `SCHEMA_SQL` alone.
+    #[test]
+    fn a_v14_store_is_migrated_and_gains_a_job_table() {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-migrate-v14-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _clean = Clean(path.clone());
+
+        {
+            let s = Store::open(&path).unwrap();
+            s.put_session(&SessionRecord {
+                id: "s-v14".into(),
+                title: None,
+                model_id: "m".into(),
+                dialect_sha: "sha".into(),
+                workspace_root: "/w".into(),
+                owner: "dead".into(),
+                role: Some("coder".into()),
+                approvers: vec![],
+                parent_session_id: None,
+            })
+            .unwrap();
+        }
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute("DROP TABLE job", []).unwrap();
+            c.execute("UPDATE schema_version SET version = 14", [])
+                .unwrap();
+            // Prove the fixture really is v14: the table is gone.
+            assert!(
+                c.query_row("SELECT 1 FROM job", [], |r| r.get::<_, i64>(0))
+                    .is_err(),
+                "the fixture still has a job table, so it is not a v14 store"
+            );
+        }
+
+        // Opening it runs the migration, and the table it added is a working one — not merely
+        // present: a `CREATE TABLE` that disagreed with `SCHEMA_SQL` would pass an existence check
+        // and fail on the first insert.
+        let s = Store::open(&path).unwrap();
+        let v: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        assert!(s.jobs("s-v14").unwrap().is_empty());
+        s.put_job(
+            "s-v14",
+            &JobRecord {
+                handle: "j1".into(),
+                command: "cargo build".into(),
+                how: "asked".into(),
+                state: "running".into(),
+                produced: 0,
+                elapsed_ms: 10,
+                redirect: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.jobs("s-v14").unwrap().len(), 1);
     }
 
     #[test]
