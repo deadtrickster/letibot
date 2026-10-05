@@ -13336,26 +13336,28 @@ impl App {
             segs.push(Seg::Borrowed(&gap));
         }
 
-        // **THE QUEUED ECHO IS DRAWN HERE — IMMEDIATELY BEFORE THE LIVE PANE, WHICH IS WHERE ITS
-        // ROW WILL LAND.**
+        // **THE QUEUED ECHO IS SPLIT BY ONE FACT, AND THE FACT DECIDES WHERE IT IS DRAWN.**
         //
-        // It used to be pushed after the turn pane, under a comment that said *"at the tail —
-        // the place their rows will land"*. That premise is false: a queued prompt's row is
-        // APPENDED to the transcript, and the live pane is drawn after every committed row, so
-        // the row lands HERE — above the turn — while the echo was starting below it. The
-        // operator saw the consequence twice: *"and again, i saw your reply before my message
-        // was unqueued"*, and then, naming it exactly: *"a message was queued to harnessd,
-        // delivered to model, reply started streaming above the queued message and then some
-        // tick goes off and queued message dequeued and rendered rightfully above the reply.
-        // pure ui desync."*
+        // **Words nothing has taken yet go to the TAIL — below the live pane.** The operator's own
+        // screen, 2026-10-05: *"queued above thinking"* — their words, and directly under them the
+        // turn's reasoning, which reads as though that working were the answer to words the daemon
+        // has not been given yet. There is no answer to those words, so nothing below them may
+        // look like one.
         //
-        // **The relationship that stays true is *immediately before the live pane*.** Rows
-        // committed afterwards arrive above BOTH the echo and the pane, so the echo stays glued
-        // to the pane's head — the same place the appended row takes the moment the daemon
-        // announces it, and the same place it keeps. The block brings its own leading blank,
-        // which is the air the landed row will have; without it the announcement still moved
-        // every row below it by one.
+        // **Words a row is already drawing stay HERE, glued above the pane.** That rule is the one
+        // this block used to apply to *everything*, and it is right for exactly this half: the row
+        // is committed above the pane and the reply to it streams below, so a prompt whose reply
+        // can already be streaming has to sit above that reply. The report it answers: *"a message
+        // was queued to harnessd, delivered to model, reply started streaming above the queued
+        // message and then some tick goes off and queued message dequeued and rendered rightfully
+        // above the reply. pure ui desync."*
         //
+        // **The fact is `claimed_by`, and it is the same fact the MARK reads** — a row is drawing
+        // these words, or nothing is. So a remainder stays with its row while an untaken entry
+        // waits at the tail, and the words move exactly once: at the moment the daemon takes them,
+        // which is a change of state and not a rendering artefact. Nothing else about the two
+        // blocks differs — both are `queued_lines` through the same marks.
+        let mut tail_echo: Vec<String> = Vec::new();
         // The prompts this head has sent that the transcript does not hold yet. See
         // `pending_prompts` for why this is the head's own queue and not the hub's.
         if !self.pending_prompts.is_empty() {
@@ -13366,7 +13368,7 @@ impl App {
             // every row between them when the announcement arrived — the same desync, one row out.
             // Measured: with the blank in front, the announcement lifts the echo by one; with it
             // behind, the frame is identical.
-            let mut owned: Vec<String> = Vec::new();
+            let mut taken: Vec<String> = Vec::new();
             let open = self.echo_open;
             let unconfirmed = self.unconfirmed.clone();
             // **The pieces the rows above are already drawing, taken out of the queue** —
@@ -13410,13 +13412,21 @@ impl App {
                     Some(_) => UNCONFIRMED,
                     None => echo_mark(&unconfirmed, key, false),
                 };
-                owned.extend(queued_lines(&drawn, &cfg, mark, open));
+                // **The split, at the one place the fact is known.** A remainder has a row
+                // drawing its head, so the rest of it belongs under that row; an entry nothing has
+                // taken waits at the tail until the daemon does.
+                let lines = queued_lines(&drawn, &cfg, mark, open);
+                if claimed_by.is_some() {
+                    taken.extend(lines);
+                } else {
+                    tail_echo.extend(lines);
+                }
             }
             // The trailing blank is the air the landed row will have, so it goes if the block is
             // empty: a lone blank row above the pane is a row of nothing.
-            if !owned.is_empty() {
-                owned.push(String::new());
-                segs.push(Seg::Owned(owned));
+            if !taken.is_empty() {
+                taken.push(String::new());
+                segs.push(Seg::Owned(taken));
             }
         }
 
@@ -13623,6 +13633,17 @@ impl App {
             if let Some(s) = state {
                 segs.push(Seg::Owned(turn_footer(&cfg, s)));
             }
+        }
+
+        // **THE UN-TAKEN WORDS WAIT BELOW THE PANE**, and the leading blank is what keeps them
+        // from reading as the last line of the working. See the split's own comment above: the
+        // pane's rows are the turn in flight and nothing in them is an answer to words the daemon
+        // has not taken, so those words belong under them — where the reader put them, and next to
+        // the composer they are waiting at. The moment the daemon takes them they move up into
+        // their row instead, and both reports this ordering answers are quoted at that comment.
+        if !tail_echo.is_empty() {
+            segs.push(Seg::Owned(vec![String::new()]));
+            segs.push(Seg::Owned(tail_echo));
         }
 
         // **A fill the daemon NAMED, with a bar when it is big enough to want one.**
@@ -23148,25 +23169,26 @@ mod tests {
         assert!(a.pending_prompts.is_empty());
     }
 
-    /// **The echo does not move when its row is announced** — the operator's own report, and the
-    /// reason the block above is drawn where it is.
+    /// **The waiting words sit below the working, and move up when the daemon takes them** — two
+    /// operator reports, and they are the two halves of one rule.
     ///
-    /// *"A message was queued to harnessd, delivered to model, reply started streaming above the
+    /// *"queued above thinking"* (their screen, 2026-10-05) is the half that was wrong. Their
+    /// words, and directly under them the running turn's reasoning — and nothing answers those
+    /// words, because the daemon has not been given them, so nothing under them may look like an
+    /// answer. While nothing has taken them they belong at the tail, and the reply to the
+    /// PREVIOUS prompt is above them, where it belongs.
+    ///
+    /// *"a message was queued to harnessd, delivered to model, reply started streaming above the
     /// queued message and then some tick goes off and queued message dequeued and rendered
-    /// rightfully above the reply. pure ui desync."*
+    /// rightfully above the reply. pure ui desync."* is the half that must not come back — and it
+    /// is why the move happens at the moment the daemon TAKES the words: from then on the echo is
+    /// above the pane by construction, so no reply to it can appear over it.
     ///
-    /// The echo used to be pushed AFTER the live pane, under a comment that said *"at the tail —
-    /// the place their rows will land"*. It is not: a queued row is appended to the transcript,
-    /// and the live pane is drawn after every committed row, so the row lands ABOVE the pane. The
-    /// echo started below it and crossed the reply when the announcement arrived.
-    ///
-    /// **What is asserted is stronger than *in the right place*: the frame is the same frame.**
-    /// Row for row, before the announcement and after it — because a row that has been announced
-    /// and has no body yet still wears the `queued` mark, the two frames are identical, and the
-    /// announcement is invisible. That is what a queued prompt should be: the reader's own
-    /// sentence, sitting still, waiting.
+    /// **The move is asserted as a move, because the move is the ruling.** What is deliberately
+    /// not asserted is that the frame is the same frame — it is not, and it must not be: the two
+    /// facts are different facts, and the frame is the one place that says which one holds.
     #[test]
-    fn a_queued_echo_does_not_move_when_its_row_is_announced() {
+    fn a_queued_echo_waits_below_the_working_until_the_daemon_takes_it() {
         let mut a = app();
         a.apply(hello(
             "s",
@@ -23200,9 +23222,10 @@ mod tests {
             .position(|l| l.contains("R2 the reply"))
             .expect("the reply is on the screen");
         assert!(
-            echo < reply,
-            "**the echo is ABOVE the reply — where its row will land**, and the first cut had it
- below: {before_text}"
+            reply < echo,
+            "**the waiting words are BELOW the working**: the daemon has not taken them, so the \
+             reply to the PREVIOUS prompt must not read as an answer to them — and the operator read \
+             exactly that as *queued above thinking*:\n{before_text}"
         );
 
         // The daemon appends the row at its step boundary and announces it.
@@ -23226,20 +23249,33 @@ mod tests {
             !after_text.contains("▌ queued · ") && !after_text.contains("▌ unconfirmed · "),
             "the announced row still carries a queued claim: {after_text}"
         );
-        // The rows that are not the echo are identical, row for row.
-        let strip = |v: &[String]| -> Vec<String> {
-            v.iter()
-                .map(|l| {
-                    l.replace("▌ queued · ", "▌ ")
-                        .replace("▌ unconfirmed · ", "▌ ")
-                })
-                .collect()
-        };
+        // **And the move is the ruling.** From this moment the words are above the reply, which is
+        // the half of the report that must not come back: *"reply started streaming above the
+        // queued message … pure ui desync."*
+        let words_after = after
+            .iter()
+            .position(|l| l.contains("Q2 the message"))
+            .expect("the words are on the screen");
+        let reply_after = after
+            .iter()
+            .position(|l| l.contains("R2 the reply"))
+            .expect("the reply is on the screen");
+        assert!(
+            words_after < reply_after,
+            "once the daemon has taken the words they sit ABOVE the reply, so no reply to them can \
+             appear over them:\n{after_text}"
+        );
+        // **The move is a move and not a second drawing.** Whatever else changes, the reader's own
+        // sentence is on the screen exactly once, in each frame.
         assert_eq!(
-            strip(&before),
-            strip(&after),
-            "**not one row MOVES across the announcement** — same words, same place; what changed \
-             is the mark, and the mark is the news"
+            before_text.matches("Q2 the message").count(),
+            1,
+            "{before_text}"
+        );
+        assert_eq!(
+            after_text.matches("Q2 the message").count(),
+            1,
+            "{after_text}"
         );
     }
 
@@ -37785,13 +37821,19 @@ mod tests {
         ];
 
         assert!(a.choice_ready("local"), "the daemon's own server");
-        assert!(a.choice_ready("dense78"), "a declared local model needs no key");
+        assert!(
+            a.choice_ready("dense78"),
+            "a declared local model needs no key"
+        );
         assert!(
             a.choice_ready("dense78 (qwen-3.8-27b at http://192.168.1.78:8082)"),
             "the row for a session already on it -- the first WORD is the name, and \
              splitting on `/` would land inside the url"
         );
-        assert!(a.choice_ready("deepseek/deepseek-flash"), "a key this box holds");
+        assert!(
+            a.choice_ready("deepseek/deepseek-flash"),
+            "a key this box holds"
+        );
         assert!(
             !a.choice_ready("grok/grok-4.3"),
             "a preset with no key is still not ready"
@@ -40775,20 +40817,21 @@ mod tests {
         );
     }
 
-    /// **The frame does not change height when the echo's row lands** — R51 item 13's third
-    /// *must not differ*, and the clause most able to rot quietly.
+    /// **The waiting words are the only row that moves when the daemon takes them** — R51 item 13's
+    /// third *must not differ*, as it now stands, and the clause most able to rot quietly.
     ///
     /// An echo is words plus the air a landed row has, and a committed row is words plus the
-    /// separator's blank — so the two occupy the same rows and the live pane below does not jump
-    /// when the announcement arrives. Get it wrong (put the air BEFORE the echo, or give the
-    /// landed row one and not the other) and every row between the echo and the composer moves by
-    /// one at the moment the operator's own message lands, which is exactly when they are looking
-    /// at it.
+    /// separator's blank — so the two occupy the same rows and **no other row of the frame changes**
+    /// when the announcement arrives. Get it wrong — put the air before the echo, or let the wait
+    /// carry furniture of its own — and every row between the echo and the composer shifts at the
+    /// moment the operator's own message lands, which is exactly when they are looking at it.
     ///
-    /// Asserted as *where the live pane sits*, not as a line count: the pane's row is the thing a
-    /// reader watches, and a count can be preserved by two errors that cancel.
+    /// **The words themselves DO move, by the ruling in `body_window`**: while nothing has taken
+    /// them they wait below the live pane, and the announcement is the daemon taking them, so they
+    /// go up into their row's own place. Both halves are asserted here — the move, and that it is
+    /// the only thing that moves — because either one alone is satisfied by a frame that is wrong.
     #[test]
-    fn the_frame_does_not_change_height_when_the_echo_lands() {
+    fn the_waiting_words_are_the_only_row_that_moves_when_the_daemon_takes_them() {
         let mut a = app();
         a.apply(hello(
             "s",
@@ -40841,10 +40884,30 @@ mod tests {
             after.iter().any(|l| l.contains("a queued line")),
             "and the words are still on the screen, as a settled row: {after:?}"
         );
+        // **Every other row, in order and in content.** Blank rows are dropped, and that is a
+        // deliberate weakening: the wait's leading air and the landed row's separator are blanks in
+        // different places, the subject here is whether a ROW moved, and a comparison that counted
+        // blanks would be measuring the padding a tall screen adds.
+        let others = |screen: &[String]| -> Vec<String> {
+            screen
+                .iter()
+                .filter(|l| !l.trim().is_empty() && !l.contains("a queued line"))
+                .cloned()
+                .collect()
+        };
         assert_eq!(
-            words_row(&after),
-            was,
-            "their own words moved a row when the row that replaces the echo landed"
+            others(&before),
+            others(&after),
+            "a row other than the waiting words moved when the daemon took them:\n\
+             before: {before:?}\nafter: {after:?}"
+        );
+        // **And the move itself is the ruling**, so it is asserted rather than tolerated: the words
+        // were below the pane and are now above it. A test that pinned the index would be pinning
+        // the ordering the operator had removed.
+        assert!(
+            words_row(&after) < was,
+            "the words did not move up when the daemon took them: row {was} → row {}",
+            words_row(&after)
         );
     }
 
