@@ -464,6 +464,25 @@ pub fn models_listing(current: &str) -> Vec<String> {
     lines.push(
         "  local the llama.cpp server this daemon was started against   /models local".into(),
     );
+    // **This fleet's own models, above the presets**, because they cost nothing and
+    // a listing that buries them under five metered providers is a listing that
+    // reads as "the choices are cloud".
+    for m in letibot_provider::keys::local_models(None) {
+        let sampling = if m.profile.sampling.is_empty() {
+            "the built-in sampling".to_string()
+        } else {
+            m.profile
+                .sampling
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        lines.push(format!(
+            "  {:<16} {:<18} at {}   {sampling}   /models {}",
+            m.name, m.model, m.url, m.name
+        ));
+    }
     for p in letibot_provider::presets::ALL {
         let auth = match letibot_provider::keys::resolve(p, None, None) {
             Ok(c) => format!("key from {}", c.from),
@@ -486,6 +505,30 @@ pub fn models_listing(current: &str) -> Vec<String> {
     lines
 }
 
+/// **What `/models NAME` resolved to.** Three kinds, because there are three,
+/// and an `Option<ProviderConfig>` could only say two.
+///
+/// It was `Option<ProviderConfig>`: `Some` a metered provider, `None` the daemon's
+/// own server. A declared local model is neither — it takes the local path and moves
+/// where that path points — and squeezing it into `None` would have made "back to
+/// this daemon's model" and "over to the 27B on .78" the same value.
+///
+/// **Two of the three are local**, and that is the axis this tree already turns on:
+/// local means the prefix is reusable, the tokens are counted here against this
+/// session's own vocabulary, and nothing is billed. `metered` is the other side of
+/// that line. A box on the LAN is on the local side of it, so it is `Local` rather
+/// than a third category named for the fleet.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelChoice {
+    /// `/models local` — this daemon's own server, exactly as it was started.
+    OwnServer,
+    /// **A local model this fleet declares** — a `[model."…"]` block with a url.
+    /// No key, no meter, tokenized here like any other local model.
+    Local(letibot_provider::keys::LocalModel),
+    /// A cloud preset, metered.
+    Metered(ProviderConfig),
+}
+
 /// Resolve a `/models PROVIDER[/MODEL] [--key K]` into a config for THIS session.
 ///
 /// It stores a pasted key and nothing else. The standing choice is
@@ -495,12 +538,45 @@ pub fn models_choice(
     model: Option<&str>,
     key: Option<&str>,
     file: Option<&std::path::Path>,
-) -> Result<(Option<ProviderConfig>, Vec<String>), Vec<String>> {
+) -> Result<(ModelChoice, Vec<String>), Vec<String>> {
     let mut notes = Vec::new();
     if provider == "local" {
-        return Ok((None, notes));
+        return Ok((ModelChoice::OwnServer, notes));
     }
-    let preset = letibot_provider::Preset::parse(provider).map_err(|e| vec![e])?;
+    // **The operator's own names first.** A fleet block is something they wrote in
+    // their own file; a preset is a name this binary ships. If the two ever collide,
+    // the file wins, because the person who typed the name also typed the block.
+    if let Some(m) = letibot_provider::keys::local_models(file)
+        .into_iter()
+        .find(|m| m.name == provider)
+    {
+        if !m.profile.unknown.is_empty() {
+            notes.push(format!(
+                "[model.\"{}\"] has keys this does not read: {}",
+                m.name,
+                m.profile.unknown.join(", ")
+            ));
+        }
+        return Ok((ModelChoice::Local(m), notes));
+    }
+    let preset = letibot_provider::Preset::parse(provider).map_err(|e| {
+        let fleet = letibot_provider::keys::local_models(file);
+        if fleet.is_empty() {
+            vec![e]
+        } else {
+            vec![
+                e,
+                format!(
+                    "  this fleet declares: {}",
+                    fleet
+                        .iter()
+                        .map(|m| m.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ]
+        }
+    })?;
     if let Some(k) = key {
         match letibot_provider::keys::store_key(file, preset.name, k) {
             Ok(f) => notes.push(format!(
@@ -522,7 +598,7 @@ pub fn models_choice(
         ]);
     }
     Ok((
-        Some(ProviderConfig {
+        ModelChoice::Metered(ProviderConfig {
             name: preset.name.to_string(),
             model: model.map(str::to_string),
             api_key: None,
@@ -638,6 +714,95 @@ pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> Slas
 
 #[cfg(test)]
 mod tests {
+
+    /// **A fleet model is selectable by name**, and it is not a provider: no key is
+    /// looked for and none is needed.
+    #[test]
+    fn a_fleet_block_is_a_choice_models_can_resolve() {
+        let f = fleet_file("a_fleet_block_is_a_choice");
+        let (choice, notes) = models_choice("dense78", None, None, Some(&f)).expect("resolving");
+        match choice {
+            ModelChoice::Local(m) => {
+                assert_eq!(m.name, "dense78");
+                assert_eq!(m.model, "qwen-3.8-27b");
+                assert_eq!(m.url, "http://192.168.1.78:8082");
+                assert_eq!(
+                    m.profile.sampling.get("temperature").unwrap().as_f64(),
+                    Some(0.7)
+                );
+                assert_eq!(
+                    m.profile
+                        .sampling
+                        .get("thinking_budget_tokens")
+                        .unwrap()
+                        .as_i64(),
+                    Some(1024),
+                    "a llama.cpp knob survives: this is not the OpenAI shape"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    /// **The operator's own names come first.** The file is theirs; the preset list is
+    /// this binary's. A collision resolves to the thing the person typed a block for.
+    #[test]
+    fn a_fleet_name_wins_over_a_preset_of_the_same_name() {
+        let f = tmp_file(
+            "a_fleet_name_wins",
+            "[model.\"grok\"]\nurl = \"http://192.168.1.78:8082\"\nmodel = \"qwen-3.8-27b\"\n",
+        );
+        let (choice, _) = models_choice("grok", None, None, Some(&f)).expect("resolving");
+        assert!(
+            matches!(&choice, ModelChoice::Local(m) if m.model == "qwen-3.8-27b"),
+            "{choice:?}"
+        );
+    }
+
+    /// **A name nobody declared lists what is declared.** The old refusal named the
+    /// five presets and stopped, which on a box whose models are all in that file
+    /// answers a question the operator was not asking.
+    #[test]
+    fn an_unknown_name_names_this_fleets_own_models() {
+        let f = fleet_file("an_unknown_name_names");
+        let e = models_choice("dense97", None, None, Some(&f)).unwrap_err();
+        assert!(
+            e.iter().any(|l| l.contains("dense78")),
+            "the refusal shows what this fleet has: {e:?}"
+        );
+    }
+
+    /// A key the reader does not know is reported when the choice is made, not
+    /// swallowed into a profile that silently lacks it.
+    #[test]
+    fn a_misspelled_sampling_key_is_reported_on_the_switch() {
+        let f = tmp_file(
+            "a_misspelled_key_on_switch",
+            "[model.\"dense78\"]\nurl = \"http://192.168.1.78:8082\"\ntemperatuer = 0.7\n",
+        );
+        let (_, notes) = models_choice("dense78", None, None, Some(&f)).expect("resolving");
+        assert!(notes.iter().any(|n| n.contains("temperatuer")), "{notes:?}");
+    }
+
+    fn tmp_file(tag: &str, body: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("letibot-slash-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&d).expect("scratch");
+        let f = d.join("providers.toml");
+        std::fs::write(&f, body).expect("write");
+        f
+    }
+
+    fn fleet_file(tag: &str) -> std::path::PathBuf {
+        tmp_file(
+            tag,
+            "[model.qwen]\neffort = \"low\"\n\n\
+             [model.\"dense78\"]\nurl = \"http://192.168.1.78:8082\"\n\
+             model = \"qwen-3.8-27b\"\ntemperature = 0.7\ntop_p = 0.8\ntop_k = 20\n\
+             min_p = 0\npresence_penalty = 1.5\nmax_tokens = 2048\n\
+             thinking_budget_tokens = 1024\n",
+        )
+    }
 
     /// **`/supervise` is one word.**
     ///
@@ -825,7 +990,10 @@ mod tests {
         let f = d.join("providers.toml");
         let (choice, notes) =
             models_choice("grok", None, Some("xai-test"), Some(&f)).expect("choosing");
-        assert!(choice.is_some(), "the session switches");
+        assert!(
+            matches!(choice, ModelChoice::Metered(_)),
+            "the session switches: {choice:?}"
+        );
         assert!(
             notes.join("\n").contains("stored the grok key"),
             "{notes:?}"
@@ -890,7 +1058,10 @@ mod tests {
         }
         let (choice, notes) =
             models_choice("grok", Some("grok-4-fast"), Some("xai-test"), Some(&f)).unwrap();
-        assert_eq!(choice.as_ref().map(|c| c.name.as_str()), Some("grok"));
+        assert!(
+            matches!(&choice, ModelChoice::Metered(pc) if pc.name == "grok"),
+            "{choice:?}"
+        );
         assert!(
             notes.iter().any(|n| n.contains("stored the grok key")),
             "{notes:?}"
@@ -903,8 +1074,8 @@ mod tests {
             "{notes:?}"
         );
         assert!(letibot_provider::keys::default_choice(Some(&f)).is_none());
-        let (none, _) = models_choice("local", None, None, Some(&f)).unwrap();
-        assert!(none.is_none());
+        let (local, _) = models_choice("local", None, None, Some(&f)).unwrap();
+        assert_eq!(local, ModelChoice::OwnServer);
         assert!(models_choice("openai", None, None, Some(&f)).unwrap_err()[0].contains("five"));
     }
 

@@ -4233,6 +4233,142 @@ impl<'a> Harness<'a> {
         self.monitors.as_ref()
     }
 
+    /// **Switch to a model this fleet hosts** — `/models dense78`.
+    ///
+    /// Declared in `providers.toml` as a `[model."…"]` block with an address; see
+    /// [`letibot_provider::keys::LocalModel`]. These are `local` in every sense that
+    /// matters here: no key, no meter, an OpenAI-compatible or llama.cpp server on the
+    /// LAN. So this takes the local path — `provider` cleared — and moves where that
+    /// path points.
+    ///
+    /// # Why it verifies the vocabulary before it moves
+    ///
+    /// The engine tokenizes HERE, with this daemon's GGUF, and sends token ids. Point
+    /// it at a server holding different weights and nothing fails: the ids are valid
+    /// numbers and mean other words. That is silent corruption of the one thing a
+    /// transcript is for, so a switch that cannot show the weights match does not
+    /// happen.
+    ///
+    /// Three outcomes, and each is a sentence rather than a shrug:
+    ///
+    ///   * `/props` names the same GGUF this daemon tokenizes with — switch.
+    ///   * `/props` names a different one — refuse, and print both names.
+    ///   * nothing answers, or `/props` names no model at all (a proxy, a server
+    ///     without it) — refuse, and name the block key that asserts it by hand.
+    ///     An operator saying *"I know these are the same weights"* is a decision on
+    ///     the record; this guessing it would not be.
+    pub fn set_local_model(
+        &mut self,
+        m: &letibot_provider::keys::LocalModel,
+    ) -> Result<String, HarnessError> {
+        let want = parse_local_url(&m.url)
+            .map_err(|e| HarnessError::Setup(format!("[model.\"{}\"] {e}", m.name)))?;
+        if let Some(why) = local_model_vocab_refusal(&want, m, &self.cfg.vocab_gguf) {
+            return Err(HarnessError::Setup(why));
+        }
+
+        // Off any metered provider first, and by its own door, so the ledger scale and
+        // the restored window are handled where that is understood. Its report is
+        // discarded deliberately: it describes a move to the daemon's own server, which
+        // is a waypoint here rather than where this switch lands.
+        self.set_provider(None)?;
+
+        // **The engine is what actually holds the address** — `cfg.endpoint` is the
+        // record and `engine.endpoint` is where `/completion` is posted. Writing one
+        // and not the other is how a switch reports a move it did not make.
+        self.cfg.endpoint = want.clone();
+        self.engine.endpoint = want.clone();
+        self.cfg.model = m.model.clone();
+        self.engine.model = m.model.clone();
+        if !m.profile.sampling.is_empty() {
+            let sampling = serde_json::Value::Object(m.profile.sampling.clone());
+            self.cfg.sampling = sampling.clone();
+            self.engine.sampling = sampling;
+        }
+        // A different box is a different KV cache and a different window; the ratio
+        // measured on the old one is not evidence about this one.
+        self.cfg.ledger_scale = None;
+        let moved = self.retune_window_local(&want, &m.name, m.profile.window);
+        let line = format!(
+            "turns go to `{}` at {} from the next one on (fleet, no meter){}{moved}",
+            m.model,
+            want.authority(),
+            if m.profile.sampling.is_empty() {
+                String::new()
+            } else {
+                format!(", sampling {}", render_sampling(&m.profile.sampling))
+            }
+        );
+        Ok(line)
+    }
+
+    /// **Point `context_window` at the box that will answer** — the fleet half of
+    /// [`Harness::retune_window`], reading the server instead of the catalogue.
+    ///
+    /// This is not symmetry for its own sake. Measured on this fleet the day the
+    /// switch landed: `127.0.0.1:8080` serves the 27B at `n_ctx` 262144 and
+    /// `192.168.1.78:8082` serves **the same GGUF** at 57344. Without this the
+    /// switch inherited the window this daemon started with, so a session that moved
+    /// to .78 planned compaction against 262144 tokens on a server holding 57344 —
+    /// and the conversation would run off the end of the KV cache with every local
+    /// check saying there was room. The weights matching is exactly what made it
+    /// easy to miss: the vocabulary check passes, and the window is the thing that
+    /// does not travel with it.
+    ///
+    /// A server that will not report `n_ctx` leaves the window `None`, which is this
+    /// config's word for *no wall* rather than for a large one — the same reading
+    /// `cli` takes for a local endpoint that will not say. It is said out loud,
+    /// because planning against nothing is a decision the operator should see.
+    fn retune_window_local(
+        &mut self,
+        want: &Endpoint,
+        name: &str,
+        stated: Option<u64>,
+    ) -> String {
+        // Remembered on the way out, so `/models local` restores the server this
+        // daemon was started against rather than keeping another box's number. Same
+        // write site and same mirror as `retune_window`, so the two cannot disagree.
+        if self.local_window.is_none() {
+            self.local_window = Some(self.cfg.context_window);
+            if let Ok(mut g) = self.local_window_cell.lock() {
+                *g = self.local_window;
+            }
+        }
+        let was = self.cfg.context_window;
+        // **A stated window beats the probe**, for the same reason `--context-window`
+        // beats `/props` at startup: the operator naming a number is them telling the
+        // daemon something it cannot work out, and the case the key exists for is a
+        // proxy whose `/props` answers about itself rather than the server behind it.
+        let now = stated.or_else(|| letibot_turn::serving::served_ctx(want));
+        self.cfg.context_window = now;
+        match now {
+            Some(w) if Some(w) == was => String::new(),
+            Some(w) => {
+                let resident = self.session.ledger.len() as u64;
+                let mut said = match was {
+                    Some(old) => format!(". Context window {old} → {w}"),
+                    None => format!(". Context window now {w}"),
+                };
+                // The consequence, not just the number — `retune_window`'s own rule:
+                // being told after the turn that it had to compact is being told
+                // too late. A move to a SMALLER box is where this bites, and that is
+                // the ordinary direction for a fleet switch.
+                if resident + self.cfg.headroom() >= w {
+                    said.push_str(&format!(
+                        "; this conversation is {resident} token(s), so the next turn \
+                         compacts first"
+                    ));
+                }
+                said
+            }
+            None => format!(
+                ". {} did not report an n_ctx, so there is no wall to plan against — \
+                 put a window on [model.\"{name}\"] or expect no compaction",
+                want.authority()
+            ),
+        }
+    }
+
     /// **Switch what answers this session's turns**, underneath the conversation.
     /// `None` is the local server. The transcript, the ledger and the tools are
     /// untouched: the next turn simply goes elsewhere. Returns a line saying what
@@ -6962,15 +7098,26 @@ impl<'a> Harness<'a> {
             return None;
         }
         match crate::slash::models_choice(&name, model.as_deref(), None, None) {
-            Ok((Some(choice), _)) => match self.set_provider(Some(choice)) {
+            Ok((crate::slash::ModelChoice::Metered(choice), _)) => {
+                match self.set_provider(Some(choice)) {
+                    Ok(_) => Some(format!("restored to {stored}")),
+                    Err(e) => Some(format!("could not restore {stored}: {e}")),
+                }
+            }
+            // **A fleet model is restored through its own door**, which re-checks the
+            // vocabulary. That check is not ceremony on a resume: the daemon being
+            // resumed INTO may have been started on different weights than the one
+            // that stored the row, and a restore that skipped it would be the one
+            // path into exactly the corruption `set_local_model` exists to refuse.
+            Ok((crate::slash::ModelChoice::Local(m), _)) => match self.set_local_model(&m) {
                 Ok(_) => Some(format!("restored to {stored}")),
                 Err(e) => Some(format!("could not restore {stored}: {e}")),
             },
-            // `Ok((None, _))` is `models_choice("local")`, and `local` is handled
-            // by name above — a row that reached here as `None` would mean the store
+            // `ModelChoice::Local` is `models_choice("local")`, and `local` is handled
+            // by name above — a row that reached here as local would mean the store
             // spelled a switch to the local server some other way, and the honest
             // answer is the daemon default rather than a panic on a fact nobody wrote.
-            Ok((None, _)) | Err(_) => Some(format!(
+            Ok((crate::slash::ModelChoice::OwnServer, _)) | Err(_) => Some(format!(
                 "could not restore {stored}: this build does not know that provider, so the \
                  daemon's own default answers"
             )),
@@ -8137,6 +8284,16 @@ pub struct SubagentModel {
     pub provider: Option<crate::config::ProviderConfig>,
     /// The window to plan compaction against, `None` when nobody knows one.
     pub window: Option<u64>,
+    /// **A declared local model the child runs on**, instead of the daemon's own server.
+    ///
+    /// The operator, 2026-10-05: *"models from providers.toml must be usable for
+    /// subagents"*. `provider` cannot carry one — it is `None` for local and a cloud
+    /// preset otherwise — and overloading `None` to mean *either* the daemon's server
+    /// *or* some other box is the same conflation `ModelChoice` was widened to end.
+    ///
+    /// The child still tokenizes with the daemon's vocabulary, so the spawn path runs
+    /// [`local_model_vocab_refusal`] against it exactly as a session switch does.
+    pub local: Option<letibot_provider::keys::LocalModel>,
 }
 
 /// **The child's window, or the refusal that names the knob** — pure, so both halves are
@@ -8190,8 +8347,23 @@ fn runs_on_the_parents_model(
     }
 }
 
-/// See [`SubagentModel`]. `want` is `local` or `PROVIDER[/MODEL]`.
+/// See [`SubagentModel`]. `want` is `local`, a declared local model, or
+/// `PROVIDER[/MODEL]`.
 pub fn subagent_model(
+    want: &str,
+    local_window: Option<Option<u64>>,
+) -> Result<SubagentModel, Vec<String>> {
+    subagent_model_in(None, want, local_window)
+}
+
+/// [`subagent_model`] against a named `providers.toml`.
+///
+/// The file is a parameter for the reason [`crate::slash::models_choice`]'s is: the
+/// declared local models are read from it, so a test that cannot name one is a test
+/// of whatever happens to be in the operator's config. The public entry point passes
+/// `None`, which is the real file.
+pub fn subagent_model_in(
+    file: Option<&std::path::Path>,
     want: &str,
     local_window: Option<Option<u64>>,
 ) -> Result<SubagentModel, Vec<String>> {
@@ -8204,6 +8376,9 @@ pub fn subagent_model(
             // out to a provider, or whatever `None` means — *nobody measured one* — rather
             // than the cloud model's number wearing the local child's name.
             window: local_window.flatten(),
+            // `local` names a DECLARED model; bare `local` is the daemon's own server,
+            // which needs no declaration and takes none.
+            local: None,
         });
     }
     let (provider, model) = match want.split_once('/') {
@@ -8211,7 +8386,7 @@ pub fn subagent_model(
         _ => (want, None),
     };
     let (pc, _notes) =
-        crate::slash::models_choice(provider, model, None, None).map_err(|lines| {
+        crate::slash::models_choice(provider, model, None, file).map_err(|lines| {
             let mut out = lines;
             out.push(format!(
                 "nothing was spawned on `{want}`; `local` needs no name, and a provider's \
@@ -8219,13 +8394,33 @@ pub fn subagent_model(
             ));
             out
         })?;
-    // `models_choice` answers `None` only for `local`, handled above — so reaching here
-    // without a provider would be a resolver bug rather than a user error, and the honest
-    // answer is to refuse rather than to run the child on the parent's model.
-    let Some(pc) = pc else {
-        return Err(vec![format!(
-            "`{want}` resolved to no provider and no model"
-        )]);
+    let pc = match pc {
+        crate::slash::ModelChoice::Metered(pc) => pc,
+        // **A declared local model seats a child like any other model** — the
+        // operator's ruling: *"models from providers.toml must be usable for
+        // subagents"*. `provider` stays `None`, because this IS the local path; what
+        // changes is where that path points, and `local` carries it.
+        //
+        // The window comes from the block when it states one and is left `None`
+        // otherwise, for the caller to measure off that server's `/props`. This
+        // function does no network: its docstring promises it is testable without a
+        // harness, and a probe in here would make every test of it either a lie or a
+        // live test.
+        crate::slash::ModelChoice::Local(m) => {
+            return Ok(SubagentModel {
+                label: m.name.clone(),
+                provider: None,
+                window: m.profile.window,
+                local: Some(m),
+            });
+        }
+        // `local` is handled above by name, so reaching here means the store spelled a
+        // local switch some other way — a resolver bug, refused rather than guessed.
+        crate::slash::ModelChoice::OwnServer => {
+            return Err(vec![format!(
+                "`{want}` resolved to no provider and no model"
+            )]);
+        }
     };
     let preset = letibot_provider::Preset::parse(&pc.name).map_err(|e| vec![e])?;
     let cat = letibot_provider::catalogue::Catalogue::load();
@@ -8241,6 +8436,7 @@ pub fn subagent_model(
         label,
         provider: Some(pc),
         window,
+        local: None,
     })
 }
 
@@ -8708,9 +8904,39 @@ impl HarnessTaskRunner {
                 None => Some(letibot_turn::serving::served_ctx(&self.base.endpoint)),
             }
         };
-        let (sub_model, sub_provider, sub_window) = match subagent_model(want, local_window) {
-            Ok(m) => (m.label, m.provider, Some(m.window)),
-            Err(why) => return Err(why.join("; ")),
+        let (sub_model, sub_provider, sub_window, sub_local) =
+            match subagent_model(want, local_window) {
+                Ok(m) => (m.label, m.provider, Some(m.window), m.local),
+                Err(why) => return Err(why.join("; ")),
+            };
+        // **A declared local model: check the weights, then measure the wall.**
+        //
+        // The child tokenizes with the parent's vocabulary — one daemon, one GGUF — so
+        // the same refusal a session switch gets applies here, from the same function
+        // rather than a second copy of the reasoning.
+        //
+        // And the window is this box's, not the daemon's. Measured on this fleet the
+        // day it was written: the same 27B GGUF at `n_ctx` 262144 on `127.0.0.1:8080`
+        // and 57344 on `192.168.1.78:8082`. A child seated on the smaller one while
+        // planning against the larger would run off the end of the KV cache with every
+        // check it makes saying there is room — which is why a block that states no
+        // window is probed here rather than allowed to inherit.
+        let (sub_endpoint, sub_window) = match &sub_local {
+            Some(m) => {
+                let want_at = parse_local_url(&m.url)
+                    .map_err(|e| format!("[model.\"{}\"] {e}", m.name))?;
+                if let Some(why) =
+                    local_model_vocab_refusal(&want_at, m, &self.base.vocab_gguf)
+                {
+                    return Err(why);
+                }
+                let w = match sub_window {
+                    Some(Some(w)) => Some(Some(w)),
+                    _ => Some(letibot_turn::serving::served_ctx(&want_at)),
+                };
+                (Some(want_at), w)
+            }
+            None => (None, sub_window),
         };
         // **And a window nobody can name may still be the parent's own — if the child runs on
         // the parent's own MODEL.** Same model, same window: that is the one case where the
@@ -8808,7 +9034,14 @@ impl HarnessTaskRunner {
                 sub_model.clone()
             },
             dialect: self.base.dialect.name().to_string(),
-            endpoint: self.base.endpoint.authority(),
+            // **The box that will answer this child**, which is not the daemon's own
+            // when the child was seated on a declared local model. The row is what the
+            // picker and the store show, and a row naming the wrong address is the
+            // same silent-provenance defect as a model name that does not match.
+            endpoint: sub_endpoint
+                .as_ref()
+                .map(|e| e.authority())
+                .unwrap_or_else(|| self.base.endpoint.authority()),
             workspace: self.base.workspace.display().to_string(),
         };
         // Built, not registered: nothing can switch into it, and the worker is not
@@ -8834,6 +9067,18 @@ impl HarnessTaskRunner {
             provider: sub_provider,
             ..self.base.clone()
         };
+        // **And the local model's own address, alias and sampling**, after the spread,
+        // because `..self.base.clone()` would otherwise put the parent's back.
+        if let (Some(e), Some(m)) = (&sub_endpoint, &sub_local) {
+            sub_cfg.endpoint = e.clone();
+            sub_cfg.model = m.model.clone();
+            if !m.profile.sampling.is_empty() {
+                sub_cfg.sampling = serde_json::Value::Object(m.profile.sampling.clone());
+            }
+            if let Some(eff) = &m.profile.effort {
+                sub_cfg.effort = Some(eff.clone());
+            }
+        }
         if let Some(w) = sub_window {
             sub_cfg.context_window = w;
             // The child's ledger is its own conversation, so it has no measured ratio:
@@ -9034,6 +9279,118 @@ fn steer_for_turn(
     } else {
         ledger.reconcile(turn_id, "").steering()
     }
+}
+
+
+/// **Do the weights at this address match the vocabulary we tokenize with?** — the
+/// refusal, or `None` to go ahead.
+///
+/// A free function because two callers need the identical answer and must not drift:
+/// [`Harness::set_local_model`] for a session switching, and the spawn path for a
+/// child seated on a declared local model. A second copy of this check would be a
+/// second answer to *are these the same weights*, which is the class of defect this
+/// tree keeps finding by looking for it.
+///
+/// # Why it exists at all
+///
+/// The engine tokenizes HERE, with this daemon's GGUF, and sends token ids. Point it
+/// at a server holding different weights and nothing fails: the ids are valid numbers
+/// that mean other words. There is no error to catch and no output that looks wrong
+/// until a person reads the transcript, which makes it the worst shape of bug this
+/// code can produce — so it is refused up front rather than detected later.
+///
+/// Three outcomes, each a sentence:
+///
+///   * `/props` names the same GGUF file — `None`, go ahead.
+///   * it names a different one — refused, with both names printed.
+///   * nothing answers, or it names no model (a proxy, a server without `/props`) —
+///     refused, naming the key that asserts it by hand. An operator writing
+///     `same_vocab = true` is a decision on the record; this assuming it would not be.
+fn local_model_vocab_refusal(
+    want: &Endpoint,
+    m: &letibot_provider::keys::LocalModel,
+    vocab: &std::path::Path,
+) -> Option<String> {
+    // `same_vocab` is not sampling, so the reader files it under `unknown` — which is
+    // where a key it does not interpret belongs. Read here, where it means something.
+    let asserted = m
+        .profile
+        .unknown
+        .iter()
+        .any(|u| u == "same_vocab" || u.starts_with("same_vocab "));
+    if asserted {
+        return None;
+    }
+    let mine = vocab_basename(vocab);
+    match letibot_turn::serving::served_model(want) {
+        Ok(theirs) => {
+            let theirs_base = vocab_basename(std::path::Path::new(&theirs));
+            (theirs_base != mine).then(|| {
+                format!(
+                    "{} serves `{theirs}` and this daemon tokenizes with `{}`. The ids are \
+                     computed here and sent as numbers, so pointing them at other weights is \
+                     silent corruption rather than an error. Start a daemon on those weights, \
+                     or put `same_vocab = true` in [model.\"{}\"] to say you know they match.",
+                    want.authority(),
+                    vocab.display(),
+                    m.name
+                )
+            })
+        }
+        Err(why) => Some(format!(
+            "{} did not answer /props with a model ({why}), so this cannot check that its \
+             weights are the ones `{}` tokenizes for. Put `same_vocab = true` in \
+             [model.\"{}\"] to assert it.",
+            want.authority(),
+            vocab.display(),
+            m.name
+        )),
+    }
+}
+
+/// `http://192.168.1.78:8082` or `192.168.1.78:8082` into an [`Endpoint`].
+///
+/// A scheme is accepted and discarded rather than refused: the operator writes the
+/// url they `curl`, and `[model."x"] url = "http://…"` is the shape that reads
+/// naturally beside a key block's `url`. A path is accepted and discarded too —
+/// `/v1/chat/completions` is what the curl carries and the client appends its own
+/// route, so keeping it would produce `/v1/chat/completions/completion`.
+fn parse_local_url(url: &str) -> Result<Endpoint, String> {
+    let rest = url
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let authority = rest.split('/').next().unwrap_or("").trim();
+    if authority.is_empty() {
+        return Err(format!("`{url}` names no host"));
+    }
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| format!("`{url}` names no port; write it as HOST:PORT"))?;
+    let port: u16 = port
+        .parse()
+        .map_err(|_| format!("`{port}` in `{url}` is not a port"))?;
+    if host.is_empty() {
+        return Err(format!("`{url}` names no host"));
+    }
+    Ok(Endpoint::new(host, port))
+}
+
+/// The GGUF's own file name, which is what two servers holding one model agree on
+/// even when the directories differ. A split GGUF's `-00001-of-00006` suffix is kept:
+/// two servers that disagree about the shard count are not serving the same file.
+fn vocab_basename(p: &std::path::Path) -> String {
+    p.file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// Sampling as one short line for a reply the operator reads, in the file's own order.
+fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) -> String {
+    s.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A provider backend from its config: the preset, the key (a missing one is a
@@ -9327,6 +9684,77 @@ fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
 
 #[cfg(test)]
 mod subagent_model_tests {
+
+    /// **A declared local model seats a child** — the operator's ruling, 2026-10-05:
+    /// *"models from providers.toml must be usable for subagents"*.
+    ///
+    /// `provider` stays `None` because this IS the local path; what travels is `local`,
+    /// which carries the address the child's config is pointed at. The two cannot be
+    /// collapsed: `None` alone would mean the daemon's own server, which is a different
+    /// box with a different window.
+    #[test]
+    fn a_declared_local_model_can_seat_a_subagent() {
+        let f = providers(
+            "a_declared_local_model_seats",
+            "[model.\"dense78\"]\nurl = \"http://192.168.1.78:8082\"\n\
+             model = \"qwen-3.8-27b\"\nwindow = 57344\ntemperature = 0.7\n",
+        );
+        let m = super::subagent_model_in(Some(&f), "dense78", Some(Some(262_144)))
+            .expect("a declared local model needs no key");
+        assert_eq!(m.label, "dense78");
+        assert!(m.provider.is_none(), "local, not metered");
+        let local = m.local.expect("the declared model travels with the choice");
+        assert_eq!(local.model, "qwen-3.8-27b");
+        assert_eq!(local.url, "http://192.168.1.78:8082");
+        assert_eq!(
+            m.window,
+            Some(57_344),
+            "the BLOCK's window, never the parent's 262144 -- the same GGUF is served at \
+             both sizes on this fleet and inheriting would run the child off the KV cache"
+        );
+    }
+
+    /// A block that states no window leaves it `None` here, for the spawn path to
+    /// measure off that server. Asserted because the alternative anybody would reach
+    /// for -- inheriting the parent's -- is the bug.
+    #[test]
+    fn a_local_model_without_a_stated_window_does_not_inherit_the_parents() {
+        let f = providers(
+            "a_local_model_without_a_window",
+            "[model.\"dense78\"]\nurl = \"http://192.168.1.78:8082\"\nmodel = \"qwen-3.8-27b\"\n",
+        );
+        let m = super::subagent_model_in(Some(&f), "dense78", Some(Some(262_144))).expect("resolving");
+        assert_eq!(
+            m.window, None,
+            "nobody has asked that server yet, and the parent's number is about another box"
+        );
+    }
+
+    /// `window = ` is read, and a value that is not a token count is named rather than
+    /// quietly leaving the child with no wall.
+    #[test]
+    fn a_stated_window_that_is_not_a_number_is_named() {
+        let f = providers(
+            "a_window_that_is_not_a_number",
+            "[model.\"dense78\"]\nurl = \"http://192.168.1.78:8082\"\nwindow = \"big\"\n",
+        );
+        let fleet = letibot_provider::keys::local_models(Some(&f));
+        assert_eq!(fleet.len(), 1);
+        assert_eq!(fleet[0].profile.window, None);
+        assert!(
+            fleet[0].profile.unknown.iter().any(|u| u.contains("window")),
+            "{:?}",
+            fleet[0].profile.unknown
+        );
+    }
+
+    fn providers(tag: &str, body: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("letibot-sub-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&d).expect("scratch");
+        let f = d.join("providers.toml");
+        std::fs::write(&f, body).expect("write");
+        f
+    }
     use super::*;
 
     /// **`local` is the daemon's own server and needs no key** — the deepseek→local half of
@@ -10525,6 +10953,54 @@ mod tests {
         // Internal runs of whitespace collapse, so the width asked for is the
         // width drawn.
         assert_eq!(Harness::one_line("ls   -la\t-h", 60), "ls -la -h");
+    }
+
+
+    /// **The url is written the way it is curled.** A scheme and the chat-completions
+    /// path both appear in what the operator pastes, and both have to come off: the
+    /// client appends its own route, so a kept path would post to
+    /// `/v1/chat/completions/completion`.
+    #[test]
+    fn a_fleet_url_is_read_the_way_the_operator_writes_it() {
+        let e = super::parse_local_url("http://192.168.1.78:8082/v1/chat/completions")
+            .expect("a curl's url");
+        assert_eq!(e.authority(), "192.168.1.78:8082");
+        assert_eq!(
+            super::parse_local_url("192.168.1.78:8082").unwrap().authority(),
+            "192.168.1.78:8082",
+            "a bare authority is the same address"
+        );
+        assert_eq!(
+            super::parse_local_url("https://box.lan:443/").unwrap().authority(),
+            "box.lan:443"
+        );
+    }
+
+    /// A port is not optional and the refusal says so, because the alternative is
+    /// guessing 8080 — which is the port the three LOCAL units share, so the guess
+    /// would land on this box while the operator was naming another one.
+    #[test]
+    fn a_fleet_url_without_a_port_is_refused_by_name() {
+        let e = super::parse_local_url("http://192.168.1.78").unwrap_err();
+        assert!(e.contains("no port"), "{e}");
+        assert!(super::parse_local_url("http://").is_err());
+    }
+
+    /// The GGUF's file name is the comparison, so two boxes holding one model in
+    /// different directories agree, and a split file's shard count still has to match.
+    #[test]
+    fn the_vocab_comparison_is_the_file_name_not_the_path() {
+        use std::path::Path;
+        assert_eq!(
+            super::vocab_basename(Path::new("/home/dead/models/Qwen3.8-27B-UD-Q6_K_XL.gguf")),
+            super::vocab_basename(Path::new("/srv/weights/Qwen3.8-27B-UD-Q6_K_XL.gguf")),
+            "one model in two places is one model"
+        );
+        assert_ne!(
+            super::vocab_basename(Path::new("/m/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf")),
+            super::vocab_basename(Path::new("/m/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00008.gguf")),
+            "a different shard count is a different file"
+        );
     }
 
     fn user(text: &str) -> TranscriptItem {

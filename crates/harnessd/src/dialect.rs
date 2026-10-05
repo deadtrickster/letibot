@@ -58,6 +58,18 @@ impl Dialect {
         }
     }
 
+    /// **The family name a `[model.<family>]` block is written under**, which is the
+    /// short one: `providers.toml` documents `[model.qwen]` and `[model.glm]`, and
+    /// [`Dialect::name`] answers `qwen3.8` — the served name, not the section name.
+    /// Two words for two readers, and conflating them would make every family block
+    /// in that file a block nothing matches.
+    pub fn family(self) -> &'static str {
+        match self {
+            Dialect::Glm => "glm",
+            Dialect::Qwen => "qwen",
+        }
+    }
+
     /// Everything the engine needs, boxed so the daemon can hold it by value.
     pub fn wiring(self, effort: Option<&str>) -> Wiring {
         match self {
