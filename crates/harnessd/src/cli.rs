@@ -745,6 +745,23 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     }
 
+    // **The operator's `prompts.toml`, read once, here.** The per-model system-prompt
+    // overrides, beside `providers.toml` in the same config dir.
+    //
+    // Read at startup rather than per session because the report belongs at startup:
+    // a file that does not parse, or that names a section this daemon does not know,
+    // is said once, with the parser's own message and the path, and the daemon runs
+    // on `DEFAULT_SYSTEM` for every session. Silently ignoring an unreadable prompt
+    // file is the failure this feature exists to forbid — somebody edits a prompt,
+    // sees no change, and cannot tell whether they were ignored.
+    {
+        let path = crate::config::Prompts::path();
+        match crate::config::Prompts::load(&path) {
+            Ok(prompts) => cfg.prompts = prompts,
+            Err(why) => eprintln!("  prompts.toml: {why} — the session runs on the built-in prompt"),
+        }
+    }
+
     // **The image marker, read off the server for the same reason the window is.**
     //
     // It is a per-instance random value published on `/props`, so `None` means *this endpoint takes

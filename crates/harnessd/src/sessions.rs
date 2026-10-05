@@ -214,6 +214,10 @@ impl<'a> Sessions<'a> {
             nagged: HashMap::new(),
         };
         let (tool, cond) = sessions.seat_tool(&id);
+        // Compose the system prompt from `prompts.toml`, once, at open. Message 0 is
+        // written from this and never rewritten after — see `Config::compose_system`.
+        let mut cfg = cfg;
+        cfg.compose_system();
         let cfg = sessions.with_fabric(&id, cfg, cond.is_some());
         let mut harness =
             Harness::open_with_registry(parts, cfg, hub, None, tool, registry.clone())?;
@@ -874,7 +878,7 @@ impl<'a> Sessions<'a> {
                 .iter()
                 .find(|b| b.session_id == session_id)
                 .and_then(|b| b.parent_session_id.clone());
-            let cfg = Config {
+            let mut cfg = Config {
                 session_id: session_id.to_string(),
                 parent_session_id: parent,
                 workspace: if ws.is_empty() {
@@ -885,6 +889,10 @@ impl<'a> Sessions<'a> {
                 ..self.base.clone()
             };
             let (tool, cond) = self.seat_tool(session_id);
+            // Compose the system prompt from `prompts.toml`, once, at open — the same
+            // rule as the first session: message 0 is written from this and never
+            // rewritten after.
+            cfg.compose_system();
             let cfg = self.with_fabric(session_id, cfg, cond.is_some());
             let mut h = Harness::open_with_registry(
                 self.parts,

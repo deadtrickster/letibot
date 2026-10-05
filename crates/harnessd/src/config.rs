@@ -322,7 +322,17 @@ pub struct Config {
     pub owner: String,
     /// The bootstrap system prompt. Part of the stable prefix; nothing volatile
     /// belongs in it (§5.2, and the operator paid for that rule).
+    ///
+    /// Built as [`DEFAULT_SYSTEM`] in [`Config::for_this_box`] and **composed once,
+    /// at session open**, from [`Prompts`] (the operator's `prompts.toml`) and this
+    /// session's model — see [`Config::compose_system`]. After that it is message 0
+    /// and is never rewritten: a session that started under one prompt keeps it for
+    /// its whole life.
     pub system: String,
+    /// The operator's `prompts.toml`, loaded once at startup. `Default` (no
+    /// overrides) when the file is absent or was refused — which is also the
+    /// byte-identical case. See [`Prompts`].
+    pub prompts: Prompts,
     /// `low` / `medium` / `high` / `xhigh`, interpreted per dialect. It is prefix
     /// bytes, so changing it mid-session re-prefills everything.
     pub effort: Option<String>,
@@ -707,6 +717,138 @@ there is a decision somebody has to make, and the name may already be another pr
 not scatter temporary files through the workspace either.\n\n\
 Be direct. Prefer the shortest answer that is complete.";
 
+/// **The per-model system-prompt overrides, from `prompts.toml`.**
+///
+/// A file the operator edits, beside `providers.toml` in the same config dir. It
+/// answers a question `providers.toml` must not: what the model is TOLD, as opposed
+/// to how it is sampled and where its key lives.
+///
+/// # Why a separate file, and a real parser
+///
+/// `providers.toml` is mode 600 because it holds provider keys, and
+/// `/models NAME --key K` WRITES it. Prompt text is not a secret, and hand-written
+/// multi-line prompt text living in a file a program rewrites by hand-rolled
+/// parsing is exactly the mangled-prompt defect this avoids. So: one file for keys,
+/// one for prompts, and a real TOML parser (`toml`) for the one file that carries
+/// arbitrary prompt bytes. The tree hand-parses the flat `key = "value"` subset
+/// elsewhere; that is a different class of content and stays that way.
+///
+/// # The keys, and why they are these
+///
+/// * `[base] system = "…"` — the base prompt, for every model. Present replaces
+///   [`DEFAULT_SYSTEM`] wholesale; absent leaves it alone. One key, because the base
+///   prompt is one unit: there is no notion of "chunks" in the constant, and
+///   inventing chunk boundaries here would make the byte-identical property below
+///   depend on a concatenation nobody owns.
+/// * `[model."NAME"] system_extra = "…"` — text appended to the base for one model.
+///   `NAME` is the model as the daemon names it: `provider/model` for a metered
+///   session, the bare alias for a local one. A `*` in the provider position
+///   (`deepseek/*`) is a glob over that provider's models.
+///
+/// `system` and `system_extra` rather than `prompt`/`extra`: the field they feed is
+/// `Config::system`, and "extra" says what the model block does that the base does
+/// not — it ADDS, it does not replace.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Prompts {
+    /// The `[base] system` override, or `None` for [`DEFAULT_SYSTEM`].
+    base: Option<String>,
+    /// Per-model `system_extra`, keyed by model name. Empty extras are dropped on
+    /// load: an empty string adds nothing, and keeping it would let an empty exact
+    /// block shadow the provider glob it should fall through to.
+    models: BTreeMap<String, String>,
+}
+
+/// The file's shape, as parsed. `deny_unknown_fields` is the report the task asks
+/// for: a section or key this daemon does not know is a parse error carrying the
+/// parser's own message, not a silently ignored line.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PromptsFile {
+    #[serde(default)]
+    base: Option<BaseSection>,
+    #[serde(default)]
+    model: BTreeMap<String, ModelSection>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BaseSection {
+    #[serde(default)]
+    system: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelSection {
+    #[serde(default)]
+    system_extra: Option<String>,
+}
+
+impl Prompts {
+    /// The path beside `providers.toml`: the same config dir, one file over.
+    pub fn path() -> PathBuf {
+        letibot_provider::keys::config_file()
+            .parent()
+            .map(|p| p.join("prompts.toml"))
+            .unwrap_or_else(|| PathBuf::from("prompts.toml"))
+    }
+
+    /// Load `prompts.toml`. A missing file is `Ok` with no overrides — the
+    /// byte-identical case, not an error. A file that does not parse, or that names
+    /// a section this daemon does not know, is `Err` with the parser's own message
+    /// and the path, so the operator can see which file said what.
+    pub fn load(path: &Path) -> Result<Prompts, String> {
+        if !path.is_file() {
+            return Ok(Prompts::default());
+        }
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let file: PromptsFile = toml::from_str(&text)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Prompts {
+            base: file.base.and_then(|b| b.system),
+            models: file
+                .model
+                .into_iter()
+                .filter_map(|(name, m)| m.system_extra.filter(|e| !e.is_empty()).map(|e| (name, e)))
+                .collect(),
+        })
+    }
+
+    /// The composed system prompt for one model: the base (the `[base]` override or
+    /// [`DEFAULT_SYSTEM`]) plus the model's `system_extra`, when there is one.
+    ///
+    /// **The safety property:** with no file, or a file that overrides nothing, this
+    /// returns [`DEFAULT_SYSTEM`] byte for byte. That is what makes the feature safe
+    /// to land — the default is unchanged, and a test asserts it.
+    pub fn compose(&self, model_name: &str) -> String {
+        let base = self.base.as_deref().unwrap_or(DEFAULT_SYSTEM);
+        match self.model_extra(model_name) {
+            Some(extra) => format!("{base}\n\n{extra}"),
+            None => base.to_string(),
+        }
+    }
+
+    /// The `system_extra` for a model: the exact name first, then the provider glob.
+    ///
+    /// An exact name is a more specific instruction than a provider-wide one, so it
+    /// wins when both are present — the operator who wrote both clearly wanted the
+    /// exact one for that model. The glob is the fallback for a model the operator
+    /// did not name individually.
+    fn model_extra(&self, model_name: &str) -> Option<&str> {
+        if let Some(extra) = self.models.get(model_name) {
+            return Some(extra);
+        }
+        if let Some((provider, _)) = model_name.split_once('/') {
+            let glob = format!("{provider}/*");
+            if let Some(extra) = self.models.get(&glob) {
+                return Some(extra);
+            }
+        }
+        None
+    }
+}
+
 impl Config {
     /// How much of the window must stay free for a turn to be safe to start.
     ///
@@ -937,6 +1079,10 @@ impl Config {
             title: String::new(),
             owner: std::env::var("USER").unwrap_or_else(|_| "operator".into()),
             system: DEFAULT_SYSTEM.into(),
+            // No overrides until `run` loads the operator's `prompts.toml`. `Default`
+            // is the byte-identical case: a daemon that never reads the file composes
+            // `DEFAULT_SYSTEM` for every session.
+            prompts: Prompts::default(),
             effort: None,
             // Deterministic by default: a harness whose own measurements move
             // between runs cannot tell a regression from a sample.
@@ -980,6 +1126,51 @@ impl Config {
             http_retries: crate::harness::MAX_HTTP_RETRIES,
             stall_rounds: 5,
         }
+    }
+
+    /// **The model name the prompt lookup runs on**: `provider/model` for a metered
+    /// session, the bare alias for a local one.
+    ///
+    /// It is the same name the operator sees in `/models` and the header, so a
+    /// `prompts.toml` written against what is on screen is a `prompts.toml` that
+    /// matches. When the operator named no model (`--provider deepseek`), the
+    /// preset's default is resolved from the catalogue rather than left off: a
+    /// `deepseek/*` glob must match the model the session actually runs on, and
+    /// `deepseek` with no model part would match nothing.
+    pub fn prompt_model_name(&self) -> String {
+        match &self.provider {
+            Some(pc) => {
+                let model = pc.model.clone().unwrap_or_else(|| {
+                    letibot_provider::Preset::parse(&pc.name)
+                        .ok()
+                        .map(|p| {
+                            p.default_model(&letibot_provider::catalogue::Catalogue::load())
+                        })
+                        .unwrap_or_default()
+                });
+                if model.is_empty() {
+                    pc.name.clone()
+                } else {
+                    format!("{}/{}", pc.name, model)
+                }
+            }
+            None => self.model.clone(),
+        }
+    }
+
+    /// **Compose `system` from `prompts.toml` and this session's model. Once, at
+    /// session open.**
+    ///
+    /// This is the only place the prompt is built from the file, and it runs before
+    /// the system message is written into the transcript. After it, `system` is
+    /// message 0 and is never rewritten: a session that started under one prompt
+    /// keeps it for its whole life, even if the model is switched or the file is
+    /// edited. That is the rule the operator asked for, and it is what makes an
+    /// edit to `prompts.toml` a fact about NEW sessions rather than a rewrite of
+    /// old ones.
+    pub fn compose_system(&mut self) {
+        let name = self.prompt_model_name();
+        self.system = self.prompts.compose(&name);
     }
 
     /// The things that are off, and why.
