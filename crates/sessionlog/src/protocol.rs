@@ -306,7 +306,18 @@ use crate::view::Snapshot;
 /// summarises a scratch transcript, so its progress could not be forwarded as the session's — a
 /// `PromptProgress` from there is drawn as the session's own context, which it is not, and that
 /// mislabel is what the suppression was for. This event is the same numbers under their own name.
-pub const PROTOCOL_VERSION: u32 = 27;
+/// # 28: the operator's own shell line
+///
+/// [`ClientFrame::OperatorShell`] is a new client frame, so a version-27 daemon would fail to
+/// parse it — the version-4 argument, and the same ATTACH-time refusal. It exists because the
+/// operator's ask — *"when prompt starts with `!` it is going to be a shell command from me"* —
+/// is not the door's question: `HEAD_RUN_TOOLS` bounds what may be RECORDED as a tool call whose
+/// name a tool owns, and a raw shell line has no tool name, no JSON arguments, and no admission
+/// that a corpus row could stand behind. The frame carries the typed line and the daemon runs it
+/// through the execution path `bash` already uses, so confine, the sudo askpass shim and the
+/// scratch directory behave exactly as they do for a model's call. See the variant's own docs for
+/// why the door was not widened instead.
+pub const PROTOCOL_VERSION: u32 = 28;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -481,6 +492,28 @@ pub fn head_run_tool<'a>(typed: &str, list: &'a [&'a str]) -> Option<&'a str> {
     list.iter()
         .copied()
         .find(|t| head_run_verb(t).to_ascii_lowercase() == want)
+}
+
+/// **The command a `!` line carries, or `None` when it carries nothing.**
+///
+/// The one rule, in the one crate both halves of it live in: a submitted line whose **first
+/// character** is `!` is the operator's own shell command, and the command is everything after
+/// that bang, trimmed. Leading whitespace before the `!` is NOT tolerated — the same rule
+/// `/`-verbs follow, so the two sigils a composer can start a line with behave the same way and
+/// a line that begins with a space is prose, as it always was.
+///
+/// `None` for a line that is not a `!` line at all, and for one that is nothing but the bang and
+/// whitespace: `!`, `!   `. The head refuses that spelling before sending; this is the daemon's
+/// re-check, and it exists because a frame is a socket, not a keyboard — anything that can
+/// connect must not be able to file an arbitrary sentence as the operator's shell line.
+///
+/// **`!!` is a command here, not a repeat.** The line `!! ls` carries the command `! ls` — there
+/// is no history in this composer to repeat from, and inventing one reading would make the same
+/// bytes mean two things depending on state nobody can see.
+pub fn operator_shell_command(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix('!')?;
+    let cmd = rest.trim();
+    (!cmd.is_empty()).then_some(cmd)
 }
 
 /// **How a daemon's protocol version compares with this build's** — as the one sentence a
@@ -1230,6 +1263,65 @@ pub enum ClientFrame {
         outcome: letibot_transcript::ToolOutcome,
         payload: String,
     },
+    /// **The operator's own shell line** — a `!` command, run by the DAEMON, in this session's
+    /// workspace.
+    ///
+    /// The operator's ask, in their words: *"when prompt starts with `!` it is going to be a shell
+    /// command from me. it obviously must be allowed, full result … and sent to model as a
+    /// message. so say `! ls .` does ls of the project dir and sends it to model. note - sudo is a
+    /// must. so you need to implement asking me for a password."*
+    ///
+    /// # Why a new frame rather than the door
+    ///
+    /// [`ClientFrame::OperatorCall`] exists for calls the operator runs while a turn is running,
+    /// and its allowlist ([`HEAD_RUN_TOOLS`]) is enforced by the daemon. `bash` is deliberately
+    /// not on that list, and the reason is recorded beside it: the door RECORDS a call as a tool's
+    /// act, with the tool's own name and JSON arguments and an admission row a corpus can stand
+    /// behind. A raw shell line is none of that — it has no tool-owned name, and its "arguments"
+    /// are the line itself. Widening the list to let `bash` through would make the door's own
+    /// recorded reason false and its `field`-completion machinery (`HeadRunTool::field`) a lie for
+    /// the one tool that takes a whole line. So this is a separate frame for a separate act: **the
+    /// operator typed a shell line**, not *the operator ran a tool call for a tool that exists*.
+    ///
+    /// # What the daemon does with it
+    ///
+    /// Queued as [`crate::hub::CommandKind::OperatorShell`] like every other verb, and run by the
+    /// session's worker — through `letibot_tools`' runtime as an operator call, which is to say
+    /// the SAME execution path a model's `bash` call takes: the same backend, the same confinement
+    /// and scratch directory, the same byte caps, and the same `SUDO_ASKPASS` standing
+    /// environment, which is what makes `sudo` able to raise
+    /// [`crate::event::SessionEvent::SecretRequested`] to a head. **The gate is not consulted** —
+    /// `ToolRuntime::invoke_operator` is the door's own ruling ("nobody left to ask") applied
+    /// here. Nothing in the handling of this frame writes an adjudication row, because there was
+    /// no decision: the operator typed the line.
+    ///
+    /// What lands in the transcript is two rows, in order: the operator's own line as a `User`
+    /// row with `speaker: Operator` (their words, verbatim, bang included), and the result as a
+    /// `ToolResult` row named `bash` with `origin: CallOrigin::Operator` — which is what every
+    /// head already draws with the tool-output treatment (folded, paged, sanitised per §3.1) and
+    /// what the next prompt replays to the model.
+    ///
+    /// # The `!` rule, and where it is checked
+    ///
+    /// `line` is the submitted line **verbatim, bang included** — `! ls .`. The head owns the
+    /// typing surface and refuses a line that is nothing but the bang (see its `submit`); the
+    /// daemon re-checks here, because a frame that reached this daemon without a head — a
+    /// hand-written socket, a future head with a different surface — must not be able to file an
+    /// arbitrary sentence as the operator's shell line. A `line` that does not start with `!`, or
+    /// has nothing but the bang and whitespace, is answered with [`ServerFrame::Rejected`] naming
+    /// why, and nothing is queued.
+    ///
+    /// Stale-tolerant like a prompt and for the door's own reason: the operator who asked while
+    /// the screen moved still meant it, and a turn running means the line is queued for the next
+    /// round boundary, not refused.
+    OperatorShell {
+        client_request_id: String,
+        expected_seq: u64,
+        /// The line as submitted, `!` first. The command the daemon runs is everything after
+        /// that first `!`, trimmed — one rule, applied at the execution site, so the head never
+        /// sends a different spelling than the one the operator typed.
+        line: String,
+    },
     /// **Ask for the bytes that justified one decision** — R11's locator, leticl's ask.
     ///
     /// A LOCATOR, not a payload: a head names one decision and one half of its exchange and
@@ -1585,6 +1677,7 @@ mod tests {
                 | ClientFrame::NewSession { .. }
                 | ClientFrame::OperatorCall { .. }
                 | ClientFrame::OperatorResult { .. }
+                | ClientFrame::OperatorShell { .. }
                 | ClientFrame::Peek { .. }
                 | ClientFrame::Promote { .. }
                 | ClientFrame::Prompt { .. }
@@ -1670,11 +1763,11 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 27,
-            "the match above was last reconciled with the frame list at 27 — bumped for \
-             `CompactionProgress`, a NEW event inside `ServerFrame::Event` (an old head's \
-             `SessionEvent` has no catch-all, so it cannot read one at all), as opposed to an \
-             added defaulted field, which is the case that needs no bump. 26 was `SetOperatorTodos`"
+            PROTOCOL_VERSION, 28,
+            "the match above was last reconciled with the frame list at 28 — bumped for \
+             `OperatorShell`, a NEW client frame (a version-27 daemon would fail to parse \
+             it at ATTACH, the version-4 argument), as opposed to an added defaulted field, \
+             which is the case that needs no bump. 27 was `CompactionProgress`"
         );
     }
 

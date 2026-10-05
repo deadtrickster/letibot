@@ -795,3 +795,208 @@ fn job_id_from_note(text: &str) -> Option<String> {
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
 }
+
+// ------------------------------------------- the operator's own `!` shell line
+//
+// The ungated half of the runtime (`invoke_operator`) is what the daemon runs an
+// operator's `!` line through. Its contract is the door's own ruling — *nobody left
+// to ask* — and these pin the two properties that ruling has:
+//
+// 1. **No gate call appears.** Not `admit`, and not the view-grant ask `bash` can
+//    raise when its output names a path the boundary hid. A gate the operator must
+//    answer for their own command is the feature not working.
+// 2. **Everything else is identical.** Same tool, same execution path, same caps —
+//    which is the reason the daemon runs it rather than a head.
+
+/// A gate that refuses everything and counts every way it was consulted.
+///
+/// The counting is the point: the assertion is not "the call succeeded" (a permissive
+/// gate would give that too) but "the gate has no calls on its books at all".
+struct Counting {
+    admits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    grants: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl letibot_tools::runtime::Gate for Counting {
+    fn admit(
+        &mut self,
+        _call: &letibot_tools::runtime::GateCall<'_>,
+    ) -> letibot_tools::runtime::GateDecision {
+        self.admits
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Refuse, so the test cannot pass because a permissive gate let the call
+        // through before anybody counted: if this answer ever reaches a `!` line,
+        // the row says NotRun and the assertion on the outcome fails first.
+        letibot_tools::runtime::GateDecision::refuse(letibot_transcript::ToolOutcome::NotRun {
+            why: "the counting gate refuses".into(),
+        })
+    }
+
+    fn grant_view(
+        &mut self,
+        _path: &std::path::Path,
+        _tool: &str,
+    ) -> letibot_tools::runtime::ViewGrant {
+        self.grants
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        letibot_tools::runtime::ViewGrant::NotAsked
+    }
+
+    fn describe(&self) -> String {
+        "counting gate (refuses, and counts)".into()
+    }
+}
+
+/// **The contrast case first, because it is what makes the other test mean anything.**
+///
+/// A MODEL's `bash` call goes through `invoke`, and `bash` is `Access::Exec` — so the
+/// gate is consulted exactly once and its refusal stops the call. If this test were
+/// green while the operator's ran, the difference would be the gate and not the test.
+#[test]
+fn a_model_bash_call_consults_the_gate_and_is_stopped_by_it() {
+    let admits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let grants = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gate = Box::new(Counting {
+        admits: admits.clone(),
+        grants: grants.clone(),
+    });
+    let mut h = runner!("model bash gate", Some(gate));
+    let r = h.call(
+        "bash",
+        &serde_json::json!({"command": "echo hi"}).to_string(),
+    );
+    assert!(
+        matches!(r.outcome, ToolOutcome::NotRun { .. }),
+        "the counting gate must stop a model call: {}",
+        r.render()
+    );
+    assert_eq!(
+        admits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a model's bash call consults the gate exactly once"
+    );
+}
+
+/// **An operator's own `!` line runs the command and consults nothing.**
+///
+/// This is the test that would fail if a gate call appeared on the `!` path: the gate
+/// counts both ways it can be reached, and both counters must stay at zero while the
+/// command's own output lands in the row.
+#[test]
+fn an_operators_own_bash_line_runs_and_no_gate_call_appears() {
+    let admits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let grants = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gate = Box::new(Counting {
+        admits: admits.clone(),
+        grants: grants.clone(),
+    });
+    let mut h = runner!("operator bash gate", Some(gate));
+    let call = letibot_transcript::ToolCall {
+        id: "bang-1".into(),
+        name: "bash".into(),
+        arguments: serde_json::json!({"command": "printf 'operator-ran-this'"}).to_string(),
+    };
+    let r = h.rt.invoke_operator("", &call, &mut h.sink);
+    assert!(
+        matches!(r.outcome, ToolOutcome::Ok),
+        "the operator's own command must run: {}",
+        r.render()
+    );
+    assert!(
+        r.render().contains("operator-ran-this"),
+        "the row carries the command's own output: {}",
+        r.render()
+    );
+    assert_eq!(
+        admits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "an operator's own command consulted the gate's admit"
+    );
+    assert_eq!(
+        grants.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "an operator's own command raised a view-grant ask"
+    );
+}
+
+/// **The view-grant ask specifically, on a boundary that produces one.**
+///
+/// `grant_view` fires when a command's output names a path the confinement hid —
+/// reachable only on a confined session, which is why this one is built with
+/// `confined_harness_with_gate` rather than the plain runner. On a MODEL's call that
+/// is a card the operator answers; on their OWN command it would be a question about
+/// a line they just typed, so the ungated path takes none and the row keeps the
+/// absence note `bash` already wrote (`absence_notes` and `outside_paths` scan the
+/// same output for the same paths — nothing is lost but the ask).
+#[test]
+fn an_operators_own_command_does_not_ask_to_grant_a_path_into_the_view() {
+    let admits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let grants = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gate = Box::new(Counting {
+        admits: admits.clone(),
+        grants: grants.clone(),
+    });
+    let mut h = match letibot_tools::testing::confined_harness_with_gate(Some(gate), |root| {
+        letibot_tools::exec::Bwrap::project(root).map(|b| Box::new(b) as _)
+    }) {
+        Ok(h) => h,
+        Err(e) => {
+            // The confined substrate needs a usable unprivileged namespace boundary,
+            // and a host without one is a real host (`kernel.apparmor_restrict_
+            // unprivileged_userns=1`). The refusal is asserted rather than skipped,
+            // for the same reason `runner!`'s is.
+            eprintln!(
+                "an_operators_own_command_does_not_ask: no boundary here, so there is \
+                 no view to grant into: {e}"
+            );
+            assert!(
+                format!("{e}").contains("namespace") || format!("{e}").contains("bwrap"),
+                "a refusal must name what was missing: {e}"
+            );
+            return;
+        }
+    };
+    let outside =
+        std::path::PathBuf::from(format!("/opt/letibot-bang-outside-{}", std::process::id()));
+    // A command whose OUTPUT names a path the boundary hid. The path does not have
+    // to exist on the host — `outside_paths` classifies LEXICALLY, on purpose (a
+    // stat would turn the note into a disclosure about the operator's disk), and
+    // `/opt` is past every bound and replaced root, so the token is `Outside` and
+    // nothing under `/tmp` would be: `/tmp` is one of the REPLACED roots, a fresh
+    // tmpfs, and a path there is absent for a different reason that raises no ask.
+    let command = format!("ls {d}/gone.txt 2>&1; true", d = outside.display());
+    let call = letibot_transcript::ToolCall {
+        id: "bang-2".into(),
+        name: "bash".into(),
+        arguments: serde_json::json!({ "command": command }).to_string(),
+    };
+    let r = h.rt.invoke_operator("", &call, &mut h.sink);
+    assert!(
+        matches!(r.outcome, ToolOutcome::Ok),
+        "the operator's own command must run: {}",
+        r.render()
+    );
+    let said = r.render();
+    assert!(
+        said.contains("No such file or directory"),
+        "the command's own output is the finding: {said}"
+    );
+    // The absence is still NAMED on the row — bash's own note, not a gate question.
+    assert!(
+        said.contains("not in this session's filesystem view")
+            || said.contains("outside this session's view")
+            || said.contains("filesystem view"),
+        "the boundary's finding must stay on the row now the ask is gone: {said}"
+    );
+    assert_eq!(
+        grants.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "an operator's own command raised a view-grant ask"
+    );
+    assert_eq!(
+        admits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "an operator's own command consulted the gate's admit"
+    );
+    let _ = outside;
+}

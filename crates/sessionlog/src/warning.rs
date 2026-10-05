@@ -158,6 +158,15 @@ pub const TABLE: &[(&str, Class)] = &[
     // deleting it loses only the number they were owed. It is the count of context they
     // just chose to buy, said while they can still act on it — the opposite of a fault.
     ("operator_call_ran", Class::Routine),
+    // The operator's own `!` line ran, and the note says what it put in the conversation.
+    // Routine for the door's own reason: the size disclosure is the feature working, not
+    // a defect — the command's own failure, if it had one, is on the `ToolResult` row it
+    // produced, under its own outcome.
+    ("operator_shell_ran", Class::Routine),
+    // The `!` line ran but its rows could not be recorded. A failure, and the same one
+    // the door's `operator_call_abandoned` is: the work happened and the record of it is
+    // what is missing.
+    ("operator_shell_failed", Class::Failure),
     // The compaction also picked up the tools this daemon now seats, and the second
     // summary turn `/reseat` would have cost was not paid. It is a *report of a
     // repair that succeeded* — the compaction's own second half.
@@ -532,10 +541,20 @@ mod the_register_census {
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_26_routine_7_refused_and_41_failures() {
+    fn the_table_is_27_routine_7_refused_and_42_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **73, not the 70 the census was taken at.** Three arrivals, each counted rather than
-        // left implicit, because a census that quietly moves is not a census:
+        // **76, not the 74 the last census was taken at.** Two arrivals, each counted
+        // rather than left implicit, because a census that quietly moves is not a census:
+        //
+        //   · `operator_shell_ran` — the operator's own `!` line, and what it put in the
+        //     conversation — is Routine by the same ruling as the door's
+        //     `operator_call_ran` beside it: the size disclosure is the feature working,
+        //     and the command's own failure, if it had one, is on the `ToolResult` row it
+        //     produced, under its own outcome;
+        //   · `operator_shell_failed` is the failure the door's `operator_call_abandoned`
+        //     is: the work happened and the RECORD of it is what is missing.
+        //
+        // The census before that, 73 to 74, kept its own list for the same reason:
         //
         //   · `model_slow_first_byte` — a provider that has not started answering, said while it
         //     is still silent — is Routine and therefore moves THIS register rather than the red
@@ -545,12 +564,12 @@ mod the_register_census {
         //     the daemon**, and it is a Failure by the same argument that keeps `anchor_lost`: the
         //     diagnostic reaches neither the conversation nor the triangle, so a reader who is not
         //     told has been told nothing at all.
-        assert_eq!(TABLE.len(), 74, "the table's size");
-        assert_eq!(count(Class::Routine), 26);
+        assert_eq!(TABLE.len(), 76, "the table's size");
+        assert_eq!(count(Class::Routine), 27);
         assert_eq!(count(Class::Refused), 7, "the seven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 41);
+        assert_eq!(count(Class::Failure), 42);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 41 of 74 and the middle is 7**, which is why the third register is a
+        // register is 42 of 76 and the middle is 7**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

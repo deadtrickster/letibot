@@ -1144,6 +1144,10 @@ pub struct Harness<'a> {
     /// A title this harness derived and the daemon has not yet published. See
     /// [`Harness::take_new_title`].
     new_title: Option<String>,
+    /// **The `!` sequence**: how many of the operator's own shell lines this session
+    /// has run. The `call_id` of each is `bang-<n>`, minted here because — unlike the
+    /// door — no head chooses one: the head sends the line and the daemon owns the run.
+    bang_seq: u64,
 
     /// Who said what, so the gate's adjudicator can see what authorised an action.
     /// Fed at every append, because the provenance is only knowable there.
@@ -3200,6 +3204,7 @@ impl<'a> Harness<'a> {
             supplies,
             open_notes: notes,
             new_title: None,
+            bang_seq: 0,
             trail,
             todos: todo_board,
             todos_version: 0,
@@ -3543,6 +3548,102 @@ impl<'a> Harness<'a> {
         let outcome = result.outcome.clone();
         self.finish_operator_call(call_id, name, who, outcome, &payload)
             .map_err(|e| e.to_string())
+    }
+
+    /// **Run the operator's own shell line (`!`), and append BOTH halves as rows.**
+    ///
+    /// The `!` feature's daemon half. The frame's own docs (`ClientFrame::OperatorShell`)
+    /// record why this is a frame of its own rather than the door; this is the run.
+    ///
+    /// # Why the daemon runs it, in one sentence the door already wrote
+    ///
+    /// [`Harness::run_operator_call`] runs the door's calls here "because the payload has to be
+    /// the one this program would have produced" — and that is a fortiori true of a shell
+    /// command, whose payload is bytes a program wrote. A head has no exec host, no confinement,
+    /// no scratch directory and **no standing environment** — and the standing environment is
+    /// what carries `LETIBOT_SOCKET`, `LETIBOT_SESSION` and `SUDO_ASKPASS`, without which `sudo`
+    /// cannot ask anybody for a password. Running it anywhere but here is the feature not
+    /// working.
+    ///
+    /// # The gate is not consulted, and neither is anything else that asks
+    ///
+    /// `ToolRuntime::invoke_operator` is the door's own ungated path — same schema lookup, same
+    /// argument salvage, same byte caps, same spill policy, same `bash` execution path with its
+    /// confinement and its `sudo` shim — and no `gate.admit`, no view-grant card. A session that
+    /// does not seat `bash` (the default read-only seat) gets the runtime's own honest refusal
+    /// as the result row, naming the tools it does have.
+    ///
+    /// # What lands, and in which order
+    ///
+    /// Two rows, one append: the operator's typed line as a `User` row with
+    /// `speaker: Operator` — their words, verbatim, bang included, because `Speaker::Operator`
+    /// means *the person at the keyboard* and that is exactly who typed it — then the result as a
+    /// `ToolResult` named `bash` with `origin: CallOrigin::Operator`, which is the tree's existing
+    /// vocabulary for *a person ran this call* and the row every head already draws with the
+    /// tool-output treatment. The output is NOT speech: it is a program's bytes, reported, and
+    /// giving it a `Speaker` would be pretending a shell spoke.
+    pub fn run_operator_shell(&mut self, line: &str, who: &str) -> Result<(), String> {
+        let command = letibot_sessionlog::operator_shell_command(line)
+            .ok_or_else(|| format!("`{line}` is not a `!` command — nothing was run"))?
+            .to_string();
+        self.bang_seq += 1;
+        let call_id = format!("bang-{}", self.bang_seq);
+        let call = ToolCall {
+            id: call_id.clone(),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({ "command": command }).to_string(),
+        };
+        // The runtime's own events go to a null sink, exactly as the door's do: the
+        // transcript row is the durable record and every head draws *it*. What the
+        // tool emits here is a `ToolStarted`/`ToolProgress` pair for a call no head
+        // proposed — and for a command the operator is watching the composer over.
+        let mut quiet = letibot_tools::events::NullToolSink;
+        // `turn_id` empty on purpose, as the door's runs are: this call belongs to no
+        // turn, and a head that saw a turn id would draw the row inside a turn that
+        // did not propose it.
+        let result = self.runtime.invoke_operator("", &call, &mut quiet);
+        let payload = result.render();
+        // **What the model will read** — the same disclosure the door's note makes,
+        // for the same reason: the price is on the screen while the operator can still
+        // do something about it, rather than at the next compaction.
+        let read = payload.len();
+        let spilled = match &result.spill {
+            Some(s) => format!(
+                "; {} byte(s) were produced and the rest went to the spill store \
+                 (`read_spill hash={}`)",
+                s.full_bytes, s.hash
+            ),
+            None => String::new(),
+        };
+        self.import_note(
+            "operator_shell_ran",
+            format!(
+                "`{who}` ran `{command}` from their own console: {read} byte(s) of context \
+                 (about {} tokens) reach the model from its next turn{spilled}. No reply is \
+                 generated — this is context, not a request.",
+                read / 4,
+            ),
+        );
+        let rows = [
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: line.to_string(),
+                }],
+            },
+            TranscriptItem::ToolResult {
+                call_id,
+                name: "bash".to_string(),
+                outcome: result.outcome.clone(),
+                payload,
+                edit: None,
+                origin: Some(letibot_transcript::CallOrigin::Operator {
+                    who: who.to_string(),
+                }),
+                media: None,
+            },
+        ];
+        self.append_imported(&rows).map_err(|e| e.to_string())
     }
 
     /// Append imported rows through the one writer, exactly as a turn's rows go in.
@@ -4319,12 +4420,7 @@ impl<'a> Harness<'a> {
     /// config's word for *no wall* rather than for a large one — the same reading
     /// `cli` takes for a local endpoint that will not say. It is said out loud,
     /// because planning against nothing is a decision the operator should see.
-    fn retune_window_local(
-        &mut self,
-        want: &Endpoint,
-        name: &str,
-        stated: Option<u64>,
-    ) -> String {
+    fn retune_window_local(&mut self, want: &Endpoint, name: &str, stated: Option<u64>) -> String {
         // Remembered on the way out, so `/models local` restores the server this
         // daemon was started against rather than keeping another box's number. Same
         // write site and same mirror as `retune_window`, so the two cannot disagree.
@@ -6636,6 +6732,28 @@ impl<'a> Harness<'a> {
     /// held two documents would otherwise deliver one per round.
     fn apply_queued_head_run(&mut self) {
         while let Some(cmd) = self.hub.try_head_run_command() {
+            // **The operator's shell line is taken by the same picker and runs the
+            // same way** — synchronously, here, at the round boundary — but it is
+            // not a door call and has no admission to note, so the two kinds are
+            // separated before the door's own bookkeeping starts rather than
+            // threaded through it with an `if`.
+            if let CommandKind::OperatorShell { line, who } = &cmd.kind {
+                let (line, who) = (line.clone(), who.clone());
+                if let Err(e) = self.run_operator_shell(&line, &who) {
+                    // Said, not swallowed: the run had no caller to answer, so the
+                    // log is the only place the failure can land (the door's arm
+                    // below does the same for its own runs).
+                    self.import_note(
+                        "operator_shell_failed",
+                        format!(
+                            "`{who}` ran `{line}` from their own console and it could not be \
+                             recorded: {e}. The command may have run; what is missing is the \
+                             row the next turn would have read."
+                        ),
+                    );
+                }
+                continue;
+            }
             let CommandKind::OperatorCall {
                 call_id,
                 name,
@@ -6644,9 +6762,10 @@ impl<'a> Harness<'a> {
                 ..
             } = &cmd.kind
             else {
-                // The picker matched an `OperatorCall`; anything else here would be a bug in
-                // the picker, and returning rather than panicking leaves the command queued
-                // for the worker, which is where it belongs.
+                // The picker matched an `OperatorCall` or an `OperatorShell`; anything
+                // else here would be a bug in the picker, and returning rather than
+                // panicking leaves the command queued for the worker, which is where it
+                // belongs.
                 return;
             };
             let (call_id, name, arguments, who) = (
@@ -8923,11 +9042,9 @@ impl HarnessTaskRunner {
         // window is probed here rather than allowed to inherit.
         let (sub_endpoint, sub_window) = match &sub_local {
             Some(m) => {
-                let want_at = parse_local_url(&m.url)
-                    .map_err(|e| format!("[model.\"{}\"] {e}", m.name))?;
-                if let Some(why) =
-                    local_model_vocab_refusal(&want_at, m, &self.base.vocab_gguf)
-                {
+                let want_at =
+                    parse_local_url(&m.url).map_err(|e| format!("[model.\"{}\"] {e}", m.name))?;
+                if let Some(why) = local_model_vocab_refusal(&want_at, m, &self.base.vocab_gguf) {
                     return Err(why);
                 }
                 let w = match sub_window {
@@ -9280,7 +9397,6 @@ fn steer_for_turn(
         ledger.reconcile(turn_id, "").steering()
     }
 }
-
 
 /// **Do the weights at this address match the vocabulary we tokenize with?** — the
 /// refusal, or `None` to go ahead.
@@ -9733,7 +9849,8 @@ mod subagent_model_tests {
             "a_local_model_without_a_window",
             "[model.\"dense78\"]\nurl = \"http://192.168.1.78:8082\"\nmodel = \"qwen-3.8-27b\"\n",
         );
-        let m = super::subagent_model_in(Some(&f), "dense78", Some(Some(262_144))).expect("resolving");
+        let m =
+            super::subagent_model_in(Some(&f), "dense78", Some(Some(262_144))).expect("resolving");
         assert_eq!(
             m.window, None,
             "nobody has asked that server yet, and the parent's number is about another box"
@@ -9752,7 +9869,11 @@ mod subagent_model_tests {
         assert_eq!(fleet.len(), 1);
         assert_eq!(fleet[0].profile.window, None);
         assert!(
-            fleet[0].profile.unknown.iter().any(|u| u.contains("window")),
+            fleet[0]
+                .profile
+                .unknown
+                .iter()
+                .any(|u| u.contains("window")),
             "{:?}",
             fleet[0].profile.unknown
         );
@@ -10965,7 +11086,6 @@ mod tests {
         assert_eq!(Harness::one_line("ls   -la\t-h", 60), "ls -la -h");
     }
 
-
     /// **The url is written the way it is curled.** A scheme and the chat-completions
     /// path both appear in what the operator pastes, and both have to come off: the
     /// client appends its own route, so a kept path would post to
@@ -10976,12 +11096,16 @@ mod tests {
             .expect("a curl's url");
         assert_eq!(e.authority(), "192.168.1.78:8082");
         assert_eq!(
-            super::parse_local_url("192.168.1.78:8082").unwrap().authority(),
+            super::parse_local_url("192.168.1.78:8082")
+                .unwrap()
+                .authority(),
             "192.168.1.78:8082",
             "a bare authority is the same address"
         );
         assert_eq!(
-            super::parse_local_url("https://box.lan:443/").unwrap().authority(),
+            super::parse_local_url("https://box.lan:443/")
+                .unwrap()
+                .authority(),
             "box.lan:443"
         );
     }

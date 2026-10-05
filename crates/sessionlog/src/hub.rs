@@ -188,6 +188,26 @@ pub enum CommandKind {
         outcome: letibot_transcript::ToolOutcome,
         payload: String,
     },
+    /// **The operator's own shell line — a `!` command, run by the daemon.**
+    ///
+    /// Not the door ([`CommandKind::OperatorCall"]): that frames a call a TOOL owns, checked
+    /// against [`crate::protocol::HEAD_RUN_TOOLS`] on the connection's thread and admitted with a
+    /// corpus row. A shell line owns itself — the operator typed it — so there is no name to check
+    /// and no admission to record. What this carries is the typed line (bang included, so the
+    /// `User` row is the operator's words verbatim) and the identity of the head that asked, which
+    /// becomes the `who` in the row's `CallOrigin` exactly as the door's does.
+    ///
+    /// It rides the queue for the same reason every other verb does: the single worker is the one
+    /// writer of the session's transcript, and a second writer is a second place for it to
+    /// disagree with itself.
+    OperatorShell {
+        /// The line as submitted, `!` first. Validated at the frame (`ClientFrame::OperatorShell`),
+        /// so anything reaching this queue already passed the daemon's re-check.
+        line: String,
+        /// The head that asked. Becomes the `who` in `CallOrigin::Operator`, so the row and the
+        /// door's rows name the actor the same way.
+        who: String,
+    },
     /// A slash command for the daemon: `flowy …`, `models …`.
     Slash {
         line: String,
@@ -330,6 +350,7 @@ impl CommandKind {
             CommandKind::ReadJobOutput { .. } => "read-job-output",
             CommandKind::OperatorCall { .. } => "operator-call",
             CommandKind::OperatorResult { .. } => "operator-result",
+            CommandKind::OperatorShell { .. } => "operator-shell",
             CommandKind::WithdrawPrompts => "take-back",
             CommandKind::SetOperatorTodos { .. } => "operator todos",
             CommandKind::Promote => "promote",
@@ -1186,6 +1207,17 @@ impl Hub {
                 (CommandKind::OperatorResult { call_id, .. }, _) => {
                     format!("result for the operator's call {call_id}")
                 }
+                // Stale-tolerant like the door beside it, and for its own reason: the
+                // operator who typed a `!` line while the screen moved still meant
+                // it, and the line's whole point is that the daemon — not this head —
+                // runs it. Mid-turn it waits for the round boundary (the same pickup
+                // the door's `execute: true` uses), which is a queue, not a refusal.
+                (CommandKind::OperatorShell { line, .. }, true) => format!(
+                    "{REJECT_STALE_SEQ}: queued anyway — the operator's own shell line `{line}`"
+                ),
+                (CommandKind::OperatorShell { line, .. }, false) => {
+                    format!("the operator's own shell line `{line}` queued for this session to run")
+                }
             };
 
             let verb = kind.verb();
@@ -1382,12 +1414,20 @@ impl Hub {
     /// DAEMON's to run, and the row it appends is the deposit the next reader sees, so it is
     /// the one that has to land mid-turn. Leaving the other kind here would hand a head's
     /// call to the worker and its result to nobody.
+    ///
+    /// # The operator's shell line rides the same pickup
+    ///
+    /// [`CommandKind::OperatorShell`] is taken here too, for the same reason in its own
+    /// words: the operator typed a `!` line while a turn was running, the daemon — not the
+    /// head — is the one that runs it, and the rows it appends are the deposit the next
+    /// round reads. A `!` line that waited for the turn to end would make the one command
+    /// surface that exists for *now* the slowest verb on the screen.
     pub fn try_head_run_command(&self) -> Option<QueuedCommand> {
         let mut g = self.lock();
         let i = (0..g.commands.len()).find(|&i| {
             matches!(
                 g.commands[i].kind,
-                CommandKind::OperatorCall { execute: true, .. }
+                CommandKind::OperatorCall { execute: true, .. } | CommandKind::OperatorShell { .. }
             )
         })?;
         g.commands.remove(i)
@@ -1410,6 +1450,13 @@ impl Hub {
     /// one press (the head's own `submit` merges the run into a single echo behind a running
     /// turn, so what the operator sees as *the queue* is one entry with N lines). So the daemon drops every
     /// queued prompt of that head, not one of them, and not the oldest alone.
+    ///
+    /// **A queued `!` line goes with it** ([`CommandKind::OperatorShell`]), because the
+    /// recall that asks for the take-back pulls the bang line's echo out of the
+    /// composer's queue too — and a shell command that runs after it was visibly
+    /// taken back is not a message landing late, it is work happening. Prompt and
+    /// bang are dropped together or the echo would be a lie about what the daemon
+    /// still holds.
     ///
     /// **"Every prompt of that head that was here when it asked" — which is the same sentence.**
     /// The rule is positional (`0..at`, the prefix in front of the withdraw frame) and that is not
@@ -1449,8 +1496,12 @@ impl Hub {
         // only thing that can arrive behind this withdraw is something typed *after* the recall.
         let mut kept = VecDeque::with_capacity(g.commands.len());
         for (i, c) in g.commands.drain(..).enumerate() {
-            let named =
-                i < at && c.head_id == cmd.head_id && matches!(c.kind, CommandKind::Prompt { .. });
+            let named = i < at
+                && c.head_id == cmd.head_id
+                && matches!(
+                    c.kind,
+                    CommandKind::Prompt { .. } | CommandKind::OperatorShell { .. }
+                );
             if !named {
                 kept.push_back(c);
             }

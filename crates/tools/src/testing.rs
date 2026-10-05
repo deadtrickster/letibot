@@ -293,6 +293,20 @@ pub fn confined_harness_with(
         &std::path::Path,
     ) -> Result<Box<dyn crate::exec::Confinement>, crate::exec::ExecError>,
 ) -> Result<Harness, crate::exec::ExecError> {
+    confined_harness_with_gate(None, build)
+}
+
+/// A confined session with a chosen gate — the confined half of
+/// [`runner_harness_with_gate`], and it exists for the same reason: a harness whose gate
+/// happened to admit would make every boundary test also a test that the gate is broken,
+/// and a test that wants to COUNT the gate's calls (the operator's own `!` path) needs a
+/// gate it chose rather than one that answers.
+pub fn confined_harness_with_gate(
+    gate: Option<Box<dyn crate::runtime::Gate>>,
+    build: impl FnOnce(
+        &std::path::Path,
+    ) -> Result<Box<dyn crate::exec::Confinement>, crate::exec::ExecError>,
+) -> Result<Harness, crate::exec::ExecError> {
     let dir = TempDir::new();
     fixture_tree(dir.path());
     // Canonicalised, because the backend canonicalises its root and the view is
@@ -307,7 +321,12 @@ pub fn confined_harness_with(
     let backend = crate::backend::HostBackend::executable_with(&root, Arc::clone(&host))
         .expect("fixture root");
     let registry = crate::runner_tools(Arc::new(Unavailable)).expect("built-ins register");
-    let rt = ToolRuntime::new(registry, Box::new(backend)).with_gate(allow_all());
+    let mut rt = ToolRuntime::new(registry, Box::new(backend));
+    if let Some(g) = gate {
+        rt = rt.with_gate(g);
+    } else {
+        rt = rt.with_gate(allow_all());
+    }
     Ok(Harness {
         rt,
         sink: RecordingToolSink::new(),

@@ -654,6 +654,14 @@ impl Link {
                             .client
                             .operator_call(app.seq, &call_id, &name, &arguments, true)?;
                     }
+                    // **The operator's own shell line.** No `call_id` to mint and no
+                    // result frame to wait for: the daemon owns the run AND the rows,
+                    // so this head's job ends at handing the typed line over. The
+                    // echo in `pending_prompts` is retired by the `User` row the
+                    // daemon appends, which is the same text by construction.
+                    Action::OperatorShell { line } => {
+                        self.client.operator_shell(app.seq, &line)?;
+                    }
                     Action::Secret { req_id, secret } => {
                         self.client.secret(&req_id, secret)?;
                     }

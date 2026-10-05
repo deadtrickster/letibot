@@ -1,0 +1,463 @@
+//! **The operator's own shell line (`!`), run by the daemon** — the run half of the
+//! feature the wire half lives in `letibot-sessionlog`'s `operator_shell.rs`.
+//!
+//! Three properties, and the first is the one the requirement names as *the* test:
+//!
+//! 1. **No permission decision is made.** The adjudicator attached is one that counts
+//!    its calls and would answer *nobody decided*; the run must succeed with zero
+//!    calls, no `DecisionRequested` may appear on the log, and no `OperatorCallAllowed`
+//!    either — that event is the door's admission, and a `!` line has none.
+//! 2. **The output reaches the model as a message, with the command named**: a `User`
+//!    row in the operator's own words (the typed line, bang included, `speaker:
+//!    Operator`) followed by a `ToolResult` named `bash` with `origin: Operator` —
+//!    the row every head folds, pages and sanitises like any other tool result.
+//! 3. **`sudo` can ask.** The command runs on the daemon's exec host, so it inherits
+//!    the standing environment (`LETIBOT_SOCKET`, `LETIBOT_SESSION`, `SUDO_ASKPASS`)
+//!    that lets `letibot-askpass` put a password card in front of a head. The test's
+//!    double for `sudo -A` is documented at its own test.
+//!
+//! What these need, and what they do not: a real exec host (a delegated cgroup v2
+//! subtree) and the vocabulary GGUF, because a `Harness` renders its stable prefix at
+//! open. Not a model: nothing here generates.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+use letibot_harnessd::config::{Config, Seat};
+use letibot_harnessd::{Dialect, Harness, Parts};
+use letibot_sessionlog::client::{HeadClient, Inbound, pump};
+use letibot_sessionlog::event::SessionEvent;
+use letibot_sessionlog::hub::Hub;
+use letibot_sessionlog::protocol::{Caps, ClientFrame, ServerFrame};
+use letibot_sessionlog::server::{ServerHandle, serve_registry};
+use letibot_sessionlog::{Registry, SessionWiring, SnapshotItem};
+use letibot_tools::{AdjudicationDecision, AdjudicationRequest, Adjudicator};
+use letibot_transcript::{CallOrigin, Speaker, TranscriptItem};
+
+fn config(session: &str, socket: &std::path::Path) -> Config {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("the workspace root is two levels above this crate")
+        .to_path_buf();
+    let mut cfg = Config::for_this_box(repo);
+    // **Not this box's configuration.** The same rule `wired.rs` states: these tests
+    // assert what the fixture supplies, not what the operator's `~/.config/letibot`
+    // happens to hold.
+    cfg.web_search = None;
+    cfg.permission = Vec::new();
+    cfg.dialect = Dialect::Qwen;
+    cfg.session_id = session.into();
+    cfg.socket = socket.to_path_buf();
+    // A seat that can run commands: unconfined (`leticode`), `bash` seated, and a
+    // mode that needs no oracle — the point here is the exec path, not the mode.
+    cfg.seat = Seat::Leticode;
+    cfg.allow_bash = true;
+    if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
+        cfg.vocab_gguf = g.into();
+    }
+    cfg
+}
+
+fn parts(cfg: &Config) -> Parts {
+    let p = Parts::load(cfg).expect(
+        "the vocabulary must load; set LETIBOT_VOCAB_GGUF if this box is not the one \
+         this repository is developed on",
+    );
+    // The operator's per-project mode is not this test's business (`wired.rs`'s rule).
+    *p.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    p
+}
+
+/// An adjudicator that counts its calls and would answer *nobody decided*.
+///
+/// It exists so that "the gate was not consulted" is a measurement rather than an
+/// inference from the call having succeeded: if the `!` path ever reached an
+/// adjudicator, the counter would move and `unavailable` would stop the command, so
+/// the outcome assertion and the counter assertion fail together.
+struct NeverAsked(Arc<AtomicUsize>);
+
+impl Adjudicator for NeverAsked {
+    fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        AdjudicationDecision::unavailable(
+            req,
+            "test",
+            "this adjudicator exists to prove it is never asked",
+        )
+    }
+
+    fn describe(&self) -> String {
+        "test adjudicator (refuses, and counts)".into()
+    }
+}
+
+fn socket_path(tag: &str) -> std::path::PathBuf {
+    let n = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "letibot-bang-{tag}-{}-{n}.sock",
+        std::process::id()
+    ))
+}
+
+/// **The whole run: a `!` line becomes two rows, the command actually ran, and no
+/// permission decision was made anywhere on the way.**
+#[test]
+fn a_bang_line_runs_in_the_workspace_and_lands_as_two_rows_with_no_decision() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let socket = socket_path("rows");
+    let cfg = config("bang-rows", &socket);
+    let p = parts(&cfg);
+    let hub = Hub::new(&cfg.session_id);
+    let asked = Arc::new(AtomicUsize::new(0));
+    let opened = Harness::open_with(
+        &p,
+        cfg,
+        hub.clone(),
+        Some(Box::new(NeverAsked(asked.clone()))),
+        None,
+    );
+    let mut h = match opened {
+        Ok(h) => h,
+        // An exec host needs a delegated cgroup v2 subtree; a host without one is a
+        // real host, and the refusal is asserted rather than skipped (`exec.rs`'s
+        // rule — a green test that measured nothing is worse than a red one).
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("cgroup") || msg.contains("reap") || msg.contains("exec"),
+                "a refusal must name what was missing: {msg}"
+            );
+            eprintln!("bang-rows: no exec host on this box, refusing open: {msg}");
+            return;
+        }
+    };
+
+    // The marker is a file the command writes in the session's workspace, so the
+    // assertion is on the disk rather than on the tool's opinion of itself.
+    let marker = format!("bang-marker-{}", std::process::id());
+    let line = format!("! printf 'the-operator-ran-this' > {marker} && cat {marker}");
+    h.run_operator_shell(&line, "dead")
+        .expect("the operator's own command runs and is recorded");
+
+    // **What a head would receive**, read the way a head reads it: the snapshot.
+    let snap = hub.snapshot();
+    let items: Vec<&TranscriptItem> = snap.items.iter().filter_map(|i| i.item.as_ref()).collect();
+    // The operator's own row first: their words, verbatim, in their own voice.
+    let user = items.iter().position(|i| {
+        matches!(
+            i,
+            TranscriptItem::User { speaker: Speaker::Operator, parts }
+                if parts.iter().any(|p| matches!(p, letibot_transcript::UserPart::Text { text } if text == &line))
+        )
+    });
+    let at = user.unwrap_or_else(|| {
+        panic!("the typed line never landed as the operator's own row: {items:?}")
+    });
+    // Then the result, AFTER it, named `bash` and attributed to the operator.
+    match &items[at + 1] {
+        TranscriptItem::ToolResult {
+            name,
+            outcome,
+            payload,
+            origin: Some(CallOrigin::Operator { who }),
+            ..
+        } => {
+            assert_eq!(name, "bash");
+            assert_eq!(who, "dead");
+            assert!(
+                matches!(outcome, letibot_transcript::ToolOutcome::Ok),
+                "the command ran: {payload}"
+            );
+            assert!(
+                payload.contains("the-operator-ran-this"),
+                "the row carries the command's output: {payload}"
+            );
+        }
+        other => panic!("the row after the line is not the command's result: {other:?}"),
+    }
+    // And the command really did run, where it was told to.
+    let wrote = std::fs::read_to_string(h.workspace().join(&marker)).unwrap_or_default();
+    assert_eq!(wrote, "the-operator-ran-this");
+    let _ = std::fs::remove_file(h.workspace().join(&marker));
+
+    // **No permission decision anywhere on the way.** Three half-checks, because the
+    // decision has three places it could show up: the adjudicator (never asked), the
+    // session log (no `DecisionRequested`, no `OperatorCallAllowed` — the door's
+    // admission, which a `!` line must not produce), and the outcome (Ok, which a
+    // refused call could never be).
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        0,
+        "the `!` path consulted the adjudicator"
+    );
+    for env in hub.retained() {
+        assert!(
+            !matches!(
+                env.event,
+                SessionEvent::DecisionRequested { .. } | SessionEvent::OperatorCallAllowed { .. }
+            ),
+            "a permission decision appeared for the operator's own command: {:?}",
+            env.event
+        );
+    }
+    // The size disclosure the door's runs make, on this path too.
+    assert!(
+        hub.retained().iter().any(|env| matches!(
+            &env.event,
+            SessionEvent::Warning { code, .. } if code == "operator_shell_ran"
+        )),
+        "the run must disclose what it put in the conversation"
+    );
+}
+
+/// **A command that cannot start is reported, not swallowed.**
+///
+/// `bash`'s own refusal lands as the `ToolResult` row with the outcome the tool gave,
+/// so the operator reads it where they read every other result.
+#[test]
+fn a_command_that_cannot_start_lands_as_a_failed_row() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let socket = socket_path("nostart");
+    let cfg = config("bang-nostart", &socket);
+    let p = parts(&cfg);
+    let hub = Hub::new(&cfg.session_id);
+    let mut h = match Harness::open_with(&p, cfg, hub.clone(), None, None) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("bang-nostart: no exec host on this box: {e}");
+            return;
+        }
+    };
+    // A command that cannot start: the shell is asked to `exec` a binary that does
+    // not exist. bash reports it and exits non-zero — which is the COMMAND's answer
+    // (`ok` with the exit stated), so the honest assertion is on the payload naming
+    // what happened, not on the outcome variant.
+    h.run_operator_shell("! this-binary-does-not-exist-anywhere", "dead")
+        .expect("the run itself records a row");
+    let snap = hub.snapshot();
+    let said = snap
+        .items
+        .iter()
+        .filter_map(|i| i.item.as_ref())
+        .find_map(|i| match i {
+            TranscriptItem::ToolResult { payload, .. } => Some(payload.clone()),
+            _ => None,
+        })
+        .expect("the failure landed as a row");
+    assert!(
+        said.contains("this-binary-does-not-exist-anywhere") && said.contains("not found"),
+        "the row names the command and what happened to it: {said}"
+    );
+    assert!(
+        said.contains("[exit ") || said.contains("exit"),
+        "a non-zero exit is the command's answer, not a harness failure: {said}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// sudo: the password ask
+// ---------------------------------------------------------------------------
+
+/// **The `!` path's command can ask the head for a password.**
+///
+/// The chain, and where each link is proven:
+///
+/// * the operator's command runs on the daemon's exec host with the **standing
+///   environment** (`LETIBOT_SOCKET`, `LETIBOT_SESSION`, `SUDO_ASKPASS`) and the
+///   `sudo` shim first on `PATH` — wired at `Harness::open`, and THIS test proves the
+///   `!` path inherits it, which is the one link that is new;
+/// * a helper that connects on that socket reaches the head as
+///   `SecretRequested` and the head's `Secret` answer reaches the helper —
+///   `letibot-sessionlog`'s `askpass.rs`, unchanged by this feature;
+/// * `sudo -A` runs `SUDO_ASKPASS` — `sudo.rs`'s unit test, and the opt-in
+///   `sudo_live.rs` against a real sudo.
+///
+/// **The double.** Standing in for `sudo -A` + `letibot-askpass` is a python3 script
+/// that speaks the wire's own NDJSON (attach as an `askpass` head, send `Askpass`,
+/// read the `Secret` answer) — the same three steps the real helper takes, with the
+/// two JSON lines serialized from real frames in this test so the double cannot drift
+/// from the protocol. It runs as the `!` command itself, so what is measured is
+/// exactly what a `sudo` inside a `!` command does: reach the daemon, ask, be
+/// answered. A real sudo is not used because the assertion must not depend on this
+/// box's sudo policy — and `letibot-askpass` is not built beside a test binary, which
+/// is what `$LETIBOT_ASKPASS` exists to override in `sudo_live.rs`.
+#[test]
+fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let socket = socket_path("sudo");
+    let cfg = config("bang-sudo", &socket);
+    // **Leaked on purpose.** The harness borrows `Parts` for its life and the run
+    // must happen on another thread (the worker blocks inside the command while
+    // this thread answers the password ask), so the borrow has to be `'static`.
+    // A test's `Parts` is exactly the thing a leak is for.
+    let p: &'static Parts = Box::leak(Box::new(parts(&cfg)));
+    let hub = Hub::new(&cfg.session_id);
+    let h = match Harness::open_with(&p, cfg.clone(), hub.clone(), None, None) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("bang-sudo: no exec host on this box: {e}");
+            return;
+        }
+    };
+    // The registry that serves the socket, so the helper's attach reaches THIS hub.
+    let registry = Registry::of(hub.clone());
+    registry
+        .create(&cfg.session_id, "", SessionWiring::default())
+        .ok();
+    let server = serve_registry(registry, &socket).expect("bind");
+    // The harness borrows `Parts` for its life, and the runner thread below takes
+    // the harness while this thread keeps `p` — both alive to the end of the test.
+    let mut h = h;
+
+    // The two frames the double sends, serialized here so the double cannot drift.
+    let attach = serde_json::to_string(&ClientFrame::Attach {
+        protocol_version: letibot_sessionlog::PROTOCOL_VERSION,
+        session_id: String::new(), // the double fills it from $LETIBOT_SESSION
+        since_seq: u64::MAX,
+        kind: "askpass".into(),
+        identity: "sudo".into(),
+        caps: Caps {
+            can_decide: false,
+            ..Caps::default()
+        },
+    })
+    .expect("attach line");
+    let askpass = serde_json::to_string(&ClientFrame::Askpass {
+        prompt: String::new(),
+        command: String::new(),
+    })
+    .expect("askpass line");
+
+    // The double. `#!/usr/bin/python3` because the exec host clears the environment
+    // and pins PATH — an absolute interpreter is the one spelling that survives.
+    let dir = std::env::temp_dir().join(format!("letibot-bang-askpass-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let double = dir.join("askpass-double");
+    std::fs::write(
+        &double,
+        format!(
+            r#"#!/usr/bin/python3
+# letibot test double for `sudo -A` + `letibot-askpass`: attach as an askpass
+# head, ask for the password for `command`, read the answer. Prints a MARKER
+# rather than the password, so the transcript can never hold the secret even
+# by accident of this test.
+import json, os, socket, sys
+prompt, command = sys.argv[1], sys.argv[2]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(os.environ["LETIBOT_SOCKET"])
+f = s.makefile("rw")
+def send(line):
+    f.write(json.dumps(line) + "\n")
+    f.flush()
+attach = json.loads({attach:?})
+attach["session_id"] = os.environ["LETIBOT_SESSION"]
+send(attach)
+ask = json.loads({askpass:?})
+ask["prompt"] = prompt
+ask["command"] = command
+send(ask)
+for line in f:
+    m = json.loads(line)
+    if isinstance(m, dict) and m.get("frame") == "secret":
+        got = m["secret"].get("secret") if isinstance(m["secret"], dict) else m["secret"]
+        print("askpass-double: the head answered" if got else "askpass-double: no password came")
+        sys.exit(0 if got else 1)
+print("askpass-double: no answer")
+sys.exit(1)
+"#,
+            attach = attach,
+            askpass = askpass,
+        ),
+    )
+    .expect("write the double");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&double, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod the double");
+    }
+
+    // The head, attached before the command runs, that will answer the ask.
+    let (mut head, _hello, reader) =
+        HeadClient::attach(&socket, &cfg.session_id, 0, "tui", "dead", Caps::default())
+            .expect("head attach");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _pump = std::thread::spawn(move || pump(reader, tx));
+
+    // The `!` line, run on the worker's own thread — the operator's command blocks
+    // inside it while the password is outstanding, exactly as a real `sudo` would.
+    let line = format!(
+        "! {double} '[sudo] password for dead: ' 'sudo true'",
+        double = double.display()
+    );
+    let runner = std::thread::spawn(move || {
+        let (line, mut h) = (line, h);
+        h.run_operator_shell(&line, "dead")
+            .expect("the run records")
+    });
+
+    // The ask arrives at the head with the command on it, and the answer goes back.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let req_id = loop {
+        assert!(
+            Instant::now() < deadline,
+            "no SecretRequested reached the head"
+        );
+        let Ok(inbound) = rx.recv_timeout(Duration::from_millis(200)) else {
+            continue;
+        };
+        if let ServerFrame::Event(env) = inbound.frame() {
+            if let SessionEvent::SecretRequested {
+                req_id,
+                prompt,
+                command,
+                ..
+            } = &env.event
+            {
+                assert!(prompt.contains("password for dead"), "{prompt}");
+                assert_eq!(command, "sudo true");
+                break req_id.clone();
+            }
+        }
+    };
+    head.secret(&req_id, Some("hunter2".into()))
+        .expect("answer the ask");
+    runner.join().expect("the run finished");
+
+    // The helper's own report is the command's output, so it is the row's payload —
+    // and the password is nowhere the transcript or the log can reach.
+    let snap = hub.snapshot();
+    let payload = item_payloads(&snap).join("\n");
+    assert!(
+        payload.contains("askpass-double: the head answered"),
+        "the helper got the password the head typed: {payload}"
+    );
+    let everything = format!("{:?} {:?}", hub.snapshot(), hub.retained());
+    assert!(
+        !everything.contains("hunter2"),
+        "the secret leaked into the session's state"
+    );
+    server.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn item_payloads(snap: &letibot_sessionlog::Snapshot) -> Vec<String> {
+    snap.items
+        .iter()
+        .filter_map(|i: &SnapshotItem| i.item.as_ref())
+        .filter_map(|i| match i {
+            TranscriptItem::ToolResult { payload, .. } => Some(payload.clone()),
+            _ => None,
+        })
+        .collect()
+}
