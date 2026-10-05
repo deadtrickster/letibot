@@ -114,6 +114,53 @@ fn secs(d: Duration) -> String {
 
 // ---------------------------------------------------------------- job_list
 
+// -------------------------------------------------------------- job_list
+
+/// **The two lines a `job_list` opens with**, given what was asked for and what there is:
+/// the denominator (§2.2 — a count does not travel without the size it was drawn from) and, when
+/// the answer is *nothing is running*, where the rest went.
+///
+/// Pure, and that is not tidiness: the default's whole promise is that the listing is the ACTIVE
+/// jobs with the hidden count stated, and asserting that through `invoke` would need a process
+/// host, a cgroup tree and a spawned job. The tree's own rule — *"a decision exercisable only by
+/// standing up a whole session is a decision nothing asserts"* — is why the wording lives here.
+fn job_list_summary(
+    want: Option<&str>,
+    everything: bool,
+    total: usize,
+    in_scope: usize,
+    running: usize,
+) -> String {
+    let settled = in_scope - running;
+    let mut out = match (want, everything) {
+        (Some(w), true) => {
+            format!("{in_scope} of {total} job(s) this session started are in scope `{w}`.\n")
+        }
+        (Some(w), false) => format!(
+            "{running} of {total} job(s) this session started are still running in scope `{w}`; \
+             {settled} settled job(s) there are not listed — `job_list` with `all: true` shows \
+             them.\n"
+        ),
+        (None, true) => format!("{total} job(s) this session has started.\n"),
+        (None, false) => format!(
+            "{running} of {total} job(s) this session has started are still running; {settled} \
+             have settled and are not listed — `job_list` with `all: true` shows every one.\n"
+        ),
+    };
+    // **Nothing running is an answer, and it should not read as an empty listing.** The reader
+    // asked what is active; "nothing" plus where the rest went is the whole truth, and the
+    // settled count is the note about how to get them.
+    if running == 0 && settled > 0 {
+        out.push_str(&match want {
+            Some(w) => format!(
+                "\nNothing is running in scope `{w}`; {settled} job(s) there have settled.\n"
+            ),
+            None => format!("\nNothing is running; {settled} job(s) have settled.\n"),
+        });
+    }
+    out
+}
+
 pub struct JobList;
 
 impl Tool for JobList {
@@ -124,14 +171,17 @@ impl Tool for JobList {
              much output it has produced and which scope owns it — plus every monitor \
              that is watching and every one that has settled with the reason it did, \
              every job that was moved to a different scope, and what every scope that \
-             has already ended killed on its way out. Takes no arguments; optionally \
-             `scope` to show only one scope's jobs. Use this instead of `ps` or \
-             `pgrep`: it reads cgroup membership, so it has no pattern that could \
-             match the process asking.",
+             has already ended killed on its way out. **Only the ACTIVE jobs are listed \
+             by default** — the ones whose completion has not arrived — because a listing \
+             that leads with forty finished `grep`s buries the one job anybody acts on; \
+             how many were left out is always stated. `all` includes the settled ones, and \
+             `scope` shows one scope's. Use this instead of `ps` or `pgrep`: it reads cgroup \
+             membership, so it has no pattern that could match the process asking.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "scope": {"type": "string", "description": "Show only jobs owned by this scope: `turn`, `session`, or an explicit scope's name."}
+                    "scope": {"type": "string", "description": "Show only jobs owned by this scope: `turn`, `session`, or an explicit scope's name."},
+                    "all": {"type": "boolean", "description": "Include the jobs that have already settled. Off by default: without it the listing is the ACTIVE jobs only, with the number hidden stated."}
                 }
             }),
             // Reads the harness's own tables and changes nothing. Clause 4 says
@@ -145,37 +195,42 @@ impl Tool for JobList {
             return no_process_host(ctx);
         };
         let want = args.get("scope").and_then(|v| v.as_str());
+        // **ACTIVE BY DEFAULT** (2026-10-05). The operator, looking at a `job_list` of 44 jobs
+        // with exactly one running: *"let job_list show only active jobs by default with a note
+        // how to get finished jobs"*. The default was the whole session's history, which is how
+        // the one job anybody acts on gets buried under forty finished `grep`s — and the count of
+        // what is hidden is printed rather than the filter being silent, which is the same rule
+        // the scope filter already follows.
+        let everything = args.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
         let all = host.jobs();
-        let jobs: Vec<_> = all
+        let in_scope: Vec<_> = all
             .iter()
             .filter(|j| want.is_none_or(|w| j.owner.kind.as_str() == w || j.owner.name == w))
             .collect();
+        let running: Vec<_> = in_scope
+            .iter()
+            .copied()
+            .filter(|j| j.state.is_running())
+            .collect();
+        let jobs: Vec<&_> = if everything {
+            in_scope.clone()
+        } else {
+            running.clone()
+        };
 
         let mut body = String::new();
         // The denominator, first and always. §2.2: a count does not travel without
         // the size of what it was drawn from, and "0 jobs" under a filter is not
-        // the same fact as "0 jobs".
-        body.push_str(&match want {
-            Some(w) => format!(
-                "{} of {} job(s) this session started are in scope `{w}`.\n",
-                jobs.len(),
-                all.len()
-            ),
-            None => format!("{} job(s) this session has started.\n", all.len()),
-        });
-
-        if jobs.is_empty() && !all.is_empty() {
-            body.push_str(&format!(
-                "\nno job is in `{}`. The scopes with jobs are: {}.\n",
-                want.unwrap_or(""),
-                {
-                    let mut ks: Vec<String> = all.iter().map(|j| j.owner.to_string()).collect();
-                    ks.sort();
-                    ks.dedup();
-                    ks.join(", ")
-                }
-            ));
-        }
+        // the same fact as "0 jobs". The choice of words is a pure function so that the
+        // default's promise — *the active ones, and how many were left out* — is asserted
+        // without a process host; see [`job_list_summary`].
+        body.push_str(&job_list_summary(
+            want,
+            everything,
+            all.len(),
+            in_scope.len(),
+            running.len(),
+        ));
 
         for j in &jobs {
             body.push_str(&format!(
@@ -1033,6 +1088,74 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **The default is the ACTIVE jobs, and the count of what it hid is stated** — the operator's
+    /// ask, 2026-10-05: *"let job_list show only active jobs by default with a note how to get
+    /// finished jobs"*.
+    ///
+    /// The whole point is the *note*. A filter that silently drops forty settled jobs is the same
+    /// defect as a listing that buries them, so the denominator and the way back are asserted with
+    /// it — and the operator's own shape is the fixture: 44 jobs, one of them running.
+    #[test]
+    fn the_default_listing_is_the_active_jobs_and_says_what_it_hid() {
+        let head = job_list_summary(None, false, 44, 44, 1);
+        assert!(
+            head.contains("1 of 44 job(s) this session has started are still running"),
+            "{head}"
+        );
+        assert!(
+            head.contains("43 have settled and are not listed"),
+            "{head}"
+        );
+        assert!(
+            head.contains("`job_list` with `all: true`"),
+            "the way back to the finished ones must be named: {head}"
+        );
+        assert!(
+            !head.contains("Nothing is running"),
+            "something IS running, so that clause is false here: {head}"
+        );
+
+        // With `all`, nothing is hidden and no note is owed — the count is the old one.
+        let every = job_list_summary(None, true, 44, 44, 1);
+        assert!(
+            every.contains("44 job(s) this session has started"),
+            "{every}"
+        );
+        assert!(
+            !every.contains("not listed") && !every.contains("all: true"),
+            "`all` must not claim a hidden count or offer a way back: {every}"
+        );
+
+        // **Nothing running is an answer**, not an empty listing.
+        let idle = job_list_summary(None, false, 44, 44, 0);
+        assert!(
+            idle.contains("0 of 44 job(s) this session has started are still running"),
+            "{idle}"
+        );
+        assert!(
+            idle.contains("Nothing is running; 44 job(s) have settled"),
+            "{idle}"
+        );
+
+        // And the scope arm keeps the same promise about what it hid *there*.
+        let scoped = job_list_summary(Some("turn"), false, 44, 7, 2);
+        assert!(
+            scoped
+                .contains("2 of 44 job(s) this session started are still running in scope `turn`"),
+            "{scoped}"
+        );
+        assert!(
+            scoped.contains("5 settled job(s) there are not listed"),
+            "{scoped}"
+        );
+        let scoped_all = job_list_summary(Some("turn"), true, 44, 7, 2);
+        assert!(
+            scoped_all.contains("7 of 44 job(s) this session started are in scope `turn`"),
+            "{scoped_all}"
+        );
+        assert!(!scoped_all.contains("not listed"), "{scoped_all}");
     }
 
     /// **`job_kill` reaches a subagent, and a session that cannot start one says so.**
