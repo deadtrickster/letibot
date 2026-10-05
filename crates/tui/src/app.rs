@@ -10041,6 +10041,47 @@ impl App {
                     self.say(&format!("row {at} is done"));
                 }
             }
+            // **`when N JOB` — the condition, attached by number.** The operator's own shape: *"if
+            // you are telling me 'job ends and i do this and that' then 'this and that' is a todo
+            // item, which is conditioned by job status (end)"*, and *"when I file a todo"* is where
+            // it belongs — the row is filed first and the condition is put on it here.
+            //
+            // **`when N -` clears it, and that is not a courtesy.** A condition nobody can take
+            // off is a row waiting for ever on a job that already ended, and the store would go on
+            // reporting it as due.
+            ("when", both) => {
+                let Some((n, handle)) = both.split_once(char::is_whitespace) else {
+                    self.say(
+                        "`/todo when N JOB` — a row number and the handle it waits on. \
+                         `/todo when N -` takes the condition off.",
+                    );
+                    return None;
+                };
+                let (n, handle) = (n.trim(), handle.trim());
+                let Ok(at) = n.parse::<usize>() else {
+                    self.say(&format!("`{n}` is not a row number — `/todo` lists yours"));
+                    return None;
+                };
+                if at < 1 || at > mine.len() {
+                    self.say(&format!(
+                        "there is no row {at} of yours — you have {}",
+                        mine.len()
+                    ));
+                    return None;
+                }
+                if handle == "-" {
+                    mine[at - 1].when = None;
+                    self.say(&format!("row {at} no longer waits on anything"));
+                } else {
+                    mine[at - 1].when = Some(letibot_sessionlog::event::TodoCondition::Job {
+                        handle: handle.to_string(),
+                    });
+                    self.say(&format!(
+                        "row {at} is due once `{handle}` is not running — a job this daemon has \
+                         never heard of counts as ended, which is what a restart looks like."
+                    ));
+                }
+            }
             // Anything else is the text of a new row — including a line that begins with a number,
             // or with `done` and no argument, because those are sentences somebody could type.
             _ if !rest.is_empty() => {
@@ -41374,6 +41415,69 @@ mod tests {
         assert!(
             screen.contains("not in the window"),
             "and say why Entering it shows nothing:\n{screen}"
+        );
+    }
+
+    /// **A CONDITION IS ATTACHED TO A ROW BY A VERB, BY NUMBER** — the piece that makes a
+    /// conditioned row something a person can actually file. The operator's own words: *"More like
+    /// Option<TodoCondition> and then we can have many conditions, and we can instantiate them
+    /// programmatically or via a form, when I file a todo"*.
+    ///
+    /// Three claims, and the third is what keeps the feature usable: the row carries the handle it
+    /// waits on, the write goes out as the operator's half (which is the only place a condition can
+    /// live — the model's half is replaced wholesale by every `todo_write`), and **`-` takes it
+    /// off**, because a condition nobody can clear is a row waiting for ever on a job that already
+    /// ended.
+    #[test]
+    fn a_condition_is_attached_to_a_row_by_number_and_can_be_taken_off() {
+        use letibot_sessionlog::event::{TodoBy, TodoCondition, TodoEntry, TodoStatus};
+        let mut a = app();
+        a.session_id = "s1".into();
+        a.apply(ServerFrame::Todos {
+            session_id: "s1".into(),
+            todos: vec![TodoEntry {
+                content: "push once CI lands".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+                when: None,
+            }],
+        });
+        match a.command("todo when 1 j121") {
+            Some(Action::SetOperatorTodos(items)) => assert_eq!(
+                items[0].when,
+                Some(TodoCondition::Job {
+                    handle: "j121".into()
+                }),
+                "the row carries the handle it waits on"
+            ),
+            other => panic!("expected a write of the operator's half, got {other:?}"),
+        }
+        // **And off again.** A row whose job has ended must be able to stop waiting on it, or the
+        // store reports the same row due on every wake for the rest of the session.
+        match a.command("todo when 1 -") {
+            Some(Action::SetOperatorTodos(items)) => {
+                assert_eq!(items[0].when, None, "`-` clears it")
+            }
+            other => panic!("expected a write, got {other:?}"),
+        }
+        // A number that is not a row of theirs is refused BY NAME, and nothing is sent — the same
+        // rule `done N` keeps, so a typo cannot quietly attach a condition to the wrong row.
+        assert_eq!(a.command("todo when 9 j121"), None);
+        assert!(
+            a.notice.as_deref().unwrap_or("").contains("no row 9"),
+            "the refusal names the row: {:?}",
+            a.notice
+        );
+        // And a bare `when` with nothing after it says how it is used rather than eating the word
+        // as the text of a new row.
+        assert_eq!(a.command("todo when"), None);
+        assert!(
+            a.notice
+                .as_deref()
+                .unwrap_or("")
+                .contains("/todo when N JOB"),
+            "a bare `when` names the form: {:?}",
+            a.notice
         );
     }
 
