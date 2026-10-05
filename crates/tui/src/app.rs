@@ -19732,8 +19732,7 @@ fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
     let w = cfg.width.max(20);
     let mark = p.paint(Role::Faint, "session · ");
     let stamp = clock_time(ts);
-    let head_w = w.saturating_sub(visible_width("session · ") + visible_width(&stamp) + 2);
-    let mut lines = wrap(text, head_w.max(8));
+    let mut lines = wrap(text, session_text_cols(ts, cfg));
     if lines.is_empty() {
         lines.push(String::new());
     }
@@ -19755,6 +19754,21 @@ fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
         ));
     }
     out
+}
+
+/// **The columns a `session ·` row's own text has** — its label and its trailing clock taken
+/// off.
+///
+/// One function, because the wrap and the trim are two readers of one number: a settlement line
+/// trimmed to a width the wrap does not use is a line that wraps anyway, which is the whole of
+/// the defect this exists for. The operator found it by looking: a finished child's row held the
+/// entire brief this head had written for that child — *"a giant prompt"* — five wrapped rows of
+/// instructions where a settlement should be one line.
+fn session_text_cols(ts: u64, cfg: &RenderConfig) -> usize {
+    let w = cfg.width.max(20);
+    let stamp = clock_time(ts);
+    w.saturating_sub(visible_width("session · ") + visible_width(&stamp) + 2)
+        .max(8)
 }
 
 /// **What a child was asked, as one line** — the rule the subagents pane and the folded
@@ -20933,7 +20947,25 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     // reading line — see [`folded_notice`], which folds only what it can
                     // account for completely and hands back everything else untouched.
                     match folded_notice(&text, subagents) {
-                        Some(folded) => (RowClass::Other, session_block(&folded, it.ts, cfg)),
+                        // **A settlement line is a LINE, however long the fact in it is.** One of
+                        // the facts `folded_notice` folds in is the child's own task, and a head
+                        // that starts subagents with a brief has tasks of thousands of
+                        // characters: pasted into the row they drew five wrapped rows of
+                        // somebody's instructions. The operator, looking at a finished child:
+                        // *"a giant prompt"*. So every folded line is trimmed to the width the
+                        // block will draw it in, with the head's own `…` — the rule every other
+                        // clamped row here keeps, and the one the pane already keeps (its rows
+                        // end in `trim_to`). What is dropped is on the pane and in the child's
+                        // own session, which is where a reader goes for the whole of it.
+                        Some(folded) => {
+                            let cols = session_text_cols(it.ts, cfg);
+                            let folded = folded
+                                .lines()
+                                .map(|l| trim_to(l, cols))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            (RowClass::Other, session_block(&folded, it.ts, cfg))
+                        }
                         None => (RowClass::Other, session_block(&text, it.ts, cfg)),
                     }
                 }
@@ -39803,6 +39835,83 @@ mod tests {
         assert!(
             !screen.contains("a job you backgrounded has ended"),
             "the heading is what a folded line replaces: {screen}"
+        );
+    }
+
+    /// **A settlement line is one line, however long the fact inside it is.**
+    ///
+    /// MEASURED on this head, 2026-10-05, by the operator looking at it: *"a giant prompt"*.
+    /// The `task` this head gives a subagent is a brief of thousands of characters, and
+    /// [`folded_notice`] folds it into the settlement line because what a child was *asked* is the
+    /// one fact the notice cannot say for itself. Pasted in whole it drew five wrapped rows of
+    /// somebody's instructions where a settlement should be one line.
+    ///
+    /// The trim is to the width the block will draw it in — [`session_text_cols`], the same number
+    /// `session_block` wraps to — so what the reader gets is one row ending in the head's own `…`
+    /// rather than a paragraph. The pane keeps the same rule at its own width (its rows end in
+    /// `trim_to`), and the whole of the task is in the child's own session, which is where a reader
+    /// goes for the whole of it.
+    #[test]
+    fn a_completion_row_holds_a_whole_brief_on_one_line() {
+        const BRIEF: &str = "You are implementing one feature in the letibot repository, in your own git worktree. Read this whole brief before touching anything. The repo is at ~/Projects/letibot, the workspace root you are in, and main must not be touched.";
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // **The row after the `Hello`**, because attaching rewrites the pane: a child this head
+        // watched spawn is what `SubagentState` is for, and the fixture has to be in the state the
+        // live head is in when the notice arrives.
+        a.subagents = vec![SubagentState {
+            session_id: "s-sub-1".into(),
+            state: "failed".into(),
+            prompt: String::new(),
+            role: "coder".into(),
+            task: BRIEF.into(),
+            model: String::new(),
+            answer: None,
+            spawned_ms: 0,
+        }];
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.0".into(),
+                kind: "user".into(),
+                ledger_head: String::new(),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Agent,
+                    parts: vec![letibot_transcript::UserPart::Text {
+                        text: "[task] a subagent you started has finished:\n  - `s-sub-1` failed: the cap is spent\nThis is the completion arriving on its own — you do not need to wait for it.".into(),
+                    }],
+                }),
+            },
+        )));
+        let screen = a.screen(100, 30);
+        let rows: Vec<&String> = screen.iter().filter(|l| l.contains("s-sub-1")).collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "the settlement drew {} rows instead of one:\n{:#?}",
+            rows.len(),
+            rows
+        );
+        let row = rows[0];
+        assert!(row.contains("You are implementing one feature"), "{row:?}");
+        assert!(row.contains("session · "), "{row:?}");
+        assert!(row.contains('…'), "the line was not elided: {row:?}");
+        assert!(
+            !screen
+                .iter()
+                .any(|l| l.contains("main must not be touched")),
+            "the tail of the brief reached the glass:\n{}",
+            screen.join("\n")
         );
     }
 
