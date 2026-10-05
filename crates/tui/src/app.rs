@@ -1075,6 +1075,18 @@ pub enum Action {
         name: String,
         arguments: String,
     },
+    /// **The operator's own shell line** — a submitted line that began with `!`.
+    ///
+    /// The line travels verbatim, bang included: the daemon strips it (one rule, at the
+    /// execution site) and the row the operator gets back is the words they typed. The
+    /// daemon runs it in this session's workspace through the `bash` path — confine, sudo
+    /// askpass and byte caps identical to a model's call — and appends two rows: this
+    /// line as the operator's own, and the output as a `bash` result the head folds and
+    /// pages like every other tool row. See [`App::submit`]'s `!` arm for the typing
+    /// surface and `ClientFrame::OperatorShell` for the wire.
+    OperatorShell {
+        line: String,
+    },
     /// A password for `sudo`, or a refusal. Never logged by anything on the way.
     Secret {
         req_id: String,
@@ -7940,6 +7952,51 @@ impl App {
     /// What a submitted line means: a command, an answer to an open decision, or
     /// a prompt.
     fn submit(&mut self, text: String) -> Option<Action> {
+        // **A line whose first character is `!` is the operator's own shell command.**
+        //
+        // The operator's ask: *"when prompt starts with ! it is going to be a shell command
+        // from me"*. The bang has to be the FIRST character, exactly as `/` does for verbs —
+        // one rule for the two sigils a composer line can start with, so leading whitespace
+        // means prose, as it always did. The recognition is the same shape as the `/` arm
+        // below and sits beside it for the same reason: while a card or a picker is open, a
+        // line that begins with a sigil is that thing and cannot sensibly be anything else.
+        //
+        // **A line that is nothing but the bang is refused here, with the words kept.** `!`
+        // and `!   ` carry no command, and sending one would make the daemon echo a refusal
+        // for something the head could see was empty. The daemon re-checks anyway
+        // (`operator_shell_command`), because a frame is a socket and not a keyboard.
+        //
+        // **No gate, no card, no ladder** — not because this head skips one but because
+        // there is none on the path: the frame is `OperatorShell`, the daemon runs it through
+        // `ToolRuntime::invoke_operator` (the door's own ungated entry), and no
+        // `DecisionRequested` can appear for it. Pinned where the run lives:
+        // `letibot-harnessd`'s `tests/operator_shell.rs` counts the adjudicator's calls
+        // (and the log's decisions) and fails if either moves.
+        //
+        // The echo joins `pending_prompts` so the line is visibly held until the daemon's
+        // `User` row lands and retires it — the same trust a prompt places — and the detached
+        // guard is the prompt's own, because a `!` line that cannot reach a daemon must not
+        // look sent either.
+        if text.starts_with('!') {
+            if letibot_sessionlog::operator_shell_command(&text).is_none() {
+                self.set_composer(&text);
+                self.say("! COMMAND — the bang has to be followed by the command to run");
+                self.redraw = true;
+                return None;
+            }
+            if self.detached() {
+                self.set_composer(&text);
+                self.say(
+                    "no daemon connection — your line is held here. It sends when the daemon \
+                     is back.",
+                );
+                self.redraw = true;
+                return None;
+            }
+            self.scroll = 0;
+            self.pending_prompts.push(text.clone());
+            return Some(Action::OperatorShell { line: text });
+        }
         if let Some(rest) = text.strip_prefix('/') {
             return self.command(rest.trim());
         }
@@ -30058,6 +30115,262 @@ mod tests {
             })
         );
         assert_eq!(a.input(), "", "the typed id is consumed, not held");
+    }
+
+    /// **A `!` line is the operator's own shell command, and nothing else stops being
+    /// what it was.**
+    ///
+    /// The operator's ask: *"when prompt starts with ! it is going to be a shell command
+    /// from me"*. Pinned with the contrast cases beside it, because a recogniser is only
+    /// honest next to what it must NOT take: an ordinary line is still a prompt, and a
+    /// line with whitespace before the bang is prose too — the same rule `/`-verbs
+    /// follow, so the two sigils behave the same way and `  ! ls .` cannot become a
+    /// command by an indentation nobody can see.
+    #[test]
+    fn a_bang_line_is_a_shell_command_and_an_ordinary_line_is_still_a_prompt() {
+        let mut a = app();
+        typed(&mut a, "! ls .");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::OperatorShell {
+                line: "! ls .".into()
+            }),
+            "the line travels verbatim, bang included"
+        );
+        assert_eq!(
+            a.pending_prompts,
+            vec!["! ls .".to_string()],
+            "the echo is held like a prompt's, until the daemon's row lands"
+        );
+        // No space needed: `!ls` is the same command as `! ls`.
+        typed(&mut a, "!ls");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::OperatorShell { line: "!ls".into() })
+        );
+        // An ordinary line is a prompt, unchanged.
+        typed(&mut a, "what changed here?");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Prompt("what changed here?".into()))
+        );
+        // Whitespace before the bang is prose, exactly as it is before a `/` verb.
+        typed(&mut a, "  ! ls .");
+        assert_eq!(a.key(Key::Enter), Some(Action::Prompt("  ! ls .".into())));
+    }
+
+    /// **The held `!` line is recallable, and the take-back rides with it.**
+    ///
+    /// `↑` on an empty composer pulls the queued line back for editing and asks the
+    /// daemon to drop it — and for a `!` line that is not a courtesy but the whole
+    /// point: a command that ran after it was visibly taken back would be work nobody
+    /// re-asked for. (The daemon's half — dropping the queued `OperatorShell` with the
+    /// prompts — is pinned in `letibot-sessionlog`'s `operator_shell.rs`.)
+    #[test]
+    fn a_held_bang_line_is_recalled_by_up_and_the_take_back_rides_with_it() {
+        let mut a = app();
+        typed(&mut a, "! make -j8");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::OperatorShell {
+                line: "! make -j8".into()
+            })
+        );
+        assert_eq!(a.key(Key::Up), Some(Action::WithdrawPrompts));
+        assert_eq!(a.input(), "! make -j8", "the line is back for editing");
+        assert!(a.pending_prompts.is_empty(), "the echo stood down");
+        // And the edited resend is a `!` line again, not prose that happens to have
+        // lost the bang it would need.
+        a.key(Key::End);
+        typed(&mut a, " && echo done");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::OperatorShell {
+                line: "! make -j8 && echo done".into()
+            })
+        );
+    }
+
+    /// **A bang with nothing after it is refused here, and the words are kept.**
+    ///
+    /// `!` and `!   ` carry no command; sending one would make the daemon answer a
+    /// refusal for something this head could see was empty. The refusal is local and
+    /// the line goes back to the composer, which is the same courtesy a held prompt
+    /// gets — nothing is sent, so nothing can be shown as queued and then evaporate.
+    #[test]
+    fn a_bang_with_nothing_after_it_is_refused_and_the_words_are_kept() {
+        let mut a = app();
+        for line in ["!", "!   "] {
+            typed(&mut a, line);
+            assert_eq!(a.key(Key::Enter), None, "`{line}` must not be sent");
+            assert_eq!(a.input(), line, "the line goes back to the composer");
+            assert!(a.pending_prompts.is_empty(), "nothing was queued");
+            a.key(Key::CtrlC);
+        }
+    }
+
+    /// **`!!` is a command, not a repeat.** There is no history in this composer to
+    /// repeat from, and inventing that reading would make the same bytes mean two
+    /// things depending on state nobody can see — so `!!` carries the command `!`,
+    /// which the shell will answer for itself, and the row that comes back is the
+    /// honest one. `!x` is pinned beside it: a bang does not need a space.
+    #[test]
+    fn a_double_bang_is_a_command_not_a_repeat() {
+        let mut a = app();
+        typed(&mut a, "!!");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::OperatorShell { line: "!!".into() })
+        );
+        assert_eq!(
+            letibot_sessionlog::operator_shell_command("!!"),
+            Some("!"),
+            "the command the daemon will run is `!`, and nothing else"
+        );
+    }
+
+    /// Feed the two rows a `!` line produces, the way the daemon's append reaches a
+    /// head: the operator's own `User` row, then the `bash` result with its `origin`
+    /// set. No proposing assistant row exists — that is the point — so nothing else is
+    /// applied, which is what makes this the shape a switched-in head receives too.
+    fn bang_rows(a: &mut App, seq: u64, id: &str, line: &str, payload: &str) {
+        a.apply(ServerFrame::Event(env(
+            seq,
+            testing::appended(&format!("{id}u"), "user"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            seq + 1,
+            SessionEvent::TranscriptContent {
+                item_id: format!("{id}u"),
+                item: Box::new(TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Operator,
+                    parts: vec![letibot_transcript::UserPart::Text {
+                        text: line.to_string(),
+                    }],
+                }),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            seq + 2,
+            testing::appended(id, "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            seq + 3,
+            SessionEvent::TranscriptContent {
+                item_id: id.into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: format!("{id}c"),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: payload.into(),
+                    edit: None,
+                    origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
+                    media: None,
+                }),
+            },
+        )));
+    }
+
+    /// **The operator's command gets the tool-output treatment, the whole of it.**
+    ///
+    /// A long output is *collapsed with an honest count* — `… +N lines` naming N as the
+    /// rows that are not shown — and the seam names the key that opens the row's own
+    /// window (`ctrl-v`), with `/t` the verb that unfolds every tool row. Opening it
+    /// pages through the payload without unfolding the conversation. And the operator's
+    /// own line is drawn as THEIR row — `speaker: Operator`, the block a prompt gets.
+    #[test]
+    fn a_bang_rows_output_is_collapsed_with_an_honest_count_and_opens_one_row() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut a, "! seq 1 60");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::OperatorShell {
+                line: "! seq 1 60".into()
+            })
+        );
+        let body: String = (0..60).map(|i| format!("line {i}\n")).collect();
+        bang_rows(&mut a, 2, "i1", "! seq 1 60", &body);
+
+        // The echo stood down: the daemon's `User` row IS the line, by construction.
+        assert!(a.pending_prompts.is_empty(), "the echo retired on the row");
+
+        let folded = a.screen(100, 40).join("\n");
+        assert!(
+            folded.contains("! seq 1 60"),
+            "the operator's line is drawn: {folded:?}"
+        );
+        // The honest count: 60 lines of payload, the head of it shown, so 59 below —
+        // the seam says exactly that, and `60 lines` on the header agrees with it.
+        assert!(
+            folded.contains("+59 lines"),
+            "the count must state what is hidden, not round it away: {folded:?}"
+        );
+        assert!(
+            folded.contains("ctrl-v opens it"),
+            "the newest long row names the chord that opens its window: {folded:?}"
+        );
+
+        // The chord opens THAT row's window and does not unfold the conversation.
+        a.key(Key::CtrlV);
+        assert_eq!(a.payload_sel.as_deref(), Some("i1"));
+        assert!(!a.tools.is_open(), "ctrl-v unfolded every row as well");
+        let open = a.screen(100, 60).join("\n");
+        assert!(
+            open.contains("pages down"),
+            "the window opened and says how to move in it: {open:?}"
+        );
+        // And `/t` is still the verb that unfolds every tool row — pinned beside the
+        // chord so a seam that names one cannot lose the other.
+        a.key(Key::Esc);
+        assert_eq!(a.command("t"), None);
+        assert!(a.tools.is_open(), "/t no longer unfolds tool output");
+    }
+
+    /// **§3.1, on this path: a control byte in the command's output never reaches the
+    /// frame as a control byte.**
+    ///
+    /// The operator's own `ls` is still a program's bytes — `grep --color` emits SGR,
+    /// and a payload carrying `ESC[?1002h` turns the operator's mouse reporting off,
+    /// which is the exact report this sanitisation exists for. Sanitised at render, in
+    /// the store's own words *the record is what the tool wrote and must stay that* —
+    /// so the assertion is on the FRAME's bytes, colourless, where the head emits no
+    /// escapes of its own and any `ESC` is somebody else's.
+    #[test]
+    fn no_control_byte_from_a_bang_rows_output_reaches_the_frame() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        // The store's own vocabulary of hostile bytes (`HOSTILE`, in the §3.1 suite):
+        // SGR, a mode string, an OSC title, C1 controls, DEL.
+        let hostile = " A\u{1b}[31mred\u{1b}[0m \u{1b}[8m(hidden) \u{1b}[2J \u{1b}[?1002h \u{1b}[?1006h \u{1b}[?1049h \u{1b}[?2004h \u{1b}[?2026h \u{1b}]0;pwned\u{7} \u{9b}31m \u{9c} \u{7f} end";
+        bang_rows(
+            &mut a,
+            2,
+            "i1",
+            "! grep --color rn foo",
+            &format!("src/a.rs{hostile}\nsrc/b.rs"),
+        );
+        for w in [60usize, 100, 160] {
+            let rows = a.screen(w, 40);
+            for (n, row) in rows.iter().enumerate() {
+                assert!(
+                    !row.contains('\u{1b}'),
+                    "an ESC reached the frame at {w} cols, row {n}: {row:?}"
+                );
+                assert!(
+                    !row.chars()
+                        .any(|c| ('\u{80}'..='\u{9f}').contains(&c) || c == '\u{7f}'),
+                    "a C1/DEL byte reached the frame at {w} cols, row {n}: {row:?}"
+                );
+            }
+        }
+        // And the fold still works over the sanitised text: the payload is long enough
+        // to count, and the count is of lines the operator can read.
+        let folded = a.screen(100, 40).join("\n");
+        assert!(
+            folded.contains("ctrl-v opens it") || folded.contains("+1 line"),
+            "the row is still a folded tool row: {folded:?}"
+        );
     }
 
     #[test]

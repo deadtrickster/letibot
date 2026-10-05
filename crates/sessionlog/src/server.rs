@@ -976,6 +976,52 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            // **The operator's own shell line — a `!` command the DAEMON runs.**
+            //
+            // No allowlist to check, because there is no tool name: the line owns itself, and
+            // the frame's own docs record why the door was not widened instead. What IS
+            // checked here is the bang — the one fact that separates *the operator's shell
+            // line* from *a sentence this frame could otherwise file as one* — and it is
+            // checked on the connection's thread for the same reason the door's list is: a
+            // daemon that trusted the line it was sent would write rows nothing stands behind.
+            //
+            // **No gate, no adjudication row, no `OperatorCallAllowed`.** The operator typed
+            // the line; there was nobody left to ask, and saying otherwise would be a decision
+            // nobody made. The gate is also structurally out of reach: the run goes through
+            // `ToolRuntime::invoke_operator`, which is the door's own ungated path.
+            Ok(ClientFrame::OperatorShell {
+                client_request_id,
+                expected_seq,
+                line,
+            }) => {
+                if crate::operator_shell_command(&line).is_none() {
+                    let f = ServerFrame::Rejected {
+                        client_request_id,
+                        reason: format!(
+                            "`{line}` is not a `!` command: the bang has to be the first \
+                             character and something has to follow it. A line that does not \
+                             start with `!` is a prompt. Nothing ran."
+                        ),
+                        expected_seq,
+                        actual_seq: seat.hub.head_seq(),
+                    };
+                    writer.lock().unwrap().write(&f)?;
+                } else {
+                    // The identity, not the head id — the row's `CallOrigin` and the door's
+                    // records name the actor the same way.
+                    let who = seat
+                        .hub
+                        .identity_of(&seat.head_id)
+                        .unwrap_or_else(|| seat.head_id.clone());
+                    let f = seat.hub.submit(
+                        &seat.head_id,
+                        client_request_id,
+                        expected_seq,
+                        CommandKind::OperatorShell { line, who },
+                    );
+                    writer.lock().unwrap().write(&f)?;
+                }
+            }
             // **R11's locator, leticl's ask.** A head names one decision and one half of its
             // exchange; the daemon answers with the bytes or with *not recorded*. The same
             // shape `FetchRow` uses, and for the same reason: this is the head asking for

@@ -1671,6 +1671,17 @@ impl ToolRuntime {
         if !invocation.needs_in_view.is_empty() {
             let asked: Vec<std::path::PathBuf> = std::mem::take(&mut invocation.needs_in_view);
             for path in asked {
+                // **An operator's own call does not raise a view-grant card.** The ungated
+                // path (`invoke_operator`) is the one the head-run door and the `!` line
+                // take, and its whole ruling is *nobody left to ask*: a card that asks the
+                // operator to grant a path into view for a command THEY JUST TYPED is the
+                // gate answering a question nobody asked. Nothing is lost by dropping the
+                // ask, because `bash` has already put the same finding in its notes —
+                // `absence_notes` and `outside_paths` scan the same output for the same
+                // Outside paths — so the row still names what the boundary hid.
+                if !gated {
+                    continue;
+                }
                 match self.gate.grant_view(&path, &schema.name) {
                     ViewGrant::Refused(why) => {
                         invocation.notes.push(format!(

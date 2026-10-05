@@ -2048,6 +2048,22 @@ impl<'a> Sessions<'a> {
                     Err(e) => Outcome::Failed(e),
                 }
             }
+            // **The operator's shell line, run by this daemon and recorded as two rows**
+            // (`! ls .` → the operator's own `User` row + a `bash` `ToolResult` with
+            // `origin: Operator`). Between turns it runs here; mid-turn the round
+            // boundary takes it (`apply_queued_head_run`), which is the door's own
+            // timing and for its own reason.
+            CommandKind::OperatorShell { line, who } => {
+                let line = line.clone();
+                let who = who.clone();
+                match self.open.get_mut(session_id) {
+                    Some(h) => match h.run_operator_shell(&line, &who) {
+                        Ok(()) => Outcome::Ignored,
+                        Err(e) => Outcome::Failed(e),
+                    },
+                    None => Outcome::Failed(format!("session {session_id} is not open")),
+                }
+            }
             // **What it produced.** The row goes in with its `origin` set, so every head
             // draws it as the person's act and the model sees the result.
             CommandKind::OperatorResult {

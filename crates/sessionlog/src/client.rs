@@ -434,6 +434,25 @@ impl HeadClient {
         Ok(())
     }
 
+    /// **The operator's own shell line** — a `!` command, for the daemon to run.
+    ///
+    /// `line` is the submitted line verbatim, `!` first; the daemon strips the bang and runs the
+    /// rest through the session's `bash` execution path, appends the operator's line and the
+    /// result as transcript rows, and never consults the gate. See
+    /// [`ClientFrame::OperatorShell`] for why this is a frame of its own rather than the door.
+    ///
+    /// Answered `Accepted` (queued — mid-turn it runs at the next round boundary) or `Rejected`
+    /// when the line is not a `!` line at all.
+    pub fn operator_shell(&mut self, expected_seq: u64, line: &str) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::OperatorShell {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+            line: line.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
     /// This head's rendered rows, answering a `ScreenRequested`.
     pub fn screen(
         &mut self,
