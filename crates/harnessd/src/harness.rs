@@ -4531,6 +4531,19 @@ impl<'a> Harness<'a> {
         // A job that has written nothing is not an empty answer about its output:
         // whether it is still running decides what the silence means. The same
         // distinction `job_output` draws, in the same words.
+        // **A job whose output was redirected has, and its window must say so** — R41's
+        // case, which the MODEL's `job_output` already answers
+        // (`letibot_tools::builtins::jobs`) and which this path still got wrong: the head
+        // read *"wrote nothing at all"* about a build that wrote megabytes to a file.
+        if slice.produced == 0
+            && let Some(path) = letibot_tools::builtins::output_redirect_path(&view.command)
+        {
+            return Ok(vec![format!(
+                "`{job}`'s output goes to `{path}`, not to its window — the capture is empty \
+                 by construction ({}). Read the file, or `tail -n` it.",
+                view.state.word()
+            )]);
+        }
         if slice.produced == 0 {
             return Ok(vec![if view.state.is_running() {
                 format!("`{job}` is still running and has written nothing yet.")
@@ -4539,7 +4552,7 @@ impl<'a> Harness<'a> {
             }]);
         }
 
-        let mut out: Vec<String> = slice.text().lines().map(str::to_string).collect();
+        let mut out: Vec<String> = progress_lines(&slice.text());
         out.push(String::new());
         out.push(format!(
             "[{} — bytes {}..{} of {} produced{}]",
@@ -7040,10 +7053,69 @@ impl<'a> Harness<'a> {
             dropped: slice.dropped,
             state: view.state.word(),
             never_ran: view.state.never_ran(),
-            lines: slice.text().lines().map(str::to_string).collect(),
+            lines: if slice.produced == 0 {
+                // **Redirected: the capture is empty by construction, and the window says
+                // which file it went to** (R41) rather than an empty page the reader takes
+                // for a job that wrote nothing. The head's own empty-window cases
+                // (`job_out_lines`) cannot know this on an older daemon; this one can.
+                match letibot_tools::builtins::output_redirect_path(&view.command) {
+                    Some(path) => vec![format!(
+                        "this job's output goes to `{path}`, not to its window — the capture is \
+                         empty by construction. Read the file, or `tail -n` it."
+                    )],
+                    None => Vec::new(),
+                }
+            } else {
+                progress_lines(&slice.text())
+            },
             next: next_job_offset(&slice),
         })
     }
+}
+
+/// **The captured bytes, as lines a person can read** — and a progress bar is one line.
+///
+/// `slice.text()` is a terminal RECORDING, not prose. A tool that draws a progress bar
+/// writes `…10%\r…20%\r…100%` with no newline in it, so splitting on `\n` alone puts the
+/// whole run of updates on one row: `2%23%47%100%`, which is what the operator read and
+/// reported (*"hope to tail its out with ascii codes correctly processed"*).
+///
+/// The rule is the terminal's own and nothing more: `\r` returns to column 0, and what is
+/// written after it OVERWRITES what was there — so the line is the result of writing each
+/// segment over the current one, and a shorter final segment leaves the tail of a longer
+/// earlier one standing (which is what the screen showed, and not a detail worth losing).
+/// No cursor movement beyond the carriage return: `\x1b[A` and friends are stripped
+/// downstream by the head like every other escape (§3.1), and emulating them here would be
+/// inventing facts about a screen this daemon never had.
+///
+/// The splitting is the daemon's on purpose — `JobWindow::lines` exists so that two heads
+/// cannot disagree about where a line ends — and a carriage return is part of where a line
+/// ends, so it belongs here with the split.
+fn progress_lines(text: &str) -> Vec<String> {
+    text.split('\n')
+        .map(|line| {
+            if !line.contains('\r') {
+                return line.trim_end_matches('\r').to_string();
+            }
+            // Written over the current row, segment by segment, from column 0.
+            let mut row: Vec<char> = Vec::new();
+            for (i, seg) in line.split('\r').enumerate() {
+                let chars: Vec<char> = seg.chars().collect();
+                if i == 0 {
+                    row = chars;
+                } else {
+                    for (col, c) in chars.into_iter().enumerate() {
+                        if col < row.len() {
+                            row[col] = c;
+                        } else {
+                            row.push(c);
+                        }
+                    }
+                }
+            }
+            row.into_iter().collect()
+        })
+        .collect()
 }
 
 /// Where a further read of a job's output would start, or `None` when the window
@@ -9766,6 +9838,34 @@ mod tests {
         assert_eq!(
             downgraded_ruleset(&parent, &Downgrade::none(), &seated),
             parent
+        );
+    }
+
+    /// **A progress bar is ONE line, and the window must show its last state.**
+    ///
+    /// The operator's report, 2026-10-05: *"more often than not i'd like to enter the job and
+    /// hope to tail its out with ascii codes correctly processed"*. `cargo`, `docker` and `npm`
+    /// redraw a single row with `\r` and no newline in it, so splitting on `\n` alone put every
+    /// update on one row — `2%23%47%100%` — which is what they were reading.
+    #[test]
+    fn a_progress_bar_is_one_line_and_not_every_update_concatenated() {
+        // The ordinary case: each redraw is longer, so the last one stands alone.
+        assert_eq!(
+            progress_lines("  2%\r 23%\r 47%\r100%"),
+            vec!["100%"],
+            "the row is what a terminal would end up showing"
+        );
+        // **A SHORTER final segment leaves the tail of the longer one standing** — that is
+        // what the screen showed, and dropping the tail would be inventing a different one.
+        // (The naive `after the last \r` rule gets this wrong.)
+        assert_eq!(progress_lines("abcdefgh\rXY"), vec!["XYcdefgh"]);
+        // Newlines still split; a carriage return at the end of a line ends it rather than
+        // being kept as a byte nobody can see.
+        assert_eq!(progress_lines("a\nb\rc\nd\r"), vec!["a", "c", "d"]);
+        // And it is not a rewrite of ordinary output: no CR, no change.
+        assert_eq!(
+            progress_lines("$ cargo test\nrunning 3 tests"),
+            vec!["$ cargo test", "running 3 tests"]
         );
     }
 

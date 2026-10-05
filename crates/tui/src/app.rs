@@ -15035,6 +15035,20 @@ impl App {
                 &self.cfg,
                 &format!("         {} · {}", without_control_lines(&j.how), tail),
             ));
+            // **And where the output actually went, when it did not come here** (R41), on a
+            // line of its own so the file is readable rather than another clause on a row that
+            // is already long. This is the operator's own question — *"im not sure it lets me
+            // to see that in the jobs details, when i 'enter' a job"* — answered in the list
+            // they are looking at, before they Enter and find an empty window.
+            if let Some(path) = &j.redirect {
+                out.push(dim(
+                    &self.cfg,
+                    &format!(
+                        "         → {} (its output is there, not in the window)",
+                        without_control_lines(path)
+                    ),
+                ));
+            }
         }
         out.push(String::new());
         out.push(dim(
@@ -40459,6 +40473,46 @@ mod tests {
     ///
     /// **The `to a file` clause is the operator's own point, and it is not in leticl's brief:** a
     /// job whose output is redirected (R41) has a window that will be empty however long it runs, so
+    /// **A redirected job's row names the file, because the window cannot.**
+    ///
+    /// The operator's question, asked while looking at the pane: *"im not sure it lets me to see
+    /// that in the jobs details, when i 'enter' a job"*. A job whose output went to a file has a
+    /// capture that is empty BY CONSTRUCTION, so Enter shows nothing however long it runs — and
+    /// the list is therefore the only place that can say which file to read instead.
+    #[test]
+    fn the_jobs_pane_names_the_file_a_redirected_job_writes_to() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(jobs_frame(
+            "s",
+            vec![letibot_sessionlog::protocol::JobEntry {
+                id: "j1".into(),
+                command: "cargo test > /tmp/build.log 2>&1".into(),
+                how: "asked".into(),
+                state: "running".into(),
+                running: true,
+                never_ran: false,
+                redirect: Some("/tmp/build.log".into()),
+                produced: 0,
+                elapsed_ms: 4_000,
+            }],
+        ));
+        a.key(Key::CtrlQ);
+        let screen = a.screen(110, 30).join("\n");
+        assert!(
+            screen.contains("\u{2192} /tmp/build.log"),
+            "the pane must name the file the job writes to:\n{screen}"
+        );
+        assert!(
+            screen.contains("not in the window"),
+            "and say why Entering it shows nothing:\n{screen}"
+        );
+    }
+
     /// *"1 job running"* is a truthful count that answers the wrong question. The distinction
     /// travels on the wire (`JobEntry::redirect`) because the daemon reads it out of the command.
     #[test]
