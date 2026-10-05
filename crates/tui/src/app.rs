@@ -2390,7 +2390,7 @@ pub struct App {
     /// prompt left under a card whose Enter adds an item is the shape that costs somebody a message:
     /// `key` returns before the composer sees anything while this is `Some`, and every key that is
     /// not `Tab`/`Enter`/`Esc` is the editor's.
-    todo_draft: Option<(String, String, bool)>,
+    todo_draft: Option<TodoDraft>,
     /// **`todo_template` as this head loaded it** — the starter-todo switch, leticl's own key,
     /// carried on `App` because the seed runs at the attach, long after `load_prefs`. Off by
     /// default; see `prefs::TodoTemplate` for the three shapes.
@@ -6426,79 +6426,71 @@ impl App {
         if self.todo_draft.is_some() {
             match k {
                 Key::Tab => {
-                    let (t, d) = {
-                        let (t, d, detail) = self.todo_draft.as_ref().expect("checked above");
-                        (t.clone(), d.clone())
-                    };
-                    // The composer's text goes into the field being LEFT, and the field being
-                    // entered comes out — leticl's `%todo-draft-focus`, one order.
-                    let (mut t, mut d) = (t, d);
-                    if self
-                        .todo_draft
-                        .as_ref()
-                        .is_some_and(|(_, _, detail)| *detail)
-                    {
-                        d = self.input().to_string();
-                    } else {
-                        t = self.input().to_string();
+                    let live = self.input().to_string();
+                    let mut shown = String::new();
+                    if let Some(draft) = self.todo_draft.as_mut() {
+                        // The composer's text goes into the field being LEFT, and the field being
+                        // entered comes out — leticl's `%todo-draft-focus`, one order. **The text is
+                        // read BEFORE the focus moves**: `shown` answers with the composer's live
+                        // text for the field that is focused, so asking after the move answers with
+                        // the field we just left and the composer would come up empty.
+                        draft.take(&live);
+                        let next = draft.next();
+                        shown = draft.shown("", next);
+                        draft.focus = next;
                     }
-                    let now_detail = !self
-                        .todo_draft
-                        .as_ref()
-                        .is_some_and(|(_, _, detail)| *detail);
-                    self.todo_draft = Some((t, d, now_detail));
-                    let shown = if now_detail {
-                        self.todo_draft.as_ref().map(|(_, d, _)| d.clone())
-                    } else {
-                        self.todo_draft.as_ref().map(|(t, _, _)| t.clone())
-                    }
-                    .unwrap_or_default();
                     self.set_composer(&shown);
                     self.redraw = true;
                     return None;
                 }
                 Key::Enter => {
-                    let title = if self
-                        .todo_draft
-                        .as_ref()
-                        .is_some_and(|(_, _, detail)| *detail)
-                    {
-                        self.todo_draft
-                            .as_ref()
-                            .map(|(t, _, _)| t.clone())
-                            .unwrap_or_default()
-                    } else {
-                        self.input().to_string()
+                    let live = self.input().to_string();
+                    let Some(mut draft) = self.todo_draft.take() else {
+                        return None;
                     };
-                    let detail = if self
-                        .todo_draft
-                        .as_ref()
-                        .is_some_and(|(_, _, detail)| *detail)
-                    {
-                        self.input().to_string()
-                    } else {
-                        self.todo_draft
-                            .as_ref()
-                            .map(|(_, d, _)| d.clone())
-                            .unwrap_or_default()
-                    };
+                    draft.take(&live);
                     // **A title is required and the card stays up without one** — the only field
                     // rule, and saying so beats storing a row of nothing.
-                    if title.trim().is_empty() {
+                    if draft.title.trim().is_empty() {
+                        self.todo_draft = Some(draft);
                         self.say("a todo item needs a title — type one, or esc to cancel");
                         self.redraw = true;
                         return None;
                     }
-                    let mut text = title.trim().to_string();
-                    if !detail.trim().is_empty() {
+                    let mut text = draft.title.trim().to_string();
+                    if !draft.detail.trim().is_empty() {
                         text.push_str(" — ");
-                        text.push_str(detail.trim());
+                        text.push_str(draft.detail.trim());
                     }
-                    self.todo_draft = None;
+                    let when = if draft.when.trim().is_empty() {
+                        None
+                    } else {
+                        Some(letibot_sessionlog::event::TodoCondition::Job {
+                            handle: draft.when.trim().to_string(),
+                        })
+                    };
                     self.set_composer("");
-                    // The add goes through the same door `/todo TEXT` uses, so a card and a typed
-                    // line cannot become different acts.
-                    return self.todo_command(&text);
+                    // **The row is filed HERE, not by handing the card's words to the verb parser.**
+                    //
+                    // The add used to go through `todo_command`, on the argument that a card and a
+                    // typed line must not become different acts. They still are one act — this
+                    // writes the same row, tagged the same way, as `SetOperatorTodos`, and echoes
+                    // it on the same path — but the WORDS are not re-read as a command line, and
+                    // that matters more with three fields than it did with two: a title reading
+                    // `done 2` or `when 1 j7` was taken for the verb by that door and would move or
+                    // condition a row the reader never named. A form's fields are fields; the three
+                    // verbs stay the typed door, which is the other one the operator asked for
+                    // (*"or via a form, when I file a todo"*).
+                    let mut mine = self.operator_todos();
+                    mine.push(letibot_sessionlog::event::TodoEntry {
+                        content: text,
+                        status: letibot_sessionlog::event::TodoStatus::Pending,
+                        by: letibot_sessionlog::event::TodoBy::Operator,
+                        when,
+                    });
+                    self.echo_operator_todos(mine.clone());
+                    self.redraw = true;
+                    return Some(Action::SetOperatorTodos(mine));
                 }
                 Key::Esc | Key::CtrlC => {
                     self.todo_draft = None;
@@ -8277,44 +8269,45 @@ impl App {
     /// The line the screen shows while `mode_confirm` is set. Spells out the three
     /// classes the point stops asking about, because "are you sure" is a question
     /// nobody can answer.
-    /// **The new-todo card**: the two fields, which one is being typed, and the three keys.
+    /// **The new-todo card**: the three fields, which one is being typed, and the three keys.
     ///
     /// leticl's `todo-card-lines`, and the shape is deliberate — *"the card is the modal and the
-    /// composer is the field"*, which is this head's one text widget, so the title and the
-    /// description are edited with every key the operator already has.
+    /// composer is the field"*, which is this head's one text widget, so all three fields are
+    /// edited with every key the operator already has. **The third is not a text box with no
+    /// label**: `when` takes a job handle, and the two sentences under the fields say what the row
+    /// then waits on, because *a handle* is not something a reader can guess at.
     ///
     /// **The last line says whose the row will be**, because that is the whole difference the
     /// feature turns on and the place a reader will look for it: an item added here is the
     /// OPERATOR's, the model is shown it and reminded of it, and the model cannot remove it.
     fn todo_card_lines(&self, w: usize) -> Vec<String> {
-        let Some((title, detail, typing_detail)) = &self.todo_draft else {
+        let Some(draft) = &self.todo_draft else {
             return Vec::new();
         };
         let p = self.cfg.palette();
-        // The field under the cursor is drawn from the COMPOSER, the other from the draft — so the
-        // row being typed is never a keystroke behind. leticl's `%todo-draft-focus` for the same
+        // The field under the cursor is drawn from the COMPOSER, the other two from the draft — so
+        // the row being typed is never a keystroke behind. leticl's `%todo-draft-focus` for the same
         // reason.
         let live = self.input();
-        let (shown_title, shown_detail) = if *typing_detail {
-            (title.as_str(), live)
-        } else {
-            (live, detail.as_str())
-        };
-        let field = |name: &str, key: &str, value: &str, active: bool| {
+        let field = |key: &str, which: TodoField, empty: &str| {
             let head = dim(&self.cfg, &format!("  {key:<7} "));
+            let value = draft.shown(&live, which);
             let body = if value.is_empty() {
-                dim(&self.cfg, "(empty)")
-            } else if active {
-                p.paint(Role::Strong, &without_control_lines(value))
+                dim(&self.cfg, empty)
+            } else if draft.focus == which {
+                p.paint(Role::Strong, &without_control_lines(&value))
             } else {
-                p.paint(Role::Faint, &without_control_lines(value))
+                p.paint(Role::Faint, &without_control_lines(&value))
             };
             format!("{head}{body}")
         };
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "adding a todo item")];
         out.push(String::new());
-        out.push(field("title", "title", shown_title, !*typing_detail));
-        out.push(field("detail", "detail", shown_detail, *typing_detail));
+        out.push(field("title", TodoField::Title, "(empty)"));
+        out.push(field("detail", TodoField::Detail, "(empty)"));
+        // **The field nobody knows**, so it says what it wants rather than `(empty)`: a handle, and
+        // the sentence under the fields says what a handle DOES.
+        out.push(field("when", TodoField::When, "(waits on nothing)"));
         out.push(String::new());
         for (k, why) in [
             ("tab", "moves between the fields"),
@@ -8328,6 +8321,12 @@ impl App {
             ));
         }
         out.push(String::new());
+        out.push(dim(
+            &self.cfg,
+            "  `when` is a JOB handle: the row is filed now and comes up again when that job is \
+             not running. A job this daemon has never heard of counts as ended, which is what a \
+             restart looks like.",
+        ));
         out.push(dim(
             &self.cfg,
             "  the model sees these and is reminded of them; it can mark one done, and cannot \
@@ -9814,7 +9813,7 @@ impl App {
             return;
         }
         self.set_composer("");
-        self.todo_draft = Some((String::new(), String::new(), false));
+        self.todo_draft = Some(TodoDraft::new());
         self.say(
             "adding a todo item — title, then tab for the description; enter adds it to the \
              session's plan as yours, esc cancels",
@@ -21382,6 +21381,76 @@ pub fn line_width(s: &str) -> usize {
     visible_width(s)
 }
 
+/// **A todo being filed from the card** — its fields, and which one owns the composer.
+///
+/// The FOCUS was a `bool` while there were two fields, and a third is exactly what a bool cannot
+/// hold: *typing the detail?* answers nothing about a `when` field, so every reader of that flag
+/// would have grown a second one and the two could disagree. One enum, and Tab cycles it.
+///
+/// **The composer holds the focused field and the draft holds the rest**, which is what keeps the
+/// row being typed from being a keystroke behind — leticl's `%todo-draft-focus`, and the reason
+/// [`TodoDraft::take`] exists: every key that LEAVES a field commits the composer into it first, so
+/// nothing typed is ever lost to a Tab.
+struct TodoDraft {
+    title: String,
+    detail: String,
+    /// **The handle this row waits on, or empty for a row that waits on nothing.** A bare handle:
+    /// the *condition* is what the row holds, and the card does not collect a kind because there is
+    /// one kind — see `TodoCondition`.
+    when: String,
+    focus: TodoField,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TodoField {
+    Title,
+    Detail,
+    When,
+}
+
+impl TodoDraft {
+    fn new() -> TodoDraft {
+        TodoDraft {
+            title: String::new(),
+            detail: String::new(),
+            when: String::new(),
+            focus: TodoField::Title,
+        }
+    }
+
+    /// **What one field holds**, with the composer's live text standing in for the focused one.
+    fn shown(&self, live: &str, which: TodoField) -> String {
+        if self.focus == which {
+            return live.to_string();
+        }
+        match which {
+            TodoField::Title => self.title.clone(),
+            TodoField::Detail => self.detail.clone(),
+            TodoField::When => self.when.clone(),
+        }
+    }
+
+    /// **Commit the composer into the field it belongs to** — every key that leaves a field does
+    /// this first, so a Tab cannot lose what was just typed.
+    fn take(&mut self, live: &str) {
+        let into = match self.focus {
+            TodoField::Title => &mut self.title,
+            TodoField::Detail => &mut self.detail,
+            TodoField::When => &mut self.when,
+        };
+        *into = live.to_string();
+    }
+
+    /// The field Tab goes to next, wrapping — a cycle, so there is no field a reader cannot reach.
+    fn next(&self) -> TodoField {
+        match self.focus {
+            TodoField::Title => TodoField::Detail,
+            TodoField::Detail => TodoField::When,
+            TodoField::When => TodoField::Title,
+        }
+    }
+}
+
 /// **A provider key the picker is collecting, for a row this box holds no key behind.**
 ///
 /// `choice` is the whole `PROVIDER/MODEL`, because Enter does both things in one verb —
@@ -28570,8 +28639,10 @@ mod tests {
             a.notice
         );
 
-        // **Tab moves to the detail and back, keeping both.** The composer carries the focused
-        // field; the draft carries the other.
+        // **Tab cycles the three fields and comes back to the title, keeping every one.** The
+        // composer carries the focused field; the draft carries the other two. Three hops now, and
+        // the one in the middle is `when` — the field this card grew, which a two-field cycle would
+        // have had no way to name.
         typed(&mut a, "and the cache too");
         a.key(Key::Tab);
         assert_eq!(
@@ -28580,6 +28651,12 @@ mod tests {
             "the detail field is empty when it is entered"
         );
         typed(&mut a, "the note the model needs");
+        a.key(Key::Tab);
+        assert_eq!(
+            a.input(),
+            "",
+            "`when` is the field after the detail, and this row waits on nothing"
+        );
         a.key(Key::Tab);
         assert_eq!(
             a.input(),
@@ -41479,6 +41556,106 @@ mod tests {
             "a bare `when` names the form: {:?}",
             a.notice
         );
+    }
+
+    /// **A ROW FILED FROM THE CARD CAN CARRY A CONDITION** — the operator's *"or via a form, when I
+    /// file a todo"*, and the reason the third field exists at all.
+    ///
+    /// Two claims, and the second is what keeps a form a form: the handle the reader typed is on
+    /// the row the card files, and **the fields are not read as a command line**. The card used to
+    /// hand its words to `todo_command`, so a title that happened to read `done 2` or `when 1 j7`
+    /// was taken for the verb, and would move or condition a row the reader never named — a hazard
+    /// the two-field card carried all along, and one the `when` field would have made reachable in
+    /// a new way.
+    #[test]
+    fn a_row_filed_from_the_card_can_carry_a_condition() {
+        use letibot_sessionlog::event::{TodoBy, TodoCondition, TodoEntry, TodoStatus};
+        let mut a = app();
+        a.session_id = "s1".into();
+        assert_eq!(a.command("todo"), None, "bare /todo opens the card");
+        typed(&mut a, "push once CI lands");
+        a.key(Key::Tab);
+        typed(&mut a, "and say so in the reply");
+        // **Tab a second time reaches the third field**, which is what the enum is for: the `bool`
+        // this replaced could not name it, and a reader who tabbed twice would have been back on
+        // the title with `j121` typed into it.
+        a.key(Key::Tab);
+        typed(&mut a, "j121");
+        let card = a.screen(120, 30).join("\n");
+        assert!(
+            card.contains("adding a todo item"),
+            "the card is up:\n{card}"
+        );
+        assert!(
+            card.contains("JOB handle"),
+            "the card must say what the third field wants:\n{card}"
+        );
+        match a.key(Key::Enter) {
+            Some(Action::SetOperatorTodos(items)) => {
+                assert_eq!(items.len(), 1, "one row was filed: {items:?}");
+                assert_eq!(items[0].by, TodoBy::Operator);
+                assert_eq!(
+                    items[0].content, "push once CI lands — and say so in the reply",
+                    "the title and the detail are one row"
+                );
+                assert_eq!(
+                    items[0].when,
+                    Some(TodoCondition::Job {
+                        handle: "j121".into()
+                    }),
+                    "the condition did not reach the row"
+                );
+            }
+            other => panic!("expected the add, got {other:?}"),
+        }
+        assert!(a.todo_draft.is_none(), "the card came down");
+
+        // **The same card with the `when` field left alone files an unconditional row** — empty is
+        // *not recorded here*, the convention the whole record keeps.
+        let mut b = app();
+        b.session_id = "s1".into();
+        b.command("todo");
+        typed(&mut b, "just a row");
+        match b.key(Key::Enter) {
+            Some(Action::SetOperatorTodos(items)) => assert_eq!(items[0].when, None, "{items:?}"),
+            other => panic!("expected the add, got {other:?}"),
+        }
+
+        // **And a title that reads as a verb is still a title.** The card's words are fields, not a
+        // command line, so nothing here moves row 2.
+        let mut c = app();
+        c.session_id = "s1".into();
+        c.apply(ServerFrame::Todos {
+            session_id: "s1".into(),
+            todos: vec![
+                TodoEntry {
+                    content: "first".into(),
+                    status: TodoStatus::Pending,
+                    by: TodoBy::Operator,
+                    when: None,
+                },
+                TodoEntry {
+                    content: "second".into(),
+                    status: TodoStatus::Pending,
+                    by: TodoBy::Operator,
+                    when: None,
+                },
+            ],
+        });
+        c.command("todo");
+        typed(&mut c, "done 2");
+        match c.key(Key::Enter) {
+            Some(Action::SetOperatorTodos(items)) => {
+                assert_eq!(items.len(), 3, "a row was filed: {items:?}");
+                assert_eq!(items[2].content, "done 2");
+                assert_eq!(
+                    items[1].status,
+                    TodoStatus::Pending,
+                    "row 2 was moved by a title that read like a command: {items:?}"
+                );
+            }
+            other => panic!("expected the add, got {other:?}"),
+        }
     }
 
     /// *"1 job running"* is a truthful count that answers the wrong question. The distinction
