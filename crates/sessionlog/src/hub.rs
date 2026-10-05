@@ -76,6 +76,15 @@ pub struct Attached {
     pub backlog: Vec<Envelope>,
 }
 
+/// **The daemon's own name in a submit.**
+///
+/// A name no head can have, because no head is minted with a NUL in it (a seat's id comes from
+/// the `Hello` this hub mints), and the vocabulary `harnessd` already used for *"a caller that
+/// is not a head at all"* when it tried to stop a subagent — where the string alone was not
+/// enough, because `submit` has to know it. See the arm in [`Hub::submit`]: this name is
+/// admitted for an [`CommandKind::Interrupt`] and for nothing else.
+pub const DAEMON_SUBMITTER: &str = "\0daemon";
+
 /// A mutating command, after validation, waiting for the session's single command
 /// worker. §13.2: *"Commands are serialized on a per-session queue."*
 #[derive(Debug, Clone, PartialEq)]
@@ -970,16 +979,37 @@ impl Hub {
         let frame = {
             let mut g = self.lock();
             let actual = g.log.head_seq();
-            let Some(h) = g.heads.iter().find(|h| h.id == head_id) else {
-                return ServerFrame::Rejected {
-                    client_request_id,
-                    reason: "not attached".into(),
-                    expected_seq,
-                    actual_seq: actual,
-                };
+            // **THE DAEMON IS NOT A HEAD — IT IS THE THING THAT SEATS THEM.** Requiring the
+            // caller to be one of this session's heads is the right rule, and it is what stops
+            // a stranger's command being attributed to somebody. But the process that holds
+            // this hub has business here that no head has: stopping a turn on behalf of a
+            // caller that is not seated in it. `DAEMON_SUBMITTER` is that caller's name, and
+            // before this arm existed the hub refused it — MEASURED 2026-10-05, every
+            // `job_kill` of a subagent answered `Rejected { reason: "not attached" }`, and the
+            // tool then formatted that refusal into *"interrupted the turn"*, so the defect was
+            // invisible from the one place a person looks.
+            //
+            // **Narrow on purpose: the daemon may INTERRUPT and nothing else.** An `Answer`
+            // needs `can_decide`, a `Prompt` speaks as a person, a `SetOperatorTodos` writes the
+            // operator's own board — each would be the daemon impersonating somebody, and none
+            // of them is needed for the thing the daemon actually asks for. The door is only as
+            // wide as that need.
+            let (identity, can_decide) = match g.heads.iter().find(|h| h.id == head_id) {
+                Some(h) => (h.identity.clone(), h.caps.can_decide),
+                None if head_id == DAEMON_SUBMITTER
+                    && matches!(kind, CommandKind::Interrupt { .. }) =>
+                {
+                    (DAEMON_SUBMITTER.to_string(), false)
+                }
+                None => {
+                    return ServerFrame::Rejected {
+                        client_request_id,
+                        reason: "not attached".into(),
+                        expected_seq,
+                        actual_seq: actual,
+                    };
+                }
             };
-            let identity = h.identity.clone();
-            let can_decide = h.caps.can_decide;
 
             if let CommandKind::Answer { req_id, reply } = &kind {
                 if !can_decide {
@@ -1947,6 +1977,70 @@ mod mode_steering_tests {
             },
         );
         assert!(!hub.has_queued_prompt());
+    }
+
+    /// **THE DAEMON MAY INTERRUPT, AND NOTHING ELSE.**
+    ///
+    /// `job_kill` of a subagent was refused here, every time, and the refusal was invisible:
+    /// `harnessd`'s task runner submitted the interrupt under [`DAEMON_SUBMITTER`] — *"the
+    /// vocabulary of a caller that is not a head at all"*, its comment said — while this
+    /// function's head lookup did not know the name, so every kill answered
+    /// `Rejected { reason: "not attached" }`. MEASURED 2026-10-05: the operator's three subagents
+    /// were told they had been stopped, went on running, and their row counts grew (102 to 108)
+    /// while the kill was in flight. The door is open for the daemon now — and ONLY for the
+    /// interrupt, because an `Answer` needs `can_decide`, a `Prompt` speaks as a person, and the
+    /// daemon is neither.
+    #[test]
+    fn the_daemon_may_interrupt_and_nothing_else() {
+        let hub = Hub::new("s-daemon-door");
+
+        // The thing the daemon actually needs: stop a turn in a session where none of our heads
+        // is seated, which is every subagent from the parent's point of view.
+        let ok = hub.submit(
+            DAEMON_SUBMITTER,
+            "job_kill-1",
+            0,
+            CommandKind::Interrupt {
+                reason: "the parent asked for this turn to stop".into(),
+            },
+        );
+        assert!(
+            matches!(ok, ServerFrame::Accepted { .. }),
+            "the daemon's own interrupt was refused: {ok:?}"
+        );
+
+        // And nothing else. Each of these would be the daemon impersonating somebody.
+        for (kind, what) in [
+            (
+                CommandKind::Prompt {
+                    text: "speak as the operator".into(),
+                },
+                "send a prompt",
+            ),
+            (CommandKind::Compact, "force a compaction"),
+        ] {
+            let r = hub.submit(DAEMON_SUBMITTER, "c2", 0, kind);
+            match r {
+                ServerFrame::Rejected { reason, .. } => {
+                    assert_eq!(reason, "not attached", "the daemon was allowed to {what}")
+                }
+                other => panic!("the daemon was allowed to {what}: {other:?}"),
+            }
+        }
+
+        // **And the rule the door is an exception TO still holds.** `not attached` is what a
+        // name nobody minted gets, for an interrupt like anything else — an exception that
+        // swallowed the rule would be worse than the bug it fixes.
+        let r = hub.submit(
+            "nobody",
+            "c3",
+            0,
+            CommandKind::Interrupt { reason: "?".into() },
+        );
+        match r {
+            ServerFrame::Rejected { reason, .. } => assert_eq!(reason, "not attached"),
+            other => panic!("a name nobody minted was admitted: {other:?}"),
+        }
     }
 
     /// **A mode change reaches a running turn.**

@@ -7631,11 +7631,20 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     /// is reachable because a subagent is a real registered session (that is what lets an
     /// operator attach to one), and it is found by the handle the model was given.
     ///
-    /// **The address is the daemon's, not a head's.** `submit` wants a head id for its
-    /// record, and `\0daemon` is the vocabulary of a caller that is not a head at all —
-    /// the same shape `head.rs`'s probe attach uses for an identity nobody minted. The
-    /// `expected_seq` is `0`, which the hub reads as *no expectation*: a stop has nothing
-    /// to say about where the reader is, and a stale mark would refuse the kill.
+    /// **The address is the daemon's, and the daemon is the one caller the hub admits without a
+    /// seat** — see [`letibot_sessionlog::hub::DAEMON_SUBMITTER`], whose arm in `Hub::submit`
+    /// admits this name for an interrupt and for nothing else. `expected_seq` is `0`, which the
+    /// hub reads as *no expectation*: a stop has nothing to say about where the reader is, and a
+    /// stale mark would refuse the kill.
+    ///
+    /// **AND THE ANSWER DECIDES THE RETURN.** This function used to call `hub.submit` with a
+    /// name the hub did not know and then format whatever came back into a sentence beginning
+    /// *"interrupted the turn"* — so every subagent kill answered `Rejected { reason: "not
+    /// attached" }` to a caller that was told the opposite. MEASURED 2026-10-05: the operator's
+    /// three subagents were *"stopped"*, went on running, and their row counts grew (102 to 108)
+    /// while the kill was in flight. A tool may not report a state change the daemon refused; it
+    /// is the same claim-versus-fact rule the rest of this tree holds to, and it is why the
+    /// match below is exhaustive over the daemon's answer rather than over our hopes.
     fn kill(&self, handle: &str) -> Result<String, String> {
         let slot = self
             .slots
@@ -7656,12 +7665,8 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                  turn left to interrupt. Nothing was stopped."
             ));
         };
-        // **Marked first.** The interrupt is asynchronous and the child may return while
-        // the sentence below is being formatted; a settlement recorded as `Done` before
-        // the flag was set is a truncated answer presented as the child's last word.
-        slot.kill();
         let f = hub.submit(
-            "\0daemon",
+            letibot_sessionlog::hub::DAEMON_SUBMITTER,
             &format!(
                 "job_kill-{}",
                 letibot_sessionlog::registry::short_id(handle)
@@ -7673,12 +7678,29 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                     .into(),
             },
         );
-        Ok(format!(
-            "interrupted the turn `{handle}` was running. A subagent is stopped by \
-             interrupting its turn, not by reaping a process, so there is no cgroup and no \
-             pid to report; the daemon answered {f:?}. `task_result` on it now says it was \
-             stopped rather than answered."
-        ))
+        match &f {
+            letibot_sessionlog::ServerFrame::Accepted { .. } => {
+                // **Marked only once the daemon said yes**, and the order is the point. The flag
+                // is what makes `task_result` say *stopped* rather than *answered*; setting it
+                // for an interrupt that was refused would make a running subagent look settled,
+                // and setting it before the submit is how the old version could label a child
+                // that was never touched. The child may still settle between the submit and
+                // this line — with the acceptance in hand that reads as the stop it is, because
+                // its turn is no longer running.
+                slot.kill();
+                Ok(format!(
+                    "the daemon accepted the interrupt for `{handle}`, so its turn stops at its \
+                     next boundary. A subagent is stopped by interrupting its turn, not by \
+                     reaping a process, so there is no cgroup and no pid to report. \
+                     `task_result` on it now says it was stopped rather than answered."
+                ))
+            }
+            other => Err(format!(
+                "`job_kill` did NOT stop `{handle}`: the daemon refused the interrupt and \
+                 answered {other:?}. Nothing was stopped — do not read this as a stop, and the \
+                 same spelling will reach the same answer."
+            )),
+        }
     }
 
     fn collect(

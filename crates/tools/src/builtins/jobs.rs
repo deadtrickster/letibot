@@ -1059,7 +1059,7 @@ mod tests {
             }
             fn kill(&self, handle: &str) -> Result<String, String> {
                 self.0.lock().expect("recorded").push(handle.to_string());
-                Ok(format!("interrupted the turn `{handle}` was running"))
+                Ok(format!("stopped `{handle}`"))
             }
         }
 
@@ -1079,11 +1079,40 @@ mod tests {
         let said = super::JobKill::with_tasks(runner.clone())
             .kill_subagent("s-1-sub-9")
             .expect("the runner stopped it");
-        assert!(said.contains("interrupted"), "{said}");
+        assert!(said.contains("stopped"), "{said}");
         assert_eq!(
             runner.0.lock().expect("recorded").as_slice(),
             ["s-1-sub-9".to_string()],
             "the handle the model gave is the handle the runner was asked about"
+        );
+
+        // **AND A REFUSED STOP IS A REFUSAL, NOT A SENTENCE.** The harness's runner used to
+        // answer `Ok("interrupted the turn …")` over a daemon that had refused with
+        // `not attached`, so `job_kill` reported a state change that never happened and a
+        // subagent went on running and writing rows (MEASURED 2026-10-05: 102 to 108 while the
+        // kill was in flight). The routing above is only half of what this tool owes a caller;
+        // the other half is that whatever the runner says comes back unchanged — including its
+        // refusals — so this pins the pass-through with a runner that refuses by name.
+        struct Refuser;
+
+        impl TaskRunner for Refuser {
+            fn start(&self, _prompt: &str, _spec: &TaskSpec) -> Result<String, String> {
+                Err("this runner starts nothing".into())
+            }
+            fn collect(&self, _handle: &str, _timeout: std::time::Duration) -> TaskStatus {
+                TaskStatus::Unknown
+            }
+            fn kill(&self, _handle: &str) -> Result<String, String> {
+                Err("not attached".into())
+            }
+        }
+
+        let refused = super::JobKill::with_tasks(std::sync::Arc::new(Refuser))
+            .kill_subagent("s-1-sub-9")
+            .expect_err("a refused stop must not read as a stop");
+        assert!(
+            refused.contains("not attached"),
+            "the runner's own words must reach the caller, unchanged: {refused}"
         );
     }
 }
