@@ -41,6 +41,138 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## A stop unlinks the socket without the daemon going, so the next start adds a SECOND daemon to one folder — **OPEN, diagnosed on the operator's box 2026-10-04**
+
+**The symptom the operator met:** a session that could not be written to at all. Every append refused:
+
+    s-1789462738453908838 · dead -> store: row 483 (s-1789462738453908838#t45.483):
+        sqlite: transcript_item seq must be the next one
+
+Not the context wall — the wall was long past. The head delivered, the daemon tried to record the row,
+and sqlite refused, so no turn could start. The session was bricked: nothing could be said to it,
+because saying anything is a write.
+
+**The store is right and the trigger is doing its job.** `tokencore/src/store.rs:528`,
+`transcript_item_append_only_insert`: *"A hole, an overlap, a reordering or a re-insert at an old
+index is refused by the database."* MEASURED against the store: `#t45` held **510 rows, seq 0–509**,
+so the next seq is 510 — and the daemon was offering **483**, twenty-seven behind. A re-insert at an
+old index, refused exactly as designed. Without that trigger two daemons would have interleaved rows
+into one transcript and the hash chain would have stopped meaning anything silently.
+
+**THE CAUSE IS THREE DAEMONS ON ONE FOLDER.** Measured:
+
+    2124394  21:27  ~/Projects/letibot
+    2210747  22:26  ~/Projects/letibot
+    2264222  23:09  ~/Projects/letibot     <- the head's
+
+and two of them were **LISTENING ON THE SAME PATH WHILE THE FILE DID NOT EXIST**:
+
+    ss -xlp:  /run/user/1000/letibot/42ce9f1aae08.sock  harnessd pid=2210747 fd=11  LISTEN
+              /run/user/1000/letibot/42ce9f1aae08.sock  harnessd pid=2264222 fd=11  LISTEN
+    ls:       cannot access that path: No such file or directory
+
+**The guard is sound and is keyed on the wrong thing.** `server.rs:176` connects to the existing
+socket first and refuses with *"already served by a live daemon"* when it answers, unlinking only
+when it does not. Correct — **but `remove_file` also lives on `ServerHandle::drop` (`:106`, `:114`)**,
+and `scripts/letibot`'s connect-or-start tests `[ -S "$SOCKET" ]`. So:
+
+  1. the operator stops the daemon; the handle drops and the socket FILE is unlinked;
+  2. the process does not actually go — the state R30 already names, *"the daemon was asked to stop
+     and had not gone"* — and keeps listening on a now-nameless inode, holding the session's ledger;
+  3. the next start finds no file, probes nothing, and legitimately starts a second daemon;
+  4. the older one keeps appending. Its rows land; the newer one's ledger is stale; the trigger
+     refuses every write the head makes.
+
+Confirmed on the way out: `2210747` went on TERM, **`2124394` ignored TERM for fourteen seconds and
+needed KILL** — the same not-going behaviour, from the other side.
+
+**Liveness is being inferred from a filename, and an unlinked socket is indistinguishable from a dead
+daemon.** That is the *absent means gone* assumption this tree has been bitten by repeatedly. The
+answer is already on the fabric, in a note from 2026-08-29: *"Single-instance guards: pidfile is
+defeatable, pgrep matches its own launcher, **use flock**."* A held lock dies with the process and
+cannot be removed by a shutdown path, which is the property the socket file does not have.
+
+**still open?** start a daemon for a folder, stop it so the file is unlinked, confirm the process
+survives, then start again and count daemons for that folder: `ss -xlp | grep <workspace>.sock`.
+Two LISTEN rows on one path is the defect.
+
+**done when** a second daemon for a folder that already has a live one is refused by name, with the
+refusal naming the live pid, and the refusal does not depend on the socket file existing.
+
+---
+
+## The `reasoning_content` refusal is a TRAILING SYSTEM MESSAGE plus `tools` — **OPEN, isolated by the relay 2026-10-04**
+
+Two days of compaction refusals on `deepseek-flash`, all of this form:
+
+    http 400: The `reasoning_content` in the thinking mode must be passed back to the API.
+
+**It has nothing to do with reasoning.** Measured against the live endpoint, three messages:
+
+    [user, assistant("hello"), system("Summarise.")]   WITHOUT tools  ->  200
+    [user, assistant("hello"), system("Summarise.")]   WITH tools     ->  400
+    [user, assistant("hello"), user("Summarise.")]     WITH tools     ->  200
+
+Confirmed at scale: 40 exchanges with mixed `reasoning_content`, identical except the final
+role — `user` 200, `system` 400. **The trigger is a trailing `system` message while `tools`
+is present**, and the error text names the wrong field.
+
+**Why every earlier theory failed.** Size was measured away correctly (976,097 -> 200;
+1,248,039 -> an honest length complaint). Structure was measured away by nine permutations —
+counts 1/5/20/100/309 of tool-calling assistants without `reasoning_content`, interleaved,
+blocked, and empty-string — **all of which ended with a user message**, which is why they all
+returned 200. The position nobody probed was the last one.
+
+**It is ours, at `compaction.rs:446`:** the summary instruction is appended as
+`TranscriptItem::System { origin: SystemOrigin::Update }`, deliberately — `:416` says *"rather
+than a user message: it is appended after the cached history instead of rewriting anything"* —
+and `messages::convert` renders that as a trailing `{"role":"system"}`. The summary turn carries
+tools again since `6d73ba6`. That is the whole mechanism, and it explains why ONLY compaction
+fails, why ordinary turns never do, and why it survived the tools revert.
+
+**The fix belongs in `messages::convert`, not in the transcript item.** `SystemOrigin::Update`
+is correct as a record and the local path reuses the prefix because of it; changing the stored
+item would make the transcript lie to work around one provider's parser. `convert` is already
+the layer that translates the record into a provider's dialect and already takes a per-request
+property (`echo_reasoning`). **Do not special-case DeepSeek by name** — this tree has twice been
+bitten by provider rules taken from documentation; gate on the transport if a gate is wanted.
+
+**still open?** `grep -n "SystemOrigin::Update" crates/turn/src/compaction.rs` and check whether
+`messages::convert` translates a trailing `System` item for the messages transport.
+
+**done when** building messages for a transcript that ends in a `System` item, with tools
+present, produces a last message whose role is not `system` — asserted in a test, because the
+three-message repro costs nothing and would have caught this the day `SystemOrigin::Update`
+was introduced.
+
+---
+
+## A fold that SUCCEEDS is thrown away by the store — **OPEN, measured on the operator's own session 2026-10-04**
+
+On `glm-coding/glm-5.3`, so the item above does not apply:
+
+    · compact_half — compacting half 1 of 1: the conversation so far — 292 item(s), 568330 token(s) to read
+    · compact_half — half 1 of 1 answered: 6146 chars written.
+    ! auto_compact_failed — store: row 594 (s-1789462738453908838#t44.594):
+        sqlite: transcript_item seq must be the next one.
+
+**The model did the work and the write refused it.** 292 items and 568,330 tokens were read, a
+6,146-character summary exists, and it is discarded — so every retry pays for the summary again.
+This is the more expensive of the two failures: the provider one fails before spending anything.
+
+**Not diagnosed, and deliberately not guessed at.** The question to start from is whether `#t44`'s
+first row is numbered from the PARENT's sequence rather than the fork's — row 594 arriving where
+the fork expects its own next is the shape a fork-numbering bug takes, and it is cheap to check
+against the store.
+
+**still open?** reproduce a fold on a session large enough to overrun, or read `#t44`'s rows out
+of `sessions.db` and compare the first `seq` against the parent's last.
+
+**done when** a successful fold's summary is persisted, and a sequence violation on the fork's
+first row is a named refusal rather than a discarded answer.
+
+---
+
 ## R55 — a round's end and a turn's end are the same event on the wire — **OPEN, reported from leticl through the relay 2026-10-03**
 
 The operator, watching leticl's composer edge during a multi-round turn: *"sometimes 'responding'
@@ -640,6 +772,37 @@ the ratio is left per-round with the printing moved to the provider's unit, or a
 with the argument for the lag written down — so that the denominator on the screen and in the log is the
 number the operator can check, and the analysis *"too much too early"* rests on attributed lines rather
 than adjacency.
+
+### The same mismatch from the DISPLAY side — **added 2026-10-04**
+
+The operator, on a compaction that fired while the header read half a million: *"it showed me
+compaction when screen showed only 500k tokens."*
+
+**The number on the screen and the number that decides are different units.** `Config::shown_tokens`
+is `provider_tokens(ledger_tokens)` — what a request would actually carry — while `should_compact`
+and the `compacting:` line are in LEDGER tokens. MEASURED on that session:
+
+    log:     compacting: 1390742 of 1000000 tokens resident   -> compacted: 834514   (the fold)
+    log:     compacting:  947896 of 1000000 tokens resident   -> compacted:  12594
+    header:  947896 of 1000000                                 (agreeing, once the ratio was near 1)
+
+The two agree now and did not then: a ~2.8x gap, inside the clamp of four. **The gap IS the reasoning
+the messages transport never sends** — the ledger holds it, the provider's count does not.
+
+**And `config.rs` already names the direction of the error**, in `tokens_are_converted`'s neighbour:
+*"a ledger figure standing in for a provider's — up to the clamp's factor of four out, **in the
+direction that compacts early**."* So *"too much too early"* is not a misreading by the operator; it
+is the documented failure mode seen from the only place they can see it.
+
+**This is the same root as the entry above, from the other end.** There the denominator moved between
+firings in the log; here the numerator is printed to the operator in one unit and decided in another,
+with nothing on the glass saying which is which. A reader cannot predict a compaction from the
+display, which is the whole of the complaint.
+
+**done when** one unit reaches the operator — either the decision is stated in the unit the header
+shows, or the header names both and says which one compaction uses. `tokens_are_converted()` exists
+precisely so a message *"can name the other number once rather than per figure"*; nothing is calling
+it on the compaction path.
 
 ## The `Subagent` event's `prompt` is a title, and on the finish it is the child's answer — **LANDED 2026-10-03 (`83be154`) on letibot's side; the wire now carries the task**
 
