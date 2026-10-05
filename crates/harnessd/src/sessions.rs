@@ -2056,12 +2056,30 @@ impl<'a> Sessions<'a> {
             CommandKind::OperatorShell { line, who } => {
                 let line = line.clone();
                 let who = who.clone();
-                match self.open.get_mut(session_id) {
-                    Some(h) => match h.run_operator_shell(&line, &who) {
-                        Ok(()) => Outcome::Ignored,
-                        Err(e) => Outcome::Failed(e),
-                    },
-                    None => Outcome::Failed(format!("session {session_id} is not open")),
+                let ran = match self.open.get_mut(session_id) {
+                    Some(h) => h.run_operator_shell(&line, &who),
+                    None => Err(format!("session {session_id} is not open")),
+                };
+                if let Err(e) = ran {
+                    return Outcome::Failed(e);
+                }
+                // **And the turn its rows are for** — the operator's correction, in their
+                // words: *"my commands should start a turn and should be printed to me"*.
+                // The rows above are the printing; this is the turn. `Ignored` here was
+                // the whole defect: the deposit sat in the transcript until something else
+                // started a turn, which is a command nobody answered.
+                let out = match self.open.get_mut(session_id) {
+                    Some(h) => h.run_after_operator_shell(),
+                    None => return Outcome::Failed(format!("session {session_id} is not open")),
+                };
+                self.publish_title(session_id);
+                // A `!` turn is a turn: it appends rows, it can reach the wall, and a
+                // session that only ever ran shell lines would have compacted never — the
+                // same routing `wake` uses, for the same reason.
+                let out = self.after_turn(session_id, &hub, out);
+                match out {
+                    Ok(reply) => Outcome::Replied(Box::new(reply)),
+                    Err(e) => Outcome::Failed(e.to_string()),
                 }
             }
             // **What it produced.** The row goes in with its `origin` set, so every head

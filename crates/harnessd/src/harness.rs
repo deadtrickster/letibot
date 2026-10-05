@@ -3654,8 +3654,9 @@ impl<'a> Harness<'a> {
             "operator_shell_ran",
             format!(
                 "`{who}` ran `{command}` from their own console: {read} byte(s) of context \
-                 (about {} tokens) reach the model from its next turn{spilled}. No reply is \
-                 generated — this is context, not a request.",
+                 (about {} tokens) reach the model in the turn this line starts{spilled}. \
+                 The turn is the sending half — the operator asked for their command's \
+                 result to be *sent to the model as a message*, so a reply is generated.",
                 read / 4,
             ),
         );
@@ -3679,6 +3680,29 @@ impl<'a> Harness<'a> {
             },
         ];
         self.append_imported(&rows).map_err(|e| e.to_string())
+    }
+
+    /// **The turn the operator's own `!` line starts** — the sending half.
+    ///
+    /// [`Harness::run_operator_shell`] appends the two rows; this is what makes them a
+    /// message rather than silent context. The operator asked for both halves in their own
+    /// words — the result *"printed (with meaningfull truncution and scrolled collapse,
+    /// like we do for tool output now) and sent to model as a message"* — and corrected
+    /// the design when the rows landed without the turn: *"my commands should start a turn
+    /// and should be printed to me"*.
+    ///
+    /// **Nothing is appended here, on purpose.** The line and its output are already rows
+    /// and already on the log, so a framing item would be a third row saying what the two
+    /// above it say. This is `submit_item` minus its append: open a turn, run the rounds,
+    /// and the model reads the operator's line and the command's output as the head of
+    /// that turn.
+    ///
+    /// **Called only between turns.** Mid-turn the line is taken at the round boundary
+    /// (`apply_queued_head_run`) and the turn already running reads the rows at its next
+    /// round; starting one there would be a second turn about one command.
+    pub fn run_after_operator_shell(&mut self) -> Result<Reply, HarnessError> {
+        self.trail.begin_turn();
+        self.run_rounds()
     }
 
     /// Append imported rows through the one writer, exactly as a turn's rows go in.
