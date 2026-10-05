@@ -7121,6 +7121,56 @@ fn fate_line(handle: &str, fate: &JobFate) -> String {
     }
 }
 
+/// **The decision `Harness::job_fate` makes, as a function of what its two looks returned.**
+///
+/// Pulled out for the reason [`fate_line`] is pure: this decision is the thing a conditioned row
+/// turns on — the operator's own acceptance case is *"a todo conditioned on job end, and then i
+/// restart head and harnessd. once server is back it should fire - job is gone"* — and reaching it
+/// through a `Harness` needs a backend, a registry, a gate and a store, so nothing asserted it at
+/// all. What is left in the method is the two reads; what is here is the ORDER, which is the whole
+/// of the honesty: only the process host can say a job runs *now*, and a stored `running` row is a
+/// job the daemon was watching when it died, which is a fact about *then*.
+fn fate_of(live: Option<letibot_tools::exec::JobState>, record: Option<&JobRecord>) -> JobFate {
+    if let Some(state) = live {
+        return if state.is_running() {
+            JobFate::Running
+        } else {
+            JobFate::Ended {
+                state: state.word(),
+            }
+        };
+    }
+    match record {
+        Some(row) => JobFate::Ended {
+            state: row.state.clone(),
+        },
+        None => JobFate::Unknown,
+    }
+}
+
+/// **Which of a board's rows the world now meets** — the filter and the pairing, apart from the
+/// harness that owns the rows and the world.
+///
+/// The board is one union (`TodoBoard::snapshot`), so this walks the whole of it and skips two
+/// kinds: **a row with no condition is not this question's subject**, and **a running job is not
+/// due**. Those two skips are the whole of the policy, and they are here rather than in the caller
+/// so that the decision and the sentence [`fate_line`] writes for it cannot be tested apart from
+/// each other — which is what left this piece unasserted until now.
+fn due_rows(rows: &[TodoItem], fate: impl Fn(&str) -> JobFate) -> Vec<(String, String, JobFate)> {
+    let mut out = Vec::new();
+    for row in rows {
+        let Some(letibot_tokencore::store::TodoCondition::Job { handle }) = &row.when else {
+            continue;
+        };
+        let fate = fate(handle);
+        if matches!(fate, JobFate::Running) {
+            continue;
+        }
+        out.push((row.content.clone(), handle.clone(), fate));
+    }
+    out
+}
+
 /// **What a recorded job's window says**, apart from the harness that found the row.
 ///
 /// A free function so the words can be asserted without a store, a vocabulary or a session —
@@ -7197,21 +7247,16 @@ impl<'a> Harness<'a> {
     /// because it is what survives a restart — and it is why a conditioned row fires at all after
     /// one, which is the case the whole mechanism exists for.
     pub fn job_fate(&self, handle: &str) -> JobFate {
-        if let Some(host) = self.runtime.backend.processes()
-            && let Some(view) = host.job(&letibot_tools::exec::JobId(handle.to_string()))
-        {
-            return if view.state.is_running() {
-                JobFate::Running
-            } else {
-                JobFate::Ended {
-                    state: view.state.word(),
-                }
-            };
-        }
-        match self.recorded_job(handle) {
-            Some(row) => JobFate::Ended { state: row.state },
-            None => JobFate::Unknown,
-        }
+        // **Two looks, and [`fate_of`] is the decision between them** — the live table first,
+        // because only the process host can say a job runs *now*, and the record second, because
+        // it is what survives a restart.
+        let live = self
+            .runtime
+            .backend
+            .processes()
+            .and_then(|host| host.job(&letibot_tools::exec::JobId(handle.to_string())))
+            .map(|view| view.state);
+        fate_of(live, self.recorded_job(handle).as_ref())
     }
 
     /// **The rows whose condition the world now meets** — the row's text, the handle it waits on,
@@ -7227,18 +7272,7 @@ impl<'a> Harness<'a> {
     /// handle. A formatter returning only strings would leave the caller re-deriving what it had
     /// just looked up — which is how the two would come to disagree.
     pub fn due_todo_rows(&self) -> Vec<(String, String, JobFate)> {
-        let mut out = Vec::new();
-        for row in self.todos.snapshot() {
-            let Some(letibot_tokencore::store::TodoCondition::Job { handle }) = &row.when else {
-                continue;
-            };
-            let fate = self.job_fate(handle);
-            if matches!(fate, JobFate::Running) {
-                continue;
-            }
-            out.push((row.content.clone(), handle.clone(), fate));
-        }
-        out
+        due_rows(&self.todos.snapshot(), |handle| self.job_fate(handle))
     }
 
     /// The same read as [`Self::job_output`], as a window rather than a page of
@@ -9496,6 +9530,120 @@ mod tests {
         assert!(
             fate_line("j7", &JobFate::Running).contains("still running"),
             "the running arm must answer rather than be unreachable"
+        );
+    }
+
+    /// **THE EVALUATOR: what the world says about a handle, and which rows that makes due.**
+    ///
+    /// The decision a conditioned row turns on, and it had **no assertion at all** before this:
+    /// reaching it through a `Harness` needs a backend, a registry, a gate and a store, so the only
+    /// thing pinned was [`fate_line`]'s wording — the sentence, and not the choice that picks it.
+    ///
+    /// The operator's acceptance case is the one that decides the design: *"a todo conditioned on
+    /// job end, and then i restart head and harnessd. once server is back it should fire - job is
+    /// gone"*. After that restart the process table is empty and the handle is a job this daemon
+    /// never ran, so **`Unknown` must meet the condition** — a decision that read *no row, no fate,
+    /// skip it* would leave the row waiting for ever on work that is already done, which is the one
+    /// failure this whole mechanism exists to prevent.
+    #[test]
+    fn the_evaluator_fires_a_row_whose_handle_is_gone() {
+        use letibot_tokencore::store::{TodoBy, TodoCondition, TodoItem, TodoStatus};
+        /// A stored row for one handle, as a restart would find it — the ending written down
+        /// before the daemon died.
+        fn record(handle: &str, state: &str) -> JobRecord {
+            JobRecord {
+                handle: handle.into(),
+                command: "cargo test".into(),
+                how: "asked".into(),
+                state: state.into(),
+                produced: 12,
+                elapsed_ms: 4_000,
+                redirect: None,
+            }
+        }
+        let row = |content: &str, when: Option<TodoCondition>| TodoItem {
+            content: content.into(),
+            status: TodoStatus::Pending,
+            by: TodoBy::Operator,
+            when,
+        };
+        let waiting_on = |handle: &str| {
+            Some(TodoCondition::Job {
+                handle: handle.into(),
+            })
+        };
+
+        // **The order of the two looks, which is the whole of the honesty.** The live table answers
+        // first: only the process host can say a job runs *now*, so a record saying `running` — a
+        // job the daemon was watching when it died — must not override a host that says otherwise.
+        assert_eq!(
+            fate_of(
+                Some(letibot_tools::exec::JobState::Running),
+                Some(&record("j7", "running")),
+            ),
+            JobFate::Running,
+            "the live table is the first look, so the record cannot say otherwise"
+        );
+        assert_eq!(
+            fate_of(
+                Some(letibot_tools::exec::JobState::Exited { code: 0 }),
+                Some(&record("j7", "running")),
+            ),
+            JobFate::Ended {
+                state: "exited 0".into()
+            },
+            "the host's own word for it, and not the stale row's"
+        );
+        // **The restart, which is why the record is the second look**: no process table at all, and
+        // the ending this daemon wrote down before it went away.
+        assert_eq!(
+            fate_of(None, Some(&record("j121", "exited 3"))),
+            JobFate::Ended {
+                state: "exited 3".into()
+            },
+            "the record is what survives a restart"
+        );
+        // And a handle nobody has run: met, and not dressed up as an ending — the distinction is
+        // the operator's, since the result can be read up for one and not for the other.
+        assert_eq!(
+            fate_of(None, None),
+            JobFate::Unknown,
+            "a job this daemon never heard of has ended; that is what a restart looks like"
+        );
+
+        // **The filter, over a board the world answers for.** Two skips — a row with no condition,
+        // and a running job — and two firings, one of each kind of gone.
+        let rows = vec![
+            row("ship the parity row", None),
+            row("push once CI lands", waiting_on("j121")),
+            row("wait for the build", waiting_on("j7")),
+            row("after the restart", waiting_on("j900")),
+        ];
+        let due = due_rows(&rows, |handle| match handle {
+            "j7" => JobFate::Running,
+            "j121" => JobFate::Ended {
+                state: "exited 0".into(),
+            },
+            _ => JobFate::Unknown,
+        });
+        assert_eq!(
+            due,
+            vec![
+                (
+                    "push once CI lands".to_string(),
+                    "j121".to_string(),
+                    JobFate::Ended {
+                        state: "exited 0".into()
+                    }
+                ),
+                (
+                    "after the restart".to_string(),
+                    "j900".to_string(),
+                    JobFate::Unknown
+                ),
+            ],
+            "a row with no condition is not due, a running job is not due, and both kinds of gone \
+             are — with the handle the caller needs to consume the condition: {due:?}"
         );
     }
 
