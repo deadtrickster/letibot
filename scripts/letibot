@@ -620,8 +620,42 @@ socket_is_listening() { # socket_is_listening PATH
   esac
 }
 live() {
-  [ -S "$SOCKET" ] || return 1
+  # **NOT `[ -S "$SOCKET" ]` FIRST, AND THAT LINE WAS THE DEFECT.** A daemon's own shutdown
+  # path UNLINKS the socket file while the process goes on listening on the now-nameless
+  # inode, so "is there a file" answers *no* for a folder that has a daemon. MEASURED
+  # 2026-10-05 on the operator's box, and the consequence was a BRICKED session: the launcher
+  # read no-file as no-daemon, started a second one, and two daemons interleaved rows into
+  # one transcript until the store refused every append (`transcript_item seq must be the
+  # next one`). `ss` names the path of a bound socket whether or not the file still exists —
+  # verified here: one LISTEN row for a path `ls` said was not there — so it is the reader
+  # that answers this question. The daemon now also holds a lock beside the socket, and it is
+  # what refuses a second start; this is the launcher refusing to TRY.
   socket_is_listening "$SOCKET"
+}
+# **Listening but unreachable**: a daemon is here and its socket file is gone, so nothing can
+# connect to it and starting a second one is the thing that corrupts the transcript. The one
+# cleanup is a hand on the process, so the refusal names the pid.
+live_detached() {
+  socket_is_listening "$SOCKET" || return 1
+  [ -S "$SOCKET" ] && return 1
+  return 0
+}
+# **The refusal, in one place for both callers.** `--attach` and the plain run both reach a
+# folder a daemon is holding without a file, and a message written twice is a message that
+# drifts. Neither of them may start anything or hand a head a path that is gone.
+refuse_detached() {
+  echo "letibot: a harnessd for $WORKSPACE is still LISTENING but its socket file is gone." >&2
+  echo "         $SOCKET" >&2
+  echo "         Nothing can attach to it, and starting a second daemon for one folder is what" >&2
+  echo "         makes two processes interleave rows into one transcript until the store refuses" >&2
+  echo "         every write. Stop the live one and start again." >&2
+  _stuck_pid="$(daemon_pid || true)"
+  if [ -n "$_stuck_pid" ]; then
+    echo "         letibot --stop            # or: kill $_stuck_pid" >&2
+  else
+    echo "         letibot --stop            # the pid could not be read; --daemons lists what is here" >&2
+  fi
+  exit 1
 }
 up() {
   [ -S "$SOCKET" ] || return 1
@@ -996,6 +1030,13 @@ SESSIONS_EOF
       stale="$(daemon_stale_line)"
       [ -n "$stale" ] && echo "! $stale"
       echo "socket   $SOCKET"
+    elif live_detached; then
+      # **A daemon is here and cannot be reached.** Saying "no daemon" here is the sentence
+      # that got a second one started, and saying "up" would be false: the path a head needs
+      # is gone. Both halves of the truth, and which one to act on.
+      echo "DETACHED: a harnessd is listening on $SOCKET but the socket FILE is gone (pid $(daemon_pid 2>/dev/null || echo ?))"
+      echo "          nothing can attach to it; letibot --stop  (or kill the pid above)"
+      echo "socket   $SOCKET"
     elif [ -n "$PROBE" ]; then
       # Something answered and refused. That is a different fact from silence, and
       # printing "not running" for it is how a live daemon gets a second one started
@@ -1022,6 +1063,7 @@ SESSIONS_EOF
     # Connect only. A second argument names another folder's daemon — as a
     # directory, or as the number `letibot --ls` printed beside it.
     retarget "${2:-}"
+    if live_detached; then refuse_detached; fi
     if live; then
       echo "letibot: attached to $(daemon_line)" >&2
       stale="$(daemon_stale_line)"
@@ -1172,6 +1214,11 @@ fi
 # and the session is still usable. What it may not do is pretend the flag landed.
 
 if live; then warn_swallowed_flags; fi
+
+# **And nothing is ever started over a daemon that is listening without its file.** This is
+# the state that bricked a session: `live` is true, so the start branch below is not taken,
+# and every path past here would have attached a head to a socket path that does not exist.
+if live_detached; then refuse_detached; fi
 
 if ! live; then
   # **The probe belongs here and only here.** This is the branch that is about to

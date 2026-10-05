@@ -28,7 +28,7 @@
 //! `publish` returns immediately.
 
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -74,11 +74,166 @@ pub struct ServerHandle {
     path: PathBuf,
     registry: Arc<Registry>,
     accept: Option<JoinHandle<()>>,
+    /// **(dev, ino) of the socket this daemon bound**, so going away can remove *its own*
+    /// file and never whatever is at that path by then. See [`unlink_if_ours`].
+    socket_id: Option<(u64, u64)>,
+    /// **The claim on this folder.** Held for the process's life, and named `claim` rather
+    /// than `lock` because being clear about what it is is the whole point: the kernel
+    /// releases it when this process goes, so it cannot be left behind by a shutdown path
+    /// that unlinked something and did not exit. Dropped LAST (declaration order), after
+    /// the socket file has been removed, so no daemon can slip in between.
+    claim: Option<FolderClaim>,
+}
+
+/// **The lock that says a folder has a daemon, because a filename cannot.**
+///
+/// The operator's own words for the defect this exists to close, and the diagnosis was
+/// theirs (2026-10-04, `TODO.md`): *"Liveness is being inferred from a filename, and an
+/// unlinked socket is indistinguishable from a dead daemon."* MEASURED on their box and
+/// reproduced here, on a scratch socket: the file in `$XDG_RUNTIME_DIR` is UNLINKED by
+/// `ServerHandle::shutdown` and by `Drop`, and a daemon asked to stop can unlink it and then
+/// keep listening on the now-nameless inode. The next start finds no file, probes nothing,
+/// and binds a second socket at the same path — Linux is happy to — so two daemons serve one
+/// folder against one store. The transcript trigger then refuses every append
+/// (`transcript_item seq must be the next one`), and the SESSION IS BRICKED: nothing can be
+/// said to it, because saying anything is a write.
+///
+/// **An `flock` dies with the process**, including on `SIGKILL`, which no `Drop` survives —
+/// and that is the property `$KEY.sock` does not have. It is the answer the tree already had
+/// written down (2026-08-29: *"Single-instance guards: pidfile is defeatable, pgrep matches
+/// its own launcher, use flock"*).
+///
+/// `std::fs::File`'s locks are `flock` on Unix and this crate takes **no new dependency**
+/// for them (it says in as many words a few lines down that it does not depend on `libc`,
+/// and it should not start).
+///
+/// **The lock file is not unlinked by anything here, deliberately.** The socket file is
+/// unlinked by this daemon's own shutdown path, which is exactly what made a filename
+/// worthless as a liveness test; the lock file is only ever created and written, so its name
+/// keeps pointing at the inode that holds the claim. An operator who deletes it by hand
+/// defeats it — and that is a hand on the box, not a code path, which is the distinction
+/// the socket file could not make.
+struct FolderClaim {
+    /// **Held, never read.** The lock lives in this open file description, and dropping it is
+    /// what releases the claim; there is deliberately no getter, and the absent reader is the
+    /// design rather than an oversight (`_` so the compiler is told the same thing).
+    _file: std::fs::File,
+    path: PathBuf,
+}
+
+impl FolderClaim {
+    /// The lock file that belongs beside a socket: `$KEY.sock` -> `$KEY.lock`.
+    fn path_for(socket: &Path) -> PathBuf {
+        socket.with_extension("lock")
+    }
+
+    /// **Take the claim, or say who has it.**
+    fn take(socket: &Path) -> Result<FolderClaim, ClaimRefusal> {
+        let path = Self::path_for(socket);
+        let file = match std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(e) => return Err(ClaimRefusal::Unavailable { why: e.to_string() }),
+        };
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(ClaimRefusal::Live {
+                    pid: Self::holder_pid(&path),
+                });
+            }
+            // **Not a held lock: a filesystem that cannot lock at all.** Said out loud and
+            // fallen back on, because refusing to START a daemon is a worse outcome than
+            // failing to catch a second one, and silence here would be the failure mode
+            // this whole change is about.
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(ClaimRefusal::Unavailable { why: e.to_string() });
+            }
+        }
+        // **Our pid, inside it, so a refusal can name somebody.** Not the source of truth —
+        // the lock is — but a refusal that says *"already served by a live daemon"* and
+        // stops is a refusal the operator cannot act on.
+        if let Err(e) = Self::write_pid(&file) {
+            eprintln!(
+                "could not write the claiming pid into {}: {e}. The claim itself is held, so \
+                 a second daemon is still refused; only the line naming it will be empty.",
+                path.display()
+            );
+        }
+        // The claim is a fact about a folder, not a secret; 0600 keeps it the same as the
+        // socket beside it and keeps another user's stray files out of the way.
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        Ok(FolderClaim { _file: file, path })
+    }
+
+    fn write_pid(file: &std::fs::File) -> io::Result<()> {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = file;
+        f.set_len(0)?;
+        f.seek(SeekFrom::Start(0))?;
+        writeln!(f, "{}", std::process::id())?;
+        f.flush()
+    }
+
+    /// The pid the holder wrote, or `None` when the file is empty — a holder that took the
+    /// lock and died between the lock and the write, which the caller words as unknown
+    /// rather than inventing a number.
+    fn holder_pid(path: &Path) -> Option<u32> {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Why a claim was not taken. Three outcomes, and the middle one is the only one that stops
+/// a daemon from starting.
+enum ClaimRefusal {
+    /// Somebody else is serving this folder, and here is who.
+    Live { pid: Option<u32> },
+    /// This filesystem cannot hold the claim (no writable directory, an exotic mount). The
+    /// caller falls back to the probe it used before there was a lock.
+    Unavailable { why: String },
+}
+
+/// **Remove a socket file only if the path still names OUR socket.**
+///
+/// `shutdown`, `Drop` and the accept thread all used to call `remove_file(&self.path)`,
+/// which removes *whatever is at that path* — and the path is shared state. Once a second
+/// daemon could take a folder (see [`FolderClaim`]) this became the way the loop repeats:
+/// the old daemon's `Drop` unlinks the NEW daemon's socket, which makes the new daemon the
+/// one whose file the next start cannot see. Comparing (dev, ino) makes the removal mean
+/// *mine* rather than *that name*.
+fn unlink_if_ours(path: &Path, id: (u64, u64)) {
+    match std::fs::metadata(path) {
+        Ok(m) if (m.dev(), m.ino()) == id => {
+            let _ = std::fs::remove_file(path);
+        }
+        // Somebody else's socket is at our path now. It is not ours to remove.
+        Ok(_) => {}
+        // Already gone. `ENOENT` on a removal that has nothing to do is the ordinary case.
+        Err(_) => {}
+    }
 }
 
 impl ServerHandle {
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// **Where this daemon's claim lives**, for a caller that wants to say so — the launcher
+    /// names it in the refusal it prints when a socket file has gone missing under a live
+    /// daemon, which is the state a person has to clean up by hand.
+    pub fn claim_path(&self) -> Option<&Path> {
+        self.claim.as_ref().map(FolderClaim::path)
     }
 
     pub fn registry(&self) -> &Arc<Registry> {
@@ -103,7 +258,14 @@ impl ServerHandle {
         if let Some(h) = self.accept.take() {
             let _ = h.join();
         }
-        let _ = std::fs::remove_file(&self.path);
+        // **Our own file, and only ours** — see [`unlink_if_ours`]. The accept thread removes
+        // the socket when it ends too, and removing it twice is an ignored `ENOENT`.
+        if let Some(id) = self.socket_id {
+            unlink_if_ours(&self.path, id);
+        }
+        // `self.claim` is dropped here, last, after the path is clear: the lock is released
+        // only once this daemon's socket is gone, so a start that slots in behind us cannot
+        // have its file removed by us on the way out.
     }
 }
 
@@ -111,7 +273,15 @@ impl Drop for ServerHandle {
     fn drop(&mut self) {
         // Best effort only. An abandoned handle leaves the socket, which is
         // recoverable; taking the session down on a drop would not be.
-        let _ = std::fs::remove_file(&self.path);
+        //
+        // **And it removes the socket only if that path still names OUR socket.** This was
+        // the way the two-daemon loop repeated: an old daemon's `Drop` unlinked whatever
+        // file was at the path, which by then could be the NEW daemon's, leaving the live
+        // one invisible to every liveness test the box has. `unlink_if_ours` compares
+        // (dev, ino); a path that now holds somebody else's socket is left alone.
+        if let Some(id) = self.socket_id {
+            unlink_if_ours(&self.path, id);
+        }
     }
 }
 
@@ -171,15 +341,67 @@ fn clamp_char(s: &str, at: usize) -> usize {
 /// Bind and start accepting for every session in `registry`.
 pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Result<ServerHandle> {
     let path = path.as_ref().to_path_buf();
-    // A stale socket from a crashed daemon is not a running daemon. Removing it is
-    // safe *because* a live one would still be holding the bind, and the bind is
-    // what would then fail — the file's existence proves nothing.
+    // **THE CLAIM COMES FIRST, AND IT DOES NOT ASK WHETHER THE FILE IS THERE.**
+    //
+    // This is the whole fix for the operator's 2026-10-04 entry, and the order is the
+    // substance of it: the check below is gated on `path.exists()`, so a folder whose socket
+    // file was unlinked by a stopping daemon had NO check at all — the bind then succeeded
+    // at a path that already had a live listener on a nameless inode, and two daemons served
+    // one store until the transcript trigger refused every write. A held `flock` says what
+    // the filename cannot: somebody is here. See [`FolderClaim`].
+    let claim = match FolderClaim::take(&path) {
+        Ok(c) => Some(c),
+        Err(ClaimRefusal::Live { pid }) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                match pid {
+                    Some(pid) => format!(
+                        "{} is already served by a live daemon (pid {pid}). This refusal is the \
+                         lock beside the socket, not the socket file: a daemon that was asked to \
+                         stop unlinks that file while it is still listening, so its absence \
+                         proves nothing. Two daemons for one folder interleave rows into one \
+                         transcript and the store refuses them all — stop the one named here \
+                         (`letibot --stop`) and start again.",
+                        path.display()
+                    ),
+                    None => format!(
+                        "{} is already served by a live daemon (its pid could not be read from \
+                         {}). Stop it and start again: letibot --stop.",
+                        path.display(),
+                        FolderClaim::path_for(&path).display()
+                    ),
+                },
+            ));
+        }
+        // **A filesystem that cannot hold the claim does not stop a daemon starting.** The
+        // probe below is still the belt; it is only the braces that are missing, and this is
+        // said out loud rather than swallowed, because silence is the shape of the bug.
+        Err(ClaimRefusal::Unavailable { why }) => {
+            eprintln!(
+                "sessionlog: cannot take the folder claim on {} ({why}). Starting anyway, with \
+                 the socket-file probe as the only guard, so a second daemon for this folder \
+                 could go unnoticed.",
+                FolderClaim::path_for(&path).display()
+            );
+            None
+        }
+    };
+    // **The belt, still worn** — and its comment corrected, because the version of it that
+    // stood here is why nobody looked further: *"the bind is what would then fail"* is true
+    // only while the live daemon's file still HAS that name. Unlink it and the bind succeeds
+    // at a fresh inode, which is exactly the hole above. This still catches the cases the
+    // lock cannot: a daemon from a build older than this one, and any other program that
+    // bound the path without taking the claim.
     if path.exists() {
         match UnixStream::connect(&path) {
             Ok(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
-                    format!("{} is already served by a live daemon", path.display()),
+                    format!(
+                        "{} is already served by a live daemon (it does not hold the folder \
+                         lock, so it is an older build or another program)",
+                        path.display()
+                    ),
                 ));
             }
             Err(_) => {
@@ -190,9 +412,31 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
     let listener = UnixListener::bind(&path)?;
     // Filesystem permissions are the auth (§13.4).
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    // **THE ACCEPT LOOP MUST BE WAKABLE WITHOUT THE SOCKET FILE EXISTING.**
+    //
+    // `shutdown` unblocks the loop by connecting to the path — which works exactly once, in
+    // the state where the path still names this listener. Unlink the file (which `shutdown`
+    // and `Drop` themselves do, and which is the ordinary state of a daemon that was asked to
+    // stop) and the connect goes to `ENOENT`, the accept thread stays blocked in `accept()` on
+    // a nameless inode, and the `join` in `shutdown` waits forever. MEASURED 2026-10-05, and it
+    // is the operator's own field note from 2026-10-04: *"`2210747` went on TERM, `2124394`
+    // ignored TERM for fourteen seconds and needed KILL"* — a daemon that has lost its file
+    // cannot be stopped politely.
+    //
+    // So the loop is non-blocking and checks the registry's flag between polls. The cost is a
+    // poll interval on the IDLE path (20 ms between a head's connect and its accept, once per
+    // attach) and the gain is a stop that does not depend on a filename. The `WouldBlock` arm
+    // below is deliberately before `is_transient`, which would classify it as transient and
+    // print a line every 50 ms for as long as the daemon is idle.
+    let _ = listener.set_nonblocking(true);
+    // **What we bound, so going away can remove this and not somebody else's socket.**
+    // Read off the path immediately after the bind, before any other start can be looking at
+    // the same name.
+    let socket_id = std::fs::metadata(&path).ok().map(|m| (m.dev(), m.ino()));
 
     let r = registry.clone();
     let deaf_path = path.clone();
+    let deaf_id = socket_id;
     let accept = std::thread::Builder::new()
         .name("head-accept".into())
         .spawn(move || {
@@ -225,6 +469,11 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
                 }
                 match listener.accept() {
                     Ok((s, _)) => {
+                        // **A blocking stream, explicitly.** The listener is non-blocking (see
+                        // above); Linux does not pass that flag on to an accepted socket, and
+                        // "the platform does not do the surprising thing" is not something a
+                        // daemon whose reads are blocking by design should rely on.
+                        let _ = s.set_nonblocking(false);
                         transient = 0;
                         if r.is_closed() {
                             break;
@@ -242,6 +491,14 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
                                         }
                                     }
                                 });
+                    }
+                    // **Idle, and not an error.** See the `set_nonblocking` above: this is
+                    // what makes `shutdown` able to stop a daemon whose socket file is gone,
+                    // and it is silent on purpose — the transient arm below prints, and a line
+                    // every poll interval from a healthy idle daemon is noise that hides the
+                    // lines that matter.
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
                     }
                     Err(e) if is_transient(&e) => {
                         // A client that vanished before it was picked up costs
@@ -272,13 +529,17 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
                     }
                 }
             }
-            // **The socket file goes when the listener does.**
+            // **The socket file goes when the listener does — if it is still ours.**
             //
-            // Whatever ended this loop, the path must stop advertising a door: a
-            // head gets a refusal it can report instead of an eternal poll. The
-            // handle's own `Drop` removes it too, and removing it twice is an
-            // ignored `ENOENT` — much cheaper than the case this prevents.
-            let _ = std::fs::remove_file(&deaf_path);
+            // Whatever ended this loop, the path must stop advertising a door: a head gets a
+            // refusal it can report instead of an eternal poll. The handle's own `Drop`
+            // removes it too, and removing it twice is an ignored `ENOENT` — much cheaper
+            // than the case this prevents. `unlink_if_ours` is what keeps "the path" from
+            // meaning "whatever is there now", which for a daemon that is on its way out can
+            // be a newer daemon's socket.
+            if let Some(id) = deaf_id {
+                unlink_if_ours(&deaf_path, id);
+            }
             // And the daemon comes down with it, gracefully: every head wakes with
             // `Bye`, every worker falls out of `next_command`, and the operator
             // sees a session end instead of a process that answers nothing. A
@@ -291,6 +552,8 @@ pub fn serve_registry(registry: Arc<Registry>, path: impl AsRef<Path>) -> io::Re
         path,
         registry,
         accept: Some(accept),
+        socket_id,
+        claim,
     })
 }
 
