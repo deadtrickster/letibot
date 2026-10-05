@@ -678,7 +678,7 @@ impl TurnEngine<'_> {
             letibot_transcript::media::mark_delivered(&mut session.items);
             Some((string, media))
         });
-        let (outcome, guard_trip) = self.stream_turn(
+        let (outcome, guard_trip) = match self.stream_turn(
             &turn_id,
             prompt.clone(),
             multimodal,
@@ -686,7 +686,16 @@ impl TurnEngine<'_> {
             sink,
             steering,
             &mut pending,
-        )?;
+        ) {
+            Ok(x) => x,
+            Err(e) => {
+                // §5.7 fails the turn and commits nothing; the operator's words are
+                // input, not output, and `absorb` already took them out of the source,
+                // so they go back rather than being appended.
+                pending.give_back(steering);
+                return Err(e);
+            }
+        };
         let wall_ms = started.elapsed().as_millis() as u64;
 
         if let Some(trip) = guard_trip {
@@ -721,6 +730,10 @@ impl TurnEngine<'_> {
                     ),
                 ),
             });
+            // §5.7 fails the turn and commits nothing; the operator's words are input,
+            // not output, and `absorb` already took them out of the source, so they go
+            // back rather than being appended.
+            pending.give_back(steering);
             return Err(TurnFailure::Guard { turn_id, trip });
         }
 
@@ -746,6 +759,10 @@ impl TurnEngine<'_> {
                 code: "row_coverage_gap",
                 detail: gap.clone(),
             });
+            // §5.7 fails the turn and commits nothing; the operator's words are input,
+            // not output, and `absorb` already took them out of the source, so they go
+            // back rather than being appended.
+            pending.give_back(steering);
             return Err(TurnFailure::Stream(StreamError::Protocol(format!(
                 "the turn's tokens do not tile its items: {gap}"
             ))));
@@ -798,6 +815,11 @@ impl TurnEngine<'_> {
                 finish_reason: outcome.final_chunk.finish_reason,
                 metrics: Box::new(metrics.clone()),
             });
+            // §5.7 fails the turn and commits nothing; the operator's words are input,
+            // not output, and `absorb` already took them out of the source, so they go
+            // back rather than being appended. One call here covers every exit of the
+            // match below, including its nested salvage-exhausted returns.
+            pending.give_back(steering);
             return Err(match verdict {
                 LengthVerdict::HardFail(reason) => {
                     sink.emit(TurnEvent::Warning {
@@ -892,6 +914,10 @@ impl TurnEngine<'_> {
                 finish_reason: outcome.final_chunk.finish_reason,
                 metrics: Box::new(metrics.clone()),
             });
+            // §5.7 fails the turn and commits nothing; the operator's words are input,
+            // not output, and `absorb` already took them out of the source, so they go
+            // back rather than being appended. One call here covers both exits below.
+            pending.give_back(steering);
             if !self.salvage.salvaged() {
                 return Err(TurnFailure::SalvageExhausted {
                     turn_id,
@@ -1023,15 +1049,34 @@ impl TurnEngine<'_> {
                 let spans = self
                     .renderer
                     .render_incremental(&session.items, std::slice::from_ref(&produced_item.item));
-                elided = self.tokenize(&spans)?;
+                elided = match self.tokenize(&spans) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        // §5.7 fails the turn and commits nothing; the operator's words
+                        // are input, not output, and `absorb` already took them out of
+                        // the source, so they go back rather than being appended.
+                        pending.give_back(steering);
+                        return Err(e.into());
+                    }
+                };
                 &elided
             } else {
                 &produced.tokens[produced_item.range.clone()]
             };
-            let row = session
+            let row = match session
                 .ledger
                 .append(&item_id, ids)
-                .map_err(|e| TurnFailure::Engine(EngineError::Ledger(e.to_string())))?;
+                .map_err(|e| TurnFailure::Engine(EngineError::Ledger(e.to_string())))
+            {
+                Ok(x) => x,
+                Err(e) => {
+                    // The operator's words are input, not output, and `absorb` already
+                    // took them out of the source; this exit commits no steering, so
+                    // they go back rather than being appended.
+                    pending.give_back(steering);
+                    return Err(e);
+                }
+            };
             let head = head_hex(&row.h_k);
             let tokens = row.tok_len;
             let kind = letibot_tokencore::store::item_kind(&produced_item.item);
@@ -1117,9 +1162,20 @@ impl TurnEngine<'_> {
         if let Some(u) = pending.absorb(steering) {
             pending.hold_urgent(u);
         }
+        // **The drain is what makes handing back at the failure sites safe.**
+        // `take_items` empties `queued`, so the operator's words absorbed during the
+        // generation are no longer in `pending` here — they are in `steering_items`,
+        // about to be appended. A failure site that returns before this drain still
+        // holds them in `pending`, and is the one that gives them back.
         let steering_items = pending.take_items();
         if !steering_items.is_empty() {
-            session.append_items(self, &steering_items, sink)?;
+            // The operator's words are already out of `pending` (in `steering_items`),
+            // so only a held urgent could still be lost here; give it back rather
+            // than dropping it.
+            if let Err(e) = session.append_items(self, &steering_items, sink) {
+                pending.give_back(steering);
+                return Err(e.into());
+            }
         }
 
         Ok(TurnOk::new(
@@ -1256,6 +1312,10 @@ impl TurnEngine<'_> {
                         backend,
                     )),
                 });
+                // §5.7 fails the turn and commits nothing; the operator's words are
+                // input, not output, and `absorb` already took them out of the source,
+                // so they go back rather than being appended.
+                pending.give_back(steering);
                 return Err(TurnFailure::Guard {
                     turn_id,
                     trip: crate::guards::Trip {
@@ -1272,6 +1332,10 @@ impl TurnEngine<'_> {
             // retried six times, each attempt sending byte-identical bytes to be
             // refused identically, with the waits doubling.
             Err(letibot_backend::BackendError::Refused { status, body }) => {
+                // §5.7 fails the turn and commits nothing; the operator's words are
+                // input, not output, and `absorb` already took them out of the source,
+                // so they go back rather than being appended.
+                pending.give_back(steering);
                 return Err(TurnFailure::Http(HttpError::Status { code: status, body }));
             }
             // **An unreachable provider is not a malformed answer, and telling a reader
@@ -1294,12 +1358,20 @@ impl TurnEngine<'_> {
             // The payload keeps the provider's own words, prefixed with our class name so
             // nothing that was in the old string is lost.
             Err(letibot_backend::BackendError::Unreachable(m)) => {
+                // §5.7 fails the turn and commits nothing; the operator's words are
+                // input, not output, and `absorb` already took them out of the source,
+                // so they go back rather than being appended.
+                pending.give_back(steering);
                 return Err(TurnFailure::Http(HttpError::Io(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     format!("provider unreachable: {m}"),
                 ))));
             }
             Err(e) => {
+                // §5.7 fails the turn and commits nothing; the operator's words are
+                // input, not output, and `absorb` already took them out of the source,
+                // so they go back rather than being appended.
+                pending.give_back(steering);
                 return Err(TurnFailure::Http(HttpError::Malformed(e.to_string())));
             }
         };
@@ -1342,6 +1414,11 @@ impl TurnEngine<'_> {
                 finish_reason,
                 metrics: Box::new(metrics.clone()),
             });
+            // §5.7 fails the turn and commits nothing; the operator's words are input,
+            // not output, and `absorb` already took them out of the source, so they go
+            // back rather than being appended. One call here covers every exit of the
+            // match below, including its nested salvage-exhausted returns.
+            pending.give_back(steering);
             return Err(match verdict {
                 LengthVerdict::HardFail(reason) => {
                     sink.emit(TurnEvent::Warning {
@@ -1403,7 +1480,13 @@ impl TurnEngine<'_> {
             tool_calls: done.tool_calls.clone(),
             truncated: matches!(verdict, LengthVerdict::TruncatedText),
         });
-        session.append_items(self, &produced, sink)?;
+        // The operator's words are input, not output, and `absorb` already took them
+        // out of the source; this exit commits no steering, so they go back rather
+        // than being appended.
+        if let Err(e) = session.append_items(self, &produced, sink) {
+            pending.give_back(steering);
+            return Err(e.into());
+        }
 
         let metrics = self.messages_metrics(
             &turn_id,
@@ -1429,9 +1512,20 @@ impl TurnEngine<'_> {
         if let Some(u) = pending.absorb(steering) {
             pending.hold_urgent(u);
         }
+        // **The drain is what makes handing back at the failure sites safe.**
+        // `take_items` empties `queued`, so the operator's words absorbed during the
+        // generation are no longer in `pending` here — they are in `steering_items`,
+        // about to be appended. A failure site that returns before this drain still
+        // holds them in `pending`, and is the one that gives them back.
         let steering_items = pending.take_items();
         if !steering_items.is_empty() {
-            session.append_items(self, &steering_items, sink)?;
+            // The operator's words are already out of `pending` (in `steering_items`),
+            // so only a held urgent could still be lost here; give it back rather
+            // than dropping it.
+            if let Err(e) = session.append_items(self, &steering_items, sink) {
+                pending.give_back(steering);
+                return Err(e.into());
+            }
         }
         Ok(TurnOk::new(
             turn_id,
