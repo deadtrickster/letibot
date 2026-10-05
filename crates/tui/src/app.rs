@@ -8939,16 +8939,60 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// **The rows that need no credential**, from the daemon's own
+    /// [`letibot_sessionlog::protocol::MODEL_KEYLESS_KEY`] row: `local` and every local
+    /// model declared in `providers.toml`.
+    ///
+    /// Falls back to `local` alone when the row is absent, which is a daemon older than
+    /// the row. That is exactly what this head did before the row existed, so an old
+    /// daemon greens what it always greened and nothing reads as newly broken.
+    fn keyless_choices(&self) -> Vec<String> {
+        self.settings
+            .iter()
+            .find(|r| r.key == letibot_sessionlog::protocol::MODEL_KEYLESS_KEY)
+            .map(|r| {
+                r.value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_else(|| vec!["local".to_string()])
+    }
+
     /// **Whether a picker row is one this box can actually take.**
     ///
     /// The operator, 2026-10-04: *"model peeker should green models we have keys for. — if i
     /// choose a model without key picker should ask for the key."* So the colour answers *will this
-    /// work if I press enter* — which is why **`local` is ready for a reason of its own**: it needs
-    /// no credential, and leaving it uncoloured would read as *this row has no key* about the one
-    /// row that never wanted one.
+    /// work if I press enter*.
+    ///
+    /// Two ways to be ready, and they are different facts: a credential this box holds
+    /// ([`Self::keyed_providers`]), or **no credential wanted at all**
+    /// ([`Self::keyless_choices`]). `local` was once hardcoded here for the second
+    /// reason — *"leaving it uncoloured would read as this row has no key about the one
+    /// row that never wanted one"* — and the operator found what a hardcoded literal
+    /// costs the moment there is a second such row: *"dense78 needs a key this box does
+    /// not hold"*, about a LAN box with no key and no meter. The daemon publishes the
+    /// list now, for the same reason it publishes the keyed one: it is the half that
+    /// knows.
     fn choice_ready(&self, name: &str) -> bool {
-        let provider = name.split('/').next().unwrap_or(name).trim();
-        provider == "local" || self.keyed_providers().iter().any(|k| k == provider)
+        let name = name.trim();
+        // **Three ways a row can name its model, so three candidates.**
+        //
+        // `deepseek/deepseek-flash` -- the preset is the part before the slash.
+        // `dense78` -- a declared name, whole, and it may contain anything the operator
+        // typed. `dense78 (qwen-3.8-27b at http://192.168.1.78:8082)` -- the row for a
+        // session already ON one, where the first WORD is the name; the `model` row's
+        // own comment is the rule (*"the first word is what a picker matches on"*), and
+        // splitting that on `/` lands inside the url instead.
+        let first_word = name.split_whitespace().next().unwrap_or(name);
+        let provider = first_word.split('/').next().unwrap_or(first_word);
+        let keyless = self.keyless_choices();
+        keyless
+            .iter()
+            .any(|k| k == name || k == first_word || k == provider)
+            || self.keyed_providers().iter().any(|k| k == provider)
     }
 
     /// **Did the daemon publish its key row at all?** An absent `models.keys` is a daemon
@@ -37713,6 +37757,75 @@ mod tests {
     /// `local` would read as *no key* about the one row that never wanted one), and **the meaning
     /// is said in words**, because `Palette::None` is the `--replay`, pipe and CI case where a
     /// colour says nothing at all.
+
+    /// **A declared local model is ready, and the daemon is what says so.**
+    ///
+    /// The operator, 2026-10-05: *"dense78 needs a key this box does not hold."* It
+    /// needs none — a LAN box, no key, no meter. `local` used to be greened by a
+    /// hardcoded literal, which worked exactly as long as it was the only keyless row.
+    #[test]
+    fn a_declared_local_model_is_ready_without_a_key() {
+        use letibot_sessionlog::protocol::{MODEL_KEYLESS_KEY, MODEL_KEYS_KEY, SettingRow};
+        let row = |r: &str, v: &str| SettingRow {
+            key: r.into(),
+            value: v.into(),
+            source: String::new(),
+            editable: String::new(),
+            choices: Vec::new(),
+            tools: Vec::new(),
+        };
+        let mut a = App::new(RenderConfig {
+            width: 110,
+            color: true,
+            ..RenderConfig::default()
+        });
+        a.settings = vec![
+            row(MODEL_KEYS_KEY, "deepseek,glm"),
+            row(MODEL_KEYLESS_KEY, "local,dense78"),
+        ];
+
+        assert!(a.choice_ready("local"), "the daemon's own server");
+        assert!(a.choice_ready("dense78"), "a declared local model needs no key");
+        assert!(
+            a.choice_ready("dense78 (qwen-3.8-27b at http://192.168.1.78:8082)"),
+            "the row for a session already on it -- the first WORD is the name, and \
+             splitting on `/` would land inside the url"
+        );
+        assert!(a.choice_ready("deepseek/deepseek-flash"), "a key this box holds");
+        assert!(
+            !a.choice_ready("grok/grok-4.3"),
+            "a preset with no key is still not ready"
+        );
+        assert!(
+            !a.choice_ready("dense97"),
+            "a name nobody declared is not ready either"
+        );
+    }
+
+    /// **An older daemon greens what it always greened.** No `models.keyless` row means
+    /// a daemon from before it existed, and the fallback is `local` alone — which is
+    /// precisely the behaviour this head had before, so nothing reads as newly broken.
+    #[test]
+    fn without_the_keyless_row_local_is_still_ready_and_nothing_else_new_is() {
+        use letibot_sessionlog::protocol::{MODEL_KEYS_KEY, SettingRow};
+        let mut a = App::new(RenderConfig {
+            width: 110,
+            color: true,
+            ..RenderConfig::default()
+        });
+        a.settings = vec![SettingRow {
+            key: MODEL_KEYS_KEY.into(),
+            value: "deepseek".into(),
+            source: String::new(),
+            editable: String::new(),
+            choices: Vec::new(),
+            tools: Vec::new(),
+        }];
+        assert!(a.choice_ready("local"));
+        assert!(a.choice_ready("deepseek/deepseek-flash"));
+        assert!(!a.choice_ready("dense78"));
+    }
+
     #[test]
     fn the_model_picker_greens_the_providers_this_box_holds_a_key_for() {
         use letibot_sessionlog::protocol::{MODEL_KEYS_KEY, SettingRow};

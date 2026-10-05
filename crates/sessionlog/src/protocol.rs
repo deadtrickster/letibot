@@ -376,6 +376,35 @@ pub const DAEMON_VERBS_KEY: &str = "daemon.verbs";
 /// than as *no keys* — the same rule [`DAEMON_VERBS_KEY`] follows, and for the same reason.
 pub const MODEL_KEYS_KEY: &str = "models.keys";
 
+/// **The picker rows that need no credential at all** — `local` and every local model
+/// this fleet declares in `providers.toml`.
+///
+/// `value` is those names, comma-joined with no spaces, `local` first.
+///
+/// # Why it is a second row rather than a widening of [`MODEL_KEYS_KEY`]
+///
+/// That row answers *does this box hold a credential for this preset*, and its own
+/// docstring is explicit that `local` is absent because "a name in this list means
+/// this row has a credential behind it rather than this row is usable". A declared
+/// local model has no credential either, so putting it there would make that sentence
+/// false for both of them. Two facts, two rows.
+///
+/// # The defect it closes
+///
+/// The operator, 2026-10-05, on a declared local model the picker had just started
+/// offering: *"dense78 needs a key this box does not hold."* It does not — it is a
+/// box on the LAN with no key and no meter. A head greened `local` by its literal
+/// name and asked this list about everything else, so the one new kind of keyless row
+/// read as the one thing it could not be.
+///
+/// # No protocol bump
+///
+/// A settings row is data inside a frame that already exists, not a new frame and not
+/// a new field, so `PROTOCOL_VERSION` is untouched. An absent row is a daemon older
+/// than this one, and a head must then fall back to greening `local` alone — which is
+/// exactly what it did before this existed, so an old daemon loses nothing.
+pub const MODEL_KEYLESS_KEY: &str = "models.keyless";
+
 /// **One door-tool as the daemon describes it to a head** — R31 and R32.
 ///
 /// The head must be able to turn `/web_search blabla` into the JSON the wire wants *without

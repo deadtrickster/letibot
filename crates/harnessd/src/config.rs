@@ -1153,6 +1153,22 @@ impl Config {
                 "/models PROVIDER/MODEL --key PASTE",
             ));
         }
+        // **And the rows that need no credential at all**, which is the other half of
+        // the same question and cannot live in the row above — see
+        // `MODEL_KEYLESS_KEY`. The operator: *"dense78 needs a key this box does not
+        // hold"*, about a box on the LAN that has no key and wants none.
+        {
+            let mut keyless = vec!["local".to_string()];
+            for m in letibot_provider::keys::local_models(None) {
+                keyless.push(m.name);
+            }
+            out.push(row(
+                letibot_sessionlog::protocol::MODEL_KEYLESS_KEY,
+                keyless.join(","),
+                "this daemon's own server, and the [model.\"...\"] blocks with a url",
+                "",
+            ));
+        }
         // **The names an operator may run themselves** — R24 part two, decision 3.
         //
         // Carried on the wire rather than compiled into a head, and that is the whole
