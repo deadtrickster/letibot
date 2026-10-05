@@ -6803,6 +6803,22 @@ impl App {
                     // the frame clamps against the rows rendered so far, so a press could
                     // never express "further up than I have drawn".
                     self.scroll_up(by);
+                } else if matches!(k, Key::WheelDown) {
+                    // **A notch back DOWN is the tail, not three lines closer.**
+                    //
+                    // The operator, 2026-10-05: *"I cant scroll back to bottom with a mouse wheel
+                    // - have to press escape"*. `hold` below is the right act for a WALK — it
+                    // moves by lines and returns to following when it *reaches* the bottom — and
+                    // a notch can never reach a bottom that moves: the stream adds rows while the
+                    // reader is three lines closer to where the bottom used to be. The parked
+                    // arrows below already answer this the only way it can be answered (*"↓ is
+                    // the bottom in ONE press"*), and this is the same act, reached by the same
+                    // clearing of the anchor. `WheelUp` keeps its three-line walk — nothing is
+                    // racing the reader in that direction — and so does `PageDown`, which is a
+                    // deliberate read of the next screenful rather than a flick back to live.
+                    self.scroll = 0;
+                    self.anchor = None;
+                    self.redraw = true;
                 } else {
                     // **The mirror, and it is `hold` for the same reason** (R36): moving
                     // down is moving over the same rows in the other direction, and it is
@@ -43145,6 +43161,59 @@ mod tests {
         assert!(
             a.following(),
             "wheeling back to the bottom follows the stream"
+        );
+    }
+
+    /// **A wheel notch DOWN returns to the tail even when the stream grew under the reader.**
+    ///
+    /// The operator, 2026-10-05: *"I cant scroll back to bottom with a mouse wheel - have to press
+    /// escape"*. A notch walks three lines and `following()` only comes back when the window
+    /// REACHES the bottom, so against a live session — which keeps adding rows — a notch is a step
+    /// toward a target that runs away from it. The test above passes either way, because its
+    /// transcript is STATIC; **the fixture is why this survived**, so this one adds rows between
+    /// the two notches, thirty of them against three the notch walks.
+    #[test]
+    fn a_wheel_notch_down_is_the_tail_even_when_the_stream_grew_under_the_reader() {
+        let mut a = app();
+        let rows = |a: &mut App, from: u64, to: u64| {
+            for i in from..to {
+                a.apply(ServerFrame::Event(env(
+                    i * 2 + 1,
+                    testing::appended(&format!("s.{i}"), "user"),
+                )));
+                a.apply(ServerFrame::Event(env(
+                    i * 2 + 2,
+                    testing::content(&format!("s.{i}"), "a line of conversation"),
+                )));
+            }
+        };
+        rows(&mut a, 0, 60);
+        a.screen(80, 24);
+        assert!(
+            a.following(),
+            "the premise: the reader starts on the stream"
+        );
+
+        // Park it the way a wheel does, and check it really is parked.
+        a.key(Key::WheelUp);
+        a.screen(80, 24);
+        assert!(!a.following(), "the notch parked the reader");
+
+        // **And the stream keeps arriving while the reader is parked.**
+        rows(&mut a, 60, 90);
+        a.screen(80, 24);
+
+        // One notch down, and the reader is live again.
+        assert_eq!(a.key(Key::WheelDown), None);
+        a.screen(80, 24);
+        assert!(
+            a.following(),
+            "one notch down left the reader parked against a stream that grew thirty rows \
+             under it: three lines a notch cannot catch that"
+        );
+        assert_eq!(
+            a.scroll, 0,
+            "and the count agrees with the anchor, because the two are one state"
         );
     }
 
