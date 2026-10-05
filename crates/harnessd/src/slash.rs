@@ -1049,6 +1049,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// **`/default-model` with no argument says a file it could not read.**
+    ///
+    /// The report used to be one sentence for every case — "no standing choice
+    /// in <path>" — which was a lie when the file was there and the parser
+    /// choked: an operator fixing a typo was told they had never written a
+    /// choice at all. The fault arm names the file and the parser's own
+    /// message, because that is the fix; and it never prints the absence
+    /// sentence, because a fault is not an absence.
+    #[test]
+    fn default_model_reports_a_file_it_could_not_read() {
+        // Malformed, but carrying a valid-looking [default]: the fault must
+        // surface even though the eye finds a choice in the file.
+        let f = tmp_file(
+            "unreadable_default",
+            "[default]\nmodel = \"deepseek-flash\"\nprovider = \"deepseek\"\nthis line has no equals sign\n",
+        );
+        let said = default_model(None, Some(&f));
+        assert!(
+            said.lines[0].contains(f.display().to_string().as_str())
+                && said.lines[0].contains("expected `key = value`"),
+            "the file and the parser's own message: {:?}",
+            said.lines
+        );
+        assert!(
+            !said.lines[0].contains("no standing choice"),
+            "the absence sentence must not be printed for a fault: {:?}",
+            said.lines
+        );
+        // The hint line is unchanged: the verb still works the moment the
+        // file is fixed.
+        assert!(
+            said.lines[1].contains("/default-model PROVIDER[/MODEL]"),
+            "{:?}",
+            said.lines
+        );
+
+        // And `provider = "local"` keeps the old sentence: a real choice,
+        // not a fault, so the operator who meant it is not complained at.
+        let g = tmp_file(
+            "local_is_a_choice_report",
+            "[default]\nprovider = \"local\"\n",
+        );
+        let silent = default_model(None, Some(&g));
+        assert!(
+            silent.lines[0].contains("no standing choice"),
+            "{:?}",
+            silent.lines
+        );
+        let _ = std::fs::remove_dir_all(f.parent().unwrap());
+        let _ = std::fs::remove_dir_all(g.parent().unwrap());
+    }
+
     #[test]
     fn a_model_choice_stores_the_key_or_says_what_is_missing() {
         let d = std::env::temp_dir().join(format!("letibot-slash-{}", std::process::id()));
@@ -1081,7 +1133,11 @@ mod tests {
             !notes.iter().any(|n| n.contains("standing choice")),
             "{notes:?}"
         );
-        assert!(letibot_provider::keys::default_choice(Some(&f)).unwrap().is_none());
+        assert!(
+            letibot_provider::keys::default_choice(Some(&f))
+                .unwrap()
+                .is_none()
+        );
         let (local, _) = models_choice("local", None, None, Some(&f)).unwrap();
         assert_eq!(local, ModelChoice::OwnServer);
         assert!(models_choice("openai", None, None, Some(&f)).unwrap_err()[0].contains("five"));

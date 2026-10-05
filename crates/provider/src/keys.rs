@@ -948,7 +948,10 @@ mod tests {
             "a file with no [default] section"
         );
 
-        let g = tmp_providers("default_without_provider", "[default]\nmodel = \"deepseek-flash\"\n");
+        let g = tmp_providers(
+            "default_without_provider",
+            "[default]\nmodel = \"deepseek-flash\"\n",
+        );
         assert_eq!(
             default_choice(Some(&g)),
             Ok(None),
