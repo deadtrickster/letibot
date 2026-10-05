@@ -5,7 +5,8 @@
 //! workspace root together describe a session against somebody else's box, and the
 //! failure would be a running daemon rather than an error.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use letibot_turn::Endpoint;
 use serde_json::{Value, json};
@@ -321,7 +322,17 @@ pub struct Config {
     pub owner: String,
     /// The bootstrap system prompt. Part of the stable prefix; nothing volatile
     /// belongs in it (§5.2, and the operator paid for that rule).
+    ///
+    /// Built as [`DEFAULT_SYSTEM`] in [`Config::for_this_box`] and **composed once,
+    /// at session open**, from [`Prompts`] (the operator's `prompts.toml`) and this
+    /// session's model — see [`Config::compose_system`]. After that it is message 0
+    /// and is never rewritten: a session that started under one prompt keeps it for
+    /// its whole life.
     pub system: String,
+    /// The operator's `prompts.toml`, loaded once at startup. `Default` (no
+    /// overrides) when the file is absent or was refused — which is also the
+    /// byte-identical case. See [`Prompts`].
+    pub prompts: Prompts,
     /// `low` / `medium` / `high` / `xhigh`, interpreted per dialect. It is prefix
     /// bytes, so changing it mid-session re-prefills everything.
     pub effort: Option<String>,
@@ -706,6 +717,286 @@ there is a decision somebody has to make, and the name may already be another pr
 not scatter temporary files through the workspace either.\n\n\
 Be direct. Prefer the shortest answer that is complete.";
 
+/// **The named sections of [`DEFAULT_SYSTEM`], in the order they appear.**
+///
+/// Joined by `\n\n` they are [`DEFAULT_SYSTEM`] byte for byte — a test asserts it.
+/// That is what makes the split owned rather than invented: an edit to a paragraph
+/// that forgets the table fails the join test, and so does a table whose boundaries
+/// moved. The names are the keys the operator uses in `prompts.toml` to replace a
+/// section in place, leaving the other sections and their order alone.
+pub const SYSTEM_SECTIONS: &[(&str, &str)] = &[
+    (
+        "identity",
+        "You are a careful software engineering assistant working in a checked-out source tree.",
+    ),
+    (
+        "language",
+        "Answer in English unless the user writes in another language, in which case answer in theirs.",
+    ),
+    (
+        "read_only_tools",
+        "You have read-only tools. Use them for questions about **this tree** — its files, their contents, where something is defined — rather than guessing: a file you have not read is a file you do not know. The same holds for **this conversation**: if the user refers to something as already settled and you have no record of it, read it with `transcript` before asking them to repeat it — a compaction replaces earlier turns with a summary, and the turns themselves are still in the store. Do not call a tool for a question about the world, about a definition, or about arithmetic; answer those directly. When a tool reports that it found nothing, say so — do not fill the gap from memory.",
+    ),
+    (
+        "find_and_read",
+        "Find with `grep` and read with `read`, not by piping `grep -n` into `sed`. `grep` takes a `context` count and returns the region around each match, numbered — that is the find and the look in one call. `read` takes a `ranges` list for several windows of one file at once. A `sed` slice has no line numbers, does not say where the file continues, and prints nothing for a range that is wrong, which reads exactly like a range that was right.",
+    ),
+    (
+        "edit_files",
+        "Change files with `edit` and `write`, never by piping a script into a shell. `edit` takes an `edits` list: several changes to one file, applied in order and all-or-nothing, each one either `old_string`+`new_string` or `insert_before`/`insert_after`+`new_string`. That is what a heredoc was for, and it is one call instead of four. A shell that rewrites a file also produces no diff for the operator to read and no record of what changed.",
+    ),
+    (
+        "scratch",
+        "You have a scratch directory of your own — the `scratch` row of `harness status` names the exact path. Put working files there: a generated script, a downloaded page, intermediate output, anything you need on disk that the operator did not ask for. It is outside their tree, so nothing you leave in it touches their work, and creating, writing and deleting inside it need no permission.",
+    ),
+    (
+        "scratch_path",
+        "Use that path and no other. A directory you invent under /tmp is shared temp space: deleting there is a decision somebody has to make, and the name may already be another process's. Do not scatter temporary files through the workspace either.",
+    ),
+    (
+        "tone",
+        "Be direct. Prefer the shortest answer that is complete.",
+    ),
+];
+
+/// **The per-model system-prompt overrides, from `prompts.toml`.**
+///
+/// A file the operator edits, beside `providers.toml` in the same config dir. It
+/// answers a question `providers.toml` must not: what the model is TOLD, as opposed
+/// to how it is sampled and where its key lives.
+///
+/// # Why a separate file, and a real parser
+///
+/// `providers.toml` is mode 600 because it holds provider keys, and
+/// `/models NAME --key K` WRITES it. Prompt text is not a secret, and hand-written
+/// multi-line prompt text living in a file a program rewrites by hand-rolled
+/// parsing is exactly the mangled-prompt defect this avoids. So: one file for keys,
+/// one for prompts, and a real TOML parser (`toml`) for the one file that carries
+/// arbitrary prompt bytes. The tree hand-parses the flat `key = "value"` subset
+/// elsewhere; that is a different class of content and stays that way.
+///
+/// # The keys, and why they are these
+///
+/// The keys inside a layer are the **section names** of [`SYSTEM_SECTIONS`] —
+/// `identity`, `language`, `read_only_tools`, `find_and_read`, `edit_files`,
+/// `scratch`, `scratch_path`, `tone`. A section key replaces that one section in
+/// place, leaving the other sections and their order alone. That is the whole
+/// feature: the operator can override one section for one model without rewriting
+/// the prompt.
+///
+/// * `[base] <section> = "…"` — a change for every model. The section is replaced
+///   for every session, and a model's own section still overrides it.
+/// * `[model."NAME"] <section> = "…"` — the same section, replaced for one model.
+///   `NAME` is the model as the daemon names it: `provider/model` for a metered
+///   session, the bare alias for a local one. A `*` in the provider position
+///   (`deepseek/*`) is a glob over that provider's models.
+/// * `<layer> system_extra = "…"` — text appended to the composed prompt, after
+///   every section. It may be set in either layer: in `[base]` it is appended for
+///   every model, and a model's own `system_extra` is appended after it. It ADDS,
+///   it does not replace.
+///
+/// There is no `[base] system` any more. The wholesale replacement it was is the
+/// shape that could not override one section for one model, and the sections are
+/// the unit now: a prompt the operator wants changed in one place is changed in one
+/// place, and the rest of [`DEFAULT_SYSTEM`] — and its order — is left alone. A
+/// section name this daemon does not know is refused by name, with the file's path,
+/// and the session runs on the un-overridden composition.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Prompts {
+    /// The `[base]` section overrides, keyed by section name. Empty overrides are
+    /// dropped on load: an empty string would replace a section with nothing, and
+    /// keeping it would let an empty exact block shadow the provider glob it should
+    /// fall through to.
+    base: BTreeMap<String, String>,
+    /// The `[base] system_extra`, appended after the sections for every model.
+    /// `None` when unset.
+    base_extra: Option<String>,
+    /// Per-model overrides, keyed by model name. A model with neither a section
+    /// override nor a `system_extra` is dropped on load, for the same shadowing
+    /// reason.
+    models: BTreeMap<String, ModelOverrides>,
+}
+
+/// One model's overrides: the sections it replaces (in place) and the
+/// `system_extra` it appends (after the base's, when there is one).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ModelOverrides {
+    /// Section overrides, keyed by section name.
+    sections: BTreeMap<String, String>,
+    /// The `system_extra` text, appended last. `None` when unset.
+    system_extra: Option<String>,
+}
+
+/// The file's shape, as parsed. `deny_unknown_fields` on the top level is the
+/// report for a section this daemon does not know: a `[foo]` is a parse error
+/// carrying the parser's own message, not a silently ignored line. The keys INSIDE
+/// `[base]` and `[model."NAME"]` are section names, captured by `flatten` and
+/// checked against [`SYSTEM_SECTIONS`] in [`Prompts::load`] — a name the daemon
+/// does not know is refused there, by name, with the path.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PromptsFile {
+    #[serde(default)]
+    base: Option<BaseSection>,
+    #[serde(default)]
+    model: BTreeMap<String, ModelSection>,
+}
+
+/// The `[base]` layer: section overrides plus the `system_extra` appended for every
+/// model. `flatten` captures the section keys so [`Prompts::load`] can refuse an
+/// unknown section name by name; `system_extra` is named so it is not mistaken for
+/// a section.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+struct BaseSection {
+    #[serde(flatten)]
+    sections: BTreeMap<String, String>,
+    #[serde(default)]
+    system_extra: Option<String>,
+}
+
+/// The `[model."NAME"]` layer: section overrides plus the `system_extra` appended
+/// last. The same shape as [`BaseSection`], scoped to one model.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+struct ModelSection {
+    #[serde(flatten)]
+    sections: BTreeMap<String, String>,
+    #[serde(default)]
+    system_extra: Option<String>,
+}
+
+impl Prompts {
+    /// The path beside `providers.toml`: the same config dir, one file over.
+    pub fn path() -> PathBuf {
+        letibot_provider::keys::config_file()
+            .parent()
+            .map(|p| p.join("prompts.toml"))
+            .unwrap_or_else(|| PathBuf::from("prompts.toml"))
+    }
+
+    /// Load `prompts.toml`. A missing file is `Ok` with no overrides — the
+    /// byte-identical case, not an error. A file that does not parse, or that names
+    /// a section this daemon does not know, is `Err` with the parser's own message
+    /// (or the section's name) and the path, so the operator can see which file
+    /// said what.
+    pub fn load(path: &Path) -> Result<Prompts, String> {
+        if !path.is_file() {
+            return Ok(Prompts::default());
+        }
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let file: PromptsFile =
+            toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+
+        // The `[base]` layer. An unknown section name is refused by name; an empty
+        // one is dropped (it would shadow the provider glob it should fall through
+        // to).
+        let mut base = BTreeMap::new();
+        let mut base_extra = None;
+        if let Some(b) = file.base {
+            for (name, value) in b.sections {
+                if !is_known_section(&name) {
+                    return Err(format!(
+                        "{}: unknown section name `{name}` in [base]",
+                        path.display()
+                    ));
+                }
+                if !value.is_empty() {
+                    base.insert(name, value);
+                }
+            }
+            base_extra = b.system_extra.filter(|e| !e.is_empty());
+        }
+
+        // The per-model layers, the same rules per block.
+        let mut models = BTreeMap::new();
+        for (name, m) in file.model {
+            let mut sections = BTreeMap::new();
+            for (section, value) in m.sections {
+                if !is_known_section(&section) {
+                    return Err(format!(
+                        "{}: unknown section name `{section}` in [model.\"{name}\"]",
+                        path.display()
+                    ));
+                }
+                if !value.is_empty() {
+                    sections.insert(section, value);
+                }
+            }
+            let system_extra = m.system_extra.filter(|e| !e.is_empty());
+            if !sections.is_empty() || system_extra.is_some() {
+                models.insert(
+                    name,
+                    ModelOverrides {
+                        sections,
+                        system_extra,
+                    },
+                );
+            }
+        }
+
+        Ok(Prompts {
+            base,
+            base_extra,
+            models,
+        })
+    }
+
+    /// The composed system prompt for one model: the sections of [`DEFAULT_SYSTEM`]
+    /// in their order, each replaced in place by the model's override, else the
+    /// provider glob's, else `[base]`'s, else the default — plus the `system_extra`
+    /// (the base's, then the model's), appended last, when there is one.
+    ///
+    /// **The safety property:** with no file, or a file that overrides nothing, this
+    /// returns [`DEFAULT_SYSTEM`] byte for byte. That is what makes the feature safe
+    /// to land — the default is unchanged, and a test asserts it.
+    pub fn compose(&self, model_name: &str) -> String {
+        // The exact block and the provider-glob block, if present. The exact name
+        // is a more specific instruction than a provider-wide one, so it wins per
+        // section; the glob is the fallback for a section the exact block did not
+        // set. One lookup, used for the sections and the `system_extra` alike —
+        // two matchers for one rule is the drift this tree deletes.
+        let exact = self.models.get(model_name);
+        let glob = model_name
+            .split_once('/')
+            .map(|(provider, _)| format!("{provider}/*"))
+            .and_then(|g| self.models.get(&g));
+
+        let sections: Vec<&str> = SYSTEM_SECTIONS
+            .iter()
+            .map(|(name, default)| {
+                exact
+                    .and_then(|m| m.sections.get(*name))
+                    .or_else(|| glob.and_then(|m| m.sections.get(*name)))
+                    .or_else(|| self.base.get(*name))
+                    .map(|s| s.as_str())
+                    .unwrap_or(*default)
+            })
+            .collect();
+        let mut result = sections.join("\n\n");
+
+        // The `[base] system_extra`, appended for every model.
+        if let Some(extra) = self.base_extra.as_deref() {
+            result.push_str("\n\n");
+            result.push_str(extra);
+        }
+        // The model's `system_extra`, appended last: the exact block's, else the
+        // glob's.
+        let extra = exact
+            .and_then(|m| m.system_extra.as_deref())
+            .or_else(|| glob.and_then(|m| m.system_extra.as_deref()));
+        if let Some(extra) = extra {
+            result.push_str("\n\n");
+            result.push_str(extra);
+        }
+
+        result
+    }
+}
+
+/// Whether `name` is a section of [`DEFAULT_SYSTEM`], per [`SYSTEM_SECTIONS`].
+fn is_known_section(name: &str) -> bool {
+    SYSTEM_SECTIONS.iter().any(|(n, _)| *n == name)
+}
+
 impl Config {
     /// How much of the window must stay free for a turn to be safe to start.
     ///
@@ -936,6 +1227,10 @@ impl Config {
             title: String::new(),
             owner: std::env::var("USER").unwrap_or_else(|_| "operator".into()),
             system: DEFAULT_SYSTEM.into(),
+            // No overrides until `run` loads the operator's `prompts.toml`. `Default`
+            // is the byte-identical case: a daemon that never reads the file composes
+            // `DEFAULT_SYSTEM` for every session.
+            prompts: Prompts::default(),
             effort: None,
             // Deterministic by default: a harness whose own measurements move
             // between runs cannot tell a regression from a sample.
@@ -979,6 +1274,49 @@ impl Config {
             http_retries: crate::harness::MAX_HTTP_RETRIES,
             stall_rounds: 5,
         }
+    }
+
+    /// **The model name the prompt lookup runs on**: `provider/model` for a metered
+    /// session, the bare alias for a local one.
+    ///
+    /// It is the same name the operator sees in `/models` and the header, so a
+    /// `prompts.toml` written against what is on screen is a `prompts.toml` that
+    /// matches. When the operator named no model (`--provider deepseek`), the
+    /// preset's default is resolved from the catalogue rather than left off: a
+    /// `deepseek/*` glob must match the model the session actually runs on, and
+    /// `deepseek` with no model part would match nothing.
+    pub fn prompt_model_name(&self) -> String {
+        match &self.provider {
+            Some(pc) => {
+                let model = pc.model.clone().unwrap_or_else(|| {
+                    letibot_provider::Preset::parse(&pc.name)
+                        .ok()
+                        .map(|p| p.default_model(&letibot_provider::catalogue::Catalogue::load()))
+                        .unwrap_or_default()
+                });
+                if model.is_empty() {
+                    pc.name.clone()
+                } else {
+                    format!("{}/{}", pc.name, model)
+                }
+            }
+            None => self.model.clone(),
+        }
+    }
+
+    /// **Compose `system` from `prompts.toml` and this session's model. Once, at
+    /// session open.**
+    ///
+    /// This is the only place the prompt is built from the file, and it runs before
+    /// the system message is written into the transcript. After it, `system` is
+    /// message 0 and is never rewritten: a session that started under one prompt
+    /// keeps it for its whole life, even if the model is switched or the file is
+    /// edited. That is the rule the operator asked for, and it is what makes an
+    /// edit to `prompts.toml` a fact about NEW sessions rather than a rewrite of
+    /// old ones.
+    pub fn compose_system(&mut self) {
+        let name = self.prompt_model_name();
+        self.system = self.prompts.compose(&name);
     }
 
     /// The things that are off, and why.
@@ -2428,6 +2766,443 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     use super::*;
+
+    // --- prompts.toml: per-model system-prompt composition -------------------
+
+    /// A temp dir for a `prompts.toml` fixture, unique per test so parallel tests
+    /// do not share a file. The caller removes it.
+    fn prompts_dir(test: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-prompts-{}-{}", std::process::id(), test));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    /// (a) **No file: the composed prompt is `DEFAULT_SYSTEM` byte for byte.**
+    ///
+    /// The safety property that makes the feature safe to land: a daemon with no
+    /// `prompts.toml` composes the built-in prompt, unchanged, for every model.
+    #[test]
+    fn no_prompts_file_composes_the_default_byte_for_byte() {
+        let dir = prompts_dir("no_file");
+        let path = dir.join("prompts.toml");
+        let prompts = Prompts::load(&path).expect("a missing file is Ok, not an error");
+        assert_eq!(prompts.compose("deepseek/deepseek-flash"), DEFAULT_SYSTEM);
+        assert_eq!(prompts.compose("qwen-3.8-flash-next"), DEFAULT_SYSTEM);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (b) **An empty file: the composed prompt is `DEFAULT_SYSTEM` byte for byte.**
+    ///
+    /// A file that overrides nothing is the same as no file: the default is
+    /// unchanged.
+    #[test]
+    fn an_empty_prompts_file_composes_the_default_byte_for_byte() {
+        let dir = prompts_dir("empty");
+        let path = dir.join("prompts.toml");
+        std::fs::write(&path, "").expect("fixture");
+        let prompts = Prompts::load(&path).expect("an empty file is Ok");
+        assert_eq!(prompts.compose("deepseek/deepseek-flash"), DEFAULT_SYSTEM);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (c) **A `[model."NAME"]` override applies to that model's session and not to
+    /// another's.**
+    ///
+    /// The named model gets the extra, appended to the base; every other model does
+    /// not. The override is scoped to the name, not global.
+    #[test]
+    fn a_model_override_applies_to_its_model_and_not_another() {
+        let dir = prompts_dir("model_override");
+        let path = dir.join("prompts.toml");
+        std::fs::write(
+            &path,
+            r#"
+[model."deepseek/deepseek-flash"]
+system_extra = "You are a deepseek specialist."
+"#,
+        )
+        .expect("fixture");
+        let prompts = Prompts::load(&path).expect("parse");
+        // The named model gets the extra, appended to the base.
+        assert_eq!(
+            prompts.compose("deepseek/deepseek-flash"),
+            format!("{DEFAULT_SYSTEM}\n\nYou are a deepseek specialist.")
+        );
+        // Another model under the same provider does not.
+        assert_eq!(prompts.compose("deepseek/deepseek-chat"), DEFAULT_SYSTEM);
+        // A model under a different provider does not.
+        assert_eq!(prompts.compose("glm-coding/glm-5.3"), DEFAULT_SYSTEM);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A provider glob matches every model under that provider, and the exact
+    /// name wins when both are present.**
+    ///
+    /// `deepseek/*` is the operator's way of saying "any deepseek model" without
+    /// naming each one. An exact name is a more specific instruction, so it wins
+    /// when both are present for the same model.
+    #[test]
+    fn a_provider_glob_matches_its_models_and_the_exact_name_wins() {
+        let dir = prompts_dir("glob");
+        let path = dir.join("prompts.toml");
+        std::fs::write(
+            &path,
+            r#"
+[model."deepseek/*"]
+system_extra = "DeepSeek house style."
+
+[model."deepseek/deepseek-flash"]
+system_extra = "Flash is special."
+"#,
+        )
+        .expect("fixture");
+        let prompts = Prompts::load(&path).expect("parse");
+        // The exact name wins for the model it names.
+        assert_eq!(
+            prompts.compose("deepseek/deepseek-flash"),
+            format!("{DEFAULT_SYSTEM}\n\nFlash is special.")
+        );
+        // The glob covers the rest of the provider's models.
+        assert_eq!(
+            prompts.compose("deepseek/deepseek-chat"),
+            format!("{DEFAULT_SYSTEM}\n\nDeepSeek house style.")
+        );
+        // Another provider is untouched.
+        assert_eq!(prompts.compose("glm-coding/glm-5.3"), DEFAULT_SYSTEM);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (d) **The `[base]` section replaces that section for every model.**
+    ///
+    /// Present, the base section is the operator's text, not the built-in, for every
+    /// model. The other sections are left alone, and a model extra still appends.
+    /// (There is no `[base] system` any more: the wholesale replacement it was is
+    /// the shape that could not override one section for one model.)
+    #[test]
+    fn the_base_section_replaces_that_section_for_every_model() {
+        let dir = prompts_dir("base");
+        let path = dir.join("prompts.toml");
+        std::fs::write(
+            &path,
+            r#"
+[base]
+tone = "A wholly different tone."
+
+[model."deepseek/deepseek-flash"]
+system_extra = "And a model extra on top."
+"#,
+        )
+        .expect("fixture");
+        let prompts = Prompts::load(&path).expect("parse");
+        // The base tone replaces the default tone for a model with no override.
+        let composed = prompts.compose("glm-coding/glm-5.3");
+        assert!(composed.contains("A wholly different tone."));
+        assert!(!composed.contains("Be direct. Prefer the shortest answer that is complete."));
+        // The other sections are still the default.
+        assert!(composed.contains("You are a careful software engineering assistant"));
+        // A model extra appends to the composed base.
+        let composed = prompts.compose("deepseek/deepseek-flash");
+        assert!(composed.contains("A wholly different tone."));
+        assert!(composed.ends_with("And a model extra on top."));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (e) **A malformed file is reported with the path and the parser's message,
+    /// and the session still runs on `DEFAULT_SYSTEM`.**
+    ///
+    /// The report is the parser's own message, prefixed with the path, so the
+    /// operator can see which file said what. The "session still runs" half is the
+    /// `Err` case in `run`: a refused file leaves `Config.prompts` at `Default`,
+    /// which composes `DEFAULT_SYSTEM` — asserted here directly.
+    #[test]
+    fn a_malformed_prompts_file_is_reported_and_the_session_runs_on_the_default() {
+        let dir = prompts_dir("malformed");
+        let path = dir.join("prompts.toml");
+        std::fs::write(&path, "this is not [valid toml").expect("fixture");
+        let err = Prompts::load(&path).expect_err("a malformed file is Err");
+        // The report names the path.
+        let path_str = path.to_str().expect("utf-8 path");
+        assert!(err.contains(path_str), "the path is in the report: {err}");
+        // And it carries the parser's own message, not a bare "failed".
+        assert!(
+            err.len() > path_str.len() + 4,
+            "the parser's message is in the report: {err}"
+        );
+        // The session still runs: a refused file leaves the prompts at `Default`,
+        // which composes `DEFAULT_SYSTEM` byte for byte.
+        let cfg = Config::for_this_box("/tmp");
+        assert_eq!(
+            cfg.prompts.compose("deepseek/deepseek-flash"),
+            DEFAULT_SYSTEM
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A top-level section the daemon does not know is a parse error, not a
+    /// silent ignore.**
+    ///
+    /// `deny_unknown_fields` on the top level is the report: a `[foo]` section is
+    /// refused with the parser's own message rather than dropped. (A section NAME
+    /// this daemon does not know, inside `[base]` or `[model."NAME"]`, is refused
+    /// by [`Prompts::load`] — see the tests below.)
+    #[test]
+    fn an_unknown_section_is_refused_not_ignored() {
+        let dir = prompts_dir("unknown_section");
+        let path = dir.join("prompts.toml");
+        std::fs::write(&path, "[foo]\nbar = \"baz\"\n").expect("fixture");
+        let err = Prompts::load(&path).expect_err("an unknown section is Err");
+        let path_str = path.to_str().expect("utf-8 path");
+        assert!(err.contains(path_str), "the path is in the report: {err}");
+        assert!(err.contains("foo"), "the unknown section is named: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **`SYSTEM_SECTIONS` joins to `DEFAULT_SYSTEM` byte for byte.**
+    ///
+    /// The test that makes the split owned rather than invented: the table is not
+    /// "a concatenation nobody owns", it is the constant, checked. An edit to a
+    /// paragraph that forgets the table fails here, and so does a table whose
+    /// boundaries moved.
+    #[test]
+    fn the_system_sections_join_to_the_default_byte_for_byte() {
+        let joined = SYSTEM_SECTIONS
+            .iter()
+            .map(|(_, text)| *text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        assert_eq!(joined, DEFAULT_SYSTEM);
+    }
+
+    /// **A section replaced by `[model."NAME"]` changes only that section and keeps
+    /// the order.**
+    ///
+    /// The named model's `read_only_tools` is the operator's text, not the built-in;
+    /// every other section is the default, in the order it appears in
+    /// [`DEFAULT_SYSTEM`].
+    #[test]
+    fn a_model_section_replaces_only_that_section_and_keeps_the_order() {
+        let dir = prompts_dir("model_section");
+        let path = dir.join("prompts.toml");
+        std::fs::write(
+            &path,
+            r#"
+[model."qwen-3.8-27b"]
+read_only_tools = "You have read-only tools, and you use them."
+"#,
+        )
+        .expect("fixture");
+        let prompts = Prompts::load(&path).expect("parse");
+        let composed = prompts.compose("qwen-3.8-27b");
+        // The replaced section is the operator's text, not the default.
+        assert!(composed.contains("You have read-only tools, and you use them."));
+        assert!(!composed.contains("Do not call a tool for a question about the world"));
+        // Every other section is the default, in the order it appears.
+        let identity = SYSTEM_SECTIONS[0].1;
+        let language = SYSTEM_SECTIONS[1].1;
+        let find_and_read = SYSTEM_SECTIONS[3].1;
+        let edit_files = SYSTEM_SECTIONS[4].1;
+        let scratch = SYSTEM_SECTIONS[5].1;
+        let scratch_path = SYSTEM_SECTIONS[6].1;
+        let tone = SYSTEM_SECTIONS[7].1;
+        let expected = [
+            identity,
+            language,
+            "You have read-only tools, and you use them.",
+            find_and_read,
+            edit_files,
+            scratch,
+            scratch_path,
+            tone,
+        ]
+        .join("\n\n");
+        assert_eq!(composed, expected);
+        // Another model is untouched.
+        assert_eq!(prompts.compose("deepseek/deepseek-flash"), DEFAULT_SYSTEM);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A `[base]` section is overridden by a model one, in place.**
+    ///
+    /// The base section is the operator's text for every model, but a model's own
+    /// section replaces it for that model — the base is the fallback, not the
+    /// ceiling.
+    #[test]
+    fn a_base_section_is_overridden_by_a_model_one() {
+        let dir = prompts_dir("base_overridden");
+        let path = dir.join("prompts.toml");
+        std::fs::write(
+            &path,
+            r#"
+[base]
+tone = "House tone, for every model."
+
+[model."deepseek/deepseek-flash"]
+tone = "Flash has its own tone."
+"#,
+        )
+        .expect("fixture");
+        let prompts = Prompts::load(&path).expect("parse");
+        // The named model gets its own tone, not the base one.
+        let composed = prompts.compose("deepseek/deepseek-flash");
+        assert!(composed.contains("Flash has its own tone."));
+        assert!(!composed.contains("House tone, for every model."));
+        // Another model gets the base tone.
+        let composed = prompts.compose("deepseek/deepseek-chat");
+        assert!(composed.contains("House tone, for every model."));
+        assert!(!composed.contains("Flash has its own tone."));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **`system_extra` is appended last, and not appended when unset.**
+    ///
+    /// When a layer sets `system_extra`, it is appended after every section. When no
+    /// layer sets it, nothing is appended and the composition is the sections alone.
+    #[test]
+    fn system_extra_is_appended_last_and_not_when_unset() {
+        let dir = prompts_dir("system_extra");
+        let path = dir.join("prompts.toml");
+        std::fs::write(
+            &path,
+            r#"
+[model."deepseek/deepseek-flash"]
+system_extra = "One short tool call beats a long plan."
+"#,
+        )
+        .expect("fixture");
+        let prompts = Prompts::load(&path).expect("parse");
+        // Set: appended after every section.
+        let composed = prompts.compose("deepseek/deepseek-flash");
+        assert!(composed.ends_with("One short tool call beats a long plan."));
+        assert_eq!(
+            composed,
+            format!("{DEFAULT_SYSTEM}\n\nOne short tool call beats a long plan.")
+        );
+        // Unset for another model: nothing appended, the default byte for byte.
+        assert_eq!(prompts.compose("deepseek/deepseek-chat"), DEFAULT_SYSTEM);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **An unknown section key is refused by name, in each layer.**
+    ///
+    /// A section name the daemon does not know is a load error naming the key and
+    /// the file's path, in `[base]` and in `[model."NAME"]` alike. The session runs
+    /// on the un-overridden composition: a refused file leaves the prompts at
+    /// `Default`, which composes `DEFAULT_SYSTEM`.
+    #[test]
+    fn an_unknown_section_key_is_refused_by_name_in_each_layer() {
+        // In `[base]`.
+        let dir = prompts_dir("unknown_base_key");
+        let path = dir.join("prompts.toml");
+        std::fs::write(&path, "[base]\nread_only_tool = \"typo\"\n").expect("fixture");
+        let err = Prompts::load(&path).expect_err("an unknown base key is Err");
+        let path_str = path.to_str().expect("utf-8 path");
+        assert!(err.contains(path_str), "the path is in the report: {err}");
+        assert!(err.contains("read_only_tool"), "the key is named: {err}");
+        assert!(err.contains("[base]"), "the layer is named: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // In `[model."NAME"]`.
+        let dir = prompts_dir("unknown_model_key");
+        let path = dir.join("prompts.toml");
+        std::fs::write(
+            &path,
+            "[model.\"deepseek/deepseek-flash\"]\ntonee = \"typo\"\n",
+        )
+        .expect("fixture");
+        let err = Prompts::load(&path).expect_err("an unknown model key is Err");
+        let path_str = path.to_str().expect("utf-8 path");
+        assert!(err.contains(path_str), "the path is in the report: {err}");
+        assert!(err.contains("tonee"), "the key is named: {err}");
+        assert!(
+            err.contains("deepseek/deepseek-flash"),
+            "the model is named: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The session still runs: a refused file leaves the prompts at `Default`,
+        // which composes `DEFAULT_SYSTEM` byte for byte.
+        let cfg = Config::for_this_box("/tmp");
+        assert_eq!(
+            cfg.prompts.compose("deepseek/deepseek-flash"),
+            DEFAULT_SYSTEM
+        );
+    }
+
+    /// **The operator's excerpt, end to end.**
+    ///
+    /// A small utility model seated with `web_search` is told, by the default
+    /// `read_only_tools`, not to call a tool for a question about the world — so a
+    /// model whose whole job is to look things up is discouraged from looking them
+    /// up. The operator's fix: replace `read_only_tools` for that one model, in
+    /// place, and append a `system_extra`. The composed prompt for that model has
+    /// the new `read_only_tools` and not the default one; a session on another model
+    /// has the default one.
+    #[test]
+    fn the_operators_excerpt_composes_the_new_read_only_tools_for_that_model() {
+        let dir = prompts_dir("operator_excerpt");
+        let path = dir.join("prompts.toml");
+        std::fs::write(
+            &path,
+            r#"
+[base]
+tone = "Short. Direct. No preamble."
+
+[model."qwen-3.8-27b"]
+read_only_tools = "You have read-only tools, and a web_search. For a fact about the world — a version, a date, a definition, something that changed last week — call `web_search` first and answer from what comes back. Do not answer from memory, and do not guess."
+system_extra = "One short tool call beats a long plan."
+"#,
+        )
+        .expect("fixture");
+        let prompts = Prompts::load(&path).expect("parse");
+
+        // The named model: the new read_only_tools, not the default one.
+        let composed = prompts.compose("qwen-3.8-27b");
+        assert!(composed.contains("call `web_search` first and answer from what comes back"));
+        assert!(!composed.contains("Do not call a tool for a question about the world"));
+        // The base tone is in place, and the model extra is appended last.
+        assert!(composed.contains("Short. Direct. No preamble."));
+        assert!(composed.ends_with("One short tool call beats a long plan."));
+        // The other sections are the default, in order.
+        assert!(composed.contains("You are a careful software engineering assistant"));
+        assert!(composed.contains("Find with `grep` and read with `read`"));
+
+        // A session on another model: the default read_only_tools, the base tone,
+        // and no model extra.
+        let composed = prompts.compose("deepseek/deepseek-flash");
+        assert!(composed.contains("Do not call a tool for a question about the world"));
+        assert!(!composed.contains("call `web_search` first and answer from what comes back"));
+        assert!(composed.contains("Short. Direct. No preamble."));
+        assert!(!composed.ends_with("One short tool call beats a long plan."));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **`Config::compose_system` composes from the file and the session's model,
+    /// and `prompt_model_name` names the model the way the operator sees it.**
+    ///
+    /// This is the wiring: the composition runs on the session's config, using the
+    /// model name the operator would write in `prompts.toml`.
+    #[test]
+    fn compose_system_uses_the_session_model_name() {
+        // A local session: the model name is the bare alias.
+        let mut cfg = Config::for_this_box("/tmp");
+        cfg.model = "qwen-3.8-flash-next".into();
+        assert_eq!(cfg.prompt_model_name(), "qwen-3.8-flash-next");
+        cfg.compose_system();
+        assert_eq!(cfg.system, DEFAULT_SYSTEM);
+
+        // A metered session: the model name is `provider/model`.
+        let mut cfg = Config::for_this_box("/tmp");
+        cfg.provider = Some(ProviderConfig {
+            name: "deepseek".into(),
+            model: Some("deepseek-flash".into()),
+            ..Default::default()
+        });
+        assert_eq!(cfg.prompt_model_name(), "deepseek/deepseek-flash");
+        cfg.compose_system();
+        assert_eq!(cfg.system, DEFAULT_SYSTEM);
+    }
 
     /// **The model row names the provider when there is one.**
     ///

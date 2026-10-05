@@ -60,6 +60,13 @@ repository = "https://github.com/deadtrickster/letibot"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The one TOML the tree parses with a real parser: `prompts.toml` carries
+# arbitrary prompt text (multi-line, quoted, escaped), which is a different
+# class from the flat `key = "value"` subset `providers.toml` and `head.toml`
+# hand-parse. A hand-rolled string parser for prompt bytes is the mangled-prompt
+# defect this avoids, and the parser's own message is what a malformed file is
+# reported with.
+toml = "0.8"
 letibot-transcript = { path = "crates/transcript" }
 letibot-dialect = { path = "crates/dialect" }
 letibot-dialect-glm = { path = "crates/dialect-glm" }

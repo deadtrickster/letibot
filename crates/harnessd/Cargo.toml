@@ -32,6 +32,9 @@ serde.workspace = true
 # preserve_order for the reason every crate in this tree needs it: a tool call's
 # argument key order becomes prompt bytes on the next turn.
 serde_json = { workspace = true, features = ["preserve_order"] }
+# `prompts.toml` — the per-model system-prompt overrides. See the workspace
+# manifest for why this is the one TOML the tree parses with a real parser.
+toml.workspace = true
 # Only for `sigaction` and the self-pipe that carries a signal to the shutdown
 # thread. No async runtime, no HTTP client: the turn engine is a synchronous state
 # machine and the log is threads and a condvar.
