@@ -132,7 +132,25 @@ fn job_list_summary(
     running: usize,
 ) -> String {
     let settled = in_scope - running;
-    let mut out = match (want, everything) {
+    // **Nothing running is the ANSWER, and it goes first.** MEASURED against a live daemon
+    // (12:04, the first run of this default): the accounting line already said *"0 of 1 job(s) …
+    // are still running; 1 have settled and are not listed"* and the clause below then said
+    // *"Nothing is running; 1 job(s) have settled"* — one fact twice, one line apart. The reader
+    // asked what is active, so the sentence that answers goes first, and the settled count inside
+    // it is the note about where the rest went.
+    if running == 0 && settled > 0 {
+        return match want {
+            Some(w) => format!(
+                "Nothing is running in scope `{w}`; {settled} job(s) there have settled — \
+                 `job_list` with `all: true` shows them.\n"
+            ),
+            None => format!(
+                "Nothing is running; {settled} job(s) have settled — `job_list` with \
+                 `all: true` shows every one.\n"
+            ),
+        };
+    }
+    match (want, everything) {
         (Some(w), true) => {
             format!("{in_scope} of {total} job(s) this session started are in scope `{w}`.\n")
         }
@@ -146,19 +164,7 @@ fn job_list_summary(
             "{running} of {total} job(s) this session has started are still running; {settled} \
              have settled and are not listed — `job_list` with `all: true` shows every one.\n"
         ),
-    };
-    // **Nothing running is an answer, and it should not read as an empty listing.** The reader
-    // asked what is active; "nothing" plus where the rest went is the whole truth, and the
-    // settled count is the note about how to get them.
-    if running == 0 && settled > 0 {
-        out.push_str(&match want {
-            Some(w) => format!(
-                "\nNothing is running in scope `{w}`; {settled} job(s) there have settled.\n"
-            ),
-            None => format!("\nNothing is running; {settled} job(s) have settled.\n"),
-        });
     }
-    out
 }
 
 pub struct JobList;
@@ -1128,15 +1134,20 @@ mod tests {
             "`all` must not claim a hidden count or offer a way back: {every}"
         );
 
-        // **Nothing running is an answer**, not an empty listing.
+        // **Nothing running is an answer**, not an empty listing — and it leads, because the live
+        // run of this default printed the same fact twice, one line apart (see the function).
         let idle = job_list_summary(None, false, 44, 44, 0);
         assert!(
-            idle.contains("0 of 44 job(s) this session has started are still running"),
+            idle.starts_with("Nothing is running; 44 job(s) have settled"),
             "{idle}"
         );
         assert!(
-            idle.contains("Nothing is running; 44 job(s) have settled"),
+            idle.contains("`job_list` with `all: true` shows every one"),
             "{idle}"
+        );
+        assert!(
+            !idle.contains("0 of 44"),
+            "the accounting line would restate the answer: {idle}"
         );
 
         // And the scope arm keeps the same promise about what it hid *there*.
