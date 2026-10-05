@@ -15095,8 +15095,8 @@ impl App {
             // a child of its own:
             //
             // ```text
-            //   ▸▾  1  this conversation      name at col 7    depth 0, has children
-            //      ▾  2  the first child       name at col 9    depth 1, has a child
+            //   ▸+  1  this conversation      name at col 7    depth 0, has children
+            //      -  2  the first child       name at col 9    depth 1, has a child
             //         3  the grandchild        name at col 10   depth 2, no children
             //       4  the second child        name at col 8    depth 1, NO children
             // ```
@@ -15114,14 +15114,23 @@ impl App {
             // not there. That is the trade — a flat list one column in, against a tree that can be
             // read.
             let kids = kids_of(&s.session_id);
+            // **The fold is `+`/`-`, and it stopped being a triangle on purpose.**
+            //
+            // It was `▾`/`▸` — the same shapes the cursor is made of — so the one row where the
+            // fold most needs to be read was the one row where it could not be: a PICKED row of a
+            // folded conversation drew `▸▸`, two identical glyphs side by side doing two different
+            // jobs, and the operator's report is exactly that (`▸▸` on the row the cursor is on).
+            // The cursor keeps `▸` because it is the mark Enter takes, and the fold takes the pair
+            // a tree has used for decades: one cell each, ASCII, and nothing like a cursor. The
+            // columns do not move — this is a character, not a layout change.
             let fold = if kids == 0 {
                 " "
             } else if self.family_open(&s.session_id, row.depth)
                 || self.expanded.iter().any(|e| *e == s.session_id)
             {
-                "▾"
+                "-"
             } else {
-                "▸"
+                "+"
             };
             // **And the number's field is as wide as the list is long.** `{:>2}` is right for the
             // nine-row lists this was written against and wrong for this box, whose header reads
@@ -27056,11 +27065,11 @@ mod tests {
         // which is the child, and it carries the `subagent of <parent>` label.
         let parent = screen
             .lines()
-            .find(|l| l.contains("parent") && (l.contains('▸') || l.contains('▾')))
+            .find(|l| l.contains("parent") && (l.contains("+ ") || l.contains("- ")))
             .unwrap_or_else(|| panic!("the parent's row is on the list:\n{screen}"));
         assert!(
-            parent.contains('▾'),
-            "the parent is drawn collapsed over its own visible children: {parent}"
+            parent.contains('-'),
+            "the parent is not drawn open over its own visible children (fold `-`): {parent}"
         );
         // And nothing was expanded to make that true — the rule is the view's, not the
         // operator's act.
@@ -27072,11 +27081,11 @@ mod tests {
         let screen = a.screen(100, 30).join("\n");
         let parent = screen
             .lines()
-            .find(|l| l.contains("parent") && (l.contains('▸') || l.contains('▾')))
+            .find(|l| l.contains("parent") && (l.contains("+ ") || l.contains("- ")))
             .unwrap_or_else(|| panic!("the parent's row is on the list:\n{screen}"));
         assert!(
-            parent.contains('▸'),
-            "a collapsed conversation is not drawn open: {parent}"
+            parent.contains('+'),
+            "a collapsed conversation is not drawn open — its fold is `+`, not `-`: {parent}"
         );
         assert!(!screen.contains("audit the store"), "{screen}");
     }
