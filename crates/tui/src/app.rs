@@ -2031,7 +2031,7 @@ pub struct App {
     ///
     ///  * **the counts clause of the live marker** — `[2 tool calls, 31 thinking lines]` while the
     ///    work it stands for is still happening. That is the one piece of a row that is a fact about
-    ///    NOW rather than about what happened, and it is why [`App::marker_counts`] exists;
+    ///    NOW rather than about what happened, and it is why [`App::marker_facts`] exists;
     ///  * **a verbosity toggle**, which is the reader asking for a different rendering of the same
     ///    conversation — every row may change then, and it is the only case where that is true.
     ///
@@ -2680,26 +2680,22 @@ pub struct App {
     /// **Found by asserting that two renders of one state are the same frame** — see
     /// `two_renders_of_one_state_are_the_same_frame`, the property this field exists to keep.
     live_join: Option<(String, String)>,
-    /// **What the rendered history's marker was built FROM** — compared against the live work, so a
-    /// change invalidates the row that carries it. See the guard in `body_window` for the
-    /// measurement: a marker baked into `hist_lines` does not move until something invalidates that
-    /// cache, and nothing did.
+    /// **Everything the marker draws about NOW, as ONE value** — and the same value is the
+    /// cache key for the row it is painted into.
     ///
-    /// **All three fields of `LiveWork`, and `running` is the one that is easy to leave out** — it
-    /// is not a count and it is the colour. `(calls, think_lines)` was the first version and it
-    /// fixed the counts while the yellow stayed dead; `marker_carries_live` is `running > 0`, so any
-    /// change in that pair alone has to invalidate too.
-    marker_counts: (usize, usize, usize),
-    /// **Which run's marker was last painted with the yellow** — the row `newest_unseen_run` answered
-    /// when the cache of rendered rows was last built.
+    /// The marker is baked into `hist_lines`, the cache of RENDERED rows, and that cache only
+    /// rebuilds from the row something changed at — so the row is stale the moment any fact the
+    /// marker drew moves. This kept being missed because the key was written *beside* the
+    /// renderer in prose, and the renderer was free to read anything: `(calls, think_lines)`
+    /// omitted `running` (the colour), and the counts omitted *which run* (five markers lit at
+    /// once — *"look how many tools are yellow"*, because two rounds can carry identical
+    /// numbers).
     ///
-    /// The colour is a fact about NOW baked into a ROW of rendered text, so when the work moves to a
-    /// newer run, the run it has LEFT has to be rebuilt without it. Keying that on the counts alone
-    /// is what left **five** markers lit at once on the operator's screen — *"look how many tools
-    /// are yellow"*: two rounds can carry identical numbers (theirs read `[2 tool calls, 6 thinking
-    /// lines]` five times over), so nothing in that key changed, nothing was invalidated, and every
-    /// run kept the colour it had been painted with.
-    marker_run: Option<usize>,
+    /// **So the key and the renderer take the SAME value.** [`hidden_run_marker`] reads `calls`,
+    /// `think_lines` and `running` out of a [`MarkerFacts`] and has no other door to now, so a
+    /// fact the marker draws is a fact this key holds. See [`MarkerFacts`] for the field that
+    /// makes the run part of it.
+    marker_facts: MarkerFacts,
     /// The model this session is talking to, kept past the end of a turn.
     ///
     /// It lives on `TurnPane` because that is where the event carries it, and the
@@ -3607,8 +3603,7 @@ impl App {
             git_format: None,
             git_read: (String::new(), 0),
             live_join: None,
-            marker_counts: (0, 0, 0),
-            marker_run: None,
+            marker_facts: MarkerFacts::default(),
             body_len: 0,
             attaching: false,
             link: Link::Attached,
@@ -11922,7 +11917,7 @@ impl App {
                     self.visibility,
                     &cfg,
                     newest_run == Some(start),
-                    live,
+                    MarkerFacts::of(live, newest_run),
                     live_here,
                 )
             });
@@ -12616,20 +12611,22 @@ impl App {
         // case the operator reported next: *"i didnt see yellow toolcalls for a while. maybe the
         // same problem"* — and it was. The plain marker was in the cache, the call started running,
         // the counts did not move, and the yellow had nothing to rebuild it.
-        let counts_now = (live.calls, live.think_lines, live.running);
-        // **And WHICH RUN carries the work**, because the yellow is a fact about the run and not
-        // about the numbers. When the work moves to a newer run, the run it has left must be rebuilt
-        // without it — see [`App::marker_run`] for the five-lit-markers screen that cost.
-        let run_now = self.newest_run_row(&live);
-        if counts_now != self.marker_counts || run_now != self.marker_run {
-            self.marker_counts = counts_now;
-            let left = self.marker_run;
-            self.marker_run = run_now;
+        // **One value, compared once.** [`MarkerFacts`] is everything the marker draws about NOW
+        // plus the row the work is in, and it is the SAME value [`hidden_run_marker`] is handed —
+        // so a fact the marker draws is a fact this comparison holds. See the field for the two
+        // omissions this replaces (`running`, then the run).
+        let facts = MarkerFacts {
+            live,
+            run: self.newest_run_row(&live),
+        };
+        if facts != self.marker_facts {
+            let left = self.marker_facts.run;
+            self.marker_facts = facts;
             // **From the EARLIER of the two rows.** A rebuild is *from row k onward*, so rewinding to
             // the row the colour was on re-renders both it and the run that now owns the work — and
             // the rows between them, which is the price of one invalidation rather than a second
             // mechanism for taking one colour off one row.
-            if let Some(row) = [left, run_now].into_iter().flatten().min()
+            if let Some(row) = [left, facts.run].into_iter().flatten().min()
                 && !self.items.is_empty()
             {
                 // **Clamped, because the run the live work belongs to may have no row yet.**
@@ -12841,7 +12838,7 @@ impl App {
                                 *visibility,
                                 &cfg,
                                 newest_run == Some(start),
-                                live,
+                                MarkerFacts::of(live, newest_run),
                                 live_here,
                             );
                             // **Glued to the sentence it continues**, when there is one: the
@@ -17984,6 +17981,40 @@ fn live_work(
     }
 }
 
+/// **Everything the marker draws about NOW, plus the row the work is in — as ONE value.**
+///
+/// It is two things wearing one name because they must not come apart: the facts are what
+/// [`hidden_run_marker`] reads, and the SAME value is the cache key for the row that marker is
+/// painted into ([`App::marker_facts`]). A fact the marker draws is therefore a fact the key
+/// holds, by construction rather than by remembering — which is the whole point, because the
+/// remembering is what failed: `(calls, think_lines)` omitted `running` (the colour, see
+/// [`marker_carries_live`]), and the counts alone omitted *which run*, which left **five**
+/// markers lit at once (*"look how many tools are yellow"*) when two rounds carried identical
+/// numbers.
+///
+/// `run` is the ONE field the renderer never reads. It is which row the work belongs to, and it
+/// is here because the rebuild needs it: the run the work has LEFT has to be rebuilt without
+/// the colour, as well as the run it moved to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct MarkerFacts {
+    /// The live turn's work, exactly as [`live_work`] reports it — the numbers the marker
+    /// prints and the `running` that lights them.
+    live: LiveWork,
+    /// **The row of the run this work belongs to**, from `newest_unseen_run`, or `None` while
+    /// the work has committed no row yet.
+    run: Option<usize>,
+}
+
+impl MarkerFacts {
+    /// **The facts as the two inputs report them.** One constructor, so every caller — the
+    /// invocation in `body_window` and the two walks that draw the marker — fills the value
+    /// from the same pair (`live_work`'s answer and `newest_unseen_run`'s row) and cannot
+    /// hand the renderer a value the key is not made of.
+    fn of(live: LiveWork, run: Option<usize>) -> MarkerFacts {
+        MarkerFacts { live, run }
+    }
+}
+
 /// **The counts, as the two halves that can be painted differently** — R51 item 7.
 ///
 /// Split apart rather than composed, because the live-edge colour goes on ONE of them: the CALLS
@@ -18385,11 +18416,17 @@ fn hidden_run_marker(
     vis: Visibility,
     cfg: &RenderConfig,
     newest: bool,
-    live: LiveWork,
+    // **The facts, not `live`.** `facts.live` is everything this marker reads about NOW, and the
+    // SAME value is the cache key for the row it draws into ([`App::marker_facts`]) — so a fact
+    // the marker draws is a fact the key holds. Taking [`LiveWork`] here instead would leave the
+    // renderer free to read a fact the key does not carry, which is how the colour and then the
+    // run went missing.
+    facts: MarkerFacts,
     // **Does this run hold a row of the current turn** — leticl's `live-here`, and the fact that
     // decides whether the in-flight work is these counts' continuation. See the fold below.
     live_here: bool,
 ) -> Marker {
+    let live = facts.live;
     let mut calls = 0usize;
     let mut think_lines = 0usize;
     let mut events = 0usize;
@@ -39878,6 +39915,72 @@ mod tests {
             text.contains("1 tool") && text.contains("1 thinking"),
             "the single marker does not carry both counts:\n{text}"
         );
+    }
+
+    /// **A FACT THE MARKER DRAWS IS A FACT THE CACHE KEY HOLDS** — the property the two
+    /// omissions were missing made checkable, and the reason [`MarkerFacts`] exists at all.
+    ///
+    /// It is what [`hidden_run_marker`] reads *and* what `App::marker_facts` compares, so the
+    /// table below is the whole of the marker's dependence on NOW: three fields it draws, and
+    /// `run`, which it does not draw but the rebuild needs — the run the work has LEFT has to be
+    /// rebuilt without the colour. **Two assertions per row, because the two halves must not come
+    /// apart:** a fact that moves the painting but not the key is a stale row (the colour, then
+    /// the run — both shipped), and a fact that moves the key but not the painting is a rebuild
+    /// for nothing.
+    #[test]
+    fn every_fact_the_marker_draws_is_a_fact_the_key_holds() {
+        let cfg = RenderConfig {
+            color: true,
+            ..plain_cfg(110)
+        };
+        let vis = Visibility::of(Profile::CONVERSATION);
+        let paint = |facts: MarkerFacts| {
+            hidden_run_marker(&[], 0, 0, vis, &cfg, true, facts, true).painted(&cfg)
+        };
+        let live = |calls: usize, running: usize, think_lines: usize| LiveWork {
+            calls,
+            running,
+            think_lines,
+        };
+        let base = MarkerFacts::of(live(1, 1, 0), Some(0));
+        // The three the marker draws, and the one it does not.
+        let cases: [(&str, MarkerFacts, bool); 4] = [
+            (
+                "the calls count",
+                MarkerFacts::of(live(2, 1, 0), Some(0)),
+                true,
+            ),
+            (
+                "the thinking count",
+                MarkerFacts::of(live(1, 1, 3), Some(0)),
+                true,
+            ),
+            (
+                "the yellow (`running`)",
+                MarkerFacts::of(live(1, 0, 0), Some(0)),
+                true,
+            ),
+            (
+                "which run the work is in (not drawn)",
+                MarkerFacts::of(live(1, 1, 0), Some(4)),
+                false,
+            ),
+        ];
+        assert!(
+            paint(base).contains("\u{1b}[33m"),
+            "the premise: a running call paints its count pending"
+        );
+        for (what, facts, drawn) in cases {
+            assert!(
+                facts != base,
+                "{what} does not move the key — that row stays stale"
+            );
+            assert_eq!(
+                paint(facts) != paint(base),
+                drawn,
+                "{what}: the painting and the key disagree about whether this is drawn"
+            );
+        }
     }
 
     /// **ONE TURN OF MANY ROUNDS WEARS ONE YELLOW MARKER, NOT FORTY** — the operator,
