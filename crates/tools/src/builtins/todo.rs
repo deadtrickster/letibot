@@ -16,7 +16,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use letibot_tokencore::store::{TodoBy, TodoItem, TodoStatus};
+use letibot_tokencore::store::{TodoBy, TodoCondition, TodoItem, TodoStatus};
 use serde_json::{Value, json};
 
 use crate::runtime::{Invocation, InvokeCtx, Tool};
@@ -174,6 +174,42 @@ impl TodoBoard {
     pub fn replace(&self, todos: Vec<TodoItem>) -> u64 {
         *self.todos.lock().unwrap_or_else(|e| e.into_inner()) = todos;
         self.version.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// **Clear the condition a row has been reported with** — the firing, as the board records it.
+    ///
+    /// The operator's own shape, and the reasoning is his: the row's condition is what makes it
+    /// *due*, so a firing that left it in place would fire again on the next wake and again after
+    /// every restart — and **a condition that never stops firing is indistinguishable from one that
+    /// never fired.** Clearing it here means a daemon that comes back re-reads the row as ordinary
+    /// open work: the store IS the memory, which is what makes this survive the restart the whole
+    /// mechanism exists for.
+    ///
+    /// **Only the condition moves.** The text and the status are left exactly as they were, so what
+    /// the reader sees still says what the row was waiting for, and the idle nag — which reads
+    /// `unfinished_plan` off this board — picks it up like any other work the model owes somebody.
+    ///
+    /// The OPERATOR's half only, and not for symmetry: a model row is replaced wholesale by its
+    /// next `todo_write`, so a condition written there would already be gone, and the caller here is
+    /// the harness, whose rows these are.
+    ///
+    /// Returns how many rows changed, which is what the caller checks before announcing: `0` must
+    /// not bump the version, or every wake would republish the board.
+    pub fn consume_conditions(&self, handles: &[String]) -> u64 {
+        let mut half = self.operator.lock().unwrap_or_else(|e| e.into_inner());
+        let mut n = 0u64;
+        for row in half.iter_mut() {
+            let due = matches!(&row.when, Some(TodoCondition::Job { handle })
+                if handles.iter().any(|h| h == handle));
+            if due {
+                row.when = None;
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        n
     }
 
     /// The list as it stands.
@@ -1145,6 +1181,62 @@ mod tests {
             "while *drop* is not offered for a row that is not the model's to remove: {theirs}"
         );
         assert!(theirs.contains("say why in your reply"), "{theirs}");
+    }
+
+    /// **THE FIRING IS RECORDED ON THE ROW, not in a daemon's memory.** The operator's own choice:
+    /// the board is the record, so a fired row does not fire again, and a daemon that comes back
+    /// re-reads it as having no condition rather than as one that is due.
+    ///
+    /// What moves is the condition and nothing else — which is what makes a fired row ordinary open
+    /// work rather than a closed one, and what keeps the intent on the screen after the job it was
+    /// waiting for is gone.
+    #[test]
+    fn a_fired_condition_is_cleared_from_the_row_and_nothing_else_moves() {
+        let b = TodoBoard::new(vec![]);
+        b.set_operator(vec![
+            TodoItem {
+                content: "push once CI lands".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+                when: Some(TodoCondition::Job {
+                    handle: "j121".into(),
+                }),
+            },
+            TodoItem {
+                content: "an ordinary row".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+                when: None,
+            },
+        ]);
+        let v = b.version();
+        // **A handle nobody is waiting on consumes nothing, and must not announce anything.** A
+        // version bump is a store write and a publish to every head, so a no-op that bumped would
+        // republish the board on every wake.
+        assert_eq!(b.consume_conditions(&["j999".to_string()]), 0);
+        assert_eq!(b.version(), v, "nothing changed, so nothing is announced");
+        // The one that was due.
+        assert_eq!(b.consume_conditions(&["j121".to_string()]), 1);
+        assert_eq!(b.version(), v + 1, "and that is ONE announcement");
+        let rows = b.operator_snapshot();
+        assert!(
+            rows[0].when.is_none(),
+            "the condition is consumed: {rows:?}"
+        );
+        assert_eq!(
+            rows[0].content, "push once CI lands",
+            "and the intent is left standing, which is what the reader acts on"
+        );
+        assert_eq!(
+            rows[0].status,
+            TodoStatus::Pending,
+            "the status is not the firing's business — the row is open work now"
+        );
+        assert!(
+            rows[1].when.is_none(),
+            "a row that never had a condition is untouched"
+        );
+        assert_eq!(b.operator_snapshot().len(), 2, "and no row was dropped");
     }
 
     /// **A RESUMED BOARD COMES BACK SPLIT, and it is the store's own list that has to be.** The

@@ -4869,17 +4869,18 @@ impl<'a> Harness<'a> {
         // about its handle — because either alone is unusable: an intent with no fate is a sentence
         // the model cannot act on, and a fate with no intent is the settlement notice it already
         // has.
-        //
-        // **It re-reports until the condition is consumed**, which is the next piece of work and
-        // not a hole: the safe direction is to be told twice, and a row that fired once and then
-        // went quiet would be indistinguishable from one that never fired.
-        let due = self.due_todo_lines();
+        let due = self.due_todo_rows();
+        let fired: Vec<String> = due.iter().map(|(_, handle, _)| handle.clone()).collect();
         if !due.is_empty() {
+            let lines: Vec<String> = due
+                .iter()
+                .map(|(text, handle, fate)| format!("  - {text} — {}", fate_line(handle, fate)))
+                .collect();
             notices.push(format!(
                 "[todo] {} row you attached a condition to is due:\n{}\nThe condition is met and \
                  the row itself is unchanged — it is yours to act on.",
                 due.len(),
-                due.join("\n")
+                lines.join("\n")
             ));
         }
         if notices.is_empty() {
@@ -4897,6 +4898,19 @@ impl<'a> Harness<'a> {
             parts: vec![UserPart::Text { text }],
         })
         .map(Some)
+        // ...and the condition is spent only once the model HAS been told. Consuming before the
+        // submit would let a turn that failed to start silently eat the firing, and **a firing
+        // nobody hears is the failure this whole mechanism exists to rule out**, where a firing
+        // reported twice is merely dull. So the order here is the requirement and not tidiness.
+        .map(|out| {
+            if !fired.is_empty() {
+                self.todos.consume_conditions(&fired);
+                if let Err(e) = self.flush_todos() {
+                    eprintln!("  todos: a fired condition could not be written down: {e}");
+                }
+            }
+            out
+        })
     }
 
     /// **The turn after the wall, without a human typing "continue".**
@@ -7200,14 +7214,19 @@ impl<'a> Harness<'a> {
         }
     }
 
-    /// **The rows whose condition the world now meets**, as the lines the model is handed.
+    /// **The rows whose condition the world now meets** — the row's text, the handle it waits on,
+    /// and the fate — so the caller can both report and CONSUME them in one breath.
     ///
-    /// **With the fate, because the operator's own split depends on it**: *"you either follow the
-    /// job result up manually (which is more robust) if next steps depend on it or just do your
-    /// things if it was just a timeline"*. A handle that ended here can be read with `job_output`;
-    /// one this daemon never heard of cannot, and the sentence says so rather than leaving the
-    /// reader to find out by asking.
-    pub fn due_todo_lines(&self) -> Vec<String> {
+    /// **The fate is carried and not collapsed into a boolean**, because the operator's own split
+    /// depends on it: *"you either follow the job result up manually (which is more robust) if next
+    /// steps depend on it or just do your things if it was just a timeline"*. A handle that ended
+    /// here can be read with `job_output`; one this daemon never heard of cannot, and its sentence
+    /// says so rather than leaving the reader to find out by asking.
+    ///
+    /// **The handle comes back with the row because consuming needs it**, and the condition IS the
+    /// handle. A formatter returning only strings would leave the caller re-deriving what it had
+    /// just looked up — which is how the two would come to disagree.
+    pub fn due_todo_rows(&self) -> Vec<(String, String, JobFate)> {
         let mut out = Vec::new();
         for row in self.todos.snapshot() {
             let Some(letibot_tokencore::store::TodoCondition::Job { handle }) = &row.when else {
@@ -7217,11 +7236,7 @@ impl<'a> Harness<'a> {
             if matches!(fate, JobFate::Running) {
                 continue;
             }
-            out.push(format!(
-                "  - {} — {}",
-                row.content,
-                fate_line(handle, &fate)
-            ));
+            out.push((row.content.clone(), handle.clone(), fate));
         }
         out
     }
