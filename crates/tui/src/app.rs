@@ -40677,17 +40677,17 @@ mod tests {
     /// every non-`ok` outcome in `Failure`, so a job still working read as something to retry and a
     /// refusal read as a malfunction. This asks the mapping for each outcome, and only `ok` is
     /// overruled — faint, because a green line under every command says nothing.
+    ///
+    /// **And the register a backgrounded call gets changed afterwards, by a ruling of its own:**
+    /// *"wait, color change can mean some rerenders, so lets make it white as soon as job starts"*.
+    /// So it is no longer one of the *attention* outcomes — the CALL is over, and the job behind it
+    /// is counted on the composer's edge and listed in the jobs pane. See the two arms' notes in
+    /// `card::Outcome`.
     #[test]
     fn a_settled_rows_register_comes_from_the_outcome_not_from_a_not_ok_test() {
         use letibot_transcript::ToolOutcome as O;
-        // The three the operator named: none of them is a failure.
+        // The two the operator named that are still *something to look at*: neither is a failure.
         for waiting in [
-            O::Backgrounded {
-                handle: "j1".into(),
-                ran_for_ms: 1,
-                how: letibot_transcript::Backgrounding::Asked,
-                next: "read it".into(),
-            },
             O::Denied {
                 req_id: "d1".into(),
             },
@@ -40701,6 +40701,17 @@ mod tests {
                 "{waiting:?} is something to look at, not something that failed"
             );
         }
+        // **A backgrounded call is neither loud nor lit**: finished work whose product is a job.
+        assert_eq!(
+            outcome_role(&O::Backgrounded {
+                handle: "j1".into(),
+                ran_for_ms: 1,
+                how: letibot_transcript::Backgrounding::Asked,
+                next: "read it".into(),
+            }),
+            Role::Faint,
+            "the call is over the moment it is backgrounded — the JOB is what runs on"
+        );
         // A real failure is still loud, and `ok` is the quiet case this head chose.
         assert_eq!(
             outcome_role(&O::Failed {
@@ -41617,7 +41628,7 @@ mod tests {
                     },
                     next: "`/job j4 out` to read it".into(),
                 },
-                "STILL RUNNING",
+                "backgrounded",
                 Some("as `j4` after 0.4s — `/job j4 out` to read it"),
             ),
         ];

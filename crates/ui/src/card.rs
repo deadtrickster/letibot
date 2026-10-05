@@ -210,9 +210,23 @@ impl Outcome {
             Outcome::Denied(_) => Role::Attention,
             Outcome::Failed(_) => Role::Failure,
             Outcome::Interrupted => Role::Failure,
-            // Attention, never Failure: something is happening and the operator
-            // may want to look, but nothing has gone wrong.
-            Outcome::Backgrounded(_) => Role::Attention,
+            // **FAINT, not Attention, and the call is OVER the moment it is backgrounded.**
+            //
+            // It was `Attention` — this head's yellow — which meant the card of a call that had
+            // already returned stayed lit for the whole life of the job behind it, while the
+            // composer's edge and the jobs pane carried the same job's liveness. Measured on the
+            // operator's screen 2026-10-05: `[3 tool calls, 24 thinking lines]` drew yellow with
+            // its calls long done, beside `2 jobs running · 1 to a file` and a session row saying
+            // `Job j12 exited 0` — three facts, one frame, and only the card was stale.
+            //
+            // The first fix was to make the card read the job's CURRENT state, which would have
+            // lit and unlit it as the job ran and settled — and the operator ruled against that
+            // for a reason worth keeping: *"wait, color change can mean some rerenders, so lets
+            // make it white as soon as job starts"*. A colour that changes on a settlement is a
+            // redraw the operator pays for a fact they already have twice. So the call draws
+            // settled from the start, and **the job's liveness is the jobs pane's and the edge's**
+            // — one fact, one place, and no row that has to be revisited.
+            Outcome::Backgrounded(_) => Role::Faint,
             // Both are `Failure`, which is what they were drawn as before they had their own
             // variants: a call that timed out or never ran is not work that is happening.
             Outcome::Timeout | Outcome::NotRun(_) => Role::Failure,
@@ -250,7 +264,13 @@ impl Outcome {
             Outcome::Interrupted => "interrupted",
             Outcome::Timeout => "timeout",
             Outcome::NotRun(_) => "not run",
-            Outcome::Backgrounded(_) => "STILL RUNNING",
+            // **`backgrounded`, not `STILL RUNNING`.** The call is over; what continues is a JOB
+            // with a handle, and the handle is in the reason beside this word
+            // (*"as `j12` after 0.0s — read it"*) so the row stays a way in. A word in the
+            // present continuous drew a finished call as unfinished, which is the defect the
+            // role above records — and lowercase, because it is a fact about how the call ended
+            // rather than a decision of the operator's (unlike `ABSTAINED` and `REFUSED`).
+            Outcome::Backgrounded(_) => "backgrounded",
         }
     }
 
@@ -548,9 +568,9 @@ impl Card {
             // `letibot-tui` found a tool-progress note reaching a card's tail raw, which
             // is exactly the hole a per-head helper leaves.
             let target = crate::text::without_control_lines(&self.target);
-            let spare = cfg
-                .width
-                .saturating_sub(width::width(&s) + width::width(&joined) + width::width(&id_str) + 1);
+            let spare = cfg.width.saturating_sub(
+                width::width(&s) + width::width(&joined) + width::width(&id_str) + 1,
+            );
             // A subject that fits whole keeps its own length; one that does not is cut with an
             // ellipsis, which is what `width::truncate` does.
             let room = spare.max(MIN_SUBJECT);
