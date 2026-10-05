@@ -503,11 +503,11 @@ impl<'a> Sessions<'a> {
                     return SlashReply { lines, ok: false };
                 };
                 let applied = match choice {
-                    crate::slash::ModelChoice::Local => h.set_provider(None),
+                    crate::slash::ModelChoice::OwnServer => h.set_provider(None),
                     crate::slash::ModelChoice::Metered(pc) => h.set_provider(Some(pc)),
                     // Its own door, because it verifies the vocabulary before it
-                    // moves anything — see `Harness::set_fleet_model`.
-                    crate::slash::ModelChoice::Fleet(m) => h.set_fleet_model(&m),
+                    // moves anything — see `Harness::set_local_model`.
+                    crate::slash::ModelChoice::Local(m) => h.set_local_model(&m),
                 };
                 match applied {
                     Ok(line) => {

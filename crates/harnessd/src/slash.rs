@@ -467,7 +467,7 @@ pub fn models_listing(current: &str) -> Vec<String> {
     // **This fleet's own models, above the presets**, because they cost nothing and
     // a listing that buries them under five metered providers is a listing that
     // reads as "the choices are cloud".
-    for m in letibot_provider::keys::fleet_models(None) {
+    for m in letibot_provider::keys::local_models(None) {
         let sampling = if m.profile.sampling.is_empty() {
             "the built-in sampling".to_string()
         } else {
@@ -509,15 +509,22 @@ pub fn models_listing(current: &str) -> Vec<String> {
 /// and an `Option<ProviderConfig>` could only say two.
 ///
 /// It was `Option<ProviderConfig>`: `Some` a metered provider, `None` the daemon's
-/// own server. A fleet model is neither — it takes the local path and moves where
-/// that path points — and squeezing it into `None` would have made "back to this
-/// daemon's model" and "over to the 27B on .78" the same value.
+/// own server. A declared local model is neither — it takes the local path and moves
+/// where that path points — and squeezing it into `None` would have made "back to
+/// this daemon's model" and "over to the 27B on .78" the same value.
+///
+/// **Two of the three are local**, and that is the axis this tree already turns on:
+/// local means the prefix is reusable, the tokens are counted here against this
+/// session's own vocabulary, and nothing is billed. `metered` is the other side of
+/// that line. A box on the LAN is on the local side of it, so it is `Local` rather
+/// than a third category named for the fleet.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelChoice {
-    /// `/models local` — this daemon's own server, as it was started.
-    Local,
-    /// A `[model."…"]` block with an address. No key, no meter.
-    Fleet(letibot_provider::keys::FleetModel),
+    /// `/models local` — this daemon's own server, exactly as it was started.
+    OwnServer,
+    /// **A local model this fleet declares** — a `[model."…"]` block with a url.
+    /// No key, no meter, tokenized here like any other local model.
+    Local(letibot_provider::keys::LocalModel),
     /// A cloud preset, metered.
     Metered(ProviderConfig),
 }
@@ -534,12 +541,12 @@ pub fn models_choice(
 ) -> Result<(ModelChoice, Vec<String>), Vec<String>> {
     let mut notes = Vec::new();
     if provider == "local" {
-        return Ok((ModelChoice::Local, notes));
+        return Ok((ModelChoice::OwnServer, notes));
     }
     // **The operator's own names first.** A fleet block is something they wrote in
     // their own file; a preset is a name this binary ships. If the two ever collide,
     // the file wins, because the person who typed the name also typed the block.
-    if let Some(m) = letibot_provider::keys::fleet_models(file)
+    if let Some(m) = letibot_provider::keys::local_models(file)
         .into_iter()
         .find(|m| m.name == provider)
     {
@@ -550,10 +557,10 @@ pub fn models_choice(
                 m.profile.unknown.join(", ")
             ));
         }
-        return Ok((ModelChoice::Fleet(m), notes));
+        return Ok((ModelChoice::Local(m), notes));
     }
     let preset = letibot_provider::Preset::parse(provider).map_err(|e| {
-        let fleet = letibot_provider::keys::fleet_models(file);
+        let fleet = letibot_provider::keys::local_models(file);
         if fleet.is_empty() {
             vec![e]
         } else {
@@ -715,7 +722,7 @@ mod tests {
         let f = fleet_file("a_fleet_block_is_a_choice");
         let (choice, notes) = models_choice("dense78", None, None, Some(&f)).expect("resolving");
         match choice {
-            ModelChoice::Fleet(m) => {
+            ModelChoice::Local(m) => {
                 assert_eq!(m.name, "dense78");
                 assert_eq!(m.model, "qwen-3.8-27b");
                 assert_eq!(m.url, "http://192.168.1.78:8082");
@@ -748,7 +755,7 @@ mod tests {
         );
         let (choice, _) = models_choice("grok", None, None, Some(&f)).expect("resolving");
         assert!(
-            matches!(&choice, ModelChoice::Fleet(m) if m.model == "qwen-3.8-27b"),
+            matches!(&choice, ModelChoice::Local(m) if m.model == "qwen-3.8-27b"),
             "{choice:?}"
         );
     }
@@ -1068,7 +1075,7 @@ mod tests {
         );
         assert!(letibot_provider::keys::default_choice(Some(&f)).is_none());
         let (local, _) = models_choice("local", None, None, Some(&f)).unwrap();
-        assert_eq!(local, ModelChoice::Local);
+        assert_eq!(local, ModelChoice::OwnServer);
         assert!(models_choice("openai", None, None, Some(&f)).unwrap_err()[0].contains("five"));
     }
 

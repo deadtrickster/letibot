@@ -510,6 +510,17 @@ pub struct ModelProfile {
     /// and the guard along with it. Absent, the block name IS the alias, which is
     /// what a profile for a single served model wants.
     pub model: Option<String>,
+    /// **The context window, when the server will not say.**
+    ///
+    /// A switch reads `n_ctx` off the target's `/props`, which is the only place that
+    /// number is true -- but a proxy, or an OpenAI-compatible server that is not
+    /// llama.cpp, answers nothing, and the alternative is planning against no wall at
+    /// all. So this is here for the operator to state what they know.
+    ///
+    /// Stated, never inferred from the model's name: one model served twice is served
+    /// at two sizes. Measured on this fleet the day it was written -- the same 27B
+    /// GGUF at `n_ctx` 262144 on `127.0.0.1:8080` and 57344 on `192.168.1.78:8082`.
+    pub window: Option<u64>,
 }
 
 /// Every key a `[model.*]` block may set beside `effort`, and how to read it.
@@ -584,6 +595,15 @@ pub fn model_profile(family: &str, alias: &str, file: Option<&Path>) -> ModelPro
                     out.model = Some(v.clone());
                     continue;
                 }
+                "window" | "context_window" => {
+                    match v.trim().parse::<u64>() {
+                        Ok(n) if n > 0 => out.window = Some(n),
+                        _ => out
+                            .unknown
+                            .push(format!("window = {v} (not a positive token count)")),
+                    }
+                    continue;
+                }
                 _ => {}
             }
             match SAMPLING_KEYS.iter().find(|(name, _)| name == k) {
@@ -632,7 +652,7 @@ fn number(v: &str, kind: Num) -> Option<serde_json::Value> {
 /// that can be trusted — a probe that finds a server says nothing about whether
 /// its weights are the ones the name claims.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FleetModel {
+pub struct LocalModel {
     /// The name `/models NAME` takes: the block's own, after the quotes.
     pub name: String,
     /// Where it answers.
@@ -649,7 +669,7 @@ pub struct FleetModel {
 /// A block with no address is a sampling profile and is deliberately absent here:
 /// it is not something a person can switch TO, and listing it as though it were
 /// would be offering a choice that does nothing.
-pub fn fleet_models(file: Option<&Path>) -> Vec<FleetModel> {
+pub fn local_models(file: Option<&Path>) -> Vec<LocalModel> {
     let path = file.map(|p| p.to_path_buf()).unwrap_or_else(config_file);
     let Ok(parsed) = parse_file(&path) else {
         return Vec::new();
@@ -672,7 +692,7 @@ pub fn fleet_models(file: Option<&Path>) -> Vec<FleetModel> {
         // family block is read where it can act: at daemon start, by `cli`.
         let profile = model_profile("", &name, Some(&path));
         let model = profile.model.clone().unwrap_or_else(|| name.clone());
-        out.push(FleetModel {
+        out.push(LocalModel {
             name,
             url: url.clone(),
             model,
@@ -763,13 +783,13 @@ mod tests {
     #[test]
     fn only_a_block_with_an_address_is_offered_as_a_fleet_model() {
         let f = tmp_providers(
-            "fleet_models",
+            "local_models",
             "[model.qwen]\neffort = \"low\"\n\n\
              [model.\"dense78\"]\nurl = \"http://192.168.1.78:8082\"\n\
              model = \"qwen-3.8-27b\"\ntemperature = 0.7\n\n\
              [model.\"qwen-3.8-flash-next\"]\npresence_penalty = 0.5\n",
         );
-        let fleet = fleet_models(Some(&f));
+        let fleet = local_models(Some(&f));
         assert_eq!(fleet.len(), 1, "{fleet:?}");
         let m = &fleet[0];
         assert_eq!(m.name, "dense78");
@@ -790,7 +810,7 @@ mod tests {
             "fleet_named_for_weights",
             "[model.\"glm-5.3-flash\"]\nurl = \"http://192.168.1.76:8080\"\n",
         );
-        let fleet = fleet_models(Some(&f));
+        let fleet = local_models(Some(&f));
         assert_eq!(fleet.len(), 1);
         assert_eq!(fleet[0].model, "glm-5.3-flash");
     }
