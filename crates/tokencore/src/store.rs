@@ -817,7 +817,10 @@ pub struct JobRecord {
     pub handle: String,
     /// What was run, verbatim — the row the model asked for and the operator reads.
     pub command: String,
-    /// Who backgrounded it: `asked`, `operator`, `promoted`; the listing's own word.
+    /// Who backgrounded it: the listing's own phrase for it — *you asked for this to run in the
+    /// background*, *the RUNTIME moved this to the background*. **Empty means *not recorded
+    /// here***, which is why it is not overwritten by a write that does not know it; see
+    /// [`Store::put_job`].
     pub how: String,
     /// The listing's own word for how it ended, or `running` while it has not.
     pub state: String,
@@ -2012,19 +2015,31 @@ impl Store {
         Ok(out)
     }
 
-    /// **Write one job's row, replacing that handle's last one.**
+    /// **Write one job's row, replacing that handle's last one — field by field.**
     ///
     /// An upsert rather than an append: the row is a job and not a log line, so a job has one
     /// state at a time and the settlement is the same job as the start. *The append-only record
     /// of every ending* is the session's own log, which is a different question from *where is
     /// this handle's row now* — and the reader that wants the second one is the pane.
+    ///
+    /// **An EMPTY text field is *not recorded here*, so the row keeps what it had.** The two
+    /// writers know different things and neither knows both: the START is told who backgrounded
+    /// the job (`how`) and never its command, and the SETTLEMENT is told the command — read from
+    /// the live view, which is the last moment it exists — and not `how`. Without this the second
+    /// write erased the first and no row could ever hold both, which is the whole reason a row
+    /// would be written twice.
+    ///
+    /// The numbers are not merged: `state`, `produced`, `elapsed_ms` and `redirect` are facts of
+    /// the write that is happening, and the later write's are the true ones.
     pub fn put_job(&self, session_id: &str, job: &JobRecord) -> Result<()> {
         self.conn.execute(
             "INSERT INTO job
                (session_id, handle, command, how, state, produced, elapsed_ms, redirect, updated_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(session_id, handle) DO UPDATE SET
-               command = ?3, how = ?4, state = ?5, produced = ?6, elapsed_ms = ?7,
+               command = CASE WHEN ?3 = '' THEN command ELSE ?3 END,
+               how = CASE WHEN ?4 = '' THEN how ELSE ?4 END,
+               state = ?5, produced = ?6, elapsed_ms = ?7,
                redirect = ?8, updated_ms = ?9",
             params![
                 session_id,

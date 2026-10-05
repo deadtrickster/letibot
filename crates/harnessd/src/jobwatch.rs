@@ -291,6 +291,33 @@ impl JobWatchers {
         *self.recorder.lock().expect("job recorder") = Some(JobRecorder::new(path, session_id));
     }
 
+    /// **A job is a row from the moment it exists, not from the moment it ends.**
+    ///
+    /// The reason is the daemon's death: a job that is running when the process goes is never
+    /// settled by anything, so without this write it left no trace at all — and a handle the
+    /// operator read in the pane an hour ago would be a handle the store had never heard of.
+    ///
+    /// Called where the daemon first learns a job exists ([`JobWatchSink::emit`]), which is also
+    /// where the watcher is armed; the two belong together because both are *this job is now a
+    /// thing in the world*.
+    ///
+    /// **What this side cannot know is the command.** The event that announces a backgrounded job
+    /// carries the outcome and no arguments, so the command is read at the settlement, from the
+    /// live view, which its own comment calls *"the last moment it exists"*. The row is therefore
+    /// written with `how` and a `running` state, and the settlement fills in the rest — an empty
+    /// field never erases a recorded one.
+    ///
+    /// `ran_for_ms` is how long it ran BEFORE it was handed off, so for a running job it is a
+    /// floor rather than a total; the settlement replaces it with the whole span.
+    pub fn record_start(&self, handle: &str, how: &str, ran_for_ms: u64) {
+        let Ok(g) = self.recorder.lock() else {
+            return;
+        };
+        if let Some(rec) = g.as_ref() {
+            rec.start(handle, how, ran_for_ms);
+        }
+    }
+
     /// **A set for a session that cannot start processes but can still spawn a
     /// subagent.**
     ///
@@ -679,19 +706,10 @@ impl JobRecorder {
         }
     }
 
-    /// **Write one settlement's row.**
-    ///
-    /// `running` is never written here — this is the ending, and the row it updates is the one
-    /// the start would have written. **`how` is empty and that is a fact, not an oversight**: it
-    /// is a property of the START (`asked`, `operator`, `promoted`) and this is the ending. A
-    /// guess at it would be a word nobody measured.
-    fn record(&self, c: &JobCompletion) {
-        // **A subagent settles through this same queue and is not a job.** `task`'s handle is a
-        // session id, `job_list` has never heard of it, and a row here would put a child in the
-        // jobs pane — the same confusion R58 removed from the notice.
-        if c.kind != BackgroundKind::Job {
-            return;
-        }
+    /// **The store, opened on first use and handed to the closure.** One place, because two
+    /// writers share it, and the open is lazy because a queue is built per watch: a store opened
+    /// at construction would be opened for every job that is never backgrounded.
+    fn with_store(&self, f: impl FnOnce(&Store)) {
         let Ok(mut g) = self.store.lock() else {
             return;
         };
@@ -701,23 +719,65 @@ impl JobRecorder {
                 Err(_) => return,
             }
         }
-        let Some(store) = g.as_ref() else {
+        if let Some(store) = g.as_ref() {
+            f(store);
+        }
+    }
+
+    /// **The start: a `running` row, with what this side knows.** See
+    /// [`JobWatchers::record_start`] for why a job is a row before it ends.
+    fn start(&self, handle: &str, how: &str, ran_for_ms: u64) {
+        self.with_store(|store| {
+            let _ = store.put_job(
+                &self.session_id,
+                &JobRecord {
+                    handle: handle.to_string(),
+                    // **Not knowable here.** `ToolEvent::Finished` carries no arguments, so the
+                    // command is read at the SETTLEMENT — the last moment it exists — and an
+                    // empty field never erases a recorded one.
+                    command: String::new(),
+                    how: how.to_string(),
+                    state: "running".to_string(),
+                    produced: 0,
+                    elapsed_ms: ran_for_ms,
+                    redirect: None,
+                },
+            );
+        });
+    }
+
+    /// **Write one settlement's row.**
+    ///
+    /// `running` is never written here — this is the ending, and the row it updates is the one
+    /// [`JobRecorder::start`] wrote. **`how` is empty on purpose**: it is a property of the start
+    /// (*who backgrounded this*), and the row keeps what the start recorded, because an empty
+    /// field is *not recorded here* (see `Store::put_job`).
+    ///
+    /// **`redirect` IS computed here**, out of the command this side is the last to see — R41's
+    /// path, which a reader needs precisely when the window is empty by construction. Until this
+    /// line both writers wrote `None` and the field could never be anything else.
+    fn record(&self, c: &JobCompletion) {
+        // **A subagent settles through this same queue and is not a job.** `task`'s handle is a
+        // session id, `job_list` has never heard of it, and a row here would put a child in the
+        // jobs pane — the same confusion R58 removed from the notice.
+        if c.kind != BackgroundKind::Job {
             return;
-        };
-        let _ = store.put_job(
-            &self.session_id,
-            &JobRecord {
-                handle: c.job.clone(),
-                command: c.command.clone(),
-                how: String::new(),
-                state: c.state.clone(),
-                produced: c.produced,
-                elapsed_ms: c.elapsed_ms,
-                // Where the bytes went is a fact of the command, read out of it at listing time
-                // — not something a settlement carries. See `JobRecord::redirect`.
-                redirect: None,
-            },
-        );
+        }
+        let redirect = letibot_tools::builtins::output_redirect_path(&c.command);
+        self.with_store(|store| {
+            let _ = store.put_job(
+                &self.session_id,
+                &JobRecord {
+                    handle: c.job.clone(),
+                    command: c.command.clone(),
+                    how: String::new(),
+                    state: c.state.clone(),
+                    produced: c.produced,
+                    elapsed_ms: c.elapsed_ms,
+                    redirect,
+                },
+            );
+        });
     }
 }
 
@@ -933,10 +993,20 @@ impl<S: ToolEventSink> ToolEventSink for JobWatchSink<S> {
     fn emit(&mut self, event: ToolEvent) {
         if let Some(w) = &self.watch
             && let ToolEvent::Finished {
-                outcome: ToolOutcome::Backgrounded { handle, .. },
+                outcome:
+                    ToolOutcome::Backgrounded {
+                        handle,
+                        how,
+                        ran_for_ms,
+                        ..
+                    },
                 ..
             } = &event
         {
+            // **The row first, then the watch.** A job is a row from the moment it exists: a
+            // daemon that dies before the watcher settles it would otherwise leave nothing, and
+            // the settlement that would have written the row is the one that never happens.
+            w.record_start(handle, &how.phrasing(), *ran_for_ms);
             w.watch(handle.clone());
         }
         self.inner.emit(event);
@@ -1022,6 +1092,57 @@ mod tests {
             "a second settlement made a second row: {rows:?}"
         );
         assert_eq!(rows[0].state, "signalled 15");
+
+        // **A START and then a SETTLEMENT is ONE row holding both halves.** The start knows
+        // `how` and not the command; the settlement knows the command and not `how` — and neither
+        // may erase the other, or the row could never hold both. j9's command redirects its
+        // output, so the settlement's `redirect` is exercised in the same breath.
+        rec.start("j9", "you asked for this to run in the background", 1_500);
+        let row = s
+            .jobs("s-jobs")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.handle == "j9")
+            .expect("the start row");
+        assert_eq!(
+            row.state, "running",
+            "a job is a row from the moment it exists"
+        );
+        assert!(
+            row.how.contains("you asked for this"),
+            "the start records who backgrounded it: {row:?}"
+        );
+        assert!(
+            row.command.is_empty(),
+            "the start cannot know the command — its event carries no arguments: {row:?}"
+        );
+
+        let mut finished = done(BackgroundKind::Job, "j9", "exited 0");
+        finished.command = "cargo build > /tmp/build.log 2>&1".into();
+        rec.record(&finished);
+        let row = s
+            .jobs("s-jobs")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.handle == "j9")
+            .expect("the settled row");
+        assert_eq!(
+            row.state, "exited 0",
+            "the settlement is the ending: {row:?}"
+        );
+        assert!(
+            row.command.contains("cargo build"),
+            "the settlement records the command, which only its side has: {row:?}"
+        );
+        assert!(
+            row.how.contains("you asked for this"),
+            "and does NOT erase the who the start recorded: {row:?}"
+        );
+        assert_eq!(
+            row.redirect.as_deref(),
+            Some("/tmp/build.log"),
+            "the redirect is read out of the command, so only the settlement can fill it: {row:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
