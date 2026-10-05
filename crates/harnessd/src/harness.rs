@@ -3028,6 +3028,27 @@ impl<'a> Harness<'a> {
             }
         };
 
+        // **The window this session plans its compaction against, written down.** See
+        // `StoredSession::context_window`: the number was otherwise knowable only at the
+        // moment it was used, and a child that ran past its wall left nothing behind saying
+        // which wall it had. Written for a root and a child alike — `cfg.context_window` is
+        // the resolved number either way, and for a child it is the one the spawn chose for
+        // the model that answers IT rather than its parent's.
+        //
+        // After the match above, because the row it updates is created inside it.
+        if let Some(store) = &store
+            && let Err(e) = store.set_window(&cfg.session_id, cfg.context_window)
+        {
+            // **A bookkeeping write failing is not a reason to refuse a session**, and it is
+            // not silent either: `notes` is what the operator reads at startup, and this is
+            // the one place a reader would look for why the store cannot answer the question.
+            notes.push(format!(
+                "the window this session plans against could not be written to the store \
+                 (`{e}`). It is in force for this run; after a restart nothing on disk says \
+                 which window it was."
+            ));
+        }
+
         // **The trail is seeded from what was restored, and it says what it lost.**
         //
         // A resumed session's `User` rows are indistinguishable in the store: the

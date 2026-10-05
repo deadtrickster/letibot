@@ -279,13 +279,16 @@ pub struct ShapelessAdmit {
     pub arguments_json: String,
 }
 
+/// **14** since a session's resolved **context window** is on its row — `context_window`,
+/// additive, described at its migration arm below. A child's window belongs to the model
+/// that answers it, and the number was otherwise knowable only at the moment it was used.
 /// **12** since the session row pairs its provider count with the LEDGER that count
 /// was measured against — `context_ledger`, additive, described at its migration arm
 /// below. **11** since the corpus records **which of the four `Unsure`s** an oracle's answer was
 /// (R12) — `oracle_reading`, additive, described at its migration arm below. **10** since it
 /// records whether an oracle was consulted and what it answered (R11), and **9** added
 /// `oracle_reply` for the same requirement.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -344,7 +347,7 @@ CREATE TABLE IF NOT EXISTS session (
                                      -- the same reason context_tokens does: a session's
                                      -- facts belong to the session, not to the process
                                      -- that happens to be holding it.
-    context_ledger INTEGER           -- v12; the LEDGER tokens that context_tokens was
+    context_ledger INTEGER,          -- v12; the LEDGER tokens that context_tokens was
                                      -- measured against. A provider count on its own is
                                      -- not a ratio: the daemon used to recover
                                      -- ledger_scale by pairing it with whatever ledger
@@ -352,7 +355,8 @@ CREATE TABLE IF NOT EXISTS session (
                                      -- bigger conversation and so a wrong ratio in the
                                      -- direction that compacts too late. NULL = no
                                      -- measurement / one that predates this column.
-);
+    context_window INTEGER           -- v14; the window this session plans its compaction against.
+                                                                                                                                                                                                                                                                                                                                                                                  );
 
 CREATE TABLE IF NOT EXISTS transcript (
     id                   TEXT PRIMARY KEY,
@@ -747,6 +751,22 @@ pub struct StoredSession {
     /// different questions at a resume: *no opinion* against *the local server,
     /// by name*.
     pub provider_choice: Option<String>,
+    /// **The window this session plans its compaction against**, in tokens — resolved when
+    /// it opened, or when it was spawned.
+    ///
+    /// Written down because the number was otherwise knowable only at the moment it was
+    /// used: `/props` on the daemon's own server, or a catalogue row for a cloud model. A
+    /// child's window belongs to the model that ANSWERS it rather than to its parent's, and
+    /// the measurement behind that rule is this column's reason: three children of one
+    /// session ran to 911,522 / 910,486 / 911,708 tokens **with no compaction item in their
+    /// logs at all**, because their wall was computed from the parent's cloud window. A
+    /// reader asking *why did this session run past its wall* can only answer it from here
+    /// once the process that resolved the number is gone.
+    ///
+    /// `None` is **nobody recorded one**, and it is not the same fact as a large window:
+    /// every check that would compact reads `let Some(window) = …` and is skipped, so a
+    /// `None` here says the record cannot answer rather than that the session had room.
+    pub context_window: Option<u64>,
 }
 
 /// One line of a session's todo list, as the model wrote it.
@@ -1190,6 +1210,35 @@ impl Store {
                     .execute_batch("ALTER TABLE session ADD COLUMN provider_choice TEXT")?;
             }
         }
+        if from < 14 {
+            // v14: **the window a session plans its compaction against.**
+            //
+            // The rule that produced it — a child's window belongs to the model that answers
+            // it and never to its parent's — was fixed at the spawn (`child_window_refusal`,
+            // `subagent_model`), and the number itself lived only in the spawn line, which is
+            // not durable. So a child that ran past its wall left nothing behind that said
+            // which wall it had been planning against. See `StoredSession::context_window`
+            // for the measurement.
+            //
+            // **NULL in every existing row, and deliberately not backfilled.** A closed-form
+            // guess is available — a daemon's own `/props`, or the catalogue row for the model
+            // the session records — and every one of them would write TODAY's number onto a
+            // row describing a session that ran then, which is the same class of lie the
+            // column exists to stop, and in the direction that looks authoritative. *Nobody
+            // recorded one* is the true state of a pre-v14 row.
+            //
+            // Idempotent for the same reason v6, v12 and v13 are: a fixture walks a current
+            // store backwards, so the column can already be here.
+            let has: bool = self
+                .conn
+                .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_window'")
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn
+                    .execute_batch("ALTER TABLE session ADD COLUMN context_window INTEGER")?;
+            }
+        }
         Ok(())
     }
 
@@ -1580,7 +1629,8 @@ impl Store {
                     s.context_tokens,
                     s.context_cached,
                     s.context_ledger,
-                    s.provider_choice
+                    s.provider_choice,
+                    s.context_window
                FROM session s",
         )?;
         let mut out: Vec<StoredSession> = stmt
@@ -1604,6 +1654,7 @@ impl Store {
                     context_cached: r.get::<_, Option<i64>>(13)?.map(|v| v as u64),
                     context_ledger: r.get::<_, Option<i64>>(14)?.map(|v| v as u64),
                     provider_choice: r.get(15)?,
+                    context_window: r.get::<_, Option<i64>>(16)?.map(|v| v as u64),
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -1679,6 +1730,28 @@ impl Store {
                 cached.map(|c| c as i64),
                 ledger.map(|l| l as i64)
             ],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("session {id}")));
+        }
+        Ok(())
+    }
+
+    /// **Write the window this session plans its compaction against.** See
+    /// [`StoredSession::context_window`].
+    ///
+    /// A setter of its own rather than a fifth parameter on [`Store::set_context`], because
+    /// the two facts have different lifetimes and folding them together would say they were
+    /// measured together: the context counts are replaced by **every turn**, and a window is
+    /// a property of the session that changes only when the model underneath it moves.
+    ///
+    /// `None` clears it — what a session whose window nobody can name records.
+    pub fn set_window(&self, id: &str, window: Option<u64>) -> Result<()> {
+        // `i64` on the wire for the same reason `set_context` gives: rusqlite's `ToSql` has
+        // no `u64`, and a window that does not fit an `i64` is not a window any server has.
+        let n = self.conn.execute(
+            "UPDATE session SET context_window = ?2 WHERE id = ?1",
+            params![id, window.map(|w| w as i64)],
         )?;
         if n == 0 {
             return Err(StoreError::NotFound(format!("session {id}")));
@@ -2782,6 +2855,30 @@ mod tests {
         assert_eq!(got.context_tokens, None);
         assert_eq!(got.context_ledger, None);
 
+        // **The window, which has its own setter and its own lifetime.** A session opens
+        // with one and keeps it until the model underneath it moves; nothing about a turn
+        // touches it, which is exactly why it is not a fifth parameter on `set_context`.
+        s.set_window("sess-1", Some(262_144)).unwrap();
+        assert_eq!(
+            s.session("sess-1").unwrap().unwrap().context_window,
+            Some(262_144)
+        );
+        // **A turn's write does not disturb it** — the two facts are measured at different
+        // times and folding them together would say they were measured together.
+        s.set_context("sess-1", Some(9), Some(8), Some(7)).unwrap();
+        assert_eq!(
+            s.session("sess-1").unwrap().unwrap().context_window,
+            Some(262_144)
+        );
+        // A session whose window nobody can name CLEARS it rather than keeping a stale
+        // one: `None` is the record saying it cannot answer, not a large window.
+        s.set_window("sess-1", None).unwrap();
+        assert_eq!(s.session("sess-1").unwrap().unwrap().context_window, None);
+        assert!(matches!(
+            s.set_window("nope", Some(1)),
+            Err(StoreError::NotFound(_))
+        ));
+
         // A session nobody has written is not a row to update.
         assert!(matches!(
             s.set_context("nope", Some(1), None, None),
@@ -2838,6 +2935,13 @@ mod tests {
             // (`has = true`) and its `ALTER` — the one line a real pre-v12 store
             // needs — was never run by any test. Same reasoning as the v6 arm's own
             // note about the fixtures, pointed the other way.
+            // **v14's column is NOT dropped here, because this table will not give it up.**
+            // sqlite refuses `ALTER TABLE session DROP COLUMN context_window` on it —
+            // MEASURED: *"error in table session after drop column: incomplete input"*, the
+            // statement-text re-splice tripping over this table's own comment blocks (the
+            // same class of constraint the note below records for the other drop order). So
+            // this walk stops at v13, and the v14 arm has a fixture of its own — the honest
+            // shape for an ADDITIVE arm, which needs a `session` table rather than a walk.
             // **v13's first, and the order is not taste.** The store is walked backwards,
             // so both columns are here and neither arm's `ALTER` would run without this —
             // and dropping provider_choice while context_ledger still follows is the drop
@@ -2878,12 +2982,116 @@ mod tests {
         // pre-existing row: unverifiable rather than zero, so the recovery refuses
         // the pair. See the v12 arm.
         assert_eq!(got.context_ledger, None);
+        // v14's column arrived with the same run, and is `None` on a pre-existing row:
+        // *nobody recorded one* — never the parent's window and never a guess. See the
+        // v14 arm for why it is not backfilled.
+        assert_eq!(got.context_window, None);
+        s.set_window("s-ctx", Some(262_144)).unwrap();
+        assert_eq!(
+            s.session("s-ctx").unwrap().unwrap().context_window,
+            Some(262_144)
+        );
+
         s.set_context("s-ctx", Some(12_000), Some(11_000), Some(11_800))
             .unwrap();
         let got = s.session("s-ctx").unwrap().unwrap();
         assert_eq!(got.context_tokens, Some(12_000));
         assert_eq!(got.context_cached, Some(11_000));
         assert_eq!(got.context_ledger, Some(11_800));
+    }
+
+    /// **A v13 store gains the window column** — v14's arm, with a fixture of its own.
+    ///
+    /// Every other arm here is tested by walking a CURRENT store backwards, and this one
+    /// cannot be: sqlite refuses to drop `context_window` from this table (see the v7
+    /// fixture's note — measured, `incomplete input`). A hand-written v13 `session` is the
+    /// right fixture for an **additive** arm, and it is the one place in this file where
+    /// hand-written DDL is not drift: the arm only needs the table to exist, and what is
+    /// asserted is what the arm DOES — the column appears, a row written before it reads
+    /// `NULL` rather than a guess, and a value written through the API comes back.
+    ///
+    /// The other tables are deliberately absent, so this reads through `connection()`
+    /// rather than `session()`: `list_sessions` joins `transcript` and `transcript_item`,
+    /// and building those by hand is the drift this fixture is trying to avoid.
+    #[test]
+    fn a_v13_store_gains_the_context_window_column() {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-migrate-v13-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _clean = Clean(path.clone());
+
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE session (
+                     id    TEXT PRIMARY KEY,
+                     title TEXT,
+                     role  TEXT
+                 );
+                 INSERT INTO session (id, title, role) VALUES ('s-window', 'old', 'coder');
+                 CREATE TABLE schema_version (version INTEGER);
+                 INSERT INTO schema_version (version) VALUES (13);",
+            )
+            .unwrap();
+            // Prove the fixture really is pre-v14, or the arm below is tested by nothing.
+            assert!(
+                c.query_row("SELECT context_window FROM session", [], |r| r
+                    .get::<_, Option<i64>>(0))
+                    .is_err(),
+                "the fixture already has a context_window column, so it is not a v13 store"
+            );
+        }
+
+        let s = Store::open(&path).unwrap();
+        let v: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION, "the migration stamped the new version");
+
+        // The column is there, and the row that predates it says *nobody recorded one* —
+        // never the parent window, and never a catalogue guess. See the v14 arm.
+        let got: Option<i64> = s
+            .connection()
+            .query_row(
+                "SELECT context_window FROM session WHERE id = 's-window'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(got, None);
+
+        // And it is writeable through the API this column exists for.
+        s.set_window("s-window", Some(262_144)).unwrap();
+        let got: Option<i64> = s
+            .connection()
+            .query_row(
+                "SELECT context_window FROM session WHERE id = 's-window'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(got, Some(262_144));
+
+        // Reopening is a no-op rather than a second migration.
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert!(
+            s.set_window("s-window", Some(1)).is_ok(),
+            "a store already at the current version still answers a write"
+        );
     }
 
     /// **The provider a session was SWITCHED TO is a fact on the session row, and it
