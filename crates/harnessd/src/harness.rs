@@ -7557,6 +7557,13 @@ impl TaskSlot {
         self.killed.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// **The status as the slot holds it**, for a test that has to assert a settlement happened —
+    /// or did not overwrite an earlier one. `collect` is the real reader.
+    #[cfg(test)]
+    fn status(&self) -> letibot_tools::builtins::task::TaskStatus {
+        self.state.lock().expect("task slot").clone()
+    }
+
     fn settle(&self, status: letibot_tools::builtins::task::TaskStatus) {
         // **`Done` under a kill is not an answer.** See the field: the text is what the
         // child had written when it was stopped, and reporting it as the child's word is
@@ -7573,6 +7580,134 @@ impl TaskSlot {
         };
         *self.state.lock().expect("task slot") = status;
         self.settled.notify_all();
+    }
+}
+
+/// **One child's answer, settled exactly once, whatever path the turn takes out of the call.**
+///
+/// `run_to_completion` has several early exits (`fail(...)`) and one long tail, and what it
+/// settles is what `task_result` reads: a settlement that never fires leaves a parent waiting for
+/// ever, and a second one lets a later failure overwrite the answer the child actually gave. So
+/// the settlement belongs to a guard rather than to each exit — [`AnswerOnce::say`] records the
+/// answer and `Drop` covers every path that did not.
+///
+/// **Why it moved here at all.** It used to be the caller's: `start`'s thread settled from this
+/// function's RETURN, which is right while the function ends with the turn — and wrong the moment
+/// a child stays reachable afterwards, because the park does not end until the hub does. So the
+/// answer is given as the turn ends and the serving begins after it.
+struct AnswerOnce<'a> {
+    slot: &'a TaskSlot,
+    said: std::cell::Cell<bool>,
+}
+
+impl<'a> AnswerOnce<'a> {
+    fn new(slot: &'a TaskSlot) -> Self {
+        AnswerOnce {
+            slot,
+            said: std::cell::Cell::new(false),
+        }
+    }
+
+    /// **The first answer is the answer.** A later one is another path out of the same call, not
+    /// a second opinion about how the turn went.
+    fn say(&self, status: letibot_tools::builtins::task::TaskStatus) {
+        if self.said.replace(true) {
+            return;
+        }
+        self.slot.settle(status);
+    }
+}
+
+impl Drop for AnswerOnce<'_> {
+    fn drop(&mut self) {
+        if !self.said.get() {
+            self.slot
+                .settle(letibot_tools::builtins::task::TaskStatus::Failed {
+                    why: "this subagent's turn ended without saying how it went — the record is \
+                          short of an answer, not in possession of one"
+                        .into(),
+                });
+        }
+    }
+}
+
+/// **What a child does with a command that reached its queue between turns.**
+///
+/// A free function so the decision can be read and tested without a model, a hub or a socket —
+/// the same reason [`subagent_depth_refusal`] is one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildCommand {
+    /// Answer it: this is the operator (or a head) asking the child something, and a child is an
+    /// agent with a session of its own — the operator's ruling in one line: *"subagent is just
+    /// another agent. its 'sub' is a way to inherit something and be managable. so mid turn, post
+    /// turn whatever"*.
+    Answer,
+    /// Leave it, and this says why.
+    Leave(&'static str),
+}
+
+fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
+    use letibot_sessionlog::CommandKind as K;
+    match kind {
+        K::Prompt { .. } => ChildCommand::Answer,
+        // Nothing is running between turns, so there is nothing to stop. A turn takes its own
+        // interrupt through the steering poll; one that arrives after the turn has ended has no
+        // turn to reach.
+        K::Interrupt { .. } => ChildCommand::Leave("nothing is running to interrupt"),
+        // A message's contract is a turn IN FLIGHT — the parent's own `task_message` refuses to
+        // send one to a child that is not running — so one here is the race that refusal names.
+        // Answering it as a prompt would answer, in the parent's name, something the parent
+        // deliberately did not send.
+        K::Message { .. } => ChildCommand::Leave("a message steers a turn in flight"),
+        // The rest is a session's own machinery — a compaction, a re-seat, a mode, the operator's
+        // door — and a child inherits all of it from its parent rather than owning a copy.
+        _ => ChildCommand::Leave("a door a child does not own"),
+    }
+}
+
+/// **A child's own turns, after the task it was spawned for.**
+///
+/// The door is the one the first prompt came through — [`Harness::submit`] — and that is the whole
+/// of the honesty here: a child's turn IS that call (see `run_to_completion`), so a later prompt is
+/// not a second, smaller `run_prompt`. What a child does not get is what it never had:
+/// `Sessions::run_prompt`'s per-turn machinery belongs to the sessions the daemon opened, and a
+/// child's harness borrows `Parts` built on this thread — which is why the daemon cannot serve it
+/// (recorded, with the four hazards, on the row that would do that properly).
+///
+/// It ends when the hub is closed — the same liveness test `jobwatch::watch_task` uses for the
+/// thread it parks per child — and **nothing here is on a clock**: a child asked something an hour
+/// later answers it.
+fn serve_child(sub: &mut Harness<'_>, hub: &Hub, sub_id: &str) {
+    loop {
+        let Some(cmd) = hub.take_command() else {
+            // The hub closed: the daemon is going away, or this session was reaped.
+            return;
+        };
+        match child_command(&cmd.kind) {
+            ChildCommand::Answer => {
+                let text = match &cmd.kind {
+                    letibot_sessionlog::CommandKind::Prompt { text } => text.clone(),
+                    _ => unreachable!("`child_command` answers a Prompt and nothing else"),
+                };
+                if let Err(e) = sub.submit(&text) {
+                    // **Said, and the child stays reachable.** A turn that failed is the same fact
+                    // `turn_failed` reports for a root; a child has no worker to publish it, so it
+                    // goes on the child's own log — which its parent and the operator both read.
+                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                        code: "turn_failed".into(),
+                        detail: format!(
+                            "{sub_id} was asked something after its task and the turn failed: \
+                             {e}. The child is still here and can be asked again."
+                        ),
+                        compaction: None,
+                    });
+                }
+            }
+            ChildCommand::Leave(why) => eprintln!(
+                "  {sub_id}: left a command in this subagent's queue — {why}. A child's machinery \
+                 is its parent's, so nothing was run."
+            ),
+        }
     }
 }
 
@@ -7919,12 +8054,11 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             ))
             .spawn(move || {
                 let slot2 = slot.clone();
-                let status = match me.run_to_completion(&id, &prompt, &spec, &mut |n| slot2.note(n))
-                {
-                    Ok(answer) => letibot_tools::builtins::task::TaskStatus::Done { answer },
-                    Err(why) => letibot_tools::builtins::task::TaskStatus::Failed { why },
-                };
-                slot.settle(status);
+                // **The settlement is the function's own now** (see `AnswerOnce`): it happens as
+                // the turn ends, because what follows — a host child serving its own queue until
+                // the hub closes — does not end until the daemon does. There is nothing for this
+                // thread to do with the answer; the slot already has it.
+                let _ = me.run_to_completion(&id, &prompt, &spec, &slot, &mut |n| slot2.note(n));
             });
         if let Err(e) = spawned {
             // Nothing is running; say so rather than handing back a handle for a
@@ -8155,6 +8289,7 @@ impl HarnessTaskRunner {
         sub_id: &str,
         prompt: &str,
         spec: &letibot_tools::builtins::task::TaskSpec,
+        slot: &TaskSlot,
         progress: &mut dyn FnMut(&str),
     ) -> Result<String, String> {
         use letibot_tools::builtins::task::Placement;
@@ -8301,9 +8436,12 @@ impl HarnessTaskRunner {
                 letibot_sessionlog::registry::short_id(&sub_id)
             ),
         });
-        // Every early return from here on records the failure rather than leaving a
-        // "running" row forever.
+        // **Every early return from here on records the failure rather than leaving a
+        // "running" row forever** — and it settles the child's slot as it does, because this
+        // function no longer returns to a caller that settles for it (see [`AnswerOnce`]).
+        let answer = AnswerOnce::new(slot);
         let fail = |why: String| {
+            answer.say(letibot_tools::builtins::task::TaskStatus::Failed { why: why.clone() });
             self.tasks.record(crate::tasks::TaskEntry {
                 name: sub_id.clone(),
                 role: seat.as_str().to_string(),
@@ -8437,7 +8575,10 @@ impl HarnessTaskRunner {
         // rings belongs to the parent, which is in `open` — and fatal at depth 2, where the child's
         // own watcher rings the child.
         self.registry
-            .adopt(sub_hub, title.clone(), wiring, Some(parent.clone()))
+            // **Cloned, because the serving loop below needs it back**: this hub is the child's
+            // queue, and `serve_child` blocks on it until the daemon closes it — so the same
+            // `Arc` the registry was given is the one the child serves from.
+            .adopt(sub_hub.clone(), title.clone(), wiring, Some(parent.clone()))
             // **A taken id here is a MINTING bug, and it says so.** `mint_sub_id` is supposed
             // to make this unreachable; if it is reached, the sentence has to name the id and
             // say what it costs, because the quiet symptom is a child's whole reply that
@@ -8470,9 +8611,6 @@ impl HarnessTaskRunner {
         ));
 
         let reply = sub.submit(prompt).map_err(|e| fail(e.to_string()))?;
-        // The child is done: release its substrate now, not when the harness is
-        // dropped, so the parent is told where the work went in the same reply.
-        let landed = sub.close_backend();
         let tokens: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
         let first_line = reply.text.lines().next().unwrap_or("").to_string();
         self.tasks.record(crate::tasks::TaskEntry {
@@ -8485,6 +8623,34 @@ impl HarnessTaskRunner {
             parent: parent.clone(),
         });
         publish("done", &first_line, Some(first_line.clone()));
+        // **A VM's life is its turn's, and closing it is where the placement sentence comes
+        // from** — the one the parent reads as *where the work went*. So a VM child answers the
+        // task and no more: its substrate cannot be held open for a later question, and that is
+        // stated here rather than discovered as silence.
+        if placement != letibot_tools::builtins::task::Placement::Host {
+            let landed = sub.close_backend();
+            let said = match landed {
+                Some(where_) => format!("{}\n\n[subagent placement] {where_}", reply.text),
+                None => reply.text,
+            };
+            answer.say(letibot_tools::builtins::task::TaskStatus::Done {
+                answer: said.clone(),
+            });
+            return Ok(said);
+        }
+        // **A host child stays reachable** — the operator's ruling (*"mid turn, post turn
+        // whatever"*), and this is where the answer is given: **as the turn ends**, not on the
+        // way out of this function, because what follows does not end until the hub does. The
+        // caller used to settle from this function's return, which a park would have delayed for
+        // the life of the daemon — `task_result` would simply never answer.
+        answer.say(letibot_tools::builtins::task::TaskStatus::Done {
+            answer: reply.text.clone(),
+        });
+        serve_child(&mut sub, &sub_hub, &sub_id);
+        // The hub closed, so the daemon is going away. Released here rather than when the harness
+        // is dropped, for the reason it always was — and there is no placement sentence to add on
+        // the host, which `close_backend` says by returning `None`.
+        let landed = sub.close_backend();
         Ok(match landed {
             Some(where_) => format!("{}\n\n[subagent placement] {where_}", reply.text),
             None => reply.text,
@@ -9839,6 +10005,104 @@ mod tests {
             downgraded_ruleset(&parent, &Downgrade::none(), &seated),
             parent
         );
+    }
+
+    /// **A child's answer is settled once, and a path out with no answer still settles.**
+    ///
+    /// Two failures this guard exists for, and both are silent without it: a settlement that
+    /// never fires leaves the parent's `task_result` waiting for ever, and a second one lets a
+    /// path out of the call overwrite the answer the child actually gave.
+    #[test]
+    fn a_childs_answer_is_settled_once_and_never_overwritten() {
+        use letibot_tools::builtins::task::TaskStatus;
+
+        // The ordinary ending.
+        let slot = TaskSlot::new();
+        {
+            let answer = AnswerOnce::new(&slot);
+            answer.say(TaskStatus::Done {
+                answer: "the child's answer".into(),
+            });
+        }
+        assert_eq!(
+            slot.status(),
+            TaskStatus::Done {
+                answer: "the child's answer".into()
+            }
+        );
+
+        // **A path out with no answer still settles** — the one that would hang a parent: a
+        // thread ending with the slot still `Running` is a `task_result` that never returns.
+        let slot = TaskSlot::new();
+        {
+            let _answer = AnswerOnce::new(&slot);
+        }
+        assert!(
+            matches!(slot.status(), TaskStatus::Failed { .. }),
+            "an unsettled child stayed `running` for ever: {:?}",
+            slot.status()
+        );
+
+        // **And the first answer is the answer.**
+        let slot = TaskSlot::new();
+        {
+            let answer = AnswerOnce::new(&slot);
+            answer.say(TaskStatus::Done {
+                answer: "said".into(),
+            });
+            answer.say(TaskStatus::Failed {
+                why: "the park ended oddly".into(),
+            });
+        }
+        assert_eq!(
+            slot.status(),
+            TaskStatus::Done {
+                answer: "said".into()
+            },
+            "a later path out overwrote what the child said"
+        );
+    }
+
+    /// **A prompt is answered; everything else a child inherits is left, and named.**
+    ///
+    /// The operator's ruling is what makes the first arm right — *"subagent is just another
+    /// agent… mid turn, post turn whatever"* — and the other arms are what keeps this door from
+    /// running the parent's machinery in the parent's name.
+    #[test]
+    fn a_child_answers_a_prompt_and_leaves_the_machinery_its_parent_owns() {
+        use letibot_sessionlog::CommandKind as K;
+        assert_eq!(
+            child_command(&K::Prompt {
+                text: "do this next".into()
+            }),
+            ChildCommand::Answer,
+            "the operator asking a child something is a turn, not a no-op"
+        );
+        for (kind, why) in [
+            (
+                K::Interrupt {
+                    reason: "esc".into(),
+                },
+                "nothing is running to interrupt",
+            ),
+            (
+                K::Message {
+                    from: "s-parent".into(),
+                    text: "change of plan".into(),
+                },
+                "a message steers a turn in flight",
+            ),
+            (K::Compact, "a door a child does not own"),
+            (
+                K::Mode {
+                    name: "allow-all".into(),
+                    consented: true,
+                },
+                "a door a child does not own",
+            ),
+        ] {
+            assert_eq!(child_command(&kind), ChildCommand::Leave(why), "{kind:?}");
+        }
     }
 
     /// **A progress bar is ONE line, and the window must show its last state.**
