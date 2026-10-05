@@ -98,6 +98,7 @@ pub mod events;
 pub mod exec;
 pub mod files;
 pub mod firecode;
+pub mod gatekeeper;
 pub mod grant;
 pub mod head_run;
 pub mod intent;

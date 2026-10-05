@@ -1113,6 +1113,34 @@ pub mod roles {
         r.max_tools = 9;
         r
     }
+
+    /// The gatekeeper's seat: read-only by construction, and blind to the child's
+    /// report.
+    ///
+    /// The seat is the capability half of the gatekeeper ([`crate::gatekeeper`]):
+    /// what a reviewer may reach. It may read, grep, glob, and run `bash` for
+    /// `git diff` and `git log` — the artifact is the diff, and the history is the
+    /// context. It has **no** `write`, no `edit`, no `task`, and nothing else that
+    /// can author code. A reviewer that can edit becomes a second author and then
+    /// nobody reviewed.
+    ///
+    /// It is also deliberately blind to the child's report. `transcript` is the one
+    /// read-only tool that would break that blindness — the child's final answer is
+    /// in the conversation, and a reviewer that reads it reviews the story rather
+    /// than the artifact — so it is excluded on purpose, for the same reason the
+    /// request has no field for a report. See [`crate::gatekeeper`].
+    ///
+    /// Five tools against a ceiling of sixteen: `read`, `grep`, `glob`, `bash` and
+    /// `read_spill`. `read_spill` is seated beside `bash` for the same reason
+    /// [`m2_runner`] seats it — a `git diff` on a large branch spills, and a seat
+    /// that cannot read back its own spilled output is a seat that cannot review a
+    /// large change.
+    pub fn gatekeeper() -> Role {
+        Role::new(
+            "gatekeeper",
+            &["read", "grep", "glob", "bash", "read_spill"],
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -2143,6 +2171,40 @@ mod tests {
         );
         // The pair is seated, not pushed: a role over its ceiling is refused at resolve,
         // so an overflow here would be a prompt the build cannot seat at all.
+        assert!(
+            seat.tools.len() <= seat.max_tools,
+            "the seat is over its own ceiling: {} > {}",
+            seat.tools.len(),
+            seat.max_tools
+        );
+    }
+
+    /// **The gatekeeper seat is read-only by construction.**
+    ///
+    /// It may read, grep, glob, and run `bash` for `git diff`/`git log`, and it has
+    /// no `write`, no `edit`, no `task` — a reviewer that can author code, directly
+    /// or through a child, becomes a second author and then nobody reviewed.
+    #[test]
+    fn the_gatekeeper_seat_has_no_writing_tool() {
+        let seat = roles::gatekeeper();
+        // The reading and the diff are there.
+        for want in ["read", "grep", "glob", "bash"] {
+            assert!(
+                seat.tools.iter().any(|t| t == want),
+                "the gatekeeper seat must name `{want}`: {:?}",
+                seat.tools
+            );
+        }
+        // And nothing that can author code: no write, no edit, no delegation.
+        for forbidden in ["write", "edit", "task", "task_result", "task_message"] {
+            assert!(
+                !seat.tools.iter().any(|t| t == forbidden),
+                "the gatekeeper seat must not name `{forbidden}` — a reviewer that \
+                 can edit becomes a second author and then nobody reviewed: {:?}",
+                seat.tools
+            );
+        }
+        // The seat is under its own ceiling, so it is seatable.
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",
