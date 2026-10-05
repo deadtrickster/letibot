@@ -735,6 +735,36 @@ pub const COMPACTION_TEMPLATE: &str = "compaction/2026-09-23";
 /// is and the head draws exactly what it drew before.
 pub const COMPACTION_SECTIONS_KEY: &str = "compaction.sections";
 
+/// **A subagent's call, named, on a card its own session cannot draw.**
+///
+/// The operator, on who a subagent's ask belongs to: *"who asks subagents
+/// permissions? i think they should surface to the parent head all the way to the
+/// root obviously"*. A child has no head attached and cannot be driven, so its
+/// gate's card is posted to the session that does have one — the tree's root — and
+/// this is the fact that says so on the card.
+///
+/// **A card that arrived at the root unlabelled would be answered for the wrong
+/// thing**: a head draws `? \`write\` wants write access to \`src/main.rs\`` with the
+/// options it always draws, and an operator with no way to tell whether that is the
+/// session in front of them or the child it spawned is approving on the wrong
+/// question.
+///
+/// The fields are exactly what the operator has to tell two children apart: the
+/// **handle** (which is the child's session id — what `task_result` collects by and
+/// what a head attaches to), the **first line of its task**, and the **root session
+/// the card belongs to**, carried so a refusal can name where it went rather than
+/// say "somewhere".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentAsk {
+    /// The child's handle, which is its session id.
+    pub handle: String,
+    /// The first line of the child's task, so two children are told apart.
+    pub task: String,
+    /// The session this card is posted to: the tree's root, the only session in a
+    /// subagent tree that has a head.
+    pub root: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum SessionEvent {
@@ -795,6 +825,21 @@ pub enum SessionEvent {
     },
     DecisionRequested {
         req_id: String,
+        /// **Another session's call, when this card is not this session's own.**
+        ///
+        /// `Some` for exactly one case: a subagent's gate reached an `ask`, and the
+        /// card was posted to the tree's ROOT, because a child has no head of its
+        /// own (R58 — the one session in a subagent tree that is in `Sessions::open`
+        /// and therefore the only one a head can be attached to). See [`SubagentAsk`].
+        ///
+        /// `None` is *this session's own call*, which is every card before this
+        /// existed — so an older head, which ignores the field, draws exactly what it
+        /// drew before and answers the same one question. No `PROTOCOL_VERSION` bump:
+        /// the precedent [`ModelAdvice::consulted`] and `write_targets` set, and the
+        /// bumps in this file are for new frames and new variants, which an old peer
+        /// cannot parse at all.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subagent: Option<SubagentAsk>,
         /// `permission` or `question`. §11.6: *"a permission and a question are one
         /// mechanism, differing in `kind`"* — and the two payload fields below are
         /// that difference made concrete rather than left to a head to infer.

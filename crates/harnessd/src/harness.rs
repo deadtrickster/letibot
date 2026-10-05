@@ -154,6 +154,21 @@ pub struct Parts {
     /// completion names a handle no runner in `open` holds.
     pub(crate) tree_slots:
         Option<std::sync::Arc<std::sync::Mutex<Vec<(String, std::sync::Arc<TaskSlot>)>>>>,
+    /// **The head's answers, as the whole tree reaches them** — the ask route's half of
+    /// R58.
+    ///
+    /// The operator, on where a subagent's permission ask goes: *"who asks subagents
+    /// permissions? i think they should surface to the parent head all the way to the root
+    /// obviously"*. A child has no head, so its gate's card is posted to the session that
+    /// does — the tree's ROOT — and the root's own [`crate::answers::Answers`] is what
+    /// settles it: posting on the root's hub without the root's sink would leave a card
+    /// that nothing can answer.
+    ///
+    /// `None` for a root, whose own answers are built at open; `Some` for a child, which
+    /// inherits its root's and hands the same value to its own children. It rides
+    /// [`Parts`] rather than [`Config`] because it is a live `Arc` and not a value to clone
+    /// per session — the same reason [`Parts::tree_watch`] does.
+    pub tree_head: Option<std::sync::Arc<crate::answers::Answers>>,
 }
 
 /// How many ledger rows a resume announces between progress ticks.
@@ -193,6 +208,9 @@ impl Parts {
             tree_watch: None,
             // Nor a parent's handle list: a root's runner gets a fresh one (R58).
             tree_slots: None,
+            // **Nor a parent's head answers**: a root's own are built as its gate is, and a
+            // root with no head-wired adjudicator has none to pass down. See `tree_head`.
+            tree_head: None,
         })
     }
 }
@@ -1950,6 +1968,13 @@ impl<'a> Harness<'a> {
         // below — see `HarnessTaskRunner::tree_watch`.
         let tree_watch_slot: Arc<std::sync::Mutex<Option<Arc<crate::jobwatch::JobWatchers>>>> =
             Default::default();
+        // **The slot a child of this session reads to reach the head's answers** — the ask
+        // route's other half (R58), and the same shape as the watcher slot above. Seeded with
+        // what THIS session inherited: a child's card is answered by its tree's root, so a
+        // child that had its own answers would be answering into a hub no head is attached
+        // to. A root has inherited nothing and writes its own in below, as its gate is built.
+        let head_answers_slot: Arc<std::sync::Mutex<Option<Arc<crate::answers::Answers>>>> =
+            Arc::new(std::sync::Mutex::new(parts.tree_head.clone()));
         // **The daemon's own server window, shared with the runner.** A spawn may ask for
         // `model: "local"` while this session is on a cloud provider; the child then plans
         // its compaction against the SERVER's window, which is this cell. See
@@ -1968,6 +1993,9 @@ impl<'a> Harness<'a> {
                 slots: parts.tree_slots.clone().unwrap_or_default(),
                 // Filled below, once this harness has built its own `job_watch` (R58).
                 tree_watch: tree_watch_slot.clone(),
+                // Filled as this session's gate is built: a root's own answers, or the ones
+                // its tree inherited (see `HarnessTaskRunner::head_answers`).
+                head_answers: head_answers_slot.clone(),
                 local_window: local_window_cell.clone(),
             });
         // Cloned before `with_session_tools` takes it: `digest` folds its findings
@@ -2325,6 +2353,12 @@ impl<'a> Harness<'a> {
                     (None, AdjudicatorChoice::Head) => {
                         let answers = Arc::new(crate::answers::Answers::new());
                         hub.set_answer_sink(answers.clone());
+                        // **And the tree can reach it.** A subagent's card is posted on a
+                        // ROOT's hub and settled through that session's sink, so this is
+                        // the one line that makes a child's ask answerable — recorded here,
+                        // with the sink, because the two are one act (see the note below).
+                        *head_answers_slot.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(answers.clone());
                         Box::new(crate::answers::HeadAdjudicator::new(hub.clone(), answers))
                     }
                     (None, AdjudicatorChoice::Console) => {
@@ -2341,6 +2375,10 @@ impl<'a> Harness<'a> {
                             model_adjudicator(&cfg, "`--adjudicator model`", Some(hub.clone()))?;
                         let answers = Arc::new(crate::answers::Answers::new());
                         hub.set_answer_sink(answers.clone());
+                        // The tree's route to a person, recorded with the sink — a subagent's
+                        // card reaches the same answer path the root's own escalation does.
+                        *head_answers_slot.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(answers.clone());
                         Box::new(crate::answers::EscalateOnTimeout::new(
                             std::sync::Arc::from(model),
                             std::sync::Arc::new(crate::answers::HeadAdjudicator::new(
@@ -7342,41 +7380,16 @@ fn visible_text(items: &[TranscriptItem]) -> String {
     out
 }
 
-/// A subagent's adjudicator: it can never ask the operator, so every `ask` fails
-/// closed. `describe` deliberately does not begin with `none` — that prefix is the
-/// harness's own signal for "nobody reachable, refuse to open a gated session" —
-/// because a subagent *does* have a decider: the permission ruleset it inherited.
-/// The ruleset's `allow`/`deny` are honoured by the gate before this is reached;
-/// what reaches it is only what the ruleset left as `ask`, and that is denied.
-struct SubagentAdjudicator;
-
-impl letibot_tools::Adjudicator for SubagentAdjudicator {
-    fn decide(
-        &self,
-        req: &letibot_tools::AdjudicationRequest,
-    ) -> letibot_tools::AdjudicationDecision {
-        letibot_tools::AdjudicationDecision::unavailable(
-            req,
-            "subagent",
-            "a subagent has no operator to ask; the inherited permission rules decide, \
-             and an ask is denied (fail closed)",
-        )
-    }
-
-    fn describe(&self) -> String {
-        "subagent — inherited permission rules decide; asks are denied".into()
-    }
-}
-
 /// The real `task` runner: spawns a **persistent subagent session** and runs it to
 /// completion, returning the subagent's final answer to the parent.
 ///
 /// A subagent is a full session — its own hub (an operator can attach and message
 /// it), its own store row (it survives the daemon and can be resumed), and its own
 /// harness — not an ephemeral nested turn. It inherits the parent's permission
-/// ruleset and mode, so its calls are governed by the same allow/deny/ask rules,
-/// but it can never ask the operator: an `ask` fails closed on
-/// [`SubagentAdjudicator`].
+/// ruleset and mode, so its calls are governed by the same allow/deny/ask rules, and
+/// what reaches an `ask` is posted to the tree's ROOT: the operator's ruling is that a
+/// subagent's ask *"should surface to the parent head all the way to the root
+/// obviously"*, so [`crate::answers::SubagentAdjudicator`] is what it opens with.
 ///
 /// The subagent seats [`Seat::Coder`] (read, write, edit, grep, glob) — nothing
 /// that spawns further subagents — so delegation is one level by construction, not
@@ -7481,6 +7494,16 @@ struct HarnessTaskRunner {
     /// already carries the tree's root as its ring target — so a `Parts` built for a
     /// grandchild inherits the root all the way down without a parent-chain walk.
     tree_watch: Arc<std::sync::Mutex<Option<Arc<crate::jobwatch::JobWatchers>>>>,
+    /// **The head's answers a child of THIS session asks through** — the ask route's
+    /// half of R58, and the same slot shape as `tree_watch` for the same reason: the
+    /// runner is built before the gate that creates them.
+    ///
+    /// For a root this is the `Answers` of its own head adjudicator; for a child it is
+    /// the one inherited from the tree, which is the ROOT's — so a grandchild's card
+    /// reaches the same head a child's does, with no parent-chain walk. `None` is a
+    /// tree with no head-wired adjudicator at all, and a child then refuses by name
+    /// rather than posting a card nothing can settle.
+    head_answers: Arc<std::sync::Mutex<Option<Arc<crate::answers::Answers>>>>,
     /// **The daemon's own server window, as this session last knew it** — `None` until
     /// the session first switches away from local, and the server's window once it has.
     ///
@@ -7862,6 +7885,39 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     }
 }
 
+/// **Where a subagent's ask goes: the tree's ROOT, and the answers that settle it.**
+///
+/// One function because two decisions are one fact — *which session the card is posted to*
+/// and *which sink can settle it* — and separating them is how a card ends up on a queue
+/// whose only listener cannot answer it. It is split out of the spawn so the addressing can
+/// be tested without a model turn, which is the only way anything inside that function can.
+///
+/// **The root is read, not walked for.** `tree` is the watcher set a child of this session
+/// joins, whose ring target is the tree's ROOT at every depth (R58) — so the one field that
+/// says which session the bell wakes says which session has the head a card can be drawn by,
+/// and the card and the bell cannot name different sessions. `None` is a session with no tree
+/// above it, and then its parent IS the tree's root.
+///
+/// The hub is resolved by that id. `None` — a root this daemon does not hold, or a tree with
+/// no head-wired adjudicator — is a refusal by name rather than a card nothing could settle.
+fn subagent_ask_target(
+    registry: &letibot_sessionlog::registry::Registry,
+    tree: Option<&crate::jobwatch::JobWatchers>,
+    parent: &str,
+    answers: Option<&Arc<crate::answers::Answers>>,
+) -> (String, Option<crate::answers::HeadAdjudicator>) {
+    let root = tree
+        .map(|w| w.tree_root().to_string())
+        .unwrap_or_else(|| parent.to_string());
+    let head = match (registry.get(&root), answers) {
+        (Some(hub), Some(answers)) => {
+            Some(crate::answers::HeadAdjudicator::new(hub, answers.clone()))
+        }
+        _ => None,
+    };
+    (root, head)
+}
+
 impl HarnessTaskRunner {
     fn run_to_completion(
         &self,
@@ -8057,13 +8113,49 @@ impl HarnessTaskRunner {
             // pushed into this list is collectable and killable by the root, which is the
             // session the tree's wake is delivered to.
             tree_slots: Some(self.slots.clone()),
+            // **And the tree's head answers** (R58's ask route). A child has no head, so what
+            // reaches an `ask` is posted to the tree's ROOT — and the root's `Answers` is
+            // what settles it. Handed down through `Parts` exactly as the watcher set and
+            // the handle list are, so a grandchild reaches the same root with no
+            // parent-chain walk. `None` is a tree with no head-wired adjudicator, and the
+            // child's adjudicator then refuses by name instead of posting a card nothing
+            // could answer.
+            tree_head: self
+                .head_answers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         };
+
+        // **The child's adjudicator: its asks surface at the tree's ROOT.** The operator's
+        // ruling, and the whole of what changed here — a child used to deny every `ask` on a
+        // policy (`a subagent has no operator to ask`), and now the card goes to the session
+        // whose head exists and the operator's answer comes back as the child's decision.
+        // The addressing itself is [`subagent_ask_target`], which says why the root comes
+        // from the watcher set rather than from the parent chain.
+        let (sub_tree_root, sub_head) = subagent_ask_target(
+            &self.registry,
+            parts.tree_watch.as_deref(),
+            &parent,
+            parts.tree_head.as_ref(),
+        );
+        let sub_adjudicator = crate::answers::SubagentAdjudicator::new(
+            letibot_sessionlog::event::SubagentAsk {
+                handle: sub_id.clone(),
+                // The task's first line — the same title the picker row and the parent's
+                // `Subagent` event carry, so the card names the child the way every other
+                // surface does.
+                task: title.clone(),
+                root: sub_tree_root.clone(),
+            },
+            sub_head,
+        );
 
         let mut sub = Harness::open_with_registry(
             &parts,
             sub_cfg,
             sub_hub.clone(),
-            Some(Box::new(SubagentAdjudicator)),
+            Some(Box::new(sub_adjudicator)),
             None,
             self.registry.clone(),
         )
@@ -8525,6 +8617,79 @@ mod subagent_model_tests {
 
 #[cfg(test)]
 mod tests {
+    /// **A subagent's ask is addressed to the tree's ROOT, never to its parent** — R58's ask
+    /// route, and the one sentence in the spawn that has to be right for a card to reach a
+    /// head at all.
+    ///
+    /// The GRANDCHILD case is what decides it: at depth ≥ 1 the parent is itself a child, so
+    /// addressing the parent would post the card on a session no head can be attached to and
+    /// no worker drives — a card nobody would ever see, which is the defect this whole change
+    /// is against. The fixture is therefore a root, a child and a grandchild, built the way
+    /// `jobwatch`'s settlement test builds them.
+    #[test]
+    fn a_subagents_ask_is_addressed_to_the_tree_root_and_not_to_its_parent() {
+        use letibot_sessionlog::registry::{Registry, SessionWiring};
+
+        let registry = Registry::new();
+        // The root is the session a daemon drives; the child and the grandchild are the ones
+        // it does not. All three are registered, which is what `adopt` does at a spawn.
+        let root_hub = registry
+            .create("s-root", "", SessionWiring::default())
+            .expect("the root registers");
+        let _child_hub = registry
+            .create_under(
+                "s-child",
+                "",
+                SessionWiring::default(),
+                Some("s-root".into()),
+            )
+            .expect("the child registers");
+        let grandchild_hub = registry
+            .create_under(
+                "s-child-sub-1",
+                "",
+                SessionWiring::default(),
+                Some("s-child".into()),
+            )
+            .expect("the grandchild registers");
+
+        // The answers the whole tree reaches: the root's own, handed down through `Parts`.
+        let answers = Some(Arc::new(crate::answers::Answers::new()));
+        // The grandchild's set is built FROM the root's, which is what gives it the root's
+        // ring target — the same set `Parts` carries for a grandchild.
+        let root_watch = crate::jobwatch::JobWatchers::watching_tasks(&root_hub, None);
+        let grandchild_watch = crate::jobwatch::JobWatchers::watching_tasks(&grandchild_hub, None)
+            .shares_tree(&root_watch);
+
+        let (root, head) = subagent_ask_target(
+            &registry,
+            Some(&grandchild_watch),
+            "s-child",
+            answers.as_ref(),
+        );
+        assert_eq!(
+            root, "s-root",
+            "the card was addressed to the parent, not to the tree's root"
+        );
+        assert!(
+            head.is_some(),
+            "the root's answers did not reach the child's ask"
+        );
+
+        // **A tree with no head-wired adjudicator**: no card is posted, and the child's own
+        // refusal names the root instead (see `answers::SubagentAdjudicator`).
+        let (root, head) = subagent_ask_target(&registry, Some(&grandchild_watch), "s-child", None);
+        assert_eq!(root, "s-root");
+        assert!(head.is_none());
+
+        // **A root this daemon does not hold** — a harness with no daemon behind it, or a
+        // registry that has lost the session — is the same refusal rather than a card on a
+        // hub nothing will read. With no watcher set at all, the parent IS the tree's root.
+        let (root, head) = subagent_ask_target(&registry, None, "s-absent", answers.as_ref());
+        assert_eq!(root, "s-absent");
+        assert!(head.is_none(), "a hub nobody holds cannot answer");
+    }
+
     /// **A row announced through a capturing sink is filled by the pairing rule, and
     /// body-less without it** — the compaction defect at the smallest size there is.
     ///

@@ -83,6 +83,18 @@ pub struct OpenDecision {
     pub req_id: String,
     pub kind: String,
     pub call_id: Option<String>,
+    /// **A subagent's call, when this card is not this session's own.**
+    ///
+    /// `Some` for a card a child's gate posted here (the tree's root), because a
+    /// child has no head — see [`crate::event::SubagentAsk`] for the ruling, and for
+    /// why a card that arrived unlabelled would be answered for the wrong thing.
+    ///
+    /// Held on the view rather than re-derived, like every other field here: a head
+    /// that worked out which session a call belonged to from the ids would be
+    /// rendering a guess about attribution. `None` is *this session's own call*,
+    /// which is every card from a daemon older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<crate::event::SubagentAsk>,
     /// The tool's declared access — `read | write | exec | network` — so a head can
     /// say WHY the card is asking when it is the declaration that asks. See
     /// [`crate::event::SessionEvent::DecisionRequested`] for the argument; empty from a
@@ -489,6 +501,7 @@ impl SessionView {
                 advice,
                 deadline,
                 on_timeout,
+                subagent,
                 ..
             } => {
                 self.open.retain(|d| &d.req_id != req_id);
@@ -497,6 +510,7 @@ impl SessionView {
                     req_id: req_id.clone(),
                     kind: kind.clone(),
                     call_id: call_id.clone(),
+                    subagent: subagent.clone(),
                     access: access.clone(),
                     summary: summary.clone(),
                     target: target.clone(),

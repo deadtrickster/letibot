@@ -5047,6 +5047,7 @@ impl App {
                 advice,
                 deadline,
                 on_timeout,
+                subagent,
                 ..
             } => {
                 self.open.retain(|d| d.req_id != req_id);
@@ -5069,6 +5070,7 @@ impl App {
                     advice,
                     deadline,
                     on_timeout,
+                    subagent,
                     // Not `ts`. A head renders how long a decision has been waiting
                     // from the view's own stamp, and this arm is the live one — the
                     // snapshot path at `apply` carries the real `asked_ts`.
@@ -14677,6 +14679,31 @@ impl App {
             sgr::YELLOW,
             &format!("? {headline} [{}]", d.kind),
         )];
+        // **Whose call this is, when it is not this session's own.**
+        //
+        // R58's tree gives a child no head, so a subagent's gate posts its card here, to
+        // the ROOT — the operator's ruling: *"who asks subagents permissions? i think they
+        // should surface to the parent head all the way to the root obviously"*. Without
+        // this clause the card above is indistinguishable from one this session's own
+        // model raised, and **a card answered for the wrong thing is the defect**: a
+        // person must be able to see which conversation they are approving before they
+        // pick an option.
+        //
+        // **Directly under the question, not below the evidence.** It changes what is
+        // being decided, so it is read on the same pass of the eye as the question; under
+        // a wall of layer A's prose it would be read after the answer was already chosen.
+        // The faint register, like every other clause on this card — it is attribution,
+        // not a second question.
+        if let Some(s) = &d.subagent {
+            let said = if s.task.is_empty() {
+                format!("    a subagent's call — {}", s.handle)
+            } else {
+                format!("    a subagent's call — {} · {}", s.handle, s.task)
+            };
+            for l in wrap(&without_control_lines(&said), w) {
+                out.push(colour(&self.cfg, sgr::DIM, &l));
+            }
+        }
         if !d.target.is_empty() {
             for l in wrap(&format!("    {}", d.target), w) {
                 // Bold rather than yellow: the question is yellow, and the thing
@@ -20303,6 +20330,9 @@ mod tests {
             choices: vec![],
             because: String::new(),
             advice: None,
+            // The fixture is this session's own call — see `SubagentAsk` for the card a
+            // child's gate posts here instead.
+            subagent: None,
             deadline: None,
             on_timeout: letibot_sessionlog::event::OnTimeout::Deny,
             asked_ts: 0,
@@ -20357,16 +20387,73 @@ mod tests {
         assert!(because_at < ladder_at, "{drawn}");
     }
 
-    /// **A card nobody took to an oracle says so, and a card that did does not.**
+    /// **A card that is a subagent's call says so, and names the child.**
     ///
-    /// The two silences are different facts and they rendered identically: under
-    /// `/mode supervised` the question printed above the ladder is *do you agree with
-    /// the model*, and a card with no verdict on it makes *no oracle was consulted*
-    /// and *the oracle was asked and said nothing* the same screen. The operator hit
-    /// the live half of it — an oracle answered and its verdict was unreadable, and
-    /// the card said so — while the card nobody had asked said exactly the same
-    /// nothing.
+    /// The operator's ruling is that a subagent's ask surfaces at the root's head — *"who
+    /// asks subagents permissions? i think they should surface to the parent head all the way
+    /// to the root obviously"*. R58 gives a child no head, so its card arrives on THIS
+    /// session's screen, and **an unlabelled card is answered for the wrong thing**: the
+    /// question and the ladder are the same either way, and this clause is the only thing
+    /// that says whose call it is.
     #[test]
+    fn the_card_says_when_the_call_is_a_subagents_and_names_it() {
+        use letibot_sessionlog::event::{OptionKind, SubagentAsk};
+        let a = app();
+
+        // This session's own call: no clause at all. A `None` that still drew a line would be
+        // furniture on every ordinary card.
+        let mine = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        let drawn = a.decision_lines(&mine, 100).join("\n");
+        assert!(!drawn.contains("a subagent's call"), "{drawn}");
+
+        let mut child = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        child.subagent = Some(SubagentAsk {
+            handle: "s-sub-3".into(),
+            task: "count the rows the store never reads".into(),
+            root: "s-root".into(),
+        });
+        let drawn = a.decision_lines(&child, 100).join("\n");
+        // The handle — what `task_result` collects by and what a head attaches to — and the
+        // task, so two children of one session are told apart.
+        assert!(drawn.contains("a subagent's call — s-sub-3"), "{drawn}");
+        assert!(
+            drawn.contains("count the rows the store never reads"),
+            "{drawn}"
+        );
+        // **Above the ladder**, so it is read on the same pass of the eye as the question:
+        // under the wall it would be read after the answer was already chosen.
+        let clause = drawn.find("a subagent's call").unwrap();
+        let ladder = drawn.find("allow_once").unwrap();
+        assert!(clause < ladder, "{drawn}");
+        // In the faint register, like every other clause on this card. Checked on a head that
+        // emits colour, since these layout tests deliberately do not.
+        let painted = App::new(RenderConfig {
+            width: 100,
+            color: true,
+            ..RenderConfig::default()
+        });
+        let line = painted
+            .decision_lines(&child, 100)
+            .into_iter()
+            .find(|l| l.contains("a subagent's call"))
+            .expect("the row");
+        assert!(line.contains(sgr::DIM), "not in the dim register: {line:?}");
+        // A child whose task the daemon never sent draws the handle alone, rather than a
+        // dangling separator after it.
+        let mut bare = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+        bare.subagent = Some(SubagentAsk {
+            handle: "s-sub-4".into(),
+            task: String::new(),
+            root: "s-root".into(),
+        });
+        let drawn = a.decision_lines(&bare, 100).join("\n");
+        assert!(drawn.contains("a subagent's call — s-sub-4"), "{drawn}");
+        assert!(
+            !drawn.contains("— s-sub-4 ·"),
+            "a task nobody sent was invented: {drawn}"
+        );
+    }
+
     /// **§11.7: the card says WHY it is asking, and only where the reason is true.**
     ///
     /// R18's last wording item. The headline says what the tool **declares** (`wants exec
@@ -20411,6 +20498,16 @@ mod tests {
         assert!(!drawn.contains("the access is what asks"), "{drawn}");
     }
 
+    /// **A card nobody took to an oracle says so, and a card that did does not.**
+    ///
+    /// The two silences are different facts and they rendered identically: under
+    /// `/mode supervised` the question printed above the ladder is *do you agree with
+    /// the model*, and a card with no verdict on it makes *no oracle was consulted*
+    /// and *the oracle was asked and said nothing* the same screen. The operator hit
+    /// the live half of it — an oracle answered and its verdict was unreadable, and
+    /// the card said so — while the card nobody had asked said exactly the same
+    /// nothing.
+    #[test]
     fn a_card_that_was_never_taken_to_an_oracle_says_so_and_one_that_was_does_not() {
         use letibot_sessionlog::event::OptionKind;
         let a = app();
@@ -22175,6 +22272,7 @@ mod tests {
                 choices: Vec::new(),
                 because: String::new(),
                 advice: None,
+                subagent: None,
                 deadline: None,
                 on_timeout: letibot_sessionlog::event::OnTimeout::Deny,
             },
@@ -25228,6 +25326,7 @@ mod tests {
                     latency_ms: 2_100,
                     unsure: None,
                 }),
+                subagent: None,
                 deadline: None,
                 on_timeout: letibot_sessionlog::event::OnTimeout::Deny,
             },
@@ -33830,6 +33929,7 @@ mod tests {
                 choices: Vec::new(),
                 because: String::new(),
                 advice: None,
+                subagent: None,
                 deadline: None,
                 on_timeout: d.on_timeout,
             },
@@ -34044,6 +34144,7 @@ mod tests {
                 choices: Vec::new(),
                 because: String::new(),
                 advice: None,
+                subagent: None,
                 deadline: None,
                 on_timeout: d.on_timeout,
             },

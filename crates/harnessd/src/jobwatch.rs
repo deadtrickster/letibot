@@ -406,6 +406,20 @@ impl JobWatchers {
         self.take_completions()
     }
 
+    /// **The session at the top of this tree** — the ROOT, which is where a subagent's ask
+    /// belongs.
+    ///
+    /// The same one field the ring names ([`JobWatchers::shares_tree`] hands a child its
+    /// root's target and leaves `me` alone), read here for a second purpose and for the same
+    /// reason: the operator's ruling is that a subagent's permission ask *"should surface to
+    /// the parent head all the way to the root obviously"*, and a child has no head. The one
+    /// session in a subagent tree that does is the one `Sessions::open` holds — which is
+    /// exactly this name. It is read rather than re-derived so that the bell and the card
+    /// cannot come to disagree about which session is the root.
+    pub fn tree_root(&self) -> &str {
+        &self.wake_target
+    }
+
     /// **Is this job's completion already on its way to the model?**
     ///
     /// True while a watcher thread is blocked on the job. That thread publishes the

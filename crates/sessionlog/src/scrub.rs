@@ -428,6 +428,7 @@ mod tests {
             choices: vec![],
             because: String::new(),
             advice: None,
+            subagent: None,
             deadline: Some(1),
             on_timeout: OnTimeout::Deny,
         });

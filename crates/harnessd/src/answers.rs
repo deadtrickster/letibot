@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 
 use letibot_sessionlog::event::{
     Decider, DecisionOption, DecisionOutcome as WireOutcome, ModelAdvice as WireAdvice,
-    OnTimeout as WireOnTimeout, OptionKind, SessionEvent,
+    OnTimeout as WireOnTimeout, OptionKind, SessionEvent, SubagentAsk,
 };
 use letibot_sessionlog::hub::{AnswerSink, Hub, Reply};
 use letibot_tools::adjudicate::{
@@ -186,23 +186,22 @@ impl Answers {
     /// posted at all: a session whose only head is a read-only connector cannot
     /// answer, and posting to it and then sitting out the deadline would report a
     /// timeout about a question nobody was ever asked.
+    ///
+    /// `subagent` is who is asking, when it is not this session's own call: a child's
+    /// gate with no head of its own, posting its card to the tree's ROOT — the session
+    /// whose head exists. See [`SubagentAsk`] for the ruling. `None` is every ask this
+    /// daemon made before that existed, and the card then says nothing about attribution.
     pub fn ask(
         &self,
         hub: &Arc<Hub>,
         req: &AdjudicationRequest,
         budget: Duration,
+        subagent: Option<&SubagentAsk>,
     ) -> AdjudicationDecision {
         let started = Instant::now();
         let who = hub.deciding_heads();
         if who.is_empty() {
-            return AdjudicationDecision::unavailable(
-                req,
-                "gate:no-head",
-                "no head that can answer is attached to this session, so nothing was \
-                 asked and nobody decided. The gate fails closed: nothing ran and \
-                 nothing changed. Attach a head, or run this seat in a foreground \
-                 terminal where the console adjudicator can reach a person.",
-            );
+            return AdjudicationDecision::unavailable(req, "gate:no-head", &no_head(subagent));
         }
 
         let deadline_ms = unix_millis() + budget.as_millis() as u64;
@@ -211,13 +210,19 @@ impl Answers {
             let mut g = self.lock();
             g.insert(req.id.clone(), Slot::Waiting);
             drop(g);
-            hub.publish(pose(req, deadline_ms));
+            hub.publish(pose(req, deadline_ms, subagent));
             // **The yellow card says why it is yellow.** The call is still
             // `Proposed` — `ToolStarted` fires only after the gate admits — so
             // this note is the only thing on the card that explains the wait,
             // and the operator's report was *"some tool calls stay yellow, no
             // idea what that means"*. The ask renders in the chrome; the note
             // renders on the call, where the eye already is.
+            //
+            // **A subagent's note lands where its card did**, on the root's hub, and the
+            // root has no such call — a head looks the id up, finds nothing and drops the
+            // note. That is the honest place for it (it travels with the card, and the
+            // child's own card is on a screen no head is watching), and the wait is still
+            // visible on the card itself, which carries the deadline.
             hub.publish(SessionEvent::ToolProgress {
                 turn_id: req.turn_id.clone(),
                 call_id: req.call_id.clone(),
@@ -378,10 +383,53 @@ fn settle(
     }
 }
 
+/// **The sentence a gate gets when nobody at the head can answer.**
+///
+/// A fact, not a policy — and for a subagent it is a different fact, told differently: the
+/// card is not this session's to draw, so the refusal has to say *which session it belongs
+/// to*, that no head is attached there, and what the child should do about it.
+///
+/// **"Stop and report" rather than "retry", and the reason is the shape of the failure**: a
+/// retry reaches the same unattended session and costs another deadline, so a child that
+/// retried would burn its whole turn proving the same fact. What it can do instead is tell
+/// whoever asked for the work, who is the only party that can attach a head.
+fn no_head(subagent: Option<&SubagentAsk>) -> String {
+    let Some(s) = subagent else {
+        return "no head that can answer is attached to this session, so nothing was \
+                asked and nobody decided. The gate fails closed: nothing ran and \
+                nothing changed. Attach a head, or run this seat in a foreground \
+                terminal where the console adjudicator can reach a person."
+            .to_string();
+    };
+    let task = if s.task.is_empty() {
+        String::new()
+    } else {
+        format!(" — `{}`", s.task)
+    };
+    format!(
+        "this is subagent `{}`'s call{task}, and its card belongs on session `{}`: the root \
+         of its tree, which is the only session in a subagent tree with a head to draw it \
+         (a child has none of its own). No head that can answer is attached there, so \
+         nothing was asked and nobody decided. The gate fails closed: nothing ran and \
+         nothing changed. Attaching a head to that session is the operator's move; the \
+         subagent's is to STOP AND REPORT this call rather than retry it — a retry reaches \
+         the same unattended session.",
+        s.handle, s.root
+    )
+}
+
 /// The `DecisionRequested` a head renders.
-fn pose(req: &AdjudicationRequest, deadline_ms: u64) -> SessionEvent {
+///
+/// `subagent` is carried straight onto the card: a child's gate posts its card to the tree's
+/// ROOT, and a card that arrived there unlabelled would be answered for the wrong thing.
+fn pose(
+    req: &AdjudicationRequest,
+    deadline_ms: u64,
+    subagent: Option<&SubagentAsk>,
+) -> SessionEvent {
     SessionEvent::DecisionRequested {
         req_id: req.id.clone(),
+        subagent: subagent.cloned(),
         kind: match req.kind {
             RequestKind::Permission => "permission".into(),
             RequestKind::Question => "question".into(),
@@ -563,19 +611,34 @@ impl HeadAdjudicator {
         self.budget = budget;
         self
     }
-}
 
-impl Adjudicator for HeadAdjudicator {
-    fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+    /// **The ask itself, with the caller's own attribution.**
+    ///
+    /// `None` is this session's own call, which is every card before R58's ask route
+    /// existed. `Some` is a subagent's, posted to the session whose head this is — the
+    /// only difference between the two, and it is one parameter rather than a second
+    /// adjudicator because the bookkeeping below (what the person was shown, the glob
+    /// they typed) is the same bookkeeping and must not be written twice.
+    pub fn decide_as(
+        &self,
+        req: &AdjudicationRequest,
+        subagent: Option<&SubagentAsk>,
+    ) -> AdjudicationDecision {
         *self.shown.lock().unwrap_or_else(|e| e.into_inner()) = Some(req.brief());
         // **Cleared before the ask, not after.** A pattern left over from the
         // previous answer would be applied to this one, which is a rule the operator
         // did not write for a call they were not looking at when they typed it.
         *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        let d = self.answers.ask(&self.hub, req, self.budget);
+        let d = self.answers.ask(&self.hub, req, self.budget, subagent);
         *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) =
             self.answers.take_pattern(&req.id);
         d
+    }
+}
+
+impl Adjudicator for HeadAdjudicator {
+    fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+        self.decide_as(req, None)
     }
 
     fn describe(&self) -> String {
@@ -607,6 +670,93 @@ impl Adjudicator for HeadAdjudicator {
 
     fn last_brief(&self) -> Option<String> {
         self.shown.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// **A subagent's gate, asking the head at the ROOT of its tree.**
+///
+/// The operator, on who a subagent's ask belongs to: *"who asks subagents permissions? i
+/// think they should surface to the parent head all the way to the root obviously"*. A child
+/// has no head attached and **cannot be driven** — it is adopted into the session registry and
+/// not into `Sessions::open`, so `Sessions::wake` returns `Ignored` for it (R58) — so its
+/// gate's card is posted to the one session in the tree that does have a head: the root.
+///
+/// This is deliberately **not a second mechanism**: it is a [`HeadAdjudicator`] over the
+/// root's hub and the root's answers, with the child's own name on the card and on the
+/// refusal. Everything about the ask — the slot, the rendezvous, the deadline, the close, the
+/// recorded brief and glob — is that one implementation, which is what makes a child's answer
+/// the same answer the root would have got.
+///
+/// **What it does not do: make the child drivable.** Nothing here touches `Sessions::open`,
+/// the child's watcher set or its ring target; the card travels and the answer comes back on
+/// the asking thread, exactly as a root's does. R58 is untouched.
+///
+/// `head` is `None` when the tree has no head-wired adjudicator at all — a root run with
+/// `--adjudicator console`, or one whose answers a child cannot reach. There is then nothing
+/// to post to, and the refusal says which session it would have been and that the child should
+/// stop and report rather than retry.
+pub struct SubagentAdjudicator {
+    /// Who is asking: the child's handle, its task, and the root it belongs to.
+    child: SubagentAsk,
+    /// The tree's answer path, when there is one.
+    head: Option<HeadAdjudicator>,
+}
+
+impl SubagentAdjudicator {
+    pub fn new(child: SubagentAsk, head: Option<HeadAdjudicator>) -> SubagentAdjudicator {
+        SubagentAdjudicator { child, head }
+    }
+
+    /// **No head-wired adjudicator in this tree, said as the fact it is.**
+    ///
+    /// `by` is `gate:no-head`, the same word the root's own no-head refusal uses, because it
+    /// is the same fact one level over: the gate could not ask anybody. The child's handle,
+    /// its task and the session the card would belong to are all in the basis, because a
+    /// refusal that does not name where it failed is one nobody can act on.
+    fn no_path(&self) -> String {
+        let task = if self.child.task.is_empty() {
+            String::new()
+        } else {
+            format!(" — `{}`", self.child.task)
+        };
+        format!(
+            "this is subagent `{}`'s call{task}, and there is nobody to ask: its card would be \
+             posted to session `{}`, the root of its tree, and that session has no head-wired \
+             adjudicator at all — so there is no head to reach at any depth up to the root. \
+             The gate fails closed: nothing ran and nothing changed. The child should STOP AND \
+             REPORT this call rather than retry it: a retry finds the same empty tree. A root \
+             that does have one (`--adjudicator head`, or `model` with no oracle answer) is the \
+             configuration this ask needs.",
+            self.child.handle, self.child.root
+        )
+    }
+}
+
+impl Adjudicator for SubagentAdjudicator {
+    fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+        match &self.head {
+            Some(head) => head.decide_as(req, Some(&self.child)),
+            None => AdjudicationDecision::unavailable(req, "gate:no-head", &self.no_path()),
+        }
+    }
+
+    /// **Never starts with `none`**: that prefix is the harness's own signal for *nobody
+    /// reachable, refuse to open a gated session*, and a subagent does have a decider — the
+    /// ruleset it inherited. What reaches this adjudicator is only what that ruleset left as
+    /// `ask`, and that now goes to the tree's root.
+    fn describe(&self) -> String {
+        match &self.head {
+            Some(_) => format!(
+                "subagent `{}` — its asks surface at the head over session `{}`, the root of \
+                 its tree; the inherited permission rules decide the rest",
+                self.child.handle, self.child.root
+            ),
+            None => format!(
+                "subagent `{}` — no head-wired adjudicator in its tree, so an ask fails \
+                 closed (session `{}` is the root it would have been posted to)",
+                self.child.handle, self.child.root
+            ),
+        }
     }
 }
 
@@ -770,6 +920,14 @@ mod tests {
             while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
                 let open = hub2.snapshot().open_decisions;
                 if let Some(d) = open.first() {
+                    // **And it is this session's own card**, not a subagent's: the new
+                    // attribution field is `None` for every ask that is not a child's, which
+                    // is what keeps the clause off every card that never needed it.
+                    assert!(
+                        d.subagent.is_none(),
+                        "this session's own call was labelled a subagent's: {:?}",
+                        d.subagent
+                    );
                     hub2.submit(
                         &head_id,
                         "c1",
@@ -885,6 +1043,183 @@ mod tests {
             .expect("posing an ask published a note on the call");
         assert!(note.contains("waiting for you"), "{note}");
         assert!(note.contains("nothing runs"), "{note}");
+    }
+
+    // ------------------------------------------------- a subagent's card (R58's ask route)
+
+    /// The child every one of these tests is about: a real handle, a real task, and the root
+    /// whose head its card belongs on.
+    fn child_ask() -> SubagentAsk {
+        SubagentAsk {
+            handle: "s-sub-3".into(),
+            task: "count the rows the store never reads".into(),
+            root: "root".into(),
+        }
+    }
+
+    /// **A child's ask is the ROOT's card, named, and the answer comes back to the child.**
+    ///
+    /// The operator's ruling, verbatim: *"who asks subagents permissions? i think they should
+    /// surface to the parent head all the way to the root obviously"*. A child has no head
+    /// attached and cannot be driven, so its gate's ask is posted to the session that does
+    /// have one — and the operator has to be able to tell it from that session's own call,
+    /// or the card is answered for the wrong thing.
+    #[test]
+    fn a_subagents_ask_lands_on_the_roots_card_and_the_answer_comes_back() {
+        let root = Hub::new("root");
+        let answers = Arc::new(Answers::new());
+        root.set_answer_sink(answers.clone());
+        let head = root.attach("tui", "deadtrickster", Caps::default(), 0);
+        // The child's own session, with NOTHING installed on it: a head could attach there,
+        // and no card belongs there.
+        let child = Hub::new("s-sub-3");
+
+        let budget = Duration::from_secs(10);
+        let adj = SubagentAdjudicator::new(
+            child_ask(),
+            Some(HeadAdjudicator::new(root.clone(), answers.clone()).with_budget(budget)),
+        );
+        let mut req = request();
+        req.id = "adj-s-sub-3-0001".into();
+        req.session_id = "s-sub-3".into();
+
+        // **The head's side, on its own thread** — the same thread the root's own ask is
+        // answered on, reading the card off the ROOT and answering through the ROOT's head.
+        let root2 = root.clone();
+        let child2 = child.clone();
+        let head_id = head.head_id.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let answerer = std::thread::spawn(move || {
+            while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+                let open = root2.snapshot().open_decisions;
+                if let Some(d) = open.first() {
+                    // **Nothing was posted to the child.** The card belongs to the session
+                    // whose head exists; a card on a session nothing drives would sit open
+                    // for the life of the tree.
+                    assert!(
+                        child2.snapshot().open_decisions.is_empty(),
+                        "a subagent's ask was posted to the subagent's own session"
+                    );
+                    let seen = d.subagent.clone();
+                    root2.submit(
+                        &head_id,
+                        "c1",
+                        0,
+                        letibot_sessionlog::hub::CommandKind::Answer {
+                            req_id: d.req_id.clone(),
+                            reply: Reply::Permission {
+                                option_id: "allow_once".into(),
+                                pattern: None,
+                                note: None,
+                            },
+                        },
+                    );
+                    return seen;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            None
+        });
+
+        let d = adj.decide(&req);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let seen = answerer
+            .join()
+            .unwrap()
+            .expect("the head never got a card to answer: {d:?}");
+
+        // **The card named the CHILD, its task and the session it belongs to** — the three
+        // facts that stop it reading as the root's own call.
+        assert_eq!(seen, child_ask());
+        // **And the child's gate got the operator's own answer**, acting on it exactly as the
+        // root would have.
+        assert_eq!(
+            d.outcome,
+            DecisionOutcome::Selected {
+                option_id: "allow_once".into()
+            },
+            "{d:?}"
+        );
+        assert!(d.by.contains("deadtrickster"), "{}", d.by);
+        // Answered on the root's queue, so the row is off the root's screen either way.
+        assert!(open_of(&root).is_empty());
+        assert!(open_of(&child).is_empty());
+    }
+
+    /// **Nobody at the root to answer: the refusal is a fact, by name.**
+    ///
+    /// The old sentence was a policy about subagents — *"a subagent has no operator to ask; an
+    /// ask is denied"* — which said nothing about where the ask went or what the child should
+    /// do. This one names the child, the session its card belongs to, that no head is attached
+    /// there, and that the child should stop and report rather than retry.
+    #[test]
+    fn a_subagents_ask_with_nobody_at_the_root_refuses_by_name() {
+        let root = Hub::new("root");
+        let answers = Arc::new(Answers::new());
+        root.set_answer_sink(answers.clone());
+        // A read-only head is not somebody who can answer — the sibling test above's premise,
+        // and here it is the ROOT's state, which is what the child has to be told about.
+        root.attach(
+            "flowy",
+            "room:general",
+            Caps {
+                can_decide: false,
+                ..Caps::default()
+            },
+            0,
+        );
+        let child = Hub::new("s-sub-3");
+        let adj = SubagentAdjudicator::new(
+            child_ask(),
+            Some(HeadAdjudicator::new(root.clone(), answers).with_budget(Duration::from_secs(30))),
+        );
+        let started = Instant::now();
+        let d = adj.decide(&request());
+        assert!(started.elapsed() < Duration::from_secs(5), "it waited");
+        assert_eq!(d.outcome, DecisionOutcome::Unavailable);
+        assert!(d.by.starts_with("gate:no-head"), "{}", d.by);
+        // Which child, which session the card belongs to, that nothing was asked, and what to
+        // do about it.
+        for want in [
+            "s-sub-3",
+            "root",
+            "nothing was asked",
+            "STOP AND REPORT",
+            "rather than retry",
+        ] {
+            assert!(d.basis.contains(want), "{want:?} is not in {:?}", d.basis);
+        }
+        // **Refused before the post**, so no card is left open on a session nothing will
+        // answer — on either queue.
+        assert!(open_of(&root).is_empty());
+        assert!(open_of(&child).is_empty());
+    }
+
+    /// **A tree with no head-wired adjudicator at all**, which is a different fact from a root
+    /// whose head is not attached right now — and it is the one the child can do nothing about.
+    #[test]
+    fn a_subagent_in_a_tree_with_no_head_adjudicator_refuses_by_name() {
+        let adj = SubagentAdjudicator::new(child_ask(), None);
+        // **Never `none`.** That prefix is the harness's own signal for *nobody reachable,
+        // refuse to open a gated session*, and this adjudicator does have a decider: the
+        // ruleset the child inherited. It simply has nobody to ask.
+        assert!(!adj.describe().starts_with("none"), "{}", adj.describe());
+        assert!(adj.describe().contains("s-sub-3"), "{}", adj.describe());
+        assert!(adj.describe().contains("root"), "{}", adj.describe());
+
+        let d = adj.decide(&request());
+        assert_eq!(d.outcome, DecisionOutcome::Unavailable);
+        assert!(d.by.starts_with("gate:no-head"), "{}", d.by);
+        for want in [
+            "s-sub-3",
+            "root",
+            "no head-wired adjudicator",
+            "STOP AND REPORT",
+            "rather than retry it",
+        ] {
+            assert!(d.basis.contains(want), "{want:?} is not in {:?}", d.basis);
+        }
     }
 
     // ------------------------------------------------------------- escalation
