@@ -628,14 +628,22 @@ pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> Slas
         return SlashReply {
             lines: vec![
                 match now {
-                    Some(d) => format!(
+                    Ok(Some(d)) => format!(
                         "new sessions start on {}{}, from [default] in {path}",
                         d.provider,
                         d.model.map(|m| format!("/{m}")).unwrap_or_default()
                     ),
-                    None => format!(
+                    Ok(None) => format!(
                         "no standing choice in {path}, so a new session starts on the \
                          local server its daemon was launched against"
+                    ),
+                    // The file is there and could not be read: a fault, not an
+                    // absence, so the absence sentence must not be printed. The
+                    // path and the parser's own message are the fix.
+                    Err(u) => format!(
+                        "{u} — the standing choice could not be read, so a new \
+                         session starts on the local server its daemon was launched \
+                         against"
                     ),
                 },
                 "`/default-model PROVIDER[/MODEL]` sets it; `/default-model local` \
@@ -1073,7 +1081,7 @@ mod tests {
             !notes.iter().any(|n| n.contains("standing choice")),
             "{notes:?}"
         );
-        assert!(letibot_provider::keys::default_choice(Some(&f)).is_none());
+        assert!(letibot_provider::keys::default_choice(Some(&f)).unwrap().is_none());
         let (local, _) = models_choice("local", None, None, Some(&f)).unwrap();
         assert_eq!(local, ModelChoice::OwnServer);
         assert!(models_choice("openai", None, None, Some(&f)).unwrap_err()[0].contains("five"));

@@ -647,15 +647,26 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // `/default-model` writes; else the local server this daemon was launched
     // against. Resolved in the binary because it reads the operator's own config
     // file, and a `Harness` that reached for that file made every test inherit it.
-    if cfg.provider.is_none()
-        && let Some(d) = letibot_provider::keys::default_choice(None)
-    {
-        cfg.provider = Some(crate::config::ProviderConfig {
-            name: d.provider,
-            model: d.model,
-            api_key: None,
-            thinking: false,
-        });
+    // The Err is said, not swallowed: a daemon that comes up local while the file
+    // says deepseek is a fault the operator cannot find from the outside. The line
+    // follows the one prompts.toml already gets — the file, the parser's own
+    // message, and what happens instead.
+    if cfg.provider.is_none() {
+        match letibot_provider::keys::default_choice(None) {
+            Ok(Some(d)) => {
+                cfg.provider = Some(crate::config::ProviderConfig {
+                    name: d.provider,
+                    model: d.model,
+                    api_key: None,
+                    thinking: false,
+                });
+            }
+            Ok(None) => {}
+            Err(u) => eprintln!(
+                "  {u} — the standing choice could not be read, so new sessions \
+                 start on the local server this daemon was launched against"
+            ),
+        }
     }
     if let Some(src) = crate::sessions::StoreSessions::open(&cfg) {
         // **One store, two questions** (R19.2b): the same instance lists sessions the
