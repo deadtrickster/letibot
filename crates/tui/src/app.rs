@@ -377,7 +377,8 @@ pub enum Action {
     /// Move this connection to another session.
     Switch(String),
     /// Read a subagent's output without leaving this session: the daemon answers
-    /// with `Peeked`, and the pane the tree's Enter opens is built from it.
+    /// with `Peeked`, and the pane the tree's read key opens is built from it —
+    /// `p` on a subagent row, and `/peek ID` for the typed spelling.
     /// Lazy — nothing is read until this is sent.
     Peek(String),
     /// Read one background job's output into a pane, without leaving this session
@@ -656,11 +657,21 @@ impl Fold {
 /// `Envelope::ts` is on every event and `ToolProgress { note }` was being read and
 /// dropped — and none of them had anywhere to go while a call rendered as one
 /// A subagent this session spawned, as the latest `Subagent` event reported it.
-/// The event is durable and replayed, so a late head rebuilds the same tree.
+///
+/// **The event is durable, and a head that was attached when it happened can replay it —
+/// but a SNAPSHOT does not carry it**, and a head that attached after the spawn has no
+/// event to fold at all. So a row has two possible sources and they are joined in one
+/// place: this shape as the live event reported it, and the same fields as far as the
+/// daemon's own session list can supply them ([`App::fold_subagents`]), which is what a
+/// late head and every switch rebuilds the tree from.
 #[derive(Debug, Clone)]
 struct SubagentState {
     session_id: String,
-    /// `opening` | `running` | `done` | `failed`.
+    /// `opening` | `running` | `done` | `failed`, **or empty**, which is a row rebuilt from the
+    /// daemon's session list for a child this head never watched: that list says whether a turn
+    /// is generating in the session and nothing about how a settled one ended, so an empty word
+    /// draws as `[?] state unknown` rather than as a `done` nobody measured. See
+    /// [`App::fold_subagents`].
     state: String,
     /// **The legacy field, and the pre-`task` fallback**: the subtask's first line on the
     /// opening states, and the child's answer's first line once it has finished. A new
@@ -681,10 +692,10 @@ struct SubagentState {
     answer: Option<String>,
 }
 
-/// What one subagent's Enter opens: its tool output, read out of the subagent's
-/// own scrollback by a `Peek`, shown without moving the head out of the session
-/// it is in. The pane behaves like a terminal — the tail shows by default,
-/// arrows walk back toward the beginning — and the whole view is spilled to a
+/// What one subagent's read key opens — `p` on a row, and `/peek ID` typed: its tool
+/// output, read out of the subagent's own scrollback by a `Peek`, shown without moving
+/// the head out of the session it is in. The pane behaves like a terminal — the tail shows
+/// by default, arrows walk back toward the beginning — and the whole view is spilled to a
 /// file, because a cap on the pane must not be a cap on the record.
 /// **A subprocess's bytes must not drive the operator's terminal.**
 ///
@@ -1190,6 +1201,12 @@ pub struct App {
     sessions: Vec<SessionBrief>,
     /// Subagents this session has spawned, folded from the durable `Subagent`
     /// events. Keyed by session id: a `running` row becomes its `done` row.
+    ///
+    /// **Two sources, one list, and only one of them can be replayed.** The live
+    /// `Subagent` events are the richer half — state, role, answer — and the daemon's
+    /// own session list is the durable half, which is what a fresh or switched head
+    /// rebuilds from; [`App::fold_subagents`] is where the two meet. A list built
+    /// from the events alone was empty for every head that did not watch the spawn.
     subagents: Vec<SubagentState>,
     /// Background jobs this session started, folded from the `Backgrounded`
     /// outcome on a tool finish and the durable `JobSettled` event. In the order
@@ -1751,10 +1768,19 @@ pub struct App {
     /// Which subagent row the cursor is on. Arrows move it, Enter switches to that
     /// subagent's session — the same two acts the picker keeps separate.
     subagents_sel: usize,
-    /// The output view one subagent's Enter opens, until Esc closes it.
+    /// The output view `p` opens on a subagent row, until Esc closes it.
     sub_out: Option<SubOut>,
     /// The subagent whose output was asked for and not yet answered. Esc cancels.
     sub_out_pending: Option<String>,
+    /// **The child this head climbed UP out of** — the session id it left when Esc sent it
+    /// back to the parent, read once by [`App::fold_subagents`] so the cursor lands on the
+    /// row that child owns instead of on row zero.
+    ///
+    /// A row id and not an index for the reason the fold exists at all: the rows are
+    /// rebuilt from the daemon's list the moment the parent's `Hello` lands, and an index
+    /// taken before that rebuild points at whatever the new list happens to have there.
+    /// `None` the rest of the time, which is why it is taken rather than read.
+    up_from: Option<String>,
     /// The job-output view the jobs pane's Enter opens, until Esc returns to the
     /// jobs list. The bytes the pane was counting, finally shown in the pane.
     job_out: Option<JobOut>,
@@ -2846,6 +2872,7 @@ impl App {
             subagents_sel: 0,
             sub_out: None,
             sub_out_pending: None,
+            up_from: None,
             job_out: None,
             todos: Vec::new(),
             repo_todos: None,
@@ -3180,6 +3207,22 @@ impl App {
     /// even scratch session they are session, just sub sessions"*, and *"why readonly? subagent
     /// session is more like you driving others via tmux"*. A session a head can post to, and get an
     /// answer from, is not a row to be filtered — it is a session to be driven.
+    ///
+    /// # Inside a subagent the list is its FAMILY
+    ///
+    /// A head switched into a child used to draw the whole daemon — every conversation, and
+    /// every conversation's children — around a row that was one level down. The operator's
+    /// ask is the narrow one a tree walk implies: *"make sure sessions list (ctrl-s) is
+    /// filtered to the parent and siblings"*, so that is what this is. The parent is the top
+    /// row and its children are under it, **shown whatever the collapse state says**, because
+    /// the filter and the expansion would otherwise be the same gesture twice — a family list
+    /// whose siblings were collapsed into the parent would be a list of one row.
+    ///
+    /// The chain up to where you are is still always shown, and it is here by construction:
+    /// the child you are in *is* one of the listed siblings. `esc` (up) and a row's `enter` walk
+    /// that same edge from the outside, so ctrl-s inside a child answers *where am I* and *who is
+    /// next to me* with one list — while ctrl-s in a conversation still answers *what does this
+    /// daemon hold* under the collapse rule above. Two questions, one enumeration per question.
     fn session_rows(&self) -> Vec<SessionRow> {
         // The chain from the current session up to its root, by id — so the way back to where you
         // are is always on the screen.
@@ -3192,29 +3235,55 @@ impl App {
             cur = p;
         }
         let mut out: Vec<SessionRow> = Vec::new();
+        // **This head is in a subagent**: the parent and its children, and nothing else.
+        if let Some(parent) = self.parent_session() {
+            if let Some(i) = self.sessions.iter().position(|s| s.session_id == parent) {
+                out.push(SessionRow { idx: i, depth: 0 });
+                self.push_children(&mut out, &parent, 1, &path, self.family_open(&parent, 0));
+            }
+            return out;
+        }
         for (i, s) in self.sessions.iter().enumerate() {
             if s.parent_session_id.is_some() {
                 continue;
             }
             out.push(SessionRow { idx: i, depth: 0 });
-            self.push_children(&mut out, &s.session_id, 1, &path);
+            self.push_children(&mut out, &s.session_id, 1, &path, false);
         }
         out
+    }
+
+    /// **Whether a row's children are on the list because this head is standing among them.**
+    ///
+    /// The family view ([`App::session_rows`]) shows the parent's children whatever the collapse
+    /// state says — a family whose members were folded away would be a list of one row — so the
+    /// first level of that view is open by rule rather than by the operator's `→`. One function,
+    /// read by the enumeration **and by the fold glyph the picker draws beside the row**: a `▸`
+    /// next to the rows it is hiding is the one thing this list must not say, and the glyph came
+    /// from the collapse list alone, so a family view drew `▸` over three visible rows. Same rule,
+    /// same reader, which is the `todos_stops` lesson this file already carries.
+    fn family_open(&self, id: &str, depth: usize) -> bool {
+        depth == 0 && self.parent_session().as_deref() == Some(id)
     }
 
     /// A session's children, in the daemon's order, one step deeper — the recursive half of
     /// [`App::session_rows`].
     ///
     /// A child is shown when its parent is expanded **or** when it is on the chain to the current
-    /// session; anything else is collapsed into its parent.
+    /// session; anything else is collapsed into its parent. `force` is [`App::family_open`]'s own
+    /// answer for the family view's first level — see `session_rows` — and it applies to **one
+    /// level only**: a sibling's own children are still folded away until that sibling is
+    /// expanded, which is what keeps the family view a family rather than the whole subtree behind
+    /// it.
     fn push_children(
         &self,
         out: &mut Vec<SessionRow>,
         parent: &str,
         depth: usize,
         path: &[String],
+        force: bool,
     ) {
-        let open = self.expanded.iter().any(|e| e == parent);
+        let open = force || self.expanded.iter().any(|e| e == parent);
         for (i, s) in self.sessions.iter().enumerate() {
             if s.parent_session_id.as_deref() != Some(parent) {
                 continue;
@@ -3223,7 +3292,7 @@ impl App {
                 continue;
             }
             out.push(SessionRow { idx: i, depth });
-            self.push_children(out, &s.session_id, depth + 1, path);
+            self.push_children(out, &s.session_id, depth + 1, path, false);
         }
     }
 
@@ -3769,8 +3838,8 @@ impl App {
                 }
                 Disposition::Control
             }
-            // The answer to the tree's Enter: the named subagent's scrollback,
-            // scrubbed as a replay. Read, never folded — these events are not
+            // The answer to the tree's read key (`p`, or `/peek ID`): the named subagent's
+            // scrollback, scrubbed as a replay. Read, never folded — these events are not
             // this session's history, and folding them would lie about whose
             // turn is whose. The pane shows the tool results; the whole view is
             // spilled to a file so no cap on the pane is a cap on the record.
@@ -4060,6 +4129,14 @@ impl App {
             // put "1 subagent running" on the composer of the very subagent being
             // looked at (measured 2026-09-16), and Enter in the pane there would
             // have switched to itself.
+            //
+            // **The clear STAYS and the reason survives it**: the rows in `subagents`
+            // are the ones the live events built here, and those events happened in the
+            // session being left. What changed is that this is no longer the end of the
+            // story — [`App::fold_subagents`] puts back the durable half below, from the
+            // daemon's own list, which is the half that made an empty pane (and an empty
+            // count) the permanent state of every head that attached late or switched
+            // back.
             self.subagents.clear();
             self.subagents_sel = 0;
             // Jobs are the session's, the same way. The rows survived a switch
@@ -4083,6 +4160,19 @@ impl App {
         self.session_id = s.session_id;
         self.seq = s.seq;
         self.dropped = self.dropped.max(s.dropped);
+        // **And the subagent rows are re-read from the daemon's list, every time.**
+        //
+        // Here, and not in the `Subagent` event arm, because this IS the late-join path
+        // and the resync path at once (see the docstring above) — and a seed that ran
+        // somewhere else would be a second way for the pane to be filled, which is how
+        // the two come to disagree. Called for a same-session resync as well as a switch:
+        // the fold is a rebuild from the current facts and is the same answer either way,
+        // and a resync is exactly when a head's own list may be the stale one.
+        //
+        // `self.sessions` is already the fresh list by now — the `Hello` arm assigns it
+        // before calling this — so the fold is reading the daemon's word and not the
+        // previous session's.
+        self.fold_subagents();
         // A resync of the *same* session keeps the queue — the hub's command
         // queue survives a resync, and a prompt queued behind a running turn is
         // still behind that turn — but anything the snapshot's transcript already
@@ -6518,10 +6608,21 @@ impl App {
             }
         }
 
-        // **An open subagent pane owns Up and Down, and Enter switches into the
-        // subagent.** The same two acts the picker keeps separate — arrows move the
-        // cursor, Enter confirms — so the tree is a screen you can act on, not just
-        // a list you read.
+        // **An open subagent pane owns Up and Down, and ENTER IS THE SWITCH INTO THAT
+        // SUBAGENT'S SESSION.** One keystroke, because that is what entering a row means
+        // everywhere else in this head and going into a subagent *is* going to that
+        // session — the operator, having driven into one and then been unable to get out
+        // again: *"when I \"Enter\" Subagent it is like completely switching session"*,
+        // and *"so after o I couldnt just Esc from the subagent — had to switch back here
+        // via session. Which narrows the subagent prompt - make \"o\" to \"Enter\""*.
+        //
+        // `o` stays as an alias for the same act: it is the key this pane has always used
+        // to move the head, and a hand that learned it must not have to learn something
+        // new. What moved is the READ — `p` now, and `p` is `/peek ID`'s own key. Reading
+        // a child's output without leaving the session is a real thing to want (R20's whole
+        // argument for the `Peek` frame), and it must not be the thing Enter does when the
+        // operator means to go there. It is neither Enter nor Esc, which is what the two
+        // gestures had to be kept apart from.
         if self.subagents_pane && !self.subagents.is_empty() {
             let n = self.subagents.len();
             match k {
@@ -6539,28 +6640,23 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                Key::Enter => {
-                    // Reading, not moving: the output pane opens on the `Peeked`
-                    // reply, and this head never leaves the session it is in.
+                // **Enter takes the row, and `o` is the same act as the alias this pane
+                // has always used.** One arm for one behaviour: Enter is unconditional (a
+                // pane owns Enter), and `o` keeps the composer's claim on a letter that is
+                // being typed — half a word on the line falls through to the composer, which
+                // is why the guard is here rather than in a second copy of these six lines.
+                Key::Enter | Key::Char('o')
+                    if matches!(k, Key::Enter) || self.editor.text().is_empty() =>
+                {
+                    // **Moving, not reading.** The row is a session and Enter goes to it;
+                    // one that is not open yet is refused here, by name, rather than
+                    // bounced off the daemon.
                     let row = &self.subagents[self.subagents_sel.min(n - 1)];
                     if row.state == "opening" {
-                        // Nothing to read yet, and the daemon would refuse the peek
-                        // by name anyway; saying it here keeps the operator in the
-                        // pane they were using rather than bouncing them through a
+                        // Nothing to attach to yet, and the daemon would refuse the
+                        // switch by name anyway; saying it here keeps the operator in
+                        // the pane they were using rather than bouncing them through a
                         // rejection.
-                        self.say("that subagent is still opening — nothing to read yet");
-                        self.redraw = true;
-                        return None;
-                    }
-                    let id = row.session_id.clone();
-                    self.sub_out_pending = Some(id.clone());
-                    return Some(Action::Peek(id));
-                }
-                // Switching is still here, one key over: Enter reads, `o` opens
-                // the subagent's session for good.
-                Key::Char('o') if self.editor.text().is_empty() => {
-                    let row = &self.subagents[self.subagents_sel.min(n - 1)];
-                    if row.state == "opening" {
                         self.say("that subagent is still opening — nothing to attach to yet");
                         self.redraw = true;
                         return None;
@@ -6568,6 +6664,19 @@ impl App {
                     let id = row.session_id.clone();
                     self.subagents_pane = false;
                     return self.switch_to(id);
+                }
+                // **Reading, not moving: the output pane opens on the `Peeked` reply and
+                // this head never leaves the session it is in.**
+                Key::Char('p') if self.editor.text().is_empty() => {
+                    let row = &self.subagents[self.subagents_sel.min(n - 1)];
+                    if row.state == "opening" {
+                        self.say("that subagent is still opening — nothing to read yet");
+                        self.redraw = true;
+                        return None;
+                    }
+                    let id = row.session_id.clone();
+                    self.sub_out_pending = Some(id.clone());
+                    return Some(Action::Peek(id));
                 }
                 _ => {}
             }
@@ -6845,6 +6954,76 @@ impl App {
                 || self.payload_sel.is_some())
         {
             return None;
+        }
+
+        // **A single Esc inside a subagent's session is the way back UP the tree.**
+        //
+        // `ctrl-s` and a row's Enter was the only way back before this, and it is the
+        // gesture the operator had to invent: *"so after o I couldnt just Esc from the
+        // subagent — had to switch back here via session … make sure a single Esc goes up
+        // to subagents list"*. Enter goes down a level (the pane's arm), Esc comes back
+        // up, and the list you came out of is on the screen when you land — which is the
+        // tree walk, with no state kept beyond the parent link the daemon already sends.
+        //
+        // # It sits HERE, after everything else that claims Esc
+        //
+        // Because Esc already means four things in this head and every one of them keeps
+        // its contract:
+        //
+        // * **Esc closes a pane** — the arm near the top of this function closes help,
+        //   the picker, the todos/jobs/subagents/config panes, a `pick` and the quit card,
+        //   and *whichever surface prints `esc closes` owns Esc*. None of those says
+        //   `esc goes up`, so none of them is shaved: this arm is below all of them.
+        // * **Esc un-parks the scrollback**, **Esc closes a payload window** and **Esc
+        //   closes a slash listing**, whose seams print exactly that — the arms above,
+        //   likewise untouched.
+        // * **Esc-Esc is the interrupt frame**, and it is armed by the composer's own
+        //   editor below. That one *is* changed while this head is inside a subagent, and
+        //   it is the conflict rather than an oversight — see the note under this arm.
+        //
+        // The empty-composer and no-decision guards are the ones every pane key in this
+        // file uses: while a permission is on the screen, or words are half-typed, Esc is
+        // not available to mean *up*.
+        //
+        // # The conflict, reported rather than taken
+        //
+        // Esc-Esc is the ONLY interrupt key, and it is the editor's (five seconds, two
+        // presses). A single Esc that leaves the session and a first Esc that arms an
+        // interrupt are the same keystroke, so inside a subagent the arm is what it is:
+        // **one Esc goes up, and the pair no longer interrupts the child from inside the
+        // child.** Two things bound the cost, and both are existing, tested behaviour
+        // rather than something added here: the child's turn can still be interrupted
+        // *from the child* with `/interrupt`, and from the parent with `job_kill HANDLE`,
+        // which is how this tree already documents stopping a subagent (`harness.rs`: *"a
+        // subagent is stopped by interrupting the turn it runs"*). Nothing else about the
+        // frame moves: in a session that is not a subagent there is no parent to go to and
+        // this arm does not fire, so Esc-Esc is byte for byte what it was.
+        //
+        // **The one thing this arm does to the frame here, with Esc gone up:** the editor
+        // never sees this press, so it is not counted as the first of a pair. That is the
+        // true statement — the keystroke went to the tree and not to the composer — but it
+        // has a second edge: an Esc the operator pressed in the PARENT, inside the five
+        // seconds, can pair with the NEXT press after an up-and-down round trip, and that
+        // second press would interrupt the parent. Three presses across a switch inside
+        // one window, and it needs the descent arm's press to have been taken by this arm
+        // too; the parent presses are otherwise untouched. It is written down rather than
+        // fixed because the fix is a way for a head to disarm the editor's pair, and
+        // `Editor` publishes no such call — inventing one is a change to the UI crate for
+        // a window narrower than the keystroke that opens it.
+        if matches!(k, Key::Esc)
+            && self.editor.text().is_empty()
+            && self.open.is_empty()
+            && let Some(parent) = self.parent_session()
+        {
+            // The rows the operator climbed out of are the ones the pane shows, so the
+            // pane opens and the cursor lands on the child they came from — the row is
+            // found by id once the parent's `Hello` has rebuilt the list
+            // ([`App::fold_subagents`]), because an index taken now would be an index
+            // into the rows of the session being left.
+            self.subagents_pane = true;
+            self.pane_scroll = 0;
+            self.up_from = Some(self.session_id.clone());
+            return self.switch_to(parent);
         }
 
         let now = self.now_ms;
@@ -9048,12 +9227,159 @@ impl App {
 
     /// The same, for the subagent tree — `/subagents` and `ctrl-g`.
     ///
-    /// No bootstrap read: the tree is folded from durable `Subagent` events, which a
-    /// snapshot carries, so a head that joins late already has it.
+    /// **And the fold runs on the way in.** The pane used to be built only by the live
+    /// `Subagent` events, and the comment here used to claim *"the tree is folded from
+    /// durable `Subagent` events, which a snapshot carries"* — **which is not true of this
+    /// daemon** (`SessionEvent::Subagent` is folded into nothing at all by the view: see
+    /// the arm in `letibot_sessionlog::view`). So a head that attached after the spawns
+    /// drew an empty pane and no count, and the only thing that could ever fill it was a
+    /// later spawn — the operator: *"i just restarted the head and the subagents list is
+    /// gone … when you started new subagents the subagents pane refreshed"*. The durable
+    /// half is the daemon's own session list, so [`App::fold_subagents`] reads it here,
+    /// where the rows are about to be looked at.
     fn toggle_subagents(&mut self) {
         self.subagents_pane = !self.subagents_pane;
         self.pane_scroll = 0;
+        self.fold_subagents();
         self.redraw = true;
+    }
+
+    /// **The subagent rows: this session's children, as the DAEMON's list has them.**
+    ///
+    /// # Why this exists, and the two halves it joins
+    ///
+    /// The pane and the composer's count are the same list, and the list had exactly one
+    /// source: the live `SessionEvent::Subagent` arm. That event carries **one child**, so
+    /// it can only ever describe a spawn or a finish this head was attached for — a fresh
+    /// head, a head that switched away and came back, and the parent of children spawned
+    /// before it attached all drew an empty pane with no count, forever, because nothing
+    /// replays a spawn. `App::load` clears the rows on every switch for a reason it keeps
+    /// (a subagent's own session must not show its parent's rows), and there was nothing
+    /// to put back. Measured 2026-10-05: *"i just restarted the head and the subagents
+    /// list is gone"*.
+    ///
+    /// The durable half is on the wire already and needs no new frame: **`SessionBrief`
+    /// carries `parent_session_id`** — the registry's own words for it are *"A head draws
+    /// a subagent tree from this without reaching the store"* — and every `Hello` (which
+    /// a `Switch` is answered with) and every `Sessions` frame carries the whole list. So
+    /// a row is rebuilt from the same fact the picker's tree is drawn from, and the two
+    /// cannot disagree about who is whose child.
+    ///
+    /// # What a rebuilt row can and cannot say
+    ///
+    /// The list carries the child's **title** (the daemon's own one-line form of the
+    /// subtask), its **model**, and whether a turn is **generating in it right now** —
+    /// which is exactly what the count asks. It does not carry the state word, the role,
+    /// or the answer, because those are what the event is for. So a rebuilt row says what
+    /// the list says and **claims nothing about a state it was not told**: `state` stays
+    /// empty, the pane draws `[?]` and `state unknown`, and the running count does not
+    /// count it. A row the head *did* watch keeps every richer field, and a live event
+    /// landing later fills the rebuilt row in place — same id, one row.
+    ///
+    /// # The one word the LIST is authoritative for, in both directions
+    ///
+    /// `state` is the one field both halves can speak to, and only through one word:
+    /// the list's `running` is a measurement of *this instant* (a turn is generating in
+    /// that session now), while a `running` a row holds is what an event said when it
+    /// was published. So the word `running` comes from the list both ways round — **the
+    /// list saying `true` makes the row `running` even if the row last said `done`** (a
+    /// child asked for more work has started a second turn), and **the list saying
+    /// `false` drops a `running` the row still claims** (a finish this head was not
+    /// attached for leaves a count above the composer reading `1 subagent running` for a
+    /// child that is not). Every other word is the event's and is kept as it stands:
+    /// `done`, `failed` and `opening` are all *not generating*, which is a fact the list
+    /// cannot tell apart from each other, and none of them is a claim about now.
+    ///
+    /// # Order, and one enumeration
+    ///
+    /// Children come in the daemon's order (the list is the enumeration the picker
+    /// already numbers), and a child this head watched spawn whose brief the list does not
+    /// carry yet — the list is a snapshot of its own moment, the event is not — is
+    /// appended after them rather than dropped.
+    fn fold_subagents(&mut self) {
+        let known: Vec<SubagentState> = std::mem::take(&mut self.subagents);
+        let mut rows: Vec<SubagentState> = Vec::with_capacity(known.len().max(4));
+        for b in &self.sessions {
+            if b.parent_session_id.as_deref() != Some(self.session_id.as_str()) {
+                continue;
+            }
+            match known.iter().find(|k| k.session_id == b.session_id) {
+                // Watched: the event's own row, which knows more than the list does about
+                // everything except whether a turn is generating in it right now.
+                Some(k) => {
+                    let mut k = k.clone();
+                    k.state = if b.status.running {
+                        "running".into()
+                    } else if k.state == "running" {
+                        // The finish this row is still running on happened before the
+                        // list was cut, so the list's `false` is the later word.
+                        String::new()
+                    } else {
+                        k.state
+                    };
+                    rows.push(k);
+                }
+                None => rows.push(SubagentState {
+                    session_id: b.session_id.clone(),
+                    // **Only what the daemon actually said.** `running` is the list's own
+                    // "a turn is generating in this session at this instant"; anything
+                    // else is a state nobody has told this head, and an empty word draws
+                    // as unknown rather than as `done`.
+                    state: if b.status.running {
+                        "running".into()
+                    } else {
+                        String::new()
+                    },
+                    prompt: String::new(),
+                    // **The child's name, or the id the daemon shows for one it has not
+                    // named** — the fallback the picker's own rows make, and the reason
+                    // is the pane: a row whose words are all empty is a row the operator
+                    // cannot tell from an empty pane, which is the report this change
+                    // exists for.
+                    task: if b.title.is_empty() {
+                        short_id(&b.session_id)
+                    } else {
+                        b.title.clone()
+                    },
+                    role: String::new(),
+                    model: b.status.model.clone(),
+                    answer: None,
+                }),
+            }
+        }
+        for k in known {
+            if !rows.iter().any(|r| r.session_id == k.session_id) {
+                rows.push(k);
+            }
+        }
+        self.subagents = rows;
+        // **The child this head climbed up out of**, by id, once the rebuild has happened
+        // — an index taken before it would point at whatever the new list has there.
+        if let Some(at) = self
+            .up_from
+            .as_deref()
+            .and_then(|from| self.subagents.iter().position(|r| r.session_id == from))
+        {
+            self.subagents_sel = at;
+            self.up_from = None;
+        }
+        self.subagents_sel = self
+            .subagents_sel
+            .min(self.subagents.len().saturating_sub(1));
+    }
+
+    /// **The session that spawned this one, or `None` when this head is not in a subagent.**
+    ///
+    /// Read off the daemon's list and **not** inferred from the id: ids are minted by the
+    /// daemon (`s-…-sub-…`) and a head that string-matched them would be inventing a fact
+    /// the registry already states — `SessionBrief::parent_session_id`, which is `Some`
+    /// exactly for a child. See [`App::fold_subagents`] for the same field used the other
+    /// way round.
+    fn parent_session(&self) -> Option<String> {
+        self.sessions
+            .iter()
+            .find(|s| s.session_id == self.session_id)
+            .and_then(|s| s.parent_session_id.clone())
     }
 
     /// **Move the running command to the background** — `ctrl-o` and `/promote`.
@@ -10392,7 +10718,7 @@ impl App {
         } else if self.config_pane {
             "arrows move · enter changes a row marked ✎ · esc closes"
         } else if self.subagents_pane {
-            "subagents this session spawned · esc closes"
+            "↑↓ moves · enter (or o) switches into that subagent · p reads its output · esc closes"
         } else if self.job_out.is_some() {
             "↑↓ scroll · → next page · ← back · esc back to jobs"
         } else if self.jobs_pane {
@@ -12626,6 +12952,24 @@ impl App {
         let mut left = String::new();
         left.push_str(&p.paint(Role::Faint, &without_control_lines(&name)));
         let mut left_cols = visible_width(&name);
+        // **One label, and only for a subagent: `subagent of <parent>`.** This head can be
+        // switched into a child session, and then the row that names the session named only
+        // the child — so a screen showing somebody else's conversation looked like a screen
+        // showing one's own, which is the whole of the operator's ask: *"when I \"Enter\"
+        // Subagent it is like completely switching session with just one piece of info - a
+        // Label that it is a subagent"*. It sits here, on the row that already names the
+        // session, in the same faint register as the workspace and the branch — one fact of
+        // the same kind, added to the same field, and **nothing else anywhere on the
+        // screen**; the session's own tree of children is where it was, under `ctrl-g`.
+        //
+        // The parent is named from the daemon's own list (`parent_session_id`), and only
+        // then: a session whose brief this head does not hold draws no label rather than a
+        // guess about which session spawned it.
+        if let Some(parent) = self.parent_session() {
+            let of = format!("  subagent of {}", self.session_label(&parent));
+            left.push_str(&p.paint(Role::Faint, &without_control_lines(&of)));
+            left_cols += visible_width(&of);
+        }
         // The workspace fills whatever is left, shortened from its *left*: the end
         // of a path is the part that identifies it.
         if !self.wiring.workspace.is_empty() {
@@ -13370,7 +13714,8 @@ impl App {
     }
 
     /// The subagent tree: the subagents this session spawned, their state and their
-    /// prompt. A subagent is also a session, so the last line points at `ctrl-s`.
+    /// prompt. A subagent is also a session, so `enter` goes to it and the last line says
+    /// so — along with `p` (read it without moving) and `esc` (up to the parent).
     fn subagents_lines(&self, w: usize) -> Vec<String> {
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "subagents")];
         out.push(String::new());
@@ -13388,7 +13733,13 @@ impl App {
                 "running" => ("[~]", sgr::YELLOW),
                 "done" => ("[x]", sgr::GREEN),
                 "failed" => ("[!]", sgr::RED),
-                _ => ("[ ]", ""),
+                // **No state word, which is the honest reading for a row rebuilt from the
+                // daemon's session list.** That list says whether a turn is generating and
+                // nothing about how a settled child ended, so a `[?]` here means *this head
+                // was not watching when it happened* — and `done` or `failed` written on
+                // that row would be an invention about the one thing the pane exists to
+                // report. See [`App::fold_subagents`].
+                _ => ("[?]", ""),
             };
             let picked = i
                 == self
@@ -13409,41 +13760,53 @@ impl App {
                 left
             };
             out.push(left);
-            out.push(dim(
-                &self.cfg,
-                &format!(
-                    "       {} · role {}{} · {}{}{}",
-                    short_id(&s.session_id),
-                    without_control_lines(&s.role),
-                    // **The child's own model, when it has one** — the operator's ask,
-                    // 2026-10-05: a tree of children on different models is a fact the pane
-                    // has to show, or a reader cannot tell which child ran on what. Empty on
-                    // a child that inherited its parent's model, which is most of them, and
-                    // the clause goes with it rather than claiming one.
-                    if s.model.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" on {}", without_control_lines(&s.model))
-                    },
-                    without_control_lines(&s.state),
-                    // **The answer as the SUBTITLE, where it belongs** — its own dim clause
-                    // rather than the row, which is the question.
-                    match (&s.answer, s.state.as_str()) {
-                        (Some(a), "done") => format!(" — {}", without_control_lines(a)),
-                        _ => String::new(),
-                    },
-                    if s.state == "opening" {
-                        " — not attachable yet"
-                    } else {
-                        ""
-                    }
-                ),
-            ));
+            // **The row's own facts, as clauses that VANISH when the daemon did not say
+            // them** — the rule the model clause already keeps. It matters more now that a
+            // row can be rebuilt from the session list: that list carries a child's name
+            // and its model and no role and no state, so a fixed `role {role} · {state}`
+            // would draw `role · ` with two holes in it on every rebuilt row.
+            let mut facts: Vec<String> = vec![short_id(&s.session_id)];
+            if !s.role.is_empty() {
+                facts.push(format!("role {}", without_control_lines(&s.role)));
+            }
+            // **The child's own model, when it has one** — the operator's ask,
+            // 2026-10-05: a tree of children on different models is a fact the pane
+            // has to show, or a reader cannot tell which child ran on what. Empty on
+            // a child that inherited its parent's model, which is most of them, and
+            // the clause goes with it rather than claiming one.
+            if !s.model.is_empty() {
+                facts.push(format!("on {}", without_control_lines(&s.model)));
+            }
+            // **The state word, or the word for not having one**, and the second is a fact
+            // about this head rather than about the child — so it says which.
+            if s.state.is_empty() {
+                facts.push("state unknown".into());
+            } else {
+                facts.push(without_control_lines(&s.state).to_string());
+            }
+            // **The answer as the SUBTITLE, where it belongs** — its own dim clause
+            // rather than the row, which is the question.
+            if let (Some(a), "done") = (&s.answer, s.state.as_str()) {
+                facts.push(without_control_lines(a).to_string());
+            }
+            if s.state == "opening" {
+                facts.push("not attachable yet".into());
+            }
+            out.push(dim(&self.cfg, &format!("       {}", facts.join(" · "))));
         }
         out.push(String::new());
+        // **The keys, said where they are used** — and the last clause is the one that cannot be
+        // learned anywhere else, because the gesture only exists while the head is standing
+        // inside a subagent. It says which way each key goes *from here*: `esc` closes the pane
+        // that is up (the contract every pane keeps — *whichever surface prints `esc closes`
+        // owns Esc*), and from inside a child the same key goes up to this list. The line this
+        // replaces said *"subagents are hidden from ctrl-s"*, which stopped being true when the
+        // picker started listing sub-sessions; a row that tells the operator a session is not
+        // in the list they are looking at it in is worse than no row.
         out.push(dim(
             &self.cfg,
-            "    arrows move, Enter reads the subagent's output, o switches into it — subagents are hidden from ctrl-s.",
+            "    arrows move · enter switches into the subagent (o does the same) · p reads its \
+             output · esc closes this, and from inside a subagent esc goes up to the parent",
         ));
         out.into_iter().map(|l| trim_to(&l, w)).collect()
     }
@@ -13875,7 +14238,9 @@ impl App {
             let kids = kids_of(&s.session_id);
             let fold = if kids == 0 {
                 ""
-            } else if self.expanded.iter().any(|e| *e == s.session_id) {
+            } else if self.family_open(&s.session_id, row.depth)
+                || self.expanded.iter().any(|e| *e == s.session_id)
+            {
                 "▾"
             } else {
                 "▸"
@@ -25251,6 +25616,401 @@ mod tests {
         assert!(!a.subagents_pane);
     }
 
+    /// **A fresh head rebuilds the subagent pane AND the count out of the daemon's own
+    /// session list — no spawn event required.**
+    ///
+    /// The operator's measured report, in two sentences: *"i just restarted the head and the
+    /// subagents list is gone"*, and (twice) *"when you started new subagents the subagents
+    /// pane refreshed and qwens showed up"*. So a head that attached after the spawns drew an
+    /// empty pane and no count, and the only thing that could fill it was a later spawn —
+    /// `SessionEvent::Subagent` carries exactly ONE child, so it cannot re-list an earlier
+    /// generation. Nothing folded the durable rows: `SessionEvent::Subagent` is folded into
+    /// nothing at all by the view (`letibot_sessionlog::view`), so the snapshot does not carry
+    /// them either, and the ONE push into `self.subagents` was the live event arm.
+    ///
+    /// The durable half is `SessionBrief::parent_session_id`, which is on the wire in every
+    /// `Hello` and every `Sessions` frame — the registry's own words for it: *"A head draws a
+    /// subagent tree from this without reaching the store"*. This pins both halves of what the
+    /// pane must be able to say after an attach: **the rows**, and **the running count**, which
+    /// is the same list read through the state clause.
+    #[test]
+    fn a_fresh_head_rebuilds_the_subagent_rows_and_the_count_from_the_session_list() {
+        let mut a = app();
+        // Not one `Subagent` event is applied anywhere in this test.
+        a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+
+        // The children, in the daemon's order, and neither the stranger's child nor the
+        // parent's own row.
+        let ids: Vec<&str> = a.subagents.iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(ids, vec!["s-sub-1", "s-sub-2"], "{ids:?}");
+
+        // **The count**, which is the same defect: `running` is the list's own fact about
+        // whether a turn is generating in that session right now.
+        let screen = a.screen(100, 24);
+        let row = screen
+            .iter()
+            .find(|l| l.contains("subagent"))
+            .expect("the count is on the screen");
+        assert!(row.contains("1 subagent running"), "{row}");
+
+        // **The pane**, with the subtask the daemon named it by.
+        a.key(Key::CtrlG);
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("find the bug in the reader"), "{screen}");
+        assert!(screen.contains("audit the store"), "{screen}");
+        assert!(screen.contains("running"), "{screen}");
+        assert!(
+            !screen.contains("someone else's child"),
+            "another conversation's child is in this session's tree:\n{screen}"
+        );
+        // **And the state word is not invented.** The list says whether a turn is
+        // generating; it says nothing about how a settled child ended, so the row this head
+        // did not watch says so rather than claiming `done`.
+        assert!(screen.contains("state unknown"), "{screen}");
+    }
+
+    /// A parent with two subagents, plus a second conversation with a child of its own —
+    /// the list the daemon sends on every `Hello`, which is the durable half of the tree.
+    fn a_family() -> Vec<SessionBrief> {
+        let mut one = brief("s-sub-1", "find the bug in the reader", true);
+        one.parent_session_id = Some("s".into());
+        let mut two = brief("s-sub-2", "audit the store", false);
+        two.parent_session_id = Some("s".into());
+        let mut far = brief("s-other-sub", "someone else's child", true);
+        far.parent_session_id = Some("s-other".into());
+        vec![
+            brief("s", "parent", false),
+            one,
+            two,
+            brief("s-other", "other conversation", false),
+            far,
+        ]
+    }
+
+    /// **THE ACCEPTANCE TEST: Enter into a subagent, then a single Esc back up to the
+    /// subagents list.**
+    ///
+    /// The operator's own two sentences: *"when I \"Enter\" Subagent it is like completely
+    /// switching session with just one piece of info - a Label that it is a subagent and Esc
+    /// going up in the subagents tree"*, and *"so after o I couldnt just Esc from the subagent
+    /// - had to switch back here via session"*. One keystroke down, one keystroke up, the
+    /// parent's list on the screen when you land, and the label saying whose child you were in
+    /// while you were there.
+    #[test]
+    fn enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from() {
+        let mut a = app();
+        a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+        a.key(Key::CtrlG);
+
+        // **Down a level: Enter IS the switch.**
+        assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
+        assert!(
+            !a.subagents_pane,
+            "switching closes the pane it was opened from"
+        );
+        a.apply(hello("s-sub-1", a_family(), Hub::new("s-sub-1").snapshot()));
+        assert_eq!(a.session_id, "s-sub-1");
+        assert!(
+            a.subagents.is_empty(),
+            "a subagent's own session shows its own children, not its parent's"
+        );
+        // **And the COUNT is the same list**, which is the reason the clear exists at all:
+        // measured 2026-09-16, a carried row put `1 subagent running` on the composer of the
+        // very subagent being looked at. The rebuild is filtered by `parent_session_id`, so a
+        // head standing in the child draws none of the parent's running rows — and this is the
+        // half that would come back if the fold ever read the daemon's list unfiltered.
+        let screen = a.screen(100, 24).join("\n");
+        assert!(
+            !screen.contains("subagent running"),
+            "the parent's running child is counted on the child's own composer:\n{screen}"
+        );
+
+        // **The ONE piece of info: this is a subagent, and whose.** On the row that already
+        // names the session — the header — and nothing else added anywhere.
+        assert!(
+            screen.contains("subagent of parent"),
+            "the header does not say whose child this is:\n{screen}"
+        );
+
+        // **And one Esc goes back up**, to the parent, with the list open.
+        assert_eq!(
+            a.key(Key::Esc),
+            Some(Action::Switch("s".into())),
+            "a single Esc did not climb out of the subagent"
+        );
+        assert!(a.subagents_pane, "esc goes up TO the subagents list");
+
+        // The parent's `Hello` — which is what a switch is answered with — carries the
+        // list, so the pane and the count are rebuilt rather than wait for an event.
+        a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+        assert_eq!(a.session_id, "s");
+        assert_eq!(a.subagents.len(), 2, "the list is back");
+        assert_eq!(
+            a.subagents[a.subagents_sel].session_id, "s-sub-1",
+            "the cursor is not on the child this head came out of"
+        );
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("find the bug in the reader"), "{screen}");
+        assert!(screen.contains("1 subagent running"), "{screen}");
+    }
+
+    /// **Esc's other meanings, inside a subagent — the four that must not be shaved.**
+    ///
+    /// The descent arm sits below every arm that already owns Esc, and this is the proof
+    /// rather than the claim: a pane the operator is standing in closes, a half-typed line
+    /// keeps Esc for the composer, an open decision keeps it away from the tree, and a
+    /// session with no parent has nowhere to go in the first place.
+    #[test]
+    fn esc_keeps_every_other_meaning_it_has_while_inside_a_subagent() {
+        // A pane on the screen owns Esc — its own footer says `esc closes`, and it wins.
+        let mut a = inside_a_subagent();
+        a.key(Key::CtrlG);
+        assert_eq!(a.key(Key::Esc), None);
+        assert!(!a.subagents_pane, "esc closed the pane");
+        assert_eq!(
+            a.session_id, "s-sub-1",
+            "esc also switched out of the session"
+        );
+
+        // A half-typed line: Esc is the composer's, which is what arms the interrupt frame.
+        let mut a = inside_a_subagent();
+        a.key(Key::Char('x'));
+        assert_eq!(a.key(Key::Esc), None);
+        assert_eq!(a.session_id, "s-sub-1");
+
+        // A decision on the screen: Esc does not leave a prompt behind.
+        let mut a = inside_a_subagent();
+        a.open.push(decision_with(&[
+            letibot_sessionlog::event::OptionKind::AllowOnce,
+        ]));
+        assert_eq!(a.key(Key::Esc), None);
+        assert_eq!(a.session_id, "s-sub-1");
+
+        // And a conversation at the top of the tree has no parent to go to, so Esc is
+        // exactly what it was there — the arm cannot fire at all.
+        let mut a = app();
+        a.clock(1_000);
+        a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+        assert!(a.parent_session().is_none());
+        assert_eq!(a.key(Key::Esc), None, "one press arms, it does not fire");
+        assert!(a.hint_bar(120).contains("again"), "{}", a.hint_bar(120));
+    }
+
+    /// **The head in the child's session, with the daemon's list in hand** — the state Enter
+    /// leaves it in when the `Switch` is answered.
+    fn inside_a_subagent() -> App {
+        let mut a = app();
+        a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+        a.apply(hello("s-sub-1", a_family(), Hub::new("s-sub-1").snapshot()));
+        a
+    }
+
+    /// **THE CONFLICT, PINNED RATHER THAN TAKEN IN SILENCE: inside a subagent, one Esc goes
+    /// up, and Esc-Esc no longer interrupts that child there.**
+    ///
+    /// A single Esc that leaves the session and a first Esc that arms the interrupt frame are
+    /// the same keystroke, so no rule can honour both inside a subagent — and this is the one
+    /// the operator asked for (*"make sure a single Esc goes up to subagents list"*). What is
+    /// left of the frame is what the arm's own comment records: the child's turn can still be
+    /// interrupted from the child with `/interrupt`, and from the parent with `job_kill`,
+    /// which is how this tree already documents stopping one. In a session that is NOT a
+    /// subagent nothing moves at all — `esc_twice_interrupts_a_running_turn_…` above is that
+    /// half, unedited.
+    #[test]
+    fn esc_inside_a_busy_subagent_goes_up_and_the_pair_does_not_interrupt_it_there() {
+        let mut a = inside_a_subagent();
+        a.clock(1_000);
+        // The child is mid-turn, which is the state the pair exists for.
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        assert!(a.turn_busy(), "the child is not busy, so this pins nothing");
+        assert_eq!(a.key(Key::Esc), Some(Action::Switch("s".into())));
+        // The second press lands in the parent, where there is no pair to fire: the editor
+        // arms and nothing is interrupted.
+        a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+        assert_eq!(a.key(Key::Esc), None);
+        assert!(
+            !a.take_actions()
+                .iter()
+                .any(|a| matches!(a, Action::Interrupt(_))),
+            "the pair interrupted a session the operator had already left"
+        );
+    }
+
+    /// **ctrl-s inside a subagent is its family: the parent and its siblings.**
+    ///
+    /// The operator's ask — *"make sure sessions list (ctrl-s) is filtered to the parent and
+    /// siblings. In fact it should also fix our sessions pane - it must be a tree"* — and the
+    /// tree was already here (`session_rows`/`push_children`: nested, folded, with the chain
+    /// to where you are always shown); what was wrong is that a head standing in a child drew
+    /// every conversation in the daemon around a row one level down. The siblings are **shown
+    /// whatever the collapse state says**, because a family view whose members were folded
+    /// away would be a list of one row.
+    #[test]
+    fn ctrl_s_inside_a_subagent_lists_the_parent_and_its_siblings() {
+        let mut a = inside_a_subagent();
+        let rows = a.session_rows();
+        let shown: Vec<(&str, usize)> = rows
+            .iter()
+            .map(|r| (a.sessions[r.idx].session_id.as_str(), r.depth))
+            .collect();
+        assert_eq!(
+            shown,
+            vec![("s", 0), ("s-sub-1", 1), ("s-sub-2", 1)],
+            "{shown:?}"
+        );
+        // Nothing was expanded and the siblings are on the list anyway.
+        assert!(a.expanded.is_empty());
+        // And the screen says the same thing the enumeration does — one list, read by the
+        // drawings and by the keys.
+        a.key(Key::CtrlS);
+        let screen = a.screen(100, 30).join("\n");
+        assert!(screen.contains("parent"), "{screen}");
+        assert!(screen.contains("audit the store"), "{screen}");
+        assert!(
+            !screen.contains("other conversation"),
+            "another conversation's tree is in a subagent's session list:\n{screen}"
+        );
+    }
+
+    /// **The family view draws the fold glyph its own rule implies.**
+    ///
+    /// The rows are on the list because this head is standing among them ([`App::family_open`]),
+    /// not because the operator pressed `→` — and the glyph beside the parent came from the
+    /// collapse list alone, so a family view drew `▸` directly above the three rows it was
+    /// claiming to hide. One rule, read by the enumeration and by the glyph: what the tree draws
+    /// and what the tree lists are the same fact.
+    #[test]
+    fn the_family_views_fold_glyph_says_open_because_its_rows_are_shown() {
+        let mut a = inside_a_subagent();
+        a.key(Key::CtrlS);
+        let screen = a.screen(100, 30).join("\n");
+        // The parent's ROW, not the header above it — the header names this head's session,
+        // which is the child, and it carries the `subagent of <parent>` label.
+        let parent = screen
+            .lines()
+            .find(|l| l.contains("parent") && (l.contains('▸') || l.contains('▾')))
+            .unwrap_or_else(|| panic!("the parent's row is on the list:\n{screen}"));
+        assert!(
+            parent.contains('▾'),
+            "the parent is drawn collapsed over its own visible children: {parent}"
+        );
+        // And nothing was expanded to make that true — the rule is the view's, not the
+        // operator's act.
+        assert!(a.expanded.is_empty());
+        // A conversation at the top of the tree keeps the ordinary rule: not expanded is `▸`.
+        let mut a = app();
+        a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+        a.key(Key::CtrlS);
+        let screen = a.screen(100, 30).join("\n");
+        let parent = screen
+            .lines()
+            .find(|l| l.contains("parent") && (l.contains('▸') || l.contains('▾')))
+            .unwrap_or_else(|| panic!("the parent's row is on the list:\n{screen}"));
+        assert!(
+            parent.contains('▸'),
+            "a collapsed conversation is not drawn open: {parent}"
+        );
+        assert!(!screen.contains("audit the store"), "{screen}");
+    }
+
+    /// **The one word the daemon's list is authoritative for, in both directions.**
+    ///
+    /// `state` is the only field both halves can speak to, and the list speaks to exactly one
+    /// word: whether a turn is generating in that session *now*. A row this head watched keeps
+    /// every richer field — the role, the model, the answer — and the word `running` comes from
+    /// the list either way: a `false` retires a `running` the row is still claiming, because a
+    /// finish this head was not attached for otherwise leaves the composer counting a child
+    /// that is not running; and a `true` overrides a settled row, because a child that has
+    /// started a second turn is generating whatever it last finished.
+    ///
+    /// **This is the merge, and it is where the two halves meet.** `fold_subagents` runs at
+    /// every `load` — the late-join and resync path, and the `Hello` a `Switch` is answered
+    /// with — so the list cannot flatten a watched row and the watched row cannot outlive the
+    /// list's live word.
+    #[test]
+    fn the_session_list_owns_the_word_running_and_the_event_owns_everything_else() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "parent", false)],
+            Hub::new("s").snapshot(),
+        ));
+        let watched = |state: &str, answer: Option<&str>| SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: state.into(),
+            prompt: "find the bug".into(),
+            role: "coder".into(),
+            task: "audit the store".into(),
+            model: "qwen-3.8-flash-next".into(),
+            answer: answer.map(str::to_string),
+        };
+        a.apply(ServerFrame::Event(env(
+            1,
+            watched("done", Some("3529 files")),
+        )));
+        assert_eq!(a.subagents[0].state, "done");
+
+        // **The list says a turn is generating in that child.** The word is the list's, and the
+        // row's own richer facts survive it — a child asked for more work is a running child.
+        let mut live = a_family();
+        live[1].status.running = true;
+        a.apply(hello("s", live, Hub::new("s").snapshot()));
+        assert_eq!(
+            a.subagents[0].state, "running",
+            "the list's live word lost to a row"
+        );
+        assert_eq!(a.subagents[0].role, "coder", "the event's row was replaced");
+        assert_eq!(a.subagents[0].task, "audit the store");
+        assert_eq!(a.subagents[0].answer.as_deref(), Some("3529 files"));
+
+        // **And the other way round: the child has stopped, and the row still claims it is
+        // running.** The finish happened before the list was cut, so the list is the later
+        // word — and the count above the composer stops lying about a child that is idle.
+        let mut stopped = a_family();
+        stopped[1].status.running = false;
+        a.apply(hello("s", stopped, Hub::new("s").snapshot()));
+        assert_eq!(
+            a.subagents[0].state, "",
+            "a stale `running` outlived the list that denied it"
+        );
+        assert!(
+            !a.screen(100, 24).join("\n").contains("subagent running"),
+            "a child that is not generating is counted as running"
+        );
+        // What the list cannot speak to is kept as the event said it: the answer was `done`.
+        assert_eq!(a.subagents[0].answer.as_deref(), Some("3529 files"));
+    }
+
+    /// **The jobs pane is NOT the subagent pane's defect, and this is the measurement.**
+    ///
+    /// `App::load` clears `self.jobs` on a switch for the same reason it clears the subagent
+    /// rows — a carried row is a question about a job that was never in this session — but the
+    /// jobs have a bootstrap read and the subagents did not: the `Hello` arm queues `ListJobs`
+    /// on **every** attachment, which a `Switch` is answered with, and `ServerFrame::Jobs`
+    /// refills the table for the session that answered. So a switched head re-asks and the pane
+    /// comes back on the daemon's own word, where the subagent pane had nothing to ask with.
+    #[test]
+    fn a_switch_re_asks_for_the_jobs_and_the_daemons_answer_refills_the_pane() {
+        let mut a = app();
+        a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+        a.take_actions();
+        assert_eq!(a.key(Key::CtrlG), None);
+        assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
+        // The switch's own `Hello` asks again — this is the half that was missing for
+        // subagents, which had no frame to ask with.
+        a.apply(hello("s-sub-1", a_family(), Hub::new("s-sub-1").snapshot()));
+        assert!(
+            a.take_actions().iter().any(|a| *a == Action::ListJobs),
+            "the switched head did not re-ask for its jobs"
+        );
+        a.jobs = Vec::new();
+        a.apply(ServerFrame::Jobs {
+            session_id: "s-sub-1".into(),
+            jobs: vec![daemon_job("j1", "cargo test", true)],
+        });
+        assert_eq!(a.jobs.len(), 1, "the daemon's table did not land");
+    }
+
     /// The subagent tree is the parent's fact. Measured 2026-09-16: switching
     /// into a subagent carried "1 subagent running" onto ITS composer, and the
     /// pane there offered the row of the very session being looked at. On the way
@@ -25275,7 +26035,8 @@ mod tests {
         };
         a.apply(ServerFrame::Event(env(1, spawn.clone())));
         a.key(Key::CtrlG);
-        // Enter reads; `o` is the key that moves the head.
+        // **`o` is the alias and Enter is the key**, and both are the same act — the switch.
+        // This test reads the pane's key for the way IN; the way here is the older spelling.
         assert_eq!(
             a.key(Key::Char('o')),
             Some(Action::Switch("s-sub-1".into()))
@@ -25333,14 +26094,20 @@ mod tests {
         assert_eq!(
             a.key(Key::Enter),
             None,
-            "Enter peeked at a session that is not open"
+            "Enter switched into a session that is not open"
         );
         assert_eq!(
             a.key(Key::Char('o')),
             None,
             "`o` switched into a session that is not open"
         );
+        assert_eq!(
+            a.key(Key::Char('p')),
+            None,
+            "`p` read a session that is not open"
+        );
         assert!(a.subagents_pane, "the pane stays where the operator was");
+        assert!(a.sub_out_pending.is_none(), "nothing was asked for");
 
         // Open now: the same row, and Enter goes there.
         a.apply(ServerFrame::Event(env(
@@ -25356,7 +26123,11 @@ mod tests {
             },
         )));
         assert_eq!(a.subagents.len(), 1);
-        assert_eq!(a.key(Key::Enter), Some(Action::Peek("s-sub-1".into())));
+        assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
+        // ...and that closed the pane, because the head is leaving the session the pane
+        // belongs to. Put it back for the alias and the read, which are the other two keys.
+        a.key(Key::CtrlG);
+        assert_eq!(a.key(Key::Char('p')), Some(Action::Peek("s-sub-1".into())));
         a.sub_out_pending = None;
         assert_eq!(
             a.key(Key::Char('o')),
@@ -25364,8 +26135,15 @@ mod tests {
         );
     }
 
+    /// **Enter on a subagent row IS the switch into that subagent's session.**
+    ///
+    /// Replaced behaviour, and the operator's own words for it: *"when I \"Enter\" Subagent
+    /// it is like completely switching session with just one piece of info … Which narrows the
+    /// subagent prompt - make \"o\" to \"Enter\""*. Enter used to `Peek` — a read that left the
+    /// head where it was — and `o` was the key that moved. The two acts are now where the rest
+    /// of this head puts them: Enter takes the row you are on.
     #[test]
-    fn enter_on_a_subagent_row_asks_for_its_output_instead_of_switching() {
+    fn enter_on_a_subagent_row_switches_into_its_session() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(
             1,
@@ -25380,11 +26158,44 @@ mod tests {
             },
         )));
         a.key(Key::CtrlG);
-        // Enter reads; it does not move the head. The ask is remembered, so a
-        // rejection has something to end.
-        assert_eq!(a.key(Key::Enter), Some(Action::Peek("s-sub-1".into())));
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Switch("s-sub-1".into())),
+            "Enter read the row instead of going to it"
+        );
+        assert!(!a.subagents_pane, "switching closes the pane");
+        assert!(
+            a.sub_out_pending.is_none(),
+            "Enter asked for the output; that is `p`'s job now"
+        );
+    }
+
+    /// **The READ stays reachable, on a key that is neither Enter nor Esc — `p`.**
+    ///
+    /// The peek is not a lesser act: it is the thing `ClientFrame::Peek` exists for (a child's
+    /// output read *without* moving the head, R20), and it was the behaviour Enter had, so
+    /// moving Enter must not lose it. `p` is `/peek ID`'s own key, and the ask is remembered so
+    /// a rejection has something to end.
+    #[test]
+    fn p_reads_a_subagents_output_without_moving_the_head() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Subagent {
+                subagent_id: "s-sub-1".into(),
+                state: "running".into(),
+                prompt: "summarize ~/bin/letibot".into(),
+                role: "coder".into(),
+                task: String::new(),
+                model: String::new(),
+                answer: None,
+            },
+        )));
+        a.key(Key::CtrlG);
+        assert_eq!(a.key(Key::Char('p')), Some(Action::Peek("s-sub-1".into())));
         assert_eq!(a.sub_out_pending.as_deref(), Some("s-sub-1"));
         assert!(a.subagents_pane, "the tree stays open under the read");
+        assert!(a.session_id.is_empty(), "reading moved the head");
     }
 
     #[test]
@@ -25583,7 +26394,7 @@ mod tests {
     }
 
     #[test]
-    fn esc_leaves_the_output_and_o_still_switches_into_the_subagent() {
+    fn esc_leaves_the_output_and_enter_and_o_both_switch_into_the_subagent() {
         let mut a = app();
         a.apply(ServerFrame::Event(env(
             1,
@@ -25598,7 +26409,8 @@ mod tests {
             },
         )));
         a.key(Key::CtrlG);
-        a.key(Key::Enter);
+        // `p` opens the read — the key that is neither Enter nor Esc.
+        a.key(Key::Char('p'));
         a.apply(ServerFrame::Peeked {
             session_id: "s-sub-1".into(),
             dropped: 0,
@@ -25614,11 +26426,19 @@ mod tests {
             "{}",
             v.lines[0]
         );
-        // Esc goes back to the tree — the tree, not everything closed.
+        // Esc goes back to the tree — the tree, not everything closed. The payload's seam
+        // prints `esc closes`, so Esc must mean that while it is up, and this pins that the
+        // descent arm added below the panes did not take it.
         a.key(Key::Esc);
         assert!(a.sub_out.is_none());
         assert!(a.subagents_pane, "back to the tree");
-        // `o` is still the way in: it switches, as Enter used to.
+        // Enter is the way in now, and `o` is the same act under the key this pane has
+        // always used for it.
+        assert!(matches!(
+            a.key(Key::Enter),
+            Some(Action::Switch(id)) if id == "s-sub-1"
+        ));
+        a.key(Key::CtrlG);
         assert!(matches!(
             a.key(Key::Char('o')),
             Some(Action::Switch(id)) if id == "s-sub-1"
