@@ -130,11 +130,16 @@ pub struct Parts {
     /// child** (R58).
     ///
     /// `None` for a root: a root's watcher set is its own, built at open. `Some` for a
-    /// child, carrying its parent's, so the child's set can join the tree's — sharing
-    /// the completions queue the root's `wake` drains and the ring target that is the
-    /// root's id. Without this a grandchild's settlement queues onto, and rings for, a
-    /// session `Sessions::open` does not hold, and `Sessions::wake` returns `Ignored`:
-    /// the condition fires and is discarded.
+    /// child, carrying its parent's, so the child's set can join the tree's — sharing the
+    /// watching/settled bookkeeping and the ring target that is the root's id. Without the
+    /// ring target a grandchild's settlement rings a session `Sessions::open` does not
+    /// hold, and `Sessions::wake` returns `Ignored`: the condition fires and is discarded.
+    ///
+    /// **Not the completions queue** — each session drains its own (2026-10-05). A tree
+    /// whose settlements all landed on the root's queue delivered a subagent's background
+    /// job to the main session as *"a job you backgrounded"*, and left the subagent that
+    /// started it never told; see [`crate::jobwatch::JobWatchers::shares_tree`] for what
+    /// the tree still shares and why the ring alone is enough.
     ///
     /// It rides [`Parts`] rather than [`Config`] because a config is *this* session's
     /// facts and a watcher set is a live `Arc`, not a value to clone per session.
@@ -656,8 +661,8 @@ impl DenialSink for HubDenials {
 // Steering
 // ---------------------------------------------------------------------------
 
-/// Steering from the head socket (§5.8), from the intent check, and from a fired
-/// monitor.
+/// Steering from the head socket (§5.8), from the intent check, from a fired
+/// monitor, and from a background job of this session's own that has ended.
 ///
 /// A `Prompt` that arrives while the model is generating is a correction, and it
 /// goes in at the next step boundary. An `Interrupt` is the urgent form: it stops
@@ -667,14 +672,28 @@ impl DenialSink for HubDenials {
 /// the daemon's own worker owns it. One drainer at a time, by construction of who
 /// is executing.
 ///
-/// # Three sources, one queue, and the speaker is recorded as they are drained
+/// # Four sources, one queue, and the speaker is recorded as they are drained
 ///
-/// The step boundary is the only place any of the three can be injected, so they
+/// The step boundary is the only place any of the four can be injected, so they
 /// share this source rather than each growing a path into the engine. What they do
 /// **not** share is provenance: a head's prompt is the operator, and the intent
-/// check and a monitor firing are this harness talking to itself. That distinction
-/// is recorded here, at the moment the message is handed over, because after the
-/// engine appends it they are four identical `User` items. See [`TrailMirror`].
+/// check, a monitor firing and a settlement are this harness talking to itself. That
+/// distinction is recorded here, at the moment the message is handed over, because after
+/// the engine appends it they are four identical `User` items. See [`TrailMirror`].
+///
+/// # Why a settlement is here at all, when R7 gives it a wake
+///
+/// For a **root** it is not: [`Harness::wake`] is its door, and
+/// [`JobWatchers::take_mid_turn_completions`] returns nothing for it — a second
+/// delivery path for the R7 turn would be exactly the kind of duplicate this tree
+/// keeps finding. For a **child** the wake does not exist: `Sessions::wake` needs
+/// `self.open.get_mut(id)` and a child is adopted into the registry and never into
+/// `open`, so a ring for it is a condition that fires and is discarded (R58). The
+/// child's own turn is the only place it can be told that a job it backgrounded has
+/// ended, and the round boundary is the only place a turn can be told anything.
+///
+/// That guard is the set's, not this struct's: it is the same question — *does this
+/// session have a between-turn wake* — and it is answered where the session ids are.
 pub struct HubSteering {
     hub: Arc<Hub>,
     /// Where the speaker of each injected message is recorded. `None` in a test
@@ -689,6 +708,9 @@ pub struct HubSteering {
     /// harness so a firing is delivered exactly once, whether it is picked up
     /// mid-turn here or between turns by [`Harness::wake`].
     monitor_cursor: Arc<AtomicUsize>,
+    /// This session's watcher set, for the settlements it cannot be woken with. `None`
+    /// in a test that has no daemon behind it.
+    job_watch: Option<Arc<JobWatchers>>,
 }
 
 impl HubSteering {
@@ -699,6 +721,7 @@ impl HubSteering {
             injected: Arc::new(Mutex::new(VecDeque::new())),
             monitors: None,
             monitor_cursor: Arc::new(AtomicUsize::new(0)),
+            job_watch: None,
         }
     }
 }
@@ -740,29 +763,26 @@ fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> String {
 /// footnote: *you do not need to wait for this.* The tool text is what taught the model
 /// that waiting was the only way to learn a result; see `bash`'s backgrounded result and
 /// `job_output`'s empty-job branch for the strings that did the teaching.
-fn completion_notice(done: &[JobCompletion], me: &str) -> String {
-    // **Whose jobs these are, which is not always the session being told** (2026-10-05). A job
-    // name with `from` beside it belongs to that session, and the sentence has to say so: the
-    // notice that said *"a job you backgrounded has ended"* about a subagent's `cargo test` was a
-    // claim the parent could not act on — its `job_output` did not know the id.
-    let foreign = done.iter().any(|c| c.owner != me);
+///
+/// **`mine` is the ownership flag, and it is not a politeness.** `true` is the session that
+/// backgrounded the job — the only one that can read it, since `job_output` asks *this*
+/// session's host. `false` is the level the settlement was handed up to because the session
+/// that started it had stopped ([`JobWatchers::stop`]): the owning session is named on the
+/// line instead, and the closing sentence does **not** send this reader to `job_output`,
+/// because for it that door does not open.
+fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
     let mut s = String::from("[job] ");
-    if done.len() == 1 {
-        if foreign {
-            s.push_str("a job backgrounded by a subagent of this session has ended:\n");
-        } else {
-            s.push_str("a job you backgrounded has ended:\n");
-        }
-    } else if foreign {
-        s.push_str(&format!(
-            "{} jobs backgrounded by subagents of this session have ended:\n",
-            done.len()
-        ));
-    } else {
-        s.push_str(&format!(
+    match (mine, done.len() == 1) {
+        (true, true) => s.push_str("a job you backgrounded has ended:\n"),
+        (true, false) => s.push_str(&format!(
             "{} jobs you backgrounded have ended:\n",
             done.len()
-        ));
+        )),
+        (false, true) => s.push_str("a job a session below this one started has ended:\n"),
+        (false, false) => s.push_str(&format!(
+            "{} jobs a session below this one started have ended:\n",
+            done.len()
+        )),
     }
     for c in done {
         let command = if c.command.is_empty() {
@@ -770,36 +790,32 @@ fn completion_notice(done: &[JobCompletion], me: &str) -> String {
         } else {
             c.command.clone()
         };
-        let from = if c.owner == me {
+        let whose = if mine {
             String::new()
         } else {
-            format!(" from `{}`", c.owner)
+            format!(" (started by `{}`)", c.owner)
         };
         s.push_str(&format!(
-            "  - `{}`{} {} after {}, wrote {} bytes: {}\n",
+            "  - `{}` {} after {}, wrote {} bytes: {}{}\n",
             c.job,
-            from,
             c.state,
             human_secs(c.elapsed_ms),
             c.produced,
             command,
+            whose,
         ));
     }
-    if foreign {
-        // The closing sentence is the other half of R7, and for a foreign job it must not promise
-        // something this session cannot do: `job_output` here does not know that id at all.
-        s.push_str(
-            "This is the completion arriving on its own — you do not need to wait for it. A job \
-             named with `from …` belongs to that session, so its output is read THERE with \
-             `job_output`; this session's own jobs are read here. Its owner is a subagent of this \
-             one, and was settled or closed when the completion was queued, which is why it arrived \
-             here at all.",
-        );
-    } else {
+    if mine {
         s.push_str(
             "This is the completion arriving on its own — you do not need to wait for it, and \
              `job_wait` would only block you for a result you already have. Read what it wrote \
              with `job_output` (job=\"…\"), then carry on with what you were doing.",
+        );
+    } else {
+        s.push_str(
+            "This session is told because the one that started it cannot be: it has stopped and \
+             will not run again, and the job's output went with it. There is nothing to collect \
+             and nothing to wait for — this is the fact of the ending and no more.",
         );
     }
     s
@@ -813,58 +829,55 @@ fn completion_notice(done: &[JobCompletion], me: &str) -> String {
 /// the thing the model was waiting for rather than a stream it has to go and fetch. So
 /// the notice carries the child's first line as well as naming how to collect the whole
 /// of it, which is what makes the wake actionable rather than a nudge.
-fn subagent_notice(done: &[JobCompletion], me: &str) -> String {
-    // The same ownership question as `completion_notice`, one level down: a *grandchild* settling
-    // is not "a subagent you started", and saying so would be the same false claim in the other
-    // direction. Only reachable when the child that started it is gone — otherwise the child's own
-    // loop is the one told.
-    let foreign = done.iter().any(|c| c.owner != me);
+///
+/// **And `mine` is the same flag as the job side's**, with one difference worth stating:
+/// a handed-up child is still collectable here — `task_result` reads the tree's handle list
+/// (`Parts::tree_slots`, R58), which every level of a tree shares — so the closing sentence
+/// keeps its promise where the job side's cannot.
+fn subagent_notice(done: &[JobCompletion], mine: bool) -> String {
     let mut s = String::from("[task] ");
-    if done.len() == 1 {
-        if foreign {
-            s.push_str("a subagent started by a subagent of this session has finished:\n");
-        } else {
-            s.push_str("a subagent you started has finished:\n");
-        }
-    } else if foreign {
-        s.push_str(&format!(
-            "{} subagents started by subagents of this session have finished:\n",
-            done.len()
-        ));
-    } else {
-        s.push_str(&format!(
+    match (mine, done.len() == 1) {
+        (true, true) => s.push_str("a subagent you started has finished:\n"),
+        (true, false) => s.push_str(&format!(
             "{} subagents you started have finished:\n",
             done.len()
-        ));
+        )),
+        (false, true) => s.push_str(
+            "a subagent a session below this one started has \
+             finished:\n",
+        ),
+        (false, false) => s.push_str(&format!(
+            "{} subagents a session below this one started have finished:\n",
+            done.len()
+        )),
     }
     for c in done {
-        let from = if c.owner == me {
+        let whose = if mine {
             String::new()
         } else {
-            format!(" from `{}`", c.owner)
+            format!(" (started by `{}`)", c.owner)
         };
         if c.detail.is_empty() {
-            s.push_str(&format!("  - `{}`{} {}\n", c.job, from, c.state));
+            s.push_str(&format!("  - `{}` {}{}\n", c.job, c.state, whose));
         } else {
             s.push_str(&format!(
-                "  - `{}`{} {}: {}\n",
-                c.job, from, c.state, c.detail
+                "  - `{}` {}: {}{}\n",
+                c.job, c.state, c.detail, whose
             ));
         }
     }
-    if foreign {
-        s.push_str(
-            "This is the completion arriving on its own — you do not need to wait for it. A \
-             subagent named with `from …` was started by that session rather than by you, so \
-             `task_result` for it is answered in that session; it arrived here because the one \
-             that started it has settled or closed.",
-        );
-    } else {
+    if mine {
         s.push_str(
             "This is the completion arriving on its own — you do not need to wait for it, and \
              calling `task_result` to block would only hold you for a result you already have. \
              Read what it said with `task_result` (task=\"…\"), then carry on with what you \
              were doing.",
+        );
+    } else {
+        s.push_str(
+            "This session is told because the one that started it cannot be: it has stopped and \
+             will not run again. Read what it said with `task_result` (task=\"…\") — the handle \
+             is in this tree, so the whole answer is still there.",
         );
     }
     s
@@ -875,6 +888,13 @@ fn subagent_notice(done: &[JobCompletion], me: &str) -> String {
 /// [`JobWatchers::watch`] — and they are told apart **here** rather than in two queues, because two
 /// queues would be the second mechanism the ruling avoided. The split is only for wording: a job is
 /// read with `job_output` and a child with `task_result`.
+///
+/// **And one more split, which is ownership rather than wording — but it is wording that is
+/// wrong without it.** A settlement is drained by the session that started it; the one
+/// exception is a settlement whose own session stopped before it could be drained, which
+/// [`JobWatchers::stop`] hands up a level so that it is not read by nobody. That
+/// completion is not this session's, and `me` is what tells the two apart: `owner != me`
+/// means *say whose it was*, do not say *you backgrounded*.
 ///
 /// **Why it is a function rather than four lines inside [`Harness::wake`].** This is the one part of
 /// the wake that decides anything, and `wake()` cannot be reached by a test: it needs a live
@@ -887,15 +907,22 @@ fn subagent_notice(done: &[JobCompletion], me: &str) -> String {
 /// An empty queue returns nothing, and that is load-bearing rather than tidy: `wake()` returns
 /// `Ok(None)` on an empty result rather than running a turn with nothing to say.
 fn completion_notices(done: Vec<JobCompletion>, me: &str) -> Vec<String> {
-    let (tasks, jobs): (Vec<JobCompletion>, Vec<JobCompletion>) = done
-        .into_iter()
-        .partition(|c| c.kind == BackgroundKind::Subagent);
+    // **Mine first**, then what was handed up — so a session reading one wake reads its
+    // own settlements before its children's, and the order of the two groups cannot be
+    // mistaken for one list.
+    let (theirs, mine): (Vec<JobCompletion>, Vec<JobCompletion>) =
+        done.into_iter().partition(|c| c.owner != me);
     let mut out = Vec::new();
-    if !jobs.is_empty() {
-        out.push(completion_notice(&jobs, me));
-    }
-    if !tasks.is_empty() {
-        out.push(subagent_notice(&tasks, me));
+    for (batch, mine) in [(mine, true), (theirs, false)] {
+        let (tasks, jobs): (Vec<JobCompletion>, Vec<JobCompletion>) = batch
+            .into_iter()
+            .partition(|c| c.kind == BackgroundKind::Subagent);
+        if !jobs.is_empty() {
+            out.push(completion_notice(&jobs, mine));
+        }
+        if !tasks.is_empty() {
+            out.push(subagent_notice(&tasks, mine));
+        }
     }
     out
 }
@@ -945,6 +972,22 @@ impl SteeringSource for HubSteering {
                 t.say(Speaker::Agent, &text, Some(Instant::now()));
             }
             return Some(SteeringMessage::normal(text));
+        }
+        // Then a background job or subagent of THIS session's own that has ended. It is
+        // here, above the monitors, because the monitors block below returns early when
+        // this session has no monitor registry — and a read-only seat that can only
+        // `task` is exactly the session that has completions and no monitors. For a root
+        // the set returns nothing here (its door is `Harness::wake`); see [`HubSteering`]
+        // for why a child needs this one.
+        if let Some(w) = &self.job_watch {
+            let done = w.take_mid_turn_completions();
+            if !done.is_empty() {
+                let text = completion_notices(done, &self.hub.session_id()).join("\n\n");
+                if let Some(t) = &self.trail {
+                    t.say(Speaker::Agent, &text, Some(Instant::now()));
+                }
+                return Some(SteeringMessage::normal(text));
+            }
         }
         // Then a monitor that fired while this turn was running. Between turns the
         // same firing arrives through `Harness::wake`; the shared cursor is what
@@ -2467,12 +2510,16 @@ impl<'a> Harness<'a> {
         // thread leaked per `task` call. Giving the watchers the runner is what makes
         // the handle route to its own wait (R7's hop, for a subagent).
         let job_watch = Some(job_watch.with_tasks(&subagent_runner));
-        // **And a child joins its TREE's set** (R58). The two halves piece 4 needs are
-        // both here: the completion must land on a queue the root's `Harness::wake`
-        // drains, and the bell must ring for the root — the only session in a tree that
-        // is in `Sessions::open`, so the only one `Sessions::wake` will serve. A root
-        // has no tree to join (`tree_watch` is `None` from `Parts::load`) and keeps its
-        // own set, whose `wake_target` is its own id.
+        // **And a child joins its TREE's set** (R58). What piece 4 needs is the ring: a
+        // settlement must waken a session the daemon can drive, and the only such session in
+        // a tree is its root — the only one in `Sessions::open`, so the only one
+        // `Sessions::wake` will serve. A root has no tree to join (`tree_watch` is `None`
+        // from `Parts::load`) and keeps its own set, whose `wake_target` is its own id.
+        //
+        // **The queue is NOT joined with it** (2026-10-05). A child's set keeps its own
+        // completions, so what it backgrounds is drained by the child — and a settlement
+        // that arrives after the child's turn is over is handed up one level by
+        // `JobWatchers::stop` rather than read by the main session as its own.
         let job_watch = match (&parts.tree_watch, job_watch) {
             (Some(tree), Some(w)) => Some(w.shares_tree(tree)),
             (_, other) => other,
@@ -4691,17 +4738,19 @@ impl<'a> Harness<'a> {
         // **The hop that did not exist (R7).** `JobSettled` reaches every head; this is
         // what reaches the model, and taking it here is what stops it arriving twice.
         //
-        // **And only what belongs here** (2026-10-05). The queue is the tree's, so the question a
-        // drain has to answer is *whose settlement is this* — and the answer is: mine, plus any
-        // whose owner is no longer registered to be told. A live child's job is LEFT for the
-        // child's own loop, which is the one waiting on it; before this, whoever drained first
-        // announced it, and the parent was told *"a job you backgrounded has ended"* about a job
-        // id its own `job_output` did not know. MEASURED twice in one afternoon with two
-        // different children (`j149`, `j183`).
+        // **And it is THIS session's queue that is drained, which is the routing fix of
+        // 2026-10-05.** The queue is per session: a job a subagent backgrounded is queued
+        // on the subagent's set and drained by the subagent, so the notice says *you
+        // backgrounded* to the one session that did. Sharing the tree's queue (R58) is
+        // what put a subagent's `sleep 25` in the main session's conversation, where the
+        // handle was not in `job_list` and `job_output` could not open it. The one thing
+        // that still arrives here from below is a settlement whose own session stopped
+        // before it could be drained ([`JobWatchers::stop`]) — and `completion_notices`
+        // is given this session's id so that it is not read as this session's own.
         let done = self
             .job_watch
             .as_ref()
-            .map(|w| w.take_completions_for(|owner| self.session_registry.get(owner).is_none()))
+            .map(|w| w.take_completions())
             .unwrap_or_default();
         // The sentences, and which kind gets which — [`completion_notices`], which is where that
         // decision lives so that it can be asserted without a live session.
@@ -6405,6 +6454,10 @@ impl<'a> Harness<'a> {
             injected: self.injected.clone(),
             monitors: self.monitors.clone(),
             monitor_cursor: self.monitor_cursor.clone(),
+            // The session's own set, so a child can be told at its round boundary what
+            // nothing will wake it with — and a root's own set answers nothing here, so
+            // R7's wake keeps its monopoly on the root's settlements.
+            job_watch: self.job_watch.clone(),
         }
     }
 
@@ -8836,15 +8889,15 @@ mod tests {
         let text = completion_notice(
             &[JobCompletion {
                 kind: BackgroundKind::Job,
+                owner: "s-me".into(),
                 job: "j7".into(),
                 command: "cargo build --release".into(),
                 state: "exited 0".into(),
                 produced: 4096,
                 elapsed_ms: 4_400,
-                owner: "s-me".into(),
                 detail: String::new(),
             }],
-            "s-me",
+            true,
         );
         assert!(text.starts_with("[job]"), "labelled like a monitor: {text}");
         assert!(text.contains("`j7`"), "{text}");
@@ -8866,15 +8919,15 @@ mod tests {
         let text = completion_notice(
             &[JobCompletion {
                 kind: BackgroundKind::Job,
+                owner: "s-me".into(),
                 job: "j9".into(),
                 command: String::new(),
                 state: "gone".into(),
                 produced: 0,
                 elapsed_ms: 0,
-                owner: "s-me".into(),
                 detail: String::new(),
             }],
-            "s-me",
+            true,
         );
         assert!(text.contains("command not recorded"), "{text}");
         assert!(!text.contains("``"), "an empty pair of backticks: {text}");
@@ -8896,16 +8949,16 @@ mod tests {
     fn a_childs_completion_names_the_child_and_points_at_task_result() {
         let one = JobCompletion {
             kind: BackgroundKind::Subagent,
+            owner: "s-me".into(),
             job: "s-1-sub-1".into(),
             // A subagent runs no command, and the field must not quietly hold an answer.
             command: String::new(),
             state: "done".into(),
             produced: 0,
             elapsed_ms: 0,
-            owner: "s-me".into(),
             detail: "two facts off a fixture".into(),
         };
-        let text = subagent_notice(&[one.clone()], "s-me");
+        let text = subagent_notice(&[one.clone()], true);
         // The label, and it is what tells this row from a job's: one channel, two nouns.
         assert!(
             text.starts_with("[task]"),
@@ -8937,7 +8990,7 @@ mod tests {
                 detail: String::new(),
                 ..one.clone()
             }],
-            "s-me",
+            true,
         );
         assert!(
             !bare.contains("done:"),
@@ -8955,7 +9008,7 @@ mod tests {
                     ..one.clone()
                 },
             ],
-            "s-me",
+            true,
         );
         assert!(
             pair.contains("2 subagents you started have finished"),
@@ -8977,22 +9030,22 @@ mod tests {
     fn a_settlement_is_two_nouns_out_of_one_channel() {
         let job = |id: &str| JobCompletion {
             kind: BackgroundKind::Job,
+            owner: "s-me".into(),
             job: id.into(),
             command: "cargo test".into(),
             state: "exited 0".into(),
             produced: 12,
             elapsed_ms: 900,
-            owner: "s-me".into(),
             detail: String::new(),
         };
         let child = |id: &str| JobCompletion {
             kind: BackgroundKind::Subagent,
+            owner: "s-me".into(),
             job: id.into(),
             command: String::new(),
             state: "done".into(),
             produced: 0,
             elapsed_ms: 0,
-            owner: "s-me".into(),
             detail: "off a fixture".into(),
         };
 
@@ -9027,34 +9080,124 @@ mod tests {
             "{:?}",
             pair[0]
         );
+    }
 
-        // **AND A COMPLETION THAT IS NOT OURS IS NOT ANNOUNCED AS OURS** (2026-10-05). This is the
-        // assertion the defect needed and did not have: a child's job, taken by the parent because
-        // the child was gone, must not be introduced as "a job you backgrounded" — the parent's
-        // `job_output` does not know the id, and MEASURED twice in one afternoon it was told exactly
-        // that about `j149` and `j183`.
-        let foreign = completion_notices(
-            vec![JobCompletion {
-                owner: "s-child".into(),
-                ..job("j183")
-            }],
-            "s-me",
-        );
-        assert_eq!(foreign.len(), 1, "{foreign:?}");
+    /// **A settlement handed up says WHOSE it was, and points at no door.**
+    ///
+    /// The other half of the ownership split, and the sentence the measured defect of
+    /// 2026-10-05 needed: [`JobWatchers::stop`] hands a stopped session's undrained
+    /// settlements to the level above, and this is what keeps that hand-over honest.
+    ///
+    /// The measurement, from the operator's own conversation: a subagent backgrounded
+    /// `sleep 25; echo done`, and the notice arrived in the MAIN session's transcript
+    /// reading *"a job you backgrounded has ended"* — while that session's own
+    /// `job_output` answered *no job called `j17`*. A notice that says *you backgrounded*
+    /// about a job you cannot read is not misplaced, it is false twice; and a notice that
+    /// promised `job_output` to the session that cannot open it sends a model to a door
+    /// that does not open, which is the rule this file keeps for `task_result` vs
+    /// `job_output` one layer down.
+    #[test]
+    fn a_handed_up_settlement_names_its_owner_and_sends_nobody_to_a_shut_door() {
+        let job = JobCompletion {
+            kind: BackgroundKind::Job,
+            owner: "s-child".into(),
+            job: "j17".into(),
+            command: "sleep 25; echo done".into(),
+            state: "exited 0".into(),
+            produced: 5,
+            elapsed_ms: 25_000,
+            detail: String::new(),
+        };
+
+        // The level it was handed up to — the ROOT — is not the session that started it.
+        let theirs = completion_notices(vec![job.clone()], "s-root");
+        assert_eq!(theirs.len(), 1, "{theirs:?}");
         assert!(
-            !foreign[0].contains("a job you backgrounded"),
-            "a child's job came back as the parent's own work: {:?}",
-            foreign[0]
+            !theirs[0].contains("you backgrounded"),
+            "the one sentence that must never be said about somebody else's job: {:?}",
+            theirs[0]
         );
         assert!(
-            foreign[0].contains("backgrounded by a subagent"),
+            theirs[0].contains("a job a session below this one started has ended"),
             "{:?}",
-            foreign[0]
+            theirs[0]
         );
         assert!(
-            foreign[0].contains("from `s-child`"),
-            "the notice must name whose job it was: {:?}",
-            foreign[0]
+            theirs[0].contains("started by `s-child`"),
+            "the owner is named on the fact line: {:?}",
+            theirs[0]
+        );
+        assert!(
+            !theirs[0].contains("job_output"),
+            "its host went with the session that started it, so `job_output` here is a door \
+             that does not open: {:?}",
+            theirs[0]
+        );
+
+        // **The same settlement, read by the session that started it** — which is the
+        // sentence that was right all along and must not have moved.
+        let mine = completion_notices(vec![job.clone()], "s-child");
+        assert!(
+            mine[0].contains("a job you backgrounded has ended"),
+            "{:?}",
+            mine[0]
+        );
+        assert!(mine[0].contains("job_output"), "{:?}", mine[0]);
+        assert!(!mine[0].contains("started by"), "{:?}", mine[0]);
+
+        // **Its own come first**, so one drain reads as this session's own news before what
+        // it is being told on somebody else's behalf — two owners, two notices, that order.
+        let mine_job = JobCompletion {
+            owner: "s-root".into(),
+            job: "j3".into(),
+            ..job.clone()
+        };
+        let both = completion_notices(vec![job, mine_job], "s-root");
+        assert_eq!(both.len(), 2, "{both:?}");
+        assert!(
+            both[0].contains("a job you backgrounded has ended") && both[0].contains("`j3`"),
+            "{:?}",
+            both[0]
+        );
+        assert!(
+            both[1].contains("started by `s-child`") && both[1].contains("`j17`"),
+            "{:?}",
+            both[1]
+        );
+
+        // A handed-up GRANDCHILD keeps its own door: `task_result` reads the tree's handle
+        // list (`Parts::tree_slots`), so unlike a dead job's output the answer is still there.
+        let child = JobCompletion {
+            kind: BackgroundKind::Subagent,
+            owner: "s-child".into(),
+            job: "s-child-sub-1".into(),
+            command: String::new(),
+            state: "done".into(),
+            produced: 0,
+            elapsed_ms: 0,
+            detail: "the grandchild answered".into(),
+        };
+        let handed = completion_notices(vec![child], "s-root");
+        assert_eq!(handed.len(), 1, "{handed:?}");
+        assert!(
+            handed[0].contains("a subagent a session below this one started has finished"),
+            "{:?}",
+            handed[0]
+        );
+        assert!(
+            handed[0].contains("started by `s-child`"),
+            "{:?}",
+            handed[0]
+        );
+        assert!(
+            handed[0].contains("the grandchild answered"),
+            "{:?}",
+            handed[0]
+        );
+        assert!(
+            handed[0].contains("task_result"),
+            "the handle is in this tree, so this door does open: {:?}",
+            handed[0]
         );
     }
 
