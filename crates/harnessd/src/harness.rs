@@ -729,6 +729,9 @@ pub struct HubSteering {
     /// This session's watcher set, for the settlements it cannot be woken with. `None`
     /// in a test that has no daemon behind it.
     job_watch: Option<Arc<JobWatchers>>,
+    /// Messages handed back by a failed turn, drained before the hub's queue so the
+    /// next poll finds them first. See [`SteeringSource::give_back`].
+    held: VecDeque<SteeringMessage>,
 }
 
 impl HubSteering {
@@ -740,6 +743,7 @@ impl HubSteering {
             monitors: None,
             monitor_cursor: Arc::new(AtomicUsize::new(0)),
             job_watch: None,
+            held: VecDeque::new(),
         }
     }
 }
@@ -957,6 +961,16 @@ fn human_secs(ms: u64) -> String {
 
 impl SteeringSource for HubSteering {
     fn try_next(&mut self) -> Option<SteeringMessage> {
+        // A handed-back message comes out first, with the flags it had when it was
+        // taken: it was taken before anything still in the hub's queue, and an
+        // interrupt is not something a later message reorders. It is the same
+        // `SteeringMessage` coming out again, so `from_operator` and `urgent` are
+        // intact — and it is not recorded in the trail here, because `try_next`
+        // records a message when it is taken and this one was already recorded the
+        // first time it was taken. See [`Self::give_back`].
+        if let Some(m) = self.held.pop_front() {
+            return Some(m);
+        }
         // The head first: somebody is waiting on it. Steering-scoped, so a
         // compaction queued behind this turn stays queued for the worker — see
         // [`Hub::try_steering_command`].
@@ -1060,6 +1074,27 @@ impl SteeringSource for HubSteering {
     /// whole thing back into the composer.
     fn try_withdraw(&mut self) -> bool {
         self.hub.try_withdraw_command()
+    }
+
+    /// **Hand a message back to the source, for a turn that failed.**
+    ///
+    /// The mirror of the take in [`Self::try_next`]: a message is out of the hub's
+    /// queue the moment `try_next` dequeues it, and a turn that fails commits
+    /// nothing (§5.7), so the words go back rather than being appended — appending
+    /// them would advance the ledger and the prefix on an error path, the same loss
+    /// with a different sign. They are held in `self.held` and drained by the next
+    /// [`Self::try_next`] before the hub's queue, so the retried or next round's
+    /// greedy pre-poll puts them in the prompt.
+    ///
+    /// **No `t.say` on the way back.** `try_next` is where a message is recorded in
+    /// the trail as `Speaker::Operator` when it is taken; recording it here would
+    /// record one that may never be consumed. The message keeps its
+    /// `from_operator`/`urgent` flags because it is the same `SteeringMessage`
+    /// coming out again.
+    fn give_back(&mut self, msgs: Vec<SteeringMessage>) {
+        for m in msgs {
+            self.held.push_back(m);
+        }
     }
 }
 
@@ -6730,6 +6765,7 @@ impl<'a> Harness<'a> {
             // nothing will wake it with — and a root's own set answers nothing here, so
             // R7's wake keeps its monopoly on the root's settlements.
             job_watch: self.job_watch.clone(),
+            held: VecDeque::new(),
         }
     }
 
@@ -11231,6 +11267,7 @@ mod tests {
             monitors: None,
             monitor_cursor: Arc::new(AtomicUsize::new(0)),
             job_watch: None,
+            held: VecDeque::new(),
         };
 
         // **What `HarnessTaskRunner::send` does**, exactly: the daemon's own name at the
@@ -11270,6 +11307,77 @@ mod tests {
         assert!(
             steering.try_next().is_none(),
             "the same message was handed over twice"
+        );
+    }
+
+    /// **A failed turn's words come back out of the hub's steering, still the
+    /// operator's, and not twice.**
+    ///
+    /// The hub half of the fix for the measured loss: a message is out of the hub's
+    /// queue the moment `try_next` dequeues it, and a turn that fails commits nothing
+    /// (§5.7), so the words go back to the source rather than being appended.
+    /// `give_back` holds them, and the next `try_next` drains them before the hub's
+    /// queue — with the flags they had when they were taken, because it is the same
+    /// `SteeringMessage` coming out again.
+    #[test]
+    fn a_handed_back_message_comes_out_of_the_next_poll_still_the_operators() {
+        let hub = Hub::new("s-steer");
+        let mut steering = HubSteering {
+            hub: hub.clone(),
+            trail: None,
+            injected: Arc::new(Mutex::new(VecDeque::new())),
+            monitors: None,
+            monitor_cursor: Arc::new(AtomicUsize::new(0)),
+            job_watch: None,
+            held: VecDeque::new(),
+        };
+
+        // An interrupt queued behind the failed turn: it must come out AFTER the
+        // handed-back words, which were taken before it. (The daemon may submit an
+        // interrupt and nothing else that speaks as a person, so this is the door
+        // the test goes through.)
+        let f = hub.submit(
+            letibot_sessionlog::hub::DAEMON_SUBMITTER,
+            "interrupt-1",
+            0,
+            letibot_sessionlog::CommandKind::Interrupt {
+                reason: "ABORT".into(),
+            },
+        );
+        assert!(
+            matches!(f, letibot_sessionlog::ServerFrame::Accepted { .. }),
+            "the hub refused the interrupt: {f:?}"
+        );
+
+        // The failed turn hands the operator's words back.
+        steering.give_back(vec![SteeringMessage::operator(
+            "use web_search and fetch to lookup git commands meaning",
+        )]);
+
+        // The next poll takes the handed-back words first, still the operator's.
+        let back = steering
+            .try_next()
+            .expect("the handed-back words come out of the next poll");
+        assert_eq!(
+            back.text,
+            "use web_search and fetch to lookup git commands meaning"
+        );
+        assert!(
+            back.from_operator,
+            "the words came out as somebody else's: {back:?}"
+        );
+
+        // Not handed over twice: the next poll takes the queued interrupt, then nothing.
+        let next = steering
+            .try_next()
+            .expect("the queued interrupt still comes out");
+        assert!(
+            next.urgent,
+            "the interrupt came out as something else: {next:?}"
+        );
+        assert!(
+            steering.try_next().is_none(),
+            "a message was handed over twice"
         );
     }
 

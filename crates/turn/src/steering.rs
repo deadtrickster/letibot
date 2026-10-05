@@ -23,6 +23,7 @@
 //! touches the ledger; the engine appends the resulting `User` item through the
 //! same door every other item goes through.
 
+use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use letibot_transcript::{TranscriptItem, UserPart};
@@ -118,6 +119,29 @@ pub trait SteeringSource {
     fn try_withdraw(&mut self) -> bool {
         false
     }
+
+    /// **Hand a message back to the source, for a turn that failed.**
+    ///
+    /// A message is out of the source's queue the moment [`Pending::absorb`] takes
+    /// it — `try_next` dequeues it — and a turn that fails commits nothing (§5.7).
+    /// So the words must go back to the source rather than being appended:
+    /// appending them would advance the ledger and the prefix on an error path,
+    /// which is the same loss with a different sign. The source keeps them for the
+    /// next [`Self::try_next`], so the retried or next round's greedy pre-poll puts
+    /// them in the prompt.
+    ///
+    /// MEASURED on the operator's own head: they typed a prompt while a turn was
+    /// running, the daemon accepted it, and the round then failed under §5.7. The
+    /// words were out of the hub's queue and never in the transcript — the head
+    /// drew `queued` for the rest of the session, and it was right to keep doing
+    /// so, because the words were never appended and the head has no way to know
+    /// that. This method is the door that puts them back where the head left them.
+    ///
+    /// **No default body.** A default that silently drops is exactly the loss this
+    /// exists to prevent, so every implementor must state what it does with a
+    /// message it is handed back. The test that holds the property end to end is
+    /// `a_failed_turn_gives_the_operators_words_back_to_the_source` in `tests/`.
+    fn give_back(&mut self, msgs: Vec<SteeringMessage>);
 }
 
 /// Nothing ever arrives. The default for a turn with no head attached.
@@ -128,6 +152,11 @@ impl SteeringSource for NoSteering {
     fn try_next(&mut self) -> Option<SteeringMessage> {
         None
     }
+    fn give_back(&mut self, _msgs: Vec<SteeringMessage>) {
+        // Nothing ever arrives, so nothing is ever held and nothing is ever handed
+        // back. This is not the same as dropping: there is no message to drop, and
+        // a `Pending` that absorbed from this source is empty by construction.
+    }
 }
 
 /// An `mpsc` channel as a steering source.
@@ -137,6 +166,9 @@ pub struct ChannelSteering {
     /// them is how a dropped subscription looks like a quiet room. Recorded so the
     /// engine can raise it once rather than checking forever.
     disconnected: bool,
+    /// Messages handed back by a failed turn, drained before the channel so the
+    /// next poll finds them first. See [`SteeringSource::give_back`].
+    held: VecDeque<SteeringMessage>,
 }
 
 impl ChannelSteering {
@@ -144,6 +176,7 @@ impl ChannelSteering {
         ChannelSteering {
             rx,
             disconnected: false,
+            held: VecDeque::new(),
         }
     }
 
@@ -154,6 +187,12 @@ impl ChannelSteering {
 
 impl SteeringSource for ChannelSteering {
     fn try_next(&mut self) -> Option<SteeringMessage> {
+        // A handed-back message comes out first, with the flags it had when it was
+        // taken: it was taken before anything still in the channel, and an interrupt
+        // is not something a later message reorders.
+        if let Some(m) = self.held.pop_front() {
+            return Some(m);
+        }
         match self.rx.try_recv() {
             Ok(m) => Some(m),
             Err(TryRecvError::Empty) => None,
@@ -161,6 +200,15 @@ impl SteeringSource for ChannelSteering {
                 self.disconnected = true;
                 None
             }
+        }
+    }
+    fn give_back(&mut self, msgs: Vec<SteeringMessage>) {
+        // A failed turn commits nothing (§5.7), so the words go back rather than
+        // being appended. They are held here and drained by the next `try_next`,
+        // before the channel, so the retried or next round's greedy pre-poll puts
+        // them in the prompt.
+        for m in msgs {
+            self.held.push_back(m);
         }
     }
 }
@@ -299,6 +347,34 @@ impl Pending {
         self.queued.drain(..).map(|m| m.to_item()).collect()
     }
 
+    /// **Everything held, back to the source, for a turn that failed.**
+    ///
+    /// The mirror of [`Self::take_items`]: where `take_items` hands the held
+    /// messages to the transcript at a step boundary, this hands them back to the
+    /// source when the turn fails and commits nothing (§5.7). The operator's words
+    /// are input, not what the model produced, and appending them on an error path
+    /// would advance the ledger and the prefix — the same loss with a different
+    /// sign. So they go back, in arrival order, with any urgent first: the urgent
+    /// was taken to be acted on, and an interrupt is not something a later message
+    /// reorders.
+    ///
+    /// After this, the `Pending` is empty: the messages are the source's again, and
+    /// the next round's greedy pre-poll will put them in the prompt. The unit half
+    /// of the test that holds this is
+    /// `give_back_returns_the_queued_run_and_a_held_urgent_in_order` below; the end
+    /// to end half is `a_failed_turn_gives_the_operators_words_back_to_the_source`
+    /// in `tests/`.
+    pub fn give_back(&mut self, source: &mut dyn SteeringSource) {
+        let mut msgs = Vec::new();
+        if let Some(u) = self.urgent.take() {
+            msgs.push(u);
+        }
+        msgs.append(&mut self.queued);
+        if !msgs.is_empty() {
+            source.give_back(msgs);
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.queued.is_empty()
     }
@@ -322,6 +398,11 @@ mod tests {
             } else {
                 Some(self.0.remove(0))
             }
+        }
+        fn give_back(&mut self, msgs: Vec<SteeringMessage>) {
+            // A handed-back message goes to the front, so the next `try_next` finds
+            // it first: it was taken before anything still in the vector.
+            self.0.splice(0..0, msgs);
         }
     }
 
@@ -366,7 +447,9 @@ mod tests {
 
         // **THE NEXT POLL MUST STILL REACH THE SOURCE.** It returns the held urgent (it came first),
         // and it drains what is behind it — which is the operator's prompt.
-        let again = pending.absorb(&mut src).expect("the held one is still returned");
+        let again = pending
+            .absorb(&mut src)
+            .expect("the held one is still returned");
         assert_eq!(again.text, "ABORT", "the held urgent still goes first");
         assert_eq!(
             pending.len(),
@@ -393,7 +476,9 @@ mod tests {
 
         let again = pending.absorb(&mut src).expect("the held one");
         assert_eq!(again.text, "FIRST", "the earlier one goes first");
-        let third = pending.absorb(&mut src).expect("**the second was not lost**");
+        let third = pending
+            .absorb(&mut src)
+            .expect("**the second was not lost**");
         assert_eq!(third.text, "SECOND");
     }
 
@@ -504,6 +589,9 @@ mod tests {
         fn try_withdraw(&mut self) -> bool {
             std::mem::take(&mut self.withdraw)
         }
+        fn give_back(&mut self, msgs: Vec<SteeringMessage>) {
+            self.msgs.splice(0..0, msgs);
+        }
     }
 
     /// The recall-to-edit flow's daemon half: the operator pulled the queued
@@ -558,5 +646,66 @@ mod tests {
             s.disconnected(),
             "silence from a dropped subscription is not a quiet room"
         );
+    }
+
+    /// **A failed turn gives the held messages back to the source, in order, with
+    /// any urgent first.**
+    ///
+    /// The unit half of the fix for the measured loss: a message absorbed
+    /// mid-generation is out of the source's queue the moment `absorb` takes it,
+    /// and a turn that fails commits nothing (§5.7). So the words must go back to
+    /// the source rather than being appended. `give_back` returns everything held —
+    /// the queued run and a held urgent — in arrival order, with the urgent first,
+    /// and leaves the `Pending` empty.
+    #[test]
+    fn give_back_returns_the_queued_run_and_a_held_urgent_in_order() {
+        let mut src = Fixed(vec![
+            SteeringMessage::operator("first line"),
+            SteeringMessage::operator("second line"),
+            SteeringMessage::urgent("ABORT"),
+            SteeringMessage::normal("a notice"),
+        ]);
+        let mut pending = Pending::new();
+
+        // The greedy pre-poll: the operator lines coalesce, the urgent is returned
+        // and held (there is no generation to act on yet), and the notice behind it
+        // stays in the source.
+        let u = pending.absorb(&mut src).expect("the urgent one comes back");
+        pending.hold_urgent(u);
+
+        // A later poll: the held urgent is returned again (and re-held), and the
+        // notice behind it is absorbed.
+        let u = pending
+            .absorb(&mut src)
+            .expect("the held urgent comes back again");
+        pending.hold_urgent(u);
+
+        assert_eq!(
+            pending.len(),
+            2,
+            "one coalesced operator run and one notice"
+        );
+        assert!(pending.urgent.is_some(), "the urgent is still held");
+
+        // The turn fails: everything held goes back to the source, urgent first.
+        pending.give_back(&mut src);
+        assert!(
+            pending.is_empty(),
+            "the Pending is empty after the give-back"
+        );
+        assert!(pending.urgent.is_none());
+
+        // The source has them back, in order: the urgent first, then the queued run.
+        let back: Vec<SteeringMessage> = std::iter::from_fn(|| src.try_next()).collect();
+        assert_eq!(back.len(), 3);
+        assert_eq!(back[0].text, "ABORT", "the urgent goes first");
+        assert!(back[0].urgent);
+        assert_eq!(
+            back[1].text, "first line\nsecond line",
+            "the coalesced operator run"
+        );
+        assert!(back[1].from_operator);
+        assert_eq!(back[2].text, "a notice");
+        assert!(!back[2].from_operator);
     }
 }
