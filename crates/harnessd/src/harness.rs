@@ -4267,9 +4267,11 @@ impl<'a> Harness<'a> {
             return Err(HarnessError::Setup(why));
         }
 
-        // Off any metered provider first, and by the same door, so the ledger scale
-        // and the restored window are handled in the one place that knows how.
-        let mut line = self.set_provider(None)?;
+        // Off any metered provider first, and by its own door, so the ledger scale and
+        // the restored window are handled where that is understood. Its report is
+        // discarded deliberately: it describes a move to the daemon's own server, which
+        // is a waypoint here rather than where this switch lands.
+        self.set_provider(None)?;
 
         // **The engine is what actually holds the address** — `cfg.endpoint` is the
         // record and `engine.endpoint` is where `/completion` is posted. Writing one
@@ -4286,8 +4288,8 @@ impl<'a> Harness<'a> {
         // A different box is a different KV cache and a different window; the ratio
         // measured on the old one is not evidence about this one.
         self.cfg.ledger_scale = None;
-        let moved = self.retune_window_local(&want, &m.name);
-        line = format!(
+        let moved = self.retune_window_local(&want, &m.name, m.profile.window);
+        let line = format!(
             "turns go to `{}` at {} from the next one on (fleet, no meter){}{moved}",
             m.model,
             want.authority(),
@@ -4317,7 +4319,12 @@ impl<'a> Harness<'a> {
     /// config's word for *no wall* rather than for a large one — the same reading
     /// `cli` takes for a local endpoint that will not say. It is said out loud,
     /// because planning against nothing is a decision the operator should see.
-    fn retune_window_local(&mut self, want: &Endpoint, name: &str) -> String {
+    fn retune_window_local(
+        &mut self,
+        want: &Endpoint,
+        name: &str,
+        stated: Option<u64>,
+    ) -> String {
         // Remembered on the way out, so `/models local` restores the server this
         // daemon was started against rather than keeping another box's number. Same
         // write site and same mirror as `retune_window`, so the two cannot disagree.
@@ -4328,7 +4335,11 @@ impl<'a> Harness<'a> {
             }
         }
         let was = self.cfg.context_window;
-        let now = letibot_turn::serving::served_ctx(want);
+        // **A stated window beats the probe**, for the same reason `--context-window`
+        // beats `/props` at startup: the operator naming a number is them telling the
+        // daemon something it cannot work out, and the case the key exists for is a
+        // proxy whose `/props` answers about itself rather than the server behind it.
+        let now = stated.or_else(|| letibot_turn::serving::served_ctx(want));
         self.cfg.context_window = now;
         match now {
             Some(w) if Some(w) == was => String::new(),
