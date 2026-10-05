@@ -47,7 +47,7 @@ use letibot_sessionlog::event::{TodoEntry, TodoStatus as WireTodoStatus};
 use letibot_sessionlog::hub::{CommandKind, Hub};
 use letibot_sessionlog::{LogSink, SessionEvent, ToolLogSink};
 use letibot_tokencore::store::TodoItem;
-use letibot_tokencore::store::{SessionRecord, StablePrefixRecord, Store};
+use letibot_tokencore::store::{JobRecord, SessionRecord, StablePrefixRecord, Store};
 use letibot_tokencore::{Vocab, ledger::hex as hex32};
 use letibot_tools::authorise::{
     AuthorisationTrail, BreakerState, DenialNotice, DenialSink, Speaker, Utterance,
@@ -7046,7 +7046,67 @@ pub struct JobWindow {
     pub next: Option<u64>,
 }
 
+/// **What a recorded job's window says**, apart from the harness that found the row.
+///
+/// A free function so the words can be asserted without a store, a vocabulary or a session —
+/// the same reason [`completion_notices`] is one. What the harness adds around it is a lookup.
+fn recorded_job_lines(row: &JobRecord) -> Vec<String> {
+    let mut lines = vec![format!(
+        "this job is not in this daemon's table: {} after {}, {} bytes out. Its bytes were \
+         not kept — the ring died with the process that held them.",
+        row.state,
+        human_secs(row.elapsed_ms),
+        row.produced,
+    )];
+    if let Some(path) = &row.redirect {
+        lines.push(format!(
+            "its output went to {path} — that is the file to read."
+        ));
+    }
+    lines
+}
+
 impl<'a> Harness<'a> {
+    /// **The window for a handle this daemon never ran**, or the refusal when the store has
+    /// never heard of it either.
+    ///
+    /// The measured complaint: entering a job showed nothing *"whether it went to file or not"*,
+    /// and after a restart it showed nothing at all — `no job ... here` about a job whose ending
+    /// was written down. This is the durable half answering. It says *not in this daemon's table*
+    /// rather than *it ran*, because the row carries a state WORD and this function does not
+    /// parse it: a job whose word is `not run (could not join its scope)` must not be described
+    /// here as one that ran.
+    ///
+    /// **What it cannot give is the bytes.** They lived in a ring owned by the process that
+    /// wrote them, so they are gone — and the row's `redirect` (R41) is the one thing that can
+    /// say where they went instead. A window that invented a page of output would be worse than
+    /// an empty one; this one names the loss and, when it can, the file.
+    fn recorded_job_window(&self, job: &str) -> Result<JobWindow, String> {
+        let refusal = || format!("no job `{job}` here; `/job` with no argument lists them");
+        let Some(store) = self.store.as_ref() else {
+            return Err(refusal());
+        };
+        let Ok(rows) = store.jobs(&self.cfg.session_id) else {
+            return Err(refusal());
+        };
+        let Some(row) = rows.into_iter().find(|r| r.handle == job) else {
+            return Err(refusal());
+        };
+        let lines = recorded_job_lines(&row);
+        Ok(JobWindow {
+            from: 0,
+            to: 0,
+            produced: row.produced,
+            // Everything the job wrote is outside this window, which is what `dropped` says.
+            dropped: row.produced,
+            state: row.state.clone(),
+            // Not known here: the row records a state WORD and this function does not parse it.
+            never_ran: false,
+            lines,
+            next: None,
+        })
+    }
+
     /// The same read as [`Self::job_output`], as a window rather than a page of
     /// prose — see [`JobWindow`] for why both exist.
     pub fn job_output_window(
@@ -7060,9 +7120,12 @@ impl<'a> Harness<'a> {
         };
         let jid = letibot_tools::exec::JobId(job.to_string());
         let Some(view) = host.job(&jid) else {
-            return Err(format!(
-                "no job `{job}` here; `/job` with no argument lists them"
-            ));
+            // **A job this daemon never ran, but whose ending it may have written down.**
+            // The process table is memory: after a restart, a handle the pane listed a moment
+            // ago answered `no job ... here` *about a job whose ending is in the store*. The
+            // host is still asked FIRST, because only it can say whether a job runs now; the
+            // row answers what happened, which is a different question. See [`JobRecord`].
+            return self.recorded_job_window(job);
         };
         let slice = host
             .output(&jid, offset, limit)
@@ -9220,6 +9283,48 @@ mod subagent_model_tests {
 
 #[cfg(test)]
 mod tests {
+    /// **A job this daemon never ran is answered from the record, not refused.**
+    ///
+    /// The operator, after a restart: entering a job showed nothing at all — `no job ... here`
+    /// about a job whose ending was written down. Three claims, and the third is the one a
+    /// reader acts on: the state word is the row's own, the bytes are admitted LOST rather than
+    /// silently absent, and a redirect names the file that still holds them (R41).
+    #[test]
+    fn a_recorded_job_says_what_happened_and_where_its_bytes_went() {
+        let row = |state: &str, redirect: Option<&str>| JobRecord {
+            handle: "j7".into(),
+            command: "cargo test --release".into(),
+            how: String::new(),
+            state: state.into(),
+            produced: 4_096,
+            elapsed_ms: 8_000,
+            redirect: redirect.map(str::to_string),
+        };
+        let said = recorded_job_lines(&row("exited 0", None)).join("\n");
+        assert!(said.contains("exited 0"), "{said}");
+        assert!(said.contains("8.0s"), "the duration is the row's: {said}");
+        assert!(said.contains("4096 bytes"), "{said}");
+        assert!(
+            said.contains("not kept"),
+            "the bytes are lost and the window must say so rather than look empty: {said}"
+        );
+        // **A word this function does not know is REPEATED, not interpreted.** A job whose
+        // state is `not run (could not join its scope)` must not read here as one that ran,
+        // which is why the sentence says *not in this daemon's table* and not *it ran*.
+        let never = recorded_job_lines(&row("not run (could not join its scope)", None)).join("\n");
+        assert!(
+            never.contains("not run (could not join its scope)"),
+            "{never}"
+        );
+        // **And the file, when the row knows it** — R41's other half: the pane cannot read the
+        // bytes, so the one useful thing it can do is say where they are.
+        let redirected = recorded_job_lines(&row("exited 0", Some("/tmp/build.log"))).join("\n");
+        assert!(
+            redirected.contains("/tmp/build.log"),
+            "a redirected job's file is not named: {redirected}"
+        );
+    }
+
     /// **A subagent's ask is addressed to the tree's ROOT, never to its parent** — R58's ask
     /// route, and the one sentence in the spawn that has to be right for a card to reach a
     /// head at all.
