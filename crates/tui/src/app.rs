@@ -16079,23 +16079,42 @@ impl App {
         // rather than counting backwards, which is a number that means nothing.
         let left = letibot_ui::progress::countdown(ask.deadline.saturating_sub(self.now_ms));
         let mut out = Vec::new();
+        // **The headline is the question, and it carries the `?` the decision card
+        // carries** — this is a card, not three lines of prose above the composer, and
+        // the marker is what says so at a glance. Yellow for the reason that card is:
+        // it exists to interrupt.
+        //
+        // **And it says the thing ONCE.** The operator, having just answered one: *"the
+        // ask is ugly as hell"*. The worst of it was the old first line, which read
+        // `sudo wants a password — [sudo] password for dead:` — the same fact twice, in
+        // the same weight, trailing off a colon.
         out.push(colour(
             &self.cfg,
             sgr::YELLOW,
-            &trim_to(&format!("sudo wants a password — {}", ask.prompt.trim()), w),
+            &trim_to("? sudo wants a password", w),
         ));
-        for l in wrap(&format!("for: {}", ask.command), w) {
-            out.push(l);
+        // **sudo's own words**, which name the account — faint and indented, because the
+        // headline has already said what this is.
+        for l in wrap(ask.prompt.trim(), w.saturating_sub(2)) {
+            out.push(dim(&self.cfg, &format!("  {l}")));
         }
-        out.push(self.cfg.palette().paint(
-            Role::Faint,
-            &trim_to(
-                &format!(
-                    "type it below (shown as dots), Enter sends it once to sudo and nowhere \
-                     else; Esc refuses · {left}"
-                ),
-                w,
-            ),
+        // The command keeps its own rows — it is the one thing here worth the rows, and
+        // the thing being authorised — and it is faint, because it is a fact about the
+        // ask rather than the ask itself. `run:` names it, where the old `for:` named
+        // nothing.
+        for l in wrap(&format!("run: {}", ask.command), w.saturating_sub(2)) {
+            out.push(dim(&self.cfg, &format!("  {l}")));
+        }
+        // **Short enough to survive a narrow terminal whole, keys first.** The old
+        // sentence ran past a hundred columns and `trim_to` cuts from the end — which is
+        // where the countdown lives, so on a narrow screen the one field that is moving
+        // was the first thing sacrificed. The keys come first for the same reason the
+        // gate card's refusal names its remedy first: what is cut must not be the way
+        // out. Forty-two columns, so the countdown survives even a 44-column frame —
+        // and `to sudo` is not in it because the headline has already named sudo.
+        out.push(dim(
+            &self.cfg,
+            &trim_to(&format!("  enter sends it · esc refuses · {left}"), w),
         ));
         out
     }
@@ -36075,6 +36094,61 @@ mod tests {
     /// is committed to the transcript one round at a time — so once round one's
     /// row had a body, its sentence was in history and still in the pane below the
     /// cards. Measured at 60x34 on the operator's session.
+    /// **The ask is a card, and it says the thing once.**
+    ///
+    /// The operator, having just answered one: *"the ask is ugly as hell"*. Three faults,
+    /// and this pins one assertion against each: the headline said `sudo wants a password
+    /// — [sudo] password for dead:` — the same fact twice, in the same weight, ending in
+    /// a colon — the command sat in the body register under a `for:` that named nothing,
+    /// and the hint ran past a hundred columns so `trim_to` cut it from the end, which is
+    /// exactly where the countdown lives.
+    #[test]
+    fn the_password_card_is_a_card_and_says_it_once() {
+        let mut a = app();
+        a.clock(1_788_984_000_000);
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::SecretRequested {
+                req_id: "secret-s-1".into(),
+                prompt: "[sudo] password for dead: ".into(),
+                command: "sudo apt install x".into(),
+                deadline: 1_788_984_047_000,
+            },
+        )));
+        let screen = a.screen(80, 24).join("\n");
+        let headline = screen
+            .lines()
+            .find(|l| l.contains("sudo wants a password"))
+            .expect("the card is drawn");
+        assert!(headline.contains("? "), "no marker: {headline:?}");
+        assert_eq!(
+            screen.matches("sudo wants a password").count(),
+            1,
+            "the card says it twice — which was the worst of it:\n{screen}"
+        );
+        // sudo's own words, and the command as the thing being authorised.
+        assert!(screen.contains("[sudo] password for dead:"), "{screen}");
+        assert!(
+            screen.contains("run: sudo apt install x"),
+            "the command is not named as a command:\n{screen}"
+        );
+        // **The keys survive a narrow terminal along with the countdown** — they are the
+        // way out, and the countdown is the only thing on the card that moves.
+        for w in [44usize, 60, 80, 200] {
+            let rows = a.secret_lines(a.secret.as_ref().expect("the ask"), w);
+            let last = rows.last().expect("a hint row");
+            assert!(line_width(last) <= w, "w={w}: {last:?}");
+            assert!(
+                last.contains("enter sends it") && last.contains("esc refuses"),
+                "w={w}: the keys were cut: {last:?}"
+            );
+            assert!(
+                last.contains("left"),
+                "w={w}: the countdown was cut: {last:?}"
+            );
+        }
+    }
+
     /// `sudo` wants a password: the card names the command, the keys are the
     /// field's alone, the screen shows dots and never the text, Enter sends it
     /// once as an `Action::Secret`, and the composer's history never had it.
