@@ -4266,7 +4266,9 @@ mod corpus_tests {
         s.connection()
             .execute("INSERT INTO schema_version (version) VALUES (4)", [])
             .expect("stamp v4");
-        let s = Store::from_connection(s.conn).expect("migrate");
+        // `None` for the path: this store was opened in memory, and what the test is
+        // re-running is the MIGRATION, which does not care where the file is.
+        let s = Store::from_connection(s.conn, None).expect("migrate");
 
         let sid = a_session(&s);
         s.record_adjudication(&a_decision("after-migration", &sid))
