@@ -728,6 +728,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 // origin, not a filter.
                 let f = ServerFrame::MergeQueue {
                     entries: registry.merge_entries(),
+                    reviews: registry.merge_reviews(),
                 };
                 writer.lock().unwrap().write(&f)?;
             }

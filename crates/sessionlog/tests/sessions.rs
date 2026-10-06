@@ -107,7 +107,14 @@ fn frame_kind(f: &ServerFrame) -> String {
             "RowFetched(row {row}, {} of {total})",
             body.as_ref().map(|b| b.len()).unwrap_or(0)
         ),
-        ServerFrame::MergeQueue { entries } => format!("MergeQueue({} entries)", entries.len()),
+        // The verdicts are counted too: a queue pane draws an entry's review beside it, so a
+        // frame that arrived with one half of the pair and not the other is worth seeing in
+        // the diagnostic rather than only in the pane.
+        ServerFrame::MergeQueue { entries, reviews } => format!(
+            "MergeQueue({} entries, {} reviews)",
+            entries.len(),
+            reviews.len()
+        ),
         ServerFrame::Peeked {
             session_id, events, ..
         } => format!("Peeked({}, {} events)", session_id, events.len()),

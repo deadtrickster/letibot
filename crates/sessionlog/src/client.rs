@@ -309,6 +309,15 @@ impl HeadClient {
         Ok(())
     }
 
+    /// **Ask for the merge queue, whole.** The pane's bootstrap read, exactly as
+    /// [`Client::list_jobs`] is the jobs pane's: the queue is the daemon's and a head that drew
+    /// its own version would draw a stale one. From then on the `MergeEntryAdded` and
+    /// `MergeEntryMoved` events carry every change.
+    pub fn list_merge_queue(&mut self) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::ListMergeQueue)?;
+        Ok(())
+    }
+
     /// Ask the daemon to compact this session: one summary turn over the history
     /// as it stands, then the history is replaced by that summary through a
     /// transcript fork. Queued behind a running turn, like a prompt.
