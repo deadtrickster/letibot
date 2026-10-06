@@ -2191,7 +2191,7 @@ pub enum ServerFrame {
     /// command after the verb, a pty that would not open, a program that was not there — is a
     /// pane that is over before it began, and the head's act is the same either way. So
     /// `reason` is the whole of the difference and it is a sentence, not a code: *"the program
-    /// exited with 3"*, *"you left the terminal"*, *"`!term` needs a command to run"*.
+    /// exited with 3"*, *"you closed the terminal"*, *"`!term` needs a command to run"*.
     ///
     /// Its own frame rather than a field on the last [`ServerFrame::TermOutput`], because
     /// **there may be no last one**: a program that dies without writing a byte still ends,

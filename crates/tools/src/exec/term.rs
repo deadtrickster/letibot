@@ -373,8 +373,8 @@ pub struct TermSession {
     tree: Option<Arc<dyn ScopeTree>>,
     /// **Why this pane ended, when the operator is the one who ended it.** Set by
     /// [`TermSession::close`] before it kills anything, and read by the reader thread when
-    /// it composes the sentence for [`TermSink::ended`] — so the operator who pressed the
-    /// way out is told *"you left the terminal"* rather than *"the program exited with
+    /// it composes the sentence for [`TermSink::ended`] — so the operator who confirmed
+    /// `!term close` is told *"you closed the terminal"* rather than *"the program exited with
     /// 137"*, and there is still exactly one reporter.
     closing: Arc<Mutex<Option<String>>>,
     /// **The program is over**, set by the reader thread the moment it knows — see
@@ -552,7 +552,7 @@ impl TermSession {
     /// **End the pane.**
     ///
     /// `why` is the sentence the operator is told, and it is set *before* the kill so the
-    /// reader thread's report carries it: the operator who pressed the way out is told what
+    /// reader thread's report carries it: the operator who confirmed `!term close` is told what
     /// they did, and the operator whose program exited on its own is told what it said.
     ///
     /// With a scope this is [`ScopeTree::end`]: the cgroup is killed, **everything under it
@@ -604,7 +604,7 @@ impl TermSession {
     /// refuses to open a second one.
     ///
     /// `closed || ended`, and the two are different facts that are both *no*: a pane the
-    /// operator left, and a pane whose program finished. Before this, the daemon asked
+    /// operator closed, and a pane whose program finished. Before this, the daemon asked
     /// `!closed` and a program that exited instantly left a **ghost** — the slot held by a
     /// pane that was over, so the next `!term` in that session was refused with *"a pane is
     /// already open"* and there was nothing on the screen to leave.
@@ -874,7 +874,7 @@ mod tests {
     }
 
     /// **The ending is the exit status, said once, by the one thread that read.** A program
-    /// that exits on its own is not the operator leaving, and the sentence says which.
+    /// that exits on its own is not the operator closing it, and the sentence says which.
     #[test]
     fn the_ending_is_the_programs_own_exit_status() {
         let (_s, sink) = pane("exit 3");
@@ -886,22 +886,25 @@ mod tests {
         assert_eq!(sink.ended().as_deref(), Some("the program exited with 3"));
     }
 
-    /// **Closing kills the program and the operator is told they left.**
+    /// **Closing kills the program and the operator is told they closed it.**
     ///
     /// The program is `sleep 30`, so a close that did not kill would leave the ending
     /// unwritten for half a minute and this test would time out — the wait is the assertion,
     /// and the sentence is the other half.
     #[test]
-    fn closing_kills_the_program_and_says_the_operator_left() {
+    fn closing_kills_the_program_and_says_the_operator_closed_it() {
         let (mut s, sink) = pane("sleep 30");
         std::thread::sleep(Duration::from_millis(200));
         assert!(
             s.live(),
             "a program that is still running is a pane that is live"
         );
-        s.close("you left the terminal");
+        // The sentence is the CALLER's — `harnessd` passes `Terminals::CLOSED` — so this is the
+        // plumbing rather than the wording. The literal is the real one, because a test that
+        // proved this with a made-up string would keep passing through a rename.
+        s.close("you closed the terminal");
         let why = sink.wait_ended(PATIENCE).expect("an ending");
-        assert_eq!(why, "you left the terminal");
+        assert_eq!(why, "you closed the terminal");
         assert!(s.closed());
         assert!(
             !s.live(),

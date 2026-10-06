@@ -161,6 +161,10 @@ fn open(w: &mut FrameWriter<UnixStream>, line: &str, cols: usize, rows: usize) {
 }
 
 /// **Every byte the program wrote, up to the pane's one ending.**
+///
+/// A `TermStatus` answer is skipped rather than refused: it is a pane frame, it carries no
+/// program bytes and it is not the ending, so a test that asked the status question before it
+/// asked for the output must not be tripped by its own answer.
 fn read_to_end(r: &mut FrameReader<UnixStream>) -> (Vec<u8>, String) {
     let mut said = Vec::new();
     loop {
@@ -169,7 +173,7 @@ fn read_to_end(r: &mut FrameReader<UnixStream>) -> (Vec<u8>, String) {
             ServerFrame::TermEnded { reason } => return (said, reason),
             // The session's own traffic — a pane moves no seq, but the seat still sends the
             // hello's events, and skipping them is what makes this a pane assertion.
-            ServerFrame::Event(_) => continue,
+            ServerFrame::Event(_) | ServerFrame::TermStatus { .. } => continue,
             other => panic!("expected a pane frame, got {other:?}"),
         }
     }
@@ -192,7 +196,7 @@ fn read_until(r: &mut FrameReader<UnixStream>, needle: &str) -> Vec<u8> {
                     String::from_utf8_lossy(&said)
                 )
             }
-            ServerFrame::Event(_) => continue,
+            ServerFrame::Event(_) | ServerFrame::TermStatus { .. } => continue,
             other => panic!("expected a pane frame, got {other:?}"),
         }
     }
@@ -320,14 +324,34 @@ fn a_pane_whose_program_exited_frees_its_slot() {
 
 /// Read until a pane frame, skipping the session's own traffic — the `Hello` a fresh attach is
 /// answered with, and the events behind it.
+///
+/// **`TermStatus` is one of the pane's frames** and is accepted here: it is the daemon's
+/// answer to *what is this session's pane running*, asked on the same socket as the rest and
+/// carrying no program bytes.
 fn until_pane(r: &mut FrameReader<UnixStream>) -> ServerFrame {
     loop {
         match r.read::<ServerFrame>().expect("a pane frame") {
             f @ (ServerFrame::TermAttached { .. }
             | ServerFrame::TermOutput { .. }
-            | ServerFrame::TermEnded { .. }) => return f,
+            | ServerFrame::TermEnded { .. }
+            | ServerFrame::TermStatus { .. }) => return f,
             ServerFrame::Event(_) | ServerFrame::Hello { .. } => continue,
             other => panic!("expected a pane frame, got {other:?}"),
+        }
+    }
+}
+
+/// **The daemon's answer to a status read**, with the pane's own drawing skipped.
+///
+/// A pane that is running writes bytes while this is asked, so the answer is not the next
+/// frame on the socket — and an assertion written against "the next frame" would pass or fail
+/// on how fast the program drew. `None` is a real answer and is returned as one: it is the
+/// daemon saying *this session has no live pane*.
+fn until_status(r: &mut FrameReader<UnixStream>) -> Option<String> {
+    loop {
+        match until_pane(r) {
+            ServerFrame::TermStatus { command } => return command,
+            _ => continue,
         }
     }
 }
@@ -412,10 +436,13 @@ fn a_bare_term_line_attaches_to_the_screen_the_daemon_holds() {
             other => panic!("expected a pane frame, got {other:?}"),
         }
     }
-    // Leaving is the session's pane, so this head can leave it — and the first head is told.
+    // **The deliberate close is the daemon's act, and this head's** — `!term close`, confirmed
+    // by the operator. `ctrl-\` is not this: it detaches and sends nothing at all, so the
+    // daemon never hears about it and the pane goes on running (asserted in `letibot-tui`'s
+    // `term_way_out.rs`, on the socket).
     w2.write(&ClientFrame::TermClose).expect("term close");
     let (_, reason) = read_to_end(&mut r2);
-    assert_eq!(reason, "you left the terminal");
+    assert_eq!(reason, "you closed the terminal");
     let _ = std::fs::remove_dir_all(&ws);
 }
 
@@ -523,11 +550,11 @@ fn the_operators_bytes_reach_the_program() {
         String::from_utf8_lossy(&said).contains("HELLO-PANE"),
         "the program never saw the keystrokes"
     );
-    // Leaving ends it, and the ending is the operator's act — asserted here so the test does
-    // not walk away from a running `tr`.
+    // The deliberate act ends it, and the ending is the operator's own — asserted here so the
+    // test does not walk away from a running `tr`.
     w.write(&ClientFrame::TermClose).expect("term close");
     let (_, reason) = read_to_end(&mut r);
-    assert_eq!(reason, "you left the terminal");
+    assert_eq!(reason, "you closed the terminal");
     let _ = std::fs::remove_dir_all(&ws);
 }
 
@@ -564,20 +591,26 @@ fn a_second_pane_is_refused_by_name_while_one_is_live() {
     w.write(&ClientFrame::TermClose).expect("term close");
     let (_, reason) = read_to_end(&mut r);
     assert_eq!(
-        reason, "you left the terminal",
-        "the pane that was refused a second one was still the operator's to leave"
+        reason, "you closed the terminal",
+        "the pane that was refused a second one was still the operator's to end"
     );
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// **Leaving is the daemon's act, and it says what the operator did.**
+/// **The deliberate close is the daemon's act, and it says what the operator did.**
 ///
-/// `TermClose` is a frame the program never sees — the head finds `ctrl-\` on its raw byte
-/// stream and sends this instead — so the program is ended by the daemon rather than by a key
-/// it could have trapped. The sentence is the operator's own act rather than the signal the
-/// program died of: *"you left the terminal"*, not *"killed by SIGKILL"*.
+/// `TermClose` is a frame the program never sees: the head raises a confirmation card for
+/// `!term close`, and sends this when — and only when — the operator answers it with `y`. So
+/// the program is ended by the daemon rather than by a key it could have trapped, and the
+/// sentence is the operator's own act rather than the signal the program died of: *"you closed
+/// the terminal"*, not *"killed by SIGKILL"*.
+///
+/// **`ctrl-\` is deliberately not this**, and the contrast is the whole of protocol 34's
+/// split: leaving a pane sends no frame at all, so the daemon never hears about it and the
+/// program goes on running. That half is asserted where it can be — `letibot-tui`'s
+/// `term_way_out.rs`, whose assertions are on the socket.
 #[test]
-fn leaving_is_the_daemons_act_and_names_the_operator() {
+fn closing_is_the_daemons_act_and_names_the_operator() {
     let _serial = serial();
     let ws = workspace("left");
     let registry = daemon("s-left", &ws);
@@ -588,8 +621,159 @@ fn leaving_is_the_daemons_act_and_names_the_operator() {
 
     let (_, reason) = read_to_end(&mut r);
     assert_eq!(
-        reason, "you left the terminal",
+        reason, "you closed the terminal",
         "the operator's own act is the fact worth reporting"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// **The daemon answers *what is this session's pane running*, and a detach is invisible to it.**
+///
+/// Protocol 34's read, and the half of it only this file can measure: `TermStatus` is answered by
+/// the daemon's own `Terminals::status`, off the session's live pane. It is what a head asks on
+/// attach (so it can draw a line about a program it is not drawing) and before a `!term close` it
+/// cannot answer from what it holds.
+///
+/// **`None` is an answer and not a failure.** *This session has no live pane* is the fact that
+/// makes a head's `!term close` a sentence rather than a confirmation about nothing, and a test
+/// that read an absent frame as the answer could not tell it from a daemon that had stopped
+/// listening.
+///
+/// **And the detach is the absence of a frame.** `ctrl-\` sends nothing at all — that is the
+/// whole of what makes the program keep running — so the read here is taken with *nothing sent in
+/// between* and still answers with the same command. There is nothing for the daemon to record
+/// and nothing for it to be told, which is why `!term` later attaches back to the SAME run rather
+/// than starting a new one.
+#[test]
+fn the_status_read_answers_what_is_running_and_a_detach_is_invisible_to_it() {
+    let _serial = serial();
+    let ws = workspace("status");
+    let registry = daemon("s-status", &ws);
+    let (mut w, mut r) = attach(&registry, "s-status");
+
+    // Nothing has ever been started in this session.
+    w.write(&ClientFrame::TermStatus).expect("status");
+    assert_eq!(
+        until_status(&mut r),
+        None,
+        "a session with no pane must answer with nothing, not with a sentence or a silence"
+    );
+
+    // A pane, and the answer is the command the daemon was handed.
+    open(&mut w, "!term sleep 30", 80, 24);
+    w.write(&ClientFrame::TermStatus).expect("status");
+    let running = until_status(&mut r);
+    assert!(
+        running.as_deref().is_some_and(|c| c.contains("sleep 30")),
+        "the daemon must say what is running in the pane this session has: {running:?}"
+    );
+
+    // **The detach, which is to send nothing.** The same read, with no frame in between, still
+    // answers — the pane is the session's and the daemon was never told anything happened.
+    w.write(&ClientFrame::TermStatus).expect("status");
+    let still = until_status(&mut r);
+    assert_eq!(
+        still, running,
+        "a detach sends nothing, so the daemon's answer must not change: {still:?}"
+    );
+
+    // And the deliberate close is the one act that changes it.
+    w.write(&ClientFrame::TermClose).expect("term close");
+    let (_, reason) = read_to_end(&mut r);
+    assert_eq!(reason, "you closed the terminal");
+    w.write(&ClientFrame::TermStatus).expect("status");
+    assert_eq!(
+        until_status(&mut r),
+        None,
+        "a pane that was closed is not a pane that is running"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// **The deliberate close frees the slot, and the next `!term` starts rather than being refused.**
+///
+/// The other half of the ghost the operator hit. `a_pane_whose_program_exited_frees_its_slot`
+/// covers a pane the PROGRAM ended; this is the pane the OPERATOR ended — and it is the path
+/// protocol 34 added, because `TermClose` is now sent only by a confirmed `!term close`.
+///
+/// The assertion that makes it about the close rather than about the slot in general is the
+/// ending itself: *"you closed the terminal"* means the daemon took the frame and ended the
+/// program, and only then is the next pane allowed to start.
+#[test]
+fn a_deliberate_close_frees_the_slot_and_the_next_pane_starts() {
+    let _serial = serial();
+    let ws = workspace("close-slot");
+    let registry = daemon("s-close-slot", &ws);
+    let (mut w, mut r) = attach(&registry, "s-close-slot");
+
+    open(&mut w, "!term sleep 30", 80, 24);
+    w.write(&ClientFrame::TermClose).expect("term close");
+    let (_, reason) = read_to_end(&mut r);
+    assert_eq!(
+        reason, "you closed the terminal",
+        "the frame the head sends for a confirmed close is the one that ends the program"
+    );
+
+    // **The slot is free.** A `sleep 30` still running here would refuse this by name, so the
+    // second pane starting at all is the assertion that the close ended the program.
+    open(&mut w, "!term echo after-close", 80, 24);
+    let (said, reason) = read_to_end(&mut r);
+    let text = String::from_utf8_lossy(&said);
+    assert!(
+        text.contains("after-close"),
+        "the next pane must have RUN rather than been refused: {text:?} (reason: {reason})"
+    );
+    assert!(
+        !reason.contains("already open"),
+        "and not refused by the pane the close ended: {reason:?}"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// **`!term close` is refused by name, and a program merely STARTING with it is not.**
+///
+/// The word is the ending, so a `TermOpen` carrying it is a head that did not ask its operator
+/// first — and the daemon's answer is a sentence rather than a program: running something called
+/// `close` instead would be the two halves disagreeing about what the same bytes mean. The
+/// sentence names the way to run such a program, because that is the cost of the word and it is
+/// paid in the open.
+///
+/// **The contrast is the test.** `!term close-it` is an ordinary program name, and the assertion
+/// is that it STARTED — the reason is its own exit status, not the refusal — which is what proves
+/// the daemon matched the whole word and not a prefix.
+#[test]
+fn a_term_close_line_is_refused_by_name_and_a_name_that_begins_with_it_is_not() {
+    let _serial = serial();
+    let ws = workspace("close-word");
+    let registry = daemon("s-close-word", &ws);
+    let (mut w, mut r) = attach(&registry, "s-close-word");
+
+    open(&mut w, "!term close", 80, 24);
+    match until_pane(&mut r) {
+        ServerFrame::TermEnded { reason } => {
+            assert!(
+                reason.contains("`!term close` is not a command to run"),
+                "the line must be refused as the ending it is: {reason:?}"
+            );
+            assert!(
+                reason.contains("!term command close"),
+                "and the refusal must name the way to run a program called `close`: {reason:?}"
+            );
+        }
+        other => panic!("expected the refusal, got {other:?}"),
+    }
+
+    // A name that merely begins with the word is a program, and it runs: the shell cannot find
+    // it, which is its own ending rather than this daemon's refusal.
+    open(&mut w, "!term close-it", 80, 24);
+    let (_, reason) = read_to_end(&mut r);
+    assert!(
+        reason.contains("the program exited"),
+        "`!term close-it` is a program name and must have been run as one: {reason:?}"
+    );
+    assert!(
+        !reason.contains("is not a command to run"),
+        "the refusal was matched by prefix: {reason:?}"
     );
     let _ = std::fs::remove_dir_all(&ws);
 }

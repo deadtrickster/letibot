@@ -506,7 +506,7 @@ impl TerminalDriver for Terminals {
 
 impl Drop for Terminals {
     /// **A daemon that stops takes its panes with it.** Every live pane is closed, which is
-    /// `ScopeTree::end` on its cgroup — the same act the operator's way out performs, and for
+    /// `ScopeTree::end` on its cgroup — the same act a confirmed `!term close` performs, and for
     /// the same reason: a screen program left running with no pane to draw in is a process
     /// nobody can see and nobody can end.
     fn drop(&mut self) {
