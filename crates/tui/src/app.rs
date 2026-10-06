@@ -11761,7 +11761,7 @@ impl App {
                     p.paint(Role::Faint, &format!("{:<9}", "decision")),
                     match r.decision.as_deref() {
                         None => "(asked, no answer yet)".to_string(),
-                        Some(d) => without_control_lines(d),
+                        Some(d) => without_control_lines(d).into_owned(),
                     }
                 ));
                 out.push(format!(

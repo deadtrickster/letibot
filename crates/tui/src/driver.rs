@@ -571,6 +571,15 @@ impl Link {
                     Action::ListTodos => {
                         self.client.list_todos()?;
                     }
+                    // The queue pane's bootstrap read, and the same shape as the two above:
+                    // a read whose answer arrives as a `MergeQueue` frame on the pump rather
+                    // than on this connection. It is the one ask here that is not scoped to
+                    // the session this head is attached to — there is one queue — which is
+                    // the daemon's business rather than the head's; see
+                    // `Action::ListMergeQueue`.
+                    Action::ListMergeQueue => {
+                        self.client.list_merge_queue()?;
+                    }
                     Action::NewSession(title) => {
                         // The head's own working directory, read here rather than carried
                         // through `App`: the app is the same object under `--replay`, where
