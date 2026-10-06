@@ -2835,8 +2835,8 @@ impl<'a> Harness<'a> {
                             runs.asking(job, question)
                         }
                         letibot_tools::runtime::OperatorRun::Ended { job } => runs.ended(job),
-                        letibot_tools::runtime::OperatorRun::Unreadable { job } => {
-                            runs.unreadable(job)
+                        letibot_tools::runtime::OperatorRun::Unreadable { job, quiet } => {
+                            runs.unreadable(job, quiet)
                         }
                     },
                 )
