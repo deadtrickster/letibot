@@ -232,10 +232,10 @@
 //!
 //! - **TODO: the head's pane, and the frame branch that would draw it.** The renderer exists
 //!   and is tested — `letibot_vt::Screen` consumes this module's bytes and
-//!   `Screen::pane_rows(cols, room, palette)` returns **exactly `room` rows**, which is the
-//!   whole of the row budget: the pane takes the conversation's rectangle and gives it back,
-//!   so the composer, the status row and the header keep the rows they had and nothing above
-//!   the pane moves when it opens. **What is not built is the head's half**: the `App` field,
+//!   `letibot_ui::ansi::pane_rows(screen, cols, room, palette)` returns **exactly `room` rows**,
+//!   which is the whole of the row budget: the pane takes the conversation's rectangle and gives
+//!   it back, so the composer, the status row and the header keep the rows they had and nothing
+//!   above the pane moves when it opens. **What is not built is the head's half**: the `App` field,
 //!   the branch in `compose_screen`'s pane chain, and the verb. It is not built because there
 //!   is nothing that can put bytes in it — the bytes come from a session this module owns on
 //!   the *daemon's* side of a frame that does not exist yet — and a pane wired to a screen no
