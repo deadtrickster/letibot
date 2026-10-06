@@ -11,4 +11,4 @@
 //!
 //! Kept as a module rather than replaced by a direct import at each call site so that the tool
 //! layer keeps one place to look for *what does `read` return when the answer is a picture*.
-pub use letibot_transcript::media::{encode_base64, sniff_mime, Media, SUPPORTED_IMAGE_MIMES};
+pub use letibot_transcript::media::{Media, SUPPORTED_IMAGE_MIMES, encode_base64, sniff_mime};

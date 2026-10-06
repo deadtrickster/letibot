@@ -281,7 +281,7 @@ impl Tool for Say {
                 notes: vec![],
                 edit: None,
                 needs_in_view: Vec::new(),
-            media: None,
+                media: None,
             },
         }
     }

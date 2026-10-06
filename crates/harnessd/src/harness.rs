@@ -1231,6 +1231,15 @@ pub struct Harness<'a> {
     /// rather than the cloud model's number the parent is carrying. Written wherever
     /// [`Harness::local_window`] is written; see [`HarnessTaskRunner::local_window`].
     local_window_cell: Arc<std::sync::Mutex<Option<Option<u64>>>>,
+    /// **This session's point, as it stands now**, shared with the subagent runner.
+    ///
+    /// A cell rather than `cfg.mode` because the runner holds a *clone* of this config,
+    /// taken at open ([`HarnessTaskRunner::base`]), and `/mode` moves the point without
+    /// touching that clone — so a child spawned after a move came up at the point its
+    /// parent had opened at. Written wherever the point moves
+    /// ([`Harness::set_mode_consented`], and once at open); read at every spawn. See
+    /// [`HarnessTaskRunner::point`].
+    point_cell: Arc<std::sync::Mutex<letibot_tools::mode::Mode>>,
 }
 
 /// What a resume actually rebuilt.
@@ -1700,7 +1709,10 @@ impl<'a> Harness<'a> {
             // So the row is for a session somebody opened in that project. A
             // subagent is not that; it is part of a session whose point is settled.
             if cfg.parent_session_id.is_some() {
-                mode_source = "inherited from the parent session".into();
+                // The point itself is the parent's, read live by the spawn and carried in
+                // `cfg.mode`; whether this seat can carry it is decided below, where the
+                // seat's own supplies exist. Here is where the row says where it came from.
+                mode_source = child_mode_source(None);
             } else if store.is_set(&cfg.workspace) {
                 let before = cfg.mode.name;
                 cfg.mode = store.for_project(&cfg.workspace);
@@ -2043,6 +2055,14 @@ impl<'a> Harness<'a> {
         // its compaction against the SERVER's window, which is this cell. See
         // `HarnessTaskRunner::local_window`.
         let local_window_cell: Arc<std::sync::Mutex<Option<Option<u64>>>> = Default::default();
+        // **This session's point, in a cell its own runner can see** — the same shape as
+        // the window above, and for the same reason one axis over: `base` is a clone taken
+        // at open and nothing ever updates it, so a cell is the only way a spawn can read
+        // the point the session is AT rather than the one it opened at. Seeded after the
+        // mode is final (the placement override included), which is why it is built here
+        // and not with the rest of the config. See `HarnessTaskRunner::point`.
+        let point_cell: Arc<std::sync::Mutex<letibot_tools::mode::Mode>> =
+            Arc::new(std::sync::Mutex::new(cfg.mode));
         let task_runner: Arc<dyn letibot_tools::builtins::task::TaskRunner> =
             Arc::new(HarnessTaskRunner {
                 vocab: parts.vocab.clone(),
@@ -2060,6 +2080,7 @@ impl<'a> Harness<'a> {
                 // its tree inherited (see `HarnessTaskRunner::head_answers`).
                 head_answers: head_answers_slot.clone(),
                 local_window: local_window_cell.clone(),
+                point: point_cell.clone(),
             });
         // Cloned before `with_session_tools` takes it: `digest` folds its findings
         // through the same subagent runner `task` uses, so the two must be the
@@ -2378,6 +2399,32 @@ impl<'a> Harness<'a> {
                 exec: has_exec_tools,
                 network: has_network_tools,
             };
+            // **A child's point is its parent's, clamped by this seat** — the rule and
+            // all of its reasoning live on `Mode::inherited_by`; what belongs here is why
+            // it is applied at this line. `seats` and `have` are facts about the session
+            // being opened (the schemas this seat actually seated, the backend it actually
+            // built) and they do not exist any earlier, which is why the clamp is not
+            // beside the mode-store lookup 700 lines up.
+            //
+            // It is a clamp and not a refusal because a child's point is not a choice
+            // anybody makes: a seat that cannot carry what it inherited used to fail the
+            // check below and the child never opened at all (`subagents dont work`).
+            // Everybody else — `/mode`, `--mode`, a project row — still refuses by name
+            // and is still handed no weaker point, which is the rule `check`'s own doc
+            // states and this does not weaken.
+            if cfg.parent_session_id.is_some() {
+                let inherited = cfg.mode.inherited_by(&have, seats, cfg.seat.as_str());
+                if let Some(why) = inherited.why() {
+                    cfg.mode = inherited.mode();
+                    // The row says where the point came from AND that it was clamped — a
+                    // child silently at a different point than its parent is the state
+                    // that made this a bug hunt in the first place.
+                    mode_source = child_mode_source(Some(why));
+                    // And the same sentence on the open notes, which is where a reader
+                    // looks when the settings row is not in front of them.
+                    notes.push(why.to_string());
+                }
+            }
             if let Err(why) = cfg.mode.check(&have, seats) {
                 return Err(HarnessError::Setup(why));
             }
@@ -3255,6 +3302,7 @@ impl<'a> Harness<'a> {
             // `None` here says exactly that.
             local_window: None,
             local_window_cell: local_window_cell.clone(),
+            point_cell: point_cell.clone(),
         };
         h.publish_settings();
         h.publish_jobs();
@@ -4195,6 +4243,10 @@ impl<'a> Harness<'a> {
             said.push_str("; the guard model now answers");
         }
         self.cfg.mode = mode;
+        // **And the spawn path's copy of it**, which is a different object: the runner
+        // holds `base`, cloned at open, and a child built from it would inherit the point
+        // this session no longer holds. See `HarnessTaskRunner::point`.
+        *self.point_cell.lock().unwrap_or_else(|e| e.into_inner()) = mode;
         self.mode_source = "/mode, this session".into();
         self.wiring.adjudicator = self.runtime.gate.describe();
         self.publish_settings();
@@ -4289,6 +4341,14 @@ impl<'a> Harness<'a> {
 
     pub fn config(&self) -> &Config {
         &self.cfg
+    }
+
+    /// **Where this session's point came from** — the settings row's own field, for a
+    /// caller that wants to say it somewhere else as well (the spawn does: a child whose
+    /// point was clamped says so on its parent's progress line). Empty meanings are the
+    /// row's; see [`Config::settings`].
+    pub fn mode_source(&self) -> &str {
+        &self.mode_source
     }
 
     /// The session's own config, to change a decision that is the session's
@@ -8434,6 +8494,17 @@ struct HarnessTaskRunner {
     /// the same mistake `retune_window` exists to prevent, one direction over. The
     /// harness writes it wherever it updates its own copy; the runner reads it at spawn.
     local_window: Arc<std::sync::Mutex<Option<Option<u64>>>>,
+    /// **This session's point, as it stands NOW** — the one thing `base` cannot answer.
+    ///
+    /// `base` is a clone taken at open and nothing updates it: a `/mode` mid-session
+    /// moves `Harness::cfg.mode` and leaves `base.mode` where it was, so a child built
+    /// from `base` came up at the point its parent *opened* at. Measured 2026-10-06: the
+    /// operator's own session at `allow-all` — consented, on their box — and every child
+    /// of it at `automode-edits`, each child's `bash` putting a person in front of a
+    /// question the parent had already answered, with the decision row reading as the
+    /// child's own. Written by [`Harness::set_mode_consented`]; read by the spawn, which
+    /// hands it to the child as `sub_cfg.mode`.
+    point: Arc<std::sync::Mutex<letibot_tools::mode::Mode>>,
 }
 
 /// **A subagent's model, resolved from the `task` tool's `model` argument.**
@@ -8617,6 +8688,27 @@ pub fn subagent_model_in(
         window,
         local: None,
     })
+}
+
+/// **The settings row's `mode_source` for a subagent** — the vocabulary the row already uses
+/// for where a point came from, and the clamp when there was one.
+///
+/// A free function because it is a sentence, and because the two spellings have to stay one
+/// vocabulary: the row a head draws for a child says *inherited from the parent session* —
+/// the phrase this file already used for it — and a child that could not carry the point its
+/// parent is at adds the sentence `Mode::inherited_by` wrote, which names the seat, the point
+/// inherited, what was missing and where it landed.
+///
+/// **The clamped case is the whole reason this exists.** A child silently at a different
+/// point than its parent is the state that made this a bug hunt: the operator's session was
+/// at `allow-all` and every child came up at `automode-edits` with nothing anywhere saying
+/// the two were not the same.
+fn child_mode_source(why: Option<&str>) -> String {
+    const INHERITED: &str = "inherited from the parent session";
+    match why {
+        None => INHERITED.to_string(),
+        Some(why) => format!("{INHERITED}, clamped to what this seat can carry: {why}"),
+    }
 }
 
 /// **The R58 depth refusal, as one pure function so it is testable without a harness.**
@@ -9183,6 +9275,11 @@ fn subagent_ask_target(
 }
 
 impl HarnessTaskRunner {
+    /// **This session's point, as it stands now** — see the field.
+    fn point(&self) -> letibot_tools::mode::Mode {
+        *self.point.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn run_to_completion(
         &self,
         sub_id: &str,
@@ -9406,11 +9503,21 @@ impl HarnessTaskRunner {
         // told to open it, until `open_with_registry` below has succeeded.
         let sub_hub = self.registry.new_hub(sub_id.clone());
 
+        let point = self.point();
         let mut sub_cfg = Config {
             session_id: sub_id.clone(),
             title: title.clone(),
             seat,
             parent_session_id: Some(parent.clone()),
+            // **The parent's point, read LIVE and not off `base`.** `base` is the config as it
+            // stood at the parent's open, and nothing updates it — so a child built from it came
+            // up at the point its parent had *opened* at, which is the operator's measured
+            // defect of 2026-10-06: session at `allow-all` (consented), children at
+            // `automode-edits`, every child's `bash` asking a person a question the parent had
+            // already answered. What travels is the point the session is at; whether this child's
+            // SEAT can carry it is the child's own question, answered at its open by
+            // `Mode::inherited_by`, which clamps and says so rather than refusing to open.
+            mode: point,
             // **One level down, incremented once and only here** (R58). It rides the
             // config the child is built from, the way `unconfined` and the workspace do,
             // so a grandchild's `depth` is 2 without anything walking a parent chain —
@@ -9564,6 +9671,22 @@ impl HarnessTaskRunner {
             letibot_sessionlog::registry::short_id(&sub_id),
             spawned.elapsed().as_secs_f64()
         ));
+        // **And if it is NOT at this session's point, say so where the person is looking.**
+        //
+        // The child's own settings row carries the same sentence (`child_mode_source`), and a
+        // row is read by whoever opens that child's pane. This line is the half the parent's
+        // reader gets: the person watching a tree of children is the one who has to know that
+        // one of them is asking about things its parent already answered — or that one of them
+        // cannot exec, and why.
+        if sub.config().mode.name != point.name {
+            progress(&format!(
+                "subagent {} opened at `{}`, not this session's `{}` — {}",
+                letibot_sessionlog::registry::short_id(&sub_id),
+                sub.config().mode.name,
+                point.name,
+                sub.mode_source()
+            ));
+        }
 
         let reply = sub.submit(prompt).map_err(|e| fail(e.to_string()))?;
         let tokens: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
@@ -10774,6 +10897,43 @@ mod tests {
         let cut = super::subagent_title(&huge);
         assert_eq!(cut.chars().count(), super::SUBAGENT_TITLE_MAX);
         assert!(cut.ends_with('…'), "{cut}");
+    }
+
+    /// **The child's row says where its point came from, and says when it was clamped.**
+    ///
+    /// The row's vocabulary is the one the settings table already uses for a mode's source, so
+    /// the phrase `inherited from the parent session` is asserted here rather than trusted, and
+    /// the clamp's sentence is asserted to survive INTO the row — a child silently at a
+    /// different point than its parent is the state that made this a bug hunt.
+    ///
+    /// **What this does NOT test**, and it is worth naming rather than leaving to be assumed:
+    /// that the spawn reads the parent's live point. That is `HarnessTaskRunner::point` reading
+    /// a cell `Harness::set_mode_consented` writes, and reaching either needs a session with a
+    /// model behind it — no test in this crate opens a `Harness` (they all need a vocabulary
+    /// GGUF and a server), so the wiring is read rather than driven. The DECISION is tested
+    /// where it lives: `mode::tests::a_child_inherits_the_point_of_the_session_that_spawned_it`
+    /// and its neighbours.
+    #[test]
+    fn a_childs_row_says_where_its_point_came_from() {
+        let inherited = super::child_mode_source(None);
+        assert_eq!(inherited, "inherited from the parent session");
+
+        let clamped = letibot_tools::mode::Mode::ALLOW_ALL.inherited_by(
+            &[letibot_tools::mode::Prereq::ReachableAdjudicator],
+            letibot_tools::mode::Seats {
+                write: false,
+                exec: true,
+                network: false,
+            },
+            "runner",
+        );
+        let why = clamped.why().expect("a confinement is missing here");
+        let said = super::child_mode_source(Some(why));
+        assert!(said.starts_with(&inherited), "{said}");
+        assert!(said.contains("clamped"), "{said}");
+        assert!(said.contains("`runner`"), "the seat is named: {said}");
+        assert!(said.contains("confinement"), "what was missing: {said}");
+        assert!(said.contains("`writes allowed`"), "where it landed: {said}");
     }
 
     /// **Three children minted at one instant get three ids.**

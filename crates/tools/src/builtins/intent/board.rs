@@ -121,7 +121,7 @@ impl Todo {
             notes: vec![],
             edit: None,
             needs_in_view: Vec::new(),
-        media: None,
+            media: None,
         }
     }
 
@@ -132,7 +132,7 @@ impl Todo {
             notes: vec![],
             edit: None,
             needs_in_view: Vec::new(),
-        media: None,
+            media: None,
         }
     }
 
