@@ -57,7 +57,7 @@ use serde_json::Value;
 use crate::exec::predicate::{Verdict, annotation, refusal};
 use crate::exec::terminal;
 use crate::exec::{JobState, ProcessHost, Promotion, ScopeKind, SpawnRequest, Waited};
-use crate::runtime::{Invocation, InvokeCtx, Tool};
+use crate::runtime::{Invocation, InvokeCtx, OperatorRun, Tool};
 use crate::schema::{Access, ToolSchema};
 
 pub struct Bash;
@@ -420,7 +420,36 @@ impl Tool for Bash {
 
         // Foreground. Progress reports WORK DONE — bytes produced — and never
         // "still alive": §8.5, and `liveness-indicators-measure-the-wrong-thing`.
+        //
+        // **The operator's own run is handed to the daemon before it is waited on, and
+        // taken back after.** Two reports, and the first is the one that matters most: it
+        // says *this run has a stdin and here is the way in*, which is what makes `!send`
+        // work **when no card is ever raised at all** — the miss this whole feature is
+        // allowed to have because a person can still answer. See [`OperatorRun`].
+        //
+        // Only for the operator's own run: a model's `bash` call has `/dev/null` for stdin,
+        // so `stdin.is_open()` is false for it and nothing is reported. The flag and the
+        // handle are checked together rather than either alone, because *a model's run that
+        // somehow got a pipe* would be the failure this must not have.
+        let answerable = (ctx.tty && ctx.operator_runs_wired())
+            .then(|| host.job_handle(&id).map(|j| j.stdin()))
+            .flatten()
+            .filter(|s| s.is_open());
+        if let Some(stdin) = &answerable {
+            ctx.operator_run(OperatorRun::Answerable {
+                job: &id.0,
+                command,
+                stdin: stdin.clone(),
+            });
+        }
         let foreground = wait_with_progress(ctx, host, &id, timeout);
+        // **The run is over, so whatever card was up for it comes down.** After the wait
+        // and before every branch below, because the three of them (a state, a promotion, a
+        // deadline) are all "this tool is no longer waiting" — and a card that outlived its
+        // command would be a person typing an answer into a program that had already exited.
+        if answerable.is_some() {
+            ctx.operator_run(OperatorRun::Ended { job: &id.0 });
+        }
 
         let Ok(out) = host.output(&id, 0, usize::MAX) else {
             return Invocation::failed(
@@ -653,6 +682,11 @@ enum Foreground {
 
 /// Wait, emitting progress that is a measurement of work rather than a heartbeat,
 /// and honour a head's Ctrl+B by promoting the command mid-flight.
+///
+/// **And ask, once a beat, whether this run is waiting for an answer.** That is the
+/// operator's `!` line and nothing else — see [`OperatorRun`] — and it is here because
+/// this loop is the only thing that has the three facts the question needs at once: the
+/// job is **alive**, it has been **quiet** for a beat, and the loop is already polling.
 fn wait_with_progress(
     ctx: &mut InvokeCtx<'_>,
     host: &dyn ProcessHost,
@@ -662,6 +696,14 @@ fn wait_with_progress(
     let started = std::time::Instant::now();
     let step = Duration::from_millis(500);
     let mut last_reported = 0u64;
+    // **What the last card was about**, so one question is raised once. A run that is
+    // blocked reading its stdin stays blocked for as long as nobody answers, and a loop
+    // that raised a card every tick would put a hundred identical cards on the screen.
+    //
+    // Keyed on the pair (bytes produced, the line shown) and not on the line alone: a
+    // program that asks the same question twice **after saying something in between** has
+    // asked twice, and the second ask is a second thing to answer.
+    let mut raised: Option<(u64, Option<String>)> = None;
     loop {
         // A head asked to move this to the background. Honour it here, on the
         // worker's own poll, because the worker is the thing that is blocked and
@@ -700,9 +742,90 @@ fn wait_with_progress(
                     v.elapsed.as_secs_f32()
                 ));
             }
+            ask_if_waiting(ctx, host, id, &v, &mut raised);
         }
     }
     Foreground::State(host.job(id).map(|v| v.state).unwrap_or(JobState::Running))
+}
+
+/// **How long a run must have written nothing before it is read as waiting.**
+///
+/// The poll above is half a second, so this is one beat: at the tick after a program stops
+/// writing, its last byte is at least `QUIET` old. Named rather than inlined because it is
+/// the one tunable here and it is a judgement — too short and a program between two lines
+/// of a slow build looks like a question, too long and a person waits for a card that a
+/// program has been blocked on for a second already.
+const QUIET: Duration = Duration::from_millis(250);
+
+/// **Is this run waiting for an answer?** — and if so, tell the daemon.
+///
+/// Three conditions, and the first two are the caller's because the caller holds the clock
+/// and the job state:
+///
+/// 1. **Alive.** A program that printed something and exited is not waiting for anything,
+///    and this is also what keeps `! printf 'are you sure?'` from raising a card: the
+///    `wait_job` above returns `Happened` for it and this function is never reached.
+/// 2. **Quiet for a beat.** A program that is asking and still drawing is a program that
+///    is not blocked. `since_last_output` is `None` for a program that has written nothing
+///    at all — `! cat`, blocked before its first byte, which is a real case — and the
+///    elapsed time is the same beat for it.
+/// 3. **Some process of the run has its stdin on the pipe this daemon holds and is blocked
+///    in a pipe read.** That is [`crate::exec::ask`], and it is the whole of the detection:
+///    **not one byte of the run's output is consulted to decide anything.**
+///
+/// The text that travels with the report is the last line of the output, for the card to
+/// **show** — see [`crate::exec::ask::last_line`] and the module header's argument for why
+/// nothing anywhere may decide by it.
+fn ask_if_waiting(
+    ctx: &mut InvokeCtx<'_>,
+    host: &dyn ProcessHost,
+    id: &crate::exec::JobId,
+    v: &crate::exec::JobView,
+    raised: &mut Option<(u64, Option<String>)>,
+) {
+    // A runtime nobody wired has no card to raise, and the read below is a whole ring of
+    // output: skipped rather than paid for.
+    if !ctx.operator_runs_wired() || !v.state.is_running() {
+        return;
+    }
+    let quiet = match v.since_last_output {
+        Some(d) => d >= QUIET,
+        None => v.elapsed >= QUIET,
+    };
+    if !quiet {
+        return;
+    }
+    // **The pipe is OURS**, and the comparison is what keeps a `grep` blocked on `ls`'s
+    // pipe in `! ls | grep foo` from looking like a program waiting for a line.
+    let pipe = host.job_handle(id).and_then(|j| j.stdin().pipe_inode());
+    let pids = host.job_pids(id);
+    if crate::exec::ask::waiting_for_an_answer(&pids, pipe) != crate::exec::ask::Waiting::Yes {
+        // `No` and `Unreadable` both raise nothing, and they are not the same fact: the
+        // second is a `/proc` this daemon could not read (a confined session's user
+        // namespace is the case), and the way in for it is `!send` — the manual floor,
+        // which needs no signal at all. See `crate::exec::ask`'s miss 4.
+        return;
+    }
+    // **The last line, and only to show.** Bounded by the ring: the question is at the end
+    // of what a program wrote, and a program that wrote a megabyte before asking has its
+    // answer in the last few kilobytes of it.
+    const SHOW_BYTES: u64 = 4096;
+    let shown = host
+        .output(
+            id,
+            v.produced.saturating_sub(SHOW_BYTES),
+            SHOW_BYTES as usize,
+        )
+        .ok()
+        .and_then(|s| crate::exec::ask::last_line(&s.text()));
+    if *raised == Some((v.produced, shown.clone())) {
+        return;
+    }
+    *raised = Some((v.produced, shown.clone()));
+    ctx.operator_run(OperatorRun::Waiting {
+        job: &id.0,
+        question: shown.as_deref(),
+    });
 }
 
 /// Keep the tail, by bytes and by lines, and say whether anything was dropped.

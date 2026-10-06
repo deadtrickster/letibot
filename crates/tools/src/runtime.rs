@@ -248,6 +248,81 @@ pub type OperatorWaiting = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
 /// same session must get different answers.
 pub type CompletionDelivered = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
+/// **What the daemon is told about the OPERATOR's own run, while it runs.**
+///
+/// The operator's `!` line is the one run with a **stdin the daemon holds** — see
+/// [`crate::exec::SpawnRequest::tty`] and [`crate::exec::Stdin`] — and it is therefore the
+/// one run a person can be **answered**. The tools layer is the half that knows the three
+/// things the daemon does not: the job, the command, and the handle to write to. This is
+/// the seam they travel on, and it is [`OperatorWaiting`]'s shape for the same reason:
+/// **`crates/tools` must not learn what a session, a hub or a card is.** The daemon
+/// supplies a closure; the tools layer calls it; what it does with the news is the
+/// daemon's business.
+///
+/// # Why three events and not a question
+///
+/// The obvious design is a callback that *asks* — *"should I raise a card?"* — and it is
+/// the wrong one, because the answer is not the tool's to act on: the tool cannot draw
+/// anything, and the card is raised on another thread while this one keeps waiting. So the
+/// tool **reports** and the daemon decides. The three reports are the whole life of the
+/// run:
+///
+/// * [`OperatorRun::Answerable`] — it started, it has a stdin, here is the handle. **This
+///   is the one that makes the manual way in work when no card is ever raised**, and it is
+///   the reason a missed heuristic is a missed convenience rather than a lost command.
+/// * [`OperatorRun::Waiting`] — the run is **blocked reading the answer we hold** and has
+///   been quiet for a beat. See [`crate::exec::ask`]: this is a reading of the process and
+///   not of its words, and the text that rides along is there to be **shown** and never to
+///   be decided on.
+/// * [`OperatorRun::Ended`] — the run is over, so whatever card was up for it comes down.
+///   Without this the card would outlive the command it was about: a person would type an
+///   answer into a program that had already exited.
+///
+/// # What is deliberately not in it
+///
+/// **No secret.** [`OperatorRun`] carries a question, a command and a job — never a
+/// password, and never a channel a password could travel on. A password has its own path
+/// (`SUDO_ASKPASS`, an `askpass` head, `ClientFrame::Secret`), and the two must not be
+/// mergeable by a later edit: a prompt card is drawn in the open, and a secret must not be.
+/// `crate::exec::ask`'s own docs carry the half of that which is a *detection* decision (a
+/// password prompt is not a question).
+pub enum OperatorRun<'a> {
+    /// **This run can be answered.** It has a stdin — a pipe this daemon holds — and this
+    /// is the handle to it.
+    Answerable {
+        /// The job's handle, as `job_list` spells it.
+        job: &'a str,
+        /// The command as the operator typed it, verbatim.
+        command: &'a str,
+        /// **The way in.** Cloned out of the job, because the answer arrives on a thread
+        /// that does not hold the job and must not have to find it.
+        stdin: crate::exec::Stdin,
+    },
+    /// **This run is waiting for an answer**, by [`crate::exec::ask`]'s reading of the
+    /// process — not of its words.
+    Waiting {
+        /// The job's handle.
+        job: &'a str,
+        /// **The last thing the program said, for the card to SHOW.** `None` when it has
+        /// said nothing at all, which is a real case — a `read` that asks nothing is still
+        /// waiting — and is reported as *nothing to show* rather than as an empty line.
+        ///
+        /// **Nothing anywhere decides anything by this string.** The card carries it
+        /// because the person answering needs to see what they are answering.
+        question: Option<&'a str>,
+    },
+    /// **The run is over.** Whatever card was up for it comes down.
+    Ended {
+        /// The job's handle.
+        job: &'a str,
+    },
+}
+
+/// See [`OperatorRun`]. `None` in a runtime with no daemon behind it — a harness driven
+/// directly by a test, or a backend that cannot start processes — and every operator run
+/// then behaves exactly as it did before the card existed.
+pub type OperatorRuns = std::sync::Arc<dyn Fn(OperatorRun<'_>) + Send + Sync>;
+
 pub struct InvokeCtx<'a> {
     pub backend: &'a dyn ExecBackend,
     pub spiller: &'a Spiller,
@@ -262,6 +337,8 @@ pub struct InvokeCtx<'a> {
     sink: &'a mut dyn ToolEventSink,
     operator_waiting: Option<&'a OperatorWaiting>,
     completion_delivered: Option<&'a CompletionDelivered>,
+    /// See [`OperatorRun`]. `None` in a runtime with no daemon behind it.
+    operator_runs: Option<&'a OperatorRuns>,
     /// **Whether this call is the OPERATOR's own**, which is the one thing that
     /// decides whether the command meets the world their console gives it.
     ///
@@ -315,6 +392,26 @@ impl InvokeCtx<'_> {
     /// wrong, only slow.
     pub fn completion_delivered(&self, job: &str) -> bool {
         self.completion_delivered.map(|f| f(job)).unwrap_or(false)
+    }
+
+    /// **Tell the daemon something about the operator's own run.** See [`OperatorRun`].
+    ///
+    /// A no-op when nobody wired it, so a runtime with no daemon behaves exactly as it
+    /// always did — which is the conservative direction and the one every other seam here
+    /// takes: an unwired run is a run with no card, and a run with no card is a run a
+    /// person answers with `!send`.
+    pub fn operator_run(&mut self, what: OperatorRun<'_>) {
+        if let Some(f) = self.operator_runs {
+            f(what);
+        }
+    }
+
+    /// Whether anybody is listening. **The one thing a tool may branch on**, because a
+    /// tool that did work to report something nobody wired would be paying for a card it
+    /// cannot raise: `bash` reads a run's output every tick to find the question to show,
+    /// and that read is worth skipping when there is no daemon to show it to.
+    pub fn operator_runs_wired(&self) -> bool {
+        self.operator_runs.is_some()
     }
 
     pub fn call_id(&self) -> &str {
@@ -1416,6 +1513,9 @@ pub struct ToolRuntime {
     /// it — a harness driven directly by a test, or a backend that cannot start
     /// processes.
     pub completion_delivered: Option<CompletionDelivered>,
+    /// See [`OperatorRun`]. `None` in a runtime with no daemon behind it, and the
+    /// operator's own run then raises no card at all — the manual way in is unaffected.
+    pub operator_runs: Option<OperatorRuns>,
 }
 
 impl ToolRuntime {
@@ -1431,6 +1531,7 @@ impl ToolRuntime {
             files: crate::files::FileLedger::new(),
             operator_waiting: None,
             completion_delivered: None,
+            operator_runs: None,
         }
     }
 
@@ -1447,6 +1548,17 @@ impl ToolRuntime {
     /// behaviour, which R23 leaves exactly as it was.
     pub fn with_completion_delivered(mut self, f: CompletionDelivered) -> Self {
         self.completion_delivered = Some(f);
+        self
+    }
+
+    /// **Wire what the daemon is told about the operator's own run.** See [`OperatorRun`].
+    ///
+    /// A closure and not a trait object with named methods, for the reason every seam in
+    /// this file is one: the daemon owns the state the three events are *about*, and a
+    /// trait here would be this crate inventing a vocabulary for a card, a session and a
+    /// hub it must not know exist.
+    pub fn with_operator_runs(mut self, f: OperatorRuns) -> Self {
+        self.operator_runs = Some(f);
         self
     }
 
@@ -1715,6 +1827,7 @@ impl ToolRuntime {
                 sink,
                 operator_waiting: self.operator_waiting.as_ref(),
                 completion_delivered: self.completion_delivered.as_ref(),
+                operator_runs: self.operator_runs.as_ref(),
                 // The operator's own run, and only it. `run`'s flag is the whole
                 // distinction between the two entries — see `InvokeCtx::tty`.
                 tty: !gated,

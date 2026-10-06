@@ -181,6 +181,25 @@ impl Stdin {
             .is_some_and(|w| w.lock().map(|g| g.is_some()).unwrap_or(false))
     }
 
+    /// **Which pipe this is**, for a reader that has to tell it apart from every other pipe
+    /// on the box.
+    ///
+    /// `super::ask` is the reader: *"the program is blocked reading the answer we hold"* is
+    /// only a fact if the descriptor the program is blocked on is **this** one, and the
+    /// inode is how the kernel lets the two be compared. A `grep` blocked on `ls`'s pipe in
+    /// `! ls | grep foo` is a pipe read too, and without this number a slow `ls` would raise
+    /// a card claiming the run was waiting for a line.
+    ///
+    /// `None` when there is no write end (a `/dev/null` run, or a closed one) and when the
+    /// descriptor is not a pipe at all — see [`super::ask::pipe_inode`] for why the type is
+    /// checked and not only the number.
+    pub fn pipe_inode(&self) -> Option<u64> {
+        use std::os::fd::AsRawFd;
+        let inner = self.inner.as_ref()?;
+        let guard = inner.lock().unwrap_or_else(|e| e.into_inner());
+        super::ask::pipe_inode(guard.as_ref()?.as_raw_fd())
+    }
+
     /// **Send one line, with the newline that makes it a line.**
     ///
     /// An empty `line` is a bare Enter, and it is not a special case invented here: the

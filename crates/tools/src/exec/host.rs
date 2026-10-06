@@ -342,6 +342,22 @@ pub trait ProcessHost: Send + Sync {
         None
     }
 
+    /// **The processes this job has right now**, by pid, when the host can say.
+    ///
+    /// One reader: [`super::ask`], whose whole question — *"is the program blocked reading
+    /// the answer we hold"* — is asked **of the run's processes**, and which therefore has
+    /// to be able to name them. The cgroup is the list: a job's own cgroup holds the shell
+    /// that became the command and everything it forked, because membership is inherited.
+    ///
+    /// **An empty list means *this host cannot say*, and not *nothing is running*.** That
+    /// is the distinction [`super::ask::Waiting::Unreadable`] exists for: a host that
+    /// cannot name the processes must not be read as having looked and found nobody asking,
+    /// or the miss would look exactly like a program that is not asking.
+    fn job_pids(&self, job: &JobId) -> Vec<u32> {
+        let _ = job;
+        Vec::new()
+    }
+
     /// The pids the harness manages, which the model cannot see.
     fn protected(&self) -> Vec<Protected>;
 
@@ -1402,6 +1418,15 @@ impl ProcessHost for HostProcesses {
         self.find(job)
     }
 
+    /// The job's own cgroup's members. See [`ProcessHost::job_pids`] for the reader and for
+    /// why an empty list is *cannot say* rather than *nothing there*.
+    fn job_pids(&self, job: &JobId) -> Vec<u32> {
+        let Some(j) = self.find(job) else {
+            return Vec::new();
+        };
+        self.tree.members(&j.lifetime().scope).unwrap_or_default()
+    }
+
     fn workspace(&self) -> Option<&std::path::Path> {
         Some(&self.root)
     }
@@ -1803,6 +1828,15 @@ mod tests {
 
         // ---- The operator's own run: a pipe, and the line reaches the command.
         let id = spawn(true);
+        // **And the host can NAME the run's processes**, which is the other half of the
+        // detection: `ask` reads each one's `/proc/<pid>/fd/0` and its `wchan`, so a host
+        // that cannot list them would make every operator run look like one that is not
+        // asking (`ask::Waiting::Unreadable`). The list comes from the job's own cgroup.
+        let pids = h.job_pids(&id);
+        assert!(
+            !pids.is_empty(),
+            "a spawned job's own cgroup must name its processes"
+        );
         let handle = h.job_handle(&id).expect("the job the spawn returned");
         let stdin = handle.stdin();
         assert!(
