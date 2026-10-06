@@ -246,7 +246,41 @@ pub trait ProcessHost: Send + Sync {
     fn output(&self, job: &JobId, from: u64, limit: usize) -> Result<OutputSlice, ExecError>;
 
     /// Kill one job by killing its cgroup, and record it.
-    fn kill_job(&self, job: &JobId) -> Result<Reaping, ExecError>;
+    fn kill_job(&self, job: &JobId) -> Result<Reaping, ExecError> {
+        self.kill_job_as(job, "job_kill")
+    }
+
+    /// The same, with **who ended it** as an argument.
+    ///
+    /// `by` is what [`JobState::Killed`] carries and what every reader of the row is shown,
+    /// so it is a sentence about the cause and not a label: *the model asked*, *its deadline
+    /// passed* and *the daemon was stopping* are three different things to have happened to
+    /// one command, and a single word for all three would be F5 with the sign flipped — a
+    /// caller's decision reported as the command's own.
+    fn kill_job_as(&self, job: &JobId, by: &str) -> Result<Reaping, ExecError>;
+
+    /// **End every run this host still has, and say why.**
+    ///
+    /// The daemon's shutdown is the caller: a stop that arrives while a run holds the
+    /// worker must end that run rather than wait out its deadline, because the alternative
+    /// is a stop that takes two minutes and a head that has to be told so. The run's own
+    /// row is where it is said — it settles as [`JobState::Killed`] carrying `by`, and
+    /// `bash` renders that on the row the session keeps.
+    ///
+    /// Returns one reap record per run ended, so *it ended nothing* and *it ended nothing
+    /// because nothing was running* are different answers to the caller that asked.
+    fn end_running(&self, by: &str) -> Vec<Reaping> {
+        let running: Vec<JobId> = self
+            .jobs()
+            .into_iter()
+            .filter(|v| v.state.is_running())
+            .map(|v| v.id)
+            .collect();
+        running
+            .iter()
+            .filter_map(|id| self.kill_job_as(id, by).ok())
+            .collect()
+    }
     /// End a scope: kill everything under it, and record it.
     fn end_scope(&self, scope: &ScopeId) -> Result<Reaping, ExecError>;
 
@@ -1458,16 +1492,14 @@ impl ProcessHost for HostProcesses {
         Ok(cap.slice(from, limit))
     }
 
-    fn kill_job(&self, id: &JobId) -> Result<Reaping, ExecError> {
+    fn kill_job_as(&self, id: &JobId, by: &str) -> Result<Reaping, ExecError> {
         let job = self.find(id).ok_or(ExecError::NoSuchJob(id.0.clone()))?;
         // Mark first, so the waiter thread does not overwrite `Killed` with the
         // SIGKILL it is about to see. F5: the reason it stopped is a fact and the
         // signal is only its shape.
         let running = job.state().is_running();
         if running {
-            job.settle(JobState::Killed {
-                by: "job_kill".into(),
-            });
+            job.settle(JobState::Killed { by: by.to_string() });
         }
         let mut r = self.tree.end(&job.lifetime().scope);
         if !running && r.observed.is_empty() {

@@ -250,6 +250,12 @@ pub const TABLE: &[(&str, Class)] = &[
     // Somebody asked this daemon to stop. The session is on disk and `/continue` reopens
     // it; the sentence exists so that a session ending is not a session disappearing.
     ("daemon_stopping", Class::Routine),
+    // **What the stop ended on its way out.** Beside `daemon_stopping` because it is the
+    // same fact one step further on — the daemon was asked to stop, and a command was in
+    // flight, so the command was ended rather than waited for. Routine for the same reason
+    // and by the same rule: the operator asked for this, so it is not a fault, and painting
+    // it as one would be R19's second fault with a longer sentence.
+    ("daemon_stopping_runs", Class::Routine),
     // The store's own notes about what opening or resuming did — the workspace it took
     // from the row, the title, the seat. Facts about where you are.
     ("resume_note", Class::Routine),
@@ -536,7 +542,13 @@ mod tests {
     /// neither the quiet register nor the red one, and this test now says so.
     #[test]
     fn the_complaint_is_routine_and_a_refusal_is_not() {
-        for code in ["daemon_stopping", "compacted", "auto_compact", "reseated"] {
+        for code in [
+            "daemon_stopping",
+            "daemon_stopping_runs",
+            "compacted",
+            "auto_compact",
+            "reseated",
+        ] {
             assert_eq!(class(code), Class::Routine, "{code}");
         }
         for code in ["turn_failed", "context_wall", "prefix_divergence"] {
@@ -600,15 +612,24 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 85 codes, of which **8** are the reader's own input refused.
+    /// **The census, pinned.** 86 codes, of which **8** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_29_routine_8_refused_and_48_failures() {
+    fn the_table_is_30_routine_8_refused_and_48_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
+        // **86, not the 85 the last census was taken at.** One arrival, and it is the
+        // daemon's own half of the stop: `daemon_stopping_runs` is the sentence said when a
+        // stop arrived while a command of the operator's was in flight, so the command was
+        // ended rather than waited for — which is what turned a stop that took the run's own
+        // two minutes into one that takes half a second. Routine by `daemon_stopping`'s own
+        // ruling: the operator asked for this, so it is not a fault.
+        //
+        // The census before that, 85, kept its own list for the same reason:
+        //
         // **85, not the 84 the last census was taken at.** One arrival, and it is the head's
         // half of the operator's own report: `daemon_replaced` is the sentence said when the
         // process at the other end of this socket is not the one this head attached to — a
@@ -678,8 +699,8 @@ mod the_register_census {
         //     and not a routine note: it is a check that did not happen, and the sentence's job is
         //     *look at this*, because the alternative is a command that says nothing and never
         //     ends.
-        assert_eq!(TABLE.len(), 85, "the table's size");
-        assert_eq!(count(Class::Routine), 29);
+        assert_eq!(TABLE.len(), 86, "the table's size");
+        assert_eq!(count(Class::Routine), 30);
         assert_eq!(count(Class::Refused), 8, "the eight in READER_INPUT");
         assert_eq!(count(Class::Failure), 48);
         // And the census the ruling turns on, as a ratio a reader can check: **the red

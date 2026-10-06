@@ -665,9 +665,41 @@ pub trait PromptDriver: Send + Sync {
     ) -> Result<Option<String>, String>;
 }
 
+/// **What a session must do when this daemon is asked to stop.**
+///
+/// A boxed closure rather than a trait, and that is the layering: the thing being ended is
+/// a **process the daemon owns** — an operator's `!` command, a model's `bash` call — and
+/// this crate holds no process host, no cgroup and no exec substrate. The daemon passes one
+/// in per session at open, exactly as it passes a [`PromptDriver`] or a [`ShellSuggester`].
+///
+/// # Why the daemon needs telling at all
+///
+/// `close` wakes the worker out of `next_command` — but a worker **inside a run** has not
+/// reached `next_command` and will not until the run ends. The daemon has one worker, so a
+/// stop that arrives mid-command waits for that command, and its own deadline is what ends
+/// it: two minutes at the `bash` default. MEASURED on a live daemon, 2026-10-06: `Stop` acked,
+/// `Bye` at 519 µs, and the process still in `/proc` for the whole of the run.
+///
+/// So a stop ends the runs. It is the same operation `job_kill` performs — the run's cgroup
+/// — done by the thread that took the `Stop` rather than by the worker, and the run's own row
+/// is where it is said: it settles as `Killed` carrying the reason, and the tool renders
+/// that on the row the session keeps.
+///
+/// Returns one sentence per run it ended, for the announcement, so *it ended nothing* and
+/// *it ended nothing because nothing was running* are different answers.
+pub type RunEnder = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+
 pub struct Registry {
     inner: Mutex<Inner>,
     bell: Arc<Bell>,
+    /// **One per session**, installed by the daemon at open beside [`Registry::prompts`].
+    /// See [`RunEnder`] for why a stop has to reach the runs and why the daemon is the half
+    /// that owns them.
+    runs: Mutex<std::collections::HashMap<String, RunEnder>>,
+    /// **`close` is not idempotent where the enders are concerned.** It is called by the
+    /// `Stop` frame, by `catch_signals` and again by `ServerHandle::shutdown`, and ending
+    /// every run three times would be three reap records for one decision.
+    ended_runs: std::sync::atomic::AtomicBool,
     /// Set once at startup by the daemon. `None` in every head and every test that
     /// predates resume, and the registry then lists only what it holds.
     source: Mutex<Option<Arc<dyn SessionSource>>>,
@@ -746,6 +778,8 @@ impl Registry {
                 view_bounds,
             }),
             bell: Bell::new(),
+            runs: Mutex::new(std::collections::HashMap::new()),
+            ended_runs: std::sync::atomic::AtomicBool::new(false),
             source: Mutex::new(None),
             rows: Mutex::new(None),
             diagnostics: Mutex::new(None),
@@ -1374,9 +1408,55 @@ impl Registry {
         }
     }
 
+    /// **Install what this session must end when the daemon stops.** See [`RunEnder`].
+    ///
+    /// Set once per session, at open, beside the other per-session drivers. A second
+    /// install for one session replaces the first rather than adding to it: a session has
+    /// one process host, and two enders for it would be two answers to one question.
+    pub fn watch_runs(&self, session: &str, ender: RunEnder) {
+        self.runs
+            .lock()
+            .expect("run enders")
+            .insert(session.to_string(), ender);
+    }
+
     /// Close every session and the bell. Every head wakes with `Bye`, every worker
     /// falls out of `next_command`.
+    ///
+    /// **And every run still in flight is ended**, because a worker inside one has not
+    /// reached `next_command` and will not until the run does. See [`RunEnder`]. The enders
+    /// are taken and called **before** the hubs close, so the sentence each one returns can
+    /// still be published to the heads that are watching — a stop that ended the operator's
+    /// command is a fact about their session, and it belongs on the log rather than in a file
+    /// nobody tails.
     pub fn close(&self) {
+        // Once, and only once, for the reason the field gives.
+        if !self
+            .ended_runs
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            let enders: Vec<RunEnder> = self
+                .runs
+                .lock()
+                .expect("run enders")
+                .drain()
+                .map(|(_, f)| f)
+                .collect();
+            let said: Vec<String> = enders.iter().flat_map(|f| f()).collect();
+            if !said.is_empty() {
+                for brief in self.list() {
+                    if let Some(hub) = self.get(&brief.session_id) {
+                        for sentence in &said {
+                            hub.publish(crate::event::SessionEvent::Warning {
+                                code: "daemon_stopping_runs".into(),
+                                detail: sentence.clone(),
+                                compaction: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
         let hubs: Vec<Arc<Hub>> = self
             .lock()
             .entries

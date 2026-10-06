@@ -1987,6 +1987,46 @@ impl<'a> Harness<'a> {
                     }
                 }
                 h.set_standing_env(env);
+                // **And a stop ends the runs this session has in flight.**
+                //
+                // `Registry::close` wakes the worker out of `next_command` — but a worker
+                // **inside a run** has not reached `next_command` and will not until the run
+                // ends, and the daemon has one worker. So a stop that arrives mid-command
+                // waits for that command, and the command's own deadline is what ends it:
+                // two minutes at the `bash` default. MEASURED on a live daemon, 2026-10-06:
+                // `Stop` acked, `Bye` at 519 µs, the process still in `/proc` for the whole
+                // of the run.
+                //
+                // The host is where the cgroup is, so the host is what ends it — the same
+                // operation `job_kill` performs, done by the thread that took the `Stop`
+                // rather than by the worker. `kill_job_as` is what makes the run's own row
+                // say *the daemon was stopping* rather than naming a signal, so the sentence
+                // lands where a head reads it and not only in a file nobody tails.
+                //
+                // Registered here because this is the half that owns the host, exactly as
+                // `set_prompt` is registered by the half that owns the pipe. A backend with
+                // no process host — a VM placement, a read-only seat — registers nothing,
+                // and `Registry::close` then finds no ender for this session, which is the
+                // honest answer for a session that cannot be running a command at all.
+                let host = Arc::clone(h);
+                let id = cfg.session_id.clone();
+                session_registry.watch_runs(
+                    &id,
+                    Arc::new(move || {
+                        // The reason travels into the run's own state and out onto the row a
+                        // head would have drawn: `killed by the daemon stopping`.
+                        host.end_running("the daemon stopping")
+                            .into_iter()
+                            .map(|r| {
+                                format!(
+                                    "the daemon was asked to stop while a command of this \
+                                     session was running, so it was ended: {}",
+                                    r.summary()
+                                )
+                            })
+                            .collect()
+                    }),
+                );
             }
             let monitors = backend.host_processes().and_then(|h| h.monitors().cloned());
             (Box::new(backend), described, writable, monitors)

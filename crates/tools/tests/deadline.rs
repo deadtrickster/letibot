@@ -291,6 +291,53 @@ fn a_root_process_the_daemon_may_not_signal_is_ended_by_the_same_deadline() {
     );
 }
 
+/// **A run ended by something other than its own deadline says WHO ended it.**
+///
+/// This is the row half of the daemon's stop. `ProcessHost::end_running` is what the daemon
+/// calls when it is asked to stop while a run holds its one worker — see [`RunEnder`]'s
+/// counterpart in `letibot_sessionlog::registry` — and what it passes as the reason is what
+/// [`JobState::Killed`] carries and what `bash` renders onto the row the session keeps.
+///
+/// *The command failed*, *the model killed it*, *its deadline passed* and *the daemon was
+/// stopping* are four different things to have happened to one command, and a single word
+/// for all four would be F5 with the sign flipped: a caller's own decision reported as the
+/// command's answer.
+#[test]
+fn a_run_ended_by_the_daemon_stopping_says_so() {
+    let Some(host) = host() else { return };
+    let id = spawn(&host, "sleep 300", false);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut seen = false;
+    while Instant::now() < deadline && !seen {
+        seen = !members(&host, &id).is_empty();
+        if !seen {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert!(seen, "the run never appeared in its cgroup");
+
+    let ended = host.end_running("the daemon stopping");
+    assert_eq!(ended.len(), 1, "one running job, one reap: {ended:?}");
+    assert_eq!(
+        host.job(&id).expect("listed").state,
+        JobState::Killed {
+            by: "the daemon stopping".into()
+        },
+        "the row has to name what ended it, not the signal that was its shape"
+    );
+    assert!(
+        members(&host, &id).is_empty(),
+        "and the cgroup has to be empty: {:?}",
+        members(&host, &id)
+    );
+    // Nothing running: the second call is the honest zero rather than a second kill.
+    assert!(
+        host.end_running("the daemon stopping").is_empty(),
+        "a second stop must find nothing to end rather than reporting the first one again"
+    );
+}
+
 /// **Can this uid look at the process?** — asked the way the daemon asks it.
 ///
 /// `super::exec::ask`'s whole detection is `/proc/<pid>/fd/0`, and the operator's report is
