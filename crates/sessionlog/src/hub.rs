@@ -298,7 +298,7 @@ impl Reply {
 /// **Where an answer goes when somebody is blocked waiting for it.**
 ///
 /// The command queue is the wrong door for an answer and the reason is a deadlock,
-/// not a preference. §13.2's one worker drains [`Hub::take_command`] and runs the
+/// not a preference. §13.2's one worker drains [`Hub::take_own_work`] and runs the
 /// turn; a gated tool call happens **inside** that turn, so the worker is inside
 /// `dispatch` when the adjudicator blocks. An answer pushed onto the same queue is
 /// drained by the thread that is waiting for it, which is never.
@@ -379,12 +379,16 @@ struct Inner {
     operator_calls: std::collections::HashMap<String, (String, String, String)>,
     next_head: u64,
     commands: VecDeque<QueuedCommand>,
+    /// **A wake aimed at the thread that owns this session's turn rather than at the
+    /// daemon's worker.** See [`Hub::wake_its_own_reader`] for who sends one and why the
+    /// bell cannot be used for it. Taken once, by [`Hub::take_own_work`].
+    own_wake: bool,
     closed: bool,
     /// Rung when this hub takes a command, so **one** worker can wait on many
     /// sessions without a timer. See [`crate::registry`].
     ///
     /// `None` for a hub nobody registered, which is the single-session case and
-    /// every test in this file: [`Hub::take_command`] blocks on this hub's own
+    /// every test in this file: [`Hub::take_own_work`] blocks on this hub's own
     /// condvar and needs no bell at all.
     bell: Option<Arc<crate::registry::Bell>>,
     /// Where a settled decision goes instead of the command queue. See
@@ -431,6 +435,23 @@ pub struct SessionStatus {
     pub last_ms: u64,
 }
 
+/// **What the thread that owns a session's queue found to do.**
+///
+/// Two kinds of thing, and the name of the second is the point: a `Wake` is not a command
+/// and carries no text, because what it means is *look at what you own and run the turn it
+/// makes* — the same job [`crate::registry::Bell::ring_wake`] does for a session the daemon
+/// holds, said to the thread that holds this one instead. See
+/// [`Hub::wake_its_own_reader`].
+#[derive(Debug)]
+pub enum OwnWork {
+    /// A command somebody submitted: a head's prompt, a parent's kill, a relayed message.
+    Command(QueuedCommand),
+    /// Something this session owns has settled and nobody else will tell it.
+    Wake,
+    /// The hub is closed and the queue is empty: this reader is done.
+    Closed,
+}
+
 /// One session's log, view, heads and command queue.
 pub struct Hub {
     inner: Mutex<Inner>,
@@ -465,6 +486,7 @@ impl Hub {
                 operator_calls: std::collections::HashMap::new(),
                 next_head: 0,
                 commands: VecDeque::new(),
+                own_wake: false,
                 closed: false,
                 bell: None,
                 answers: None,
@@ -1309,19 +1331,95 @@ impl Hub {
         }
     }
 
-    /// Take the next command for the session's single worker. Blocks. `None` once
+    /// Take the next thing for the session's single reader. Blocks. `Closed` once
     /// the hub is closed.
-    pub fn take_command(&self) -> Option<QueuedCommand> {
+    ///
+    /// **The reader is whoever runs this session's turns**, and for a session the daemon
+    /// holds that is the daemon's worker; for a subagent it is the thread its parent spawned
+    /// it on (`harness::serve_child`), which is the same thread that runs its turns. Both
+    /// take from this one queue, and the two things they can be handed are a command a head
+    /// submitted and a wake the daemon handed up — see [`Hub::wake_its_own_reader`] and
+    /// [`Hub::give_back_to_its_own_reader`].
+    pub fn take_own_work(&self) -> OwnWork {
         let mut g = self.lock();
         loop {
+            // **A command first**, because a command has a head behind it (or a parent's
+            // kill) and a wake has nobody waiting. The `Bell` keeps the same order between
+            // work and wakes, and for the same reason.
             if let Some(c) = g.commands.pop_front() {
-                return Some(c);
+                return OwnWork::Command(c);
+            }
+            if g.own_wake {
+                g.own_wake = false;
+                return OwnWork::Wake;
             }
             if g.closed {
-                return None;
+                return OwnWork::Closed;
             }
             g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
         }
+    }
+
+    /// **A wake for the thread that owns this session's turn, rather than for the daemon's
+    /// worker.**
+    ///
+    /// [`crate::registry::Bell::ring_wake`] is how the daemon learns a session has
+    /// something to act on between turns, and it is the right door for every session the
+    /// daemon holds a harness for: the worker drains that session's completions and runs the
+    /// turn they make. A subagent is not one of those — its harness lives on its parent's
+    /// spawn thread, so a ring naming it reaches `Sessions::wake`, finds no harness in
+    /// `open`, and is discarded (R58 measured exactly that). So a wake whose session the
+    /// daemon does not hold is handed HERE instead, and this door rings nothing: it sets a
+    /// flag and wakes this hub's own condvar, which is where the thread that IS running the
+    /// session is blocked.
+    ///
+    /// **Why not the bell with the subagent's id, and let the daemon relay it there?**
+    /// Because the daemon would have to queue something to hand over, and every queued thing
+    /// here rings the bell in turn — a wake that produces a wake. This door is the shortest
+    /// honest path from *something this session owns has settled* to the thread that can act
+    /// on it, and it leaves the bell meaning one thing: *the daemon has work to do*.
+    ///
+    /// `false` for a closed hub: a session that is gone has no reader, and the settlement
+    /// that prompted this was handed up a level before it closed (see
+    /// `jobwatch::JobWatchers::stop`).
+    pub fn wake_its_own_reader(&self) -> bool {
+        self.hand_to_its_own_reader_with(None)
+    }
+
+    /// **A command the daemon took off this queue but must not run itself.**
+    ///
+    /// The daemon's worker and a subagent's own thread take from ONE queue, so either can
+    /// win a command a head submitted for a subagent — and the worker's answer to an
+    /// interrupt is *"nothing was generating"*, which for a subagent that is mid-turn in its
+    /// own thread is a lie. So a command that belongs to the session's own reader is put back
+    /// here and that reader is woken: the same door as [`Hub::wake_its_own_reader`], with the
+    /// work attached.
+    pub fn give_back_to_its_own_reader(&self, cmd: QueuedCommand) -> bool {
+        if !matches!(cmd.kind, CommandKind::Interrupt { .. }) {
+            return false;
+        }
+        self.hand_to_its_own_reader_with(Some(cmd))
+    }
+
+    /// **Set the flag and wake this hub's own condvar, with or without work attached.**
+    /// The one door both [`Hub::wake_its_own_reader`] and
+    /// [`Hub::give_back_to_its_own_reader`] go through, so the two cannot come to ring
+    /// or lock differently.
+    fn hand_to_its_own_reader_with(&self, cmd: Option<QueuedCommand>) -> bool {
+        {
+            let mut g = self.lock();
+            if g.closed {
+                return false;
+            }
+            if let Some(cmd) = cmd {
+                g.commands.push_back(cmd);
+            }
+            g.own_wake = true;
+        }
+        // Outside the lock, for the reason `submit` rings outside it: a waiter takes its own
+        // mutex on the way out and must not be doing that while this one is held.
+        self.cv.notify_all();
+        true
     }
 
     /// Non-blocking form, for a worker that also has other things to do.
@@ -1510,7 +1608,8 @@ impl Hub {
         true
     }
 
-    /// Shut the hub down. Every waiter wakes with [`Delivery::Closed`].
+    /// Shut the hub down. Every waiter wakes with [`Delivery::Closed`], and
+    /// [`Hub::take_own_work`] returns [`OwnWork::Closed`].
     pub fn close(&self) {
         let ring = {
             let mut g = self.lock();
@@ -1591,6 +1690,104 @@ mod tests {
         assert_eq!(hub.take_promote_request(), None);
         // An unattached head resolves to no request.
         assert_eq!(hub.request_promote_from("nobody"), None);
+    }
+
+    /// **A wake handed to the session's own reader is taken THERE, once, and rings no bell.**
+    ///
+    /// The operator's design, in their words: *"think about it like it is an erlang supervision
+    /// tree. we talk to parents and they own lifecycle."* A subagent's settlement is its
+    /// parent's, and the parent is a session the daemon does not hold (`Sessions::wake`), so the
+    /// wake is handed to the thread that runs it — and the two facts that make that a route
+    /// rather than a hope are asserted here:
+    ///
+    ///   * a waiting reader is woken and finds it, and a SECOND take finds nothing, because a
+    ///     keeper flag would turn one settlement into a turn every time the loop came round;
+    ///   * **the bell is not rung**, so the daemon's worker is not told about work it cannot do
+    ///     — which is the whole reason this door is not `Bell::ring_wake`.
+    ///
+    /// A command still comes first when both are waiting: a head that pressed enter
+    /// outranks a settlement nobody is holding.
+    #[test]
+    fn a_wake_handed_to_the_own_reader_is_taken_there_and_rings_nothing() {
+        use crate::registry::{Registry, SessionWiring, Work, WorkOrIdle};
+
+        // **The bell is read without blocking**: `next_work` waits for ever when nothing is
+        // pending, so "nothing was rung" has to be asked as "the worker has nothing to do
+        // as of now".
+        let quiet = |r: &Registry| {
+            matches!(
+                r.next_work_until(Some(std::time::Instant::now())),
+                WorkOrIdle::Idle
+            )
+        };
+
+        let r = Registry::new();
+        let hub = r
+            .create("s-child", "", SessionWiring::default())
+            .expect("the child registers");
+        // Drain the create's `Open`, so the next thing off the bell is the settlement's —
+        // and there must not be one.
+        assert!(matches!(r.next_work(), Some(Work::Open(id)) if id == "s-child"));
+
+        assert!(hub.wake_its_own_reader(), "a live hub takes a wake");
+        assert!(
+            matches!(hub.take_own_work(), OwnWork::Wake),
+            "the thread that owns the session is woken by it"
+        );
+        assert!(
+            quiet(&r),
+            "and the DAEMON's worker is told nothing: this wake is not work it can do"
+        );
+        // The take is a take: a keeper flag would spend a turn on every pass of a loop
+        // that has nothing left to read.
+        hub.wake_its_own_reader();
+        assert!(matches!(hub.take_own_work(), OwnWork::Wake));
+
+        // **A stop put back for its own reader**, which is the other thing this door
+        // carries: the worker can win an interrupt the parent aimed at its child, and
+        // its answer to one is `interrupt_idle` — a false sentence for a child that is
+        // mid-turn in its own thread.
+        let cmd = QueuedCommand {
+            head_id: DAEMON_SUBMITTER.to_string(),
+            identity: DAEMON_SUBMITTER.to_string(),
+            client_request_id: "job_kill-1".into(),
+            at_seq: hub.head_seq(),
+            kind: CommandKind::Interrupt {
+                reason: "job_kill".into(),
+            },
+        };
+        assert!(hub.give_back_to_its_own_reader(cmd));
+        match hub.take_own_work() {
+            OwnWork::Command(c) => assert!(
+                matches!(c.kind, CommandKind::Interrupt { .. }),
+                "the interrupt is back in front of the session's own reader: {c:?}"
+            ),
+            other => panic!("expected the interrupt back, got {other:?}"),
+        }
+        assert!(quiet(&r), "and still nothing for the daemon's worker");
+
+        // Only a STOP goes back: a prompt is work the daemon CAN serve, by opening the
+        // session, and putting one back would take a head's own words away from it.
+        let prompt = QueuedCommand {
+            head_id: "h1".into(),
+            identity: "dead@lab2x1".into(),
+            client_request_id: "c1".into(),
+            at_seq: hub.head_seq(),
+            kind: CommandKind::Prompt {
+                text: "hello".into(),
+            },
+        };
+        assert!(
+            !hub.give_back_to_its_own_reader(prompt),
+            "a prompt is not a stop and is not this door's"
+        );
+
+        // A hub that is closed has no reader to hand anything to, which is a `false`
+        // rather than a promise: the settlement that prompted a wake was handed up a
+        // level when this session stopped (`JobWatchers::stop`).
+        hub.close();
+        assert!(!hub.wake_its_own_reader(), "a closed hub has nobody to wake");
+        assert!(matches!(hub.take_own_work(), OwnWork::Closed));
     }
 
     #[test]
@@ -2048,8 +2245,11 @@ mod mode_steering_tests {
         assert!(hub.has_queued_prompt());
         assert!(
             matches!(
-                hub.take_command().map(|c| c.kind),
-                Some(CommandKind::Prompt { .. })
+                hub.take_own_work(),
+                OwnWork::Command(QueuedCommand {
+                    kind: CommandKind::Prompt { .. },
+                    ..
+                })
             ),
             "the prompt must still be there for the worker"
         );
@@ -2212,8 +2412,11 @@ mod mode_steering_tests {
         );
         assert!(
             matches!(
-                hub.take_command().map(|c| c.kind),
-                Some(CommandKind::Compact)
+                hub.take_own_work(),
+                OwnWork::Command(QueuedCommand {
+                    kind: CommandKind::Compact,
+                    ..
+                })
             ),
             "the compaction was eaten"
         );

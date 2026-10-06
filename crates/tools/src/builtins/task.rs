@@ -339,6 +339,35 @@ pub trait TaskRunner: Send + Sync {
              was sent."
         ))
     }
+
+    /// **Stop every child this session still owns.**
+    ///
+    /// The operator's design, in their words: *"think about it like it is an erlang
+    /// supervision tree. we talk to parents and they own lifecycle."* Two of the tree's edges
+    /// are already here — `start` makes a child, and `collect`/`send`/`kill` each talk to one
+    /// — and this is the third: **a parent that is being stopped stops its children first**,
+    /// so the tree never leaves work computing for nobody. That shape was measured the same
+    /// night: a stalled grandchild survived the parent that owned it, because the interrupt
+    /// reached exactly one session.
+    ///
+    /// **The children, not the subtree.** A runner stops what IT started and answers for
+    /// those; each child does the same when the stop reaches it, so the walk down is one
+    /// level per session and no runner needs to know its grandchildren. That is the whole of
+    /// what *"we talk to parents"* means in code, and the reason this is not a `kill` over a
+    /// list of handles nobody holds.
+    ///
+    /// One result per child, in the words [`TaskRunner::kill`] gives, so a caller can say
+    /// what was stopped and what refused rather than a count that hides a refusal — the rule
+    /// this trait already holds to. A runner that starts nothing returns nothing, which is
+    /// the honest answer for a session with no children rather than a failure.
+    ///
+    /// **Not the restart policy.** Nothing here decides whether a child should be started
+    /// again; a parent's decision about what its child's exit MEANS is the second half of the
+    /// operator's design and is not built. See the TODO beside `HarnessTaskRunner`'s own
+    /// implementation.
+    fn stop_all(&self) -> Vec<(String, Result<String, String>)> {
+        Vec::new()
+    }
 }
 
 /// The default: no runner, and it says so rather than pretending to have run.

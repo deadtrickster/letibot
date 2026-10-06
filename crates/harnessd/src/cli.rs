@@ -1268,6 +1268,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         ),
         Outcome::Failed(e) => eprintln!("  {session} · {} -> {e}", cmd.identity),
         Outcome::Ignored => {}
+        // A wake handed to the session's own thread; nothing ran on this one. See
+        // `Sessions::wake` — the arm exists because the outcome is the worker's vocabulary.
+        Outcome::HandedOn => {}
     });
     // **The queue is told to stop, and it is deliberately NOT joined.** A gate in flight is a
     // `cargo test --workspace`, so waiting here would hold the daemon's exit for minutes — and

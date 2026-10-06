@@ -200,6 +200,17 @@ pub const TABLE: &[(&str, Class)] = &[
     // Their interrupt and their promote arrived between turns, so there was nothing to
     // stop or move. The operator's own act, and a no-op.
     ("interrupt_idle", Class::Routine),
+    // **A stop took the session's children with it** — the downward edge of a supervision
+    // tree, said out loud. Routine by the rule above and for the same reason: it reports an
+    // act the operator (or the parent that killed it) asked for, and deleting it would lose
+    // only the list of what went with it. See the supervision invariant on
+    // `HarnessTaskRunner` and `stop_children_first`, which is the one place it is written.
+    ("subagents_stopped", Class::Routine),
+    // **A child was woken because something it started had settled, and the turn that would
+    // have read the settlement failed.** A failure: the settlement is still queued and the
+    // next wake finds it (the session is not stuck), but a notice the child was owed did not
+    // reach it, which is exactly what the wake exists to prevent.
+    ("wake_failed", Class::Failure),
     ("promote_idle", Class::Routine),
     // **A parent's message to a subagent that had already finished** — see
     // `CommandKind::Message`. The runner refuses these by name before submitting
