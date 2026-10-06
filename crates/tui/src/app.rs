@@ -1942,8 +1942,9 @@ const WAY_OUT: u8 = 0x1c;
 ///
 /// It is [`letibot_vt::Screen`] — a rectangle of cells, a cursor, a pen and an alternate
 /// buffer, driven by the bytes a pty's far end wrote — plus the three facts a head needs about
-/// the program that is drawing in it. **It is not an emulator of this head's own** (there is
-/// one in `letibot-ui` and this is the second caller of it after the pane's own tests) and it
+/// the program that is drawing in it. **It is not an emulator of this head's own**: there is one
+/// in `letibot-vt`, it is a crate *below* this one, and this head's half of it is
+/// `letibot_ui::ansi::pane_rows`. And it
 /// is not the conversation: nothing here is a transcript row, and when the pane closes the
 /// transcript is exactly what it was.
 ///

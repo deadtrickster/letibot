@@ -48,9 +48,10 @@ conversation's rectangle given to the program with the composer keeping its rows
 `!term <command>` at the composer, a pty the daemon owns (`crates/tools/src/exec/term.rs`,
 `setsid` + `TIOCSCTTY`), raw bytes both ways on protocol 31
 (`ClientFrame::TermOpen`/`TermInput`/`TermResize`/`TermClose`,
-`ServerFrame::TermOutput`/`TermEnded`), the head drawing them through `letibot_ui::vt::Screen`
-in the conversation's rectangle, and `ctrl-\` the one way out — intercepted on the raw byte
-stream, so the program never receives it and cannot trap it.
+`ServerFrame::TermOutput`/`TermEnded`), the head drawing them through `letibot_vt::Screen`
+painted by `letibot_ui::ansi::pane_rows` in the conversation's rectangle, and `ctrl-\` the one
+way out — intercepted on the raw byte stream, so the program never receives it and cannot trap
+it.
 
 **What is not done, and none of it is a defect in what is:**
 
