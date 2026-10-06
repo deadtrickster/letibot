@@ -2657,6 +2657,34 @@ impl SessionSource for StoreSessions {
             .collect()
     }
 
+    /// **The merge queue, whole, for a head's bootstrap read** — the snapshot half of the
+    /// snapshot-plus-events the wire is written as.
+    ///
+    /// Read through this source's own connection, which is the same file the merge-queue
+    /// thread writes: a `SELECT` sees what the daemon committed, and the queue is daemon-level,
+    /// so there is no `session_id` to scope it by.
+    ///
+    /// **Every state, and the evidence on each row.** A read that answered only the actionable
+    /// entries would say *"that is all the work there is"* about a queue holding a `Failed`
+    /// entry with a reason on it — the one thing the queue's own read refuses to do, and this
+    /// is that read, one hop out.
+    ///
+    /// **A read that FAILED is said, not answered as empty.** The trait has no room for an
+    /// error, and the alternative to a line here is a head drawing an empty queue over a store
+    /// that could not be read — two states that look identical from the outside, which is
+    /// exactly the confusion the `Corrupt` variants exist to prevent.
+    fn merge_entries(&self) -> Vec<letibot_sessionlog::event::MergeEntry> {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let rows = match g.merge_entries() {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("  merge queue: the queue could not be read: {e}");
+                return Vec::new();
+            }
+        };
+        crate::mergequeue::wire_queue(&rows)
+    }
+
     fn list(&self) -> Vec<StoredBrief> {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
         g.list_sessions()

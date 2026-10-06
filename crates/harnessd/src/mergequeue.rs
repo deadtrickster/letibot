@@ -45,8 +45,11 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 
-use letibot_tokencore::store::{MergeEntry, MergeState, Store};
+use letibot_tokencore::store::{MergeEntry, MergePriority, MergeState, Store};
 
 // ===== The pure core: the state machine, with no store, no git and no thread =====
 
@@ -284,6 +287,162 @@ fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
     git(repo, &["branch", "-d", branch]).map(|_| ())
 }
 
+/// **The git top level of `path`** — the repo a queue serves, from a path inside it.
+///
+/// The queue is about one repo and one `main`, so the repo is resolved once at startup
+/// rather than guessed from a workspace path: `cfg.workspace` is a directory a session was
+/// started in, and the repo whose main the queue fast-forwards is the one git names.
+pub fn repo_root(path: &Path) -> Result<PathBuf, String> {
+    let out = git(path, &["rev-parse", "--show-toplevel"])?;
+    let top = out.trim();
+    if top.is_empty() {
+        return Err(format!("{path:?} is not inside a git repository"));
+    }
+    Ok(PathBuf::from(top))
+}
+
+// ===== The gate: the same checks CI runs, at the tip =====
+
+/// **How much of a failing step's output goes on the row.** The evidence column is a
+/// `String` a person reads, and a `cargo test --workspace --nocapture` that fails prints
+/// megabytes of it; the failure itself is at the END, which is the part kept.
+const EVIDENCE_BYTES: usize = 4_096;
+
+/// **The last `cap` bytes of `text`, saying what was dropped.** A truncation that did not
+/// say it truncated is the same lie a short queue read tells — *this is all there is* —
+/// which is the rule the whole module is written around.
+fn tail(text: &str, cap: usize) -> String {
+    if text.len() <= cap {
+        return text.to_string();
+    }
+    let mut start = text.len() - cap;
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!(
+        "… [{} byte(s) dropped from the front]\n{}",
+        start,
+        &text[start..]
+    )
+}
+
+/// **One command, run in `dir`, with its output kept** — the gate's own words, whether it
+/// passed or failed.
+///
+/// The environment is inherited deliberately: the gate is CI's own command line run on
+/// this machine, and `LETIBOT_LLAMA_LIB` and the vocabulary path are facts about the box,
+/// not something the queue should invent. `Ok` is the output of a step that passed (kept
+/// for the caller's log) and `Err` is the output of one that did not, which is the
+/// evidence the row carries.
+fn run_captured(dir: &Path, program: &str, args: &[&str]) -> Result<String, String> {
+    let out = Command::new(program)
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("{program} {}: {e}", args.join(" ")))?;
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let err = String::from_utf8_lossy(&out.stderr);
+    if !err.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&err);
+    }
+    if out.status.success() {
+        Ok(text)
+    } else {
+        Err(text)
+    }
+}
+
+/// **The gate CI runs** — the format check on the files this change touches, clippy, the
+/// workspace tests, and the release build — run in the entry's worktree after the rebase.
+///
+/// The operator's ask, in their words: *"we need a gated merge to main"*, and the gate is
+/// the same one `.github/workflows/ci.yml` runs: `scripts/check-fmt.sh`, `cargo clippy
+/// --all-targets`, `cargo test --workspace --no-fail-fast -- --nocapture` and `cargo build
+/// --release --bins`. **Not a second, weaker check**: a queue that lands on a different
+/// standard from the one the branch was written to is a queue that lands branches CI would
+/// have refused.
+///
+/// **The base the format check measures from is `main`, and the rebase is what makes that
+/// true.** The branch was rebased onto the current main immediately before this runs, so
+/// `main` is exactly the revision the change is measured from — and `check-fmt.sh` refuses
+/// a base it cannot resolve rather than passing, which is the property wanted here: a
+/// worktree whose `main` cannot be named fails the gate instead of skipping a step.
+///
+/// The steps run in order and the first failure is the answer. There is no `--continue`: a
+/// gate that ran everything after a red step would spend minutes to say what the first
+/// line already said.
+pub fn ci_gate(worktree: &Path) -> Result<(), String> {
+    let steps: [(&str, &[&str]); 4] = [
+        ("sh", &["scripts/check-fmt.sh", "main"]),
+        ("cargo", &["clippy", "--all-targets"]),
+        (
+            "cargo",
+            &["test", "--workspace", "--no-fail-fast", "--", "--nocapture"],
+        ),
+        ("cargo", &["build", "--release", "--bins"]),
+    ];
+    for (program, args) in steps {
+        if let Err(out) = run_captured(worktree, program, args) {
+            return Err(format!(
+                "{program} {} failed:\n{}",
+                args.join(" "),
+                tail(&out, EVIDENCE_BYTES)
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ===== The wire: the store's row as a head reads it =====
+
+/// **One entry, as the wire spells it** — the conversion the two copies of the types exist
+/// for.
+///
+/// The priority and the state are `match`es and not casts, and that is the whole of the
+/// argument for the wire's types being copies rather than re-exports: a rung or a state
+/// added on either side fails to compile HERE, where the two vocabularies meet, instead of
+/// arriving at a head as a word nobody can order or draw.
+pub fn wire_entry(entry: &MergeEntry) -> letibot_sessionlog::event::MergeEntry {
+    use letibot_sessionlog::event as wire;
+    wire::MergeEntry {
+        id: entry.id.clone(),
+        session_id: entry.session_id.clone(),
+        branch: entry.branch.clone(),
+        base_sha: entry.base_sha.clone(),
+        priority: match entry.priority {
+            MergePriority::Urgent => wire::MergePriority::Urgent,
+            MergePriority::Subagent => wire::MergePriority::Subagent,
+        },
+        needs: entry.needs.clone(),
+        state: match entry.state {
+            MergeState::Waiting => wire::MergeState::Waiting,
+            MergeState::Taken => wire::MergeState::Taken,
+            MergeState::Landed => wire::MergeState::Landed,
+            MergeState::Failed => wire::MergeState::Failed,
+            MergeState::Conflict => wire::MergeState::Conflict,
+            MergeState::Stale => wire::MergeState::Stale,
+        },
+        evidence: entry.evidence.clone(),
+        created_ms: entry.created_ms,
+        updated_ms: entry.updated_ms,
+        worktree: entry.worktree.clone(),
+        landed_sha: entry.landed_sha.clone(),
+    }
+}
+
+/// **The whole queue, as the wire spells it** — the snapshot a head's `ListMergeQueue` is
+/// answered with, every state, in the order the queue was filled.
+///
+/// The read that answers *what is the queue* must not drop a row it cannot act on, which
+/// is why this is a map over the store's own read rather than a filter: a `Failed` entry is
+/// listed with its reason, and so is a `Stale` one.
+pub fn wire_queue(entries: &[MergeEntry]) -> Vec<letibot_sessionlog::event::MergeEntry> {
+    entries.iter().map(wire_entry).collect()
+}
+
 // ===== The daemon thread: the thing that takes the next entry =====
 
 /// **What one pass of the daemon did** — the vocabulary the loop and the test share.
@@ -485,13 +644,10 @@ impl MergeQueueDaemon {
     /// mechanical check and the review is the judgment call, and both are required before an
     /// entry lands. The gatekeeper branch is not merged yet, so this is the requirement and
     /// its seam, not an interface.
-    pub fn run(
-        &self,
-        stop: &std::sync::atomic::AtomicBool,
-    ) -> Result<(), letibot_tokencore::store::StoreError> {
+    pub fn run(&self, stop: &AtomicBool) -> Result<(), letibot_tokencore::store::StoreError> {
         self.recover()?;
         loop {
-            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            if stop.load(Ordering::Relaxed) {
                 return Ok(());
             }
             match self.step()? {
@@ -510,14 +666,87 @@ impl MergeQueueDaemon {
             }
         }
     }
+
+    /// **Start the thread that serves the queue** — the daemon's half of the operator's
+    /// *"merge queue is 2 - together with persistence and harnessd thread that serves it."*
+    ///
+    /// Named, so the queue's thread is legible in `ps`; detached, so a daemon that is stopping
+    /// does not wait for a gate that is minutes long. **A merge interrupted that way is not lost
+    /// and is not silently retried**: the row on disk is `Taken`, the next daemon's
+    /// [`Self::recover`] moves it to `Stale` with its reason, and a person re-enqueues it.
+    /// Waiting for the gate here would hold the daemon's exit for the length of a `cargo test
+    /// --workspace`, which is the opposite of what a shutdown is for.
+    ///
+    /// TODO(events): **publish `MergeEntryAdded`/`MergeEntryMoved` as the queue moves.** The
+    /// wire carries both — the census at `PROTOCOL_VERSION` 29 counts them and `scrub` keeps
+    /// them — and the snapshot a head reads is the queue as of now, so a head that was attached
+    /// when an entry moved keeps drawing the state it last saw. What is missing is the emitter
+    /// and not the event: every `publish` in this daemon is to ONE session's hub
+    /// (`Harness::hub`), the queue is daemon-level rather than a session's, and a broadcast
+    /// across hubs is a decision about what every session's log records rather than a call that
+    /// is missing. So the seam is named here, next to the thread that would emit.
+    pub fn spawn(self, stop: Arc<AtomicBool>) -> std::io::Result<JoinHandle<()>> {
+        std::thread::Builder::new()
+            .name("merge-queue".into())
+            .spawn(move || {
+                if let Err(e) = self.run(&stop) {
+                    // A queue that cannot be read is said out loud rather than going quiet: an
+                    // empty queue and an unreadable one look identical from the outside, and
+                    // *"that is all the work there is"* is the one thing this module refuses to
+                    // say falsely.
+                    eprintln!("  merge queue: the queue could not be served: {e}");
+                }
+            })
+    }
+}
+
+/// **Start the queue for a daemon** — the whole of the startup wiring in one place, so the
+/// binary's own startup is one call and the decisions live with the queue.
+///
+/// `None` when there is no queue to serve, and the two cases are different:
+///
+/// * **No `--store`**: there is no durable queue by construction — the queue lives in
+///   `sessions.db` — so a daemon without a store has nothing to serve and nothing to say.
+///   This is [`crate::sessions::StoreSessions::open`]'s posture, for its reason.
+/// * **A workspace that is not in a git repo**: there is no `main` to land on. That IS said,
+///   because a daemon that was asked for a queue and silently has none is the same lie as an
+///   empty queue that is not empty.
+///
+/// The poll interval is the one [`MergeQueueDaemon::run`] sleeps on, and it is worth naming
+/// here where it is a cost rather than a line: with an empty queue this thread re-reads one
+/// indexed `SELECT` a second, which is what the enqueue side (`task_start`'s half) will ring a
+/// bell for once it exists.
+pub fn spawn_for(cfg: &crate::config::Config, stop: Arc<AtomicBool>) -> Option<JoinHandle<()>> {
+    let store_path = cfg.store.as_ref()?;
+    let repo = match repo_root(&cfg.workspace) {
+        Ok(repo) => repo,
+        Err(e) => {
+            eprintln!("  merge queue: not served — {e}");
+            return None;
+        }
+    };
+    let store = match Store::open(store_path) {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("  merge queue: not served — {}: {e}", store_path.display());
+            return None;
+        }
+    };
+    match MergeQueueDaemon::new(store, repo.clone(), Box::new(ci_gate)).spawn(stop) {
+        Ok(handle) => {
+            eprintln!("  merge queue: serving {} toward main", repo.display());
+            Some(handle)
+        }
+        Err(e) => {
+            eprintln!("  merge queue: not served — the thread did not start: {e}");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The tests build entries, so they name the priority; the module above does not, which is
-    // why the import is here rather than at the top.
-    use letibot_tokencore::store::MergePriority;
 
     /// A `MergeEntry` for the tests, with the fields the test does not care about set to
     /// defaults.
@@ -1204,6 +1433,188 @@ mod tests {
         assert_eq!(on_disk.state, MergeState::Stale, "the row on disk is stale");
         assert!(!on_disk.evidence.is_empty(), "the row has the reason");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ===== The gate, the wire and the thread =====
+
+    /// **The repo is the one git names** — resolved from a path inside it, which is how the
+    /// daemon finds the `main` it will fast-forward.
+    ///
+    /// A subdirectory is the case that matters: a daemon's workspace is a directory somebody
+    /// started it in, and the repo is a fact git answers rather than one the queue derives.
+    #[test]
+    fn the_repo_is_the_one_git_names() {
+        let (root, _wt, _main_sha, _feature_sha) = repo_with_branch("root");
+        let canonical = |p: &Path| std::fs::canonicalize(p).expect("canonical");
+        let named = repo_root(&root).expect("the repo is named");
+        assert_eq!(canonical(&named), canonical(&root), "git named {named:?}");
+        // From inside it — a workspace that is a subdirectory of the checkout, which is what
+        // `--workspace` usually is.
+        let sub = root.join("worktrees");
+        let from_sub = repo_root(&sub).expect("a subdirectory is in the repo");
+        assert_eq!(
+            canonical(&from_sub),
+            canonical(&root),
+            "the subdirectory named {from_sub:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **The gate is CI's command line, and the step that failed is the answer.** Asserted
+    /// without running a build: in a worktree with no `scripts/check-fmt.sh`, the FIRST step
+    /// fails, and the evidence names it with its own words.
+    ///
+    /// The second assertion is the one about the shape: `cargo clippy`, `cargo test` and the
+    /// release build must not have run after a red format check, because a gate that continues
+    /// spends minutes to say what the first line already said.
+    #[test]
+    fn the_gate_reports_the_step_that_failed_and_runs_no_further() {
+        let dir = std::env::temp_dir().join(format!("letibot-mq-gate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let err = ci_gate(&dir).expect_err("a worktree with no scripts/check-fmt.sh is not green");
+        assert!(
+            err.contains("scripts/check-fmt.sh"),
+            "the failing step is named: {err:?}"
+        );
+        assert!(
+            !err.contains("cargo clippy") && !err.contains("cargo test"),
+            "a later step ran anyway: {err:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A truncation says it truncated** — the same rule the queue's own read is written to,
+    /// applied to the evidence a failing gate puts on the row.
+    #[test]
+    fn a_truncated_evidence_says_so_and_keeps_the_end() {
+        let short = "the gate is red";
+        assert_eq!(
+            tail(short, EVIDENCE_BYTES),
+            short,
+            "a short evidence is untouched"
+        );
+        let long = format!("{}THE END", "x".repeat(10_000));
+        let cut = tail(&long, 100);
+        assert!(cut.contains("byte(s) dropped from the front"), "{cut:?}");
+        assert!(
+            cut.ends_with("THE END"),
+            "the end is the part worth keeping: {cut:?}"
+        );
+    }
+
+    /// **Every state and every rung survives the hop to the wire** — the whole closed set, not
+    /// the one state a test happened to need. The `match`es in [`wire_entry`] are what make a
+    /// rung added on either side a compile error rather than a word nobody can order; this is
+    /// the half a compiler cannot check, which is that the values come across unchanged.
+    #[test]
+    fn every_state_and_rung_survives_the_hop_to_the_wire() {
+        use letibot_sessionlog::event as wire;
+        for (state, want) in [
+            (MergeState::Waiting, wire::MergeState::Waiting),
+            (MergeState::Taken, wire::MergeState::Taken),
+            (MergeState::Landed, wire::MergeState::Landed),
+            (MergeState::Failed, wire::MergeState::Failed),
+            (MergeState::Conflict, wire::MergeState::Conflict),
+            (MergeState::Stale, wire::MergeState::Stale),
+        ] {
+            let mut e = entry("m-1", MergePriority::Subagent, state, 1_000);
+            e.needs = vec!["m-0".into()];
+            e.evidence = "the reason".into();
+            e.worktree = Some("/wt".into());
+            e.landed_sha = Some("tip".into());
+            let w = wire_entry(&e);
+            assert_eq!(w.state, want, "{state:?} did not survive the hop");
+            assert_eq!(w.id, e.id);
+            assert_eq!(w.session_id, e.session_id);
+            assert_eq!(w.branch, e.branch);
+            assert_eq!(w.base_sha, e.base_sha);
+            assert_eq!(w.needs, e.needs);
+            assert_eq!(w.evidence, e.evidence);
+            assert_eq!(w.created_ms, e.created_ms);
+            assert_eq!(w.updated_ms, e.updated_ms);
+            assert_eq!(w.worktree, e.worktree);
+            assert_eq!(w.landed_sha, e.landed_sha);
+        }
+        for (p, want) in [
+            (MergePriority::Urgent, wire::MergePriority::Urgent),
+            (MergePriority::Subagent, wire::MergePriority::Subagent),
+        ] {
+            let e = entry("m-1", p, MergeState::Waiting, 1_000);
+            assert_eq!(
+                wire_entry(&e).priority,
+                want,
+                "{p:?} did not survive the hop"
+            );
+        }
+    }
+
+    /// **The snapshot is the whole queue** — an entry the queue cannot act on is in it, with
+    /// its reason. A shorter list would say *"that is all the work there is"*, which is the
+    /// one thing the queue's read must not say.
+    #[test]
+    fn the_snapshot_carries_every_state_and_its_reason() {
+        use letibot_sessionlog::event as wire;
+        let mut failed = entry("f", MergePriority::Subagent, MergeState::Failed, 1_000);
+        failed.evidence = "the gate is red".into();
+        let waiting = entry("w", MergePriority::Urgent, MergeState::Waiting, 2_000);
+        let stale = entry("s", MergePriority::Subagent, MergeState::Stale, 3_000);
+        let queue = wire_queue(&[failed, waiting, stale]);
+        assert_eq!(queue.len(), 3, "the snapshot dropped a row: {queue:?}");
+        assert_eq!(queue[0].state, wire::MergeState::Failed);
+        assert_eq!(queue[0].evidence, "the gate is red", "the reason travels");
+        assert_eq!(queue[1].priority, wire::MergePriority::Urgent);
+        assert_eq!(queue[2].state, wire::MergeState::Stale);
+    }
+
+    /// **A daemon thread serves the queue** — the thread starts, takes a pass over the queue
+    /// on its own thread, and stops when it is told to.
+    ///
+    /// The pass is observable because the entry it takes has no worktree: the queue cannot
+    /// rebase a branch that is not checked out, so it puts the entry back `Waiting` with that
+    /// reason on the row, and the row is read back through a connection the thread never held.
+    /// That is the whole of the operator's *"merge queue is 2 - together with persistence and
+    /// harnessd thread that serves it"*: a thread, a row, and the row saying what happened.
+    #[test]
+    fn the_thread_serves_the_queue_and_stops() {
+        let dir = std::env::temp_dir().join(format!("letibot-mq-thread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let db = dir.join("sessions.db");
+        enqueue(
+            &db,
+            &entry(
+                "m-thread",
+                MergePriority::Subagent,
+                MergeState::Waiting,
+                1_000,
+            ),
+        );
+
+        let daemon =
+            MergeQueueDaemon::new(store_at(&db), std::env::temp_dir(), Box::new(|_| Ok(())));
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = daemon.spawn(stop.clone()).expect("the thread starts");
+        // The first pass is immediate; the flag is what ends the loop, at the next check.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        stop.store(true, Ordering::Relaxed);
+        handle.join().expect("the thread stops when it is told to");
+
+        let on_disk = store_at(&db)
+            .merge_entry("m-thread")
+            .expect("reads")
+            .expect("the entry");
+        assert_eq!(
+            on_disk.state,
+            MergeState::Waiting,
+            "the entry is still waiting"
+        );
+        assert!(
+            on_disk.evidence.contains("no worktree"),
+            "the thread's own pass left its reason on the row: {:?}",
+            on_disk.evidence
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The output of a git command that is allowed to fail, for the assertions that read it.

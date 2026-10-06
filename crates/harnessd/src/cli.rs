@@ -693,6 +693,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let mut daemon = Daemon::serve(registry.clone(), &cfg.socket).map_err(|e| e.to_string())?;
     daemon.catch_signals().map_err(|e| e.to_string())?;
 
+    // **The merge queue, before the worker loop takes this thread.** Its own thread, its own
+    // connection to the session store, and the gate CI runs as its check — see `mergequeue`'s
+    // module docs for why each of those is a thread of its own. It is inert until an entry
+    // exists: the enqueue is `task_start`'s half, so today this thread finds an empty queue and
+    // sleeps, and a daemon that is not in a git repo (or has no `--store`) is told it has no
+    // queue rather than pretending to serve one.
+    let merge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let merge_queue = crate::mergequeue::spawn_for(&cfg, merge_stop.clone());
+
     let socket = daemon.socket().display().to_string();
     let dialect = cfg.dialect.name();
     let model = cfg.model.clone();
@@ -1069,6 +1078,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         Outcome::Failed(e) => eprintln!("  {session} · {} -> {e}", cmd.identity),
         Outcome::Ignored => {}
     });
+    // **The queue is told to stop, and it is deliberately NOT joined.** A gate in flight is a
+    // `cargo test --workspace`, so waiting here would hold the daemon's exit for minutes — and
+    // nothing is lost by not waiting: the row on disk says `Taken`, and the next daemon's
+    // `recover` moves it to `Stale` with its reason, which is the designed answer to a merge
+    // interrupted mid-flight. Dropping the handle detaches the thread; the process is exiting.
+    merge_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    drop(merge_queue);
+
     daemon.shutdown();
     // The seat after the daemon: the listener's next poll window sees the stop and
     // the waiter claim is released with it. `std::process::exit` above runs no
