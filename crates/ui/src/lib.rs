@@ -42,7 +42,9 @@
 //! | [`card`] | tool calls: collapsed, expanded, and what a long result looks like |
 //! | [`editor`] | multi-line input, history, paste, kill ring |
 //! | [`style`] | the one place a colour is chosen |
+//! | [`ansi`] | SGR a foreign program wrote, drawn as the palette's own roles |
 
+pub mod ansi;
 pub mod card;
 pub mod diff;
 pub mod editor;
