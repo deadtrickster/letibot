@@ -16,6 +16,26 @@
 //! or the vocabulary is not on this box.
 //!
 //!     cargo test -p letibot-harnessd --test reprefill_feasibility -- --nocapture
+//!
+//! # The store is copied, never opened
+//!
+//! `Store::open` is not a read: it **migrates**. A build whose `SCHEMA_VERSION` is
+//! newer than the file's rewrites it in place, so a test that opens the operator's
+//! live `~/.local/share/letibot/sessions.db` is a test that upgrades the operator's
+//! store underneath the daemon serving it. This one did exactly that — MEASURED
+//! with `strace` on 2026-10-06, before this fix:
+//!
+//!     openat(AT_FDCWD, "/home/dead/.local/share/letibot/sessions.db",
+//!            O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC, 0644) = 3
+//!
+//! — and the cost was two subagent spawns: the store moved to 16 while the running
+//! daemon was built at 15, and every spawn after that was refused with
+//! `SchemaTooNew { found: 16, known: 15 }`.
+//!
+//! So the live file is only ever READ here, by the copy below, and every row
+//! measured below is read from the copy. `resume.rs` has the same helper and the
+//! same reason; `crates/turn/tests/restore.rs::real_store_copy` is where the idiom
+//! comes from.
 
 use letibot_tokencore::control::{resolve, tokenize_spans};
 use letibot_tokencore::store::Store;
@@ -28,6 +48,31 @@ fn env_path(var: &str, fallback: String) -> std::path::PathBuf {
 
 fn home() -> String {
     std::env::var("HOME").unwrap_or_default()
+}
+
+/// **The operator's store, COPIED — this file never opens the live one.**
+///
+/// The argument is in the module doc above; the two details here are the ones that
+/// make the copy usable rather than merely safe:
+///
+/// * **The `-wal` comes with it.** This database is written by a daemon that may be
+///   running right now, so a bare copy of the `.db` alone is silently a snapshot from
+///   the last checkpoint — old rows, no error, and a measurement of the wrong week.
+///   `-shm` is copied for the same reason: it is derived, but leaving a stale one
+///   beside a fresh `-wal` is the one combination SQLite complains about.
+/// * **The copy is opened, and only the copy.** A test that cannot name the file it
+///   opened is a test that cannot say whether it touched the operator's.
+fn copied_store(src: &std::path::Path) -> Option<(TempDir, Store)> {
+    let dir = TempDir::new("reprefill");
+    let dst = dir.path().join("sessions.db");
+    std::fs::copy(src, &dst).ok()?;
+    for suffix in ["-wal", "-shm"] {
+        let from = src.with_file_name(format!("{}{suffix}", src.file_name()?.to_string_lossy()));
+        if from.is_file() {
+            let _ = std::fs::copy(&from, dir.path().join(format!("sessions.db{suffix}")));
+        }
+    }
+    Some((dir, Store::open(&dst).expect("opening the copy")))
 }
 
 #[test]
@@ -57,7 +102,12 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
         .map(|b| format!("{b:02x}"))
         .collect();
 
-    let store = Store::open(&store_path).expect("the store opens");
+    // **The copy, never the operator's file** — see the module doc. `store_path` is
+    // read once, by the copy; everything below is measured on the copy.
+    let Some((_dir, store)) = copied_store(&store_path) else {
+        eprintln!("skipped: {} could not be copied", store_path.display());
+        return;
+    };
     let Some(transcript_id) = biggest_foreign(&store, &ours) else {
         eprintln!("skipped: no transcript recorded under a different dialect");
         return;
@@ -109,6 +159,31 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
 
     assert_eq!(history.len(), loaded.items.len(), "every item rendered");
     assert!(tokens > 0, "the re-rendered prompt is not empty");
+}
+
+/// Ten lines rather than a dev-dependency, spelled as `resume.rs` spells them so the
+/// two files cannot drift on the one thing they both exist to guarantee.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(tag: &str) -> TempDir {
+        let p = std::env::temp_dir().join(format!(
+            "letibot-{tag}-{}-{}",
+            std::process::id(),
+            letibot_harnessd::config::now_ns()
+        ));
+        std::fs::create_dir_all(&p).expect("a temp dir");
+        TempDir(p)
+    }
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// The largest transcript whose recorded dialect is not `ours` — a two-row
