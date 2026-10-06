@@ -66,7 +66,11 @@
 //! 2. **A program that starts a pager itself.** `git log`, `git diff`,
 //!    `systemctl status`, `journalctl` — the rule sees `git`, which is not a screen
 //!    program, and cannot see the `less` git execs a moment later. **This is the
-//!    ordinary command most likely to hang on the operator's own line.**
+//!    ordinary command most likely to hang on the operator's own line**, and it is
+//!    now answered from the other side rather than by this rule: [`super::console`]
+//!    sets [`super::console::PAGERS`] to `cat` on the operator's own run, so the
+//!    class does not page at all. The rule still cannot see the program; what changed
+//!    is that the pager it would have started prints and exits.
 //! 3. **A wrapper's own interactive form.** `sudo -s` and `sudo -i` are root shells;
 //!    after unwrapping there is nothing left to read, so they are not refused.
 //! 4. **A name reached through a shell the rule does not read.** `sh -c 'nano'` and
@@ -120,9 +124,11 @@
 //!   cursor addressing (`CUP`, `ED`, `EL`), `SIGWINCH` when the pane is resized, and a
 //!   decision about scrollback that is not the transcript row. Nothing in this tree
 //!   draws any of it today; the head's ANSI work is SGR colour only.
-//! - **TODO: `GIT_PAGER=cat` and friends for the operator's run.** The cheapest fix for
-//!   miss 2, and a different change: it is about the *environment* rather than about
-//!   refusing a command.
+//! - **DONE (see [`super::console`]): `GIT_PAGER=cat` and friends for the operator's
+//!   run.** The cheapest fix for miss 2, and a different change from this one: it is
+//!   about the *environment* rather than about refusing a command. It is a table
+//!   rather than a special case for `git log`, because the class is every program that
+//!   chooses a pager through a variable.
 
 use letibot_code::shell::{self, Context, Stage, Word};
 

@@ -295,25 +295,46 @@ impl Tool for Bash {
                 return Invocation::failed(format!("cwd `{cwd}`: {e}"), String::new());
             }
         };
+        // **The world their console gives this run, and only this run.**
+        //
+        // `exec::console` carries the decision and what it changes. The pairs go on the
+        // REQUEST rather than being added by the host after the wrap is built, and that
+        // is not tidiness: `confine` reads `req.env` to decide what to put back inside a
+        // confined view (`--clearenv` then a keep-list then these), so a pair added later
+        // would reach an unconfined child and be dropped for a confined one — the pager
+        // fix would hold in one session and not in the other.
+        //
+        // A model's call gets none of it: `ctx.tty` is `!gated` and nothing else, and
+        // its environment is R10 layer 1. See `exec::console` for why each pair here is
+        // about a terminal the model's run does not have.
+        let mut env: Vec<(String, String)> = Vec::new();
+        if ctx.tty {
+            env.extend(crate::exec::console::env());
+        }
+        // So a helper the command runs can say what it is running for —
+        // `letibot-askpass` puts it on the password card.
+        env.push(("LETIBOT_COMMAND".to_string(), command.to_string()));
         let req = SpawnRequest {
             command: command.to_string(),
             cwd,
             scope,
             scope_name,
             background,
-            // So a helper the command runs can say what it is running for —
-            // `letibot-askpass` puts it on the password card.
-            env: vec![("LETIBOT_COMMAND".to_string(), command.to_string())],
-            // **The operator's own run gets a terminal; a model's does not.**
+            env,
+            // **The operator's own run meets their console; a model's does not.**
             //
             // The operator reported it more than once: *"i run `! ls -la` and the
             // output is plain, while in a proper terminal directory names are
-            // highlighted"*. `ls` colours only when `isatty(1)` is true, and a pipe
-            // is not a terminal, so the fix is to give the run one — see
-            // `exec::pty` for the measurement, the cost, and why the environment
-            // alone cannot do it. The model's call keeps its pipe: the payload is
-            // tokens it reads, and `ESC[01;34m` around every directory name is a
-            // cost it pays and cannot see.
+            // highlighted"*. The pty is half the answer — `ls` colours only when
+            // `isatty(1)` is true, and a pipe is not a terminal, so the fix is to give
+            // the run one; see `exec::pty` for the measurement, the cost, and why the
+            // environment alone cannot do it. The other half is that the alias which
+            // asks for the colour is shell state in an rc file, so the run is also
+            // handed to their shell, interactive, with their environment on it — see
+            // `exec::console`, which is where the decision and its consequences live.
+            // The model's call keeps its pipe and the host's `/bin/sh -c`: the payload
+            // is tokens it reads, `ESC[01;34m` around every directory name is a cost it
+            // pays and cannot see, and the text a gate judged is text this shell reads.
             tty: ctx.tty,
         };
         let id = match host.spawn(&req) {

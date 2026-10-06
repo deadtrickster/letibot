@@ -72,9 +72,11 @@
 //! | [`host`] | [`host::ProcessHost`], the seam a firecode backend would also implement, and the host implementation |
 //! | [`predicate`] | T21.1 and T21.2 — what the harness knows that the model cannot |
 //! | [`pty`] | a pseudo-terminal, for the operator's own run: a pipe is not a terminal, so `ls` prints plain |
+//! | [`console`] | the rest of what the operator's own run meets: their shell with their rc read, and the environment their terminal is described by |
 //! | [`terminal`] | the programs that pty must NOT be handed to — `nano`, `less`, a bare `python` — refused by name, before the run, with the reason and the remedy |
 
 pub mod confine;
+pub mod console;
 pub mod host;
 pub mod jobs;
 pub mod monitor;

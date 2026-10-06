@@ -61,6 +61,32 @@
 //! is why this is not a property of the host or of the session: it is a property of
 //! **who is going to read the bytes**.
 //!
+//! **The pty is half of what that flag buys, and the other half is
+//! [`super::console`].** `isatty(1)` is what `--color=auto` asks and a pipe is not a
+//! terminal, so a pty is what makes the colour possible at all — and on this box
+//! `--color=auto` is not `ls`'s default either: plain `! ls -la` colourises because
+//! the operator's `~/.bashrc` says `alias ls='ls --color=auto'`, and an alias is
+//! shell state that no `/bin/sh -c` reads. So the operator's run is handed to
+//! `bash -ic` as well, and gets their terminal's variables and a pager that cannot
+//! page. One flag, three consequences, and [`super::host::SpawnRequest::tty`] is
+//! where that is argued.
+//!
+//! **A terminal with no controlling terminal, and why it stays that way.** An
+//! interactive shell that has none prints two lines of its own about job control —
+//! `bash: cannot set terminal process group (…)` and `bash: no job control in this
+//! shell` — **before it reads any rc file**, so they land on the row of every
+//! operator command. Measured, through this host: `! echo hi` comes back as those two
+//! lines and then `hi`.
+//!
+//! The fix is `setsid` plus `TIOCSCTTY`, which is what a pty handed to a shell
+//! normally is, and it was **rejected**: it makes `/dev/tty` *openable*, where it is
+//! `ENXIO` today. The programs that open it are the ones that want a person at the
+//! keyboard — [`super::terminal`]'s own class, refused by name when the command names
+//! them — and the ones reached **indirectly** (git's editor, `gpg`'s pinentry) would
+//! go from failing at once to waiting for a keystroke that cannot arrive, which is the
+//! defect the sibling `bang-term` branch closed rather than reopened. Two lines of
+//! bash's own diagnostics are the cheaper defect, and they are true.
+//!
 //! # Why `libc`, in a crate whose manifest said it had none
 //!
 //! There is no pty in `std`. The alternatives were read and rejected: `script(1)`

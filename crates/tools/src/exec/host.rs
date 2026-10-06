@@ -80,7 +80,7 @@ pub struct SpawnRequest {
     pub background: bool,
     /// Additions to the environment, in a fixed order so a run is reproducible.
     pub env: Vec<(String, String)>,
-    /// **Does this run get a terminal on its output side?**
+    /// **Does this run meet the world the operator's own console gives a command?**
     ///
     /// `true` for the OPERATOR's own run — the `!` line and the door's calls, which
     /// are the same ungated path ([`crate::runtime::ToolRuntime::invoke_operator`]) —
@@ -89,8 +89,18 @@ pub struct SpawnRequest {
     /// `ls --color=auto` colouring a directory is the whole point, and the model is
     /// reading tokens, where `ESC[01;34m` around every name is a cost it cannot see.
     ///
-    /// A run with this set gets a pty for stdout and stderr instead of pipes — see
-    /// [`super::pty`] for what that buys, what it costs, and why stdin stays null.
+    /// **Three things follow from it, and they follow from this one flag.**
+    ///
+    /// | what | where | why |
+    /// |---|---|---|
+    /// | a pty on stdout and stderr instead of pipes | the spawn below, and [`super::pty`] | a pipe is not a terminal, so `ls --color=auto` prints plain |
+    /// | their shell, interactive, instead of the host's | [`HostProcesses::with_console_shell`] | the alias that colours `ls` is shell state in a rc file, and no rc is read by `/bin/sh -c` |
+    /// | their terminal's variables, and pagers that cannot page | [`super::console::env`], put on the request by `bash` | `TERM` and `LS_COLORS` describe the screen; `less` waits for a keystroke that cannot arrive |
+    ///
+    /// It is one flag and not three because it is one fact — *a person typed this and
+    /// is looking at a screen* — and three flags with the same value are three things
+    /// a later edit can make disagree. [`super::console`] carries the decision, what
+    /// it changes, and why a model's call gets none of it.
     pub tty: bool,
 }
 
@@ -417,6 +427,18 @@ pub struct HostProcesses {
     capture_bytes: usize,
     /// The shell a command is handed to.
     shell: Vec<String>,
+    /// **The shell the OPERATOR's own command is handed to**, which is theirs and
+    /// interactive — see [`super::console::shell`] for the decision and what it
+    /// changes. Only a run whose [`SpawnRequest::tty`] is set is handed to it.
+    ///
+    /// A field rather than a constant at the call site for the same reason [`shell`]
+    /// is one: a host that has no shell of its own has no console shell either. The
+    /// firecode VM's host is the case — it hands the command to the guest's own
+    /// `bash -lc`, so there is nothing here to make interactive, and its constructor
+    /// says so with [`HostProcesses::with_console_shell`].
+    ///
+    /// [`shell`]: HostProcesses::with_shell
+    console_shell: Vec<String>,
     /// What this host calls its session scope.
     ///
     /// **Unique per host, not the constant `s`.** Two sessions in one daemon share
@@ -500,6 +522,7 @@ impl HostProcesses {
             protected: Mutex::new(Vec::new()),
             capture_bytes: DEFAULT_CAPTURE_BYTES,
             shell: vec!["/bin/sh".into(), "-c".into()],
+            console_shell: super::console::shell(),
             session_name: unique("s"),
         };
         h.protect_self_and_ancestors();
@@ -555,8 +578,25 @@ impl HostProcesses {
         self
     }
 
+    /// **The shell a command is handed to**, `/bin/sh -c` unless this says otherwise.
+    ///
+    /// Non-interactive and non-login, so **no rc file is read** — which is R10's
+    /// layer 1 and the reason a bare name resolves through the pinned `PATH` and
+    /// nothing else. It is what a *model's* command is read by, and the gate that
+    /// judged the text is entitled to it.
+    ///
+    /// The operator's own run is handed to [`HostProcesses::with_console_shell`]
+    /// instead, because their command has no gate to be entitled to it and their
+    /// aliases are theirs.
     pub fn with_shell(mut self, shell: Vec<String>) -> Self {
         self.shell = shell;
+        self
+    }
+
+    /// **The shell the operator's own command is handed to.** See the field, and
+    /// [`super::console::shell`] for the default and the decision behind it.
+    pub fn with_console_shell(mut self, shell: Vec<String>) -> Self {
+        self.console_shell = shell;
         self
     }
 
@@ -821,7 +861,19 @@ impl ProcessHost for HostProcesses {
         for a in &wrap {
             cmd.arg(a);
         }
-        for s in &self.shell {
+        // **Their shell for their own run, the host's for everything else.**
+        //
+        // This is where the operator's `! ls -la` stops being the same command as the
+        // daemon's `/bin/sh -c 'ls -la'`: `bash -ic` reads `~/.bashrc`, which is where
+        // `alias ls='ls --color=auto'` lives, and without it the alias — and so the
+        // colour — does not exist. [`super::console`] carries the decision and what it
+        // changes; the flag is the one [`SpawnRequest::tty`] already documented.
+        let shell = if req.tty {
+            &self.console_shell
+        } else {
+            &self.shell
+        };
+        for s in shell {
             cmd.arg(s);
         }
         cmd.arg(&req.command);
