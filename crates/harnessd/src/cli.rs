@@ -780,11 +780,50 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // **The merge queue, before the worker loop takes this thread.** Its own thread, its own
     // connection to the session store, and the gate CI runs as its check — see `mergequeue`'s
     // module docs for why each of those is a thread of its own. It is inert until an entry
-    // exists: the enqueue is `task_start`'s half, so today this thread finds an empty queue and
-    // sleeps, and a daemon that is not in a git repo (or has no `--store`) is told it has no
-    // queue rather than pretending to serve one.
+    // exists, and the entry comes from `task_start`'s child finishing (see
+    // `HarnessTaskRunner::finished`); a daemon that is not in a git repo (or has no `--store`)
+    // is told it has no queue rather than pretending to serve one.
     let merge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let merge_queue = crate::mergequeue::spawn_for(&cfg, merge_stop.clone());
+
+    // **The door the queue reviews through, and the one thing about it that is NOT built.**
+    //
+    // `SessionReviewer` is the daemon's half of a wake: it writes the request into the session
+    // store and rings the bell that starts the reviewer's turn. What it does NOT do is start a
+    // reviewer, because there is no reviewer session to start — and the reason is a capability
+    // question rather than an omission.
+    //
+    // `roles::gatekeeper()` seats `bash`, `bash` is `Access::Exec`, and a seat that can reach
+    // the gate must have an adjudicator that reaches somebody: `Harness::open` REFUSES to open
+    // a session with an exec tool and an adjudicator whose own account of itself begins `none`.
+    // A daemon-owned reviewer has no head, so the default `Head` adjudicator is exactly that,
+    // and the alternatives are a `Console` reader (a background daemon has none) or a model
+    // adjudicator over `[gatekeeper] endpoint` (a real answer, and a decision about who rules
+    // on a reviewer's own commands that belongs with the gatekeeper's seat rather than with
+    // this wiring).
+    //
+    // So the door is wired and it REFUSES BY NAME when no reviewer session is live — which is
+    // the honest state of this build, and the safe direction: the queue asks, is told nobody
+    // can be asked, and lands nothing. Nothing lands unreviewed either way; what is missing is
+    // the review that would let it land at all.
+    let reviewer: Box<dyn letibot_tools::gatekeeper::Reviewer + Send> = match cfg.store.as_ref() {
+        None => Box::new(letibot_tools::gatekeeper::NoReviewer),
+        Some(path) => match letibot_tokencore::store::Store::open(path) {
+            Ok(store) => Box::new(crate::mergequeue::SessionReviewer::new(
+                store,
+                registry.bell().clone(),
+                registry.clone(),
+                crate::mergequeue::REVIEWER_SESSION_ID.to_string(),
+            )),
+            Err(e) => {
+                eprintln!(
+                    "  merge queue: the reviewer cannot write requests — {}: {e}",
+                    path.display()
+                );
+                Box::new(letibot_tools::gatekeeper::NoReviewer)
+            }
+        },
+    };
+    let merge_queue = crate::mergequeue::spawn_for(&cfg, merge_stop.clone(), reviewer);
 
     let socket = daemon.socket().display().to_string();
     let dialect = cfg.dialect.name();

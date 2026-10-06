@@ -292,7 +292,7 @@ pub struct ShapelessAdmit {
 /// (R12) — `oracle_reading`, additive, described at its migration arm below. **10** since it
 /// records whether an oracle was consulted and what it answered (R11), and **9** added
 /// `oracle_reply` for the same requirement.
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -465,6 +465,35 @@ CREATE TABLE IF NOT EXISTS merge_queue (
 -- one a SQL-side read would use.
 CREATE INDEX IF NOT EXISTS merge_queue_state_idx
     ON merge_queue (state, priority, created_ms);
+
+-- **The gatekeeper's verdict on one entry (v18).** One row per entry, keyed by the entry's
+-- own id, written when the review is ASKED FOR and updated once when the verdict comes back —
+-- the `job` row's shape, for the `job` row's reason: *asked* is not the same fact as
+-- *answered*, and a queue that could not tell them apart would either re-ask for ever or wait
+-- for a verdict nobody was ever asked for.
+--
+-- A table of its own rather than columns on `merge_queue`, because the two have different
+-- writers: the queue owns the entry's state and the REVIEWER owns the verdict. The rule that
+-- a head never writes a `merge_queue` row is about the merge — a head that could mark its own
+-- branch `Landed` is the thing the queue exists to prevent — and it says nothing about the
+-- review, which is a different act by a different seat.
+--
+-- `decision` is `accept`, `reject` or `needs_human` (the gatekeeper's own closed set), and
+-- NULL while no verdict has come back. `reasons_json` is the reviewer's reasons and
+-- `files_json`/`commands_json` are what it looked at — a verdict with no evidence is an
+-- opinion, which is why they are columns and not prose.
+CREATE TABLE IF NOT EXISTS merge_review (
+    entry_id       TEXT PRIMARY KEY,
+    session_id     TEXT NOT NULL,
+    branch         TEXT NOT NULL,
+    base_sha       TEXT NOT NULL,
+    asked_ms       INTEGER NOT NULL,
+    answered_ms    INTEGER,
+    decision       TEXT,
+    reasons_json   TEXT NOT NULL DEFAULT '[]',
+    files_json     TEXT NOT NULL DEFAULT '[]',
+    commands_json  TEXT NOT NULL DEFAULT '[]'
+);
 
 -- **The adjudication corpus.** Every decision this harness makes, and every
 -- decision the operator makes about it, as one row.
@@ -1178,6 +1207,100 @@ fn merge_entry_from_raw(raw: RawMergeEntry) -> Result<MergeEntry> {
     })
 }
 
+/// **The reviewer's verdict on one entry, as the session store keeps it** — the durable half
+/// of the gate the queue is under.
+///
+/// The operator's ask, in their words: *"we need a gatekeeper - a subagent that does code
+/// review on merge queue"*. The verdict is what stops the fast-forward, so it has to outlive
+/// both the reviewer's turn and the daemon: a verdict that lived in the daemon's memory would
+/// make a restarted daemon either re-review everything or land something nobody reviewed.
+///
+/// **Two writes, one row**, the [`JobRecord`] shape and for the same reason: the row is written
+/// when the review is ASKED FOR — `decision` is `None` — and updated once when the verdict comes
+/// back. The two are different facts, and a queue that could not tell them apart would either
+/// re-ask for ever or wait for a verdict nobody was ever asked for.
+///
+/// **`decision` is a word and not an enum here.** The closed set (`accept`, `reject`,
+/// `needs_human`) belongs to the gatekeeper, which lives above this crate; the store keeps the
+/// word the way it keeps `merge_queue.state` and `merge_queue.priority`, and the reader that
+/// needs the closed set parses it where the two vocabularies meet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewRecord {
+    /// The entry this verdict is about — the queue's own id, so the two tables are joined by
+    /// the one thing they share.
+    pub entry_id: String,
+    /// **The session that reviewed it**, which is the reviewer's own — a session the daemon
+    /// serves, and the one a person attaches to when they want to read the argument.
+    pub session_id: String,
+    /// The branch judged, echoed from the request so a verdict names what it is about even if
+    /// the entry row is gone.
+    pub branch: String,
+    /// The base SHA judged, echoed for the same reason.
+    pub base_sha: String,
+    /// When the reviewer was asked, Unix ms.
+    pub asked_ms: u64,
+    /// When the verdict came back, Unix ms. `None` while the review is outstanding.
+    pub answered_ms: Option<u64>,
+    /// **The decision, in the gatekeeper's own words** — `accept`, `reject` or `needs_human`.
+    /// `None` is *no verdict yet*, which is not the same fact as a rejection: the queue waits
+    /// for the first and refuses to land on the second.
+    pub decision: Option<String>,
+    /// The reviewer's reasons, in its own words.
+    pub reasons: Vec<String>,
+    /// The files the reviewer read.
+    pub files: Vec<String>,
+    /// The commands the reviewer ran.
+    pub commands: Vec<String>,
+}
+
+/// **One row of `merge_review`, before the JSON columns are parsed.** See [`RawMergeEntry`]
+/// for why the read is two steps: there is nothing to refuse here yet, and the shape exists
+/// because the `SELECT` column order should be written down once.
+#[derive(Debug)]
+struct RawReviewRecord {
+    entry_id: String,
+    session_id: String,
+    branch: String,
+    base_sha: String,
+    asked_ms: i64,
+    answered_ms: Option<i64>,
+    decision: Option<String>,
+    reasons_json: String,
+    files_json: String,
+    commands_json: String,
+}
+
+/// The column order the `merge_review` `SELECT`s use, read into a [`RawReviewRecord`].
+fn review_raw_from_row(r: &rusqlite::Row) -> rusqlite::Result<RawReviewRecord> {
+    Ok(RawReviewRecord {
+        entry_id: r.get(0)?,
+        session_id: r.get(1)?,
+        branch: r.get(2)?,
+        base_sha: r.get(3)?,
+        asked_ms: r.get(4)?,
+        answered_ms: r.get(5)?,
+        decision: r.get(6)?,
+        reasons_json: r.get(7)?,
+        files_json: r.get(8)?,
+        commands_json: r.get(9)?,
+    })
+}
+
+fn review_from_raw(raw: RawReviewRecord) -> Result<ReviewRecord> {
+    Ok(ReviewRecord {
+        entry_id: raw.entry_id,
+        session_id: raw.session_id,
+        branch: raw.branch,
+        base_sha: raw.base_sha,
+        asked_ms: raw.asked_ms.max(0) as u64,
+        answered_ms: raw.answered_ms.map(|v| v.max(0) as u64),
+        decision: raw.decision,
+        reasons: serde_json::from_str(&raw.reasons_json)?,
+        files: serde_json::from_str(&raw.files_json)?,
+        commands: serde_json::from_str(&raw.commands_json)?,
+    })
+}
+
 /// One line of a session's todo list, as the model wrote it.
 ///
 /// Stored as mutable session metadata — the `set_title` class, not the
@@ -1795,6 +1918,31 @@ impl Store {
                     "ALTER TABLE merge_queue ADD COLUMN brief TEXT NOT NULL DEFAULT ''",
                 )?;
             }
+        }
+        if from < 18 {
+            // v18: **the reviewer's verdict** — see [`ReviewRecord`] and the table's own
+            // comment in [`SCHEMA_SQL`]. A table rather than a column for the reason v16's
+            // entry table is one: the queue and the review have different writers, and the
+            // question a reader asks ("what did the gatekeeper say about this entry") is about
+            // one row and not about the entry's state.
+            //
+            // `IF NOT EXISTS` for the same reason v6, v12, v13, v14, v15 and v16 are
+            // idempotent: a fixture walks a current store backwards, so the table can already
+            // be here.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS merge_review (
+                     entry_id       TEXT PRIMARY KEY,
+                     session_id     TEXT NOT NULL,
+                     branch         TEXT NOT NULL,
+                     base_sha       TEXT NOT NULL,
+                     asked_ms       INTEGER NOT NULL,
+                     answered_ms    INTEGER,
+                     decision       TEXT,
+                     reasons_json   TEXT NOT NULL DEFAULT '[]',
+                     files_json     TEXT NOT NULL DEFAULT '[]',
+                     commands_json  TEXT NOT NULL DEFAULT '[]'
+                 );",
+            )?;
         }
         Ok(())
     }
@@ -2531,6 +2679,80 @@ impl Store {
         // `transpose` and no `Ok(…?)`: the `Result` is already the answer, and wrapping it in
         // another one to unwrap it again is the shape clippy's `needless_question_mark` names.
         raw.map(merge_entry_from_raw).transpose()
+    }
+
+    /// **Write one review row, replacing that entry's last one — whole.**
+    ///
+    /// An upsert on the entry's id, for the reason [`Store::put_merge_entry`] is one: the row
+    /// is a review and not a log line, so an entry has one review at a time and the verdict is
+    /// the same row as the request. The append-only record of a review's life would be an
+    /// event, and there is not one — the queue's events carry the ENTRY's moves, which is the
+    /// question a head asks.
+    ///
+    /// **`asked_ms` is the caller's and `answered_ms` is the caller's too**, which is the
+    /// opposite of [`Store::put_job`]'s rule and deliberate: the ask and the answer are two
+    /// different turns by two different writers (the daemon asks; the reviewer's session
+    /// answers), so the times are facts those writers hold rather than something a single
+    /// clock can stamp. `answered_ms` is `None` while the review is outstanding, and a
+    /// verdict write sets it.
+    pub fn put_review(&self, rec: &ReviewRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO merge_review
+                (entry_id, session_id, branch, base_sha, asked_ms, answered_ms, decision,
+                 reasons_json, files_json, commands_json)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+              ON CONFLICT(entry_id) DO UPDATE SET
+                session_id = ?2, branch = ?3, base_sha = ?4, asked_ms = ?5,
+                answered_ms = ?6, decision = ?7, reasons_json = ?8, files_json = ?9,
+                commands_json = ?10",
+            params![
+                rec.entry_id,
+                rec.session_id,
+                rec.branch,
+                rec.base_sha,
+                rec.asked_ms as i64,
+                rec.answered_ms.map(|v| v as i64),
+                rec.decision,
+                serde_json::to_string(&rec.reasons)?,
+                serde_json::to_string(&rec.files)?,
+                serde_json::to_string(&rec.commands)?,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// **Every review, oldest ask first** — the whole table, which is what the queue's pass
+    /// reads once and joins in memory against the entries it is about to take.
+    ///
+    /// The whole table rather than a per-entry lookup because the queue's pass is about the
+    /// whole queue anyway (`Store::merge_entries`), and a second read per entry would make one
+    /// pass N+1 queries for a table that is one row per entry.
+    pub fn reviews(&self) -> Result<Vec<ReviewRecord>> {
+        let mut st = self.conn.prepare(
+            "SELECT entry_id, session_id, branch, base_sha, asked_ms, answered_ms, decision,
+                    reasons_json, files_json, commands_json
+               FROM merge_review ORDER BY asked_ms, entry_id",
+        )?;
+        let rows = st.query_map([], review_raw_from_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(review_from_raw(r?)?);
+        }
+        Ok(out)
+    }
+
+    /// **One entry's review**, or `None` when nobody has asked — which is not the same fact as
+    /// a row with no verdict, and the two are what the queue's gate is built on.
+    pub fn merge_review(&self, entry_id: &str) -> Result<Option<ReviewRecord>> {
+        let mut st = self.conn.prepare(
+            "SELECT entry_id, session_id, branch, base_sha, asked_ms, answered_ms, decision,
+                    reasons_json, files_json, commands_json
+               FROM merge_review WHERE entry_id = ?1",
+        )?;
+        let raw: Option<RawReviewRecord> = st
+            .query_row(params![entry_id], review_raw_from_row)
+            .optional()?;
+        raw.map(review_from_raw).transpose()
     }
 
     /// Remove a session that holds no transcript rows.
@@ -3640,6 +3862,73 @@ mod tests {
             // table is missing" have to be different answers or the second shows up as the
             // first.
             assert!(s.merge_entry("m-nope").expect("reads").is_none());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A review survives the daemon that asked for it, and the two writes are one row** — the
+    /// half of the gate that has to outlive everything: the ask is durable, the verdict is
+    /// durable, and the row is the same row.
+    ///
+    /// The queue reads this table on every pass and refuses to land anything it cannot find an
+    /// accepting verdict for, so a review held in the daemon's memory would make a restart
+    /// either re-review everything or land something nobody reviewed.
+    #[test]
+    fn a_review_survives_the_daemon_that_asked_for_it() {
+        let dir = std::env::temp_dir().join(format!("letibot-review-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+
+        let asked = ReviewRecord {
+            entry_id: "m-1".into(),
+            session_id: "gatekeeper".into(),
+            branch: "agent/merge-queue".into(),
+            base_sha: "abc123".into(),
+            asked_ms: 1_000,
+            answered_ms: None,
+            decision: None,
+            reasons: vec![],
+            files: vec![],
+            commands: vec![],
+        };
+        {
+            let s = Store::open(&path).expect("a store");
+            s.put_review(&asked).expect("the request row");
+        }
+        {
+            let s = Store::open(&path).expect("the same store, a second daemon");
+            let back = s.merge_review("m-1").expect("reads").expect("the review");
+            assert_eq!(
+                back, asked,
+                "the request came back changed — and `decision: None` is what makes the queue \
+                 WAIT rather than land"
+            );
+
+            // **The verdict is the SAME row.** A review has one verdict at a time, so the
+            // second write updates it; a table that appended would make *what did the reviewer
+            // say about this entry* a history the queue would have to pick a winner from.
+            let answered = ReviewRecord {
+                asked_ms: back.asked_ms,
+                answered_ms: Some(2_000),
+                decision: Some("accept".into()),
+                reasons: vec!["the artifact does what the brief asked".into()],
+                files: vec!["crates/harnessd/src/mergequeue.rs".into()],
+                commands: vec!["git diff abc123...agent/merge-queue".into()],
+                ..asked.clone()
+            };
+            s.put_review(&answered).expect("the verdict");
+            assert_eq!(
+                s.merge_review("m-1").expect("reads"),
+                Some(answered),
+                "the verdict made a second row"
+            );
+            assert_eq!(s.reviews().expect("reads").len(), 1);
+
+            // **And an entry nobody asked about reads `None`** — *nobody asked* and *asked and
+            // unanswered* are different answers, and the queue does something different with
+            // each (it asks, or it waits).
+            assert!(s.merge_review("m-nope").expect("reads").is_none());
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
