@@ -21445,6 +21445,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             payload,
             call_id,
             edit: row_edit,
+            origin,
             ..
         } => {
             // The row's own excerpt, when it has one — every row the runtime
@@ -21567,12 +21568,61 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 + 3
                 + 6
                 + lines.len().to_string().len();
-            let lead = format!("{mark} {verb} ");
+            // # A call the person ran says so, in the mark this file already keeps for them
+            //
+            // MEASURED, and this is the whole of the report: the operator typed `! ls` and
+            // `! ls -la` on a live head, the two rows landed correctly — their own `User` line
+            // and the `bash` result carrying `origin: CallOrigin::Operator` — the row was
+            // drawn, folded and visible at every rung since R24 part two's filter clause, and
+            // their words about what they saw were *"no colors tho?"*.
+            //
+            // **The registers below were already the model's, and that is a fact about the
+            // paint rather than a promise.** Every role on this header is chosen from
+            // `outcome`, `name`, the payload and the fold — nothing in this arm has ever read
+            // `origin` — so an operator-origin row and a model-origin one render byte for byte
+            // the same header, the same count, the same body and the same fold. What the
+            // operator's row did not have is the one thing a model's row has no need to say:
+            // WHO acted. A tool row names its call and never its author, which is right for the
+            // model's — there is exactly one proposer — and wrong for the person's, and
+            // `origin` is the field the row carries precisely so a head can tell them apart
+            // ([`operator_act`] reads the same fact for the filter).
+            //
+            // So the row wears the `▌` bar in [`Role::UserAccent`]: the glyph and the role
+            // `user_block` already gives the operator's own words, and the one their `! ls`
+            // line is wearing two rows above. **The same glyph and the same role rather than a
+            // new colour**, because the palette has exactly one meaning for *the person at the
+            // keyboard* and inventing a second would make two spellings of one fact. And it is
+            // a GLYPH as well as a colour, which is the whole reason it is this mark: under
+            // [`Palette::None`] — the pipe, `--replay` and CI case — a provenance carried by a
+            // colour alone would say nothing at all, and the bar survives with no sequences and
+            // survives a copy-paste, the argument `user_block`'s own note already makes.
+            //
+            // **What it does not change.** The fold, the count, the one-line form, the diff,
+            // the reason, the decision block and every other row on the screen: this is two
+            // columns of the header, and it is measured into `lead` below so a long subject is
+            // shortened by the same arithmetic that shortens it for a model. **And it invents
+            // no target.** For the operator's `!` line the daemon mints the id itself (`bang-N`)
+            // and runs the line, and no event carries the arguments back — the head is told the
+            // line was queued and nothing else — so `targets` has nothing to offer and the row
+            // still names the call id where a model's names the command. That is the honest
+            // degradation: the command is the operator's own `User` line, verbatim, one row
+            // above, which is a place a model's call has nothing in.
+            let mine = matches!(
+                origin,
+                Some(letibot_transcript::CallOrigin::Operator { .. })
+            );
+            let provenance = if mine {
+                format!("{} ", p.paint(Role::UserAccent, "▌"))
+            } else {
+                String::new()
+            };
+            let lead = format!("{provenance}{mark} {verb} ");
             let subject = shorten_subject(
                 &subject,
                 w.saturating_sub(visible_width(&lead) + tail_cols).max(8),
             );
-            let mut head = p.paint(outcome_role, mark);
+            let mut head = provenance;
+            head.push_str(&p.paint(outcome_role, mark));
             head.push_str(&p.paint(Role::Faint, &format!(" {verb} ")));
             head.push_str(&p.paint(Role::Plain, &subject));
             head.push_str(&p.paint(outcome_role, &format!(" · {word}")));
@@ -30773,6 +30823,174 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **A row the person ran is the model's row with their own mark on it** — the one fact a
+    /// settled tool row could not say, and the whole of what the operator was missing.
+    ///
+    /// MEASURED on a live head, and it is why this is a test about the PAINT: `! ls` and
+    /// `! ls -la` produced their two rows, the result was drawn, folded and visible at every
+    /// rung, and the report on it was *"no colors tho?"*. Read rather than assumed, the answer
+    /// is that every role on that header is chosen from `outcome`, `name`, the payload and the
+    /// fold and **nothing in the arm ever read `origin`** — so the operator's row and the
+    /// model's were already byte for byte the same, and what was absent is the one fact only
+    /// `origin` carries: who acted.
+    ///
+    /// So two properties, and the first is what makes the second mean anything:
+    ///
+    ///  * **The registers are the model's, byte for byte.** Take the provenance off the
+    ///    operator's header and it IS the model's header — same `Faint` glyph and verb, same
+    ///    `Plain` subject, same outcome role, same count, same fold, same body — asserted on the
+    ///    painted rows, because the words are identical either way and the register is the whole
+    ///    of the claim.
+    ///  * **The provenance is readable with and without colour.** The `▌` bar in
+    ///    [`Role::UserAccent`]: the glyph and the role `user_block` already gives the operator's
+    ///    own words, and the one their `!` line is wearing two rows above this one. Under
+    ///    [`Palette::None`] the bar is what survives, which is the whole reason the mark is a
+    ///    glyph and not only a colour.
+    #[test]
+    fn an_operators_tool_row_is_the_models_row_with_the_persons_own_mark_on_it() {
+        let body: String = (0..60).map(|i| format!("line {i}\n")).collect();
+        let row = |origin: Option<letibot_transcript::CallOrigin>| TranscriptItem::ToolResult {
+            call_id: "bang-1".into(),
+            name: "bash".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: body.clone(),
+            edit: None,
+            origin,
+            media: None,
+        };
+        let mine = item_rows(
+            true,
+            row(Some(letibot_transcript::CallOrigin::Operator {
+                who: "dead".into(),
+            })),
+        );
+        let theirs = item_rows(true, row(None));
+
+        // The person's own mark, built from the palette rather than spelled as an escape: the
+        // assertion is about the ROLE, and a test that knew the sequence would pass on the day
+        // the role moved.
+        let bar = letibot_ui::style::Palette::Colour.paint(Role::UserAccent, "▌");
+        let indent = theirs[0].len() - theirs[0].trim_start().len();
+        assert!(
+            mine[0].starts_with(&format!("{}{bar} ", " ".repeat(indent))),
+            "the row does not say the person ran it: {:?}",
+            mine[0]
+        );
+        assert_eq!(
+            mine[0],
+            format!("{}{bar} {}", " ".repeat(indent), &theirs[0][indent..]),
+            "the operator's header is not the model's with the mark in front of it"
+        );
+        assert_eq!(
+            mine[1..],
+            theirs[1..],
+            "the count, the fold and the body must be the model's, byte for byte"
+        );
+
+        // **And with no palette at all** — the pipe, `--replay` and CI case. The provenance is a
+        // glyph, so it survives the sequences going away, and nothing else on the row is painted.
+        let plain = item_rows(
+            false,
+            row(Some(letibot_transcript::CallOrigin::Operator {
+                who: "dead".into(),
+            })),
+        );
+        assert!(
+            plain[0].contains('▌'),
+            "the provenance went with the colour: {:?}",
+            plain[0]
+        );
+        assert!(
+            !plain.iter().any(|l| l.contains('\u{1b}')),
+            "[`Palette::None`] emits no sequences at all: {plain:?}"
+        );
+    }
+
+    /// **The control: a model's row is unmarked, and its paint has not moved.**
+    ///
+    /// Beside the test above, this pair is what says the mark reads `origin` rather than
+    /// appearing on tool rows in general — `origin: None` is a call the MODEL proposed, and it
+    /// is also every row written before the field existed.
+    ///
+    /// **The header is pinned literally**, because *a model-origin row is unchanged* is a claim
+    /// about bytes and there is no other way to hold one: a change that moves the operator's row
+    /// is expected to leave this one exactly as it is, and a change that moves this one is the
+    /// defect this test exists to catch.
+    #[test]
+    fn a_models_tool_row_is_unmarked_and_its_paint_has_not_moved() {
+        let body: String = (0..60).map(|i| format!("line {i}\n")).collect();
+        let theirs = item_rows(
+            true,
+            TranscriptItem::ToolResult {
+                call_id: "bang-1".into(),
+                name: "bash".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: body,
+                edit: None,
+                origin: None,
+                media: None,
+            },
+        );
+        assert!(
+            !theirs[0].contains('▌'),
+            "a call the MODEL proposed is not the person's act: {:?}",
+            theirs[0]
+        );
+        assert_eq!(
+            theirs[0],
+            "  \u{1b}[2m▾\u{1b}[0m\u{1b}[2m Ran \u{1b}[0m(bang-1)\u{1b}[2m · ok\u{1b}[0m\
+             \u{1b}[2m\u{1b}[0m\u{1b}[1m · 60 lines\u{1b}[0m",
+            "the model's header is the one it has always been"
+        );
+    }
+
+    /// **And it is on the SCREEN, which is where the report came from.**
+    ///
+    /// The two tests above hold the row `item_lines` builds; this one holds the row the operator
+    /// actually met — the same two rows fed the way the daemon appends them, through the walk and
+    /// the frame, with the palette on because the mark is a role as well as a glyph. **Both
+    /// halves**, because one half alone is the defect: the operator's row must wear the bar, and
+    /// the model's row must not, or the mark is decoration on every tool row rather than
+    /// provenance on this one.
+    #[test]
+    fn the_persons_mark_reaches_the_screen_and_only_their_own_row_wears_it() {
+        let body: String = (0..60).map(|i| format!("line {i}\n")).collect();
+        let bar = letibot_ui::style::Palette::Colour.paint(Role::UserAccent, "▌");
+        // The settled tool row is the one line that names the call; ` Ran ` is the verb a `bash`
+        // result is drawn with, and the operator's own line above it is not a tool row.
+        let header = |a: &mut App| {
+            a.screen(100, 40)
+                .into_iter()
+                .find(|l| l.contains(" Ran "))
+                .expect("the result row is drawn")
+        };
+
+        let mut mine = app();
+        mine.cfg.color = true;
+        mine.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        typed(&mut mine, "! seq 1 60");
+        assert!(matches!(
+            mine.key(Key::Enter),
+            Some(Action::OperatorShell { .. })
+        ));
+        bang_rows(&mut mine, 2, "i1", "! seq 1 60", &body);
+        let row = header(&mut mine);
+        assert!(
+            row.contains(&bar),
+            "the row the person ran does not say so on the screen: {row:?}"
+        );
+
+        let mut theirs = app();
+        theirs.cfg.color = true;
+        theirs.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        model_bash_rows(&mut theirs, 2, "i1", &body);
+        let row = header(&mut theirs);
+        assert!(
+            !row.contains('▌'),
+            "a call the MODEL proposed is wearing the person's mark: {row:?}"
+        );
     }
 
     #[test]
