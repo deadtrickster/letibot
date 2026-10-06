@@ -287,6 +287,33 @@ fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
     git(repo, &["branch", "-d", branch]).map(|_| ())
 }
 
+/// **Do the cleanup the state owns** — the one place the rule is acted on.
+///
+/// The operator's ask is *"worktree cleanup"*, and the answer differs by state for the reason
+/// [`cleanup_for`] gives: a `Landed` entry's tree and branch are done with, and every other
+/// state's tree is either the evidence or the branch still being merged. The pass routes
+/// through this rather than inlining the removal, which is what makes the daemon's act and the
+/// pane's reading one answer — and what makes a state added to the closed set reach a `match`
+/// that must classify it.
+///
+/// A cleanup that failed is not reported here: a `git worktree remove` that failed leaves a tree
+/// that is still there, which is a fact the row already describes, and a second failure mode
+/// invented for the cleanup would be a second thing for a reader to hold.
+fn clean_up(repo: &Path, entry: &MergeEntry, state: MergeState) {
+    match cleanup_for(state) {
+        Cleanup::RemoveWorktreeAndBranch => {
+            if let Some(wt) = &entry.worktree {
+                let _ = remove_worktree(repo, Path::new(wt));
+            }
+            let _ = delete_branch(repo, &entry.branch);
+        }
+        // **The tree stays, and that is the whole of this arm.** `Failed`, `Conflict` and
+        // `Stale` are where the evidence is; `Waiting` and `Taken` are where the branch is
+        // checked out and the rebase and the gate need it.
+        Cleanup::KeepWorktree => {}
+    }
+}
+
 /// **The git top level of `path`** — the repo a queue serves, from a path inside it.
 ///
 /// The queue is about one repo and one `main`, so the repo is resolved once at startup
@@ -555,27 +582,23 @@ impl MergeQueueDaemon {
             // rebase a branch that is not checked out. This is the `task_start` seam — the
             // worktree is created when the branch is enqueued, and until then the entry
             // waits. It is reported rather than guessed at.
-            let mut waiting = entry.clone();
-            waiting.state = MergeState::Waiting;
-            waiting.evidence = "no worktree: the branch is not checked out".into();
-            self.store.put_merge_entry(&waiting)?;
+            self.move_to(
+                &entry,
+                MergeState::Waiting,
+                "no worktree: the branch is not checked out".into(),
+                None,
+            )?;
             return Ok(StepOutcome::Idle);
         }
         let worktree = Path::new(worktree);
         if let Err(e) = rebase(worktree, base) {
-            let mut conflict = entry.clone();
-            conflict.state = MergeState::Conflict;
-            conflict.evidence = e;
-            self.store.put_merge_entry(&conflict)?;
+            self.move_to(&entry, MergeState::Conflict, e, None)?;
             return Ok(StepOutcome::Conflict);
         }
 
         // **Run the gate**, at the tip, on the rebased branch.
         if let Err(e) = (self.gate)(worktree) {
-            let mut failed = entry.clone();
-            failed.state = MergeState::Failed;
-            failed.evidence = e;
-            self.store.put_merge_entry(&failed)?;
+            self.move_to(&entry, MergeState::Failed, e, None)?;
             return Ok(StepOutcome::Failed);
         }
 
@@ -583,35 +606,51 @@ impl MergeQueueDaemon {
         let tip = match fast_forward_main(&self.repo, &entry.branch) {
             Ok(tip) => tip,
             Err(e) => {
-                let mut failed = entry.clone();
-                failed.state = MergeState::Failed;
-                failed.evidence = e;
-                self.store.put_merge_entry(&failed)?;
+                self.move_to(&entry, MergeState::Failed, e, None)?;
                 return Ok(StepOutcome::Failed);
             }
         };
         if let Err(e) = push_main(&self.repo) {
-            let mut failed = entry.clone();
-            failed.state = MergeState::Failed;
-            failed.evidence = e;
-            self.store.put_merge_entry(&failed)?;
+            self.move_to(&entry, MergeState::Failed, e, None)?;
             return Ok(StepOutcome::Failed);
         }
 
-        // **Land it**: mark it `Landed` with the tip, and clean up by state.
-        let mut landed = entry.clone();
-        landed.state = MergeState::Landed;
-        landed.evidence = format!("landed at {tip}");
-        landed.landed_sha = Some(tip.clone());
-        self.store.put_merge_entry(&landed)?;
-
-        // The cleanup `Landed` owns: remove the worktree and delete the branch.
-        if let Some(wt) = &entry.worktree {
-            let _ = remove_worktree(&self.repo, Path::new(wt));
-        }
-        let _ = delete_branch(&self.repo, &entry.branch);
+        // **Land it**: the row carries the tip, and the cleanup the state owns runs.
+        self.move_to(
+            &entry,
+            MergeState::Landed,
+            format!("landed at {tip}"),
+            Some(tip.clone()),
+        )?;
 
         Ok(StepOutcome::Landed(tip))
+    }
+
+    /// **Write the entry's move, then do the cleanup the new state owns** — the two halves of
+    /// every move in one place, so which tree survives is the RULE's answer ([`cleanup_for`])
+    /// rather than a property of which `return` the pass happened to take.
+    ///
+    /// The row is written first, and that order is the design rather than an accident: a daemon
+    /// that dies between the two comes back to a row that says what happened, and the next
+    /// daemon's [`Self::recover`] and its cleanup are both idempotent. `landed_sha` is set only
+    /// where there is one to set: a move that is not a landing carries the entry's own, which
+    /// is `None` for an entry that has not landed.
+    fn move_to(
+        &self,
+        entry: &MergeEntry,
+        state: MergeState,
+        evidence: String,
+        landed_sha: Option<String>,
+    ) -> Result<(), letibot_tokencore::store::StoreError> {
+        let mut moved = entry.clone();
+        moved.state = state;
+        moved.evidence = evidence;
+        if landed_sha.is_some() {
+            moved.landed_sha = landed_sha;
+        }
+        self.store.put_merge_entry(&moved)?;
+        clean_up(&self.repo, entry, state);
+        Ok(())
     }
 
     /// **Run the loop until `stop` is set**: recover on the first pass, then `step` until
@@ -1436,6 +1475,68 @@ mod tests {
     }
 
     // ===== The gate, the wire and the thread =====
+
+    /// Whether `branch` exists in `root`.
+    fn branch_exists(root: &Path, branch: &str) -> bool {
+        !git_output(root, &["branch", "--list", branch])
+            .trim()
+            .is_empty()
+    }
+
+    /// **The cleanup the state owns is APPLIED, not merely asserted** — driven through the
+    /// function the pass itself calls, so a `Failed` entry's tree is kept by the rule rather
+    /// than by a `return` that happened to skip a removal.
+    ///
+    /// The `git branch -d` at the end is the interesting half: it refuses a branch that is not
+    /// merged, so the fast-forward has to have happened for the branch to go. That refusal is
+    /// the guarantee the cleanup leans on rather than a check it makes, and this test is where
+    /// a reader can see it.
+    #[test]
+    fn the_cleanup_the_state_owns_is_applied() {
+        let (root, wt, _main_sha, _feature_sha) = repo_with_branch("cleanup");
+        let entry = MergeEntry {
+            id: "m-clean".into(),
+            session_id: "s".into(),
+            branch: "feature".into(),
+            base_sha: "base".into(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            evidence: String::new(),
+            created_ms: 1_000,
+            updated_ms: 1_000,
+            worktree: Some(wt.to_str().unwrap().to_string()),
+            landed_sha: None,
+        };
+
+        // **Every state that keeps its tree, driven through the rule.** These are the states
+        // the operator's ask is about: removing a tree after a failure destroys the evidence.
+        for state in [
+            MergeState::Waiting,
+            MergeState::Taken,
+            MergeState::Failed,
+            MergeState::Conflict,
+            MergeState::Stale,
+        ] {
+            clean_up(&root, &entry, state);
+            assert!(wt.exists(), "{state:?} removed the worktree");
+            assert!(
+                branch_exists(&root, "feature"),
+                "{state:?} deleted the branch"
+            );
+        }
+
+        // **And `Landed` removes both.** The fast-forward first, because the branch deletion
+        // is `-d`: an unmerged branch is refused, which is what makes the deletion safe.
+        git(&root, &["merge", "--ff-only", "feature"]);
+        clean_up(&root, &entry, MergeState::Landed);
+        assert!(!wt.exists(), "a landed entry's worktree is removed");
+        assert!(
+            !branch_exists(&root, "feature"),
+            "a landed entry's branch is deleted"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// **The repo is the one git names** — resolved from a path inside it, which is how the
     /// daemon finds the `main` it will fast-forward.
