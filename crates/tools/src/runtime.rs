@@ -262,6 +262,18 @@ pub struct InvokeCtx<'a> {
     sink: &'a mut dyn ToolEventSink,
     operator_waiting: Option<&'a OperatorWaiting>,
     completion_delivered: Option<&'a CompletionDelivered>,
+    /// **Whether this call is the OPERATOR's own**, which is the one thing that
+    /// decides whether the command gets a terminal.
+    ///
+    /// It is `!gated` and nothing else: [`ToolRuntime::invoke_operator`] is the
+    /// ungated path, and it is the `!` line and the door's calls — *a person typed
+    /// this and is looking at a screen*. A model's call is gated and reads the
+    /// payload as tokens. So the flag is derived where the two paths are told apart
+    /// rather than passed in by a caller who could disagree with them, which is the
+    /// shape that keeps a second reader from inventing a third answer.
+    ///
+    /// See [`crate::exec::pty`] for what the terminal buys and what it costs.
+    pub tty: bool,
 }
 
 impl InvokeCtx<'_> {
@@ -1698,6 +1710,9 @@ impl ToolRuntime {
                 sink,
                 operator_waiting: self.operator_waiting.as_ref(),
                 completion_delivered: self.completion_delivered.as_ref(),
+                // The operator's own run, and only it. `run`'s flag is the whole
+                // distinction between the two entries — see `InvokeCtx::tty`.
+                tty: !gated,
             };
             tool.invoke(&mut ctx, &args)
         };

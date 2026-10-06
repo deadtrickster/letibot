@@ -120,6 +120,8 @@ fn a_host_with_no_confinement_refuses_every_spawn_and_starts_nothing() {
             scope_name: None,
             background: false,
             env: vec![],
+            // No terminal: these are the substrate's own tests, not an operator's run.
+            tty: false,
         })
         .expect_err("a host with no boundary must not spawn");
     let m = format!("{e}");
@@ -162,6 +164,8 @@ fn a_bash_call_on_a_refusing_boundary_says_nothing_ran_and_is_not_a_denial() {
             scope_name: None,
             background: false,
             env: vec![],
+            // No terminal: these are the substrate's own tests, not an operator's run.
+            tty: false,
         })
         .unwrap_err();
     let m = format!("{e}");
@@ -792,6 +796,8 @@ fn a_forwarded_agent_socket_is_in_the_view_at_a_fixed_path_and_the_key_is_not() 
             scope_name: None,
             background: false,
             env: vec![],
+            // No terminal: these are the substrate's own tests, not an operator's run.
+            tty: false,
         })
         .expect("spawn");
     let _ = host.wait_job(&id, std::time::Duration::from_secs(20));
@@ -911,6 +917,8 @@ fn the_environment_is_cleared_so_a_token_is_absent_rather_than_filtered() {
             scope_name: None,
             background: false,
             env: vec![("LETIBOT_DECLARED".into(), "on-purpose".into())],
+            // No terminal: these are the substrate's own tests, not an operator's run.
+            tty: false,
         })
         .expect("spawn");
     let _ = host.wait_job(&id, std::time::Duration::from_secs(20));

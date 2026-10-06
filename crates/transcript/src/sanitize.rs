@@ -38,10 +38,115 @@
 //! **collapses it onto one line**: every paragraph, every list item and every fenced
 //! block gone. That mistake is invisible on a one-line fixture and destroys every long
 //! message, so the two cases are two named functions rather than one and a `.map`.
+//!
+//! # And one walk under both of them
+//!
+//! [`pieces`] is that walk, and it exists because **removing every escape is not the only
+//! honest thing to do with one**. `ls`, `grep` and `cargo` colour their output with SGR,
+//! and the operator's own command is meant to look on their screen as it looks in their
+//! console — so the walk reports an SGR sequence as the parameters it carries, and the two
+//! readers take what they want: [`without_control`] the text, `letibot_ui::ansi` the text
+//! *and* the colour, reduced to the palette's own roles. Everything that is not text and
+//! not SGR is removed exactly as it always was, by this one parser rather than by a second
+//! copy of the sequence rules kept in step by hand.
 
 use std::borrow::Cow;
 use std::iter::Peekable;
 use std::str::Chars;
+
+/// **One piece of a line, as a terminal would read it.**
+///
+/// The module above removes every control byte, and for a head that draws text that is
+/// right. It is not right for the **operator's own command**, whose output is meant to
+/// look on the screen as it looks in their console: `ls`, `grep` and `cargo` colour with
+/// SGR, and dropping the sequence loses the one thing the program said. So the walk
+/// reports SGR rather than swallowing it, and the caller that wants colour
+/// (`letibot_ui::ansi`) interprets it into a palette role; the caller that wants text
+/// ([`without_control`]) takes the `Text` pieces and nothing else.
+///
+/// **One parser, two readers.** The sequence-skipping rules are the subtle part of this
+/// module — the C1 introducers, an `OSC` that ends at `BEL` or `ST`, a parameter byte that
+/// is not a digit — and a second copy of them for the colour path is exactly the duplicate
+/// that drifts. `without_control` is now this walk with the SGR pieces dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Piece {
+    /// Text a reader sees. A control byte that was **not** part of a sequence has
+    /// already become a space here, by [`without_control`]'s own rule and for its reason:
+    /// dropping it would silently reflow the line.
+    Text(String),
+    /// **An SGR sequence's parameters** — `ESC [ … m` — in order.
+    ///
+    /// A bare `ESC[m`, and an empty parameter inside a longer sequence (`ESC[;31m`), are
+    /// the `0` that ECMA-48 says they are, so a reader that understands `0` needs no
+    /// special case for them.
+    Sgr(Vec<u16>),
+}
+
+/// **The line, split into the two things a terminal does with it**: text it shows and
+/// SGR it obeys. Everything else — a mode string, an OSC title, a C1 control, a DEL — is
+/// still removed, and this is the only walk in this module that does that.
+///
+/// A sequence this cannot read as SGR is **not** reported as one: `ESC[?25m` is a private
+/// form and not a colour, `ESC[38;5;167m`'s parameters are reported but a reader that has
+/// no role for the xterm cube drops it (see `letibot_ui::ansi`), and a parameter that is
+/// not a decimal number makes the whole sequence a non-SGR that goes as it always did.
+/// The rule is the same one this module has always had: **a well-formed sequence goes as
+/// one thing**, and nothing of its body is ever left on the line as text.
+pub fn pieces(line: &str) -> Vec<Piece> {
+    let mut out: Vec<Piece> = Vec::new();
+    let mut text = String::new();
+    let mut it = line.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            // `ESC` introduces a sequence; the sequence goes with it.
+            '\u{1b}' => {
+                flush(&mut out, &mut text);
+                match it.peek().copied() {
+                    Some('[') => {
+                        it.next();
+                        if let Some(p) = csi(&mut it) {
+                            out.push(Piece::Sgr(p));
+                        }
+                    }
+                    Some(']') => {
+                        it.next();
+                        skip_osc(&mut it);
+                    }
+                    // Any other two-byte sequence (`ESC ( B`, `ESC =`), or an `ESC` that
+                    // ends the line: one more character goes with it if there is one.
+                    Some(_) => {
+                        it.next();
+                    }
+                    None => {}
+                }
+            }
+            // The C1 forms carry the same meaning with no `ESC` in front: `CSI` (U+009B)
+            // and `OSC` (U+009D) introduce, `ST` (U+009C) is a bare terminator.
+            '\u{9b}' => {
+                flush(&mut out, &mut text);
+                if let Some(p) = csi(&mut it) {
+                    out.push(Piece::Sgr(p));
+                }
+            }
+            '\u{9d}' => {
+                flush(&mut out, &mut text);
+                skip_osc(&mut it);
+            }
+            '\u{9c}' => flush(&mut out, &mut text),
+            c if c.is_control() => text.push(' '),
+            c => text.push(c),
+        }
+    }
+    flush(&mut out, &mut text);
+    out
+}
+
+/// Hand the text run built so far to `out`, if there is one.
+fn flush(out: &mut Vec<Piece>, text: &mut String) {
+    if !text.is_empty() {
+        out.push(Piece::Text(std::mem::take(text)));
+    }
+}
 
 /// **Is there anything in here for the sanitiser to do?**
 ///
@@ -80,19 +185,13 @@ fn clean(s: &str) -> bool {
 /// byte that is not part of a sequence — a tab, a `\r`, a DEL — becomes a space instead,
 /// because dropping it would silently reflow the line.
 pub fn without_control(line: &str) -> String {
+    if clean(line) {
+        return line.to_string();
+    }
     let mut out = String::with_capacity(line.len());
-    let mut it = line.chars().peekable();
-    while let Some(c) = it.next() {
-        match c {
-            // `ESC` introduces a sequence; the sequence goes with it.
-            '\u{1b}' => skip_escape(&mut it),
-            // The C1 forms carry the same meaning with no `ESC` in front: `CSI` (U+009B)
-            // and `OSC` (U+009D) introduce, `ST` (U+009C) is a bare terminator.
-            '\u{9b}' => skip_csi(&mut it),
-            '\u{9d}' => skip_osc(&mut it),
-            '\u{9c}' => {}
-            c if c.is_control() => out.push(' '),
-            c => out.push(c),
+    for p in pieces(line) {
+        if let Piece::Text(t) = p {
+            out.push_str(&t);
         }
     }
     out
@@ -129,16 +228,34 @@ pub fn without_control_lines(s: &str) -> Cow<'_, str> {
     )
 }
 
-/// The parameters and the final byte of a `CSI` sequence, with the introducer already
-/// consumed: `0x20..=0x3f` are parameters and intermediates, and one byte in
-/// `0x40..=0x7e` ends it.
-fn skip_csi(it: &mut Peekable<Chars<'_>>) {
+/// The parameters of a `CSI` sequence, with the introducer already consumed: `0x20..=0x3f`
+/// are parameters and intermediates, and one byte in `0x40..=0x7e` ends it.
+///
+/// Returns them **only when the sequence is an SGR** — final byte `m`, every parameter a
+/// decimal number — and `None` otherwise, having consumed exactly the bytes a skip would
+/// have. That `None` is not a failure: a mode string is not a colour and is removed.
+fn csi(it: &mut Peekable<Chars<'_>>) -> Option<Vec<u16>> {
+    let mut body = String::new();
     while it.peek().is_some_and(|c| ('\u{20}'..='\u{3f}').contains(c)) {
-        it.next();
+        body.push(it.next().expect("peeked"));
     }
-    if it.peek().is_some_and(|c| ('\u{40}'..='\u{7e}').contains(c)) {
-        it.next();
+    let final_byte = match it.peek() {
+        Some(c) if ('\u{40}'..='\u{7e}').contains(c) => Some(it.next().expect("peeked")),
+        _ => None,
+    };
+    if final_byte != Some('m') {
+        return None;
     }
+    let mut params = Vec::new();
+    for part in body.split(';') {
+        // An empty parameter is `0`: `ESC[m` is a reset and `ESC[;31m` sets red.
+        params.push(if part.is_empty() {
+            0
+        } else {
+            part.parse::<u16>().ok()?
+        });
+    }
+    Some(params)
 }
 
 /// An `OSC` string, with the introducer already consumed: it ends at `BEL` or at `ST`,
@@ -155,26 +272,6 @@ fn skip_osc(it: &mut Peekable<Chars<'_>>) {
             }
             return;
         }
-    }
-}
-
-/// Whatever follows an `ESC`, with the `ESC` already consumed.
-fn skip_escape(it: &mut Peekable<Chars<'_>>) {
-    match it.peek().copied() {
-        Some('[') => {
-            it.next();
-            skip_csi(it);
-        }
-        Some(']') => {
-            it.next();
-            skip_osc(it);
-        }
-        // Any other two-byte sequence (`ESC ( B`, `ESC =`), or an `ESC` that ends the
-        // line: one more character goes with it if there is one.
-        Some(_) => {
-            it.next();
-        }
-        None => {}
     }
 }
 
@@ -237,6 +334,53 @@ mod tests {
         // A **bare C1 CSI** is the same instruction without its `ESC`, so it takes its
         // sequence with it: `\u{9b}31m` is `ESC[31m`.
         assert_eq!(without_control("a\u{9b}31mb"), "ab");
+    }
+
+    /// **`pieces` reports a colour and still removes everything else** — the second reader
+    /// this module gained, and the one the operator's `! ls` needs.
+    ///
+    /// The rule that has to survive is the old one, restated for a reader that keeps
+    /// something: **a sequence goes as one thing**. An SGR comes back as its parameters and
+    /// nothing of its body is left as text; a mode string, an OSC title, a private form
+    /// (`ESC[?25m` is not a colour) and a C1 control are removed exactly as before; and a
+    /// parameter that is not a decimal number makes the whole sequence a non-SGR rather than
+    /// half of one.
+    #[test]
+    fn pieces_reports_a_colour_and_still_removes_everything_else() {
+        let line = "a\u{1b}[01;34msrc\u{1b}[0m \u{1b}[2J\u{1b}[?1002h \u{1b}]0;t\u{7} \u{1b}[?25m \u{9b}31m\u{9c} \u{7f}b";
+        let got = pieces(line);
+        let sgr: Vec<&Vec<u16>> = got
+            .iter()
+            .filter_map(|p| match p {
+                Piece::Sgr(v) => Some(v),
+                Piece::Text(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            sgr,
+            vec![&vec![1, 34], &vec![0], &vec![31]],
+            "the colours are reported in order, and only the colours: {got:?}"
+        );
+        // The text between them, with no byte of any removed sequence in it.
+        let text: String = got
+            .iter()
+            .filter_map(|p| match p {
+                Piece::Text(t) => Some(t.as_str()),
+                Piece::Sgr(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            text, "asrc      b",
+            "`a`, `src`, six spaces, `b` — and nothing else"
+        );
+        for gone in [
+            "[?25m", "[2J", "[?1002h", "]0;", "\u{1b}", "\u{9b}", "\u{9c}",
+        ] {
+            assert!(!text.contains(gone), "{gone:?} survived as text: {text:?}");
+        }
+        // And the old reader is this one with the colours dropped, which is what keeps the
+        // two from drifting: the same line, through both.
+        assert_eq!(without_control(line), text);
     }
 
     /// **The pair that is the whole point**: the document form keeps its lines, and the

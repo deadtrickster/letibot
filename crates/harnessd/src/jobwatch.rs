@@ -1192,6 +1192,8 @@ mod tests {
             scope_name: None,
             background: true,
             env: vec![],
+            // No terminal: these are the substrate's own tests, not an operator's run.
+            tty: false,
         })
         .expect("spawn")
     }

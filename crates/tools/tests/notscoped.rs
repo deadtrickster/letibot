@@ -157,6 +157,8 @@ fn a_scope_that_cannot_be_joined_still_says_the_command_never_ran() {
             scope_name: None,
             background: false,
             env: Vec::new(),
+            // No terminal: these are the substrate's own tests, not an operator's run.
+            tty: false,
         })
         .expect("the spawn itself succeeds: the failure is the join, not the fork");
 

@@ -71,6 +71,7 @@
 //! | [`monitor`] | a condition watched ACROSS turns, keyed on a handle and never on a pattern (T24) |
 //! | [`host`] | [`host::ProcessHost`], the seam a firecode backend would also implement, and the host implementation |
 //! | [`predicate`] | T21.1 and T21.2 — what the harness knows that the model cannot |
+//! | [`pty`] | a pseudo-terminal, for the operator's own run: a pipe is not a terminal, so `ls` prints plain |
 
 pub mod confine;
 pub mod host;
@@ -78,6 +79,7 @@ pub mod jobs;
 pub mod monitor;
 pub mod predicate;
 pub mod procs;
+pub mod pty;
 pub mod scope;
 
 pub use confine::{
@@ -91,6 +93,7 @@ pub use monitor::{
     LogTailCondition, Monitor, MonitorError, Monitors, PortState, TimerCondition, Wait, Watch,
 };
 pub use predicate::{Hazard, Predicate, Verdict, Witness};
+pub use pty::Pty;
 pub use scope::{Cgroup2, Migration, NoScopes, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree};
 
 /// Why an exec request did not become a process.

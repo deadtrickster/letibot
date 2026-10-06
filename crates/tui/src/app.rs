@@ -37,6 +37,7 @@ use letibot_transcript::{TranscriptItem, UserPart};
 
 use std::borrow::Cow;
 
+use letibot_ui::ansi;
 use letibot_ui::editor::{Editor, Reaction};
 use letibot_ui::style::{Painter, Role};
 use letibot_ui::{card, diff::DiffConfig, progress, sidediff, width};
@@ -21861,12 +21862,34 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // Sanitised here rather than in the store: the record is what the tool
             // wrote and must stay that. A space rather than a deletion, because
             // the wrapper about to measure these lines counts columns.
+            //
+            // **And since 2026-09-25 it is sanitised AND painted** (§3.1's second half).
+            // The operator's own run now reaches a terminal (`exec::pty`), so a command
+            // that colours — `ls`, `grep --color`, `cargo` — writes SGR into this payload,
+            // and the sanitiser this line used to call would **delete the colour it just
+            // made possible**: *"i run `! ls -la` and the output is plain, while in a proper
+            // terminal directory names are highlighted"* would have been answered on the
+            // run half and thrown away here. `letibot_ui::ansi::painted` is the same walk
+            // with SGR interpreted into the palette's own roles; everything that is not
+            // SGR is still removed, whole, exactly as before.
+            //
+            // **On the text, and that is what keeps the fold honest.** The envelope
+            // filter, the count below and every comparison against `lines` are taken from
+            // the sanitised text — one entry per line of payload, no escape byte in sight —
+            // so `+N lines` counts lines a reader can read and a painted line's escapes
+            // cannot inflate it. `trim_to` and the wrapper measure columns escape-aware, so
+            // a painted line is cut where an unpainted one would be.
             let flat: Vec<String> = payload.lines().map(without_control).collect();
-            let lines: Vec<&str> = flat
-                .iter()
-                .map(String::as_str)
-                .filter(|l| !is_envelope(l))
+            // The raw bytes beside the text of each line that survives the envelope
+            // filter: **the painter needs the sequence and the fold needs the text**, and
+            // one vector cannot be both.
+            let kept: Vec<(&str, &str)> = payload
+                .lines()
+                .zip(flat.iter())
+                .filter(|(_, clean)| !is_envelope(clean))
+                .map(|(raw, clean)| (raw, clean.as_str()))
                 .collect();
+            let lines: Vec<&str> = kept.iter().map(|(_, clean)| *clean).collect();
             let bad = !matches!(outcome, letibot_transcript::ToolOutcome::Ok);
             let mark = if tools.is_open() { "▾" } else { "▸" };
             // `▾ Read crates/ui/src/style.rs · ok · 183 lines · ctrl-v`, not
@@ -21917,6 +21940,12 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // by *which* field rather than by a decoration.
             const BIG: usize = 40;
             let p = cfg.palette();
+            // **The painter for the payload's own block, which is dim.** `dim` below opens
+            // the body with `sgr::DIM`, so a coloured run inside it has to close back to dim
+            // rather than to the terminal's default — the defect `Painter` exists for, and
+            // the reason this is not a `Palette`. Under `Palette::None` it paints nothing and
+            // the line is the sanitised text, which is what `--replay` and CI need.
+            let painter = Painter::inside(p, Role::Faint);
             let w = cfg.width.saturating_sub(ind).max(20);
             let outcome_role = outcome_role(outcome);
             let size_role = if lines.len() >= BIG {
@@ -22222,7 +22251,11 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     &format!("  ↑ {page} more lines above · ↑ scrolls up"),
                 ));
             }
-            out.extend(lines[page..end].iter().map(|l| dim(cfg, &format!("  {l}"))));
+            out.extend(
+                kept[page..end]
+                    .iter()
+                    .map(|(raw, _)| dim(cfg, &format!("  {}", ansi::painted(painter, raw)))),
+            );
             if below {
                 let hidden = total - end;
                 // grok-build's `execute.rs:549` form, kept: the seam where content was
@@ -31092,6 +31125,231 @@ mod tests {
         assert!(
             folded.contains("ctrl-v opens it") || folded.contains("+1 line"),
             "the row is still a folded tool row: {folded:?}"
+        );
+    }
+
+    /// **Every escape sequence this head has any business emitting.**
+    ///
+    /// The frame's own vocabulary, stated positively: the `sgr` module's constants, which is what
+    /// `colour()`, `dim()` and the git field paint with, and every sequence `Palette::open` can
+    /// produce for a role. §3.1's guarantee is *a foreign program's escape never reaches the
+    /// terminal*; this is the other half of the same sentence — what does reach it is a sequence
+    /// this head chose, and the list is short enough to write down.
+    ///
+    /// A helper for the coloured tests, because the assertion it feeds is one line and the list
+    /// would otherwise be copied into each of them: `strip these off the row and nothing a
+    /// terminal would act on is left`.
+    fn head_vocabulary() -> Vec<&'static str> {
+        let mut v = vec![
+            sgr::RESET,
+            sgr::BOLD,
+            sgr::DIM,
+            sgr::ITALIC,
+            sgr::BOLD_ITALIC,
+            sgr::CYAN,
+            sgr::GREEN,
+            sgr::YELLOW,
+            sgr::RED,
+            sgr::MAGENTA,
+            sgr::GREY,
+            sgr::REVERSE,
+        ];
+        for r in [
+            Role::Plain,
+            Role::Faint,
+            Role::Strong,
+            Role::Heading,
+            Role::Subheading,
+            Role::UserAccent,
+            Role::UserBlock,
+            Role::Success,
+            Role::Pending,
+            Role::Failure,
+            Role::Attention,
+            Role::Reasoning,
+            Role::Code,
+            Role::Added,
+            Role::Removed,
+            Role::Emphasis,
+            Role::Keyword,
+            Role::StringLit,
+            Role::NumberLit,
+            Role::Comment,
+            Role::TypeName,
+            Role::FuncName,
+        ] {
+            let o = letibot_ui::style::Palette::Colour.open(r);
+            if !o.is_empty() {
+                v.push(o);
+            }
+        }
+        v
+    }
+
+    /// **Take this head's own vocabulary off a row; nothing a terminal would act on may be left.**
+    ///
+    /// A `String::replace` per sequence rather than an escape parser in the test: the question is
+    /// membership, the vocabulary is a closed list, and a second parser here would be a second
+    /// thing to keep in step with the first — which is the mistake this whole change is about.
+    fn only_the_heads_own_escapes(row: &str) -> bool {
+        let mut rest = row.to_string();
+        for own in head_vocabulary() {
+            rest = rest.replace(own, "");
+        }
+        !rest.contains('\u{1b}')
+            && !rest
+                .chars()
+                .any(|c| ('\u{80}'..='\u{9f}').contains(&c) || c == '\u{7f}')
+    }
+
+    /// **The same hostile payload on a head that DOES emit colour** — and this is the half the
+    /// colourless test cannot reach.
+    ///
+    /// The operator's own `! ls -la` is meant to look on the screen as it looks in their console,
+    /// so the SGR their command wrote has to survive as **a role this head already has** rather
+    /// than as a byte from the program. That is the one thing §3.1's sanitiser could not be asked
+    /// for before: the old guarantee was *no escape reaches the frame*, and it is now *no escape
+    /// reaches the frame that this head did not choose* — which is the same guarantee stated in
+    /// the only form that can be true of a head that colours its own rows.
+    ///
+    /// So the assertions are three: the payload's `\u{1b}[01;34m` arrives as [`Role::Subheading`]'s
+    /// own sequence (the same bytes `ls`'s directory colour means here); every other escape on
+    /// every row is in [`head_vocabulary`]; and not one byte of the hostile sequences — the mode
+    /// strings, the OSC title, the C1 controls, the DEL — is anywhere in the frame, which is the
+    /// existing guarantee re-asserted where the colour now enters.
+    #[test]
+    fn on_a_head_that_emits_colour_a_foreign_escape_arrives_as_a_role_and_nothing_else() {
+        let mut a = App::new(RenderConfig {
+            width: 100,
+            color: true,
+            ..RenderConfig::default()
+        });
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        // `ls`'s own default for a directory, and then the rest of the vocabulary of
+        // hostile bytes the colourless test already uses.
+        let hostile = " A\u{1b}[31mred\u{1b}[0m \u{1b}[8m(hidden) \u{1b}[2J \u{1b}[?1002h \u{1b}]0;pwned\u{7} \u{9b}31m \u{9c} \u{7f} end";
+        bang_rows(
+            &mut a,
+            2,
+            "i1",
+            "! ls -la",
+            &format!("src/\u{1b}[01;34mthe-dir\u{1b}[0m{hostile}\nplain"),
+        );
+        let rows = a.screen(100, 40);
+        let frame = rows.join("\n");
+        // The colour arrived, as this head's role for it.
+        assert!(
+            frame.contains(letibot_ui::style::Palette::Colour.open(Role::Subheading)),
+            "the payload's own colour must be drawn in the palette's role for it: {frame:?}"
+        );
+        assert!(frame.contains("the-dir"), "and the text is kept: {frame:?}");
+        assert!(frame.contains("red"), "{frame:?}");
+        // And every escape that reaches the glass is one this head chose.
+        for (n, row) in rows.iter().enumerate() {
+            assert!(
+                only_the_heads_own_escapes(row),
+                "an escape reached the frame that the palette did not put there, row {n}: {row:?}"
+            );
+        }
+        // The existing guarantee, re-asserted: not one byte of a hostile sequence, as an
+        // escape or as text.
+        for gone in [
+            "[2J", "[?1002h", "[8m", "]0;", "pwned", "\u{9b}", "\u{9c}", "\u{7f}",
+        ] {
+            assert!(!frame.contains(gone), "{gone:?} survived: {frame:?}");
+        }
+    }
+
+    /// **The fold counts the TEXT, not the escape bytes.**
+    ///
+    /// The seam's number is the whole reason a long row is readable at all — *"the count must
+    /// state what is hidden, not round it away"* — and a head that counted a payload line by its
+    /// bytes would report a different number for a coloured `ls` than for a plain one of the same
+    /// length. So the two are rendered and their seams compared: same payload, same count, with
+    /// and without the SGR.
+    #[test]
+    fn the_fold_counts_a_coloured_payload_exactly_as_it_counts_a_plain_one() {
+        let plain: String = (0..60).map(|i| format!("line {i}\n")).collect();
+        let coloured: String = (0..60)
+            .map(|i| format!("\u{1b}[01;34mline {i}\u{1b}[0m\n"))
+            .collect();
+        let mut seen = Vec::new();
+        for body in [&plain, &coloured] {
+            let mut a = App::new(RenderConfig {
+                width: 100,
+                color: true,
+                ..RenderConfig::default()
+            });
+            a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+            bang_rows(&mut a, 2, "i1", "! ls -la", body);
+            let folded = a.screen(100, 40).join("\n");
+            assert!(
+                folded.contains("+59 lines"),
+                "sixty payload lines, one shown, so 59 below: {folded:?}"
+            );
+            assert!(
+                folded.contains("60 lines"),
+                "and the header agrees with the seam: {folded:?}"
+            );
+            seen.push(folded);
+        }
+        // **The two counts are the same number**, which is the assertion: not that each
+        // contains a string, but that the escape bytes changed nothing about it.
+        assert_eq!(
+            seen[0].matches("+59 lines").count(),
+            seen[1].matches("+59 lines").count(),
+            "a coloured payload folded differently from a plain one"
+        );
+    }
+
+    /// **A colour that runs to the end of a payload line does not tint the next one.**
+    ///
+    /// A terminal carries SGR state across a newline; a row list must not. Each payload line is
+    /// drawn with this head's own two-column gutter in front of it, and a colour that leaked would
+    /// paint that gutter — and then the whole of the next line — in a colour the command never
+    /// asked for there. The assertion is on the row that holds the second line: it must carry
+    /// none of the first line's colour.
+    #[test]
+    fn a_colour_that_runs_to_the_end_of_a_payload_line_does_not_tint_the_next_one() {
+        let mut a = App::new(RenderConfig {
+            width: 100,
+            color: true,
+            ..RenderConfig::default()
+        });
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        // The first line opens a colour and never closes it — which is what a program that
+        // is killed mid-write does, and what `ls` does at the end of its last entry.
+        // Three lines, so the row has a rest to open: a folded row draws one line and the
+        // seam, and this test needs the line AFTER the coloured one on the screen.
+        bang_rows(
+            &mut a,
+            2,
+            "i1",
+            "! ls -la",
+            "\u{1b}[31mred to the end of the line\nplain second line\nthird",
+        );
+        a.key(Key::CtrlV);
+        let rows = a.screen(100, 40);
+        let red = letibot_ui::style::Palette::Colour.open(Role::Failure);
+        let coloured = rows
+            .iter()
+            .find(|r| r.contains("red to the end"))
+            .expect("the first line is drawn");
+        assert!(
+            coloured.contains(red),
+            "the first line's own colour is drawn: {coloured:?}"
+        );
+        let next = rows
+            .iter()
+            .find(|r| r.contains("plain second line"))
+            .expect("the second line is drawn");
+        assert!(
+            !next.contains(red),
+            "the first line's colour leaked into the next row: {next:?}"
+        );
+        assert!(
+            only_the_heads_own_escapes(next),
+            "and that row is still only this head's own sequences: {next:?}"
         );
     }
 

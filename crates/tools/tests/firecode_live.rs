@@ -105,6 +105,8 @@ fn a_vm_backend_reads_writes_lists_runs_and_lands_its_work() {
             scope_name: None,
             background: false,
             env: vec![],
+            // No terminal: these are the substrate's own tests, not an operator's run.
+            tty: false,
         })
         .unwrap();
     let w = host

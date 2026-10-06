@@ -261,6 +261,8 @@ fn a_scope_that_ends_records_what_it_killed_and_the_processes_are_actually_gone(
             scope_name: Some("reaper-test".into()),
             background: true,
             env: vec![],
+            // No terminal: these are the substrate's own tests, not an operator's run.
+            tty: false,
         })
         .expect("spawn");
     }
@@ -737,6 +739,8 @@ fn a_session_that_ends_leaves_no_empty_cgroup_directory_either() {
         scope_name: None,
         background: false,
         env: vec![],
+        // No terminal: these are the substrate's own tests, not an operator's run.
+        tty: false,
     })
     .expect("spawn");
 
@@ -916,6 +920,105 @@ fn an_operators_own_bash_line_runs_and_no_gate_call_appears() {
         grants.load(std::sync::atomic::Ordering::SeqCst),
         0,
         "an operator's own command raised a view-grant ask"
+    );
+}
+
+/// **The operator's own run gets a terminal and a model's does not** — part A of the
+/// ANSI requirement, asserted on what the command itself can see.
+///
+/// The operator reported it more than once: *"i run `! ls -la` and the output is plain,
+/// while in a proper terminal directory names are highlighted"*. `ls --color=auto`
+/// colourises only when `isatty(1)` is true, and a pipe is not a terminal, so the fix
+/// is not a colour of our choosing but **a pty for their run** (`exec::pty` carries the
+/// measurement, the cost and why the environment cannot do it).
+///
+/// The assertion is the command's own answer rather than an inspection of the request,
+/// because that is the property that has to be true: `[ -t 1 ]` is `ls`'s question, put
+/// to the same fd, and it is asked twice through the two entries of one runtime — the
+/// ungated one a `!` line takes and the gated one a model's call takes. A model's call
+/// must keep its pipe: the payload is tokens it reads, and an escape sequence around
+/// every directory name is a cost it pays and cannot see.
+///
+/// **What this cannot cover is the operator's screen**: whether the colour that now
+/// reaches the row is *drawn* is part B and is asserted in `letibot-tui`'s frame tests.
+#[test]
+fn the_operators_own_run_gets_a_terminal_and_a_models_call_does_not() {
+    let mut h = runner!("operator tty");
+    let question = "if [ -t 1 ]; then echo ON-A-TERMINAL; else echo ON-A-PIPE; fi";
+
+    let call = letibot_transcript::ToolCall {
+        id: "bang-tty".into(),
+        name: "bash".into(),
+        arguments: serde_json::json!({ "command": question }).to_string(),
+    };
+    let theirs = h.rt.invoke_operator("", &call, &mut h.sink);
+    assert!(
+        matches!(theirs.outcome, ToolOutcome::Ok),
+        "the operator's own command must run: {}",
+        theirs.render()
+    );
+    assert!(
+        theirs.render().contains("ON-A-TERMINAL"),
+        "the operator's own run must see a terminal, or `ls --color=auto` stays plain: {}",
+        theirs.render()
+    );
+
+    // The contrast: the same command, the same runtime, the model's entry.
+    let mine = h.call(
+        "bash",
+        &serde_json::json!({ "command": question }).to_string(),
+    );
+    assert!(
+        mine.render().contains("ON-A-PIPE"),
+        "a model's call must keep its pipe: {}",
+        mine.render()
+    );
+}
+
+/// **The operator's own case, against the program they reported it about.**
+///
+/// `[ -t 1 ]` is the mechanism; this is the fact. The operator's report was *"i run
+/// `! ls -la` and the output is plain, while in a proper terminal directory names are
+/// highlighted"*, so what has to be true is that **`ls` itself writes the SGR** on their run
+/// — and `--color=auto` is the spelling that decides by asking the same question every
+/// well-behaved program asks. The fixture tree has three directories in it, so a run that
+/// colours has something to colour.
+///
+/// The assertion is on the payload the runtime produced, not on a screen: the head's half is
+/// `letibot-tui`'s
+/// (`on_a_head_that_emits_colour_a_foreign_escape_arrives_as_a_role_and_nothing_else`), and
+/// the two together are the whole requirement — the run writes it, the row draws it.
+/// **A model's call has the same assertion backwards**: its payload must carry no escape at
+/// all, which is what keeps the model's context free of bytes it cannot see.
+#[test]
+fn the_operators_own_ls_colours_because_its_output_is_a_terminal() {
+    let mut h = runner!("operator ls colour");
+    let ask = |id: &str| letibot_transcript::ToolCall {
+        id: id.into(),
+        name: "bash".into(),
+        arguments: serde_json::json!({ "command": "ls --color=auto" }).to_string(),
+    };
+    let theirs = h.rt.invoke_operator("", &ask("bang-ls"), &mut h.sink);
+    assert!(
+        matches!(theirs.outcome, ToolOutcome::Ok),
+        "the operator's own command must run: {}",
+        theirs.render()
+    );
+    assert!(
+        theirs.render().contains('\u{1b}'),
+        "`ls --color=auto` must colour on the operator's own run, or part A bought nothing: {}",
+        theirs.render()
+    );
+    // **The same command on the model's entry, and it is plain.** This is the control that
+    // makes the assertion above mean *the pty* rather than *this `ls` always colours*.
+    let mine = h.call(
+        "bash",
+        &serde_json::json!({ "command": "ls --color=auto" }).to_string(),
+    );
+    assert!(
+        !mine.render().contains('\u{1b}'),
+        "a model's payload must stay plain: {}",
+        mine.render()
     );
 }
 
