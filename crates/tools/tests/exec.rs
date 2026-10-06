@@ -975,6 +975,53 @@ fn the_operators_own_run_gets_a_terminal_and_a_models_call_does_not() {
     );
 }
 
+/// **The operator's own case, against the program they reported it about.**
+///
+/// `[ -t 1 ]` is the mechanism; this is the fact. The operator's report was *"i run
+/// `! ls -la` and the output is plain, while in a proper terminal directory names are
+/// highlighted"*, so what has to be true is that **`ls` itself writes the SGR** on their run
+/// — and `--color=auto` is the spelling that decides by asking the same question every
+/// well-behaved program asks. The fixture tree has three directories in it, so a run that
+/// colours has something to colour.
+///
+/// The assertion is on the payload the runtime produced, not on a screen: the head's half is
+/// `letibot-tui`'s
+/// (`on_a_head_that_emits_colour_a_foreign_escape_arrives_as_a_role_and_nothing_else`), and
+/// the two together are the whole requirement — the run writes it, the row draws it.
+/// **A model's call has the same assertion backwards**: its payload must carry no escape at
+/// all, which is what keeps the model's context free of bytes it cannot see.
+#[test]
+fn the_operators_own_ls_colours_because_its_output_is_a_terminal() {
+    let mut h = runner!("operator ls colour");
+    let ask = |id: &str| letibot_transcript::ToolCall {
+        id: id.into(),
+        name: "bash".into(),
+        arguments: serde_json::json!({ "command": "ls --color=auto" }).to_string(),
+    };
+    let theirs = h.rt.invoke_operator("", &ask("bang-ls"), &mut h.sink);
+    assert!(
+        matches!(theirs.outcome, ToolOutcome::Ok),
+        "the operator's own command must run: {}",
+        theirs.render()
+    );
+    assert!(
+        theirs.render().contains('\u{1b}'),
+        "`ls --color=auto` must colour on the operator's own run, or part A bought nothing: {}",
+        theirs.render()
+    );
+    // **The same command on the model's entry, and it is plain.** This is the control that
+    // makes the assertion above mean *the pty* rather than *this `ls` always colours*.
+    let mine = h.call(
+        "bash",
+        &serde_json::json!({ "command": "ls --color=auto" }).to_string(),
+    );
+    assert!(
+        !mine.render().contains('\u{1b}'),
+        "a model's payload must stay plain: {}",
+        mine.render()
+    );
+}
+
 /// **The view-grant ask specifically, on a boundary that produces one.**
 ///
 /// `grant_view` fires when a command's output names a path the confinement hid —
