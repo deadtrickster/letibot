@@ -1196,10 +1196,24 @@ pub enum Action {
         cols: usize,
         rows: usize,
     },
-    /// **The operator pressed `ctrl-\`.** The one unambiguous way out, and it is this head's
-    /// act rather than a key the program sees: see [`TermPane`] for why it is this byte and
-    /// why intercepting it is what makes it untrappable.
+    /// **End the pane.** The head's own act, and it is sent **only after the operator has
+    /// confirmed it** — the confirmation card is [`App::term_ask`], and the verb that raises it
+    /// is `!term close`.
+    ///
+    /// **`ctrl-\` no longer sends this.** It detaches — the rectangle goes, the conversation
+    /// comes back, and **nothing is sent at all** — which is the operator's own correction:
+    /// *"but i dont want it to exit"*. Two acts, one frame, and the destructive one is the one
+    /// that has to be spelled out. See [`TermPane`].
     TermClose,
+    /// **Ask what this session's pane is running.** The answer is
+    /// `ServerFrame::TermStatus`, and this is the read that lets a head which is **not drawing**
+    /// the pane say that something is running in it — **without a transcript row**, because a
+    /// detach is not an event. See [`App::term_fact`].
+    ///
+    /// Asked on attach (a head that has just switched sessions has no pane of its own and the
+    /// pane is the session's), and asked before a `!term close` the head cannot answer from what
+    /// it holds.
+    TermStatus,
     /// **Ask the model to propose `!` completions for a prefix** — the smart half of
     /// the `!` completion. The history is this head's own and is the first answer;
     /// this is asked for only when the history has no match for the prefix (or its
@@ -2028,6 +2042,25 @@ pub const WAY_OUT: u8 = 0x1c;
 /// pane that ate it would be a pane the program could not be driven from. `Ctrl-\` is the one
 /// key whose whole meaning is *stop this*, and the operator asked for exactly that: *"one
 /// unambiguous way out."*
+///
+/// # What `ctrl-\` does, and what it deliberately does not
+///
+/// **It detaches. It does not end anything.** The rectangle goes, the conversation comes back,
+/// the composer has its rows and its keys — and **nothing is sent at all**: the program keeps
+/// running on the daemon's pty, the daemon keeps the screen it has been keeping since protocol
+/// 32, the slot stays occupied, and a later `!term` attaches back to the same run.
+///
+/// **That is a correction, and the operator's words are the reason:** *"but i dont want it to
+/// exit"*. This key used to send [`Action::TermClose`], which ends the pane's cgroup — so
+/// leaving `nano` killed it, and the attach work bought nothing for anything a person cares
+/// about. **The default is the non-destructive act on purpose**: a person reaching for *get me
+/// out of here* must not lose an hour's editing, and a program that must be ended can be asked
+/// for by name.
+///
+/// **Ending is `!term close`**, typed at the composer (so it works whether the pane is on the
+/// screen or not), and it is confirmed first — see [`App::term_ask`]. The two acts are as
+/// different as they can be: one sends nothing and keeps everything, the other sends one frame
+/// and kills a process tree, and neither is reachable by the other's key.
 struct TermPane {
     /// The program's screen, fed the daemon's bytes and asked for rows.
     screen: letibot_vt::Screen,
@@ -2038,12 +2071,22 @@ struct TermPane {
     /// would be a frame per keystroke — this is what makes `TermResize` fire on a change and
     /// not on a redraw.
     sent: (usize, usize),
-    /// **The operator has left and the daemon has not answered yet.** Set by the `Ctrl-\`
-    /// interception, and it stops the keys: between the close and the `TermEnded` there is a
-    /// kill in flight, and a byte written into a pty whose program is being signalled is a byte
-    /// nobody will read. The window is milliseconds, and this is what makes it closed rather
-    /// than merely short.
+    /// **The operator has left and an ending is on its way.** Set when the head sends
+    /// [`Action::TermClose`] — the confirmed `!term close` — and it stops the keys: between the
+    /// frame and the daemon's `TermEnded` there is a kill in flight, and a byte written into a
+    /// pty whose program is being signalled is a byte nobody will read. The window is
+    /// milliseconds, and this is what makes it closed rather than merely short.
+    ///
+    /// **Not the detach flag.** Leaving (`ctrl-\`) sends nothing and waits for nothing — see
+    /// [`TermPane::detached`].
     closing: bool,
+    /// **The operator left with `ctrl-\`, and the program is still running.**
+    ///
+    /// The rectangle is not drawn, the composer has its rows and its keys back — and the pane
+    /// is **kept**: the bytes keep arriving into this screen, and the ending, whenever it comes,
+    /// is filed as the row it would have been had the operator been looking. That is the whole
+    /// of *detaching is not ending*, and it is why [`App::detach`] drops nothing.
+    detached: bool,
 }
 
 impl TermPane {
@@ -2053,6 +2096,7 @@ impl TermPane {
             line: line.to_string(),
             sent: (cols, rows),
             closing: false,
+            detached: false,
         }
     }
 
@@ -2245,6 +2289,19 @@ pub struct App {
     /// the pane's own ending is drawn; this head does not refuse it locally, because the
     /// authority on *is a pane open* is the daemon that owns the pty.
     term: Option<TermPane>,
+    /// **What this head believes about the session's pane** — the daemon's answer to
+    /// `ClientFrame::TermStatus`, kept because a head that is **not drawing** the pane still has
+    /// to say that something is running in it (and a `!term close` has to name what it is about
+    /// to end). See [`PaneFact`], and [`App::pane_behind`] for how the two sources of that fact
+    /// — this head's own pane and the daemon's answer — are joined.
+    term_fact: PaneFact,
+    /// **The confirmation that ends a pane**, when one is up. See [`TermAsk`].
+    term_ask: Option<TermAsk>,
+    /// **A `!term close` that is waiting for the status read.** The head cannot always answer
+    /// *is there a pane to end* from what it holds — it has just attached, or it never opened
+    /// one — so the line is **held** and the answer runs the same decision. See
+    /// [`App::begin_close`].
+    close_pending: bool,
     session_id: String,
     head_id: String,
     /// The head id the daemon just handed out, for the driver to give the client.
@@ -3976,6 +4033,9 @@ impl App {
             prefs_path: None,
             settings: Vec::new(),
             term: None,
+            term_fact: PaneFact::Unasked,
+            term_ask: None,
+            close_pending: false,
             session_id: String::new(),
             head_id: String::new(),
             seated: None,
@@ -4902,6 +4962,19 @@ impl App {
                 // by deepseek: *"restarted the letibot - still qwen"*. It was:
                 // the daemon knew, and nothing had asked it.
                 self.queued.push(Action::Settings);
+                // **And what this session's pane is running** — the read behind the head's own
+                // line about a program it is not drawing. Asked here, with the other two, for
+                // the same shape of reason: the daemon answers a read and never volunteers one,
+                // and a head that has just been SEATED somewhere knows nothing about the pane
+                // there — its own pane went with the session it left (see [`App::load`]), and
+                // the pane in the new one is the session's, not this head's.
+                //
+                // **`Unasked` rather than `None`**, because those are different facts and one
+                // of them decides whether `!term close` asks or refuses — see [`PaneFact`].
+                self.term_fact = PaneFact::Unasked;
+                self.close_pending = false;
+                self.term_ask = None;
+                self.queued.push(Action::TermStatus);
                 // **And the job count, for a case the brief names as a moment:** *"for a job already
                 // running when this head attached, which no event announces."* R51 item 5 puts that
                 // at the end of a turn, which is the earliest a turn boundary can answer it — but a
@@ -5345,11 +5418,36 @@ impl App {
                 if let Some(p) = self.term.as_mut() {
                     p.line = format!("!term {command}");
                 }
+                // **And the fact the head draws when it is not drawing the pane.** An attach is
+                // the daemon answering *what is running* in the same breath as handing over the
+                // screen, so a head that detaches a moment later already knows what to say.
+                self.term_fact = PaneFact::Running(command.clone());
                 self.say(&format!(
                     "attached to `!term {command}` — the pane this session already has. \
-                     ctrl-\\ leaves it."
+                     ctrl-\\ leaves it running, `!term close` ends it."
                 ));
                 self.redraw = true;
+                Disposition::Control
+            }
+            // **What this session's pane is running, or nothing** — the answer to a read, and
+            // the fact a head draws **instead of a row** when it is not drawing the pane (see
+            // [`App::pane_behind`] and [`PaneFact`]).
+            ServerFrame::TermStatus { command } => {
+                self.term_fact = match &command {
+                    Some(command) => PaneFact::Running(command.clone()),
+                    None => PaneFact::None,
+                };
+                self.redraw = true;
+                // **A `!term close` that was waiting for this answer runs now**, through the same
+                // decision it would have taken had the head known — see [`App::begin_close`]. The
+                // line is held rather than guessed, which is the whole reason `Unasked` is a
+                // state and not an `Option`.
+                if self.close_pending {
+                    self.close_pending = false;
+                    if let Some(action) = self.begin_close() {
+                        self.queued.push(action);
+                    }
+                }
                 Disposition::Control
             }
             ServerFrame::TermOutput { bytes } => {
@@ -5382,7 +5480,7 @@ impl App {
             }
             ServerFrame::TermEnded { reason } => {
                 // **The one place a pane closes, and the reason always comes from the daemon**
-                // — *"the program exited with 3"*, *"you left the terminal"*, *"a pane is
+                // — *"the program exited with 3"*, *"you closed the terminal"*, *"a pane is
                 // already open in this session"*. So a head never guesses why its rectangle
                 // came back, and a refusal to start is the same frame as an ending.
                 //
@@ -5393,11 +5491,19 @@ impl App {
                 // program had printed. The screen the program left is read here, while the
                 // pane still holds it, and goes into the note with the daemon's sentence. See
                 // [`Note::Pane`].
+                //
+                // **A pane this head had DETACHED from is the same arm, and that is the
+                // point.** The pane is kept while the operator is away (see
+                // [`TermPane::detached`]), the bytes keep arriving into its screen, and this
+                // is where the row they would have seen had they been looking is filed — so
+                // detaching does not hide a death. The only difference is that there is no
+                // rectangle to give back, which `pane_open()` already accounts for.
+                self.term_fact = PaneFact::None;
                 if let Some(p) = self.term.take() {
                     self.file_note(Note::Pane {
                         line: p.line.clone(),
                         said: p.last_rows(),
-                        left: p.closing,
+                        closed: p.closing,
                         reason,
                     });
                     self.redraw = true;
@@ -5479,6 +5585,14 @@ impl App {
             // say was missing (*"a head that switches back does not find its pane again, it
             // finds the transcript"*).
             self.term = None;
+            // **And what this head believed about the pane is the session's, not this head's.**
+            // A `Hello` re-asks (see that arm), and until the answer lands the fact is
+            // `Unasked` — which is the state that makes `!term close` hold its line rather than
+            // guess. Carrying the previous session's answer across a switch would be a
+            // confirmation naming another session's program.
+            self.term_fact = PaneFact::Unasked;
+            self.term_ask = None;
+            self.close_pending = false;
             // The subagent tree is the PARENT's fact. Carried across a switch it
             // put "1 subagent running" on the composer of the very subagent being
             // looked at (measured 2026-09-16), and Enter in the pane there would
@@ -6813,6 +6927,22 @@ impl App {
                 command,
                 question,
             } => {
+                // **A question from a RUNNING PROGRAM outranks the question about killing one.**
+                // The two cards are mutually exclusive by construction everywhere else (the
+                // confirmation is raised from the composer, and the prompt card owns the
+                // composer while it is up) — but a prompt can arrive *while* the confirmation
+                // is standing, and then one keystroke would have two meanings: `y` is this
+                // card's yes and that card's text. The operator's rule is that neither may be
+                // answerable by the other's keystroke, so the confirmation yields, with a
+                // sentence — the program has asked something and must not be killable by the
+                // answer to it.
+                if let Some(ask) = self.term_ask.take() {
+                    self.say(&format!(
+                        "{} is still running — your command's question came first, so nothing \
+                         was ended. `!term close` asks again.",
+                        ask.line
+                    ));
+                }
                 self.prompt = Some(PromptAsk {
                     req_id,
                     job,
@@ -7309,6 +7439,42 @@ impl App {
             }
             self.redraw = true;
             return None;
+        }
+        // **The confirmation that ends a pane owns the keys while it is up**, and it is checked
+        // ahead of the prompt card so the two can never both be answered by one keystroke — see
+        // [`TermAsk`] for why the yes is `y` and not Enter, and why every other key cancels.
+        //
+        // **A detach never asks**, because it ends nothing: this card exists only for a
+        // `!term close` the operator typed, and only while a program is running (see
+        // [`App::begin_close`]).
+        if let Some(ask) = self.term_ask.take() {
+            self.redraw = true;
+            return match k {
+                Key::Char('y') | Key::Char('Y') => {
+                    // **An ending is on its way.** The keys stop here from now on — a byte written
+                    // into a pty whose program is being signalled is a byte nobody will read —
+                    // and the row the ending becomes is filed when the daemon's `TermEnded`
+                    // lands, with `closed: true` so the register is the operator's own act.
+                    //
+                    // **Nothing is said here.** The card coming down is the act, and the row the
+                    // ending files a moment later is the disclosure: a notice on top of the two
+                    // would be the third copy of one fact, and it is the one that fades.
+                    if let Some(p) = self.term.as_mut() {
+                        p.closing = true;
+                    }
+                    Some(Action::TermClose)
+                }
+                // **Anything that is not a deliberate yes is the cancel**, Esc included — the
+                // only shape a destructive confirmation can have. It says what it did NOT do,
+                // because a card that vanishes in silence reads as an act.
+                _ => {
+                    self.say(&format!(
+                        "{} is still running — nothing was ended",
+                        ask.line
+                    ));
+                    None
+                }
+            };
         }
         // **A command of the operator's own asked them something, and this owns the
         // keyboard** — the password field's rule one card over, and for the same reason:
@@ -8862,13 +9028,159 @@ impl App {
         had
     }
 
-    /// Whether a pane is open and therefore owns the keyboard. See [`TermPane`].
+    /// Whether a pane is open **and drawn**, and therefore owns the keyboard. See [`TermPane`].
     ///
     /// The one question `Link::tick` asks before it decides whether a byte this head read is a
     /// key of its own or the program's, and it is asked of `App` because the pane is the
     /// head's state and not the terminal's.
+    ///
+    /// **A detached pane owns nothing**: the composer has its rows and its keys back, which is
+    /// the whole point of leaving. The two questions are deliberately different — *is there a
+    /// program here* ([`App::term`]) and *is it on the screen* (this) — and a head that answered
+    /// both with one predicate would keep the keyboard for a pane nobody can see.
     pub fn pane_open(&self) -> bool {
+        self.term.as_ref().is_some_and(|p| !p.detached)
+    }
+
+    /// **Does this head hold a pane at all** — drawn, or detached and still running.
+    ///
+    /// The third of the three questions about a pane, and the one about the PROGRAM rather
+    /// than about the screen: [`App::pane_open`] is *is it being drawn*, [`App::pane_keys`] is
+    /// *who gets the keys*, and this is *is there a process behind it*. They come apart in
+    /// exactly one state — a detach — and that state is the whole of protocol 34's split: the
+    /// pane is held (so `!term` attaches back and `!term close` has something to end) and it is
+    /// not drawn (so the conversation has the rectangle and the composer has its keys).
+    ///
+    /// Public because an integration test that drives the head through the driver's own loop
+    /// has to be able to ask it: `pane_open()` answers `false` for a detached pane, and a test
+    /// that read *no pane* off it would pass whether the detach kept the program or killed it.
+    pub fn holds_pane(&self) -> bool {
         self.term.is_some()
+    }
+
+    /// **Leave the pane without ending it** — the `ctrl-\` act. See [`TermPane`].
+    ///
+    /// The rectangle goes and the conversation comes back; **nothing is sent**, so the program
+    /// keeps running on the daemon's pty, the daemon keeps its screen, and the pane's slot stays
+    /// occupied — which is what makes a later `!term` an attach to the *same* run rather than a
+    /// new one.
+    ///
+    /// **The head keeps its own copy of the screen and keeps feeding it**, deliberately: the
+    /// `TermOutput` frames are still arriving (the pane is the session's and this head is still
+    /// attached to the session), so a program that exits while the operator is away still leaves
+    /// the row they would have seen had they been looking — with its last rows and its status.
+    /// Dropping the screen here would make a death while detached a death with nothing to show,
+    /// which is the second half of *a detach must not hide anything*.
+    ///
+    /// **The sentence names both ways on**, because a person who has just made a program
+    /// disappear needs to know it is still there and how to end it if they meant to.
+    ///
+    /// # It is NOT a notice, and that is the correction
+    ///
+    /// This said *"{line} is still running — `!term` comes back to it, `!term close` ends it"*
+    /// through [`App::say`], and it was the same fact twice: [`App::pane_behind`] draws that
+    /// sentence **persistently**, one line above the composer, for as long as it is true. Worse,
+    /// the notice is the copy that cannot be taken back — a notice lives for `NOTICE_MS` of wall
+    /// time and nothing retires it early, so the `TermEnded` a second later left a sentence on
+    /// the screen saying a program was still running, directly above the row saying it had
+    /// ended. A fact about NOW belongs in the one place that stops drawing it when it stops
+    /// being true.
+    ///
+    /// Returns whether there was a pane to leave, so a caller can say so once rather than per
+    /// report — the shape [`App::drop_pane`] uses for the same reason.
+    pub fn detach(&mut self) -> bool {
+        let Some(p) = self.term.as_mut() else {
+            return false;
+        };
+        p.detached = true;
+        self.redraw = true;
+        true
+    }
+
+    /// **`!term close` — the ending, and the head asks first.**
+    ///
+    /// # The four answers, and why the head cannot give three of them
+    ///
+    /// * **a pane of this head's own** — drawn or detached. The line the operator typed at
+    ///   `TermOpen` is in [`TermPane::line`], so the card can name what is about to end;
+    /// * **no pane here, but a live one the daemon named** — [`App::term_fact`] is
+    ///   [`PaneFact::Running`], and the card names `!term <command>`. This is the case the
+    ///   read exists for: the program's screen may be in another head entirely, and the
+    ///   operator still means it;
+    /// * **no pane at all** — a sentence, and **nothing sent**. `TermClose` is quiet about
+    ///   there being nothing to end, so a head that sent it would look like it had done
+    ///   something. The sentence names the way to start one;
+    /// * **and *not asked yet*** — [`PaneFact::Unasked`] is the state between an attach and the
+    ///   daemon's answer to the read, and **the line is held**: the read goes out, and its
+    ///   answer runs this same decision (see the `TermStatus` arm). A head that guessed *no
+    ///   pane* here would be wrong on the one case that matters — a person who attached a
+    ///   moment ago and means the program the daemon is holding.
+    ///
+    /// **Nothing here ends anything.** Every arm either raises [`App::term_ask`] or says why it
+    /// cannot; the frame leaves when the card is answered with a yes, and never before.
+    fn begin_close(&mut self) -> Option<Action> {
+        match (&self.term, &self.term_fact) {
+            (Some(p), _) => {
+                let line = p.line.clone();
+                self.ask_close(&line);
+                None
+            }
+            (None, PaneFact::Running(command)) => {
+                let line = format!("!term {command}");
+                self.ask_close(&line);
+                None
+            }
+            (None, PaneFact::None) => {
+                self.say(
+                    "this session has no pane to end — `!term COMMAND` starts one, and \
+                     `!term` attaches to one that is already running",
+                );
+                self.redraw = true;
+                None
+            }
+            (None, PaneFact::Unasked) => {
+                self.close_pending = true;
+                self.say("asking the daemon what this session is running…");
+                self.redraw = true;
+                Some(Action::TermStatus)
+            }
+        }
+    }
+
+    /// **Raise the confirmation card**, and it is the only place [`App::term_ask`] is set — so
+    /// there is one place a pane can be ended from, and it is the one that asks.
+    fn ask_close(&mut self, line: &str) {
+        self.term_ask = Some(TermAsk {
+            line: line.to_string(),
+        });
+        self.redraw = true;
+    }
+
+    /// **The pane this session has that this head is not drawing**, as a line a person reads —
+    /// or `None` when there is nothing to report.
+    ///
+    /// Two sources, and the order is the decision: **this head's own pane first** (a detach
+    /// keeps the pane, so the head holds the program *and* the line the operator typed), and
+    /// then **the daemon's answer** to `ClientFrame::TermStatus`, which is the only thing that
+    /// can answer for a session this head has no pane in — a head that switched away and came
+    /// back, or a second head attached to the same session.
+    ///
+    /// **Not a row, and that is the operator's rule.** A detach is not an event: there is no
+    /// `SessionEvent` for it, nothing durable happened, and a transcript row saying *you left a
+    /// pane* would be a disclosure about a moment that did not change anything. What the head
+    /// draws instead is this — a fact about **now**, drawn while it is true and gone the moment
+    /// it stops being true.
+    fn pane_behind(&self) -> Option<String> {
+        // On the screen: the pane itself is the fact, and a sentence about it would be the same
+        // fact twice.
+        if self.pane_open() {
+            return None;
+        }
+        match (&self.term, &self.term_fact) {
+            (Some(p), _) => Some(p.line.clone()),
+            (None, PaneFact::Running(command)) => Some(format!("!term {command}")),
+            (None, PaneFact::None | PaneFact::Unasked) => None,
+        }
     }
 
     /// **The pane's keyboard: the raw bytes the reader consumed, turned into actions.**
@@ -8876,26 +9188,33 @@ impl App {
     /// # The way out is found HERE, and that is what makes it untrappable
     ///
     /// `0x1c` — `Ctrl-\` — is looked for in the byte stream **before anything is forwarded**,
-    /// and the bytes before it are the last thing the program ever gets. A key the program
-    /// never receives is a key no program can trap, whatever it does to `SIGQUIT` or to its own
-    /// input handling; and the close itself is `TermClose`, which is the daemon ending the
-    /// pane's cgroup, so a program that ignored the key would still die. Two mechanisms, one
-    /// act, and neither of them is a byte the program can see.
+    /// and the bytes before it are the last thing the program gets. A key the program never
+    /// receives is a key no program can trap, whatever it does to `SIGQUIT` or to its own input
+    /// handling. **And the act it performs is a detach**: the head hides the rectangle and sends
+    /// nothing at all, so the program is not signalled, not killed, and not even told — see
+    /// [`TermPane`] for why the default is the non-destructive one.
     ///
     /// **The byte cannot be part of anything else.** `0x1c` is below `0x20`, so it is not a
     /// UTF-8 continuation and cannot appear inside a character; and it is not a CSI final byte
     /// (those are `0x40`-`0x7e`), so it cannot appear inside an escape sequence the reader is
     /// holding. It *can* appear inside a bracketed paste — somebody pasting a file that
-    /// contains a literal `0x1c` — and the pane closes: the honest reading of *the operator's
+    /// contains a literal `0x1c` — and the pane detaches: the honest reading of *the operator's
     /// terminal sent the way-out byte*, and a hole named in [`TermPane`] rather than a
     /// silent one.
     pub fn pane_keys(&mut self, raw: &[u8]) -> Vec<Action> {
         let Some(p) = self.term.as_ref() else {
             return Vec::new();
         };
-        // Leaving: between the way out and the daemon's ending there is a kill in flight, and a
-        // byte written into a pty whose program is being signalled is a byte nobody will read.
-        if p.closing {
+        // An ending is in flight: between the confirmed `!term close` and the daemon's
+        // `TermEnded` there is a kill on the way, and a byte written into a pty whose program is
+        // being signalled is a byte nobody will read. The window is milliseconds, and this is
+        // what makes it closed rather than merely short.
+        //
+        // **And a DETACHED pane takes no keys either**, which is the same rule from the other
+        // end: the composer has its rows and its keys back, so a keystroke the operator aimed at
+        // the composer must not reach a program nobody is drawing. `Link::tick` already routes
+        // on [`App::pane_open`]; this is the second door, closed rather than left to the caller.
+        if p.closing || p.detached {
             return Vec::new();
         }
         match raw.iter().position(|b| *b == WAY_OUT) {
@@ -8906,10 +9225,9 @@ impl App {
                         bytes: raw[..at].to_vec(),
                     });
                 }
-                if let Some(p) = self.term.as_mut() {
-                    p.closing = true;
-                }
-                out.push(Action::TermClose);
+                // **Detach: nothing leaves the head.** Not a frame and not a keystroke — the
+                // whole point is that the program keeps running and this head stops drawing it.
+                self.detach();
                 out
             }
             None if raw.is_empty() => Vec::new(),
@@ -8941,15 +9259,24 @@ impl App {
         // session has*; a session with no pane says so through the same `TermEnded` every other
         // pane that could not start uses, and the note that closes the rectangle is where that
         // sentence is read.
-        if letibot_sessionlog::term_command(&text).is_some() {
+        //
+        // **And the third reading is the ending.** `!term close` is not a program to run: it is
+        // how a pane is ENDED, and it is the only act that sends `Action::TermClose` — see
+        // [`TermPane`] for why the destructive act has to be spelled out while `ctrl-\` only
+        // detaches. The parse is `term_line`, the one function both halves share, so a head
+        // cannot treat the line as the ending while the daemon runs a program called `close`.
+        if let Some(what) = letibot_sessionlog::term_line(&text) {
             if self.detached() {
                 self.set_composer(&text);
                 self.say(
-                    "no daemon connection — your line is held here. It sends when the daemon \
-                     is back.",
+                    "no daemon connection — nothing was started and nothing was ended. Your line \
+                     is held here. It sends when the daemon is back.",
                 );
                 self.redraw = true;
                 return None;
+            }
+            if matches!(what, letibot_sessionlog::TermLine::Close) {
+                return self.begin_close();
             }
             self.scroll = 0;
             // **The pane is created now, empty, and the daemon's first bytes fill it.** The
@@ -13128,6 +13455,16 @@ impl App {
         let (dec, dec_pinned): (Vec<String>, Vec<String>) =
             match (&self.secret, &self.prompt, self.open.first()) {
                 (Some(ask), _, _) => (self.secret_lines(ask, w), Vec::new()),
+                // **The confirmation that ends a pane rides in the same slot and comes second**,
+                // ahead of the prompt card. The two are mutually exclusive — a `!term close` can
+                // only be typed while the prompt card is not up, and a prompt that arrives while
+                // this is up takes the screen back (see the `PromptRequested` arm) — so this arm
+                // is about *which* card is drawn, and the operator is never shown one while the
+                // keys are owned by the other.
+                (None, _, _) if self.term_ask.is_some() => (
+                    self.term_ask_lines(self.term_ask.as_ref().expect("just checked"), w),
+                    Vec::new(),
+                ),
                 // **The prompt card rides in the same slot and comes second.** A password ask is
                 // `sudo` blocking the run it is inside, so the two are rarely up together — and
                 // when they are, the secret is the one that must not be typed past: a person who
@@ -13186,6 +13523,23 @@ impl App {
         // operator reads while the daemon goes.
         let stopping = self.stopping_line(w);
         let stuck = self.stuck_line(w);
+        // **A pane this head is not drawing, and the fact that it is still running.** See
+        // [`App::pane_behind`] for the two sources of that fact and for why it is a line and
+        // not a row: a detach is not an event, so what a reader gets is a statement about NOW
+        // — drawn while it is true, gone the moment it stops being true, and naming the two
+        // verbs that do something about it.
+        //
+        // **Nothing is drawn while the pane is on the screen**: the pane itself is the fact,
+        // and a sentence about it would be the same fact twice.
+        let pane = self.pane_behind().map(|line| {
+            self.cfg.palette().paint(
+                Role::Pending,
+                &trim_to(
+                    &format!("a pane is running: {line} — `!term` attaches, `!term close` ends it"),
+                    w,
+                ),
+            )
+        });
         // **The turn's status is a ROW of its own, immediately above the composer** (R51 item 1).
         //
         // It used to be a legend inlaid in the composer's bottom border, sharing that edge with
@@ -13248,6 +13602,12 @@ impl App {
         let mut hint = true;
         let mut show_notice = notice.is_some();
         let mut show_stuck = stuck.is_some();
+        // **The pane's line is news too, and it is given up LAST of the news.** See `let pane`
+        // for what it is: a program is running off-screen, which is a fact a reader can act on
+        // and cannot get from anything else on the screen. The composer's own rows are given up
+        // before it (`rows -= 1` below), because a line a person is not typing into is worth
+        // less than the knowledge that a program they started is still alive.
+        let mut show_pane = pane.is_some();
         // **The row is RESERVED, not conditional.** The operator: *"keep the line reserved for
         // `Responding...` always free, or we have these ugly jumps"* — and the jump is the whole
         // reason. The row exists only while a turn does, so the moment one starts or ends, every
@@ -13278,6 +13638,7 @@ impl App {
                 + seam
                 + dec_pinned.len()
                 + usize::from(show_stuck)
+                + usize::from(show_pane)
                 + usize::from(show_status)
                 + usize::from(show_notice)
                 // **Counted by the SLOT, not by the text in it.** This is the whole fix: the
@@ -13310,6 +13671,14 @@ impl App {
                 rows -= 1;
             } else if show_stuck {
                 show_stuck = false;
+            } else if show_pane {
+                // **The pane's line goes before the turn's row and after the stuck
+                // disclosure.** On a terminal this short something has to go, and the pane's
+                // line is the one fact here that a reader can still get another way — the
+                // program is still there, and `!term` finds it whether or not this head said
+                // so. The stuck disclosure is about silence and the status row is about the
+                // work; both are about the thing the reader is looking at.
+                show_pane = false;
             } else if show_status {
                 // **The turn's row goes before the box does**, and after the stuck disclosure:
                 // on a terminal this short something has to go, and what a reader loses least by
@@ -13354,6 +13723,9 @@ impl App {
         chrome.extend(card_rows);
         chrome.extend(dec_pinned);
         if show_stuck && let Some(l) = stuck {
+            chrome.push(l);
+        }
+        if show_pane && let Some(l) = pane {
             chrome.push(l);
         }
         if show_notice && let Some(l) = notice {
@@ -13483,12 +13855,15 @@ impl App {
         let room = h
             .saturating_sub(chrome.len() + usize::from(header.is_some()))
             .max(1);
-        let mut out = if self.term.is_some() {
+        let mut out = if self.pane_open() {
             // **The pane takes the conversation's rectangle and gives it back.**
             //
             // First in the chain, and that is a decision rather than an ordering: while a pane
-            // is open it owns the keyboard (see `App::pane_keys`), so a card, a picker or a
+            // is DRAWN it owns the keyboard (see `App::pane_keys`), so a card, a picker or a
             // pane drawn *under* it would be a screen the operator could see and not answer.
+            // **A detached pane is not drawn and owns nothing** — the conversation has the
+            // rectangle back, the composer has its keys, and the one line above the composer
+            // says the program is still running (see `let pane`).
             // The chrome below still draws — the composer keeps its rows and the header keeps
             // its line, which is the whole requirement — and a card that arrives while a pane
             // is up waits until the operator leaves with `ctrl-\`.
@@ -17962,6 +18337,47 @@ impl App {
         ) {
             out.push(dim(&self.cfg, &l));
         }
+        out
+    }
+
+    /// **The card that asks before a pane is ended** — the daemon's own question about killing
+    /// something, and never the program's question about itself. See [`TermAsk`] for the whole
+    /// argument, and [`App::begin_close`] for when it is raised.
+    ///
+    /// # The words are the whole of the separation
+    ///
+    /// The prompt card and this one can never be on the screen together, and the keys cannot
+    /// reach the wrong one (see [`TermAsk`]) — but a person has to know which one they are
+    /// looking at *by reading it*, so the registers are as different as two cards can be:
+    ///
+    /// * **this one names the program** and says what ending it does, in the imperative;
+    /// * **it quotes nothing the program wrote.** The prompt card's second line is the program's
+    ///   own last line, which is exactly what makes it answerable; a confirmation that showed
+    ///   that text would look like the program's question;
+    /// * **it spells both keys and says which is the default**, because a destructive
+    ///   confirmation that leaves the reader to guess is a trap.
+    fn term_ask_lines(&self, ask: &TermAsk, w: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        // The headline is the question, and it carries the `?` every other card in this file
+        // carries. Yellow for the reason the gate card is: it exists to interrupt.
+        out.push(colour(
+            &self.cfg,
+            sgr::YELLOW,
+            &trim_to(&format!("? end the pane — {} is running", ask.line), w),
+        ));
+        out.push(dim(
+            &self.cfg,
+            &trim_to("  ending it kills the program and everything it started", w),
+        ));
+        // **The keys, both of them, and which one is the default.** Not Enter: that key is the
+        // prompt card's and the composer's, and a stray one must not be able to kill a program.
+        out.push(dim(
+            &self.cfg,
+            &trim_to(
+                "  y ends it  ·  any other key (esc) leaves it running — that is the default",
+                w,
+            ),
+        ));
         out
     }
 
@@ -23800,6 +24216,68 @@ struct PromptAsk {
     question: Option<String>,
 }
 
+/// **What this head believes about the session's pane** — the daemon's answer to
+/// [`ClientFrame::TermStatus`](letibot_sessionlog::protocol::ClientFrame::TermStatus), as this
+/// head holds it.
+///
+/// # Why it is a three-state and not an `Option`
+///
+/// `None` would mean two different things at once, and the difference decides whether a
+/// `!term close` **asks or refuses**:
+///
+/// * **`Unasked`** — nobody has answered yet. The head has just attached, or switched, and the
+///   question is in flight. A verb that read this as *no pane* would refuse to end a program
+///   the operator can see, which is the one case the read exists for;
+/// * **`None`** — the daemon said there is no live pane. That is a fact, and it is what makes
+///   `!term close` a sentence rather than a card;
+/// * **`Running(command)`** — the daemon said this is running in it, and it is what a
+///   confirmation names.
+///
+/// **A fact about NOW, refreshed rather than accumulated.** It is set by the three frames that
+/// can know ([`ServerFrame::TermStatus`], `TermAttached`, `TermEnded`), reset to `Unasked` on
+/// every `Hello` — a head that has just been seated somewhere does not know what is in the
+/// pane there — and never derived from anything durable, because there is nothing durable about
+/// it: a detach is not an event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PaneFact {
+    /// Nobody has asked yet: the read is in flight, or this head has not attached.
+    Unasked,
+    /// The daemon said this session has no live pane.
+    None,
+    /// The daemon said this is running in it.
+    Running(String),
+}
+
+/// **The confirmation that ends a pane** — the daemon's own question about killing something,
+/// and never the program's question about itself.
+///
+/// # Why it is not the prompt card
+///
+/// `SessionEvent::PromptRequested`'s card answers **the program**: it is a line written into a
+/// pipe the daemon holds, drawn in the open, answered by typing and Enter. This card answers
+/// **the daemon**: whether a process tree should die. The operator's rule is that the two must
+/// not be confusable — *"a person must never be unsure which one they are looking at, and
+/// neither may be answerable by the other's keystroke"* — so they are kept apart in every way a
+/// person can see or type:
+///
+/// * **different words** — this one names the program and says what ending it does, and it
+///   never quotes the program's own output (see [`App::term_ask_lines`]);
+/// * **different key** — the yes here is `y`, and it is deliberately **not Enter**, because
+///   Enter is the prompt card's own (an empty line is a real answer there) and the composer's.
+///   A stray Enter cannot kill anything;
+/// * **and the safe default** — *anything that is not a deliberate yes* cancels, Esc included.
+///   A confirmation whose default is the destructive answer is not a confirmation.
+///
+/// **A prompt that arrives while this is up takes the screen back**, and the arm that does it
+/// says why: a program that has just asked a question must not be killable by the answer to it.
+#[derive(Debug, Clone)]
+struct TermAsk {
+    /// **What is about to end, as a line a person reads** — `!term nano notes.txt`, the spelling
+    /// the operator typed at the composer when there is one, or `!term <command>` rebuilt from
+    /// the daemon's own word when the pane is another head's.
+    line: String,
+}
+
 /// **Where a note sits, or whether it sits in the conversation at all.**
 ///
 /// `head-parity-2026-09-21.md` **R19**, the operator's ruling of 2026-09-22. A warning is
@@ -23867,9 +24345,15 @@ enum Note {
         /// The daemon's own sentence: the exit status, or the operator's act. Never
         /// guessed here — see [`ServerFrame::TermEnded`].
         reason: String,
-        /// **The operator is the one who ended it** — this head's own record that it sent
-        /// [`Action::TermClose`], and not a reading of the reason's wording.
-        left: bool,
+        /// **This head asked for the end and the operator confirmed it** — this head's own
+        /// record that it sent [`Action::TermClose`], and not a reading of the reason's wording.
+        ///
+        /// **`closed` and not `left`.** Leaving is now a detach — `ctrl-\` sends nothing at all
+        /// — so a row that said *left* about an ending would name the act that does not end
+        /// anything. The three endings this can be true of are the deliberate one (this flag),
+        /// the program's own exit (false), and a refusal to start (false, and it is a `×` for
+        /// the same reason: it is the answer to what the operator just typed).
+        closed: bool,
     },
 }
 
@@ -24036,15 +24520,18 @@ fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
             line,
             said,
             reason,
-            left,
+            closed,
         } => {
             // **The register is the operator's own act, and it is a fact this head holds.**
-            // A pane they left with `ctrl-\` is housekeeping — dim, a `·` — and a pane that
-            // ended without them is the answer to what they just typed: the notice register,
-            // a `×`. Reading that out of the reason's *wording* would be a head matching on a
-            // sentence the daemon composes; `left` is the head's own record that it sent
-            // `Action::TermClose`.
-            let (mark, tint) = if *left {
+            // A pane they ENDED deliberately — `!term close`, confirmed — is housekeeping: dim,
+            // a `·`. A pane that ended without them is the answer to what they just typed: the
+            // notice register, a `×`. Reading that out of the reason's *wording* would be a head
+            // matching on a sentence the daemon composes; `closed` is the head's own record that
+            // it sent `Action::TermClose`.
+            //
+            // **A detach is neither**, and it never reaches here: leaving with `ctrl-\` files
+            // no row at all, because it ends nothing — see [`TermPane`].
+            let (mark, tint) = if *closed {
                 ("·", sgr::DIM)
             } else {
                 ("×", sgr::YELLOW)
@@ -27143,14 +27630,16 @@ mod tests {
         );
 
         // **And the line the daemon named is what an ending names**, not the bare verb the head
-        // typed: the row a person reads has to say which pane ended.
+        // typed: the row a person reads has to say which pane ended. (The reason is the daemon's
+        // own sentence; this fixture uses the one a deliberate close gets, which is the daemon's
+        // wording since protocol 34 — see `harnessd`'s `Terminals::CLOSED`.)
         a.apply(ServerFrame::TermEnded {
-            reason: "you left the terminal".into(),
+            reason: "you closed the terminal".into(),
         });
         assert!(
             a.screen(80, 24)
                 .iter()
-                .any(|r| r.contains("!term mc /etc") && r.contains("you left the terminal")),
+                .any(|r| r.contains("!term mc /etc") && r.contains("you closed the terminal")),
             "the ending names the pane the daemon said was running: {:?}",
             a.screen(80, 24)
         );
@@ -27274,8 +27763,16 @@ mod tests {
     /// never receives it and cannot trap it. It is also one of the three bytes this head's own
     /// decoder has no arm for, so it could never have arrived as a `Key` at all — see
     /// `Terminal::raw_keys`.
+    ///
+    /// # And the act is a DETACH — the operator's *"but i dont want it to exit"*
+    ///
+    /// This test used to assert `Action::TermClose` here, which is the defect the whole split
+    /// exists to remove: leaving a pane ended its cgroup, so leaving `nano` killed it. What is
+    /// asserted now is the negative the requirement is made of — **nothing leaves the head** —
+    /// and the positive that makes it a detach rather than a disappearance: the pane is still
+    /// held, so the program is still running and `!term` has something to come back to.
     #[test]
-    fn the_panes_keys_go_down_verbatim_and_ctrl_backslash_is_the_way_out() {
+    fn the_panes_keys_go_down_verbatim_and_ctrl_backslash_detaches() {
         let mut a = app();
         pane(&mut a, b"mc");
 
@@ -27290,24 +27787,44 @@ mod tests {
 
         assert_eq!(
             a.pane_keys(b"hi\x1cz"),
-            vec![
-                Action::TermInput {
-                    bytes: b"hi".to_vec()
-                },
-                Action::TermClose
-            ],
-            "the bytes before the way out are the last the program gets, and the key itself is \
-             never one of them"
+            vec![Action::TermInput {
+                bytes: b"hi".to_vec()
+            }],
+            "the bytes before the way out are the last the program gets, the key itself is never \
+             one of them, and NOTHING ELSE is sent — no frame of any kind ends anything"
         );
         assert!(
-            a.pane_keys(b"more").is_empty(),
-            "after the close the keys stop: a byte into a pty whose program is being signalled \
-             is a byte nobody will read"
+            !a.pane_open(),
+            "the rectangle comes back: the pane is hidden"
+        );
+        assert!(
+            a.term.is_some(),
+            "and the pane is KEPT — the program is still running, which is what `!term` attaches \
+             back to"
         );
         assert_eq!(a.input(), "", "the composer saw none of it");
+        // **The disclosure is the chrome line, and it is drawn while it is true** — see
+        // [`App::detach`] for why the sentence is not a notice as well: a notice cannot be taken
+        // back, and this one would have outlived the pane.
+        let frame = a.screen(80, 24);
         assert!(
-            a.pane_open(),
-            "the pane is drawn until the daemon's ending arrives"
+            frame.iter().any(|r| r.contains("a pane is running")
+                && r.contains("!term mc")
+                && r.contains("`!term close` ends it")),
+            "the screen says the program is still running, and names both ways on: {frame:?}"
+        );
+        assert!(
+            a.notes.is_empty(),
+            "a detach files no row: it ends nothing, so there is no ending to disclose"
+        );
+
+        // **A detached pane forwards nothing**, which is the other half of *it is not on the
+        // screen*: the keys belong to the composer again, so this is never even asked — and a
+        // byte written into a pane nobody is drawing would be a keystroke the operator aimed at
+        // the composer.
+        assert!(
+            a.pane_keys(b"more").is_empty(),
+            "a detached pane takes no keys"
         );
 
         // The control that makes the interception mean something: with no pane, the same bytes
@@ -27316,6 +27833,64 @@ mod tests {
         assert!(!b.pane_open());
         assert!(b.pane_keys(&keys).is_empty());
         assert!(b.pane_keys(b"\x1c").is_empty());
+    }
+
+    /// **A program that exits while the operator is away still leaves its row.**
+    ///
+    /// The second half of *a detach must not hide anything*: the head keeps the pane while it
+    /// is detached (so it keeps feeding the screen from the frames that are still arriving),
+    /// and the ending therefore arrives with the last rows the program left — the row they
+    /// would have seen had they been looking.
+    ///
+    /// **The register is the difference and it is asserted too**: this ending was not the
+    /// operator's act, so it is the notice register — the `×` a `!term close` does not get.
+    #[test]
+    fn a_program_that_exits_while_detached_still_leaves_its_ending_row() {
+        let mut a = app();
+        a.session_id = "s".into();
+        a.head_id = "h1".into();
+        let _ = a.screen(80, 24);
+        pane(&mut a, b"mc: starting\r\n");
+
+        // The operator leaves: nothing is sent, the rectangle goes, the program keeps running.
+        assert_eq!(
+            a.pane_keys(b"\x1c"),
+            Vec::new(),
+            "a detach sends nothing at all"
+        );
+        assert!(!a.pane_open());
+
+        // It writes while they are away — the frames still arrive, and the head still feeds the
+        // screen it is holding. Then it exits.
+        a.apply(ServerFrame::TermOutput {
+            bytes: b"mc: not found\r\n".to_vec(),
+        });
+        a.apply(ServerFrame::TermEnded {
+            reason: "the program exited with 127".into(),
+        });
+
+        assert!(!a.pane_open());
+        assert!(a.term.is_none(), "the pane is over and dropped");
+        let frame = a.screen(80, 24);
+        assert!(
+            frame
+                .iter()
+                .any(|r| r.contains("!term mc") && r.contains("the program exited with 127")),
+            "the ending is a row, with the daemon's own sentence on it: {frame:?}"
+        );
+        assert!(
+            frame.iter().any(|r| r.contains("mc: not found")),
+            "and with the last thing the program printed — the rows a detach must not hide: \
+             {frame:?}"
+        );
+        // **`×` and not `·`**: nobody chose this ending, so it is the answer to what the
+        // operator is about to read rather than housekeeping.
+        assert!(
+            frame
+                .iter()
+                .any(|r| r.trim_start().starts_with('×') && r.contains("!term mc")),
+            "an ending nobody asked for is the notice register: {frame:?}"
+        );
     }
 
     /// **Leaving gives the conversation back, and the ending stays as a row.**
@@ -27331,8 +27906,12 @@ mod tests {
     /// * **the transcript is back**, which is the property this test has always been about;
     /// * **and the ending is a row in it**, with the line that was run and the daemon's own
     ///   sentence — see [`Note::Pane`].
+    ///
+    /// **The ending here is the deliberate one** (`!term close`, confirmed), which is why the
+    /// sentence is *"you closed the terminal"* and the register is the dim `·` — a detach would
+    /// have filed no row at all, and a program's own exit would have been the `×`.
     #[test]
-    fn leaving_the_pane_gives_the_conversation_back_and_the_ending_stays_as_a_row() {
+    fn ending_the_pane_gives_the_conversation_back_and_the_ending_stays_as_a_row() {
         let mut a = app();
         a.session_id = "s".into();
         a.head_id = "h1".into();
@@ -27353,8 +27932,25 @@ mod tests {
             "the pane really did replace the conversation"
         );
 
+        // The operator ends it deliberately: `!term close` is typed at the composer (which a
+        // drawn pane owns, so this is the DETACHED case — the head has the pane and the card
+        // names it), then confirmed with the one key that means yes.
+        a.detach();
+        typed(&mut a, "!term close");
+        assert_eq!(
+            a.key(Key::Enter),
+            None,
+            "the verb asks; it does not end anything on its own"
+        );
+        assert!(a.term_ask.is_some(), "the confirmation is up");
+        assert_eq!(
+            a.key(Key::Char('y')),
+            Some(Action::TermClose),
+            "and `y` is the yes"
+        );
+
         a.apply(ServerFrame::TermEnded {
-            reason: "you left the terminal".into(),
+            reason: "you closed the terminal".into(),
         });
         assert!(!a.pane_open(), "the pane is over");
         assert!(
@@ -27373,7 +27969,7 @@ mod tests {
             .position(|r| r.contains("!term mc"))
             .expect("the ending is a row");
         assert!(
-            after[heading].contains("you left the terminal"),
+            after[heading].contains("you closed the terminal"),
             "the ending row carries the daemon's own sentence: {after:?}"
         );
         assert_eq!(
@@ -27390,6 +27986,299 @@ mod tests {
         assert!(
             after.iter().any(|r| r.contains("! ls -la")),
             "and the transcript is back: {after:?}"
+        );
+    }
+
+    /// **`!term close` asks before it ends anything, and only a deliberate yes ends it.**
+    ///
+    /// The operator's rule, in their words: *"yeah it is pretty much a terminal emulator - if a
+    /// process runs then `ending` must ask"*. So the verb raises a card and sends **nothing**;
+    /// the frame leaves on `y` and on nothing else.
+    ///
+    /// **Enter is deliberately not the yes**, and the two reasons are asserted here rather than
+    /// argued: Enter is the prompt card's own key (an empty line is a real answer there, so the
+    /// two cards would be answerable by the same keystroke) and it is the composer's, so a stray
+    /// one must not be able to kill a program. Esc cancels, and so does every other key — *the
+    /// safe default* is the whole shape of a destructive confirmation.
+    ///
+    /// **And a detach never asks**, because it ends nothing: that is the point of it being the
+    /// default. Asserted beside the rest so the two acts are read together.
+    #[test]
+    fn a_term_close_asks_first_and_only_a_deliberate_yes_ends_anything() {
+        let mut a = app();
+        a.session_id = "s".into();
+        a.head_id = "h1".into();
+        let _ = a.screen(80, 24);
+        pane(&mut a, b"nano's screen\r\n");
+        // The operator leaves first — a detach, and it raises no card at all.
+        a.pane_keys(b"\x1c");
+        assert!(!a.pane_open());
+        assert!(
+            a.term_ask.is_none(),
+            "a detach ends nothing, so it asks nothing"
+        );
+
+        typed(&mut a, "!term close");
+        assert_eq!(
+            a.key(Key::Enter),
+            None,
+            "the verb itself sends nothing: it is the ASK"
+        );
+        let ask = a.term_ask.as_ref().expect("the confirmation is up");
+        assert_eq!(
+            ask.line, "!term mc",
+            "the card names the program in the operator's own spelling"
+        );
+        let card = a.screen(80, 24);
+        assert!(
+            card.iter()
+                .any(|r| r.contains("end the pane") && r.contains("!term mc")),
+            "and it says what it is about to end: {card:?}"
+        );
+        assert!(
+            card.iter().any(|r| r.contains("y ends it")),
+            "both keys, and which one is the default: {card:?}"
+        );
+
+        // **Every key that is not a deliberate yes cancels**, Enter included — and the program
+        // is still running afterwards.
+        for k in [Key::Enter, Key::Esc, Key::Char('n'), Key::Up] {
+            let mut b = app();
+            b.session_id = "s".into();
+            let _ = b.screen(80, 24);
+            pane(&mut b, b"mc");
+            // Detached first, because that is the only state `!term close` is reachable from:
+            // a drawn pane owns the keyboard.
+            b.pane_keys(b"\x1c");
+            typed(&mut b, "!term close");
+            assert_eq!(
+                b.key(Key::Enter),
+                None,
+                "the verb itself sends nothing: it is the ASK"
+            );
+            assert!(b.term_ask.is_some(), "the confirmation is up");
+            assert_eq!(
+                b.key(k.clone()),
+                None,
+                "`{k:?}` must not end a program: the safe default is the cancel"
+            );
+            assert!(b.term_ask.is_none(), "and the card is down");
+            assert!(
+                b.term.is_some(),
+                "`{k:?}`: the pane is still here — nothing was ended"
+            );
+        }
+
+        // And the yes: the frame leaves, and the pane's keys stop while the kill is in flight.
+        assert_eq!(a.key(Key::Char('Y')), Some(Action::TermClose));
+        assert!(a.term_ask.is_none());
+        assert!(
+            a.pane_keys(b"x").is_empty(),
+            "an ending is on its way: a byte written into a pty whose program is being \
+             signalled is a byte nobody will read"
+        );
+    }
+
+    /// **A close the head cannot answer from what it holds is ASKED FOR, not guessed.**
+    ///
+    /// Two cases, and they are the reason [`PaneFact`] is a three-state: a session with no pane
+    /// (a sentence, and **nothing sent** — `TermClose` is quiet about there being nothing to
+    /// end, so a head that sent it would look like it had done something) and a pane the daemon
+    /// says is running in a head that does not hold it (a card that names `!term <command>`, the
+    /// string the daemon was handed).
+    ///
+    /// The third state — *not asked yet* — is the one that would otherwise be read as *no pane*,
+    /// and it is asserted as the hold it is: the line goes out, and the answer runs the same
+    /// decision.
+    #[test]
+    fn a_close_the_head_cannot_answer_is_asked_for_and_not_guessed() {
+        // No pane at all: the daemon said so.
+        let mut a = app();
+        a.session_id = "s".into();
+        a.apply(ServerFrame::TermStatus { command: None });
+        typed(&mut a, "!term close");
+        assert_eq!(a.key(Key::Enter), None, "nothing is sent");
+        assert!(a.term_ask.is_none(), "and no card: there is nothing to end");
+        assert!(
+            a.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("no pane to end")),
+            "the head says why rather than staying silent: {:?}",
+            a.notice
+        );
+
+        // A pane the DAEMON holds and this head does not: the card names it.
+        let mut b = app();
+        b.session_id = "s".into();
+        b.apply(ServerFrame::TermStatus {
+            command: Some("mc /etc".into()),
+        });
+        typed(&mut b, "!term close");
+        assert_eq!(b.key(Key::Enter), None);
+        assert_eq!(
+            b.term_ask.as_ref().map(|a| a.line.as_str()),
+            Some("!term mc /etc"),
+            "the card names what the daemon says is running"
+        );
+        assert_eq!(b.key(Key::Char('y')), Some(Action::TermClose));
+
+        // **Not asked yet**: the read goes out and the line is HELD, then the same decision runs
+        // on the answer. A head that read this as *no pane* would refuse to end a program the
+        // operator can see.
+        let mut c = app();
+        c.session_id = "s".into();
+        assert_eq!(c.term_fact, PaneFact::Unasked, "nothing has answered yet");
+        typed(&mut c, "!term close");
+        assert_eq!(
+            c.key(Key::Enter),
+            Some(Action::TermStatus),
+            "the head asks rather than guessing"
+        );
+        assert!(c.close_pending, "and it holds the line");
+        c.apply(ServerFrame::TermStatus {
+            command: Some("nano notes.txt".into()),
+        });
+        assert!(!c.close_pending, "the answer runs the decision");
+        assert_eq!(
+            c.term_ask.as_ref().map(|a| a.line.as_str()),
+            Some("!term nano notes.txt"),
+            "and the card is the one the answer implies"
+        );
+    }
+
+    /// **The pane's existence is drawn from the status read, and it is not a row.**
+    ///
+    /// The operator's rule: a detach leaves no ending row, and *the pane's existence is a fact
+    /// the head draws from `TermStatus`*. So a head that is not drawing a pane the daemon says
+    /// is running draws **one line** above the composer, naming the program and both verbs, and
+    /// files nothing in the conversation; when the answer becomes `None` the line goes with it,
+    /// because it is a fact about now and not a disclosure about a moment.
+    #[test]
+    fn the_pane_line_is_drawn_from_the_status_read_and_is_not_a_row() {
+        let mut a = app();
+        a.session_id = "s".into();
+        a.head_id = "h1".into();
+        let _ = a.screen(80, 24);
+        assert!(
+            !a.screen(80, 24)
+                .iter()
+                .any(|r| r.contains("a pane is running")),
+            "nothing is drawn before the daemon has said anything"
+        );
+
+        a.apply(ServerFrame::TermStatus {
+            command: Some("mc /etc".into()),
+        });
+        let frame = a.screen(80, 24);
+        assert!(
+            frame.iter().any(|r| r.contains("a pane is running")
+                && r.contains("!term mc /etc")
+                && r.contains("!term close")),
+            "the line names what is running and both verbs: {frame:?}"
+        );
+        assert!(
+            a.notes.is_empty(),
+            "and it is NOT a row: a detach is not an event, so there is no ending to file"
+        );
+
+        // The daemon says there is nothing running any more: the line stops being true and goes.
+        a.apply(ServerFrame::TermStatus { command: None });
+        assert!(
+            !a.screen(80, 24)
+                .iter()
+                .any(|r| r.contains("a pane is running")),
+            "a fact that is no longer true is no longer drawn"
+        );
+    }
+
+    /// **A question from the run takes the screen back from the confirmation.**
+    ///
+    /// The operator's other rule: the two questions must not be confusable, and *neither may be
+    /// answerable by the other's keystroke*. They are exclusive by construction everywhere else —
+    /// the confirmation is typed at the composer and the prompt card owns the composer while it
+    /// is up — but a `PromptRequested` can arrive *while* the confirmation is standing, and then
+    /// `y` would mean two things: this card's yes and that card's text. So the confirmation
+    /// yields, with a sentence, and the program it was about is still running.
+    #[test]
+    fn a_question_from_the_run_takes_the_screen_back_from_the_confirmation() {
+        let mut a = app();
+        a.session_id = "s".into();
+        a.head_id = "h1".into();
+        let _ = a.screen(80, 24);
+        pane(&mut a, b"nano's screen\r\n");
+        a.detach();
+        typed(&mut a, "!term close");
+        a.key(Key::Enter);
+        assert!(a.term_ask.is_some());
+
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::PromptRequested {
+                req_id: "r1".into(),
+                job: "j1".into(),
+                command: "! sudo apt install mc".into(),
+                question: Some("Continue? [Y/n]".into()),
+            },
+        )));
+        assert!(a.term_ask.is_none(), "the confirmation yielded");
+        assert!(a.prompt.is_some(), "and the program's question is up");
+        assert!(
+            a.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("still running")),
+            "the yield is said rather than silent: {:?}",
+            a.notice
+        );
+        // **And `y` is the program's answer, not a kill**: the confirmation is gone, so the key
+        // goes where the card that IS up says it goes.
+        assert_eq!(a.key(Key::Char('y')), None);
+        assert_eq!(a.prompt_buf, "y", "the letter reached the prompt card");
+        assert!(a.term.is_some(), "nothing was ended");
+    }
+
+    /// **A bare `!term` after a detach attaches back to the SAME run.**
+    ///
+    /// The operator's way back, and the whole of it is that the pane was never ended: the head
+    /// sends the bare verb, the daemon answers with what is running in the pane it kept and
+    /// replays the screen, and the head draws that screen again. A head that had *ended* the
+    /// pane on `ctrl-\` would be opening a new one here — or being refused.
+    #[test]
+    fn a_bare_term_line_after_a_detach_attaches_back_to_the_same_run() {
+        let mut a = app();
+        a.session_id = "s".into();
+        a.head_id = "h1".into();
+        let _ = a.screen(80, 24);
+        pane(&mut a, b"\x1b[2J\x1b[Hmc's screen\r\n");
+        a.pane_keys(b"\x1c");
+        assert!(!a.pane_open(), "detached");
+
+        typed(&mut a, "!term");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::TermOpen {
+                line: "!term".into()
+            }),
+            "a bare `!term` is an attach: the daemon is asked for the pane it has"
+        );
+        assert!(
+            a.pane_open(),
+            "the rectangle is back before the daemon answers"
+        );
+        // The daemon's answer: the same command, and the screen it kept.
+        a.apply(ServerFrame::TermAttached {
+            command: "mc /etc".into(),
+        });
+        a.apply(ServerFrame::TermOutput {
+            bytes: b"\x1b[2J\x1b[Hmc's screen\r\n".to_vec(),
+        });
+        assert_eq!(
+            a.term.as_ref().map(|p| p.line.clone()),
+            Some("!term mc /etc".into()),
+            "and the line is the daemon's own name for the program — the same run"
+        );
+        assert!(
+            a.screen(80, 24).iter().any(|r| r.contains("mc's screen")),
+            "with the screen replayed into the rectangle"
         );
     }
 

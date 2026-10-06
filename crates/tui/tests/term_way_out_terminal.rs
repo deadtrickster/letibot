@@ -3,7 +3,7 @@
 //! The other half of the way out, and the half no `App` test can see: whether `0x1c` is
 //! *observable* at all. `0x1c` is `QUIT` under `ISIG`, so a head whose terminal is not
 //! fully raw never receives the byte — the kernel sends `SIGQUIT` to the process group and
-//! the head dies instead of closing a pane. `Terminal::enter` calls `cfmakeraw` on the
+//! the head dies instead of detaching from the pane. `Terminal::enter` calls `cfmakeraw` on the
 //! fd it read, which clears `ISIG` (`term.rs`), and this file is the measurement of that
 //! claim rather than a reading of it: a pty pair, a real `Terminal`, the byte written into
 //! the master the way a keyboard would send it, and the assertion that
