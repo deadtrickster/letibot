@@ -687,6 +687,96 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 // after the tool call that asked has given up.
                 seat.hub.give_screen(&req_id, cols, rows_n, rows);
             }
+            // **The operator answered a command that asked them something.**
+            //
+            // Off the queue, and this is the sharpest case of it in the file: the session
+            // worker is **blocked inside the very command that is asking** (`run_operator_shell`
+            // is waiting on the job), so a line queued behind that turn would be drained by the
+            // thread waiting for it — which is never. See `PROTOCOL_VERSION` 33.
+            Ok(ClientFrame::PromptAnswer { req_id, line }) => {
+                let session = seat.hub.session_id().to_string();
+                match registry.prompt(&session) {
+                    None => {
+                        seat.hub.publish(crate::event::SessionEvent::Warning {
+                            code: "nothing_to_send_to".into(),
+                            detail: format!(
+                                "{identity}: this daemon has no way to reach a running \
+                                 command's stdin, so `{line}` was not sent. Nothing of yours \
+                                 is running."
+                            ),
+                            compaction: None,
+                        });
+                    }
+                    Some(driver) => match driver.send(&session, Some(&req_id), &line) {
+                        // A card was up and this settled it. The line is nowhere on the
+                        // log — the settlement is the record, exactly as `SecretSettled`
+                        // is for a password.
+                        Ok(settled) => {
+                            if let Some(id) = settled {
+                                seat.hub.publish(crate::event::SessionEvent::PromptSettled {
+                                    req_id: id,
+                                    sent: true,
+                                    by: identity.clone(),
+                                });
+                            }
+                        }
+                        // **Late, and said rather than refused.** The command ended, or
+                        // another head answered first, so nothing was written — the same
+                        // shape and the same sentence as `secret_late`, and for its
+                        // reason: the person typed an answer and the command did not get
+                        // it, which is worth a red line.
+                        Err(why) => {
+                            seat.hub.publish(crate::event::SessionEvent::Warning {
+                                code: "prompt_late".into(),
+                                detail: format!("{identity}: {why}"),
+                                compaction: None,
+                            });
+                        }
+                    },
+                }
+            }
+            // **One line to the running command, on demand** — `!send`, the manual floor
+            // under the card. Off the queue for the reason above, and with no `req_id`: it
+            // addresses whatever operator command this session is running right now.
+            Ok(ClientFrame::SendLine { line }) => {
+                let session = seat.hub.session_id().to_string();
+                match registry.prompt(&session) {
+                    None => {
+                        seat.hub.publish(crate::event::SessionEvent::Warning {
+                            code: "nothing_to_send_to".into(),
+                            detail: format!(
+                                "{identity}: this daemon has no way to reach a running \
+                                 command's stdin, so `{line}` was not sent."
+                            ),
+                            compaction: None,
+                        });
+                    }
+                    Some(driver) => match driver.send(&session, None, &line) {
+                        Ok(settled) => {
+                            // A card was up and this answered it, so the card comes down
+                            // for every head — the same settlement the card's own field
+                            // would have produced.
+                            if let Some(id) = settled {
+                                seat.hub.publish(crate::event::SessionEvent::PromptSettled {
+                                    req_id: id,
+                                    sent: true,
+                                    by: identity.clone(),
+                                });
+                            }
+                        }
+                        // **Nothing of yours is running**, or its stdin is gone. A refusal
+                        // and not a failure: the act had nothing to act on, which is
+                        // `!term` with no pane one verb over.
+                        Err(why) => {
+                            seat.hub.publish(crate::event::SessionEvent::Warning {
+                                code: "nothing_to_send_to".into(),
+                                detail: format!("{identity}: {why}"),
+                                compaction: None,
+                            });
+                        }
+                    },
+                }
+            }
             Ok(ClientFrame::ListSessions) => {
                 let f = ServerFrame::Sessions {
                     sessions: registry.list(),

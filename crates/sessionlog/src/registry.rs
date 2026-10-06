@@ -579,6 +579,64 @@ pub trait TerminalDriver: Send + Sync {
     fn close(&self, session_id: &str) -> Result<(), String>;
 }
 
+/// **Who can write to a running command's stdin** — the answer to `PromptAnswer` and to
+/// `!send`.
+///
+/// # Why this is a trait on the registry and not a field somewhere
+///
+/// The same reason [`TerminalDriver`] is: **the caller is the server's reader thread**, and
+/// the state it needs — the pipe the daemon holds for the operator's own run — lives in the
+/// session's exec host, which the daemon worker owns. The worker is **blocked inside the very
+/// command that is asking**, so it cannot be asked; the server has to reach the state
+/// without it.
+///
+/// # Why it is per SESSION
+///
+/// One registry serves every session, and a pipe belongs to the run of one session. So the
+/// driver is looked up by session id ([`Registry::prompt`]) rather than held once: two
+/// sessions on one daemon each have their own operator run, and a `!send` in one must never
+/// write into the other's command. The daemon installs one per session at open
+/// ([`Registry::set_prompt`]).
+///
+/// # What is deliberately not here
+///
+/// **No secret.** This trait has no method that takes a password and no method that
+/// returns one; a password travels on [`crate::protocol::ClientFrame::Secret`] to a
+/// waiting `askpass` connection and nowhere else. That is not a rule this trait follows —
+/// it is a shape it does not have, which is the version of the rule a later edit cannot
+/// quietly break.
+pub trait PromptDriver: Send + Sync {
+    /// **Write one line to this session's own running command.**
+    ///
+    /// `req` is `Some(req_id)` when the line answers a card the daemon raised
+    /// ([`crate::protocol::ClientFrame::PromptAnswer`]) and `None` for the operator's own
+    /// send ([`crate::protocol::ClientFrame::SendLine`]). The difference is the whole of
+    /// the stale-card rule: with a `req_id` the driver checks that **that** request is the
+    /// one still open, so a card raised for `apt` cannot answer a `sleep` that started
+    /// after `apt` died; with `None` the caller has said *whatever is running*, which is
+    /// exactly what the manual verb means.
+    ///
+    /// **Returns the request this settled, if a card was up**, so the caller can publish
+    /// [`crate::SessionEvent::PromptSettled`] with the request id it names — the driver
+    /// does not publish, because it is the daemon's to say who answered.
+    ///
+    /// `Err` is a sentence a person reads: *nothing of yours is running*, *that card is
+    /// not open any more*, *the command is no longer reading its stdin*. The caller turns
+    /// it into a `Warning` (`prompt_late`, `nothing_to_send_to`) rather than a refusal,
+    /// because a late answer must not look like a refused one.
+    ///
+    /// **Nothing here may block.** This is called on the connection's reader thread, so a
+    /// driver that waited for the program to read would stop this head's acks and its
+    /// events. The write is one line into a pipe; `letibot_tools::exec::Stdin::send_line`
+    /// carries what that costs and why it is bounded.
+    fn send(
+        &self,
+        session_id: &str,
+        req: Option<&str>,
+        line: &str,
+    ) -> Result<Option<String>, String>;
+}
+
 pub struct Registry {
     inner: Mutex<Inner>,
     bell: Arc<Bell>,
@@ -597,6 +655,10 @@ pub struct Registry {
     /// [`TerminalDriver`]. `None` in every head and every test that predates `!term`, and a
     /// `TermOpen` then answers with a pane that is over and the reason it is.
     terminal: Mutex<Option<Arc<dyn TerminalDriver>>>,
+    /// **One per session**, installed by the session's own harness at open and never
+    /// removed — a session this registry holds is a session that lives for the daemon's
+    /// life. See [`PromptDriver`] for why it is keyed by session and not held once.
+    prompts: Mutex<std::collections::HashMap<String, Arc<dyn PromptDriver>>>,
 }
 
 /// What the worker was woken for.
@@ -661,6 +723,7 @@ impl Registry {
             diagnostics: Mutex::new(None),
             suggester: Mutex::new(None),
             terminal: Mutex::new(None),
+            prompts: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -858,6 +921,30 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// **Install a session's stdin driver.** Called by the session's own harness at open —
+    /// it is the half that owns the exec host, so it is the half that has the pipe — and
+    /// never removed: a session this registry holds lives for the daemon's life.
+    ///
+    /// See [`PromptDriver`] for why the key is a session id.
+    pub fn set_prompt(&self, session_id: &str, driver: Arc<dyn PromptDriver>) {
+        self.prompts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.to_string(), driver);
+    }
+
+    /// This session's stdin driver, or `None` for a session that has none — a daemon built
+    /// before this existed, a test, or a session whose harness never opened. A `PromptAnswer`
+    /// or a `SendLine` then answers with a sentence naming the absence rather than silence,
+    /// which is `terminal`'s own rule one verb over.
+    pub fn prompt(&self, session_id: &str) -> Option<Arc<dyn PromptDriver>> {
+        self.prompts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned()
     }
 
     /// One half of one decision's exchange, or `None` when there is no source or no record.

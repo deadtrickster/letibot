@@ -430,7 +430,39 @@ use crate::view::Snapshot;
 /// The other half is the screen, and it needs no frame of its own: the daemon holds the
 /// pane's bytes and replays them as [`ServerFrame::TermOutput`] — see
 /// `letibot_harnessd`'s `term` module for the decision and for what a capped log costs.
-pub const PROTOCOL_VERSION: u32 = 32;
+/// # 33: the operator's own run can be ANSWERED
+///
+/// Two new [`ClientFrame`]s — [`ClientFrame::PromptAnswer`] and [`ClientFrame::SendLine`] —
+/// and two new [`crate::SessionEvent`]s (`PromptRequested`, `PromptSettled`). The frames are
+/// the version-4 argument exactly: a version-32 daemon would fail to parse the first of
+/// them, so a head sending one against it gets a `Bye` at ATTACH rather than a
+/// deserialisation failure in the middle of a session. The two events are the version-25
+/// argument in the other direction — a version-32 head has no arm for either and would fail
+/// to decode it mid-session. One bump covers all four, the way 23 and 31 each carried a
+/// whole feature at one version.
+///
+/// **What it is for, in the operator's words:** *"no, we need this interactivity
+/// working"* — after `! sudo apt install mc`, which streamed its progress and then aborted
+/// at `Continue? [Y/n]`, because the row path's stdin was `/dev/null` and an EOF is not a
+/// `Y`. The mechanism is the daemon holding a pipe on the operator's own run's stdin
+/// (`letibot_tools::exec::Stdin`); these four frames and events are how the answer reaches
+/// it and how the person is asked.
+///
+/// # Why the answer is a frame and not a command
+///
+/// Both are the [`ClientFrame::Secret`]/[`ClientFrame::TermInput`] rule, for the sharpest
+/// version of the reason those two give: **the session worker is BLOCKED inside the very
+/// command that is asking.** `run_operator_shell` calls `invoke_operator`, which waits on
+/// the job — so an answer queued behind that turn would be drained by the thread waiting
+/// for it, which is never. The answer is delivered on the socket reader's thread, the way
+/// every other in-flight half is, and the daemon writes it into the pipe.
+///
+/// **And a password still does not travel here.** [`ClientFrame::PromptAnswer`] carries a
+/// line and [`ClientFrame::Secret`] carries a secret, and the two are separate variants on
+/// purpose: the prompt card is drawn in the open, its field is not masked, and the secret
+/// path (`SUDO_ASKPASS`, an `askpass` head, the helper's own connection) keeps its rules.
+/// A later edit that merged them would be the change this paragraph exists to make hard.
+pub const PROTOCOL_VERSION: u32 = 33;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -655,6 +687,57 @@ pub fn term_command(line: &str) -> Option<&str> {
     let rest = line.strip_prefix("!term")?;
     // A word boundary, not a prefix: the character after the verb must be whitespace or the
     // end of the line, or this is not the verb at all.
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(rest.trim())
+}
+
+/// **The line a `!send` line carries, or `None` when it is not one.**
+///
+/// Beside [`term_command`] and [`operator_shell_command`] for the same reason: this is the
+/// one place both halves of the parse live, so the head that recognises the verb at the
+/// composer and the daemon that re-checks it at the socket cannot disagree about what a
+/// `!send` line is.
+///
+/// # What the verb is for
+///
+/// **It is the manual floor under a heuristic.** The daemon raises a prompt card when a run
+/// of the operator's own is *blocked reading the stdin pipe the daemon holds* — a reading of
+/// the process and not of its words (`letibot_tools::exec::ask`) — and that reading has
+/// misses it names: a program blocked on another fd, one that asks and keeps drawing, a
+/// `/proc` a confined session's daemon may not read. **None of those is a reason a person
+/// cannot answer**: they are watching the bytes, they can see the question, and this is how
+/// they reply. The card is the convenience; this is the way in.
+///
+/// # The spelling
+///
+/// The verb is `!send` and the rest of the line is the text, trimmed at both ends:
+///
+/// * `!send Y` writes `Y\n` to the running command's stdin.
+/// * `!send` with nothing after it writes a bare `\n` — **an Enter, which is a real
+///   answer**: `Continue? [Y/n]` takes Enter as its default, and a person who wants to
+///   accept a default must not have to type a letter to say so.
+/// * `!send foo bar` writes `foo bar\n`. The text is NOT re-split: it is one line, and the
+///   command decides what to do with the spaces in it.
+///
+/// **A word boundary, exactly as [`term_command`] has one.** `!sender`, `!send-mail` and
+/// `!sends` are not this verb and fall through to [`operator_shell_command`] — which is what
+/// they always were, an operator's own shell line that happens to start with the same five
+/// letters. One space, and no tolerance for a tab or a second one.
+///
+/// `Some("")` for the bare verb, so *"the verb, with nothing after it"* (a bare Enter) and
+/// *"not this verb at all"* are two answers a caller can tell apart. `None` means this is
+/// not a `!send` line, and the caller falls through to `!`.
+///
+/// # What it deliberately does NOT do
+///
+/// **It cannot close the pipe.** A program waiting for EOF (`! cat` with no argument) is not
+/// answerable by this and is ended by its deadline instead. Named because it is the one shape
+/// a person will reach for this verb on and not get; a `!eof` is a third verb and a decision
+/// nobody has asked for.
+pub fn send_line(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("!send")?;
     if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
         return None;
     }
@@ -1603,6 +1686,52 @@ pub enum ClientFrame {
     /// Its own frame rather than a field on [`ClientFrame::TermInput`], because a resize is
     /// not a keystroke and a terminal's two directions are not one message.
     TermResize { cols: usize, rows: usize },
+    /// **The operator's answer to a command that asked them something.**
+    ///
+    /// The daemon raised `SessionEvent::PromptRequested` for a run of the operator's own
+    /// that is **blocked reading its stdin** (`letibot_tools::exec::ask` — the detection is
+    /// the process's state and not its words), the head drew a card, and this is the line
+    /// the person typed.
+    ///
+    /// `req_id` and not a job id, and that is the same choice [`ClientFrame::Secret`] makes:
+    /// **a stale card must not be able to answer a later command.** A card raised for `apt`
+    /// and answered after `apt` died, while something else runs, is a line written into the
+    /// wrong program's stdin — and the daemon can tell, because it holds the open request.
+    /// An answer that finds nothing waiting is a `prompt_late` warning and nothing is
+    /// written.
+    ///
+    /// **A line, not a keystroke.** The run's stdin is a pipe and not a terminal, so there
+    /// are no arrow keys to send: what a person types is a line and a newline is what makes
+    /// it one. An empty `line` is a bare Enter and is a real answer — `Continue? [Y/n]`
+    /// takes Enter as its default.
+    ///
+    /// **Not a command**: it is never queued, never announced and never logged with its
+    /// payload. See [`PROTOCOL_VERSION`]'s 33 section for why the queue cannot carry it.
+    PromptAnswer {
+        /// The request this answers, as `PromptRequested` named it.
+        req_id: String,
+        /// The line, verbatim. Empty is a bare Enter.
+        line: String,
+    },
+    /// **One line to the running command, on demand** — the manual way in.
+    ///
+    /// The operator's own words for why it exists: the card is raised by a **heuristic**,
+    /// and a heuristic has misses (a program blocked on something other than its stdin, a
+    /// program that asks and keeps drawing, a `/proc` this daemon may not read). This is the
+    /// floor under it: **a person watching the stream can answer whether or not anything
+    /// looked like a question**, and it needs no signal at all.
+    ///
+    /// **No `req_id` and no job id**, deliberately. It addresses *whatever operator command
+    /// this session is running right now* — which the daemon knows and the head does not —
+    /// so there is nothing for a head to get wrong, and a session with nothing running gets
+    /// a sentence saying so rather than silence. A head that wanted to answer a *card* sends
+    /// [`ClientFrame::PromptAnswer`], where the request id is checked.
+    ///
+    /// The verb is [`send_line`], and the line arrives here with the verb stripped.
+    SendLine {
+        /// The line to write, verbatim. Empty is a bare Enter.
+        line: String,
+    },
     /// **The operator left the pane.** The one unambiguous way out, and it is the operator's
     /// act rather than a key the program sees: the daemon ends the pane's scope, which kills
     /// the program and everything it started, and answers with
@@ -2042,6 +2171,7 @@ mod tests {
                 | ClientFrame::Peek { .. }
                 | ClientFrame::Promote { .. }
                 | ClientFrame::Prompt { .. }
+                | ClientFrame::PromptAnswer { .. }
                 | ClientFrame::ReadJobOutput { .. }
                 | ClientFrame::RenameSession { .. }
                 | ClientFrame::ReseatSession { .. }
@@ -2049,6 +2179,7 @@ mod tests {
                 | ClientFrame::Resync { .. }
                 | ClientFrame::Screen { .. }
                 | ClientFrame::Secret { .. }
+                | ClientFrame::SendLine { .. }
                 | ClientFrame::Settings { .. }
                 | ClientFrame::Slash { .. }
                 | ClientFrame::SuggestShell { .. }
@@ -2080,6 +2211,8 @@ mod tests {
                 | crate::SessionEvent::Filling { .. }
                 | crate::SessionEvent::CompactionProgress { .. }
                 | crate::SessionEvent::PromptProgress { .. }
+                | crate::SessionEvent::PromptRequested { .. }
+                | crate::SessionEvent::PromptSettled { .. }
                 | crate::SessionEvent::ScreenRequested { .. }
                 | crate::SessionEvent::SecretRequested { .. }
                 | crate::SessionEvent::SecretSettled { .. }
@@ -2136,10 +2269,14 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 32,
-            "the match above was last reconciled with the frame list at 32 — bumped for \
-             `TermAttached`, one NEW server frame (a version-31 head would fail to decode it \
-             mid-session, the version-25 argument), which is the answer to a bare `!term`: the \
+            PROTOCOL_VERSION, 33,
+            "the match above was last reconciled with the frame list at 33 — bumped for \
+             `PromptAnswer` and `SendLine`, two NEW client frames (a version-32 daemon would \
+             fail to parse the first of them, the version-4 argument), and `PromptRequested` \
+             and `PromptSettled`, two NEW events (a version-32 head would fail to decode them \
+             mid-session, the version-25 argument): the operator's own run can be ANSWERED, \
+             which is what `! sudo apt install mc` aborting at `Continue? [Y/n]` asked for. 32 \
+             was `TermAttached`, one NEW server frame, the answer to a bare `!term`: the \
              pane a session already has, and what is running in it. 31 was `!term` whole — \
              `TermOpen`, `TermInput`, `TermResize` and `TermClose`, four NEW client frames (a \
              version-30 daemon would fail to parse the first at ATTACH, the version-4 \

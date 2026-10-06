@@ -324,6 +324,16 @@ pub const TABLE: &[(&str, Class)] = &[
     // given up, or another head answered first — so the call that needed the password did
     // not get one.
     ("secret_late", Class::Failure),
+    // **A line for the operator's own run found nothing waiting.** The card was raised for
+    // a command that has since ended, or another head answered it first, so nothing was
+    // written to any program's stdin. A `Failure` and not the reader's input being wrong:
+    // the person typed an answer and the command did not get it.
+    ("prompt_late", Class::Failure),
+    // **There was no command of the operator's own to send to.** `!send` with nothing
+    // running, or with the run already ended. Not a failure of the harness and not a
+    // mistake the reader can be told to correct beyond the one sentence — the act simply
+    // had nothing to act on, which is the same shape as `!term` with no pane.
+    ("nothing_to_send_to", Class::Refused),
     // **Refused, and it must be read.** The mode they named does not exist, or the session
     // cannot carry the one they asked for: the point did NOT move, and the fix is their next
     // line. *"this session stays at `writes-allowed`: …"* is an answer, not a fault.
@@ -555,32 +565,36 @@ mod the_register_census {
         "job_output_refused",
         "mode_set_refused",
         "mode_unknown",
+        // **`!send` with nothing of yours running**, or with the run already over. The reader
+        // typed a line and there was no command of theirs to give it to — the same shape as
+        // `!term` with no pane, which is `job_output_refused`'s shape too: the act is well
+        // formed, the thing it names is not there, and the fix is the reader's next line.
+        "nothing_to_send_to",
         "reseat_refused",
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 80 codes, of which **7** are the reader's own input refused.
+    /// **The census, pinned.** 82 codes, of which **8** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_29_routine_7_refused_and_44_failures() {
+    fn the_table_is_29_routine_8_refused_and_45_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **80, not the 78 the last census was taken at.** Two arrivals, and they are one
-        // door's two verdicts — the merge queue's enqueue, which had no words of its own
-        // until a finished `task_start` child's branch started going into the queue:
+        // **82, not the 80 the last census was taken at.** Two arrivals, and they are the two
+        // verdicts of one act — the operator answering a command of their own:
         //
-        //   · `merge_queued` — the branch is in the queue, said to the parent that started
-        //     the child — is Routine by the same ruling as `operator_call_ran` above it: the
-        //     work happened, the sentence says where it went, and deleting it costs the reader
-        //     the sentence rather than the branch;
-        //   · `merge_not_queued` is the failure the same act's refusal is — the branch is
-        //     still in its worktree and nothing will land it until somebody enqueues it, which
-        //     no line the reader types can fix.
+        //   · `prompt_late` — a line sent for a card that is no longer open, because the
+        //     command ended or another head answered first — is a Failure, and it is
+        //     `secret_late`'s own case one channel over: the person answered and the command
+        //     did not get it, which is worse than a sentence the reader can correct;
+        //   · `nothing_to_send_to` — `!send` with nothing of theirs running, or a daemon with
+        //     no way to reach a command's stdin at all — is Refused: the act was well formed
+        //     and the thing it names is not there, exactly like `job_output_refused`.
         //
-        // The census before that, 78, kept its own list for the same reason:
+        // The census before that, 80, kept its own list for the same reason:
         //
         //   · `subagents_stopped` — a stop took the session's children with it — is Routine
         //     by the rule at the top of the table: it reports an act somebody asked for (the
@@ -612,12 +626,12 @@ mod the_register_census {
         //     the daemon**, and it is a Failure by the same argument that keeps `anchor_lost`: the
         //     diagnostic reaches neither the conversation nor the triangle, so a reader who is not
         //     told has been told nothing at all.
-        assert_eq!(TABLE.len(), 80, "the table's size");
+        assert_eq!(TABLE.len(), 82, "the table's size");
         assert_eq!(count(Class::Routine), 29);
-        assert_eq!(count(Class::Refused), 7, "the seven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 44);
+        assert_eq!(count(Class::Refused), 8, "the eight in READER_INPUT");
+        assert_eq!(count(Class::Failure), 45);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 44 of 80 and the middle is 7**, which is why the third register is a
+        // register is 45 of 82 and the middle is 8**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }
