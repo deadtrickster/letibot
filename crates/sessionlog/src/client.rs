@@ -453,6 +453,29 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// **Ask the model to propose `!` completions for a prefix** — the smart half of the
+    /// `!` completion. The history is this head's own and is the first answer; this is
+    /// asked for only when the history has no match for the prefix.
+    ///
+    /// `prefix` is the composer's line as typed, `!` first. The daemon builds the prompt
+    /// from the session's own rows and asks the LOCAL model; the answer comes back as a
+    /// [`crate::protocol::ServerFrame::ShellSuggestions`] on this head's reader, carrying
+    /// the prefix back so the head can key its cache by it. **Nothing here submits**: the
+    /// lines are candidates for the composer, and Enter is still the operator's.
+    pub fn suggest_shell(
+        &mut self,
+        expected_seq: u64,
+        prefix: &str,
+    ) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::SuggestShell {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+            prefix: prefix.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
     /// This head's rendered rows, answering a `ScreenRequested`.
     pub fn screen(
         &mut self,

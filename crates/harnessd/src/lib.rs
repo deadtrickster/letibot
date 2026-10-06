@@ -109,6 +109,7 @@ pub mod oracle;
 pub mod progress;
 pub mod sessions;
 pub mod slash;
+pub mod suggest;
 pub mod sudo;
 pub mod tasks;
 pub mod transcript_source;

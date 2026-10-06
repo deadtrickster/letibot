@@ -736,6 +736,25 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         registry.set_row_source(src.clone());
         registry.set_source(src);
     }
+    // **The smart `!`'s model half, attached whenever there is a local model to ask.**
+    //
+    // The endpoint is `cfg.oracle` — the `[gatekeeper]` endpoint read at startup, the
+    // LOCAL model — and the suggester is installed on exactly that condition, the same
+    // one the guard is attached on. A daemon with no local endpoint installs no
+    // suggester, and a `SuggestShell` then answers with an empty list: a suggestion
+    // must not cost money per keystroke, so the fallback is *nothing*, never a metered
+    // provider. The model name is the guard's own, so the two never disagree about
+    // which model is local.
+    if let Some(ep) = cfg.oracle.clone() {
+        let model = cfg
+            .oracle_model
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| "local".to_string());
+        registry.set_suggester(std::sync::Arc::new(crate::suggest::LocalSuggester::new(
+            ep, model,
+        )));
+    }
     registry
         .create(
             cfg.session_id.clone(),

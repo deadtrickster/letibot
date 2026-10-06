@@ -1164,6 +1164,23 @@ pub enum Action {
     OperatorShell {
         line: String,
     },
+    /// **Ask the model to propose `!` completions for a prefix** — the smart half of
+    /// the `!` completion. The history is this head's own and is the first answer;
+    /// this is asked for only when the history has no match for the prefix (or its
+    /// cycle is exhausted).
+    ///
+    /// `client_request_id` is minted here, by the head, because the answer comes back
+    /// on the pump and the head has to recognise it: the id is the correlation, and a
+    /// head that could not tell one answer from another would cache a suggestion under
+    /// the wrong prefix. The daemon echoes it back in `ShellSuggestions`.
+    ///
+    /// **Nothing here submits.** The answer is a list of candidate lines for the
+    /// composer, drawn as candidates with their provenance, and Enter is still the
+    /// operator's.
+    SuggestShell {
+        prefix: String,
+        client_request_id: String,
+    },
     /// A password for `sudo`, or a refusal. Never logged by anything on the way.
     Secret {
         req_id: String,
@@ -2043,6 +2060,38 @@ pub struct App {
     /// str`, because half the list now comes from the daemon (R32) and a borrowed list
     /// could only ever hold this head's own table.
     completion: Option<(String, Vec<String>, usize)>,
+    /// **The model's half of the `!` completion, in flight and answered.**
+    ///
+    /// The history is the first answer and this is the fallback: when the history has
+    /// no match for the prefix (or its cycle is exhausted), the head asks the daemon,
+    /// and the daemon asks the local model. The operator's ask, in their words: *"i
+    /// want smart ! when a model suggest completions."*
+    ///
+    /// `shell_ask` is the asks in flight, keyed by the `client_request_id` the head
+    /// minted, mapping to the (prefix, transcript position) the ask was for. The id is
+    /// the correlation: the answer comes back on the pump and the head has to tell one
+    /// answer from another, because a suggestion cached under the wrong prefix is a
+    /// wrong suggestion. `shell_suggestions` is the answered asks, keyed by
+    /// (prefix, transcript position) — the same prefix asked twice at the same
+    /// position is not two model calls.
+    ///
+    /// **Both are cleared when the transcript advances**, because a suggestion built
+    /// on the conversation as it was is a suggestion about that conversation, and a
+    /// conversation that moved is a different question. The position in the key is the
+    /// number of transcript rows at the ask, so a row landing is a new position and a
+    /// stale answer.
+    shell_ask: std::collections::HashMap<String, (String, u64)>,
+    shell_suggestions: std::collections::HashMap<(String, u64), Vec<String>>,
+    /// The number the next `SuggestShell`'s `client_request_id` takes, beside
+    /// `head_run_seq` and for the same reason: the id has to be unique per head, and
+    /// the head is the one that has to recognise it on the way back.
+    shell_ask_seq: u64,
+    /// **The model's cycle, when it is live**: the prefix it was started for, the
+    /// lines it is cycling, and which one is showing. Separate from `completion`
+    /// (the history's cycle) because the two have different provenance and the render
+    /// has to tell them apart — a model line drawn as a history line is a line that
+    /// looks like the operator typed it and did not.
+    shell_model: Option<(String, Vec<String>, usize)>,
     /// Actions produced by a *frame* rather than by a key: the switch that follows
     /// a session being created. Drained by the driver, which is the only thing that
     /// can send.
@@ -3618,6 +3667,10 @@ impl App {
             picker_rows_drawn: 0,
             screen_rows: 0,
             completion: None,
+            shell_ask: std::collections::HashMap::new(),
+            shell_suggestions: std::collections::HashMap::new(),
+            shell_ask_seq: 0,
+            shell_model: None,
             queued: Vec::new(),
             pending_prompts: Vec::new(),
             bound_prompts: std::collections::HashMap::new(),
@@ -4666,6 +4719,28 @@ impl App {
             // and a frame with no home in this head is read and counted rather than half-drawn.
             // `Control` because it is a reply, like `Jobs` and `Todos`, not an event.
             ServerFrame::MergeQueue { .. } => Disposition::Control,
+            // **The model's proposed `!` completions, answered.** The answer to a
+            // `SuggestShell` this head sent, correlated by the id it minted: a
+            // suggestion cached under the wrong prefix is a wrong suggestion, and the
+            // id is what tells one answer from another. An id this head is not
+            // holding — the transcript advanced and the ask was cleared — is stale
+            // and is dropped, because a suggestion about a conversation that moved is
+            // a suggestion about the wrong conversation.
+            //
+            // **Nothing here fills the composer.** The lines are cached and drawn as
+            // candidates, with their provenance; only a Tab fills the composer with
+            // one, and Enter is still the operator's.
+            ServerFrame::ShellSuggestions {
+                client_request_id,
+                prefix: _,
+                lines,
+            } => {
+                if let Some((prefix, position)) = self.shell_ask.remove(&client_request_id) {
+                    self.shell_suggestions.insert((prefix, position), lines);
+                    self.redraw = true;
+                }
+                Disposition::Control
+            }
             ServerFrame::Todos { session_id, todos } => {
                 if session_id == self.session_id {
                     self.todos = todos;
@@ -5067,6 +5142,9 @@ impl App {
             self.last_timings = Some(*timings);
         }
         self.items = s.items;
+        // A snapshot replaces the rows, so the model's suggestions — built on the
+        // rows as they were — are stale and go with them.
+        self.clear_shell_suggestions();
         // **And the fill's bar goes with the stream that carried it.**
         //
         // A `Filling` tick rides the event stream and its ONLY exit is a tick whose `done` has
@@ -6132,6 +6210,10 @@ impl App {
                     ts,
                     item: None,
                 });
+                // A row landed, so the transcript moved and the model's suggestions
+                // — built on the rows as they were — are a new position and a stale
+                // answer. The next Tab for the same prefix is a fresh ask.
+                self.clear_shell_suggestions();
                 Disposition::Rendered
             }
             // The body for a row already announced. Before this existed, a head
@@ -9253,13 +9335,22 @@ impl App {
         }
     }
 
-    /// **Tab on a `!` line completes from what this session has actually run.**
+    /// **Tab on a `!` line completes from what this session has actually run — and,
+    /// when the history has nothing, from what the model proposes.**
     ///
     /// The operator's own words for the feature: *"smart autocomplete here for ! -
-    /// you trying to suggest me commands based on conversation context"*. The
-    /// candidates are whole lines, newest first, deduped — the operator's own `!`
-    /// rows verbatim, and the model's `bash` calls as `! ` plus the command they
-    /// ran — and the match is a whole-line prefix, so `! ls` reaches `! ls .`.
+    /// you trying to suggest me commands based on conversation context"*, and then
+    /// *"i want smart ! when a model suggest completions."* The candidates are whole
+    /// lines, newest first, deduped — the operator's own `!` rows verbatim, and the
+    /// model's `bash` calls as `! ` plus the command they ran — and the match is a
+    /// whole-line prefix, so `! ls` reaches `! ls .`.
+    ///
+    /// **History first, model second.** The history is the first answer, because a
+    /// command this session actually ran is a fact and a model's proposal is a guess,
+    /// and a real command beats an invented one. The model is the fallback, asked
+    /// only when the history has no match for the prefix — or its cycle is exhausted
+    /// — and asked once per (prefix, transcript position), so the same prefix asked
+    /// twice is not two model calls.
     ///
     /// **The one recogniser for "is this a `!` line" is `operator_shell_command`**,
     /// the same rule the daemon re-checks at the send: a bang with nothing after it
@@ -9280,15 +9371,45 @@ impl App {
         if letibot_sessionlog::operator_shell_command(&text).is_none() {
             return;
         }
-        if let Some((_, lines, idx)) = &mut self.completion {
-            let live = lines.get(*idx).is_some_and(|current| text == *current);
-            if live && !lines.is_empty() {
+        // **The model's cycle, if it is live.** It is checked first because it is the
+        // more recent answer: the operator exhausted the history to get here. An empty
+        // lines list is the *waiting* state — the history is exhausted and the model
+        // has not answered yet — and a Tab in that state re-checks the cache rather
+        // than asking again.
+        if let Some((prefix, lines, idx)) = &mut self.shell_model {
+            let live = text.starts_with(prefix.as_str())
+                && (lines.is_empty() || lines.get(*idx).is_some_and(|current| text == *current));
+            if live {
+                if lines.is_empty() {
+                    self.shell_model_fallback(&text);
+                    return;
+                }
                 *idx = (*idx + 1) % lines.len();
                 let line = lines[*idx].clone();
                 self.set_composer(&line);
                 return;
             }
         }
+        // **The history's cycle, if it is live.** When it is exhausted — the next Tab
+        // would wrap to the first history candidate — the model is the fallback,
+        // asked once, and its suggestions are cycled instead.
+        if let Some((_, lines, idx)) = &mut self.completion {
+            let live = lines.get(*idx).is_some_and(|current| text == *current);
+            if live && !lines.is_empty() {
+                let next = (*idx + 1) % lines.len();
+                if next == 0 {
+                    self.completion = None;
+                    self.shell_model_fallback(&text);
+                    return;
+                }
+                *idx = next;
+                let line = lines[*idx].clone();
+                self.set_composer(&line);
+                return;
+            }
+        }
+        // No live cycle: start the history's, or fall to the model when the history
+        // has nothing for this prefix.
         let lines: Vec<String> = self
             .shell_candidates()
             .into_iter()
@@ -9302,9 +9423,90 @@ impl App {
             }
             None => {
                 self.completion = None;
-                self.say(&format!("no ! line from this session starts with {text:?}"));
+                self.shell_model_fallback(&text);
             }
         }
+    }
+
+    /// **The model's half of the `!` completion, asked once per (prefix, position).**
+    ///
+    /// Called when the history has no match for the prefix, or its cycle is
+    /// exhausted. It is the whole of the "ask the model" decision, and the rule it
+    /// keeps is that **the same prefix asked twice is not two model calls**: an
+    /// answered ask is cycled from the cache, an in-flight ask is waited on, and
+    /// only a prefix never asked is sent to the daemon.
+    ///
+    /// The position is the number of transcript rows, so a row landing is a new
+    /// position and a fresh ask — the cache is cleared when the transcript advances,
+    /// and a suggestion built on the conversation as it was is a suggestion about
+    /// that conversation.
+    ///
+    /// **Nothing here submits.** The answer is a list of candidate lines for the
+    /// composer, drawn as candidates with their provenance, and Enter is still the
+    /// operator's.
+    fn shell_model_fallback(&mut self, text: &str) {
+        let position = self.items.len() as u64;
+        let key = (text.to_string(), position);
+        // Already answered for this prefix at this position: cycle the cached lines.
+        if let Some(lines) = self.shell_suggestions.get(&key) {
+            if !lines.is_empty() {
+                let lines = lines.clone();
+                let first = lines[0].clone();
+                self.shell_model = Some((text.to_string(), lines, 0));
+                self.set_composer(&first);
+                return;
+            }
+        }
+        // Already asked for this prefix at this position: the response is in flight.
+        // Enter the waiting state and say so, rather than asking again.
+        if self.shell_ask.values().any(|(p, n)| p == text && *n == position) {
+            self.shell_model = Some((text.to_string(), Vec::new(), 0));
+            self.say(&format!(
+                "asking the model for a ! line starting with {text:?}…"
+            ));
+            return;
+        }
+        // Ask the model, once. The id is minted here so the head can recognise the
+        // answer on the way back; the daemon echoes it in `ShellSuggestions`.
+        let id = self.next_shell_ask_id();
+        self.shell_ask.insert(id.clone(), (text.to_string(), position));
+        self.shell_model = Some((text.to_string(), Vec::new(), 0));
+        self.queued.push(Action::SuggestShell {
+            prefix: text.to_string(),
+            client_request_id: id,
+        });
+        self.say(&format!(
+            "asking the model for a ! line starting with {text:?}…"
+        ));
+    }
+
+    /// The next `SuggestShell`'s `client_request_id`, beside `next_head_run` and for
+    /// the same reason: the id has to be unique per head, and the head is the one
+    /// that has to recognise it when the answer comes back on the pump.
+    fn next_shell_ask_id(&mut self) -> String {
+        self.shell_ask_seq += 1;
+        format!("{}-s{}", self.head_id, self.shell_ask_seq)
+    }
+
+    /// **The transcript moved, so the model's suggestions are stale.**
+    ///
+    /// A suggestion is built on the conversation as it was when it was asked, and a
+    /// conversation that moved is a different question. So when a row lands — or a
+    /// snapshot replaces the rows — the asks in flight and the answered asks are
+    /// both dropped, and the next Tab for the same prefix is a fresh ask rather than
+    /// a stale answer. The model's cycle is dropped too: it is cycling lines about a
+    /// conversation that no longer is, and a character typed on would match fresh
+    /// anyway.
+    fn clear_shell_suggestions(&mut self) {
+        if self.shell_ask.is_empty()
+            && self.shell_suggestions.is_empty()
+            && self.shell_model.is_none()
+        {
+            return;
+        }
+        self.shell_ask.clear();
+        self.shell_suggestions.clear();
+        self.shell_model = None;
     }
 
     /// The whole `!` lines this session has run, newest first, deduped: the
@@ -9381,13 +9583,17 @@ impl App {
         self.editor.insert(text);
     }
 
-    /// The live completion row shown above the composer while a `/command` is
-    /// being typed: every match, name plus its hint, joined with `·`. A bare
-    /// `/` lists everything; a prefix nothing matches shows nothing, because
-    /// an empty line that appears and disappears is noise, and Tab will say
-    /// what went wrong when it is asked.
+    /// The live completion row shown above the composer while a `/command` or a
+    /// `!` line is being typed. A `/` line lists its matches, name plus hint; a
+    /// `!` line lists the history's candidates and the model's, with their
+    /// provenance. A prefix nothing matches shows nothing, because an empty line
+    /// that appears and disappears is noise, and Tab will say what went wrong
+    /// when it is asked.
     fn completions_line(&self, w: usize) -> Option<String> {
         let text = self.editor.text();
+        if text.starts_with('!') {
+            return self.shell_completions_line(w);
+        }
         if !text.starts_with('/') || text.contains(char::is_whitespace) {
             return None;
         }
@@ -9404,6 +9610,45 @@ impl App {
                 }
             })
             .collect();
+        if parts.is_empty() {
+            return None;
+        }
+        let cfg = &self.cfg;
+        Some(dim(cfg, &trim_to(&format!("  {}", parts.join("  ·  ")), w)))
+    }
+
+    /// **The live `!` completion row, with provenance.**
+    ///
+    /// The history's candidates — the commands this session actually ran — are
+    /// facts, and are drawn plain. The model's candidates are proposals, not
+    /// facts, and are drawn marked with a leading `~`, because **a line that
+    /// looks like the operator typed it and did not is the same class of lie as
+    /// an unattributed quote**: the operator has to be able to tell, at a glance,
+    /// which candidates are the session's own and which the model invented.
+    ///
+    /// The mark is display-only: a Tab fills the composer with the line itself
+    /// (`! git status`), never the marked form (`~! git status`). And nothing
+    /// here is submitted — the row is a typing aid, and Enter is still the
+    /// operator's.
+    fn shell_completions_line(&self, w: usize) -> Option<String> {
+        let text = self.editor.text();
+        if !text.starts_with('!') {
+            return None;
+        }
+        let mut parts: Vec<String> = Vec::new();
+        // The history's candidates, plain: a command this session ran is a fact.
+        for line in self.shell_candidates().into_iter().filter(|l| l.starts_with(text)) {
+            parts.push(line);
+        }
+        // The model's candidates, marked: a proposal is not a fact, and the mark
+        // is the provenance. Only the ones cached for this prefix at this
+        // position, so a suggestion about a conversation that moved is not drawn.
+        let position = self.items.len() as u64;
+        if let Some(lines) = self.shell_suggestions.get(&(text.to_string(), position)) {
+            for line in lines.iter().filter(|l| l.starts_with(text)) {
+                parts.push(format!("~{line}"));
+            }
+        }
         if parts.is_empty() {
             return None;
         }
