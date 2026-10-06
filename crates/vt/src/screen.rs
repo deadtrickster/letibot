@@ -19,6 +19,8 @@
 //! | modes | `?7` autowrap, `?6` origin, `?25` cursor visibility, `?47`/`?1047`/`?1049` the alternate screen |
 //! | pen | `SGR` through [`crate::attr`], which is the head's own walk |
 //! | screen control | `ESC 7`/`ESC 8` and `CSI s`/`CSI u`, `RIS`, `DECSTR` |
+//! | the shape | [`Screen::resize`], which keeps the cells that still fit and the *state* — see
+//!   its doc for why a pane must not build a new screen when the operator resizes the window |
 //!
 //! **Not implemented, and each one is a thing the pane will therefore not show:**
 //!
@@ -41,9 +43,10 @@
 //!   terminal to answer a cursor-position report waits. **This is the one gap that can look like
 //!   a hang**, and the fix belongs to the pane rather than here: it is the one caller that has a
 //!   write path, and it is the one that should answer.
-//! - **A resize.** A `SIGWINCH` is the pane's; this crate has `Screen::new` and nothing that
-//!   reflows a grid that already has content, because what a program is told about a resize and
-//!   what it redraws are the pane's business rather than the model's.
+//! - **Line reflow.** [`Screen::resize`] changes the shape and keeps what still fits; it does not
+//!   re-wrap a row that is now too long, because this crate has no line model — a row is a row.
+//!   A program that has been told about the new size redraws its own, which is what a full-screen
+//!   program does on `SIGWINCH` anyway.
 //!
 //! # The line feed is a line feed
 //!
@@ -206,6 +209,45 @@ impl Screen {
         self.parser = parser;
         if std::mem::take(&mut self.parser_reset) {
             self.parser = Parser::new();
+        }
+    }
+
+    /// Change the shape, keeping what is on the screen and **keeping the state**.
+    ///
+    /// A pane is reshaped when the operator resizes the head's window. The program inside is told
+    /// about it (`TIOCSWINSZ`) and redraws — **but the screen's state is not something a program
+    /// re-sends**: `mc` sends `?1049h` once, so a pane that threw its screen away and made a new
+    /// one would decide it was drawing the transcript while the program was still drawing its own
+    /// panels. That is the operator's own sentence broken by a window drag, which is why this is
+    /// an operation on the screen rather than a second call to [`Screen::new`].
+    ///
+    /// So: the cells that still fit are kept, from the top-left; the cursor and the scrolling
+    /// region are clamped into the new shape; the pen, the modes and the parked main screen are
+    /// untouched, and a wide glyph cut by the new right edge loses both halves rather than half of
+    /// one. **What is past the new edge is gone** — a row longer than the new width is cut and
+    /// rows below the new height are dropped — and nothing is re-wrapped, because this crate has no
+    /// line model: a row is a row.
+    pub fn resize(&mut self, rows: usize, cols: usize) {
+        let rows = rows.max(1);
+        let cols = cols.max(1);
+        if (rows, cols) == (self.rows, self.cols) {
+            return;
+        }
+        let from = (self.rows, self.cols);
+        reshape(&mut self.face, from, (rows, cols));
+        if let Some(main) = self.parked.as_mut() {
+            reshape(main, from, (rows, cols));
+        }
+        self.rows = rows;
+        self.cols = cols;
+        // **The deferred wrap is dropped**, because the cursor's column means something different
+        // in the new shape: `pending_wrap` says "the next character wraps", which was true of the
+        // old right margin and is a lie about the new one. A program that has been resized redraws
+        // its own frame, so there is nothing to carry.
+        self.face.pending_wrap = false;
+        // A cut at the new right edge can leave half a glyph, and the invariant is not negotiable.
+        for row in 0..rows {
+            self.repair(row);
         }
     }
 
@@ -457,7 +499,12 @@ impl Screen {
 
     fn restore_cursor(&mut self) {
         if let Some((pos, pen)) = self.decsc {
-            self.face.cursor = pos;
+            // Clamped, because a cursor saved before a resize can name a cell the screen no longer
+            // has — and an unclamped restore would put every later write out of bounds.
+            self.face.cursor = Pos {
+                row: pos.row.min(self.rows - 1),
+                col: pos.col.min(self.cols - 1),
+            };
             self.face.pen = pen;
             self.face.pending_wrap = false;
         }
@@ -828,6 +875,30 @@ impl Screen {
             col: 0,
         };
         self.face.pending_wrap = false;
+    }
+}
+
+/// Give a face a new shape, keeping the cells that still fit and clamping everything that is a
+/// position.
+fn reshape(face: &mut Face, from: (usize, usize), to: (usize, usize)) {
+    let (old_rows, old_cols) = from;
+    let (rows, cols) = to;
+    let mut cells = vec![Cell::blank(); rows * cols];
+    for row in 0..old_rows.min(rows) {
+        for col in 0..old_cols.min(cols) {
+            cells[row * cols + col] = face.cells[row * old_cols + col];
+        }
+    }
+    face.cells = cells;
+    face.cursor.row = face.cursor.row.min(rows - 1);
+    face.cursor.col = face.cursor.col.min(cols - 1);
+    face.top = face.top.min(rows - 1);
+    face.bottom = face.bottom.min(rows - 1);
+    // A region that a shrink has collapsed is the whole screen, which is what a terminal does
+    // rather than leaving a region of one row that nothing can scroll.
+    if face.top >= face.bottom {
+        face.top = 0;
+        face.bottom = rows - 1;
     }
 }
 
@@ -1361,6 +1432,76 @@ mod tests {
         assert_well_formed(&s);
     }
 
+    /// **A resize keeps the state, and that is the whole reason it is not `Screen::new` again.**
+    ///
+    /// The operator drags the window: the pane's screen changes shape and the program is told and
+    /// redraws — but the state a program does **not** re-send has to survive, or a pane would decide
+    /// it was drawing the transcript while `mc` was still drawing its panels. `?1049h`, the scroll
+    /// region, the cursor's visibility and the parked main screen are all asserted here.
+    #[test]
+    fn a_resize_changes_the_shape_and_keeps_the_state() {
+        let mut s = screen(6, 10);
+        s.feed(b"\x1b[?1049h\x1b[2J\x1b[1;1H");
+        s.feed(b"0123456789\r\nabcdefghij\r\n\x1b[3;5r\x1b[?25l");
+        assert!(s.alternate());
+        assert_eq!(s.scroll_region(), (2, 4));
+        // Smaller: what fits is kept from the top-left, and everything that is a position is
+        // clamped into the new shape.
+        s.resize(3, 5);
+        assert_eq!(s.size(), (3, 5));
+        assert_eq!(lines(&s), vec!["01234", "abcde", ""]);
+        assert_eq!(
+            s.scroll_region(),
+            (0, 2),
+            "the region is clamped, not left inverted"
+        );
+        assert!(s.alternate(), "the alternate screen is still up");
+        assert!(!s.cursor_visible(), "and the program's cursor mode with it");
+        assert_well_formed(&s);
+        // Bigger: the cells stay where they were and the rest is blank.
+        s.resize(5, 8);
+        assert_eq!(s.size(), (5, 8));
+        assert_eq!(lines(&s), vec!["01234", "abcde", "", "", ""]);
+        assert!(s.alternate(), "and it is still up after growing either");
+        assert_well_formed(&s);
+
+        // A wide glyph cut by the new right edge loses both halves rather than half of one.
+        let mut s = screen(2, 6);
+        s.feed("日本".as_bytes());
+        s.resize(2, 3);
+        assert_eq!(
+            s.line(0),
+            "日",
+            "the glyph that no longer fits is dropped whole"
+        );
+        assert_well_formed(&s);
+
+        // The parked main screen is reshaped with the alternate one, so `?1049l` gives back a
+        // screen of the right shape rather than the shape the window used to have.
+        let mut s = screen(4, 6);
+        s.feed(b"main\r\nscreen");
+        s.feed(b"\x1b[?1049h\x1b[2J\x1b[1;1Halt");
+        s.resize(3, 4);
+        s.feed(b"\x1b[?1049l");
+        assert_eq!(s.size(), (3, 4));
+        assert_eq!(lines(&s), vec!["main", "scre", ""]);
+        assert_well_formed(&s);
+
+        // A cursor saved before a resize comes back inside the screen, which is what stops a
+        // restore from putting every later write out of bounds.
+        let mut s = screen(6, 10);
+        s.feed(b"\x1b[6;10H\x1b7");
+        s.resize(3, 4);
+        s.feed(b"\x1b8X");
+        assert_eq!(
+            s.cursor(),
+            (2, 3),
+            "the saved column is clamped into the new shape"
+        );
+        assert_eq!(s.line(2), "   X");
+        assert_well_formed(&s);
+    }
+
     /// **A screen's shape is its own, and a degenerate one does not panic.** A head whose window
     /// size came back as zero must get a screen, not a crash.
     #[test]
@@ -1372,6 +1513,11 @@ mod tests {
         assert_eq!(s.line(0), "");
         // And a row that does not exist is an empty string rather than a panic.
         assert_eq!(s.line(9), "");
+        // A resize to nothing is the same clamp, and a resize to itself is a no-op.
+        s.resize(0, 0);
+        assert_eq!(s.size(), (1, 1));
+        s.resize(1, 1);
+        assert_eq!(s.size(), (1, 1));
         assert_well_formed(&s);
     }
 }
