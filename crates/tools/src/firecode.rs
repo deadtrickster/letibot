@@ -286,8 +286,13 @@ impl FirecodeBackend {
             let host = HostProcesses::confined(project.clone(), Box::new(confine))
                 .map_err(|e| BackendError::Io(format!("process host for the VM: {e}")))?
                 // The command string goes to `firecode in` as ONE argument, which the
-                // guest runs under bash -lc. No shell in front of it here.
-                .with_shell(Vec::new());
+                // guest runs under bash -lc. No shell in front of it here — **and so no
+                // console shell either**: the operator's own run is handed to this host's
+                // shell, and this host has none. The guest's `bash -lc` is what reads the
+                // guest's own rc, and making the local argv interactive would put a second
+                // shell in front of a command that already has one.
+                .with_shell(Vec::new())
+                .with_console_shell(Vec::new());
             Some(Arc::new(host))
         } else {
             None

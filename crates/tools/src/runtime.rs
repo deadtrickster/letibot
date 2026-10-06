@@ -263,7 +263,7 @@ pub struct InvokeCtx<'a> {
     operator_waiting: Option<&'a OperatorWaiting>,
     completion_delivered: Option<&'a CompletionDelivered>,
     /// **Whether this call is the OPERATOR's own**, which is the one thing that
-    /// decides whether the command gets a terminal.
+    /// decides whether the command meets the world their console gives it.
     ///
     /// It is `!gated` and nothing else: [`ToolRuntime::invoke_operator`] is the
     /// ungated path, and it is the `!` line and the door's calls — *a person typed
@@ -272,7 +272,12 @@ pub struct InvokeCtx<'a> {
     /// rather than passed in by a caller who could disagree with them, which is the
     /// shape that keeps a second reader from inventing a third answer.
     ///
-    /// See [`crate::exec::pty`] for what the terminal buys and what it costs.
+    /// **Three things follow from it and they follow from this one flag**: a pty on
+    /// stdout and stderr ([`crate::exec::pty`]), their shell with their rc read, and
+    /// their environment with pagers that cannot page ([`crate::exec::console`],
+    /// which carries the decision, what it changes, and why a model's `bash` call
+    /// gets none of it). One flag rather than three because it is one fact, and three
+    /// flags with the same value are three things a later edit can make disagree.
     pub tty: bool,
 }
 

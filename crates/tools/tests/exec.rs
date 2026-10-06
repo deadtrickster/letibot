@@ -1281,3 +1281,117 @@ fn an_operators_own_command_does_not_ask_to_grant_a_path_into_the_view() {
     );
     let _ = outside;
 }
+
+// ------------------------------------------- the world their console gives it
+//
+// The operator's first report was *"i run `! ls -la` and the output is plain, while
+// in a proper terminal directory names are highlighted"*, and the pty above is only
+// half of it: on this box `ls` colourises because their `~/.bashrc` says
+// `alias ls='ls --color=auto'`, and an alias is shell state that no `/bin/sh -c`
+// reads. `letibot_tools::exec::console` carries the decision, what it changes, and
+// why a model's call gets none of it; these are the wiring, against a real process.
+
+/// **The operator's own line is read by their shell, so their alias is their
+/// command.**
+///
+/// The console's rc is a file, so this is testable without a daemon: the daemon's
+/// only part is `HOME`, which it puts on the standing environment
+/// (`harness.rs` `set_standing_env`), and a test can put the same pair there. The
+/// assertion is the alias's own output rather than an inspection of the argv,
+/// because the property is *the line met their shell* and not *the argv had `-i`
+/// in it* — and the model's entry is the control that makes it mean that: the same
+/// command, the same host, the gated path, where `sh` has never heard of the name.
+#[test]
+fn the_operators_own_run_reads_their_rc_so_their_alias_is_their_command() {
+    let mut h = runner!("operator rc");
+    let home = h.root().to_path_buf();
+    std::fs::write(
+        home.join(".bashrc"),
+        "alias letibot-rc-probe='printf ALIAS-APPLIED'\n",
+    )
+    .expect("write the console's rc");
+    h.processes
+        .as_ref()
+        .unwrap()
+        .set_standing_env(vec![("HOME".to_string(), home.display().to_string())]);
+
+    let call = letibot_transcript::ToolCall {
+        id: "bang-rc".into(),
+        name: "bash".into(),
+        arguments: serde_json::json!({ "command": "letibot-rc-probe" }).to_string(),
+    };
+    let theirs = h.rt.invoke_operator("", &call, &mut h.sink);
+    assert!(
+        matches!(theirs.outcome, ToolOutcome::Ok),
+        "the operator's own command must run: {}",
+        theirs.render()
+    );
+    assert!(
+        theirs.render().contains("ALIAS-APPLIED"),
+        "their line must meet their shell, or `alias ls='ls --color=auto'` is a file \
+         nothing reads and `! ls -la` stays plain: {}",
+        theirs.render()
+    );
+
+    // The control: the same command on the model's entry. `sh` has no alias table
+    // here, so the name is not a command — which is R10 layer 1 working, not a bug.
+    let mine = h.call(
+        "bash",
+        &serde_json::json!({ "command": "letibot-rc-probe" }).to_string(),
+    );
+    assert!(
+        !mine.render().contains("ALIAS-APPLIED"),
+        "a model's call must not be read through the operator's rc: {}",
+        mine.render()
+    );
+}
+
+/// **The operator's own run gets the console's environment; a model's does not.**
+///
+/// `PAGER` is the assertion because it is the one pair that is **forced** rather
+/// than inherited, so it does not depend on what this test process happens to carry
+/// — the console's own `PAGER` cannot survive into a run nobody can type at, and a
+/// model's run has no console at all. `printenv` prints nothing and exits non-zero
+/// for a variable that is not there, which is the second half of the contrast.
+///
+/// The pure version of the whole six-pair environment is
+/// `exec::console::tests::the_operators_run_is_given_the_consoles_terminal_and_pagers_that_cannot_page`;
+/// this is the wiring from that function to a process.
+#[test]
+fn the_operators_own_run_gets_the_consoles_pagers_and_a_models_call_does_not() {
+    let mut h = runner!("operator console env");
+    let home = h.root().to_path_buf();
+    h.processes
+        .as_ref()
+        .unwrap()
+        .set_standing_env(vec![("HOME".to_string(), home.display().to_string())]);
+
+    let call = letibot_transcript::ToolCall {
+        id: "bang-env".into(),
+        name: "bash".into(),
+        arguments: serde_json::json!({ "command": "printenv PAGER GIT_PAGER SYSTEMD_PAGER" })
+            .to_string(),
+    };
+    let theirs = h.rt.invoke_operator("", &call, &mut h.sink);
+    let said = theirs.render();
+    assert!(
+        matches!(theirs.outcome, ToolOutcome::Ok),
+        "the operator's own command must run: {said}"
+    );
+    assert!(
+        said.contains("cat"),
+        "a pager on the operator's own run is the sibling defect — `git log` execs \
+         `less`, and `less` waits for a keystroke that cannot arrive: {said}"
+    );
+
+    let mine = h.call(
+        "bash",
+        &serde_json::json!({ "command": "printenv PAGER" }).to_string(),
+    );
+    assert!(
+        !mine.render().contains("cat"),
+        "a model's call has no terminal, so no pager engages and it must be handed \
+         no pager variable: {}",
+        mine.render()
+    );
+}
