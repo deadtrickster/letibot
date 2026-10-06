@@ -40,6 +40,11 @@
 //!   reads stdin gets the EOF it always got rather than blocking on a terminal nobody
 //!   is typing at. `sudo` asks `letibot-askpass` through the `-A` shim and not a tty,
 //!   which is unchanged.
+//!   **A program that takes the *screen* rather than reading stdin is the case this
+//!   paragraph used to leave out, and it is worse than plain**: `nano`, `less`, `top`
+//!   see a terminal, draw cursor-addressing escapes into the one transcript row, and
+//!   wait for a keystroke that cannot arrive. Those are refused before they start, by
+//!   name, with the reason and the remedy — see [`super::terminal`].
 //! - **`\n` is translated to `\r\n` by the line discipline unless it is told not to.**
 //!   A pty's default output post-processing does exactly that, and `\r` in the capture
 //!   would be a stray byte in every payload the model reads. So the slave's `ONLCR` is

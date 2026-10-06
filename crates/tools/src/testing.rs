@@ -273,6 +273,39 @@ pub fn runner_harness_with_gate(
     })
 }
 
+/// **The runner's tool set over a backend that cannot start a process.**
+///
+/// For the properties `bash` decides from the command **text** and nothing else — the
+/// terminal rule ([`crate::exec::terminal`]), the argument checks, the scope names —
+/// which are all reached before the backend is consulted.
+///
+/// A `runner_harness` would be the wrong instrument for those and not because it is
+/// wrong: it needs a delegated cgroup v2 subtree, so on a host without one a test of a
+/// property that never touches a process would take `runner!`'s refusal branch and
+/// assert nothing. This one has no host at all, so the property is measured everywhere
+/// — and `processes: None` is itself part of the fixture: a call that reaches the
+/// backend gets the backend's refusal, which is how a test tells *the terminal rule did
+/// not fire* from *the terminal rule fired and something else refused afterwards*.
+pub fn text_only_runner_harness() -> Harness {
+    let dir = TempDir::new();
+    fixture_tree(dir.path());
+    let backend = HostBackend::writable(dir.path()).expect("fixture root");
+    let registry = crate::runner_tools(Arc::new(Unavailable)).expect("built-ins register");
+    // A gate that allows, so a MODEL's call reaches the tool: the contrast the terminal
+    // rule's wiring test needs is the model's entry, and a session with no adjudicator
+    // would refuse it at the first gate and never reach the tool at all.
+    let rt = ToolRuntime::new(registry, Box::new(backend)).with_gate(allow_all());
+    Harness {
+        rt,
+        sink: RecordingToolSink::new(),
+        processes: None,
+        mount: Default::default(),
+        promote: None,
+        _dir: dir,
+        _scratch: None,
+    }
+}
+
 /// A session that can run commands **inside a measured project-scoped boundary**,
 /// or the reason it cannot.
 ///

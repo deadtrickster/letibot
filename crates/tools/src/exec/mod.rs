@@ -72,6 +72,7 @@
 //! | [`host`] | [`host::ProcessHost`], the seam a firecode backend would also implement, and the host implementation |
 //! | [`predicate`] | T21.1 and T21.2 — what the harness knows that the model cannot |
 //! | [`pty`] | a pseudo-terminal, for the operator's own run: a pipe is not a terminal, so `ls` prints plain |
+//! | [`terminal`] | the programs that pty must NOT be handed to — `nano`, `less`, a bare `python` — refused by name, before the run, with the reason and the remedy |
 
 pub mod confine;
 pub mod host;
@@ -81,6 +82,7 @@ pub mod predicate;
 pub mod procs;
 pub mod pty;
 pub mod scope;
+pub mod terminal;
 
 pub use confine::{
     Boundary, Bwrap, ConfinePlan, Confinement, Egress, Grant, HomeView, Namespace, NoConfinement,
@@ -95,6 +97,7 @@ pub use monitor::{
 pub use predicate::{Hazard, Predicate, Verdict, Witness};
 pub use pty::Pty;
 pub use scope::{Cgroup2, Migration, NoScopes, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree};
+pub use terminal::{Class, Refusal, wants_the_terminal};
 
 /// Why an exec request did not become a process.
 ///

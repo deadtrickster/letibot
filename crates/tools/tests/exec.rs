@@ -1022,6 +1022,184 @@ fn the_operators_own_ls_colours_because_its_output_is_a_terminal() {
     );
 }
 
+// ------------------------------------------- a command that wants the terminal
+//
+// The operator's second report, in the same breath as the colour one: *"what if I do
+// `! sudo ls /root` … and we also have to think about things like nano. what happens
+// when I run something long and running and that wants to own everything"*.
+//
+// The pty that makes `ls --color=auto` colourise is a **capture**: one transcript row,
+// `/dev/null` on stdin. So a program that takes the screen draws cursor-addressing
+// escapes into that row and then waits for a keystroke that cannot arrive — worse than
+// plain, and the state to make honest.
+//
+// [`letibot_tools::exec::terminal`] is the rule, and its own tests are the pure
+// predicate: refused or not, by which program, for which class, with no process ever
+// started. These two are the **wiring**: that the rule is consulted on the operator's
+// entry and NOT on the model's, and that the refusal is said rather than silent.
+
+/// **The operator's own `!` line is refused, by name, with the sentence.**
+///
+/// `text_only_runner_harness` rather than `runner!`, and deliberately: the rule is the
+/// FIRST thing `bash` decides — ahead of the backend, the scope and the predicate —
+/// because it is a fact about the command text alone. So a session whose backend cannot
+/// start a process still gets the right sentence, and this test then measures something
+/// on a host with no delegated cgroup instead of taking `runner!`'s refusal branch.
+///
+/// Three assertions, and the last two are what make the first mean *this rule* rather
+/// than *this harness refuses everything*:
+///
+/// 1. `nano` on the operator's entry is `NotRun` and the row carries the sentence.
+/// 2. **The operator's own example from the same sentence** — `! sudo ls /root` — is not
+///    refused by this rule: it reaches the backend and is refused for the backend's
+///    reason, which says nothing about a terminal.
+/// 3. A **pipeline** is refused for its interactive member, which is what makes this a
+///    rule over the line's stages rather than over its first word.
+#[test]
+fn an_interactive_program_on_the_operators_own_line_is_refused_by_name_with_the_sentence() {
+    let mut h = letibot_tools::testing::text_only_runner_harness();
+    let bang = |id: &str, command: &str| letibot_transcript::ToolCall {
+        id: id.into(),
+        name: "bash".into(),
+        arguments: serde_json::json!({ "command": command }).to_string(),
+    };
+
+    // 1. Refused, and SAID. The hard requirement is that the refusal is never silent,
+    //    so the assertions are on the text: the program's name, that nothing ran, what
+    //    the run actually is, and what to do instead.
+    let r =
+        h.rt.invoke_operator("", &bang("bang-nano", "nano /etc/fstab"), &mut h.sink);
+    assert!(
+        matches!(r.outcome, ToolOutcome::NotRun { .. }),
+        "`nano` on the operator's own line must be refused and must not run: {:?}",
+        r.outcome
+    );
+    let body = r.render();
+    assert!(
+        body.contains("nano"),
+        "the refusal must name the program: {body}"
+    );
+    assert!(
+        body.contains("needs the terminal and letibot cannot hand you one"),
+        "the refusal must be the operator's sentence: {body}"
+    );
+    assert!(
+        body.contains("run it in another window"),
+        "the refusal must say what to do instead: {body}"
+    );
+    assert!(
+        body.contains("The command was NOT run"),
+        "the row must say that nothing ran: {body}"
+    );
+    assert!(
+        body.contains("ONE transcript row") && body.contains("/dev/null"),
+        "the row must say what the operator's own run actually is: {body}"
+    );
+
+    // 2. The operator's own example, from the same sentence as `nano`, and it must run
+    //    — which here means *reach the backend*: this harness has no process host, so
+    //    the reason is the backend's. The assertion is that it is NOT this rule's.
+    let ordinary =
+        h.rt.invoke_operator("", &bang("bang-ls", "sudo ls /root"), &mut h.sink);
+    let text = ordinary.render();
+    assert!(
+        !text.contains("cannot hand you one"),
+        "`sudo ls /root` is the operator's own example and must not be refused by the \
+         terminal rule: {text}"
+    );
+
+    // 3. A pipeline is judged member by member.
+    let piped =
+        h.rt.invoke_operator("", &bang("bang-less", "ls | less"), &mut h.sink);
+    assert!(
+        matches!(piped.outcome, ToolOutcome::NotRun { .. }),
+        "`ls | less` must be refused for the `less`: {:?}",
+        piped.outcome
+    );
+    assert!(
+        piped.render().contains("`less` needs the terminal"),
+        "and the refusal must name the pipeline member that wants it: {}",
+        piped.render()
+    );
+}
+
+/// **The rule is not consulted on a model's call**, and that is a decision rather than
+/// an oversight.
+///
+/// A model's `bash` call has no pty — `InvokeCtx::tty` is `!gated`, and this is the
+/// gated entry — so `nano` there reads EOF on `/dev/null` and exits instead of hanging
+/// in a screen nobody is watching. That is a different defect and `exec::terminal` lists
+/// it among its own misses; what this test pins is that the rule stays on the side of
+/// the line it was written for, because a rule that fired on both would tell the model
+/// to *run it in another window*, which is advice a model cannot take.
+#[test]
+fn the_terminal_rule_does_not_fire_on_a_models_call() {
+    let mut h = letibot_tools::testing::text_only_runner_harness();
+    let mine = h.call(
+        "bash",
+        &serde_json::json!({ "command": "nano /etc/fstab" }).to_string(),
+    );
+    let text = mine.render();
+    assert!(
+        !text.contains("cannot hand you one"),
+        "a model's call keeps its pipe and must not be refused by the terminal rule: {text}"
+    );
+    // It still does not RUN, and the reason is the one that applies here: this harness
+    // has no process host. The contrast is the point — a different reason, from a
+    // different guard.
+    assert!(
+        matches!(mine.outcome, ToolOutcome::Failed { .. }),
+        "the backend's own refusal is what a model's call gets here: {text}"
+    );
+}
+
+/// **The end-to-end version, against the real substrate**, for a host that has one.
+///
+/// The two tests above prove the wiring without needing a process. This one proves the
+/// thing the operator will actually see: on a session that CAN run commands, `! nano`
+/// is refused with the sentence and **nothing is started**, while `! ls` on the same
+/// entry runs and its output lands in the row. `runner!` needs a delegated cgroup v2
+/// subtree, so on a host without one this takes the refusal branch and says so — the
+/// house pattern for every test in this file that needs a real process.
+#[test]
+fn on_a_real_substrate_the_operators_nano_is_refused_and_their_ls_still_runs() {
+    let mut h = runner!("operator terminal rule");
+    let bang = |id: &str, command: &str| letibot_transcript::ToolCall {
+        id: id.into(),
+        name: "bash".into(),
+        arguments: serde_json::json!({ "command": command }).to_string(),
+    };
+
+    let refused =
+        h.rt.invoke_operator("", &bang("bang-nano", "nano /etc/fstab"), &mut h.sink);
+    assert!(
+        matches!(refused.outcome, ToolOutcome::NotRun { .. }),
+        "`nano` must not run on the operator's own line: {}",
+        refused.render()
+    );
+    assert!(
+        refused.render().contains("run it in another window"),
+        "and it must say what to do instead: {}",
+        refused.render()
+    );
+
+    // The control that makes the refusal about the command rather than about `bash`
+    // being broken on this entry: the ordinary command still runs, and its own bytes
+    // are in the row.
+    let ran =
+        h.rt.invoke_operator("", &bang("bang-echo", "printf 'ordinary-ran'"), &mut h.sink);
+    assert!(
+        matches!(ran.outcome, ToolOutcome::Ok),
+        "an ordinary command must still run: {}",
+        ran.render()
+    );
+    assert!(
+        ran.render().contains("ordinary-ran"),
+        "and its output must be in the row: {}",
+        ran.render()
+    );
+}
+
 /// **The view-grant ask specifically, on a boundary that produces one.**
 ///
 /// `grant_view` fires when a command's output names a path the confinement hid —

@@ -55,6 +55,7 @@ use letibot_transcript::Backgrounding;
 use serde_json::Value;
 
 use crate::exec::predicate::{Verdict, annotation, refusal};
+use crate::exec::terminal;
 use crate::exec::{JobState, ProcessHost, Promotion, ScopeKind, SpawnRequest, Waited};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
@@ -141,6 +142,30 @@ impl Tool for Bash {
                 "bash was given an empty command",
                 "nothing was run. Give `command` a shell command line.",
             );
+        }
+
+        // **A program that wants to own the terminal is refused before it is
+        // started** — and this is the FIRST thing decided, ahead of the backend, the
+        // scope and the predicate, because it is a fact about the command text alone.
+        //
+        // Only where a terminal is handed out, which is the operator's own run:
+        // `InvokeCtx::tty` is `!gated` and nothing else, so this is the `!` line and
+        // the door's calls. A model's `bash` call keeps its pipe, where `nano` reads
+        // EOF and exits rather than hanging — a different defect, and `exec::terminal`
+        // says so in its own list of misses.
+        //
+        // The operator's report is the reason this exists at all: *"what if I do
+        // `! sudo ls /root` … and we also have to think about things like nano. what
+        // happens when I run something long and running and that wants to own
+        // everything"*. The pty that makes `ls --color=auto` colourise is a **capture**
+        // — one transcript row, `/dev/null` on stdin — so a program that takes the
+        // screen draws escapes into that row and waits for a keystroke that cannot
+        // arrive. `exec::terminal` carries the rule, what it looks at, and what it
+        // will therefore miss.
+        if ctx.tty
+            && let Some(r) = terminal::wants_the_terminal(command)
+        {
+            return Invocation::not_run(r.why(), r.body());
         }
 
         // **What the workspace looked like before this command.** A shell that
