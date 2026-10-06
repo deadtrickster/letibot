@@ -1177,7 +1177,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             // `expected_seq`, and this frame has neither: it is not a command and it has
             // nothing to be stale against.
             Ok(ClientFrame::TermOpen { line, cols, rows }) => {
-                let said = match crate::term_command(&line) {
+                let said = match crate::term_line(&line) {
                     // Not this verb at all. A head that sent one is a head this daemon does
                     // not understand, so it is told rather than ignored.
                     None => Err(format!(
@@ -1190,7 +1190,7 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     // so a person whose head lost the rectangle still has a program running
                     // and nothing to leave. A session with no pane answers with a sentence
                     // through the same `TermEnded` every other unstartable pane uses.
-                    Some("") => match registry.terminal() {
+                    Some(crate::TermLine::Attach) => match registry.terminal() {
                         None => Err("this daemon has no terminal driver, so there is no pane \
                                      to attach to. Nothing was attached."
                             .to_string()),
@@ -1198,7 +1198,20 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                             driver.attach(&seat.hub.session_id(), &seat.hub, cols, rows)
                         }
                     },
-                    Some(command) => match registry.terminal() {
+                    // **`!term close` is the ending, and it is the head's act.** The head
+                    // asks the operator to confirm it and then sends `TermClose` — see
+                    // `PROTOCOL_VERSION`'s 34 section — so a `TermOpen` carrying this line is
+                    // a head that did not do that, and running a program called `close`
+                    // instead would be this daemon and the head disagreeing about what the
+                    // same bytes mean. The sentence names the way to run such a program,
+                    // because that is the cost of the word and it is paid in the open.
+                    Some(crate::TermLine::Close) => Err(
+                        "`!term close` is not a command to run: it is how a pane is ENDED, and \
+                         the head sends that as its own act (after asking). Nothing ran — a \
+                         program called `close` is `!term command close`."
+                            .to_string(),
+                    ),
+                    Some(crate::TermLine::Run(command)) => match registry.terminal() {
                         None => Err("this daemon has no terminal driver, so there is no pty to \
                                      run a screen program on. Nothing ran."
                             .to_string()),
@@ -1242,6 +1255,28 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 if let Some(driver) = registry.terminal() {
                     let _ = driver.close(&seat.hub.session_id());
                 }
+            }
+            // **What this session's pane is running, or nothing.** A read, answered on this
+            // connection like every other pane frame: a question about a live program queued
+            // behind a running turn would be an answer about the past.
+            //
+            // **It is what a head draws instead of a row.** A head that has detached, or
+            // switched session, still has to say *something is running in here* — and the
+            // operator's rule is that a detach is not an event, so there is no row to file.
+            // The `None` arm is not an error: a session nobody ran `!term` in has no pane,
+            // and the head draws nothing at all.
+            //
+            // A daemon with no terminal driver answers `None` rather than refusing: *there is
+            // no pane* is the true statement, and it is the same one a driver with no pane for
+            // this session gives.
+            Ok(ClientFrame::TermStatus) => {
+                let command = registry
+                    .terminal()
+                    .and_then(|driver| driver.status(&seat.hub.session_id()));
+                writer
+                    .lock()
+                    .unwrap()
+                    .write(&ServerFrame::TermStatus { command })?;
             }
             // **R11's locator, leticl's ask.** A head names one decision and one half of its
             // exchange; the daemon answers with the bytes or with *not recorded*. The same

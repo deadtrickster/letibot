@@ -89,8 +89,29 @@
 //! ends by [`ScopeTree::end`]. **The scope is this module's and not the session's**, and that
 //! is deliberate: the session's cgroup is the harness's and holds the turn's processes, so a
 //! pane that ended the session's scope would kill the turn that opened it. One scope per pane,
-//! named for the session it belongs to, ended when the operator leaves and again by
+//! named for the session it belongs to, ended when the operator closes it and again by
 //! [`Terminals`]' own `Drop` — so a daemon that stops takes its panes with it.
+//!
+//! # Leaving is not ending, and this module is where the difference lives
+//!
+//! **`ctrl-\` detaches.** The head hides the rectangle, returns the conversation and **sends
+//! nothing at all** — so this module is not told, the program keeps running on the pty, the
+//! screen stays in [`Pane::log`], and the slot stays occupied. That is the whole point of the
+//! attach work one version earlier: a pane that ends when you look away is a pane that cannot
+//! hold anything you care about. The operator's words for the correction are the 34 note's:
+//! *"but i dont want it to exit"*.
+//!
+//! **`!term close` ends it**, and that is the only act that reaches [`Terminals::close`]: the
+//! head asks the operator to confirm it first (its own card, its own key — see
+//! `PROTOCOL_VERSION`'s 34 section for why the two questions must not be confusable) and then
+//! sends the `TermClose` that was already on the wire. A program that exits on its own is the
+//! third ending, and it is nobody's act: the reader thread reports it and the slot is freed on
+//! the next `open`.
+//!
+//! **And a head that is not drawing the pane can still ask what is running in it** —
+//! [`Terminals::status`], the answer to `ClientFrame::TermStatus`. A detach is not an event, so
+//! there is no row for it; the head draws the fact while it is true, which is what
+//! [`TermSession::live`] decides and what this module answers with.
 //!
 //! **A box with no cgroups degrades and says so**: [`Cgroup2::probe`] failing gives
 //! [`NoScopes`], `open` fails, the pane runs with no scope, and the ending falls back to
@@ -127,13 +148,20 @@ use letibot_tools::exec::{
     Cgroup2, NoScopes, ScopeId, ScopeKind, ScopeTree, TermConfig, TermError, TermSession, TermSink,
 };
 
-/// **What the operator is told when they press the way out.**
+/// **What the operator is told when they end the pane deliberately.**
 ///
 /// The sentence comes from here rather than from the signal the program died of, because the
 /// operator's act is the fact worth reporting: `nano` killed by `SIGKILL` reads as a crash, and
-/// *"you left the terminal"* reads as what happened. `TermSession::close` takes it for exactly
+/// *"you closed the terminal"* reads as what happened. `TermSession::close` takes it for exactly
 /// that reason — see its own doc.
-const LEFT: &str = "you left the terminal";
+///
+/// **`closed` and not `left`, and the word is this version's correction.** `ctrl-\` used to end
+/// the pane and this sentence used to say *"you left the terminal"*; leaving is now a **detach**
+/// that ends nothing, so the only act that reaches this constant is the deliberate one — the
+/// head's `!term close`, after it has asked the operator to confirm it (see
+/// `PROTOCOL_VERSION`'s 34 section). A row saying *left* about an ending would now read as the
+/// opposite of what happened.
+const CLOSED: &str = "you closed the terminal";
 
 /// **How much of what a program drew the daemon keeps.**
 ///
@@ -301,7 +329,8 @@ impl TerminalDriver for Terminals {
         let mut panes = self.panes();
         // **A live pane is refused by name, not replaced.** Killing a running program to make
         // room for the next keystroke is how an operator loses an edited file; the refusal
-        // names the way out instead.
+        // names the way back and the way out instead — and neither of them is `ctrl-\`, which
+        // now detaches and ends nothing. See `PROTOCOL_VERSION`'s 34 section.
         //
         // **`live` and not `closed`** — see the module header's *the ghost*: a program that
         // exits on its own ends the pane without anybody closing it, and refusing the next
@@ -311,8 +340,8 @@ impl TerminalDriver for Terminals {
         {
             return Err(format!(
                 "a pane is already open in this session and `{command}` was not started. \
-                 Leave it with ctrl-\\ first — a pane that replaced a running program would \
-                 lose whatever that program had not saved."
+                 `!term` comes back to it and `!term close` ends it — a pane that replaced a \
+                 running program would lose whatever that program had not saved."
             ));
         }
         // **A pane that has already ended leaves nothing to keep**, and this is where the
@@ -419,6 +448,27 @@ impl TerminalDriver for Terminals {
         Ok(())
     }
 
+    /// **What this session's pane is running, or nothing** — the read behind a head's own line
+    /// about a program it is not drawing.
+    ///
+    /// **`live` and not merely *present*, exactly as `open`'s refusal is.** A pane whose program
+    /// has exited is kept until the next `open` (its scope is still the cgroup that has to be
+    /// ended — see [`Pane`]), and reporting it as *running* would put a head's *a pane is
+    /// running `!term mc`* line on the screen for a program that has been gone for a minute. A
+    /// head that asks this question is asking *is something running here*, which is the question
+    /// [`TermSession::live`] answers.
+    ///
+    /// The command is the daemon's own string, the one it was handed at `open` — the same one
+    /// [`TerminalDriver::attach`] puts on [`ServerFrame::TermAttached`], so the two answers
+    /// cannot disagree.
+    fn status(&self, session_id: &str) -> Option<String> {
+        let panes = self.panes();
+        panes
+            .get(session_id)
+            .filter(|p| p.session.live())
+            .map(|p| p.command.clone())
+    }
+
     fn input(&self, session_id: &str, bytes: &[u8]) -> Result<(), String> {
         let panes = self.panes();
         match panes.get(session_id) {
@@ -442,9 +492,13 @@ impl TerminalDriver for Terminals {
         if let Some(mut p) = panes.remove(session_id) {
             // **The operator's sentence, set before the kill.** The pty's reader thread
             // composes the `TermEnded` the head will show, and it reads this — so the pane
-            // that was closed says *"you left the terminal"* rather than the signal number
+            // that was closed says *"you closed the terminal"* rather than the signal number
             // the program died of. See `TermSession::close`.
-            p.session.close(LEFT);
+            //
+            // **This is the deliberate act, and the only one that reaches here.** `ctrl-\`
+            // detaches and sends nothing at all; the frame that lands on this method is sent
+            // by a head whose `!term close` the operator confirmed.
+            p.session.close(CLOSED);
         }
         Ok(())
     }

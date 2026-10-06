@@ -570,12 +570,40 @@ pub trait TerminalDriver: Send + Sync {
         cols: usize,
         rows: usize,
     ) -> Result<(), String>;
+    /// **What this session's pane is running, or nothing** — the answer to
+    /// [`crate::protocol::ClientFrame::TermStatus`].
+    ///
+    /// `Some(command)` is a **live** pane: the same string [`Self::attach`] puts on
+    /// [`crate::protocol::ServerFrame::TermAttached`], because it is the same fact asked for
+    /// rather than volunteered. `None` is *no live pane*, which is not an error — a session
+    /// nobody has run `!term` in has none, and a program that has exited stops counting the
+    /// moment its reader thread reports (the slot is freed on the next `open`).
+    ///
+    /// # Why a read and not a notification
+    ///
+    /// A head that has **detached** (`ctrl-\`, which ends nothing — see
+    /// `PROTOCOL_VERSION`'s 34 section) or switched session still has to know the program is
+    /// there, and the operator's rule is that this is **not a transcript row**: a detach is
+    /// not an event and a row for it would be a disclosure about a moment that did not
+    /// happen. So the head asks, draws the fact while it is true, and stops drawing it when
+    /// it stops being true — which needs no history at all.
+    ///
+    /// **It must not block.** Called on the connection's reader thread, like every other
+    /// method here: it takes the driver's own pane table and answers.
+    fn status(&self, session_id: &str) -> Option<String>;
     /// The operator's keys, verbatim. Quietly ignored when there is no pane.
     fn input(&self, session_id: &str, bytes: &[u8]) -> Result<(), String>;
     /// The pane's rectangle moved.
     fn resize(&self, session_id: &str, cols: usize, rows: usize) -> Result<(), String>;
-    /// **The operator left.** Ends the pane's scope, which kills the program and everything
-    /// it started. Quiet when there is no pane: *"stop"* is not a request that can be wrong.
+    /// **End the pane.** Ends the pane's scope, which kills the program and everything it
+    /// started. Quiet when there is no pane: *"stop"* is not a request that can be wrong.
+    ///
+    /// **This is the deliberate act, and it is no longer the way out.** `ctrl-\` used to send
+    /// the frame that lands here, so leaving `nano` killed it — the operator's *"but i dont
+    /// want it to exit"*. Leaving is now a detach (the head hides the rectangle and sends
+    /// nothing); ending is `!term close`, after the head has asked the operator to confirm it.
+    /// The confirmation is the head's, deliberately: a daemon that asked its own question
+    /// would be a second card with a second set of keys.
     fn close(&self, session_id: &str) -> Result<(), String>;
 }
 

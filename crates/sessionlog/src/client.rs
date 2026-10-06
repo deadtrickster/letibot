@@ -502,11 +502,29 @@ impl HeadClient {
         Ok(())
     }
 
-    /// **The operator left the pane.** The one unambiguous way out: the daemon ends the
-    /// pane's scope, which kills the program and everything it started, and the ending comes
+    /// **End the pane.** The operator's deliberate act, and the frame the daemon ends the
+    /// pane's scope on: it kills the program and everything it started, and the ending comes
     /// back as [`crate::protocol::ServerFrame::TermEnded`]. Quiet when there is no pane.
+    ///
+    /// **Not the way out.** `ctrl-\` detaches and sends nothing at all — see
+    /// [`ClientFrame::TermClose`] — so this is only ever reached by the head's `!term close`,
+    /// and only after its own confirmation card has been answered with a yes. A caller that
+    /// sent this on a keystroke would be the defect the split exists to remove.
     pub fn term_close(&mut self) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::TermClose)?;
+        Ok(())
+    }
+
+    /// **Ask what this session's pane is running.** The answer is
+    /// [`crate::protocol::ServerFrame::TermStatus`], and it is not returned here because the
+    /// frame is read on the head's reader like every other: a head that held a reply table for
+    /// this would be a head with a second state machine for one fact.
+    ///
+    /// The read is what lets a head that is **not drawing** the pane say that something is
+    /// running in it — and it is a read rather than a notification because a detach is not an
+    /// event: see [`ClientFrame::TermStatus`] for the whole argument.
+    pub fn term_status(&mut self) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::TermStatus)?;
         Ok(())
     }
 

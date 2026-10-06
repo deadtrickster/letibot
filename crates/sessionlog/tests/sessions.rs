@@ -134,6 +134,12 @@ fn frame_kind(f: &ServerFrame) -> String {
         ServerFrame::TermAttached { command } => format!("TermAttached({command})"),
         ServerFrame::TermOutput { bytes } => format!("TermOutput({} bytes)", bytes.len()),
         ServerFrame::TermEnded { reason } => format!("TermEnded({reason})"),
+        // **The read's answer, named by what it says rather than by the frame**: `None` is a
+        // session with no pane and that is the half a diagnostic wants to see.
+        ServerFrame::TermStatus { command } => match command {
+            Some(command) => format!("TermStatus({command})"),
+            None => "TermStatus(none)".into(),
+        },
         ServerFrame::Resync { .. } => "Resync".into(),
         ServerFrame::Accepted { .. } => "Accepted".into(),
         ServerFrame::Rejected { reason, .. } => format!("Rejected({reason})"),
