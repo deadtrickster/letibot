@@ -209,3 +209,129 @@ asset path (`install.sh:208-234`) is only ever exercised by the release workflow
 extracts the archive itself rather than running the installer. *Done when* a test runs
 `install.sh` with `LETIBOT_VERSION=<tag>` and `LETIBOT_INSTALL_DIR=$(mktemp -d)` from a
 directory that is not a checkout, and asserts the eight files and a running `harnessd`.
+
+**B8 — an inherited `LETIBOT_SOCKET` must not let one workspace stop another's daemon.**
+`scripts/letibot:123` is `SOCKET="${LETIBOT_SOCKET:-$RUNDIR/$KEY.sock}"`, so the variable
+outranks the socket computed from the workspace, and `--status`/`--stop` then act on
+whatever it names while every message names the *current* workspace (`:1037-1050`). See
+§5.4 — measured against a live daemon on this box. *Done when* `--status` and `--stop`
+refuse by name when `LETIBOT_SOCKET` resolves to a socket whose record (`$RUNDIR/$KEY.json`)
+names a different workspace.
+
+**B9 — the release workflow's `$ORIGIN` guard must cover the binaries too.**
+`release.yml:129-139` iterates the four library names, so `harnessd`, `letibot-tui` and
+`letibot-askpass` are never inspected — and all three ship a runner build path in their
+`DT_RUNPATH` (§5.7). *Done when* the loop runs over `$bins $libs`, the way
+`release.yml:220-239` already does for the extraction check.
+
+---
+
+## 5. What was measured
+
+Against the `v0.3.0` release, on a copy of `install.sh` in a directory that is not a
+checkout, into a scratch prefix, and then under `env -i` with a scratch `HOME`,
+`XDG_RUNTIME_DIR`, store, log and workspace. The operator's `~/.local/bin`, `/home/dead/bin`,
+live store and live daemon were checked before and after and were not touched.
+
+### 5.1 The install itself is clean
+
+`install.sh` exits 0. Eight files land: `harnessd` (36 MB), `letibot-tui` (24 MB),
+`letibot-askpass` (2.9 MB), `letibot` (69 KB, `#!/usr/bin/env bash`), and the four
+libraries. `harnessd 0.3.0` and `letibot-tui 0.3.0`. The four libraries' `DT_RUNPATH` is
+exactly `$ORIGIN`, and with `LD_LIBRARY_PATH` emptied on a box with no llama.cpp anywhere,
+both binaries run.
+
+### 5.2 A first run fails at the vocabulary, exactly as §3.3 says
+
+On a box with a model server on 8080 and no letibot config at all:
+
+```
+letibot: no harnessd for <ws> - starting one (role coder, model qwen-3.8-27b, pid 3613245)
+letibot: daemon did not come up; last lines of <home>/logs/harnessd.log:
+letibot: installed the preapproved list at <home>/.config/letibot/permission.json — it is yours to edit
+harnessd: no vocabulary GGUF at <home>/models/Qwen3.8-27B-UD-Q6_K_XL.gguf. For a split model, pass the first shard.
+```
+
+Exit 1, after the launcher's 30-second wait. The path it names is under the user's own
+`$HOME`, derived from the model the *server* happened to have loaded, and the user never
+chose it. What is left behind is `~/.config/letibot/permission.json` (4,522 bytes, from the
+seed), an empty `~/.local/share/letibot/`, and `~/logs/harnessd.log` — which is the table in
+§2, confirmed.
+
+### 5.3 With a vocabulary, the whole loop works
+
+Bare `letibot` → a daemon (pid 3615329) and a real TUI drawn on the screen. `--status` →
+*up*, with the scratch socket. `--stop` → *"stopped …"*, exit 0. `--status` after → *no
+daemon*. The record JSON is written correctly. Residue after a clean stop:
+`$RUNDIR/letibot/<key>.lock`, `scratch-<pid>/` and `shims/` remain; the socket and the
+record do not.
+
+**So the thing the operator asked to prove works.** The gap is not the install.
+
+### 5.4 `LETIBOT_SOCKET` reaches across workspaces — measured by accident
+
+This session's environment carries `LETIBOT_SOCKET=/run/user/1000/letibot/42ce9f1aae08.sock`.
+Running `letibot --status` in a scratch `HOME`, scratch workspace and scratch
+`XDG_RUNTIME_DIR` printed:
+
+```
+up: harnessd for /…/.scratch/release-0.3.0/ws (pid 3423932), up since 2026-10-06T23:45:36+0200, role coder model qwen-3.8-27b
+socket   /run/user/1000/letibot/42ce9f1aae08.sock
+```
+
+Pid 3423932 is **the operator's live daemon for `/home/dead/Projects/letibot`**, role
+`leticode`, whose record says so. The launcher took the socket from the environment
+(`:123`), found it listening, and reported it as *this* workspace's daemon — and `--stop`
+acts on the pid it reads from that socket. The test was re-run under `env -i` and answered
+*"no daemon"* correctly. **An inherited `LETIBOT_SOCKET` is therefore one `--stop` away from
+taking down somebody else's session.** B8.
+
+### 5.5 What it says when a file is missing
+
+Each on a *copy* of the installed prefix:
+
+| what was removed | what it says | exit |
+|---|---|---|
+| `libggml-cpu.so.0` | `./harnessd: error while loading shared libraries: libggml-cpu.so.0: cannot open shared object file` | 127 |
+| all four llama libraries | `… libllama.so.0: cannot open shared object file` | 127 |
+| `harnessd` | `letibot: no harnessd at <dir>` + the three ways out | 1 |
+| the tag (`v9.9.9`) | `fatal: Remote branch v9.9.9 not found in upstream origin` | 128 |
+
+The loader's own words are what `install.sh:401-406` quotes, and they are the right answer.
+The third row is only reached by a run that starts or attaches: `--help` and `--status` both
+exit 0 before the check at `:1144`.
+
+### 5.6 `install.sh`'s launcher check cannot fail for the reason its comment gives
+
+`install.sh:425-446` runs `$INSTALL_DIR/letibot --help` and asserts the output contains
+`letibot`, under a comment about the launcher *"linking llama too"* and `$ORIGIN` resolving
+it. The shipped `letibot` is `scripts/letibot`, a **bash script** — it links nothing.
+MEASURED: with `libggml-cpu.so.0` deleted, `letibot --help` still exits 0 and prints its
+usage, while `harnessd --version` in the same directory exits 127. The check is a substring
+match on a usage text.
+
+### 5.7 The published binaries carry the runner's build path
+
+```
+harnessd         $ORIGIN:/home/runner/work/letibot/letibot/llama.cpp/build/bin
+letibot-tui      $ORIGIN:/home/runner/work/letibot/letibot/llama.cpp/build/bin
+letibot-askpass  $ORIGIN:/home/runner/work/letibot/letibot/llama.cpp/build/bin
+libllama.so.0    $ORIGIN
+libggml.so.0     $ORIGIN
+libggml-cpu.so.0 $ORIGIN
+libggml-base.so.0 $ORIGIN
+```
+
+The guard at `release.yml:129-139` loops over the four **library** names, so it never looks
+at the three executables — while the argument it makes (*"The absolute entries here are
+build paths from this runner, and they would be baked into an asset people download"*,
+`release.yml:134-136`) applies to them exactly. Harmless today: `$ORIGIN` is searched first
+and `/home/runner/…` exists on no user's machine, and both binaries were measured running
+with `LD_LIBRARY_PATH` emptied. B9.
+
+### 5.8 `~/logs/harnessd.log` is append-only, and `tail -15` mixes runs
+
+MEASURED: the report for a failed start began with the banner of an earlier *successful*
+daemon from the same log, and the actual error was the last line. The launcher's only
+first-run diagnostic (`scripts/letibot:1278`) is therefore a window into every run this
+box has ever done.
