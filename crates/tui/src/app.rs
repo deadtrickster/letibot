@@ -3332,6 +3332,33 @@ pub struct App {
     /// `sessionlog` rather than here because the sentence belongs to the protocol and
     /// every head has to say the same one.
     daemon_protocol: Option<u32>,
+    /// **Which daemon this head is drawing the picture of.**
+    ///
+    /// Two facts, and both are about the connection rather than about the attach: the process at
+    /// the other end of the socket, from `SO_PEERCRED` ([`App::set_daemon_pid`], re-read on every
+    /// reconnect), and the build's `PROTOCOL_VERSION`, which rides the `Hello`. The pid is the
+    /// kernel's own answer for *this socket*, which is what makes it an identity rather than a
+    /// guess — a number read out of a file could be a predecessor's, and R30 already argued that
+    /// through for `/status`.
+    ///
+    /// # Why a head needs one at all
+    ///
+    /// The operator's box, in their words: three `letibot-tui` processes alive (ages 15d, 1d18h,
+    /// 21h) while the daemon was replaced this afternoon. **A head outlives the daemon that gave
+    /// it its facts**, and the registry is in memory — so a daemon that comes back is not the one
+    /// whose answers are still on the screen, and the head went on drawing them without ever
+    /// saying that the party it was talking to had changed.
+    ///
+    /// **What the head does about it is the same refetch it owes after any seating**
+    /// ([`App::refetch_session_facts`]) plus the sentence below — it cannot re-attach itself, and
+    /// does not need to: the socket dying is what makes the driver reconnect, and the `Hello`
+    /// that answers the reconnect is this arm. What was missing was *noticing*, and noticing is
+    /// what turns a silent stale picture into a named one.
+    ///
+    /// `None` until a daemon has answered, which is a different statement from *pid unknown* —
+    /// the kernel declines to name a peer on some platforms, and `Some(DaemonSeat { pid: None,
+    /// .. })` is that case rather than this one.
+    daemon_seat: Option<DaemonSeat>,
     /// **The daemon connection, as far as this head can tell.** See [`Link`].
     ///
     /// Kept on the head rather than in the driver because it is a fact the *screen*
@@ -3447,6 +3474,43 @@ pub struct App {
     /// had not changed (2026-09-20). Nothing here can be confused with the session's
     /// figures however alike they look, because nothing else writes this field.
     compacting: Option<CompactionLine>,
+}
+
+/// **A pid as a sentence fragment, or the honest absence** — R30's rule, in one place because
+/// two writers say it: the stop's farewell and the replaced-daemon note.
+///
+/// `None` is *the kernel would not name the peer*, which is a different statement from a pid of
+/// zero; a head that printed a number it did not have would send the operator to `ps` for a
+/// process that is not there.
+fn pid_word(pid: Option<i32>) -> String {
+    match pid {
+        Some(p) => format!("pid {p}"),
+        None => "a pid the kernel did not name".to_string(),
+    }
+}
+
+/// **Which daemon a head is drawing the picture of** — the two facts that answer *is this the
+/// one I attached to*.
+///
+/// A pair rather than the pid alone because a pid is reused by the kernel: a daemon restarted
+/// and handed the same number is a different daemon with the same identity, and the build's
+/// protocol version is the other half of the answer — a replaced daemon is usually a rebuilt
+/// one, and a rebuild that moved the wire is the case a head most needs to be told about.
+///
+/// **What it deliberately is not: a daemon instance id.** The strongest available fact would be
+/// a boot-time stamp the daemon mints once and sends on every `Hello`, which is a protocol
+/// field and a `PROTOCOL_VERSION` bump; `SO_PEERCRED` is already on the wire (R30) and already
+/// re-read on every connection, so this is the honest reading of what the head has. The residue
+/// — a replaced daemon that happens to get the same pid and speaks the same protocol — is
+/// named here rather than papered over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DaemonSeat {
+    /// The process at the other end of this socket, from `SO_PEERCRED`. `None` when the kernel
+    /// would not say, which compares equal to another `None` — the one case this cannot tell
+    /// apart, and the reason the protocol version is beside it.
+    pid: Option<i32>,
+    /// The version the daemon claims, from the `Hello` that seated this connection.
+    protocol: u32,
 }
 
 /// One compaction half, as the daemon reports it.
@@ -4189,6 +4253,7 @@ impl App {
             attaching: false,
             link: Link::Attached,
             daemon_protocol: None,
+            daemon_seat: None,
             attach_started_ms: 0,
             cursor: None,
             bulk: None,
@@ -4339,7 +4404,8 @@ impl App {
         //
         // ```text
         // letibot: the daemon was asked to stop and had not gone 0s later.
-        //   the request was acknowledged and did not stop; pid 2291248 is still there.
+        //   the request was acknowledged and did not stop; the daemon is still there (pid
+        //   2291248).
         //   `letibot --stop --force` finishes it — …
         // letibot: the daemon ended this head — daemon shutting down
         // ```
@@ -4368,12 +4434,7 @@ impl App {
         if s.gone || self.bye.is_some() {
             return None;
         }
-        let pid = match s.pid {
-            Some(p) => format!("pid {p}"),
-            None => "pid unknown (the kernel would not say which process is at the other \
-                     end of the socket)"
-                .to_string(),
-        };
+        let pid = pid_word(s.pid);
         let ask = if s.acked {
             "was acknowledged and did not stop"
         } else if s.sent {
@@ -4389,7 +4450,7 @@ impl App {
         };
         Some(format!(
             "the daemon was asked to stop and had not gone {secs}s later.\n  \
-             the request {ask}; {pid} is still there.\n  {because}\n  \
+             the request {ask}; the daemon is still there ({pid}).\n  {because}\n  \
              `letibot --stop --force` finishes it — it aborts in-flight turns over the \
              protocol, then signals, and says `NOT stopped` if the process survives."
         ))
@@ -4938,6 +4999,45 @@ impl App {
                 // head will report and skip, an older one means the next command the two
                 // do not share ends the session.
                 self.daemon_protocol = Some(protocol_version);
+                // **And which daemon that is.** A head outlives the daemon that gave it its
+                // facts — the operator's box has had three `letibot-tui` processes up for days
+                // while the daemon was replaced underneath them — so the party at the other end
+                // of this socket has to be checked rather than assumed. The pid is re-read per
+                // connection by the caller that opened it, so by the time this arm runs it is
+                // *this* daemon's, and the protocol rides this frame.
+                //
+                // **The check is on the SEATING, and the seating is where it belongs**: a
+                // `Hello` is an attach, a re-attach and the return from a switch, and a switch
+                // is answered on the same socket by the same process — so this fires once per
+                // connection that lands somewhere new, and not once per keystroke.
+                let seat = DaemonSeat {
+                    pid: self.daemon_pid,
+                    protocol: protocol_version,
+                };
+                let was = self.daemon_seat;
+                self.daemon_seat = Some(seat);
+                // **Held, not filed.** `load` replaces `self.notes` wholesale a few lines down,
+                // so a note written here is thrown away — the same reason the skew's sentence
+                // and the reattach's are held rather than said. See `App::link_up`.
+                //
+                // **Both numbers on both sides, and `None` is said as `not told`.** A pid the
+                // kernel declined to name is not a pid of zero, and the same rule R30 keeps on
+                // the farewell applies here: a head that printed a number it did not have would
+                // send the operator to `ps` for a process that is not there.
+                let replaced_said = was.filter(|w| *w != seat).map(|w| {
+                    format!(
+                        "this is not the daemon this head was attached to. That one was {} and \
+                         spoke protocol {}; this one is {} and speaks {}. Everything the old one \
+                         told me that was its own — its session list, its job table, its children \
+                         — has been asked for again, because a daemon's registry is in memory \
+                         and a replacement holds none of it. What you are reading below is what \
+                         THIS daemon holds.",
+                        pid_word(w.pid),
+                        w.protocol,
+                        pid_word(seat.pid),
+                        seat.protocol,
+                    )
+                });
                 // **The `Hello` is what says the link is back.** It is the frame that
                 // seats this connection, so it is the only honest answer to "are we
                 // attached" — a socket that accepts and then says nothing is not.
@@ -5016,6 +5116,13 @@ impl App {
                 if let Some(said) = skew_said {
                     self.note(Note::Warned(Warned {
                         code: "protocol_skew".into(),
+                        detail: said,
+                        ts: 0,
+                    }));
+                }
+                if let Some(said) = replaced_said {
+                    self.note(Note::Warned(Warned {
+                        code: "daemon_replaced".into(),
                         detail: said,
                         ts: 0,
                     }));
@@ -30487,6 +30594,144 @@ mod tests {
             ));
         }
         assert_eq!(a.notes.len(), 1, "said three times: {:?}", a.notes);
+    }
+
+    /// **A head that outlives its daemon notices, says so, and re-asks.**
+    ///
+    /// The operator's box: three `letibot-tui` processes alive (ages 15d, 1d18h, 21h) while the
+    /// daemon was replaced this afternoon. A head outlives the daemon that gave it its facts, and
+    /// the registry is in memory — so a daemon that comes back is not the one whose answers are
+    /// still on the screen. The head went on drawing them without ever saying the party it was
+    /// talking to had changed.
+    ///
+    /// **The identity is `SO_PEERCRED` and the protocol**, which is what the head has: the pid is
+    /// the kernel's answer for *this socket*, re-read by the caller on every connection, and the
+    /// version rides the `Hello`. Both halves are asserted, because either alone can be wrong —
+    /// a pid is reused, and a rebuild that keeps its number is still a different daemon.
+    #[test]
+    fn a_replaced_daemon_is_noticed_said_and_re_asked() {
+        let hub = Hub::new("s");
+        // The daemon this head attached to.
+        let mut a = app();
+        a.set_daemon_pid(Some(4242));
+        a.apply(hello("s", a_family(), hub.snapshot()));
+        assert!(
+            !a.notes
+                .iter()
+                .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "daemon_replaced")),
+            "the first attach has nothing to compare against: {:?}",
+            a.notes
+        );
+        a.take_actions();
+
+        // **A switch on the same socket, by the same process, is not a replacement.** This is the
+        // half that keeps the note from firing on every keystroke-shaped `Hello`.
+        a.apply(hello("s", a_family(), hub.snapshot()));
+        assert!(
+            !a.notes
+                .iter()
+                .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "daemon_replaced")),
+            "the same daemon answered the same session twice: {:?}",
+            a.notes
+        );
+
+        // **The socket died and the driver came back to a different process.** `head.rs` re-reads
+        // `SO_PEERCRED` on the new connection before the `Hello` is folded — that is the caller's
+        // order and this test's, because the arm reads `self.daemon_pid`.
+        a.link_down("the daemon closed the connection");
+        a.reconnect_sent();
+        a.set_daemon_pid(Some(5151));
+        a.apply(hello("s", a_family(), hub.snapshot()));
+
+        let said = a
+            .notes
+            .iter()
+            .find_map(|(_, n)| match n {
+                Note::Warned(w) if w.code == "daemon_replaced" => Some(w.detail.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("a different daemon went unremarked: {:?}", a.notes));
+        assert!(
+            said.contains("pid 4242"),
+            "it does not name the one that went: {said}"
+        );
+        assert!(
+            said.contains("pid 5151"),
+            "nor the one that arrived: {said}"
+        );
+        assert!(
+            said.contains("in memory"),
+            "it does not say WHY the old answers are no longer good: {said}"
+        );
+
+        // **And the refetch ran**, which is the other half of the requirement: the head does not
+        // keep drawing the old picture, it asks again. The same three reads as any seating.
+        let asked = a.take_actions();
+        for want in [Action::ListSessions, Action::ListJobs, Action::Settings] {
+            assert!(
+                asked.contains(&want),
+                "a head under a new daemon did not re-ask for {want:?}: {asked:?}"
+            );
+        }
+
+        // **A rebuild that moved the wire is a replacement too**, even at the same pid — which is
+        // the reason the identity is a pair rather than the number alone.
+        let mut b = app();
+        b.set_daemon_pid(Some(4242));
+        b.apply(hello_at(
+            "s",
+            a_family(),
+            hub.snapshot(),
+            letibot_sessionlog::protocol::PROTOCOL_VERSION,
+        ));
+        b.apply(hello_at(
+            "s",
+            a_family(),
+            hub.snapshot(),
+            letibot_sessionlog::protocol::PROTOCOL_VERSION + 1,
+        ));
+        assert!(
+            b.notes
+                .iter()
+                .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "daemon_replaced")),
+            "the same pid speaking a different protocol is still a different daemon: {:?}",
+            b.notes
+        );
+    }
+
+    /// **A pid the kernel would not name is said as such, not as a number.** R30's rule on the
+    /// farewell, kept on the other sentence that names a pid: a head that printed a zero would
+    /// send the operator to `ps` for a process that is not there.
+    #[test]
+    fn a_replacement_between_two_unnamed_peers_says_so_rather_than_inventing_a_pid() {
+        let hub = Hub::new("s");
+        let mut a = app();
+        // No `set_daemon_pid` at all: the kernel declined to name the peer.
+        a.apply(hello_at(
+            "s",
+            a_family(),
+            hub.snapshot(),
+            letibot_sessionlog::protocol::PROTOCOL_VERSION,
+        ));
+        a.apply(hello_at(
+            "s",
+            a_family(),
+            hub.snapshot(),
+            letibot_sessionlog::protocol::PROTOCOL_VERSION - 1,
+        ));
+        let said = a
+            .notes
+            .iter()
+            .find_map(|(_, n)| match n {
+                Note::Warned(w) if w.code == "daemon_replaced" => Some(w.detail.clone()),
+                _ => None,
+            })
+            .expect("the protocol moved, so the daemon did");
+        assert!(
+            said.contains("the kernel did not name"),
+            "an unnamed peer was rendered as a pid: {said}"
+        );
+        assert!(!said.contains("pid 0"), "a zero is not a pid: {said}");
     }
 
     /// **A head whose daemon goes away says so, keeps its screen, and does not exit.**

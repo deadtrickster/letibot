@@ -396,6 +396,13 @@ pub const TABLE: &[(&str, Class)] = &[
     ("log_gap", Class::Failure),
     ("unreadable_frame", Class::Failure),
     ("protocol_skew", Class::Failure),
+    // **A head that outlives its daemon, and does not notice.** The operator's box: three
+    // `letibot-tui` processes up for days while the daemon was replaced underneath them, and
+    // the registry is in memory — so the answers still on the screen were a *predecessor's*,
+    // and nothing said so. `Failure` by the register's own discriminator: the session is
+    // fine and the head is the thing that is wrong, and a reader who is not told is reading
+    // a picture of a daemon that no longer exists.
+    ("daemon_replaced", Class::Failure),
     ("orphan_body", Class::Failure),
     ("sudo", Class::Failure),
     // **A command of the operator's own, answered or not.** The head's own note beside
@@ -593,20 +600,29 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 83 codes, of which **8** are the reader's own input refused.
+    /// **The census, pinned.** 85 codes, of which **8** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_29_routine_8_refused_and_47_failures() {
+    fn the_table_is_29_routine_8_refused_and_48_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **84, not the 83 the last census was taken at.** One arrival, and it is the daemon's
-        // half of the operator's own report: `operator_run_unreadable` is the sentence said when
-        // the process that is waiting cannot be looked at at all — `! sudo apt install mc`,
-        // where `apt` runs as root and `/proc/<pid>/fd/0` is `EACCES`. A Failure, because it is
-        // a check that did not happen and the reader's next move depends on being told.
+        // **85, not the 84 the last census was taken at.** One arrival, and it is the head's
+        // half of the operator's own report: `daemon_replaced` is the sentence said when the
+        // process at the other end of this socket is not the one this head attached to — a
+        // head outlives its daemon, and a daemon's registry is in memory, so the answers
+        // still on the screen were a predecessor's. A Failure, because the session is fine
+        // and the reader is being shown a picture of a daemon that no longer exists.
+        //
+        // The census before that, 84, kept its own list for the same reason:
+        //
+        //   · `operator_run_unreadable` — the daemon's half of the operator's own report: the
+        //     sentence said when the process that is waiting cannot be looked at at all —
+        //     `! sudo apt install mc`, where `apt` runs as root and `/proc/<pid>/fd/0` is
+        //     `EACCES`. A Failure, because it is a check that did not happen and the reader's
+        //     next move depends on being told.
         //
         // The census before that, 83, kept its own list for the same reason:
         //
@@ -662,12 +678,12 @@ mod the_register_census {
         //     and not a routine note: it is a check that did not happen, and the sentence's job is
         //     *look at this*, because the alternative is a command that says nothing and never
         //     ends.
-        assert_eq!(TABLE.len(), 84, "the table's size");
+        assert_eq!(TABLE.len(), 85, "the table's size");
         assert_eq!(count(Class::Routine), 29);
         assert_eq!(count(Class::Refused), 8, "the eight in READER_INPUT");
-        assert_eq!(count(Class::Failure), 47);
+        assert_eq!(count(Class::Failure), 48);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 47 of 84 and the middle is 8**, which is why the third register is a
+        // register is 48 of 85 and the middle is 8**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }
