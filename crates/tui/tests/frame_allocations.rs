@@ -262,26 +262,33 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
     assert!(before.len() > 20, "the scroll fixture draws no frame");
     put(&mut shown, &mut scratch, &before);
 
-    // **The state change the 2026-10-05 work added is kept**, because dropping a repaint must not
-    // drop a scroll: a notch up parks the reader on the anchor, and ONE notch down is the tail
-    // again however far the stream has moved under them.
+    // **The state change is kept, and the walk with it**, because dropping a repaint must not drop
+    // a scroll: a notch up parks the reader on the anchor, and a notch down walks three lines back
+    // toward the tail. This fixture parks three lines up, so the walk arrives in one notch — but
+    // that is the geometry and not the rule. **One notch was the tail itself until 2026-10-06**, and
+    // that is what the operator reported as *"one simple stroke gets me to the bottom immediately —
+    // effectively like Esc"*; the walk is the reconciliation, and Esc and the parked `↓` are the
+    // keys that still mean "follow again" in one press.
     assert!(app.following(), "the fixture starts on the stream");
     assert_eq!(app.key(Key::WheelUp), None);
     assert!(!app.following(), "a notch up parks the reader");
     assert!(!app.take_redraw(), "a notch up asked for a full repaint");
     assert_eq!(app.key(Key::WheelDown), None);
-    assert!(app.following(), "one notch down is the tail again");
+    assert!(
+        app.following(),
+        "the notch that walks into the tail is the one that follows again"
+    );
     assert_eq!(app.scroll, 0, "and the count agrees with the anchor");
     assert!(
         !app.take_redraw(),
-        "the tail notch asked for a full repaint"
+        "the notch down asked for a full repaint"
     );
     before = app.screen(120, 40);
     put(&mut shown, &mut scratch, &before);
 
     // Every key the conversation pane scrolls with, one at a time. The order matters only in that
-    // the page keys have somewhere to move FROM — a notch up, a page up, the tail in one press,
-    // a page up again, then a page down.
+    // the page keys have somewhere to move FROM — a notch up, a page up, a notch down, a page up
+    // again, then a page down.
     for key in [
         Key::WheelUp,
         Key::PageUp,
