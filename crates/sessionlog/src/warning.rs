@@ -390,6 +390,17 @@ pub const TABLE: &[(&str, Class)] = &[
     ("protocol_skew", Class::Failure),
     ("orphan_body", Class::Failure),
     ("sudo", Class::Failure),
+    // **A command of the operator's own, answered or not.** The head's own note beside
+    // `sudo`'s, one channel over: it says whether the line went down the run's stdin, and
+    // the two cases are different things to have happened to a person who was about to
+    // type — `answer sent by WHO` is the feature working, and `nothing sent (WHY)` is a
+    // line that did not reach a program that was waiting for it.
+    //
+    // **`Failure`, and it is not the `nothing sent` case that decides it.** A register is
+    // per code and not per instance, and the same code carries the line that DID go out;
+    // the case that settles it is the other one — the command ended with the card still up,
+    // which is an answer that was not delivered. Routine would paint that as housekeeping.
+    ("prompt", Class::Failure),
     // **A head that was told something is edge-bound and has nowhere to put it.** The code is
     // in [`ALARM_ONLY`], so the daemon's sentence is not drawn in the conversation; the head
     // is supposed to move it to a counter, and this is what it says when it has no counter to
@@ -574,17 +585,22 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 82 codes, of which **8** are the reader's own input refused.
+    /// **The census, pinned.** 83 codes, of which **8** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_29_routine_8_refused_and_45_failures() {
+    fn the_table_is_29_routine_8_refused_and_46_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **82, not the 80 the last census was taken at.** Two arrivals, and they are the two
-        // verdicts of one act — the operator answering a command of their own:
+        // **83, not the 82 the last census was taken at.** One arrival, and it is the HEAD's
+        // half of the same act: `prompt` is the note the head files when a card for the
+        // operator's own command settles — `answer sent by WHO`, or `nothing sent (WHY)`.
+        // It is a Failure for the reason `sudo` beside it is, and the instance that settles
+        // it is the second: an answer that did not reach a program that was waiting for it.
+        //
+        // The census before that, 82, kept its own list for the same reason:
         //
         //   · `prompt_late` — a line sent for a card that is no longer open, because the
         //     command ended or another head answered first — is a Failure, and it is
@@ -626,12 +642,12 @@ mod the_register_census {
         //     the daemon**, and it is a Failure by the same argument that keeps `anchor_lost`: the
         //     diagnostic reaches neither the conversation nor the triangle, so a reader who is not
         //     told has been told nothing at all.
-        assert_eq!(TABLE.len(), 82, "the table's size");
+        assert_eq!(TABLE.len(), 83, "the table's size");
         assert_eq!(count(Class::Routine), 29);
         assert_eq!(count(Class::Refused), 8, "the eight in READER_INPUT");
-        assert_eq!(count(Class::Failure), 45);
+        assert_eq!(count(Class::Failure), 46);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 45 of 82 and the middle is 8**, which is why the third register is a
+        // register is 46 of 83 and the middle is 8**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }
