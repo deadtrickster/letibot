@@ -347,6 +347,21 @@ impl Tool for Bash {
             }
         };
 
+        // **The deadline is armed on the HOST, and the host is what fires it.**
+        //
+        // This is the one line that stops the timeout being enforced inside the thing it
+        // guards. The loop below still checks the clock — it is the fast path and the one
+        // that can say how far past the deadline the run went — but it is no longer the
+        // only thing that would end the run, so a run whose thread never comes back round
+        // that loop is still ended, by the run's own cgroup and by a thread that is not
+        // the run's. See [`crate::exec::host::Deadlines`].
+        //
+        // A backgrounded run has no deadline at all — `background: true` is the model
+        // asking for exactly that — so nothing is armed for it.
+        if !background {
+            host.arm_deadline(&id, timeout);
+        }
+
         if background {
             let view = host.job(&id);
             // **Where this job's own output goes** — R41, requirement one, and it changes
@@ -548,6 +563,28 @@ impl Tool for Bash {
             // did not ask to run longer than the default must not run forever. A
             // model that wants it to outlive the deadline says `background: true`, or
             // a person moves it from the head.
+            //
+            // **And the second way a deadline arrives here.** `JobState::Running` is the
+            // loop's own check — it looked at the clock and the run was still going. This
+            // arm is the host's watchdog having already ended the run, which is the case
+            // where the loop did *not* look: the job is settled as `Killed` with the
+            // deadline's own reason, and reporting that as a plain failure would be a
+            // timeout rendered as an error, which is F5 with the sign flipped. Both paths
+            // render the same sentence, because they are the same fact.
+            JobState::Killed { by } if by == crate::exec::DEADLINE_KILL => {
+                let reaped = host.kill_job(&id);
+                let mut inv = Invocation::timed_out(format!(
+                    "{body}\n\n[the command `{id}` was killed after {:.0}s — it outlived \
+                     its deadline]\n  command: {command}\n\nIt did not fail; it was \
+                     stopped. To run it longer, call `bash` again with a larger \
+                     `timeout_ms`, or `background: true` to run it with no deadline.",
+                    timeout.as_secs_f32()
+                ));
+                if let Err(e) = &reaped {
+                    inv = inv.with_note(format!("the kill did not complete: {e}"));
+                }
+                inv
+            }
             JobState::Running => {
                 let reaped = host.kill_job(&id);
                 let mut inv = Invocation::timed_out(format!(
