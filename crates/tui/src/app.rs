@@ -3890,7 +3890,8 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("todos", "open or close the todos pane (ctrl-t)"),
     (
         "todo",
-        "TEXT adds one of YOUR rows · done N · rm N — the pane numbers your half",
+        "TEXT adds one of YOUR rows · done N · rm N · postpone N · resume N — the pane numbers \
+         your half",
     ),
     ("subagents", "open or close the subagent tree (ctrl-g)"),
     (
@@ -11726,6 +11727,8 @@ impl App {
     /// /todo finish the parity row        add it, at the end
     /// /todo done 2                       mark the second of MY rows complete
     /// /todo rm 2                         take it off the board
+    /// /todo postpone 2                   set it aside: it stays, and nothing nags about it
+    /// /todo resume 2                     put it back in the list
     /// ```
     ///
     /// **Numbered over the operator's rows and not the union**, because the model's rows are not
@@ -11936,6 +11939,56 @@ impl App {
                 } else {
                     mine[at - 1].status = letibot_sessionlog::event::TodoStatus::Completed;
                     self.say(&format!("row {at} is done"));
+                }
+            }
+            // **`postpone N` and `resume N` — the state the operator owns, over the same numbers
+            // every other verb uses.**
+            //
+            // The operator's ask: *"can we handle postponed todo item properly? i.e. they persist
+            // but without nag and with some counter visible to me"*. The state is THEIRS and this
+            // is the door: a model that could set its own row aside would have a way to silence the
+            // check that exists to stop it abandoning a plan, so `todo_write` still takes three
+            // words and the two that are missing are here.
+            //
+            // **The verb pair and not a key on the row.** Enter on one of these rows already means
+            // *toggle done* — the pane's own act since R44 — and a second row key would be a second
+            // thing to learn for an act that has a typed door; these two are listed in
+            // `SLASH_COMMANDS` (which is what `/help` and tab read) and named in the pane's own
+            // hint line, which is how every other verb here is found.
+            //
+            // **`resume` and not a second spelling of `done`,** because the two answers are
+            // different questions: `done` is *this is finished*, `resume` is *ask me about this
+            // again*. Lifting a row puts it back as `pending` — open work, which is what the queue
+            // and the idle check read — and **it keeps whatever condition it was carrying**: the
+            // handle is not touched by either verb, so a row set aside while waiting on a job goes
+            // back to waiting on the same one.
+            //
+            // A bare `postpone` or `resume` with no number is the text of a new row, exactly as a
+            // bare `done` is — see the arm below, which is the one convention for all of them.
+            ("postpone" | "resume", n) if !n.is_empty() => {
+                let Ok(at) = n.parse::<usize>() else {
+                    self.say(&format!("`{n}` is not a row number — `/todo` lists yours"));
+                    return None;
+                };
+                if at < 1 || at > mine.len() {
+                    self.say(&format!(
+                        "there is no row {at} of yours — you have {}",
+                        mine.len()
+                    ));
+                    return None;
+                }
+                if verb == "postpone" {
+                    mine[at - 1].status = letibot_sessionlog::event::TodoStatus::Postponed;
+                    self.say(&format!(
+                        "row {at} is set aside — it stays on your list and the model still sees \
+                         it, and nothing is reminded of it until you lift it with `/todo resume \
+                         {at}`"
+                    ));
+                } else {
+                    mine[at - 1].status = letibot_sessionlog::event::TodoStatus::Pending;
+                    self.say(&format!(
+                        "row {at} is back in the list — the check may ask about it again"
+                    ));
                 }
             }
             // **`when N JOB` — the condition, attached by number.** The operator's own shape: *"if
@@ -17104,7 +17157,25 @@ impl App {
         // **The rows the stops land on, taken as they go out.** Built local and assigned at the
         // end because the loops below hold `&self.todos` and `&self.repo_todos` while they record.
         let mut stop_rows: Vec<usize> = Vec::new();
-        let mut out = vec![colour(&self.cfg, sgr::BOLD, "todos")];
+        // **A zero is shown only when it means something.** The `open` number is always drawn —
+        // an empty plan is exactly the fact a reader opens this pane to confirm, and `0 open` is
+        // the answer. `postponed` is drawn only when there is one, because it is a number about a
+        // state most lists never use: a permanent `· 0 postponed` would be a word about a feature
+        // rather than about the work, on a header that is read at a glance.
+        //
+        // **And it is here rather than in the chrome**, which is a decision and not an omission:
+        // the top edge carries `N jobs running` because a job is news that arrives while the pane
+        // is closed, and this is the operator's OWN act — a row they set aside, in the pane whose
+        // rows and whose verbs are the whole of the state. The chrome's own rule is the one
+        // `jobs_line` writes down (*"a count that is always there is furniture"*), and a second
+        // surface drawing this number would be a second place to keep true, which is the defect
+        // this header is arranged to prevent.
+        let (open, postponed) = todo_counts(&self.todos);
+        let header = match postponed {
+            0 => format!("todos — {open} open"),
+            n => format!("todos — {open} open · {n} postponed"),
+        };
+        let mut out = vec![colour(&self.cfg, sgr::BOLD, &header)];
         out.push(String::new());
         // **ONE LIST, WITH THE AUTHOR ON EVERY ROW** — R51 item 18: *"the author tag on every row
         // is the requirement (R44)"*. leticl draws it this way and its `todos-lines` gives the
@@ -17168,6 +17239,7 @@ impl App {
                 letibot_sessionlog::event::TodoStatus::Pending => TodoMark::Open,
                 letibot_sessionlog::event::TodoStatus::InProgress => TodoMark::Doing,
                 letibot_sessionlog::event::TodoStatus::Completed => TodoMark::Done,
+                letibot_sessionlog::event::TodoStatus::Postponed => TodoMark::Postponed,
             };
             let is_mine = t.by == letibot_sessionlog::event::TodoBy::Operator;
             let number = if is_mine {
@@ -17177,6 +17249,19 @@ impl App {
                 "    ".to_string()
             };
             let who = if is_mine { "you" } else { "model" };
+            // **AND WHAT THE ROW IS WAITING ON, when it is waiting on anything.** The pane never
+            // drew a row's condition at all, so a row filed with `when` (or the card's third field)
+            // was indistinguishable from an unconditional one once it was on the board — the
+            // handle existed in the store and nowhere a reader could see it. It matters most for a
+            // POSTPONED row, whose condition is the thing that is *kept and not fired*: without
+            // this the row would read as one whose condition had been dropped, which is the one
+            // reading the state must not invite.
+            let waiting = match &t.when {
+                Some(letibot_sessionlog::event::TodoCondition::Job { handle }) => {
+                    format!(" · waits on {handle}")
+                }
+                None => String::new(),
+            };
             // **The mark is on the operator's rows only.** The model's rows are not stops — no key
             // acts on one — so a cursor that stopped there would be a cursor the operator presses
             // keys into and nothing happens. See [`App::todos_stops`].
@@ -17185,12 +17270,15 @@ impl App {
                 stop_rows.push(out.len());
             }
             out.push(format!(
-                "  {} {number}{} {}  {}",
+                "  {} {number}{} {}  {}{}",
                 if cursor_here { "▸" } else { " " },
                 mark.painted(&self.cfg),
                 without_control_lines(&t.content),
                 // The tag is FAINT: it is the aside on the row and the content is what is read.
                 dim(&self.cfg, &format!("— {who}")),
+                // …and so is the condition, for the same reason: it is what the row is WAITING
+                // on, which is an aside about the row and not the row.
+                dim(&self.cfg, &waiting),
             ));
         }
         out.push(String::new());
@@ -17286,6 +17374,20 @@ impl App {
             &self.cfg,
             "  ↑↓ moves (or click a row) · enter on [+] adds, on your row toggles it, on a repo \
              item unfolds · esc closes",
+        ));
+        // **And the one act the pane does not bind, said where its rows are.** `[p]` is a mark
+        // this pane has and `TODO.md` does not, so it is the one mark a reader cannot look up in
+        // org — and the two verbs are named here rather than only in `/help`, because a state you
+        // can see and cannot lift is a state that looks like a bug. Two short lines rather than
+        // one long one: the pane trims to the window, and a sentence whose second half is off the
+        // edge is a sentence that named nothing.
+        out.push(dim(
+            &self.cfg,
+            "  `[p]` is a row you set aside — it stays on the board and the model still sees it:",
+        ));
+        out.push(dim(
+            &self.cfg,
+            "  the check stops asking about it · `/todo postpone N` · `/todo resume N`",
         ));
         out.into_iter().map(|l| trim_to(&l, w)).collect()
     }
@@ -21453,17 +21555,51 @@ fn repo_todos_map(workspace: &str) -> Vec<TodoRow> {
     render_todo_md(&body)
 }
 
-/// One item's state, in the three marks org and `todo_write` share.
+/// **The two numbers the todos pane's header draws**, from the one list it draws its rows from.
+///
+/// `(open, postponed)`. `open` is every row the model still owes — `pending` or `in_progress`,
+/// which is exactly the set the idle check may ask about — and `postponed` is every row the
+/// operator has set aside. `completed` is neither: it is a record, and a header counting it would
+/// be answering a question nobody asks at a glance.
+///
+/// **A free function over the list, and not a second count kept anywhere.** The defect this exists
+/// to prevent is a pane that disagrees with itself — a header derived from the wire while the rows
+/// come from the head's own copy, or a total maintained beside the list it counts — and the way to
+/// make that impossible is for the count and the rows to be two readings of ONE argument.
+/// `todos_lines` passes the same `self.todos` it is about to draw.
+fn todo_counts(todos: &[letibot_sessionlog::event::TodoEntry]) -> (usize, usize) {
+    let mut open = 0usize;
+    let mut postponed = 0usize;
+    for t in todos {
+        match t.status {
+            letibot_sessionlog::event::TodoStatus::Pending
+            | letibot_sessionlog::event::TodoStatus::InProgress => open += 1,
+            letibot_sessionlog::event::TodoStatus::Postponed => postponed += 1,
+            letibot_sessionlog::event::TodoStatus::Completed => {}
+        }
+    }
+    (open, postponed)
+}
+
+/// One item's state, in the marks org and `todo_write` share.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TodoMark {
     Open,
     Doing,
     Done,
+    /// **Set aside by the operator** — the session board's fourth state, and the only one a
+    /// `TODO.md` has no syntax for: a file cannot say *still owed, and not being asked for*.
+    /// `TodoMark::of` therefore never returns it, which is what keeps the FILE's vocabulary three
+    /// marks wide while the board's is four. See `TodoStatus::Postponed` for the state itself.
+    Postponed,
 }
 
 impl TodoMark {
     /// `- [ ]`, `- [~]`, `- [x]` — and `*` for the other bullet org and markdown
     /// both accept. Anything else in the box is not a checkbox this reads.
+    ///
+    /// **Three marks and not four**: `[p]` is the session board's and is deliberately not read
+    /// out of a file, because a file has no way to say *still owed, and not being asked for*.
     fn of(line: &str) -> Option<(TodoMark, &str)> {
         let t = line.trim_start();
         let rest = t.strip_prefix("- ").or_else(|| t.strip_prefix("* "))?;
@@ -21482,6 +21618,7 @@ impl TodoMark {
             TodoMark::Open => "[ ]",
             TodoMark::Doing => "[~]",
             TodoMark::Done => "[x]",
+            TodoMark::Postponed => "[p]",
         }
     }
 
@@ -21494,11 +21631,18 @@ impl TodoMark {
     /// other two carry. Painted here rather than by `colour()` with an empty
     /// code, because that helper appends a RESET unconditionally and so put a
     /// bare `ESC[0m` after every open box — an escape that closes nothing.
+    ///
+    /// **`[p]` is DIMMED and not given a fourth hue.** A postponed row is not a fourth kind of
+    /// thing on the list — it is the same kind of thing, turned down — and the attribute
+    /// de-emphasises whatever foreground the reader's theme chose, which is what the frame around
+    /// a quotation already uses for the same purpose. A fourth colour would be a fourth thing to
+    /// learn, on the one row whose whole meaning is *this one is not shouting*.
     fn painted(self, cfg: &RenderConfig) -> String {
         match self {
             TodoMark::Open => self.glyph().to_string(),
             TodoMark::Doing => colour(cfg, sgr::YELLOW, self.glyph()),
             TodoMark::Done => colour(cfg, sgr::GREEN, self.glyph()),
+            TodoMark::Postponed => colour(cfg, sgr::DIM, self.glyph()),
         }
     }
 }
@@ -32670,6 +32814,173 @@ mod tests {
             a.todo_draft.is_some(),
             "bare /todo did not open the card: {:?}",
             a.notice
+        );
+    }
+
+    /// **THE HEADER COUNTS THE ROWS THE PANE DRAWS** — the operator's *"with some counter visible
+    /// to me"*, and the half of it that is a rule rather than a preference: one list, counted once.
+    ///
+    /// The defect this asserts against is a pane that disagrees with itself — a total maintained
+    /// beside the rows it counts, or derived from the wire while the rows come from the head's own
+    /// copy — so the numbers are checked against **the marks the pane actually painted**, not
+    /// against a second computation of the same sum. Three open and one set aside, over five rows
+    /// of which one is finished: the two numbers a reader can count to on the screen.
+    #[test]
+    fn the_todo_header_counts_the_rows_the_pane_draws() {
+        use letibot_sessionlog::event::{TodoBy, TodoCondition, TodoEntry, TodoStatus};
+        let mut a = app();
+        a.session_id = "s1".into();
+        a.apply(ServerFrame::Todos {
+            session_id: "s1".into(),
+            todos: vec![
+                TodoEntry {
+                    content: "the model's row".into(),
+                    status: TodoStatus::Pending,
+                    by: TodoBy::Model,
+                    when: None,
+                },
+                TodoEntry {
+                    content: "one I owe".into(),
+                    status: TodoStatus::Pending,
+                    by: TodoBy::Operator,
+                    when: None,
+                },
+                TodoEntry {
+                    content: "started".into(),
+                    status: TodoStatus::InProgress,
+                    by: TodoBy::Operator,
+                    when: None,
+                },
+                TodoEntry {
+                    content: "finished".into(),
+                    status: TodoStatus::Completed,
+                    by: TodoBy::Operator,
+                    when: None,
+                },
+                TodoEntry {
+                    content: "push once CI lands".into(),
+                    status: TodoStatus::Postponed,
+                    by: TodoBy::Operator,
+                    when: Some(TodoCondition::Job {
+                        handle: "j121".into(),
+                    }),
+                },
+            ],
+        });
+        a.key(Key::CtrlT);
+
+        // **The marks the pane painted**, read off its own lines: each mark is followed by a space
+        // and the row's words, which is what tells a row from the legend under the list.
+        let lines = a.todos_lines(120);
+        let drawn = |mark: &str| lines.iter().filter(|l| l.contains(mark)).count();
+        assert_eq!(drawn("[ ] "), 2, "two open rows, one of them the model's");
+        assert_eq!(drawn("[~] "), 1, "one started");
+        assert_eq!(drawn("[x] "), 1, "one finished");
+        assert_eq!(drawn("[p] "), 1, "one set aside");
+
+        let screen = a.screen(120, 40).join("\n");
+        assert!(
+            screen.contains("3 open · 1 postponed"),
+            "the header does not carry the two numbers: {screen}"
+        );
+        // The numbers and the marks are the same rows: 2 + 1 open, 1 set aside.
+        assert_eq!(todo_counts(&a.todos), (3, 1));
+        // **And a postponed row says what it is still waiting on**, which is the other half of the
+        // state: the handle is KEPT and does not fire while the row is set aside, so a pane that
+        // drew only `[p]` would leave a reader to guess whether the condition was dropped.
+        assert!(
+            screen.contains("push once CI lands") && screen.contains("waits on j121"),
+            "the row must carry its condition: {screen}"
+        );
+        // And the mark is explained where its rows are, since it is the one mark org has no
+        // spelling for.
+        assert!(
+            screen.contains("/todo postpone N") && screen.contains("/todo resume N"),
+            "the pane must name the verbs that undo the mark: {screen}"
+        );
+    }
+
+    /// **A ROW IS SET ASIDE AND LIFTED BY NUMBER, AND IT IS THE OPERATOR'S ACT.**
+    ///
+    /// The other half of the operator's ask — *"can we handle postponed todo item properly"* — and
+    /// the recommendation they made when the state was proposed: the row keeps its handle, does not
+    /// fire while it is set aside, and lifting it puts the same question back in front of the check.
+    /// Nothing here touches the condition, which is the assertion that makes the state reversible
+    /// rather than a quiet way to drop a firing.
+    ///
+    /// Numbered over the operator's half exactly as `done N` and `rm N` are, and refused by name
+    /// when the number is not one of theirs — so a typo cannot set aside a row nobody named.
+    #[test]
+    fn a_row_is_set_aside_and_lifted_by_number() {
+        use letibot_sessionlog::event::{TodoBy, TodoCondition, TodoEntry, TodoStatus};
+        let waiting = Some(TodoCondition::Job {
+            handle: "j121".into(),
+        });
+        let mut a = app();
+        a.session_id = "s1".into();
+        a.apply(ServerFrame::Todos {
+            session_id: "s1".into(),
+            todos: vec![TodoEntry {
+                content: "push once CI lands".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+                when: waiting.clone(),
+            }],
+        });
+        a.key(Key::CtrlT);
+
+        match a.command("todo postpone 1") {
+            Some(Action::SetOperatorTodos(items)) => {
+                assert_eq!(items.len(), 1, "the whole half goes out: {items:?}");
+                assert_eq!(items[0].status, TodoStatus::Postponed);
+                assert_eq!(
+                    items[0].when, waiting,
+                    "**the handle is KEPT** — lifting the row has to put the same question back"
+                );
+            }
+            other => panic!("expected a write of the operator's half, got {other:?}"),
+        }
+        assert!(
+            a.notice.as_deref().unwrap_or("").contains("set aside"),
+            "the act is said out loud, and it names the verb that undoes it: {:?}",
+            a.notice
+        );
+        let screen = a.screen(120, 40).join("\n");
+        assert!(screen.contains("0 open · 1 postponed"), "{screen}");
+
+        // **And the lift.** Back to open work, with the same condition on it.
+        match a.command("todo resume 1") {
+            Some(Action::SetOperatorTodos(items)) => {
+                assert_eq!(items[0].status, TodoStatus::Pending);
+                assert_eq!(items[0].when, waiting, "still waiting on the same handle");
+            }
+            other => panic!("expected a write of the operator's half, got {other:?}"),
+        }
+        let after = a.screen(120, 40).join("\n");
+        assert!(
+            after.contains("1 open") && !after.contains("postponed"),
+            "the row is back in the list and the counter says so: {after}"
+        );
+
+        // A number that is not a row of theirs is refused BY NAME, and nothing is sent.
+        assert_eq!(a.command("todo postpone 9"), None);
+        assert!(
+            a.notice.as_deref().unwrap_or("").contains("no row 9"),
+            "the refusal names the row: {:?}",
+            a.notice
+        );
+        assert_eq!(a.command("todo resume 9"), None);
+
+        // **And the verbs are listed where every other verb is** — `SLASH_COMMANDS` is what `/help`
+        // and the completion table read, so a verb missing here is a verb nobody finds.
+        let hint = SLASH_COMMANDS
+            .iter()
+            .find(|(n, _)| *n == "todo")
+            .map(|(_, h)| *h)
+            .unwrap_or("");
+        assert!(
+            hint.contains("postpone") && hint.contains("resume"),
+            "the todo row of the verb table does not name the two new verbs: {hint}"
         );
     }
 

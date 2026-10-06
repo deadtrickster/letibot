@@ -298,6 +298,13 @@ pub fn open_priority(todos: &[TodoItem]) -> Vec<&TodoItem> {
 ///
 /// [`TodoBoard::snapshot`] is the state, taken at the turn boundary rather than watched,
 /// so a list written and finished inside one turn never produces a message.
+///
+/// **The rows handed here are the ones the caller may speak about.** This renders the queue it is
+/// given and does not decide what the idle check is allowed to say — and the difference is a real
+/// state, because a POSTPONED row persists and is deliberately not being asked for. So the
+/// narrowing happens before the message (`harnessd`'s `the_plan_as_checked`, which the arming
+/// decision reads through as well) rather than inside this function, which would then be two
+/// answers to one question about what a plan is.
 pub fn unfinished_plan(todos: &[TodoItem]) -> Option<String> {
     // **THE QUEUE, served one at a time** — see `open_priority` for the order and why it is one.
     let open = open_priority(todos);
@@ -365,7 +372,11 @@ impl Tool for TodoWriteTool {
              multi-step work and to keep the operator's pane current: one entry per \
              step, the step being worked on marked in_progress, finished steps \
              marked completed. Send the WHOLE list every time — there is no delta; \
-             omitting an entry removes it.\n\n`operator` is for rows the OPERATOR \
+             omitting an entry removes it.\n\nA row the OPERATOR has POSTPONED comes \
+             back marked `[p]`: it stays on the board, it is still theirs, and it is \
+             not work you are being asked for — do not propose it again. `postponed` \
+             is not a status you may send; setting one aside and lifting it again are \
+             the operator's own acts.\n\n`operator` is for rows the OPERATOR \
              wrote — the ones the reply marks `— the operator's` — and changes their \
              STATE only: quote `content` EXACTLY as the reply shows it. A quote that \
              does not match exactly one of their rows is refused and nothing is \
@@ -589,6 +600,9 @@ fn render(todos: &[TodoItem]) -> String {
             TodoStatus::Pending => "[ ]",
             TodoStatus::InProgress => "[~]",
             TodoStatus::Completed => "[x]",
+            // **The operator's own mark.** See the legend below the list for what it means to the
+            // reader that has to act on it.
+            TodoStatus::Postponed => "[p]",
         };
         // **AND WHO WROTE IT, or `operator` is a field the model cannot aim.** The `by` field is
         // the whole of the difference between the halves, the pane has drawn it on every row since
@@ -607,6 +621,21 @@ fn render(todos: &[TodoItem]) -> String {
                 "yours"
             }
         ));
+    }
+    // **AND WHAT `[p]` MEANS, because the model has to stop proposing the row without being told
+    // twice.** The operator set the row aside: it is still on the board, it is still theirs, and it
+    // is deliberately not being asked for. A mark with no legend would be a model reading `[p]` as
+    // *mine to pick up* and proposing it on the next turn — which is the nagging the state exists
+    // to stop, arriving through the model's own good manners instead of through the clock.
+    //
+    // Said only when there IS such a row: a list that has never used the state does not need a
+    // paragraph about it, and the reply is read by a model that pays for every word.
+    if todos.iter().any(|t| t.status == TodoStatus::Postponed) {
+        out.push_str(
+            "\n`[p]` is a row the OPERATOR has set aside — it is still on the board and still \
+             theirs, and it is not work you are being asked for: do not propose it again. They \
+             lift it themselves when they want it back.\n",
+        );
     }
     out
 }
@@ -704,6 +733,64 @@ mod tests {
         assert!(
             nag.contains("#model"),
             "the tag did not survive the nag: {nag}"
+        );
+    }
+
+    /// **A POSTPONED row is still the model's to SEE, and the reply says what the mark means.**
+    ///
+    /// The operator's ask has two halves and this is the second one: the row *"persists"* — so it
+    /// is in the list the model is handed, with its own words and its author, which is what keeps
+    /// `todo_write`'s `operator` field able to aim at it — and it is *"without nag"*, which from the
+    /// model's side means it can stop proposing the row **without being told twice**. That is what
+    /// the legend below the list is for: `[p]` with no explanation is a mark the next turn reads as
+    /// *mine to pick up*, and the model proposing it is the nagging arriving through its own good
+    /// manners instead of through the clock.
+    ///
+    /// And the state is not one the model may set: `todo_write` still takes three words, so a model
+    /// cannot silence the check that exists to stop it abandoning a plan. Asserted on the refusal
+    /// itself, because that is where a fourth word would arrive.
+    #[test]
+    fn a_postponed_row_is_marked_in_what_the_model_is_shown() {
+        let set_aside = TodoItem {
+            content: "push once CI lands".into(),
+            status: TodoStatus::Postponed,
+            by: TodoBy::Operator,
+            when: Some(TodoCondition::Job {
+                handle: "j121".into(),
+            }),
+        };
+        let all = vec![item("the model's own row", TodoStatus::Pending), set_aside];
+
+        let shown = render(&all);
+        assert!(
+            shown.contains("[p] push once CI lands"),
+            "the row keeps its place in the list and is marked: {shown}"
+        );
+        assert!(
+            shown.contains("— the operator's"),
+            "and says whose it is, so `operator` can still aim at it: {shown}"
+        );
+        assert!(
+            shown.contains("do not propose it again"),
+            "the mark's meaning has to be in the reply, not only in the mark: {shown}"
+        );
+        // The state is the OPERATOR's, so the word is not one this tool takes.
+        let (mut rt, _board) = runtime();
+        let mut sink = RecordingToolSink::new();
+        let r = rt.invoke(
+            "t1",
+            &call(r#"{"todos": [{"content": "mine", "status": "postponed"}]}"#),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "a model must not be able to set a row aside: {:?}",
+            r.outcome
+        );
+        let said = format!("{} {:?}", r.payload, r.outcome);
+        assert!(
+            said.contains("pending, in_progress, completed"),
+            "and the refusal names the words it does take: {said}"
         );
     }
 
