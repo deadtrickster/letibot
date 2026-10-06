@@ -217,6 +217,103 @@ fn a_bang_line_runs_in_the_workspace_and_lands_as_two_rows_with_no_decision() {
     );
 }
 
+/// **The turn that starts reads the payload** — the half that was missing.
+///
+/// The test above asserts the operator's half: the two rows land, their line and the
+/// command's output, and a head draws them. This one asserts the MODEL's half, and it is
+/// the defect that was measured three times on a live session: `! ls -la` deposited its
+/// two rows, the turn started, and the turn opened with the line and nothing else.
+///
+/// **Where the evidence is pinned, said plainly.** A `Harness` cannot run a real turn here
+/// — that needs a model — so this test takes the rows the deposit left in the store and
+/// hands them to the function that builds what the model is handed,
+/// `letibot_provider::messages::convert`. That is the layer the drop happened in
+/// (`pair_tool_calls` saw a `tool` message with no proposing assistant row and discarded
+/// it), and it is reachable without a live model. **The layer this covers is the
+/// model-facing message builder over the real deposited rows; what it does not cover is a
+/// live round trip to a provider.**
+///
+/// The local dialects are not in this test's scope because they were never wrong:
+/// `dialect-qwen`'s `ToolResult` arm renders the row as a `<tool_response>` user turn with
+/// no proposal above it, which is why the operator's screen showed the output while the
+/// `messages` route dropped it.
+#[test]
+fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let socket = socket_path("model-reads");
+    let cfg = config("bang-model-reads", &socket);
+    let p = parts(&cfg);
+    let hub = Hub::new(&cfg.session_id);
+    let mut h = match Harness::open_with(&p, cfg, hub.clone(), None, None) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("bang-model-reads: no exec host on this box: {e}");
+            return;
+        }
+    };
+    let marker = format!("bang-reads-marker-{}", std::process::id());
+    // **The output is not in the command line, and that is what makes this a test.**
+    //
+    // The first draft of this test `printf`ed its own marker, so the marker was in the
+    // operator's typed line as well as in the output — and the assertion below passed
+    // against the LINE while the result was being dropped, which is the exact defect it
+    // exists to catch. The file is seeded here and the command only names it.
+    let output = format!("the-model-must-read-{}", std::process::id());
+    std::fs::write(h.workspace().join(&marker), &output).expect("seed the file the command reads");
+    let line = format!("! cat {marker}");
+    assert!(
+        !line.contains(&output),
+        "the typed line must not carry the output, or this test measures the wrong row: {line}"
+    );
+    h.run_operator_shell(&line, "dead")
+        .expect("the operator's own command runs and is recorded");
+
+    // **The rows the turn reads**, in the order the turn reads them: everything the
+    // deposit left, exactly as the transcript holds it.
+    let items: Vec<TranscriptItem> = hub
+        .snapshot()
+        .items
+        .iter()
+        .filter_map(|i| i.item.clone())
+        .collect();
+    assert!(
+        items
+            .iter()
+            .any(|i| matches!(i, TranscriptItem::User { .. })),
+        "the operator's own line is not in what the model would read: {items:?}"
+    );
+
+    // What the model is handed.
+    let messages = letibot_provider::messages::convert("be terse", &items, false);
+    let said: Vec<&str> = messages
+        .iter()
+        .filter_map(|m| m["content"].as_str())
+        .collect();
+    assert!(
+        said.iter().any(|c| c.contains(&output)),
+        "the command's output never reaches the model \u{2014} this is the defect: {messages:?}"
+    );
+    // **And it is the person's, not the model's.** No assistant `tool_calls` entry was
+    // invented to own it and no `tool` message was sent to answer one: the model is handed
+    // the output as the operator's own turn, which is the shape the local dialects already
+    // render for this row.
+    assert!(
+        !messages.iter().any(|m| m["role"] == "tool"),
+        "the result was sent as a tool message answering nothing: {messages:?}"
+    );
+    let carried = messages
+        .iter()
+        .find(|m| m["content"].as_str().is_some_and(|c| c.contains(&output)))
+        .expect("just asserted");
+    assert_eq!(
+        carried["role"], "user",
+        "the operator's own run is the person's turn: {carried:?}"
+    );
+    let _ = std::fs::remove_file(h.workspace().join(&marker));
+}
+
 /// **A command that cannot start is reported, not swallowed.**
 ///
 /// `bash`'s own refusal lands as the `ToolResult` row with the outcome the tool gave,

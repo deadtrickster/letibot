@@ -18,6 +18,10 @@
 //!   is folded into the content the way the local dialects do it: an `ok`
 //!   result is the payload; anything else is prefixed with what happened, so
 //!   the model can tell a refusal from an answer.
+//!   **Except a result that carries its own author** — one the OPERATOR ran, which has
+//!   no proposing assistant row above it and so cannot be a `tool` message at all. That
+//!   one is carried as a user turn; see [`person_ran`], which is the whole of why the
+//!   `!` line's output used to reach the transcript and the screen and not the model.
 //! - `SegmentMark` → dropped. It is the store's, not the model's.
 //!
 //! # `reasoning_content`, which this file has now been wrong about twice
@@ -155,6 +159,14 @@ pub fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> 
     // at that point is exactly the 400 this exists to prevent. The API's requirement
     // is that it be present; folding it forward keeps it present.
     let mut pending_reasoning: Option<String> = None;
+    // **The results that carry their own author**, by `call_id`.
+    //
+    // `CallOrigin::Operator` is R24 part two's word for *a person ran this call*, and it is
+    // on the row for exactly this reason: the operator's own `!` line and their own door
+    // calls are run by the daemon with no model proposing anything, so the result has no
+    // `tool_calls` entry above it to answer. Collected in the walk below — one walk of the
+    // items — and consulted by `pair_tool_calls`, which is where the old code dropped it.
+    let mut own_author: std::collections::HashSet<String> = std::collections::HashSet::new();
     for item in items {
         match item {
             TranscriptItem::System { text, .. } => {
@@ -255,8 +267,14 @@ pub fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> 
                 // Display-only; the prompt never sees it.
                 edit: _,
                 media,
-                ..
+                origin,
             } => {
+                if matches!(
+                    origin,
+                    Some(letibot_transcript::CallOrigin::Operator { .. })
+                ) {
+                    own_author.insert(call_id.clone());
+                }
                 let content = match outcome {
                     ToolOutcome::Ok => payload.clone(),
                     other => format!("[{name}: {}]\n{payload}", outcome_word(other)),
@@ -289,7 +307,7 @@ pub fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> 
             }
         }
     }
-    pair_tool_calls(out)
+    pair_tool_calls(out, &own_author)
 }
 
 /// **Every `tool_calls` gets its `tool` messages, or the provider refuses the
@@ -317,34 +335,51 @@ pub fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> 
 /// better information than the provider's refusal and better than a fabricated
 /// success. A `tool` message whose id answers nothing is dropped for the same
 /// reason in reverse: the providers reject those too.
-fn pair_tool_calls(rows: Vec<Value>) -> Vec<Value> {
+///
+/// # The one orphan that is carried instead of dropped
+///
+/// Dropping it was right for every result whose author is missing from the trail, and
+/// wrong for one: **a result the OPERATOR ran**, which `origin: CallOrigin::Operator`
+/// marks. Those are not model calls with a lost proposal — they are calls no model ever
+/// proposed, run by the person at the keyboard from their own console (`! ls -la`, and
+/// the door's own `human:<who>` path). Such a result cannot be a `tool` message, because
+/// there is no `tool_calls` entry for it to answer and the provider would refuse the
+/// request whole; so it is carried as the person's own turn instead. See [`person_ran`].
+fn pair_tool_calls(rows: Vec<Value>, own_author: &std::collections::HashSet<String>) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::with_capacity(rows.len());
     // Ids opened by the assistant message being answered right now, in order, so
     // the fillers go in the order the calls were made.
     let mut owed: Vec<String> = Vec::new();
 
     for row in rows {
-        let role = row.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        if role == "tool" {
+        let mut row = row;
+        if row.get("role").and_then(|r| r.as_str()) == Some("tool") {
             let id = row
                 .get("tool_call_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            // An orphan: no assistant message above it opened this id. Dropped,
-            // because a provider refuses it and nothing downstream reads it.
             if let Some(at) = owed.iter().position(|o| *o == id) {
                 owed.remove(at);
                 out.push(row);
+                continue;
             }
-            continue;
+            // An orphan: no assistant message above it opened this id. Dropped,
+            // because a provider refuses it and nothing downstream reads it —
+            // **unless it carries its own author**, in which case it is not a `tool`
+            // message at all and falls through to the arm below as the person's turn.
+            if !own_author.contains(&id) {
+                continue;
+            }
+            row = person_ran(row);
         }
-        // Any other role closes the answering window, so whatever is still owed
-        // is owed forever and is filled here.
+        // Any other role — including an operator's own result, which is one — closes
+        // the answering window, so whatever is still owed is owed forever and is filled
+        // here.
         for id in std::mem::take(&mut owed) {
             out.push(unanswered(&id));
         }
-        if role == "assistant" {
+        if row.get("role").and_then(|r| r.as_str()) == Some("assistant") {
             owed = row
                 .get("tool_calls")
                 .and_then(|v| v.as_array())
@@ -364,6 +399,32 @@ fn pair_tool_calls(rows: Vec<Value>) -> Vec<Value> {
         out.push(unanswered(&id));
     }
     out
+}
+
+/// **A result the OPERATOR ran, carried as the person's own turn.**
+///
+/// `CallOrigin::Operator` is this tree's word for *a person ran this call*, and it is on the
+/// row for exactly this case: the operator's `!` line is run by the daemon with **no model
+/// proposing anything**, so the result has no proposing assistant row above it and there
+/// never was one. A `tool` message cannot be sent for it — the provider's rule is that every
+/// `tool_call_id` answers a `tool_calls` entry above it, which is the rule [`pair_tool_calls`]
+/// fills gaps for and drops orphans by — so the output reached the transcript, reached the
+/// operator's screen, and never reached the model. MEASURED three times on a live session:
+/// `! ls -la` deposited its two rows, the turn started, and the turn opened with the line
+/// and nothing else.
+///
+/// It is carried as a **user** message, which is what the local dialects already render for
+/// this same row: `dialect-qwen`'s `ToolResult` arm emits `<|im_start|>user …
+/// <tool_response> … </tool_response>`, with no call id and no proposal above it, and the
+/// model reads it. Doing the same here is the two routes agreeing about one transcript
+/// rather than two rules for it.
+///
+/// **And the role is the honest one.** These are not the model's words and no call is being
+/// attributed to it: inventing an assistant `tool_calls` entry to own the result would put a
+/// call in the trail that no model made, with arguments this function does not even hold.
+fn person_ran(row: Value) -> Value {
+    let content = row.get("content").cloned().unwrap_or(Value::Null);
+    json!({"role": "user", "content": content})
 }
 
 fn unanswered(id: &str) -> Value {
@@ -659,6 +720,99 @@ mod pairing_tests {
         }
     }
 
+    /// The same row with the operator's own mark on it — `CallOrigin::Operator`, which is
+    /// the tree's word for *a person ran this call* and the whole of what tells an orphan
+    /// with an author from an orphan without one.
+    fn ran_by_the_operator(id: &str, payload: &str) -> TranscriptItem {
+        TranscriptItem::ToolResult {
+            call_id: id.into(),
+            name: "bash".into(),
+            outcome: ToolOutcome::Ok,
+            payload: payload.into(),
+            edit: None,
+            origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
+            media: None,
+        }
+    }
+
+    /// **The defect, measured three times on a live session: the operator's `!` line and
+    /// its output reached the transcript and the screen, and the model was handed the line
+    /// and nothing else.**
+    ///
+    /// `run_operator_shell` appends a `User` row and a `ToolResult` with
+    /// `origin: CallOrigin::Operator` and no proposing assistant row — there never was one,
+    /// because no model proposed the call — and this function dropped the result as an
+    /// orphan, which is right for every other orphan and wrong for this one.
+    ///
+    /// The assertion is on the message the model is handed rather than on a count: the
+    /// output has to be READABLE in the request, because a row that is carried as an empty
+    /// message is the same defect one layer in.
+    #[test]
+    fn the_operators_own_result_reaches_the_model_with_no_proposal_above_it() {
+        let m = convert(
+            "sys",
+            &[
+                user("! ls -la"),
+                ran_by_the_operator("bang-1", "total 8\ndrwxr-xr-x 2 dead dead"),
+            ],
+            false,
+        );
+        assert_paired(&m);
+        assert!(
+            m.iter().any(|r| r["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("drwxr-xr-x"))),
+            "the command's output is not in the request at all: {m:?}"
+        );
+        // **And it is the person's turn, not the model's.** A `tool` message here would be
+        // refused — it answers a `tool_calls` entry that does not exist — and a fabricated
+        // assistant call would put a call in the trail that no model made.
+        let carried = m
+            .iter()
+            .find(|r| {
+                r["content"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("drwxr-xr-x"))
+            })
+            .expect("just asserted");
+        assert_eq!(carried["role"], "user");
+        assert!(
+            !m.iter().any(|r| r["role"] == "tool"),
+            "there is no call above it for a tool message to answer: {m:?}"
+        );
+        // The operator's own line is still there, and still theirs.
+        assert!(m.iter().any(|r| r["content"] == "! ls -la"));
+    }
+
+    /// **The control the change needs: an OPERATOR-origin result that DOES answer a call is
+    /// untouched.**
+    ///
+    /// This is the door's own path — the model proposed the call, the gate denied it, the
+    /// operator ran it — and the row carries `CallOrigin::Operator` exactly as the `!`
+    /// line's does. Keying the fix on `origin` alone would have turned this one into a user
+    /// turn and lost the pairing; keying it on *no proposal above it* leaves it a `tool`
+    /// message, which is what it has always been.
+    #[test]
+    fn an_operators_result_that_answers_a_call_is_still_a_tool_message() {
+        let m = convert(
+            "sys",
+            &[
+                user("go"),
+                calls(&["op-1"]),
+                ran_by_the_operator("op-1", "the page"),
+            ],
+            false,
+        );
+        assert_paired(&m);
+        let answered = m
+            .iter()
+            .find(|r| r["tool_call_id"] == "op-1")
+            .expect("the result answers the call the model proposed");
+        assert_eq!(answered["role"], "tool");
+        assert!(answered["content"].as_str().unwrap().contains("the page"));
+        assert_eq!(m.len(), 4, "system + three, nothing added: {m:?}");
+    }
+
     /// Every id an assistant message opens is answered by the time the next
     /// non-tool message starts. This is the provider's own rule, asserted over
     /// whatever `messages` produced.
@@ -757,6 +911,12 @@ mod pairing_tests {
 
     /// The mirror image: a `tool` message answering nothing. Providers reject
     /// those too, and nothing downstream reads it.
+    ///
+    /// **The operator's own rows are the exception, and this is the control that says
+    /// which rows are which**: an orphan is dropped when nothing can vouch for it
+    /// (`origin: None` — the model proposed it, and its proposal is gone), and carried as
+    /// the person's turn when it carries its own author. See
+    /// [`the_operators_own_result_reaches_the_model_with_no_proposal_above_it`].
     #[test]
     fn an_orphan_result_is_dropped_rather_than_sent() {
         let m = convert("sys", &[user("go"), result("ghost"), user("next")], false);
