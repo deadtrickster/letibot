@@ -120,7 +120,8 @@
 //!   the terminal emulator: keystrokes down, screen up. That was the real answer to `nano`, and
 //!   it is a session with a lifetime, a size and an end — not a tool call that returns a string.
 //!   The mechanism is [`super::term`] (`setsid` + `TIOCSCTTY`, a raw byte stream both ways, the
-//!   pane's own cgroup), the renderer is `letibot_ui::vt::Screen`, and the head's half is the
+//!   pane's own cgroup), the renderer is `letibot_vt::Screen` painted by `letibot_ui::ansi`,
+//!   and the head's half is the
 //!   pane in `letibot-tui` — the conversation's rectangle given to the program, the composer
 //!   keeping its rows, and `ctrl-\` the one way out. **This refusal stays**, and that is not an
 //!   oversight: a plain `! nano` is still a program that would draw cursor-addressing escapes
@@ -128,7 +129,7 @@
 //!   every sentence below now names the verb that works instead of filing it as a TODO.
 //! - **TODO: the VT features a pane's program may still want.** An alternate screen
 //!   (`?1049h`/`l`), cursor addressing (`CUP`, `ED`, `EL`) and `SIGWINCH` on a resize are all
-//!   **built** — they are in `letibot_ui::vt` and on `ClientFrame::TermResize`. What is not is
+//!   **built** — they are in `letibot_vt` and on `ClientFrame::TermResize`. What is not is
 //!   scrollback: a program that scrolls *off* the pane's rectangle is gone, and the decision
 //!   that waits is whether the ring is the screen's (a rendering question) or the daemon's (a
 //!   storage one). It is filed in [`super::term`] and in the head's `TermPane`.

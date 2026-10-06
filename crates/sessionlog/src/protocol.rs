@@ -1849,10 +1849,10 @@ pub enum ServerFrame {
     /// The answer to [`ClientFrame::TermOpen`], and then as many of these as the program has
     /// something to say, in the order it said it. **Raw**: cursor addressing, `\r`, a partial
     /// UTF-8 character, `ESC[?1049h` and all, because the head's half of this pair is a
-    /// terminal emulator and not a text filter — `letibot_ui::vt::Screen::feed` takes these
-    /// bytes and `Screen::pane_rows` returns the rectangle. **No byte a program writes
-    /// reaches the frame**: a cell holds a `char` and a role, so a program cannot paint with
-    /// an escape this head did not choose.
+    /// terminal emulator and not a text filter — `letibot_vt::Screen::feed` takes these
+    /// bytes and `letibot_ui::ansi::pane_rows` returns the rectangle. **No byte a program
+    /// writes reaches the frame**: a cell holds a glyph and the terminal's own pen, so a program
+    /// cannot paint with an escape this head did not choose.
     ///
     /// **A `Vec<u8>` and not a base64 string, and the cost is named rather than discovered.**
     /// `serde_json` writes a byte vector as an array of integers, so a screen byte costs

@@ -1940,7 +1940,7 @@ const WAY_OUT: u8 = 0x1c;
 ///
 /// # What it is, and the two things it is not
 ///
-/// It is [`letibot_ui::vt::Screen`] — a rectangle of cells, a cursor, a pen and an alternate
+/// It is [`letibot_vt::Screen`] — a rectangle of cells, a cursor, a pen and an alternate
 /// buffer, driven by the bytes a pty's far end wrote — plus the three facts a head needs about
 /// the program that is drawing in it. **It is not an emulator of this head's own** (there is
 /// one in `letibot-ui` and this is the second caller of it after the pane's own tests) and it
@@ -1949,8 +1949,8 @@ const WAY_OUT: u8 = 0x1c;
 ///
 /// # The rectangle is the contract
 ///
-/// [`TermPane::rows`] is `Screen::pane_rows(cols, room, palette)` and it returns **exactly
-/// `room` rows** — the same property `vt.rs` keeps for the pane it was written for. That is the
+/// [`TermPane::rows`] is `letibot_ui::ansi::pane_rows(&mut screen, cols, room, palette)` and it
+/// returns **exactly `room` rows** — the same property `ansi.rs` keeps for the pane it was written for. That is the
 /// whole of *"the composer, header and status keep their rows"*: the pane takes the
 /// conversation's rectangle and gives it back, so nothing above it moves by a line when it
 /// opens and nothing below it loses a row it had.
@@ -1973,7 +1973,7 @@ const WAY_OUT: u8 = 0x1c;
 /// unambiguous way out."*
 struct TermPane {
     /// The program's screen, fed the daemon's bytes and asked for rows.
-    screen: letibot_ui::vt::Screen,
+    screen: letibot_vt::Screen,
     /// The line the operator submitted, verb included — kept for the one sentence this head
     /// says when the pane ends, so *what ended* is not a mystery.
     line: String,
@@ -1992,7 +1992,7 @@ struct TermPane {
 impl TermPane {
     fn new(line: &str, cols: usize, rows: usize) -> TermPane {
         TermPane {
-            screen: letibot_ui::vt::Screen::new(cols, rows),
+            screen: letibot_vt::Screen::new(rows, cols),
             line: line.to_string(),
             sent: (cols, rows),
             closing: false,
@@ -2007,7 +2007,7 @@ impl TermPane {
         room: usize,
         palette: letibot_ui::style::Palette,
     ) -> Vec<String> {
-        self.screen.pane_rows(cols, room, palette)
+        letibot_ui::ansi::pane_rows(&mut self.screen, cols, room, palette)
     }
 }
 
@@ -26146,7 +26146,7 @@ mod tests {
     /// **The pane takes the conversation's rectangle and gives it back, exactly.**
     ///
     /// This is the whole of *"the conversation's rectangle given to the program with the
-    /// composer keeping its rows"*, and the property `letibot_ui::vt::Screen::pane_rows` keeps:
+    /// composer keeping its rows"*, and the property `letibot_ui::ansi::pane_rows` keeps:
     /// the pane is resized to the rectangle it is given and returns **exactly** that many rows.
     /// So the header keeps its line, the chrome under the pane keeps its rows, and nothing above
     /// the pane moves when it opens.
@@ -26172,7 +26172,10 @@ mod tests {
         let before = a.screen(80, 24);
         pane(&mut a, b"\x1b[2J\x1b[Hhello from mc\r\n");
         let during = a.screen(80, 24);
-        let room = a.term.as_ref().expect("a pane").screen.rows();
+        // **`size().0`, and not `rows()`** — on this screen `rows()` hands back the cells of
+        // every row (`Chunks<Cell>`), and the number the pane was given is the size. The
+        // rectangle is what this test is about, so it is asked for by name.
+        let room = a.term.as_ref().expect("a pane").screen.size().0;
 
         assert_eq!(
             during.len(),
@@ -26204,9 +26207,9 @@ mod tests {
             pane(&mut a, b"\x1b[2Jone\r\ntwo\r\n");
             let frame = a.screen(80, h);
             assert_eq!(frame.len(), h, "a {h}-row terminal is a {h}-row frame");
-            let room = a.term.as_ref().unwrap().screen.rows();
+            let room = a.term.as_ref().unwrap().screen.size().0;
             assert_eq!(
-                a.term.as_ref().unwrap().screen.cols(),
+                a.term.as_ref().unwrap().screen.size().1,
                 80 - 2 * App::gutter(80),
                 "the pane is the conversation's own width, gutter excluded"
             );

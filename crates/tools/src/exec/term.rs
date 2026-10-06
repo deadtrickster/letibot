@@ -27,7 +27,7 @@
 //! | the end | the shell exits | the program exits, or the operator leaves |
 //!
 //! **It is not a screen.** Nothing here parses an escape, holds a cell or knows what a
-//! rectangle is: the bytes go out as they arrived and `letibot_ui::vt::Screen` is what
+//! rectangle is: the bytes go out as they arrived and `letibot_vt::Screen` is what
 //! turns them into rows. That is the seam the pane's coupling is kept to — [`TermSink`] in
 //! one direction and the screen's own `feed` in the other — so the two ends can be
 //! changed independently.

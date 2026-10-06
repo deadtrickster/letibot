@@ -1136,6 +1136,7 @@ dependencies = [
  "letibot-sessionlog",
  "letibot-transcript",
  "letibot-ui",
+ "letibot-vt",
  "libc",
  "rano",
  "serde",
