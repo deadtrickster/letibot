@@ -1731,9 +1731,7 @@ impl<'a> Sessions<'a> {
         match wake_route(self.open.contains_key(session_id), hub.is_some()) {
             WakeRoute::Drive => {}
             WakeRoute::ItsOwnReader => {
-                let handed = hub
-                    .map(|h| h.wake_its_own_reader())
-                    .unwrap_or(false);
+                let handed = hub.map(|h| h.wake_its_own_reader()).unwrap_or(false);
                 return if handed {
                     Outcome::HandedOn
                 } else {

@@ -131,9 +131,18 @@ pub struct Parts {
     ///
     /// `None` for a root: a root's watcher set is its own, built at open. `Some` for a
     /// child, carrying its parent's, so the child's set can join the tree's — sharing the
-    /// watching/settled bookkeeping and the ring target that is the root's id. Without the
-    /// ring target a grandchild's settlement rings a session `Sessions::open` does not
-    /// hold, and `Sessions::wake` returns `Ignored`: the condition fires and is discarded.
+    /// watching/settled bookkeeping, **the level above** (whose queue what this session can
+    /// no longer drain goes to, and whose id the ring for it names) and the **ROOT**, which
+    /// is the one session in a tree that has a head and is therefore the one a permission
+    /// card can be drawn by (`tree_root`).
+    ///
+    /// **The RING is not among them any more** (2026-10-06). It used to carry the root's id
+    /// so a grandchild's settlement would ring a session `Sessions::open` holds, because a
+    /// ring for a child was `Ignored` — the condition fired and was discarded. The ring now
+    /// names the session that OWNS the settlement (the parent, at every depth) and the
+    /// daemon serves a session it does not hold by handing the wake to the thread that does
+    /// (`Sessions::wake` → `Hub::wake_its_own_reader`), so a card and an exit are two
+    /// questions with two answers. See `jobwatch`'s module header.
     ///
     /// **Not the completions queue** — each session drains its own (2026-10-05). A tree
     /// whose settlements all landed on the root's queue delivered a subagent's background
@@ -2716,8 +2725,8 @@ impl<'a> Harness<'a> {
         };
         // **And this session's own set is what ITS children will join** (R58). Filled
         // here, after the join above, so the value a child reads is already the joined
-        // one — which is how the ring target stays the tree's root at every depth
-        // without anything walking a parent chain.
+        // one — which is how the ROOT (the session a permission card can be drawn by)
+        // stays the tree's root at every depth without anything walking a parent chain.
         if let Some(w) = &job_watch {
             *tree_watch_slot.lock().expect("tree watch") = Some(Arc::clone(w));
             // **Where a settlement gets written down.** The watcher threads settle jobs on
@@ -8352,8 +8361,7 @@ impl TaskSlot {
     /// **This child's thread has ended.** Read by [`HarnessTaskRunner::stop_all`], which is
     /// the only caller that has to tell "already answered" from "still here".
     fn mark_exited(&self) {
-        self.exited
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.exited.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn has_exited(&self) -> bool {
@@ -11039,8 +11047,8 @@ mod tests {
 
         // The answers the whole tree reaches: the root's own, handed down through `Parts`.
         let answers = Some(Arc::new(crate::answers::Answers::new()));
-        // The grandchild's set is built FROM the root's, which is what gives it the root's
-        // ring target — the same set `Parts` carries for a grandchild.
+        // The grandchild's set is built FROM the root's, which is what gives it the ROOT —
+        // the same set `Parts` carries for a grandchild.
         let root_watch = crate::jobwatch::JobWatchers::watching_tasks(&root_hub, None);
         let grandchild_watch = crate::jobwatch::JobWatchers::watching_tasks(&grandchild_hub, None)
             .shares_tree(&root_watch);
@@ -11621,22 +11629,26 @@ mod tests {
     /// stand for "is gone", and `TaskSlot::exited` is the fact that can.
     #[test]
     fn a_stop_takes_this_sessions_children_and_not_the_ones_that_are_gone() {
-        // The tree's one list, with four entries: two of mine (one still computing, one
-        // parked with an answer), one of my parent's, and one of mine that has exited.
+        // The tree's one list, with four entries: three of mine — one still computing, one
+        // parked with an answer, one whose thread has ended — and one of my PARENT's, which is
+        // a sibling of mine and must not be in my answer.
         let mine_running = Arc::new(TaskSlot::new("s-child"));
         let mine_answered = Arc::new(TaskSlot::new("s-child"));
         mine_answered.settle(letibot_tools::builtins::task::TaskStatus::Done {
             answer: "done, and still here".into(),
         });
-        let my_parents = Arc::new(TaskSlot::new("s-root"));
         let mine_and_gone = Arc::new(TaskSlot::new("s-child"));
         mine_and_gone.mark_exited();
+        // **A slot's handle follows its OWNER** (`<owner>-sub-N`, the shape
+        // `HarnessTaskRunner::start` mints), so the parent's child cannot be called
+        // `s-child-sub-*`: a name that says `s-child` on a slot the root started is the
+        // confusion this whole test is about, and the owner field is what settles it.
+        let my_parents = Arc::new(TaskSlot::new("s-root"));
         let slots = vec![
             ("s-child-sub-1".to_string(), mine_running),
             ("s-child-sub-2".to_string(), mine_answered),
-            ("s-child-sub-3".to_string(), my_parents),
-            ("s-child-sub-4".to_string(), mine_and_gone),
-            ("s-root-sub-1".to_string(), Arc::new(TaskSlot::new("s-root"))),
+            ("s-child-sub-3".to_string(), mine_and_gone),
+            ("s-root-sub-1".to_string(), my_parents),
         ];
 
         let stop = stoppable_children(&slots, "s-child");

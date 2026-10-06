@@ -687,9 +687,11 @@ impl Adjudicator for HeadAdjudicator {
 /// recorded brief and glob — is that one implementation, which is what makes a child's answer
 /// the same answer the root would have got.
 ///
-/// **What it does not do: make the child drivable.** Nothing here touches `Sessions::open`,
-/// the child's watcher set or its ring target; the card travels and the answer comes back on
-/// the asking thread, exactly as a root's does. R58 is untouched.
+/// **What it does not do: make the child drivable.** Nothing here touches `Sessions::open` or
+/// the child's watcher set; the card travels and the answer comes back on the asking thread,
+/// exactly as a root's does. A child that IS served is served by the thread that owns it —
+/// `Sessions::wake` handing the wake to `Hub::wake_its_own_reader` — which is a different
+/// door from this one.
 ///
 /// `head` is `None` when the tree has no head-wired adjudicator at all — a root run with
 /// `--adjudicator console`, or one whose answers a child cannot reach. There is then nothing
