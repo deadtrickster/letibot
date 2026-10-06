@@ -107,6 +107,7 @@ pub mod mergequeue;
 pub mod modes;
 pub mod oracle;
 pub mod progress;
+pub mod prompt;
 pub mod sessions;
 pub mod slash;
 pub mod sudo;

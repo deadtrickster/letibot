@@ -1306,6 +1306,66 @@ pub enum SessionEvent {
         /// Unix millis; after it the helper gives up and `sudo` fails.
         deadline: u64,
     },
+    /// **A run of the operator's own is waiting for an answer.**
+    ///
+    /// The operator's `!` line is the one run whose stdin is a pipe this daemon holds
+    /// (`letibot_tools::exec::Stdin`), so *"the program is waiting for a line"* is a fact
+    /// about the process and not a guess about its words — `letibot_tools::exec::ask` reads
+    /// `/proc/<pid>/fd/0` against the write end's inode and `/proc/<pid>/task/*/wchan` for a
+    /// pipe read, and **that** is what raises this. The operator's own correction is why it
+    /// is not a text match: *"i think `Continue?` is an overfit"* — question wording is
+    /// per-program, per-locale and per-version, and a matcher for it fails silently on the
+    /// next program.
+    ///
+    /// A head draws a card with `question` shown and the line it takes sent back as
+    /// [`crate::protocol::ClientFrame::PromptAnswer`]. **Not a secret and never one**: the
+    /// field is drawn in the open, and a password has its own path (`SUDO_ASKPASS`, an
+    /// `askpass` head, `SecretRequested`) whose rules this must not be able to borrow.
+    ///
+    /// **The card is a convenience and not the way in.** The same line can be sent at any
+    /// moment with `!send` ([`crate::protocol::ClientFrame::SendLine`]), which needs no
+    /// signal at all — because the detection above has misses it names (a program blocked on
+    /// another fd, one that asks and keeps drawing, a `/proc` a confined session's daemon may
+    /// not read), and a person watching the stream can always answer.
+    ///
+    /// **Ephemeral**, like `SecretRequested` and for its reason: the request names a live
+    /// run, and a head that attached after the run began has not seen the output the question
+    /// is about. Its settlement ([`SessionEvent::PromptSettled`]) is the record and stays.
+    PromptRequested {
+        /// The handle [`crate::protocol::ClientFrame::PromptAnswer`] comes back under.
+        req_id: String,
+        /// The job's handle, as `job_list` spells it. For the record and for a head that
+        /// wants to name it; the answer does not travel by it, so a stale card cannot
+        /// address a later command.
+        job: String,
+        /// The operator's own command, verbatim, as they typed it after the `!`.
+        ///
+        /// **The command and not a program name**, deliberately: the daemon cannot know
+        /// which process in a pipeline asked (`sudo apt install mc` is three programs and
+        /// the question is the third one's), so it names the one thing that is certain —
+        /// what the person typed.
+        command: String,
+        /// **The last line the program wrote, for the card to SHOW.** `None` when it has
+        /// written nothing at all, which is a real case (`! cat`, blocked before its first
+        /// byte). Nothing anywhere decides anything by this string.
+        question: Option<String>,
+    },
+    /// Whether a line was sent to the waiting run, and by whom — the record, without the
+    /// line.
+    ///
+    /// **The line itself is not here**, for the same reason a password is not: it is a
+    /// `ClientFrame` that reaches a program's stdin and nothing else — not the log, not the
+    /// view, not a `CommandIssued`. What a corpus may need to know is *that* a person
+    /// answered and who, which is this.
+    ///
+    /// `sent: false` is the run ending with the card still up, or the send failing — the
+    /// two are told apart by `by`, which is a person's identity in the first case and a
+    /// sentence in the second.
+    PromptSettled {
+        req_id: String,
+        sent: bool,
+        by: String,
+    },
     /// Whether a password was given for `req_id`, and by which head — the
     /// record, without the secret.
     SecretSettled {
@@ -1742,6 +1802,8 @@ impl SessionEvent {
         match self {
             SessionEvent::TurnStarted { .. } => "TurnStarted",
             SessionEvent::PromptProgress { .. } => "PromptProgress",
+            SessionEvent::PromptRequested { .. } => "PromptRequested",
+            SessionEvent::PromptSettled { .. } => "PromptSettled",
             SessionEvent::TokensGenerated { .. } => "TokensGenerated",
             SessionEvent::Delta { .. } => "Delta",
             SessionEvent::ToolCallProposed { .. } => "ToolCallProposed",

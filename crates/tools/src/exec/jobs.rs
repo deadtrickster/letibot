@@ -28,8 +28,9 @@
 //! measurement.
 
 use std::collections::VecDeque;
+use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime};
 
 /// A job's name, as the model spells it back.
@@ -125,6 +126,135 @@ impl JobState {
     /// and paired by the tests on both sides of the wire (§11.6).
     pub fn never_ran(&self) -> bool {
         matches!(self, JobState::NotScoped)
+    }
+}
+
+/// **A way to write to a running command's stdin** — the handle the daemon keeps for
+/// the operator's own run, and the one place a person's answer can go.
+///
+/// # Why only the operator's run has one
+///
+/// Every other job's stdin is `/dev/null`, and that is not an oversight: a model's
+/// `bash` call that reads stdin must get **EOF** rather than block for a person who is
+/// not there. The operator's own `!` line is the one run where a person *is* there —
+/// they typed the line and they are watching the bytes — so it is the one run whose
+/// stdin is a pipe somebody holds. [`super::host::SpawnRequest::tty`] is the flag, and
+/// this is the fourth consequence of it.
+///
+/// The defect this closes, in the operator's own words: *"we need this interactivity
+/// working"* — after `! sudo apt install mc`, which streamed its progress and then
+/// **aborted at `Continue? [Y/n]`**, because `/dev/null` on stdin is an EOF and EOF is
+/// not a `Y`.
+///
+/// # `Default` is `none`, and `none` is a fact rather than an error
+///
+/// A job whose stdin is `/dev/null` has a `Stdin` too — the empty one — so a caller
+/// never has to carry an `Option` around a handle that is sometimes absent for a reason
+/// it does not care about. [`Stdin::send_line`] says what the absence means.
+#[derive(Clone, Default)]
+pub struct Stdin {
+    /// `Some` only for a run spawned with a pipe on fd 0. The inner `Option` is the
+    /// close: a write end that has been closed is not a write end that was never there,
+    /// and the two sentences a caller reads for them differ.
+    inner: Option<Arc<Mutex<Option<std::process::ChildStdin>>>>,
+}
+
+impl Stdin {
+    /// **No stdin to write to** — `/dev/null`, which is every job but the operator's own.
+    pub fn none() -> Stdin {
+        Stdin { inner: None }
+    }
+
+    /// The write end of a pipe handed to a command, as `host::spawn` takes it out of the
+    /// child it just started.
+    pub fn pipe(w: std::process::ChildStdin) -> Stdin {
+        Stdin {
+            inner: Some(Arc::new(Mutex::new(Some(w)))),
+        }
+    }
+
+    /// Whether a command is out there that could be answered at all. `false` for a run
+    /// whose stdin is `/dev/null` **and** for one whose pipe has already been closed.
+    pub fn is_open(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|w| w.lock().map(|g| g.is_some()).unwrap_or(false))
+    }
+
+    /// **Which pipe this is**, for a reader that has to tell it apart from every other pipe
+    /// on the box.
+    ///
+    /// `super::ask` is the reader: *"the program is blocked reading the answer we hold"* is
+    /// only a fact if the descriptor the program is blocked on is **this** one, and the
+    /// inode is how the kernel lets the two be compared. A `grep` blocked on `ls`'s pipe in
+    /// `! ls | grep foo` is a pipe read too, and without this number a slow `ls` would raise
+    /// a card claiming the run was waiting for a line.
+    ///
+    /// `None` when there is no write end (a `/dev/null` run, or a closed one) and when the
+    /// descriptor is not a pipe at all — see [`super::ask::pipe_inode`] for why the type is
+    /// checked and not only the number.
+    pub fn pipe_inode(&self) -> Option<u64> {
+        use std::os::fd::AsRawFd;
+        let inner = self.inner.as_ref()?;
+        let guard = inner.lock().unwrap_or_else(|e| e.into_inner());
+        super::ask::pipe_inode(guard.as_ref()?.as_raw_fd())
+    }
+
+    /// **Send one line, with the newline that makes it a line.**
+    ///
+    /// An empty `line` is a bare Enter, and it is not a special case invented here: the
+    /// question this exists for — `Continue? [Y/n]` — takes Enter as its default answer,
+    /// so an empty line is a real answer and not a mistake to be refused.
+    ///
+    /// # The write blocks, and the bound is the pipe's own
+    ///
+    /// This is a blocking write on a pipe, which is what `ChildStdin` gives and what a
+    /// non-blocking version would have to replace with a thread per answer. The pipe's
+    /// buffer is 64 KiB on Linux and a line is a line, so the write blocks only if the
+    /// program has stopped reading **and** several thousand lines have already been sent
+    /// into it unread. Named rather than discovered: the alternative is a `O_NONBLOCK`
+    /// dance that would turn a full pipe into a silently dropped answer, and a dropped
+    /// answer is the failure this whole mechanism exists to end.
+    ///
+    /// # Why the failure is a `String` and not an `io::Error`
+    ///
+    /// The reader is a person: every one of these becomes a sentence on a screen, and the
+    /// three cases (no pipe, closed pipe, the far end gone) need three different ones.
+    pub fn send_line(&self, line: &str) -> Result<(), String> {
+        let Some(inner) = self.inner.as_ref() else {
+            return Err(
+                "this command's stdin is /dev/null — there is nothing to send to. \
+                        Only your own `!` line is answered."
+                    .to_string(),
+            );
+        };
+        let mut guard = inner.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(w) = guard.as_mut() else {
+            return Err("this command's stdin is already closed".to_string());
+        };
+        // One `write_all` for the line and its newline, so a reader sees them together:
+        // a program that reads a line at a time must not be able to see a line whose
+        // terminator has not arrived.
+        let mut bytes = Vec::with_capacity(line.len() + 1);
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+        match w.write_all(&bytes).and_then(|_| w.flush()) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // The far end is gone. Forget the handle rather than leaving a write end
+                // that can only fail again with the same sentence.
+                *guard = None;
+                Err(format!("the command is no longer reading its stdin: {e}"))
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for Stdin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Stdin")
+            .field("open", &self.is_open())
+            .finish()
     }
 }
 
@@ -331,6 +461,9 @@ pub struct Job {
     /// reported an hour later from this field is the job's real runtime, and one
     /// reconstructed from a later clock is a guess with a decimal point.
     settled_at: Mutex<Option<SystemTime>>,
+    /// **The way in to this job's stdin**, when it has one. See [`Stdin`]: `/dev/null`
+    /// for every job but the operator's own run.
+    stdin: Stdin,
 }
 
 impl Job {
@@ -341,6 +474,7 @@ impl Job {
         cwd: String,
         pid: u32,
         capture_bytes: usize,
+        stdin: Stdin,
     ) -> Job {
         Job {
             id,
@@ -353,7 +487,16 @@ impl Job {
             finished: Condvar::new(),
             capture: Mutex::new(Capture::new(capture_bytes)),
             settled_at: Mutex::new(None),
+            stdin,
         }
+    }
+
+    /// **The way in to this job's stdin.** Cloned out rather than lent, because the
+    /// reader is on another thread: the daemon's own worker is blocked inside the very
+    /// call that started this job, so an answer arrives from a thread that does not hold
+    /// the `Arc<Job>`. See [`Stdin`].
+    pub fn stdin(&self) -> Stdin {
+        self.stdin.clone()
     }
 
     pub fn lifetime(&self) -> Lifetime {

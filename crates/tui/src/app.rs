@@ -1222,6 +1222,29 @@ pub enum Action {
         req_id: String,
         secret: Option<String>,
     },
+    /// **The operator's answer to a command of their own that asked them something.**
+    ///
+    /// The card is raised by the daemon when the run is **blocked reading the stdin pipe the
+    /// daemon holds** — a reading of the process and not of its words, see
+    /// `letibot_tools::exec::ask` — and this is the line the person typed into it.
+    ///
+    /// **Not `Action::Secret` and not a path to one.** A password has its own card, its own
+    /// masked field and its own frame, and the two are separate variants on purpose: this one
+    /// is drawn in the open and what it carries is a line for a program's stdin. See
+    /// [`App::prompt_lines`].
+    PromptAnswer {
+        req_id: String,
+        line: String,
+    },
+    /// **One line to the running command, on demand** — the `!send` verb.
+    ///
+    /// The manual floor under the card: a person watching the stream can answer whether or
+    /// not anything looked like a question, so this needs no card, no request id and no
+    /// signal at all. It addresses *whatever operator command this session is running right
+    /// now*, which the daemon knows and this head does not.
+    SendLine {
+        line: String,
+    },
     Quit,
     /// Leave AND stop the daemon. The head detaches after the daemon has been
     /// asked, so the notice reaches every other head first.
@@ -2513,6 +2536,21 @@ pub struct App {
     /// dot per character while this is `Some`.
     secret: Option<SecretAsk>,
     secret_buf: String,
+    /// **A command of the operator's own is waiting for an answer**: the request, and what has
+    /// been typed for it so far.
+    ///
+    /// Kept OUT of the composer, exactly as [`App::secret`] is and for a sharper reason than
+    /// the password's: a line typed into a card is an answer to a program that is blocked on
+    /// it, and letting it fall into the composer would leave it sitting there to be submitted
+    /// again as a shell command. It has its own field and its own buffer, and the composer
+    /// draws that buffer while the card is up.
+    ///
+    /// **The text is NOT masked**, and that difference from [`App::secret_buf`] is the whole
+    /// of what keeps the two channels apart: this card is drawn in the open because what it
+    /// carries is a line for a program's stdin, and a secret must never travel here. See
+    /// [`App::prompt_lines`].
+    prompt: Option<PromptAsk>,
+    prompt_buf: String,
     /// **A key the model picker asked for** — the operator's row: *"if i choose a model without
     /// key picker should ask for the key."* The greening told them WHICH rows need one; this is
     /// the row that collects it. Its own state and never the sudo path's: a provider key is
@@ -3979,6 +4017,8 @@ impl App {
             open: Vec::new(),
             secret: None,
             secret_buf: String::new(),
+            prompt: None,
+            prompt_buf: String::new(),
             key_ask: None,
             key_buf: String::new(),
             screen_requests: Vec::new(),
@@ -6759,6 +6799,49 @@ impl App {
                 }));
                 Disposition::Rendered
             }
+            // **A command of the operator's own is waiting for an answer.** The card is up
+            // for as long as the run is blocked, and the keyboard belongs to it while it
+            // is — see the `Key` arm and [`App::prompt_lines`].
+            //
+            // **The text is NOT masked**, and that is the difference from the arm above
+            // rather than an oversight: what this card carries is a line for a program's
+            // stdin, drawn in the open. A password has its own path and its own card, and
+            // the two must not be one.
+            SessionEvent::PromptRequested {
+                req_id,
+                job,
+                command,
+                question,
+            } => {
+                self.prompt = Some(PromptAsk {
+                    req_id,
+                    job,
+                    command,
+                    question,
+                });
+                self.prompt_buf.clear();
+                self.redraw = true;
+                Disposition::Rendered
+            }
+            // The card comes down, whether it was answered or the command ended — and the
+            // sentence says which, because those are different things to have happened to a
+            // person who was about to type.
+            SessionEvent::PromptSettled { req_id, sent, by } => {
+                if self.prompt.as_ref().is_some_and(|p| p.req_id == req_id) {
+                    self.prompt = None;
+                    self.prompt_buf.clear();
+                }
+                self.note(Note::Warned(Warned {
+                    code: "prompt".into(),
+                    detail: if sent {
+                        format!("answer sent by {by}")
+                    } else {
+                        format!("nothing sent ({by})")
+                    },
+                    ts,
+                }));
+                Disposition::Rendered
+            }
             SessionEvent::Warning { code, detail, .. } => {
                 // `turn_failed` is the log's grep-able record of the same fact
                 // `TurnFailed` puts under the turn, and the daemon publishes both
@@ -7221,6 +7304,53 @@ impl App {
                         req_id,
                         secret: None,
                     });
+                }
+                _ => {}
+            }
+            self.redraw = true;
+            return None;
+        }
+        // **A command of the operator's own asked them something, and this owns the
+        // keyboard** — the password field's rule one card over, and for the same reason:
+        // while a card is up, a character typed is an answer to it and not the first letter
+        // of the next thing the operator meant to say.
+        //
+        // **Enter sends and Esc puts the card away, and the two are not the same act.**
+        // Enter answers the command: the line goes down the frame the daemon writes into the
+        // run's stdin. **Esc does NOT refuse anything** — the command is still running and
+        // still waiting, and there is nothing to refuse — it only takes this head's card off
+        // the screen, which is what a person wants when they would rather type the answer as
+        // a `!send` line or watch the stream for a moment longer. The daemon keeps the
+        // request open and the run keeps waiting; the card does not come back, because the
+        // run has not asked a new question.
+        //
+        // **An empty line is a real answer** and Enter on an empty field sends it: `Continue?
+        // [Y/n]` takes Enter as its default, and a person accepting a default must not have
+        // to type a letter to say so.
+        if let Some(ask) = &self.prompt {
+            let req_id = ask.req_id.clone();
+            match k {
+                Key::Char(c) => self.prompt_buf.push(c),
+                Key::Paste(s) => self.prompt_buf.push_str(s.trim_end_matches(['\n', '\r'])),
+                Key::Backspace => {
+                    self.prompt_buf.pop();
+                }
+                Key::KillToStart | Key::KillToEnd => self.prompt_buf.clear(),
+                Key::Enter => {
+                    let line = std::mem::take(&mut self.prompt_buf);
+                    self.prompt = None;
+                    self.redraw = true;
+                    return Some(Action::PromptAnswer { req_id, line });
+                }
+                Key::Esc | Key::CtrlC => {
+                    self.prompt_buf.clear();
+                    self.prompt = None;
+                    self.redraw = true;
+                    self.say(
+                        "card put away — the command is still waiting, and \
+                              `!send LINE` answers it",
+                    );
+                    return None;
                 }
                 _ => {}
             }
@@ -8841,6 +8971,29 @@ impl App {
             ));
             self.redraw = true;
             return Some(Action::TermOpen { line: text });
+        }
+
+        if letibot_sessionlog::send_line(&text).is_some() {
+            if self.detached() {
+                self.set_composer(&text);
+                self.say(
+                    "no daemon connection — your line is held here. It sends when the daemon \
+                     is back.",
+                );
+                self.redraw = true;
+                return None;
+            }
+            self.scroll = 0;
+            // **No echo and no `pending_prompts`.** A `!` line and a `!term` line both put
+            // something in the conversation or on the screen; a `!send` line goes into a
+            // running program's stdin and leaves no row behind. An echo would be this head
+            // claiming a line that the transcript will never carry — the same rule
+            // `!term`'s arm states for its own reason.
+            return Some(Action::SendLine {
+                line: letibot_sessionlog::send_line(&text)
+                    .expect("just checked")
+                    .to_string(),
+            });
         }
 
         // **A line whose first character is `!` is the operator's own shell command.**
@@ -12972,30 +13125,40 @@ impl App {
         // and `dec_pinned` is the answer: the ladder, the deadline, the hint. The fit loop
         // below may not touch the second, because a card that has dropped its choices is a
         // question with no way to answer it. See [`App::decision_card`].
-        let (dec, dec_pinned): (Vec<String>, Vec<String>) = match (&self.secret, self.open.first())
-        {
-            (Some(ask), _) => (self.secret_lines(ask, w), Vec::new()),
-            (None, Some(d)) => self.decision_card(d, w),
-            // **A key the picker asked for rides in the ask card's slot too**, ahead of the
-            // pickers and the todo card: it is the newest question, it owns the keyboard
-            // while it is up, and a list under it is a list nobody is going to use.
-            (None, None) if self.key_ask.is_some() => (self.key_ask_lines(w), Vec::new()),
-            // **The new-todo card rides in the ask card's slot too**, and ahead of the quit card:
-            // it is the newest question and the one the keyboard belongs to while it is up.
-            (None, None) if self.todo_draft.is_some() => (self.todo_card_lines(w), Vec::new()),
-            // The mode card rides in the ask card's slot: a compact card at
-            // the bottom of the screen with the transcript still visible above
-            // it, which is where everything else that wants a choice sits.
-            // The two are never up at once — a decision owns the ladder keys,
-            // and a second cursor under it would be a cursor nothing moves —
-            // so the card waits out an ask and comes back when it is answered.
-            // Ahead of the mode picker: a head on its way out is answering the
-            // last question it will be asked, and a list under it is a list
-            // nobody is going to use.
-            (None, None) if self.quit_card => (self.quit_card_lines(w), Vec::new()),
-            (None, None) if self.pick.is_some() => (self.setting_picker_lines(w), Vec::new()),
-            (None, None) => (Vec::new(), Vec::new()),
-        };
+        let (dec, dec_pinned): (Vec<String>, Vec<String>) =
+            match (&self.secret, &self.prompt, self.open.first()) {
+                (Some(ask), _, _) => (self.secret_lines(ask, w), Vec::new()),
+                // **The prompt card rides in the same slot and comes second.** A password ask is
+                // `sudo` blocking the run it is inside, so the two are rarely up together — and
+                // when they are, the secret is the one that must not be typed past: a person who
+                // answers the password releases the command that was going to ask them the other
+                // question. See [`App::prompt_lines`] for what the second card shows.
+                (None, Some(ask), _) => (self.prompt_lines(ask, w), Vec::new()),
+                (None, None, Some(d)) => self.decision_card(d, w),
+                // **A key the picker asked for rides in the ask card's slot too**, ahead of the
+                // pickers and the todo card: it is the newest question, it owns the keyboard
+                // while it is up, and a list under it is a list nobody is going to use.
+                (None, None, None) if self.key_ask.is_some() => (self.key_ask_lines(w), Vec::new()),
+                // **The new-todo card rides in the ask card's slot too**, and ahead of the quit card:
+                // it is the newest question and the one the keyboard belongs to while it is up.
+                (None, None, None) if self.todo_draft.is_some() => {
+                    (self.todo_card_lines(w), Vec::new())
+                }
+                // The mode card rides in the ask card's slot: a compact card at
+                // the bottom of the screen with the transcript still visible above
+                // it, which is where everything else that wants a choice sits.
+                // The two are never up at once — a decision owns the ladder keys,
+                // and a second cursor under it would be a cursor nothing moves —
+                // so the card waits out an ask and comes back when it is answered.
+                // Ahead of the mode picker: a head on its way out is answering the
+                // last question it will be asked, and a list under it is a list
+                // nobody is going to use.
+                (None, None, None) if self.quit_card => (self.quit_card_lines(w), Vec::new()),
+                (None, None, None) if self.pick.is_some() => {
+                    (self.setting_picker_lines(w), Vec::new())
+                }
+                (None, None, None) => (Vec::new(), Vec::new()),
+            };
         let dec_full = dec.len();
         // **The window the key handler asks about.** Set every frame, because the length of
         // the content is a function of the width and the room is a function of the terminal
@@ -13517,6 +13680,16 @@ impl App {
             // itself is never rendered, not even to compute a width.
             let n = self.secret_buf.chars().count();
             (vec!["•".repeat(n)], (0, n))
+        } else if self.prompt.is_some() {
+            // **The prompt card's field is drawn IN THE OPEN** — the text as typed, the same
+            // editor renderer the composer uses — and that difference from the password's
+            // dots is the whole of what keeps the two channels apart. What this carries is a
+            // line for a program's stdin, on a card that says so; a secret has its own card
+            // and its own masked field. The text never reaches the composer's history either:
+            // `prompt_buf` is a field of its own.
+            let mut e = Editor::new();
+            e.insert(&self.prompt_buf);
+            e.render(inner, self.cfg.palette())
         } else if self.key_ask.is_some() {
             // **A provider key is masked exactly as a password is** — a dot per character,
             // the text never rendered, not even to compute a width. The card above the
@@ -17792,6 +17965,75 @@ impl App {
         out
     }
 
+    /// **The prompt card: a command of the operator's own is waiting for a line.**
+    ///
+    /// # What it shows, and what it deliberately does not
+    ///
+    /// The headline names the thing that is certain — **the command the operator typed** —
+    /// because the daemon cannot know which process in a pipeline asked: `sudo apt install
+    /// mc` is three programs and the question is the third one's, so a card that claimed a
+    /// program name would be guessing at exactly the moment a person is deciding what to
+    /// type. The program's own last line goes under it, faint and indented, exactly as
+    /// sudo's prompt sits under the password card's headline: it is what the person is
+    /// answering, quoted and never parsed.
+    ///
+    /// **No deadline, and that is not an omission.** The password card counts down because
+    /// `sudo` gives up and the helper's request expires with it; a command blocked on its
+    /// stdin is blocked until somebody answers it or its own timeout ends it, and this head
+    /// was not told which. A countdown invented here would be a number nobody measured.
+    ///
+    /// **Not masked, and not a secret.** The text being typed is drawn by the composer
+    /// exactly as the operator types it — see `composer_rows` — because what this card
+    /// carries is a line for a program's **stdin** and it is drawn in the open. The password
+    /// card's dots are the other channel's, and the two must not be one.
+    ///
+    /// **And it says the manual way in**, which is the honest half of the feature: the card
+    /// is raised when the daemon can see the run blocked on the pipe it holds, and that
+    /// reading has misses it names. `!send` needs no reading at all, and a person who would
+    /// rather type there than here should be told so on the card rather than in a document.
+    fn prompt_lines(&self, ask: &PromptAsk, w: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        // The headline is the fact, and it carries the marker the decision card carries —
+        // this is a card and not three lines of prose above the composer. Yellow, for the
+        // reason that card is: it exists to interrupt.
+        out.push(colour(
+            &self.cfg,
+            sgr::YELLOW,
+            &trim_to("? your command is asking", w),
+        ));
+        // The operator's own words, which is the one thing the daemon is certain of.
+        for l in wrap(&format!("run: {}", ask.command), w.saturating_sub(2)) {
+            out.push(dim(&self.cfg, &format!("  {l}")));
+        }
+        // **The program's own last line, quoted.** `None` is a real case — a `read` that
+        // asks nothing, blocked before its first byte — and it says so rather than showing
+        // an empty line as if that were the question.
+        match ask.question.as_deref().map(str::trim) {
+            Some(q) if !q.is_empty() => {
+                for l in wrap(q, w.saturating_sub(4)) {
+                    out.push(dim(&self.cfg, &format!("  │ {l}")));
+                }
+            }
+            _ => out.push(dim(
+                &self.cfg,
+                &trim_to("  │ (it has not written anything yet)", w),
+            )),
+        }
+        // The job handle, so the row can be found in `/jobs` and killed if it must be — and
+        // the two keys, keys first, for the reason the password card puts them first.
+        out.push(dim(
+            &self.cfg,
+            &trim_to(
+                &format!(
+                    "  enter sends it · esc puts the card away · `!send LINE` also works · {}",
+                    ask.job
+                ),
+                w,
+            ),
+        ));
+        out
+    }
+
     /// The password card: what is asking, for which command, and the two keys.
     fn secret_lines(&self, ask: &SecretAsk, w: usize) -> Vec<String> {
         // **The same countdown the gate card draws** (§1.6), which is the other half of
@@ -21040,6 +21282,13 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
              never sees that key, so it cannot trap it)",
         ),
         (
+            "!send LINE",
+            "send a line to a command of yours that is still running — `!send Y` answers a \
+             `Continue? [Y/n]`, and a bare `!send` is an Enter, which is a real answer. This is \
+             the way in when no card is up: a card appears by itself when the daemon can see \
+             the command blocked on its stdin, and this verb needs no such signal",
+        ),
+        (
             "ctrl-s",
             "the session list: type a number or part of a name to switch",
         ),
@@ -23517,6 +23766,38 @@ struct SecretAsk {
     prompt: String,
     command: String,
     deadline: u64,
+}
+
+/// **A command of the operator's own is waiting for an answer**, as the head shows it.
+///
+/// # It is not [`SecretAsk`] and it must not become it
+///
+/// The two are separate types, separate fields, separate buffers, separate actions and
+/// separate frames — and the separation is the requirement rather than tidiness. A password
+/// has its own path (`SUDO_ASKPASS`, a helper that attaches as an `askpass` head,
+/// `ClientFrame::Secret`), and a prompt card is drawn **in the open**: what a person types
+/// here is a line for a program's **stdin**, visible on the screen and unremarkable there.
+/// A secret must never travel down it, and the cheapest way to keep that true is for the
+/// two channels to have nothing in common to borrow — no masked buffer, no `secret` field,
+/// no `Action::Secret`.
+///
+/// # What is on it
+///
+/// * `req_id` — what the answer is addressed to, so a stale card cannot answer a later
+///   command. The daemon holds the open request and refuses one that is not.
+/// * `command` — **the operator's own line, verbatim**. The daemon cannot know which
+///   process in a pipeline asked (`sudo apt install mc` is three programs and the question
+///   is the third one's), so the card names the one thing that is certain.
+/// * `question` — **the last line the program wrote, to SHOW and never to decide on.**
+///   `None` when it has written nothing at all, which is a real case (`! cat`, blocked
+///   before its first byte): the card then says the command is waiting rather than showing
+///   an empty line as if that were the question.
+#[derive(Debug, Clone)]
+struct PromptAsk {
+    req_id: String,
+    job: String,
+    command: String,
+    question: Option<String>,
 }
 
 /// **Where a note sits, or whether it sits in the conversation at all.**
@@ -39405,6 +39686,226 @@ mod tests {
                 secret: None,
             })
         );
+    }
+
+    /// **The prompt card: a command of the operator's own is asking, and the field is NOT
+    /// masked.**
+    ///
+    /// The whole of the difference from the password card, asserted rather than argued: the
+    /// text is drawn as typed, the composer never holds it, Enter sends it once as an
+    /// [`Action::PromptAnswer`] — and it never becomes an [`Action::Secret`], which is the
+    /// head's half of *a secret cannot be routed through the prompt card*.
+    #[test]
+    fn a_prompt_card_owns_the_keys_shows_what_is_typed_and_never_becomes_a_secret() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::PromptRequested {
+                req_id: "prompt-s-1".into(),
+                job: "j7".into(),
+                command: "sudo apt install mc".into(),
+                question: Some("Do you want to continue? [Y/n]".into()),
+            },
+        )));
+        let card = a.screen(100, 20).join("\n");
+        assert!(card.contains("your command is asking"), "{card}");
+        // **The command the operator typed**, which is the one thing the daemon is certain
+        // of — it cannot know which process in a pipeline asked.
+        assert!(card.contains("run: sudo apt install mc"), "{card}");
+        // **The program's own last line, quoted.** Shown and never parsed.
+        assert!(card.contains("Do you want to continue? [Y/n]"), "{card}");
+        // The manual way in is ON the card, because that is the half of the feature a
+        // person needs when the card does not appear at all.
+        assert!(card.contains("!send"), "{card}");
+        assert!(card.contains("j7"), "the job handle is named: {card}");
+
+        // **The text is typed and it is NOT masked.** The contrast with the password field
+        // is the point: dots here would be this card claiming to be a secret channel.
+        for c in "Yes".chars() {
+            assert!(a.key(Key::Char(c)).is_none());
+        }
+        let typing = a.screen(100, 20).join("\n");
+        assert!(
+            typing.contains("Yes"),
+            "the prompt card must show what is typed, not dots:\n{typing}"
+        );
+        assert!(
+            !typing.contains('\u{2022}'),
+            "a prompt card is drawn in the open and must not mask:\n{typing}"
+        );
+        assert!(a.input().is_empty(), "the composer must never hold it");
+
+        // Enter sends it once, as a `PromptAnswer` — and never as a `Secret`, which is the
+        // head's half of the rule that a password cannot travel this way.
+        let sent = a.key(Key::Enter);
+        assert_eq!(
+            sent,
+            Some(Action::PromptAnswer {
+                req_id: "prompt-s-1".into(),
+                line: "Yes".into(),
+            })
+        );
+        assert!(a.input().is_empty());
+        assert!(
+            a.editor.history().iter().all(|h| !h.contains("Yes")),
+            "the answer must not reach the composer's history either"
+        );
+        let after = a.screen(100, 20).join("\n");
+        assert!(!after.contains("your command is asking"), "{after}");
+
+        // **An empty line is a real answer.** `Continue? [Y/n]` takes Enter as its default,
+        // so a person accepting one must not have to type a letter to say so.
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::PromptRequested {
+                req_id: "prompt-s-2".into(),
+                job: "j8".into(),
+                command: "apt install mc".into(),
+                question: Some("Continue? [Y/n]".into()),
+            },
+        )));
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::PromptAnswer {
+                req_id: "prompt-s-2".into(),
+                line: String::new(),
+            })
+        );
+
+        // **Esc puts the card away and refuses nothing.** The command is still running and
+        // still waiting; there is nothing to refuse. What the operator gets is the card off
+        // the screen and a sentence naming the verb that still works.
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::PromptRequested {
+                req_id: "prompt-s-3".into(),
+                job: "j9".into(),
+                command: "apt install mc".into(),
+                question: None,
+            },
+        )));
+        let bare = a.screen(100, 20).join("\n");
+        assert!(
+            bare.contains("it has not written anything yet"),
+            "a program blocked before its first byte says so rather than showing an \
+             empty line as the question:\n{bare}"
+        );
+        assert_eq!(a.key(Key::Esc), None, "esc is not an answer to send");
+        let gone = a.screen(100, 20).join("\n");
+        assert!(!gone.contains("your command is asking"), "{gone}");
+    }
+
+    /// **The command ending takes the card down, and the note says which happened.**
+    ///
+    /// The card outliving its command is the failure this pair exists to prevent: a person
+    /// typing an answer into a program that has already exited. The two sentences are
+    /// different because the two things are — one is *your answer went*, the other is *the
+    /// command ended first* — and a head that said the same words for both would be telling
+    /// somebody their answer was delivered when it was not.
+    #[test]
+    fn a_settled_prompt_takes_the_card_down_and_says_which_way() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::PromptRequested {
+                req_id: "prompt-s-1".into(),
+                job: "j7".into(),
+                command: "apt install mc".into(),
+                question: Some("Continue? [Y/n]".into()),
+            },
+        )));
+        assert!(
+            a.screen(100, 20)
+                .join("\n")
+                .contains("your command is asking")
+        );
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::PromptSettled {
+                req_id: "prompt-s-1".into(),
+                sent: true,
+                by: "dead".into(),
+            },
+        )));
+        let screen = a.screen(100, 20).join("\n");
+        assert!(!screen.contains("your command is asking"), "{screen}");
+        assert!(screen.contains("answer sent by dead"), "{screen}");
+        // And the line itself is nowhere on the screen — the settlement is the record.
+        assert!(!screen.contains("Yes"), "{screen}");
+
+        // The other ending: the command finished with the card still up.
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::PromptRequested {
+                req_id: "prompt-s-2".into(),
+                job: "j8".into(),
+                command: "apt install mc".into(),
+                question: None,
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::PromptSettled {
+                req_id: "prompt-s-2".into(),
+                sent: false,
+                by: "the command ended".into(),
+            },
+        )));
+        let screen = a.screen(100, 20).join("\n");
+        assert!(!screen.contains("your command is asking"), "{screen}");
+        assert!(
+            screen.contains("nothing sent (the command ended)"),
+            "{screen}"
+        );
+    }
+
+    /// **`!send LINE` is a verb, and it is checked before the bare `!`.**
+    ///
+    /// `!send Y` is also a perfectly good `!` line — `operator_shell_command` reads it as the
+    /// command `send Y`, which is a program nobody has — so the verb has to be taken first,
+    /// exactly as `!term` is and through the same kind of shared parse
+    /// (`letibot_sessionlog::send_line`). And the line leaves with the verb stripped, so the
+    /// daemon is handed the text and not the spelling.
+    ///
+    /// **A bare `!send` sends an empty line**, which is an Enter and a real answer; and
+    /// `!sender`, `!sends` and `!send-mail` are ordinary `!` lines and always were.
+    #[test]
+    fn the_send_verb_is_recognised_before_the_bare_bang() {
+        let mut a = app();
+        assert_eq!(
+            a.submit("!send Y".into()),
+            Some(Action::SendLine { line: "Y".into() })
+        );
+        assert_eq!(
+            a.submit("!send".into()),
+            Some(Action::SendLine {
+                line: String::new()
+            }),
+            "a bare `!send` is an Enter, which is a real answer"
+        );
+        assert_eq!(
+            a.submit("!send yes please".into()),
+            Some(Action::SendLine {
+                line: "yes please".into()
+            }),
+            "the text is one line and is not re-split"
+        );
+        // **No echo.** A `!` line leaves an echo because a `User` row is coming to retire it;
+        // a `!send` line goes into a running program's stdin and leaves no row behind, so an
+        // echo would be this head claiming a line the transcript will never carry.
+        assert!(
+            a.pending_prompts.is_empty(),
+            "a `!send` must not join the pending prompts: {:?}",
+            a.pending_prompts
+        );
+        // The near misses fall through to the operator's own shell line, which is what they
+        // always were.
+        for line in ["!sender x", "!sends x", "!send-mail"] {
+            assert!(
+                matches!(a.submit(line.into()), Some(Action::OperatorShell { .. })),
+                "`{line}` is an ordinary `!` line"
+            );
+        }
     }
 
     /// **R13's two-clocks trap, checked in the second place it could live.**

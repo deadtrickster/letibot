@@ -2808,7 +2808,36 @@ impl<'a> Harness<'a> {
             .with_operator_waiting(std::sync::Arc::new(move || waiting_hub.has_queued_prompt()))
             .with_completion_delivered(std::sync::Arc::new(move |job: &str| {
                 delivering.as_ref().is_some_and(|w| w.delivering(job))
-            }));
+            }))
+            // **The operator's own run can be ANSWERED** — see `crate::prompt`.
+            //
+            // Three reports and one object, and the object is installed on the registry
+            // here because **this is the half that has the pipe**: the exec host was built
+            // a few lines above, and the write end of the operator's stdin came out of the
+            // job the tool spawned. The server's reader thread is the half that needs it,
+            // and it cannot ask the worker — the worker is blocked inside the very command
+            // that is asking.
+            //
+            // Keyed by session: a pipe belongs to one session's run, and a `!send` in one
+            // session must never write into another's command.
+            .with_operator_runs({
+                let prompts = crate::prompt::Prompts::new(&cfg.session_id, hub.clone());
+                session_registry.set_prompt(&cfg.session_id, prompts.clone());
+                let runs = prompts.clone();
+                std::sync::Arc::new(
+                    move |what: letibot_tools::runtime::OperatorRun<'_>| match what {
+                        letibot_tools::runtime::OperatorRun::Answerable {
+                            job,
+                            command,
+                            stdin,
+                        } => runs.opened(job, command, stdin),
+                        letibot_tools::runtime::OperatorRun::Waiting { job, question } => {
+                            runs.asking(job, question)
+                        }
+                        letibot_tools::runtime::OperatorRun::Ended { job } => runs.ended(job),
+                    },
+                )
+            });
 
         let mut engine = TurnEngine::new(
             &parts.vocab,

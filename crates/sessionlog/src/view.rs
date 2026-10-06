@@ -710,6 +710,12 @@ impl SessionView {
             // with it, and a settled one is history.
             SessionEvent::SecretRequested { .. }
             | SessionEvent::SecretSettled { .. }
+            // And the same for the operator's own run's card: it is live for as long as
+            // the run is blocked, the head that is watching the run has it, and a head
+            // that attached later has not seen the output the question is about. The
+            // settlement is a record and is not carried either — the run's own rows are.
+            | SessionEvent::PromptRequested { .. }
+            | SessionEvent::PromptSettled { .. }
             | SessionEvent::ScreenRequested { .. } => {}
             // §6's plan is a full document. It belongs in the log, where a head can
             // ask for it by seq; carrying every one of them in every snapshot would

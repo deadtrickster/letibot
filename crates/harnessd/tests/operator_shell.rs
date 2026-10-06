@@ -558,3 +558,352 @@ fn item_payloads(snap: &letibot_sessionlog::Snapshot) -> Vec<String> {
         })
         .collect()
 }
+
+// ---------------------------------------------------------------------------
+// The prompt card: the operator's own run can be ANSWERED
+// ---------------------------------------------------------------------------
+
+/// **The whole thing, end to end, through the real path.**
+///
+/// The defect: `! sudo apt install mc` streamed its progress and then aborted at
+/// `Continue? [Y/n]`, because fd 0 was `/dev/null` and an EOF is not a `Y`. Every layer of the
+/// fix is exercised here and **not one of them by calling a helper in isolation**:
+///
+/// * the daemon holds a **pipe** on the operator's own run's stdin (`letibot_tools::exec`);
+/// * the run is **blocked reading it**, which is what `letibot_tools::exec::ask` reads out of
+///   `/proc` — the process's state and not its words — and which is what raises the card;
+/// * the card reaches a head as `PromptRequested`, **naming the command the operator typed**;
+/// * the head's `PromptAnswer` is delivered on the socket reader's thread — it cannot go
+///   through the command queue, because the worker is blocked inside the very command that is
+///   asking — and the daemon writes it into the pipe;
+/// * **the command reads it and finishes**, with the answer in its own output, which is the
+///   assertion the whole branch exists for;
+/// * and the two rows the `!` feature already appends still land, with the program's last
+///   words and its status.
+///
+/// **`read` and `printf` are builtins**, so the assertion does not depend on anything
+/// outside the pinned `PATH` — the same rule the tests above keep.
+#[test]
+fn a_bang_line_that_asks_is_answered_and_finishes() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let socket = socket_path("answered");
+    let cfg = config("bang-answered", &socket);
+    // **Leaked on purpose.** The harness borrows `Parts` for its life and the run must happen
+    // on another thread (the worker blocks inside the command while this thread answers),
+    // so the borrow has to be `'static`.
+    let p: &'static Parts = Box::leak(Box::new(parts(&cfg)));
+    let hub = Hub::new(&cfg.session_id);
+    // **The registry the harness is opened WITH**, and not a second one built afterwards:
+    // the daemon installs this session's stdin driver on the registry it was handed, so a
+    // test that served a different one would be testing a socket with no way in — which is
+    // exactly what the first cut of this test did, and it failed for that reason.
+    let registry = Registry::of(hub.clone());
+    let mut h = match Harness::open_with_registry(
+        p,
+        cfg.clone(),
+        hub.clone(),
+        None,
+        None,
+        registry.clone(),
+    ) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("bang-answered: no exec host on this box: {e}");
+            return;
+        }
+    };
+    let server = serve_registry(registry, &socket).expect("bind");
+
+    let (mut head, _hello, reader) =
+        HeadClient::attach(&socket, &cfg.session_id, 0, "tui", "dead", Caps::default())
+            .expect("head attach");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _pump = std::thread::spawn(move || pump(reader, tx));
+
+    // A program that prints a prompt and then BLOCKS on its stdin. `read` is a builtin in
+    // every shell this host can be configured with.
+    let line = "! printf 'Continue? [Y/n] '; read x; printf 'answered=%s\\n' \"$x\"";
+    let runner = std::thread::spawn({
+        let line = line.to_string();
+        move || h.run_operator_shell(&line, "dead")
+    });
+
+    // The card, as a head receives it.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let req_id = loop {
+        assert!(
+            Instant::now() < deadline,
+            "no PromptRequested reached the head — the run is blocked on a pipe and nothing \
+             said so"
+        );
+        let Ok(inbound) = rx.recv_timeout(Duration::from_millis(200)) else {
+            continue;
+        };
+        if let ServerFrame::Event(env) = inbound.frame()
+            && let SessionEvent::PromptRequested {
+                req_id,
+                command,
+                question,
+                ..
+            } = &env.event
+        {
+            assert!(
+                command.contains("read x"),
+                "the card names the operator's own command: {command}"
+            );
+            assert_eq!(
+                question.as_deref(),
+                Some("Continue? [Y/n]"),
+                "the card SHOWS the program's own last line"
+            );
+            break req_id.clone();
+        }
+    };
+    head.prompt_answer(&req_id, "Y")
+        .expect("the answer is written");
+    runner
+        .join()
+        .expect("the run thread")
+        .expect("the run records");
+
+    // **The command read the answer and finished with it in its own output.** This is the
+    // assertion the branch exists for.
+    let payload = item_payloads(&hub.snapshot()).join("\n");
+    assert!(
+        payload.contains("answered=Y"),
+        "the answer must reach the command's stdin and come back out of it: {payload}"
+    );
+    // **And the ending the `!` path already added is still there** — the program's last words
+    // and its status, as the row every head draws. An answered prompt must not cost the
+    // ending that was there before it.
+    let outcome = hub
+        .snapshot()
+        .items
+        .iter()
+        .filter_map(|i| i.item.as_ref())
+        .find_map(|i| match i {
+            TranscriptItem::ToolResult { outcome, .. } => Some(outcome.clone()),
+            _ => None,
+        })
+        .expect("the result row");
+    assert!(
+        matches!(outcome, letibot_transcript::ToolOutcome::Ok),
+        "the answered command exited cleanly and the row says so: {outcome:?}"
+    );
+    // And the settlement is on the log — who answered, and never the line.
+    let settled = hub.retained().into_iter().find_map(|env| match env.event {
+        SessionEvent::PromptSettled { req_id, sent, by } => Some((req_id, sent, by)),
+        _ => None,
+    });
+    match settled {
+        Some((id, sent, by)) => {
+            assert_eq!(id, req_id);
+            assert!(sent, "a line was sent");
+            assert_eq!(by, "dead");
+        }
+        None => panic!("the card was never settled"),
+    }
+    let everything = format!("{:?}", hub.retained());
+    assert!(
+        !everything.contains("\"Y\""),
+        "the line itself must not be on the log"
+    );
+    server.shutdown();
+}
+
+/// **The manual way in reaches a running command's stdin** — and it needs no card at all.
+///
+/// This is the floor under the heuristic, and the operator's own instruction is why it is the
+/// primary mechanism rather than a fallback: the card is raised by a reading of `/proc` that
+/// has misses it names, and **a person watching the stream can always answer**. So the test
+/// never looks at a card: it sends `SendLine` while the run is blocked and asserts the command
+/// got the line. The program prints **nothing at all** before it blocks, which also pins the
+/// other half — `!send` is a verb and not a reply to a question.
+#[test]
+fn the_manual_send_reaches_a_running_commands_stdin() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let socket = socket_path("manual");
+    let cfg = config("bang-manual", &socket);
+    let p: &'static Parts = Box::leak(Box::new(parts(&cfg)));
+    let hub = Hub::new(&cfg.session_id);
+    let registry = Registry::of(hub.clone());
+    let mut h = match Harness::open_with_registry(
+        p,
+        cfg.clone(),
+        hub.clone(),
+        None,
+        None,
+        registry.clone(),
+    ) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("bang-manual: no exec host on this box: {e}");
+            return;
+        }
+    };
+    let server = serve_registry(registry, &socket).expect("bind");
+    let (mut head, _hello, reader) =
+        HeadClient::attach(&socket, &cfg.session_id, 0, "tui", "dead", Caps::default())
+            .expect("head attach");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _pump = std::thread::spawn(move || pump(reader, tx));
+
+    let line = "! read x; printf 'sent=%s\\n' \"$x\"";
+    let runner = std::thread::spawn({
+        let line = line.to_string();
+        move || h.run_operator_shell(&line, "dead")
+    });
+    // **No card is waited for.** The verb is the way in whether or not anything looked like a
+    // question, which is the whole point of it being a verb.
+    std::thread::sleep(Duration::from_millis(1200));
+    head.send_line("hello from the verb")
+        .expect("the verb's line is written");
+    runner
+        .join()
+        .expect("the run thread")
+        .expect("the run records");
+
+    let payload = item_payloads(&hub.snapshot()).join("\n");
+    assert!(
+        payload.contains("sent=hello from the verb"),
+        "`!send` must reach the running command's stdin: {payload}"
+    );
+    let _ = rx;
+    server.shutdown();
+}
+
+/// **A program that prints a question and EXITS raises no card.**
+///
+/// The control, and it is the one that would have failed before the detection was corrected.
+/// A text matcher — `ends with ?`, `ends with [Y/n]` — fires on the output of a program that
+/// has already finished, which is a card nobody can answer, raised for a command that is over.
+/// The state reading cannot: `wait_job` returns `Happened` for it and the question is never
+/// asked.
+///
+/// **And the third case is the strongest form of the correction.** A program that prints no
+/// question at all — `working...` — and then blocks on its stdin **does** raise a card,
+/// because what is being read is the process and not the words. A rule drawn around
+/// `Continue?` would fail that one in the direction that looks like success.
+#[test]
+fn a_program_that_prints_a_question_and_exits_raises_no_card() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    // ---- 1. A question, and a clean exit.
+    {
+        let socket = socket_path("noquestion");
+        let cfg = config("bang-noquestion", &socket);
+        let p: &'static Parts = Box::leak(Box::new(parts(&cfg)));
+        let hub = Hub::new(&cfg.session_id);
+        let registry = Registry::of(hub.clone());
+        let mut h = match Harness::open_with_registry(
+            p,
+            cfg.clone(),
+            hub.clone(),
+            None,
+            None,
+            registry.clone(),
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("bang-noquestion: no exec host on this box: {e}");
+                return;
+            }
+        };
+        let server = serve_registry(registry, &socket).expect("bind");
+        let (mut head, _hello, reader) =
+            HeadClient::attach(&socket, &cfg.session_id, 0, "tui", "dead", Caps::default())
+                .expect("head attach");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _pump = std::thread::spawn(move || pump(reader, tx));
+        h.run_operator_shell("! printf 'Are you sure? [Y/n] '", "dead")
+            .expect("the run records");
+        assert!(
+            !hub.retained()
+                .into_iter()
+                .any(|e| matches!(e.event, SessionEvent::PromptRequested { .. })),
+            "a program that printed a question and EXITED must raise no card: there is \
+             nobody left to answer it and nothing is blocked"
+        );
+        // And the ending the `!` path adds is still there — an answered prompt, or a run that
+        // ends, still leaves the row with the program's last words and its status.
+        let payload = item_payloads(&hub.snapshot()).join("\n");
+        assert!(
+            payload.contains("Are you sure? [Y/n]"),
+            "the program's last words are on the row: {payload}"
+        );
+        let _ = (&mut head, &rx);
+        server.shutdown();
+    }
+    // ---- 2. No question at all, and a block: the card is raised anyway.
+    {
+        let socket = socket_path("noquestion-blocked");
+        let cfg = config("bang-blocked", &socket);
+        let p: &'static Parts = Box::leak(Box::new(parts(&cfg)));
+        let hub = Hub::new(&cfg.session_id);
+        let registry = Registry::of(hub.clone());
+        let mut h = match Harness::open_with_registry(
+            p,
+            cfg.clone(),
+            hub.clone(),
+            None,
+            None,
+            registry.clone(),
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("bang-blocked: no exec host on this box: {e}");
+                return;
+            }
+        };
+        let server = serve_registry(registry, &socket).expect("bind");
+        let (mut head, _hello, reader) =
+            HeadClient::attach(&socket, &cfg.session_id, 0, "tui", "dead", Caps::default())
+                .expect("head attach");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _pump = std::thread::spawn(move || pump(reader, tx));
+        let line = "! printf 'working...'; read x; printf 'ok\\n'";
+        let runner = std::thread::spawn({
+            let line = line.to_string();
+            move || h.run_operator_shell(&line, "dead")
+        });
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let (req_id, question) = loop {
+            assert!(
+                Instant::now() < deadline,
+                "a run blocked on the pipe must raise a card whatever it printed"
+            );
+            let Ok(inbound) = rx.recv_timeout(Duration::from_millis(200)) else {
+                continue;
+            };
+            if let ServerFrame::Event(env) = inbound.frame()
+                && let SessionEvent::PromptRequested {
+                    req_id, question, ..
+                } = &env.event
+            {
+                break (req_id.clone(), question.clone());
+            }
+        };
+        assert_eq!(
+            question.as_deref(),
+            Some("working..."),
+            "the card shows what the program said, and decides nothing by it"
+        );
+        head.prompt_answer(&req_id, "")
+            .expect("a bare Enter is a real answer");
+        runner
+            .join()
+            .expect("the run thread")
+            .expect("the run records");
+        let payload = item_payloads(&hub.snapshot()).join("\n");
+        assert!(
+            payload.contains("ok"),
+            "the empty line released the read: {payload}"
+        );
+        server.shutdown();
+    }
+}

@@ -571,6 +571,42 @@ impl HeadClient {
         Ok(())
     }
 
+    /// **A head's answer to a `PromptRequested`**: the line the person typed, for the
+    /// stdin of the operator's own running command.
+    ///
+    /// Not a command, for [`ClientFrame::PromptAnswer`]'s own reason and the sharpest
+    /// version of it: the session worker is **blocked inside the very command that is
+    /// asking**, so a line queued behind that turn would be drained by the thread waiting
+    /// for it. An empty `line` is a bare Enter and is a real answer.
+    ///
+    /// **Not a secret and not a path to one.** A password goes on
+    /// [`HeadClient::secret`], to the `askpass` connection that asked for it.
+    pub fn prompt_answer(&mut self, req_id: &str, line: &str) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::PromptAnswer {
+            req_id: req_id.to_string(),
+            line: line.to_string(),
+        })?;
+        Ok(())
+    }
+
+    /// **One line to this session's own running command, on demand** — the manual way in.
+    ///
+    /// No request id and no job id: it addresses *whatever operator command this session is
+    /// running right now*, which the daemon knows and the head does not. The verb is
+    /// [`letibot_sessionlog::send_line`], and the line arrives here with the verb stripped.
+    ///
+    /// This is the floor under the prompt card. The card is raised when the daemon can see
+    /// that the run is **blocked reading the stdin pipe it holds**, and that reading has
+    /// misses it names — a program blocked on another fd, one that asks and keeps drawing, a
+    /// `/proc` a confined session's daemon may not read. None of those stops a person from
+    /// answering, and this is how they do it.
+    pub fn send_line(&mut self, line: &str) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::SendLine {
+            line: line.to_string(),
+        })?;
+        Ok(())
+    }
+
     /// The `askpass` helper's one frame: `sudo` wants a password for `command`.
     /// The answer arrives on the reader as [`ServerFrame::Secret`].
     pub fn askpass(&mut self, prompt: &str, command: &str) -> Result<(), ClientError> {

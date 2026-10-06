@@ -77,6 +77,7 @@
 //! | [`shell`] | **one long-lived shell per session**, with a controlling terminal: the sentinel framing that reads a line's output back, and the state that survives between lines |
 //! | [`term`] | **a program that owns the screen** — `!term mc`: raw bytes in both directions on a pty the daemon owns, with the pty as the program's *controlling* terminal, and the head as the emulator that draws them |
 
+pub mod ask;
 pub mod confine;
 pub mod console;
 pub mod host;
@@ -90,12 +91,13 @@ pub mod shell;
 pub mod term;
 pub mod terminal;
 
+pub use ask::{Waiting, last_line, waiting_for_an_answer};
 pub use confine::{
     Boundary, Bwrap, ConfinePlan, Confinement, Egress, Grant, HomeView, Namespace, NoConfinement,
     NsState, Presence, Seal, SealKind, Unconfined, ViewSpec,
 };
 pub use host::{HostProcesses, JobView, ProcessHost, Promotion, Protected, SpawnRequest, Waited};
-pub use jobs::{JobId, JobState, OutputSlice};
+pub use jobs::{JobId, JobState, OutputSlice, Stdin};
 pub use monitor::{
     ChannelCondition, CommandCondition, CommandExpect, Condition, CustomWatch, Fired, Firing,
     LogTailCondition, Monitor, MonitorError, Monitors, PortState, TimerCondition, Wait, Watch,

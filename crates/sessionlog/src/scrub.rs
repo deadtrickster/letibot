@@ -69,6 +69,16 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // its deadline; replayed, it would show a masked field for a sudo that
         // has long since failed. Its settlement is a record and stays.
         SessionEvent::SecretRequested { .. } => true,
+        // **A card for the operator's own run, and the same rule as the password's.**
+        //
+        // It names a live `req_id` in the daemon's own table for a run that is blocked
+        // right now, and a head that attached *after* the run began has not seen the
+        // output the question is about — so replaying it would put a field on a screen
+        // over a command whose bytes that head never drew. The request is raised on the
+        // live fan-out, where the heads that are watching the run are, and the way in for
+        // every other head is `!send`, which needs no request at all. Its settlement
+        // ([`SessionEvent::PromptSettled`]) is a record and stays.
+        SessionEvent::PromptRequested { .. } => true,
         // Replayed, this would ask a head to draw itself for a tool call that
         // finished long ago.
         SessionEvent::ScreenRequested { .. } => true,
@@ -108,6 +118,7 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         | SessionEvent::HeadDetached { .. }
         | SessionEvent::Warning { .. }
         | SessionEvent::SecretSettled { .. }
+        | SessionEvent::PromptSettled { .. }
         | SessionEvent::Explain { .. }
         // Durable: "bob interrupted at 14:02" stays true. It is a record of what a
         // head did, not a request for a head to do something.
