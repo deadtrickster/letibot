@@ -8623,6 +8623,30 @@ fn subagent_depth_refusal(depth: u32, max: u32) -> Option<String> {
     ))
 }
 
+/// **Run a git command in a directory and return its stdout, trimmed.**
+///
+/// The one door `task_start`'s filesystem work goes through: the tool layer has no
+/// git and no exec of its own, so the runner is where `git worktree add` and its
+/// companions are run. `Ok` is the command's stdout, trimmed; `Err` is the command
+/// and its stderr, so a refusal names what was tried and what git said rather than
+/// swallowing the failure.
+fn git_in(dir: &str, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git {} could not be run: {e}", args.join(" ")))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 /// **A subagent's session id, minted so that two children cannot share one.**
 ///
 /// leticl found this one on the wire and diagnosed it without reading this tree: three `task`
@@ -8739,6 +8763,9 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             downgrade: spec.downgrade.clone(),
             placement: spec.placement,
             model: spec.model.clone(),
+            // The worktree `task_start` arranged, when it did: the child's workspace is
+            // the worktree, not the parent's tree. `None` for a plain `task`.
+            worktree: spec.worktree.clone(),
         };
         let id = sub_id.clone();
         let spawned = std::thread::Builder::new()
@@ -8764,6 +8791,160 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             return Err(format!("the subagent thread could not be started: {e}"));
         }
         Ok(sub_id)
+    }
+
+    /// **Arrange the tree, then start the child** — the `task_start` door.
+    ///
+    /// The order is the point: the worktree is created *before* the child is
+    /// spawned, and a path that already exists is refused by name and without
+    /// spawning anything. The operator's ask, in their words: *"we will need a
+    /// new tool - task_start or what that will arrange worktree, firecode and
+    /// subagent"*. The two mistakes this prevents are a child spawned into the
+    /// main tree and a child killed instead of corrected for being in the wrong
+    /// place — so the placement is a fact the spawn carries (see
+    /// [`letibot_tools::builtins::task::TaskSpec::worktree`]), not a thing the
+    /// caller remembers to say.
+    ///
+    /// **The default is never the main tree.** A `task_start` that did not name
+    /// the main checkout creates a fresh worktree at
+    /// `<workspace>/.claude/worktrees/agent-<slug>` on branch `agent/<slug>`, cut
+    /// from the base the caller named (or the repo's HEAD). The main tree is the
+    /// exception, and it requires the explicit `main_tree` argument.
+    ///
+    /// **The build cache is shared deliberately.** The worktree's cargo is pointed
+    /// at the main tree's `target/` (via a `.cargo/config.toml` the runner writes
+    /// into the worktree — the same mechanism as `CARGO_TARGET_DIR`, and the one
+    /// that survives the child's own environment being cleared), because cargo's
+    /// own lock serialises concurrent builds and a fresh worktree otherwise pays a
+    /// cold build of the whole graph.
+    ///
+    /// **The branch is the deliverable, and it is never pushed.** This method does
+    /// not push, and will not: the branch is to be landed by a merge queue.
+    ///
+    /// **TODO(merge-queue): the merge queue does not exist yet.** The branch is
+    /// left where it is and the answer says so, rather than inventing an interface
+    /// for a queue that is not built. When the queue lands, this is the door it
+    /// takes.
+    fn start_worktree(
+        &self,
+        prompt: &str,
+        spec: &letibot_tools::builtins::task::TaskSpec,
+        worktree: &letibot_tools::builtins::task::WorktreeSpec,
+    ) -> Result<letibot_tools::builtins::task::WorktreeHandle, String> {
+        use letibot_tools::builtins::task::{
+            WorktreeHandle, WorktreePlacement, slug_from_prompt, worktree_branch, worktree_path,
+        };
+        // **The depth cap, refused by name before any tree is arranged** — the same
+        // check [`Self::start`] makes, done here first so a child that cannot be
+        // spawned does not get a worktree created for it.
+        if let Some(why) = subagent_depth_refusal(self.base.depth, self.base.max_subagent_depth) {
+            return Err(why);
+        }
+        let workspace = self.base.workspace.display().to_string();
+        let slug = if worktree.slug.is_empty() {
+            slug_from_prompt(prompt)
+        } else {
+            worktree.slug.clone()
+        };
+        let base = worktree.base.clone().unwrap_or_else(|| "HEAD".to_string());
+
+        let placement = if worktree.main_tree {
+            // **The exception**: the child works in the main checkout. No tree is
+            // arranged; the placement is the main tree's own path, branch and HEAD.
+            let branch = git_in(&workspace, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .map_err(|e| format!("the main tree's branch could not be read: {e}"))?;
+            let base_sha = git_in(&workspace, &["rev-parse", "HEAD"])
+                .map_err(|e| format!("the main tree's HEAD could not be read: {e}"))?;
+            WorktreePlacement {
+                path: workspace.clone(),
+                branch,
+                base_sha,
+                main_tree: true,
+            }
+        } else {
+            // **The default**: a fresh worktree, arranged before the child is spawned.
+            let path = worktree_path(&workspace, &slug);
+            let branch = worktree_branch(&slug);
+            // **The refusal of an existing path, by name and without spawning
+            // anything.** The tool pre-checks this; the runner re-checks it because
+            // it is the one that creates the path, and a check the creator does not
+            // make is a check that can be raced.
+            if std::fs::symlink_metadata(&path).is_ok() {
+                return Err(format!(
+                    "`{path}` already exists, so a fresh worktree cannot be created there. \
+                     Nothing was arranged and nothing was spawned. Use a different `slug`, \
+                     or `main_tree: true` to work in the main checkout (the exception)."
+                ));
+            }
+            // **The base SHA, read before the branch is cut**, so the answer names the
+            // commit the branch actually starts from rather than a guess.
+            let base_sha = git_in(&workspace, &["rev-parse", &base])
+                .map_err(|e| format!("the base `{base}` could not be resolved: {e}"))?;
+            // **The worktree, created before the child is spawned.** A failure here is
+            // a spawn that fails, named — never a child run in the parent's tree and
+            // called placed.
+            git_in(
+                &workspace,
+                &["worktree", "add", &path, "-b", &branch, &base],
+            )
+            .map_err(|e| {
+                format!(
+                    "the worktree could not be created at `{path}`: {e}. Nothing was \
+                     spawned. The base was `{base}` and the branch would have been \
+                     `{branch}`."
+                )
+            })?;
+            // **The build cache, shared deliberately.** The worktree's cargo is pointed
+            // at the main tree's `target/`, so the child does not pay a cold build of
+            // the whole graph. Written into the worktree rather than the child's
+            // environment because the child's environment is cleared before its own
+            // pairs, and a config file survives that.
+            let cargo_dir = std::path::Path::new(&path).join(".cargo");
+            let _ = std::fs::create_dir_all(&cargo_dir);
+            let cargo_config = cargo_dir.join("config.toml");
+            let _ = std::fs::write(
+                &cargo_config,
+                format!(
+                    "# Written by `task_start`: the build cache is shared with the main \
+                     tree, so this worktree does not pay a cold build of the whole graph.\n\
+                     [build]\ntarget-dir = \"{}\"\n",
+                    std::path::Path::new(&workspace).join("target").display()
+                ),
+            );
+            // **And the config file must not be able to land in a commit or in the
+            // operator's `git status`.** It is a build-cache pointer, not a change: a
+            // config file that shows up as an untracked change in every review is a
+            // change nobody made, reviewable by nobody. So it is excluded in the
+            // worktree's own `info/exclude` — per-worktree, so the main tree's status
+            // and every other worktree are untouched, and nothing is added to the
+            // repo's `.gitignore` that the operator did not ask for.
+            if let Ok(git_dir) = git_in(&path, &["rev-parse", "--git-dir"]) {
+                let exclude = std::path::Path::new(&git_dir).join("info").join("exclude");
+                if let Some(parent) = exclude.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let line = format!(".cargo/config.toml\n");
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&exclude)
+                    .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+            }
+            WorktreePlacement {
+                path,
+                branch,
+                base_sha,
+                main_tree: false,
+            }
+        };
+
+        // **The placement rides the spec into the spawn**, so the child's workspace is
+        // the worktree (see `run_to_completion`), and the handle the tool returns names
+        // the path, branch and base SHA the child was put in.
+        let mut spec = spec.clone();
+        spec.worktree = Some(placement.clone());
+        let handle = self.start(prompt, &spec)?;
+        Ok(WorktreeHandle { handle, placement })
     }
 
     /// **Stop a subagent by interrupting the turn it is running.**
@@ -9220,6 +9401,15 @@ impl HarnessTaskRunner {
             provider: sub_provider,
             ..self.base.clone()
         };
+        // **The worktree `task_start` arranged is the child's workspace**, not the
+        // parent's tree. The placement rides the spec (see `TaskSpec::worktree`), and
+        // a child whose workspace is not the worktree the tool just reported is the
+        // same silent provenance defect as a model name that does not match — the
+        // child would be working in the parent's tree while the answer said it was in
+        // its own. `None` is a plain `task`, which keeps the parent's workspace.
+        if let Some(wt) = &spec.worktree {
+            sub_cfg.workspace = std::path::PathBuf::from(&wt.path);
+        }
         // **And the local model's own address, alias and sampling**, after the spread,
         // because `..self.base.clone()` would otherwise put the parent's back.
         if let (Some(e), Some(m)) = (&sub_endpoint, &sub_local) {
@@ -10425,6 +10615,101 @@ mod tests {
         // A cap of 0 refuses even a root — *no nesting*, read honestly rather than as
         // *unlimited*.
         assert!(super::subagent_depth_refusal(0, 0).is_some());
+    }
+
+    /// **A real worktree is arranged the way `task_start` arranges it**: the branch is
+    /// `agent/<slug>`, cut from the base, and the main tree is untouched.
+    ///
+    /// This drives the same `git_in` door `HarnessTaskRunner::start_worktree` uses, in a
+    /// throwaway repo, so the branch name and the main tree's cleanliness are facts on
+    /// disk rather than a claim in the answer. The operator's ask — *"we will need a new
+    /// tool - task_start or what that will arrange worktree, firecode and subagent"* — is
+    /// that the placement is arranged before the child is spawned, and this is the half of
+    /// that that can be checked without a live subagent.
+    #[test]
+    fn a_worktree_is_arranged_with_its_branch_and_the_main_tree_untouched() {
+        use std::process::Command;
+        // A throwaway repo, the same shape `detect.rs`'s tests use.
+        let root = std::env::temp_dir().join(format!(
+            "letibot-task-start-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").expect("write");
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "first"]);
+        let base_sha =
+            super::git_in(root.to_str().unwrap(), &["rev-parse", "HEAD"]).expect("the base SHA");
+
+        // **The worktree, arranged the way `start_worktree` arranges it.**
+        let slug = "task-start";
+        let path = letibot_tools::builtins::task::worktree_path(root.to_str().unwrap(), slug);
+        let branch = letibot_tools::builtins::task::worktree_branch(slug);
+        super::git_in(
+            root.to_str().unwrap(),
+            &["worktree", "add", &path, "-b", &branch, "HEAD"],
+        )
+        .expect("the worktree is created");
+
+        // **The branch is `agent/<slug>`, cut from the base.**
+        let wt_branch = super::git_in(&path, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .expect("the worktree's branch");
+        assert_eq!(wt_branch, branch, "the branch is agent/<slug>");
+        let wt_base = super::git_in(&path, &["rev-parse", "HEAD"]).expect("the worktree's HEAD");
+        assert_eq!(wt_base, base_sha, "the branch is cut from the base");
+
+        // **The main tree is untouched**: its branch is still `main`, its HEAD is still
+        // the base, and its status is clean — the worktree did not move the main tree.
+        let main_branch = super::git_in(
+            root.to_str().unwrap(),
+            &["rev-parse", "--abbrev-ref", "HEAD"],
+        )
+        .expect("the main tree's branch");
+        assert_eq!(main_branch, "main", "the main tree's branch is untouched");
+        let main_head = super::git_in(root.to_str().unwrap(), &["rev-parse", "HEAD"])
+            .expect("the main tree's HEAD");
+        assert_eq!(main_head, base_sha, "the main tree's HEAD is untouched");
+        // The `.claude/` directory is where the worktree lives, and it is untracked in
+        // the main tree — that is expected, it is the worktree's home. The main tree's
+        // *tracked* files are what must be untouched, so the status excludes it.
+        let status = super::git_in(
+            root.to_str().unwrap(),
+            &["status", "--porcelain", "--", ".", ":(exclude).claude"],
+        )
+        .expect("the main tree's status");
+        assert!(
+            status.is_empty(),
+            "the main tree's tracked files are untouched: {status}"
+        );
+
+        // **And the worktree is a fact on disk**: `git worktree list` shows it.
+        let list = super::git_in(root.to_str().unwrap(), &["worktree", "list"])
+            .expect("the worktree list");
+        assert!(list.contains(&path), "the worktree is listed: {list}");
+
+        // Clean up: remove the worktree and the repo.
+        let _ = super::git_in(
+            root.to_str().unwrap(),
+            &["worktree", "remove", "--force", &path],
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// **The subagent's title is not the session's name, and the two have different bounds.**

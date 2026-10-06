@@ -78,6 +78,150 @@ pub struct TaskSpec {
     /// name a person can type is a name a child can run on, and a key the picker finds is
     /// a key the spawn finds.
     pub model: Option<String>,
+    /// **Where the child's files live**, when `task_start` arranged a tree for it.
+    ///
+    /// `None` is a plain `task` call, which works in the parent's own workspace — the
+    /// behaviour every earlier build had, and the one `task` keeps. `Some` is a
+    /// `task_start` call, and the child's workspace is the worktree the runner created
+    /// before it spawned the child: the placement is a fact the spawn carries, not a
+    /// thing the caller remembers to say. See [`WorktreePlacement`] for why the field
+    /// rides the spec rather than a second argument.
+    pub worktree: Option<WorktreePlacement>,
+}
+
+/// **What one `task_start` call asked for**, beyond the prompt and the [`TaskSpec`].
+///
+/// The request, before the runner has done anything with it: the slug the worktree and
+/// branch are named by, the base the branch is cut from, and whether the exception was
+/// asked for (the main checkout rather than a fresh worktree). The runner answers it
+/// with a [`WorktreePlacement`] — the path, branch and base SHA that actually exist —
+/// and the two are different shapes on purpose: the request is what the caller typed,
+/// the placement is what the filesystem now is, and a tool that reported the request as
+/// the placement would be the defect this tree keeps finding by looking for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorktreeSpec {
+    /// The slug the worktree and branch are named by. Empty is *derive it from the
+    /// prompt* — the default, and the one [`slug_from_prompt`] answers.
+    pub slug: String,
+    /// The base ref the branch is cut from. `None` is the repo's current HEAD, which is
+    /// the default and the one a caller that did not look at the branch gets.
+    pub base: Option<String>,
+    /// **The exception**: work in the main checkout rather than a fresh worktree.
+    /// `false` is the default — a `task_start` that did not name the main tree creates
+    /// a worktree, and the main tree is the thing it exists to keep the child out of.
+    pub main_tree: bool,
+}
+
+/// **Where a `task_start` child works, as the runner arranged it.**
+///
+/// The answer to a [`WorktreeSpec`]: the path the child's files live in, the branch
+/// they are on, and the base SHA the branch was cut from. It rides the [`TaskSpec`]
+/// (as its `worktree` field) rather than a second argument to [`TaskRunner::start`]
+/// because the spawn is the one place that turns a spec into a session, and a session
+/// whose workspace is not the worktree the tool just reported is the same silent
+/// provenance defect as a model name that does not match — the child would be working
+/// in the parent's tree while the answer said it was in its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreePlacement {
+    /// The path the child works in. A worktree path for the default, the main
+    /// checkout's path for the exception.
+    pub path: String,
+    /// The branch the child works on: `agent/<slug>` for a worktree, the main tree's
+    /// own branch for the exception.
+    pub branch: String,
+    /// The base SHA the branch was cut from. The main tree's HEAD for the exception.
+    pub base_sha: String,
+    /// Whether the child works in the main checkout — the exception, named in the
+    /// answer so the operator sees it rather than finds it.
+    pub main_tree: bool,
+}
+
+/// **The handle a `task_start` call returns, with the placement it arranged.**
+///
+/// A plain `task` returns a bare handle, because the child works where the parent
+/// works and there is nothing else to say. A `task_start` returns this: the handle
+/// `task_result` collects by, plus the path, branch and base SHA the child was put in,
+/// so the caller and the operator see where the child is working without re-reading
+/// the brief. The placement is the point of the tool — a handle that does not say
+/// where the child is is a handle the operator has to go and find.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeHandle {
+    /// The handle `task_result` collects by.
+    pub handle: String,
+    /// Where the child works, as the runner arranged it.
+    pub placement: WorktreePlacement,
+}
+
+/// **The slug a `task_start` child's worktree and branch are named by**, derived
+/// from the prompt when the caller did not name one.
+///
+/// Short, kebab, and readable: the first few words of the prompt, lowercased, with
+/// everything that is not a letter or a digit collapsed to a single hyphen, capped
+/// at a length that keeps the path and the branch legible in a `git worktree list`.
+///
+/// **Deterministic in the prompt, on purpose.** Two different subtasks get two
+/// different slugs, and the same subtask asked twice gets the same slug — which is
+/// what makes the refusal of an existing path meaningful: a second `task_start` for
+/// the same work finds the first one's worktree and says so by name, rather than
+/// silently creating a second tree for work that already has one. A caller that
+/// wants a different name for the same work names it with the `slug` argument; the
+/// derivation is the default, not a lock.
+///
+/// Pure, so it is testable without a repo: the slug is a fact about the prompt, and
+/// the filesystem work that uses it lives in the runner.
+pub fn slug_from_prompt(prompt: &str) -> String {
+    const MAX: usize = 40;
+    const WORDS: usize = 4;
+    let mut slug = String::new();
+    for word in prompt.split_whitespace().take(WORDS) {
+        for c in word.chars() {
+            if c.is_ascii_alphanumeric() {
+                slug.push(c.to_ascii_lowercase());
+            } else if !slug.is_empty() && !slug.ends_with('-') {
+                slug.push('-');
+            }
+        }
+        if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.chars().count() > MAX {
+        slug = slug.chars().take(MAX).collect::<String>();
+        while slug.ends_with('-') {
+            slug.pop();
+        }
+    }
+    if slug.is_empty() {
+        "task".to_string()
+    } else {
+        slug
+    }
+}
+
+/// **The path a `task_start` worktree is created at**, from the repo's workspace and
+/// the slug.
+///
+/// `<workspace>/.claude/worktrees/agent-<slug>` — the same shape the operator's own
+/// worktrees take, so a `git worktree list` in the main tree shows the child's tree
+/// beside the operator's, and the child is a fact on disk rather than a handle the
+/// operator has to go and find. Pure, so the tool and the runner compute the same
+/// path from the same inputs: a tool that reported a path the runner did not create
+/// would be the same claim-versus-fact defect the rest of this tree refuses.
+pub fn worktree_path(workspace: &str, slug: &str) -> String {
+    format!("{workspace}/.claude/worktrees/agent-{slug}")
+}
+
+/// **The branch a `task_start` worktree is cut onto**, from the slug.
+///
+/// `agent/<slug>` — the branch is the deliverable, and its name says what it is:
+/// an agent's work, cut from the base the caller named (or the repo's HEAD), to be
+/// landed by a merge queue rather than pushed. See [`TaskStartTool`] for the rule
+/// that it is never pushed.
+pub fn worktree_branch(slug: &str) -> String {
+    format!("agent/{slug}")
 }
 
 /// Where a spawned subagent has got to.
@@ -110,6 +254,38 @@ pub trait TaskRunner: Send + Sync {
     /// Start the subtask and return the handle it can be collected by. Returns
     /// when the child is **spawned**, not when it is finished.
     fn start(&self, prompt: &str, spec: &TaskSpec) -> Result<String, String>;
+
+    /// **Arrange the tree, then start the child** — the `task_start` door.
+    ///
+    /// The difference from [`Self::start`] is the order: the worktree is created
+    /// *before* the child is spawned, and the refusal (a path that already exists
+    /// or is already a worktree) is answered by this call rather than by a child
+    /// that was never started. The operator's ask, in their words: *"we will need
+    /// a new tool - task_start or what that will arrange worktree, firecode and
+    /// subagent"* — the placement is arranged by the tool, not remembered by the
+    /// caller, because the two mistakes this exists to prevent are a child spawned
+    /// into the main tree and a child killed instead of corrected for being in the
+    /// wrong place.
+    ///
+    /// Returns the handle **and** the placement the child was put in — the path,
+    /// branch and base SHA — so the answer can say where the child is working
+    /// without the operator re-reading the brief. A runner that cannot arrange a
+    /// tree refuses by name rather than spawning a child in the parent's workspace
+    /// and calling it placed: the same claim-versus-fact rule [`Self::kill`] and
+    /// [`Self::send`] follow.
+    fn start_worktree(
+        &self,
+        _prompt: &str,
+        _spec: &TaskSpec,
+        _worktree: &WorktreeSpec,
+    ) -> Result<WorktreeHandle, String> {
+        Err(
+            "this session's runner cannot arrange a worktree: a `task_start` needs the \
+             runner that owns the tree to create the worktree before it spawns the child, \
+             and this one does not. Nothing was arranged and nothing was spawned."
+                .into(),
+        )
+    }
 
     /// Where a spawned subagent has got to, waiting up to `timeout` for it to
     /// finish. A zero timeout is a poll.
@@ -264,6 +440,8 @@ impl Tool for TaskTool {
                 .and_then(|v| v.as_str())
                 .map(|m| m.trim().to_string())
                 .filter(|m| !m.is_empty()),
+            // A plain `task` works in the parent's workspace: no worktree is arranged.
+            worktree: None,
         };
         let handle = match self.runner.start(prompt, &spec) {
             Ok(h) => h,
@@ -310,6 +488,259 @@ fn first_line(prompt: &str) -> String {
         return l.to_string();
     }
     format!("{}…", l.chars().take(100).collect::<String>())
+}
+
+/// `task_start` — arrange a subagent's placement *before* it spawns it.
+///
+/// The operator's ask, in their words: *"we will need a new tool - task_start or
+/// what that will arrange worktree, firecode and subagent"*. The two mistakes of a
+/// previous session are its spec: a child was spawned into the main tree, and then
+/// that child was killed instead of corrected. Placement must live in the tool, not
+/// in the caller's memory — so this tool creates the worktree first, refuses a path
+/// that already exists by name and without spawning anything, and only then starts
+/// the child in the tree it just made.
+///
+/// **The default is never the main tree.** A `task_start` that did not name the main
+/// checkout creates a fresh worktree at `<workspace>/.claude/worktrees/agent-<slug>`
+/// on branch `agent/<slug>`, cut from the base the caller named (or the repo's HEAD).
+/// Working in the main checkout is the exception, and it requires the explicit
+/// `main_tree` argument — the same shape as `where: firecode`, a declared seam rather
+/// than a default.
+///
+/// **The build cache is shared deliberately.** The child's environment carries
+/// `CARGO_TARGET_DIR` pointing at the main tree's `target/`, because cargo's own lock
+/// serialises concurrent builds and a fresh worktree otherwise pays a cold build of
+/// the whole graph. The runner is where that environment is set — the tool layer has
+/// no git and no exec of its own.
+///
+/// **The branch is the deliverable, and it is never pushed.** The tool does not push,
+/// and will not: the branch is to be landed by a merge queue.
+///
+/// **TODO(merge-queue): the merge queue does not exist yet.** The branch is the
+/// deliverable and the landing is somebody else's job; this tool leaves the branch
+/// where it is and says so, rather than inventing an interface for a queue that is
+/// not built. When the queue lands, this is the door it takes.
+///
+/// **A child in the wrong PLACE is corrected with `task_message`, not killed.**
+/// Killing is for wrong work. A child that is in the wrong tree is a placement
+/// mistake, and the remedy is to tell it where to be — the same live correction
+/// `task_message` exists for — not to throw the work away.
+pub struct TaskStartTool {
+    runner: Arc<dyn TaskRunner>,
+}
+
+impl TaskStartTool {
+    pub fn new(runner: Arc<dyn TaskRunner>) -> Self {
+        TaskStartTool { runner }
+    }
+}
+
+impl Tool for TaskStartTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "task_start",
+            "Arrange a subagent's placement BEFORE it spawns it: create a git worktree \
+             for the child, then start it in that worktree. Give `prompt` (the subtask); \
+             optionally `role`, `access`, `where` and `model` exactly as `task` takes \
+             them, plus `base` (the ref the branch is cut from, default the repo's \
+             current HEAD), `slug` (the worktree and branch name, default derived from \
+             the prompt), and `main_tree` (work in the main checkout instead of a fresh \
+             worktree — the exception, off by default). By default the child works in \
+             a fresh worktree at `<workspace>/.claude/worktrees/agent-<slug>` on branch \
+             `agent/<slug>`, sharing the main tree's cargo build cache; a path that \
+             already exists is refused by name and nothing is spawned. The branch is \
+             the deliverable and is NEVER pushed — it is to be landed by a merge queue. \
+             A child in the wrong PLACE is corrected with `task_message`, not killed: \
+             killing is for wrong work. Collect its answer with `task_result`.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "The subtask for the subagent."},
+                    "role": {"type": "string", "description": "The subagent's role. Defaults to coder."},
+                    "access": {"type": "string", "description": "Narrow the subagent below your own permissions: `read-only` (no write, exec or network), or any of `no-write`, `no-exec`, `no-network`, comma-separated. Omit to inherit yours unchanged. Cannot widen."},
+                    "where": {"type": "string", "description": "`host` (the default: your own boundary) or `firecode` (a VM). Placement never changes permissions."},
+                    "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
+                    "base": {"type": "string", "description": "The ref the branch is cut from. Defaults to the repo's current HEAD."},
+                    "slug": {"type": "string", "description": "The slug the worktree and branch are named by. Defaults to a derivation from the prompt."},
+                    "main_tree": {"type": "boolean", "description": "Work in the main checkout instead of a fresh worktree. The exception; off by default."}
+                },
+                "required": ["prompt"]
+            }),
+            // `Session`, exactly as `task` is: this arranges a tree and delegates to a
+            // child turn whose own gate governs its write/exec/network calls. The git
+            // work happens in the runner, not here — the tool layer has no git and no
+            // exec of its own.
+            Access::Session,
+        )
+    }
+
+    fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &serde_json::Value) -> Invocation {
+        let Some(prompt) = args.get("prompt").and_then(|v| v.as_str()) else {
+            return Invocation::failed(
+                "task_start needs a prompt",
+                "call `task_start` with `prompt` set to the subtask.",
+            );
+        };
+        let role = args.get("role").and_then(|v| v.as_str()).unwrap_or("coder");
+        let downgrade = match args.get("access").and_then(|v| v.as_str()) {
+            None => Downgrade::none(),
+            Some(a) => match Downgrade::parse(a) {
+                Ok(d) => d,
+                Err(e) => {
+                    return Invocation::failed(
+                        "`access` was not understood",
+                        format!("{e}. Nothing was arranged and nothing was spawned."),
+                    );
+                }
+            },
+        };
+        let placement = match args.get("where").and_then(|v| v.as_str()) {
+            None => Placement::Host,
+            Some(w) => match Placement::parse(w) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Invocation::failed(
+                        "`where` was not understood",
+                        format!("{e}. Nothing was arranged and nothing was spawned."),
+                    );
+                }
+            },
+        };
+        let model = args
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
+        let base = args
+            .get("base")
+            .and_then(|v| v.as_str())
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty());
+        let slug_arg = args
+            .get("slug")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let main_tree = args
+            .get("main_tree")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // **The slug, derived from the prompt when the caller did not name one.** The
+        // derivation is the default, not a lock: a caller that wants a different name
+        // for the same work names it with `slug`.
+        let slug = slug_arg.unwrap_or_else(|| slug_from_prompt(prompt));
+
+        // **The workspace, or the refusal that names its absence.** A `task_start`
+        // with no workspace to arrange a worktree in is a call that cannot be done,
+        // and it says so rather than guessing at a path.
+        let Some(workspace) = ctx.backend.workspace_path() else {
+            return Invocation::failed(
+                "task_start needs a workspace",
+                "this session has no workspace to arrange a worktree in. Nothing was \
+                 arranged and nothing was spawned.",
+            );
+        };
+
+        // **The refusal of an existing path, by name and without spawning anything.**
+        // The default is a fresh worktree, and a path that already exists — a
+        // directory, or a worktree a previous `task_start` made — is refused here
+        // rather than by a child that was never started. The main tree is the
+        // exception and does not create a path, so it is not checked.
+        if !main_tree {
+            let path = worktree_path(&workspace, &slug);
+            if std::fs::symlink_metadata(&path).is_ok() {
+                return Invocation::failed(
+                    format!("the path {path} already exists"),
+                    format!(
+                        "`{path}` is already a directory or a worktree, so a fresh \
+                         worktree cannot be created there. Nothing was arranged and \
+                         nothing was spawned. Use a different `slug`, or `main_tree: \
+                         true` to work in the main checkout (the exception)."
+                    ),
+                );
+            }
+        }
+
+        let spec = TaskSpec {
+            role: role.to_string(),
+            downgrade,
+            placement,
+            model,
+            // The runner fills this after the git work: the placement is a fact the
+            // spawn carries, and the tool does not invent one the runner did not make.
+            worktree: None,
+        };
+        let worktree_spec = WorktreeSpec {
+            slug,
+            base,
+            main_tree,
+        };
+
+        let handle = match self.runner.start_worktree(prompt, &spec, &worktree_spec) {
+            Ok(h) => h,
+            Err(e) => return Invocation::failed(e, "the subagent did not start."),
+        };
+        ctx.progress(&format!(
+            "subagent {} started in {}",
+            handle.handle, handle.placement.path
+        ));
+
+        // **The placement is in the answer.** The handle names the path, the branch
+        // and the base SHA, so the caller and the operator see where the child is
+        // working without re-reading the brief. The main tree is named as the
+        // exception when it was the exception, and a firecode spawn says the VM got
+        // a copy rather than pretending it is the same directory.
+        let where_line = if handle.placement.main_tree {
+            "the main checkout (the exception — a fresh worktree is the default)".to_string()
+        } else {
+            "a fresh worktree".to_string()
+        };
+        let seam_line = match handle.placement.main_tree {
+            true => String::new(),
+            false => match spec.placement {
+                Placement::Firecode => {
+                    "  seam: the VM received a COPY of the tree; the work comes back as \
+                     the branch, not as the directory.\n"
+                        .to_string()
+                }
+                _ => String::new(),
+            },
+        };
+        // **`Backgrounded`, not `Ok`** — the same reason `task` gives: the outcome
+        // names a fact about the world, *this is running and has not answered yet*.
+        Invocation::backgrounded(
+            handle.handle.clone(),
+            std::time::Duration::ZERO,
+            letibot_transcript::Backgrounding::Asked,
+            format!(
+                "call `task_result` with task=\"{}\" and a `timeout_ms`",
+                handle.handle
+            ),
+            format!(
+                "started subagent `{}` as `{}` in {}.\n  subtask: {}\n  path: {}\n  \
+                 branch: {}\n  base: {}\n{seam_line}\nThe branch is the deliverable and \
+                 is NOT pushed; it is to be landed by a merge queue. It is working now, \
+                 and this call did not wait for it — the rest of this round runs while \
+                 it does. `task_result` with task=\"{}\" and a `timeout_ms` blocks until \
+                 it answers and returns what it said; with no `timeout_ms` it reports \
+                 where the subagent has got to without waiting. A child in the wrong \
+                 PLACE is corrected with `task_message`, not killed: killing is for \
+                 wrong work.",
+                handle.handle,
+                match &spec.model {
+                    Some(m) => format!("{m} (as a {})", spec.role),
+                    None => spec.role.clone(),
+                },
+                where_line,
+                first_line(prompt),
+                handle.placement.path,
+                handle.placement.branch,
+                handle.placement.base_sha,
+                handle.handle,
+            ),
+        )
+    }
 }
 
 /// `task_result` — collect a subagent `task` started.
@@ -870,5 +1301,290 @@ mod tests {
         assert!(p.contains("not a downgrade"), "{p}");
         let p = run(&mut rt, &mut sink, r#"{"prompt": "x", "where": "moon"}"#);
         assert!(p.contains("not a placement"), "{p}");
+    }
+
+    /// **The slug is short, kebab, and deterministic in the prompt.**
+    ///
+    /// The derivation is the default, not a lock: two different subtasks get two
+    /// different slugs, and the same subtask asked twice gets the same slug — which
+    /// is what makes the refusal of an existing path meaningful. Pure, so it is
+    /// tested without a repo.
+    #[test]
+    fn the_slug_is_short_kebab_and_deterministic() {
+        assert_eq!(
+            slug_from_prompt("add a new tool task_start"),
+            "add-a-new-tool"
+        );
+        assert_eq!(
+            slug_from_prompt("Fix the bug in the parser"),
+            "fix-the-bug-in"
+        );
+        // Non-alphanumerics collapse to a single hyphen.
+        assert_eq!(
+            slug_from_prompt("hello, world! foo_bar"),
+            "hello-world-foo-bar"
+        );
+        // The same prompt gives the same slug.
+        assert_eq!(
+            slug_from_prompt("a long prompt that goes on and on"),
+            slug_from_prompt("a long prompt that goes on and on")
+        );
+        // A different prompt gives a different slug.
+        assert_ne!(
+            slug_from_prompt("a long prompt that goes on and on"),
+            slug_from_prompt("a different prompt that goes elsewhere")
+        );
+        // Capped at a length that keeps the path legible.
+        let long = slug_from_prompt(
+            "one two three four five six seven eight nine ten eleven twelve thirteen",
+        );
+        assert!(long.chars().count() <= 40, "{long}");
+        assert!(!long.ends_with('-'), "{long}");
+        // An empty prompt gets a default rather than an empty slug.
+        assert_eq!(slug_from_prompt(""), "task");
+        assert_eq!(slug_from_prompt("   "), "task");
+    }
+
+    /// **The worktree path and branch are pure functions of the workspace and slug.**
+    #[test]
+    fn the_worktree_path_and_branch_are_pure() {
+        assert_eq!(
+            worktree_path("/repo", "task-start"),
+            "/repo/.claude/worktrees/agent-task-start"
+        );
+        assert_eq!(worktree_branch("task-start"), "agent/task-start");
+    }
+
+    /// **A `task_start` whose path already exists is refused by name, and nothing is
+    /// spawned.**
+    ///
+    /// The default is a fresh worktree, and a path that already exists — a directory,
+    /// or a worktree a previous `task_start` made — is refused here rather than by a
+    /// child that was never started. The refusal names the path and says nothing was
+    /// spawned.
+    #[test]
+    fn an_existing_path_is_refused_by_name_and_nothing_is_spawned() {
+        use crate::runtime::{Registry, ToolRuntime};
+        use letibot_transcript::ToolCall;
+
+        /// A runner that records whether it was asked to arrange a worktree.
+        struct PlacedRunner {
+            asked: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl TaskRunner for PlacedRunner {
+            fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+                Ok("sub-1".into())
+            }
+            fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+                TaskStatus::Unknown
+            }
+            fn start_worktree(
+                &self,
+                _p: &str,
+                _s: &TaskSpec,
+                _w: &WorktreeSpec,
+            ) -> Result<WorktreeHandle, String> {
+                self.asked.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(WorktreeHandle {
+                    handle: "sub-1".into(),
+                    placement: WorktreePlacement {
+                        path: "/nowhere".into(),
+                        branch: "agent/x".into(),
+                        base_sha: "abc".into(),
+                        main_tree: false,
+                    },
+                })
+            }
+        }
+
+        let d = crate::backend::tempdir::TempDir::new();
+        // The backend canonicalises its root, so the workspace the tool sees is the
+        // canonicalised path — use the same one to compute the path the tool checks.
+        let workspace = d
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        // Create the path the tool would try to use, so the refusal fires.
+        let slug = "existing";
+        let path = worktree_path(&workspace, slug);
+        std::fs::create_dir_all(&path).unwrap();
+
+        let asked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runner: Arc<dyn TaskRunner> = Arc::new(PlacedRunner {
+            asked: asked.clone(),
+        });
+        let mut reg = Registry::new();
+        reg.register(Box::new(TaskStartTool::new(runner))).unwrap();
+        let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+        let mut rt = ToolRuntime::new(reg, Box::new(backend));
+        let mut sink = crate::NullToolSink;
+        let r = rt.invoke(
+            "t1",
+            &ToolCall {
+                id: "c1".into(),
+                name: "task_start".into(),
+                arguments: format!(r#"{{"prompt": "do the work", "slug": "{slug}"}}"#).into(),
+            },
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, letibot_transcript::ToolOutcome::Failed { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert!(r.payload.contains(&path), "{}", r.payload);
+        assert!(
+            r.payload.contains("already a directory or a worktree"),
+            "{}",
+            r.payload
+        );
+        // The runner was never asked to arrange a worktree: the refusal happened
+        // before the spawn.
+        assert!(
+            !asked.load(std::sync::atomic::Ordering::SeqCst),
+            "the runner was asked to arrange a worktree for a path that already exists"
+        );
+    }
+
+    /// **The placement is in the answer**: the handle names the path, the branch and
+    /// the base SHA, so the caller and the operator see where the child is working
+    /// without re-reading the brief.
+    #[test]
+    fn the_placement_is_in_the_answer() {
+        use crate::runtime::{Registry, ToolRuntime};
+        use letibot_transcript::ToolCall;
+
+        /// A runner that returns a known placement, so the test is about the tool's
+        /// answer and not about git.
+        struct KnownPlaced;
+        impl TaskRunner for KnownPlaced {
+            fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+                Ok("sub-1".into())
+            }
+            fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+                TaskStatus::Unknown
+            }
+            fn start_worktree(
+                &self,
+                _p: &str,
+                _s: &TaskSpec,
+                w: &WorktreeSpec,
+            ) -> Result<WorktreeHandle, String> {
+                let path = worktree_path("/repo", &w.slug);
+                Ok(WorktreeHandle {
+                    handle: "sub-1".into(),
+                    placement: WorktreePlacement {
+                        path: path.clone(),
+                        branch: worktree_branch(&w.slug),
+                        base_sha: "deadbeef".into(),
+                        main_tree: w.main_tree,
+                    },
+                })
+            }
+        }
+
+        let d = crate::backend::tempdir::TempDir::new();
+        let runner: Arc<dyn TaskRunner> = Arc::new(KnownPlaced);
+        let mut reg = Registry::new();
+        reg.register(Box::new(TaskStartTool::new(runner))).unwrap();
+        let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+        let mut rt = ToolRuntime::new(reg, Box::new(backend));
+        let mut sink = crate::NullToolSink;
+        let r = rt.invoke(
+            "t1",
+            &ToolCall {
+                id: "c1".into(),
+                name: "task_start".into(),
+                arguments: r#"{"prompt": "do the work", "slug": "task-start"}"#.into(),
+            },
+            &mut sink,
+        );
+        assert!(
+            matches!(
+                r.outcome,
+                letibot_transcript::ToolOutcome::Backgrounded { .. }
+            ),
+            "{:?}",
+            r.outcome
+        );
+        // The path, branch and base SHA are all in the answer.
+        assert!(
+            r.payload
+                .contains("/repo/.claude/worktrees/agent-task-start"),
+            "{}",
+            r.payload
+        );
+        assert!(r.payload.contains("agent/task-start"), "{}", r.payload);
+        assert!(r.payload.contains("deadbeef"), "{}", r.payload);
+        // The branch is the deliverable and is not pushed.
+        assert!(r.payload.contains("NOT pushed"), "{}", r.payload);
+        // A child in the wrong place is corrected, not killed.
+        assert!(r.payload.contains("task_message"), "{}", r.payload);
+    }
+
+    /// **The main tree is the exception, and it is named as such in the answer.**
+    #[test]
+    fn the_main_tree_is_named_as_the_exception() {
+        use crate::runtime::{Registry, ToolRuntime};
+        use letibot_transcript::ToolCall;
+
+        struct MainTreePlaced;
+        impl TaskRunner for MainTreePlaced {
+            fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+                Ok("sub-1".into())
+            }
+            fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+                TaskStatus::Unknown
+            }
+            fn start_worktree(
+                &self,
+                _p: &str,
+                _s: &TaskSpec,
+                w: &WorktreeSpec,
+            ) -> Result<WorktreeHandle, String> {
+                Ok(WorktreeHandle {
+                    handle: "sub-1".into(),
+                    placement: WorktreePlacement {
+                        path: "/repo".into(),
+                        branch: "main".into(),
+                        base_sha: "cafe0000".into(),
+                        main_tree: w.main_tree,
+                    },
+                })
+            }
+        }
+
+        let d = crate::backend::tempdir::TempDir::new();
+        let runner: Arc<dyn TaskRunner> = Arc::new(MainTreePlaced);
+        let mut reg = Registry::new();
+        reg.register(Box::new(TaskStartTool::new(runner))).unwrap();
+        let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+        let mut rt = ToolRuntime::new(reg, Box::new(backend));
+        let mut sink = crate::NullToolSink;
+        let r = rt.invoke(
+            "t1",
+            &ToolCall {
+                id: "c1".into(),
+                name: "task_start".into(),
+                arguments: r#"{"prompt": "do the work", "main_tree": true}"#.into(),
+            },
+            &mut sink,
+        );
+        assert!(
+            matches!(
+                r.outcome,
+                letibot_transcript::ToolOutcome::Backgrounded { .. }
+            ),
+            "{:?}",
+            r.outcome
+        );
+        // The main tree is named as the exception.
+        assert!(
+            r.payload.contains("the main checkout (the exception"),
+            "{}",
+            r.payload
+        );
     }
 }

@@ -202,7 +202,15 @@ pub fn with_session_tools(
     // A seat that can start work, read it and stop it — and cannot correct it — has only two
     // remedies when a child goes down the wrong path: wait out a wrong answer, or throw the
     // work away with `job_kill`.
-    reg.register(Box::new(builtins::task::TaskMessageTool::new(task_runner)))?;
+    reg.register(Box::new(builtins::task::TaskMessageTool::new(
+        task_runner.clone(),
+    )))?;
+    // **And so is `task_start`** — the operator's ask: *"we will need a new tool -
+    // task_start or what that will arrange worktree, firecode and subagent"*. It is
+    // registered with the same runner as `task`, because it is the same spawn with the
+    // placement arranged first: a `task_start` that used a second runner would hand out
+    // handles its sibling's `task_result` cannot collect.
+    reg.register(Box::new(builtins::task::TaskStartTool::new(task_runner)))?;
     Ok(reg)
 }
 
