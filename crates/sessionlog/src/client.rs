@@ -462,18 +462,29 @@ impl HeadClient {
     /// [`crate::protocol::ServerFrame::ShellSuggestions`] on this head's reader, carrying
     /// the prefix back so the head can key its cache by it. **Nothing here submits**: the
     /// lines are candidates for the composer, and Enter is still the operator's.
+    ///
+    /// **`client_request_id` is the caller's, and this is the one client method where
+    /// that is true.** Every other frame here mints its own id and returns it, because
+    /// the only thing that needs to recognise the answer is the writer. A suggestion is
+    /// not answered on the caller's behalf: the head has to match the answer to the
+    /// (prefix, transcript position) it asked about, and it can only do that if the id it
+    /// filed the ask under is the id that travels. Minting a second one here would leave
+    /// the head holding a key the daemon never echoes — the answer would arrive, be
+    /// looked up, miss, and be dropped, and the completion would hang on *asking the
+    /// model* for ever. The head's ids are `{head_id}-s{n}`, which cannot collide with
+    /// [`Self::next_id`]'s `{head_id}-{n}`.
     pub fn suggest_shell(
         &mut self,
         expected_seq: u64,
+        client_request_id: &str,
         prefix: &str,
-    ) -> Result<String, ClientError> {
-        let client_request_id = self.next_id();
+    ) -> Result<(), ClientError> {
         self.writer.write(&ClientFrame::SuggestShell {
-            client_request_id: client_request_id.clone(),
+            client_request_id: client_request_id.to_string(),
             expected_seq,
             prefix: prefix.to_string(),
         })?;
-        Ok(client_request_id)
+        Ok(())
     }
 
     /// This head's rendered rows, answering a `ScreenRequested`.
