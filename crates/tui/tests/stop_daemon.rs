@@ -84,7 +84,7 @@ fn frame(a: &mut App) -> String {
 /// One pass, drawing into a throwaway sink. A test has no terminal.
 fn step(link: &mut Link, a: &mut App) {
     let mut sink = |_lines: &[String], _cursor| {};
-    link.tick(a, (100, 30), &[], &mut sink);
+    link.tick(a, (100, 30), &[], &[], &mut sink);
 }
 
 /// Read until the peer has said what the test is waiting for, or the deadline passes.
@@ -284,6 +284,7 @@ fn choose_stop(link: &mut Link, a: &mut App) {
             letibot_tui::app::Key::CtrlC,
             letibot_tui::app::Key::Char('2'),
         ],
+        &[],
         &mut sink,
     );
 }

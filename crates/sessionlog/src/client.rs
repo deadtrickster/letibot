@@ -453,6 +453,54 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// **Open a pane and run a screen program in it** — `!term <command>`.
+    ///
+    /// `line` is the submitted line verbatim, verb included; the daemon strips `!term` and
+    /// hands the rest to `/bin/sh -c` on a pty the daemon owns. `cols` and `rows` are **the
+    /// conversation's rectangle** — the head is the half that knows it — and they reach the
+    /// pty as its `winsize` before the program's first byte.
+    ///
+    /// **Nothing is answered on this socket but the pane itself.** There is no
+    /// `Accepted`/`Rejected` for this frame: the daemon's first word is
+    /// [`crate::protocol::ServerFrame::TermOutput`] carrying what the program drew, and a
+    /// pane that never started is [`crate::protocol::ServerFrame::TermEnded`] with the
+    /// sentence saying why.
+    pub fn term_open(&mut self, line: &str, cols: usize, rows: usize) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::TermOpen {
+            line: line.to_string(),
+            cols,
+            rows,
+        })?;
+        Ok(())
+    }
+
+    /// **The operator's keys, verbatim**, to the pane's program.
+    ///
+    /// Bytes and not a keycode — see [`ClientFrame::TermInput`] for why the pane's keyboard
+    /// cannot be the head's own decoder. Nothing is returned: a keystroke has no answer, and
+    /// the pane's next `TermOutput` is the program's reply to whatever it did with it.
+    pub fn term_input(&mut self, bytes: &[u8]) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::TermInput {
+            bytes: bytes.to_vec(),
+        })?;
+        Ok(())
+    }
+
+    /// **The pane's rectangle moved.** The head's fact: the daemon has no screen, so this is
+    /// the only way the program is told the size it is being drawn at.
+    pub fn term_resize(&mut self, cols: usize, rows: usize) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::TermResize { cols, rows })?;
+        Ok(())
+    }
+
+    /// **The operator left the pane.** The one unambiguous way out: the daemon ends the
+    /// pane's scope, which kills the program and everything it started, and the ending comes
+    /// back as [`crate::protocol::ServerFrame::TermEnded`]. Quiet when there is no pane.
+    pub fn term_close(&mut self) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::TermClose)?;
+        Ok(())
+    }
+
     /// **Ask the model to propose `!` completions for a prefix** — the smart half of the
     /// `!` completion. The history is this head's own and is the first answer; this is
     /// asked for only when the history has no match for the prefix.

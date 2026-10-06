@@ -81,7 +81,7 @@ fn frame(a: &mut App) -> String {
 /// One pass, drawing into a throwaway sink. A test has no terminal.
 fn step(link: &mut Link, a: &mut App) {
     let mut sink = |_lines: &[String], _cursor| {};
-    link.tick(a, (100, 30), &[], &mut sink);
+    link.tick(a, (100, 30), &[], &[], &mut sink);
 }
 
 /// One pass **plus the caller's half of the recovery**, exactly as the binary does it:

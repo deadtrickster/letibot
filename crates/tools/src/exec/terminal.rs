@@ -115,15 +115,24 @@
 //!
 //! # What is deliberately NOT built here
 //!
-//! - **TODO: a `!term` verb.** Its own verb on the `!` line, which runs the command in
-//!   a pty the *daemon* owns, hands the master to the head, and lets the head be the
-//!   terminal emulator: keystrokes down, screen up. That is the real answer to `nano`,
-//!   and it is a session with a lifetime, a size and an end — not a tool call that
-//!   returns a string.
-//! - **TODO: the VT features that verb needs.** An alternate screen (`?1049h`/`l`),
-//!   cursor addressing (`CUP`, `ED`, `EL`), `SIGWINCH` when the pane is resized, and a
-//!   decision about scrollback that is not the transcript row. Nothing in this tree
-//!   draws any of it today; the head's ANSI work is SGR colour only.
+//! - **DONE (see [`super::term`]): the `!term` verb.** Its own verb on the `!` line, which runs
+//!   the command in a pty the *daemon* owns, hands the master to the head, and lets the head be
+//!   the terminal emulator: keystrokes down, screen up. That was the real answer to `nano`, and
+//!   it is a session with a lifetime, a size and an end — not a tool call that returns a string.
+//!   The mechanism is [`super::term`] (`setsid` + `TIOCSCTTY`, a raw byte stream both ways, the
+//!   pane's own cgroup), the renderer is `letibot_vt::Screen` painted by `letibot_ui::ansi`,
+//!   and the head's half is the
+//!   pane in `letibot-tui` — the conversation's rectangle given to the program, the composer
+//!   keeping its rows, and `ctrl-\` the one way out. **This refusal stays**, and that is not an
+//!   oversight: a plain `! nano` is still a program that would draw cursor-addressing escapes
+//!   into one transcript row and wait for a keystroke that cannot arrive. What changed is that
+//!   every sentence below now names the verb that works instead of filing it as a TODO.
+//! - **TODO: the VT features a pane's program may still want.** An alternate screen
+//!   (`?1049h`/`l`), cursor addressing (`CUP`, `ED`, `EL`) and `SIGWINCH` on a resize are all
+//!   **built** — they are in `letibot_vt` and on `ClientFrame::TermResize`. What is not is
+//!   scrollback: a program that scrolls *off* the pane's rectangle is gone, and the decision
+//!   that waits is whether the ring is the screen's (a rendering question) or the daemon's (a
+//!   storage one). It is filed in [`super::term`] and in the head's `TermPane`.
 //! - **DONE (see [`super::console`]): `GIT_PAGER=cat` and friends for the operator's
 //!   run.** The cheapest fix for miss 2, and a different change from this one: it is
 //!   about the *environment* rather than about refusing a command. It is a table
@@ -294,11 +303,14 @@ impl Class {
     /// What to do instead. Short, because it sits inside the row's one-line reason.
     fn instead(self) -> &'static str {
         match self {
-            Class::OwnsTheScreen => "run it in another window",
+            Class::OwnsTheScreen => "run it in the pane: `!term <command>`",
             Class::PagesToTheTerminal => {
-                "pipe or redirect its output so it is not writing to a terminal"
+                "pipe or redirect its output so it is not writing to a terminal, or read it \
+                 in the pane: `!term <command>`"
             }
-            Class::ReadsTheKeyboard => "give it a script to run, or run it in another window",
+            Class::ReadsTheKeyboard => {
+                "give it a script to run, or run it in the pane: `!term <command>`"
+            }
         }
     }
 }
@@ -346,8 +358,9 @@ captured into ONE transcript row and its input is `/dev/null`, so a program that
 the screen draws cursor-addressing escapes into that row and then waits for a keystroke \
 that can never arrive. That is why this is refused rather than run — the run would not \
 hang the session, it would hang itself, in a row you cannot answer. \
-`!term`, a verb that runs such a program in a pty the daemon owns with the head as a \
-terminal emulator, is the fix and is filed as a TODO in `exec/terminal.rs`.";
+**`!term <command>` is the way to run it**: the daemon owns a pty for the pane, the head \
+is the terminal emulator that draws it in the conversation's rectangle, and `ctrl-\\` \
+leaves. `!term nano notes.txt`, `!term mc`, `!term top`.";
 
 /// **Given a command line: is it refused, by which program, and why.**
 ///
@@ -717,7 +730,11 @@ mod tests {
         let why = r.why();
         assert!(why.contains("nano"), "{why}");
         assert!(why.contains("cannot hand you one"), "{why}");
-        assert!(why.contains("run it in another window"), "{why}");
+        // **The remedy names the verb that works**, which is the half of this test that
+        // changed when `!term` was built: *"run it in another window"* was the answer while
+        // there was no pane, and it sent the operator out of the harness for a program this
+        // harness now runs itself. See `super::term`.
+        assert!(why.contains("`!term <command>`"), "{why}");
 
         let body = r.body();
         assert!(body.contains("`nano` was refused because"), "{body}");
@@ -729,8 +746,12 @@ mod tests {
         // What the run actually is, which is the fact the operator asked about.
         assert!(body.contains("ONE transcript row"), "{body}");
         assert!(body.contains("/dev/null"), "{body}");
-        // And the TODO, so the row does not read as a final answer.
-        assert!(body.contains("`!term`"), "{body}");
+        // And the way to run it, so the row does not read as a final answer.
+        assert!(body.contains("`!term <command>`"), "{body}");
+        assert!(
+            body.contains("ctrl-\\"),
+            "the row must name the way out of the pane it recommends: {body}"
+        );
 
         // The other two classes carry their own remedy and their own account of what
         // the rule looked at, rather than `nano`'s.

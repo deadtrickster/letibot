@@ -235,23 +235,26 @@
 //!   `letibot_ui::ansi::pane_rows(screen, cols, room, palette)` returns **exactly `room` rows**,
 //!   which is the whole of the row budget: the pane takes the conversation's rectangle and gives
 //!   it back, so the composer, the status row and the header keep the rows they had and nothing
-//!   above the pane moves when it opens. **What is not built is the head's half**: the `App` field,
-//!   the branch in `compose_screen`'s pane chain, and the verb. It is not built because there
-//!   is nothing that can put bytes in it — the bytes come from a session this module owns on
-//!   the *daemon's* side of a frame that does not exist yet — and a pane wired to a screen no
-//!   path can feed is the pretence the operator's own brief warned about (*"an emulator that
-//!   mostly works and cannot be driven"*). It waits on the registry and the version-31 frames
-//!   above, and on nothing else.
+//!   above the pane moves when it opens. **The head's half exists now, for the SCREEN case** —
+//!   `!term`, `ClientFrame::TermOpen`/`TermInput`/`TermResize`/`TermClose` and
+//!   `ServerFrame::TermOutput`/`TermEnded`, with [`super::term`] on the daemon's side and the
+//!   pane in `letibot-tui`. What is still not built is the same pane fed by a *line*: this
+//!   module's `Turn` is one frame per line and needs no screen to draw, so the branch that
+//!   would draw one waits on the streaming TODO above and on nothing else.
 //! - **TODO: the daemon's registry.** `harnessd` holds a session's live things; this is not one
 //!   of them yet. The decision it waits on is *when a session's shell is started* — lazily on
 //!   the first `!` line, or eagerly when the session opens — and what `Hello` tells a head that
 //!   attaches to a session whose shell is already running (the cwd, and whether the shell is
 //!   alive, both of which a second head would otherwise have to guess).
-//! - **TODO: the input path.** Keystrokes down, and one unambiguous way out. Raw keys forwarded
-//!   verbatim (the pane is a terminal; a key this head "understands" is a key the program did
-//!   not get), and the way out is `Ctrl-\` or an escape the head intercepts *before* forwarding,
-//!   because a pane whose exit is a keystroke the program also sees is a pane a program can
-//!   trap. Not built: the frames below carry no input.
+//! - **TODO: the input path.** Keystrokes down, and one unambiguous way out. **A sibling has
+//!   built both for the screen case and this one still has neither** — see [`super::term`]: the
+//!   pane's keys travel as bytes on `ClientFrame::TermInput`, and its way out is `ctrl-\`,
+//!   intercepted by the head before a byte is forwarded. What is *not* reusable as it stands is
+//!   the byte stream itself: this module's traffic is a line, and a keystroke typed at a shell
+//!   the daemon keeps is a line's worth of bytes only once Enter arrives. The decision it waits
+//!   on is whether a line at a pane's shell is `ShellLine`'s (one frame, one turn) or the
+//!   pane's (bytes in, bytes out) — and the two are different enough that this module has not
+//!   answered it by borrowing.
 //! - **TODO: an answer to a program that asks the terminal a question.** `CSI 6n` (report cursor
 //!   position), `CSI 5n` and `CSI c` (device attributes) are *received and dropped* —
 //!   `letibot_vt::Screen` consumes them whole and has no output path by design — so a program
@@ -273,9 +276,11 @@
 //!   that will look like a hang, and a report that is never answered is the worst way for a
 //!   pane to fail — no error, no exit status, just a program that has stopped.
 //! - **TODO: streaming.** `run` returns when the trailer arrives, so a screen program is a
-//!   deadline rather than a view. The decision it waits on is whether the daemon forwards bytes
-//!   as they arrive (a `ServerFrame::ShellBytes` per read, with the pane live) and how the
-//!   trailer is then delivered — as its own frame, or as a field on the last one.
+//!   deadline rather than a view. **The screen case is built** ([`super::term`] streams both
+//!   ways and the pane draws it); what is not is streaming for a *line*, which is the case this
+//!   module owns. The decision it waits on is whether the daemon forwards bytes as they arrive
+//!   (a `ServerFrame::ShellBytes` per read, with the pane live) and how the trailer is then
+//!   delivered — as its own frame, or as a field on the last one.
 //! - **TODO: `SIGWINCH`, and who sends it.** `resize` sets the pty's size and the kernel raises
 //!   `SIGWINCH` for the foreground process group by itself; what is not built is the *path*
 //!   from the head's terminal size to this call, and whether the daemon or the head is the one
@@ -938,7 +943,12 @@ impl Drop for ShellSession {
 /// `TIOCSWINSZ` on the master. Failure is ignored: a pty that will not take a size is a pty
 /// whose programs see the default, which is a cosmetic defect and not a reason to lose a
 /// session.
-fn set_size(master: &std::fs::File, cols: usize, rows: usize) {
+///
+/// **`pub(crate)` because [`super::term`] is the second caller and there is one answer to
+/// *how a pty is told its size*.** A pane and a shell session both have a rectangle that
+/// belongs to the head, and two `ioctl` wrappers would be two places for the clamp to be
+/// wrong.
+pub(crate) fn set_size(master: &std::fs::File, cols: usize, rows: usize) {
     use std::os::fd::AsRawFd;
     let ws = libc::winsize {
         ws_row: rows.clamp(1, u16::MAX as usize) as u16,

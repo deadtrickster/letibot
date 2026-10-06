@@ -41,6 +41,51 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## R60 — `!term` is built; the pane has four things it still does not do — **OPEN, filed with the branch that built it (`agent/term-run`)**
+
+The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
+conversation's rectangle given to the program with the composer keeping its rows. It runs:
+`!term <command>` at the composer, a pty the daemon owns (`crates/tools/src/exec/term.rs`,
+`setsid` + `TIOCSCTTY`), raw bytes both ways on protocol 31
+(`ClientFrame::TermOpen`/`TermInput`/`TermResize`/`TermClose`,
+`ServerFrame::TermOutput`/`TermEnded`), the head drawing them through `letibot_vt::Screen`
+painted by `letibot_ui::ansi::pane_rows` in the conversation's rectangle, and `ctrl-\` the one
+way out — intercepted on the raw byte stream, so the program never receives it and cannot trap
+it.
+
+**What is not done, and none of it is a defect in what is:**
+
+1. **No scrollback.** A program that scrolls *off* the pane's rectangle is gone. The decision
+   it waits on is whether the ring is the screen's (a rendering question) or the daemon's (a
+   storage one) — see `TermPane` and `exec/term.rs`'s header. `less` and `git log` are the
+   ordinary commands that will want it.
+2. **One pane per session, and no second one.** A second `TermOpen` while one is live is
+   refused in a sentence rather than replacing the running program. Two panes on one screen is
+   a layout question this head has no answer for.
+3. **The pane is not confined.** It runs in the session's workspace with the session's
+   terminal environment and **not** inside the namespace boundary a `bash` call gets.
+   `exec::confine` is the seam; what a confined pane has to keep working (`/dev/tty`, the
+   cgroup, the workspace mount) is the whole of the work.
+4. **A head that switches away does not find its pane again.** The pane is cleared on a
+   session change and the daemon's program is deliberately left to the session it belongs to
+   — a `TermClose` sent after a `Switch` would arrive on the new session's hub and kill the
+   wrong thing. Switching back shows the transcript, and the program ends when the daemon
+   stops. The fix is the daemon telling a head on `Hello` that a pane is open (its command and
+   whether it is alive), which is the same question `shell.rs`'s registry TODO already asks
+   about a shell.
+
+**And the sibling this waits on.** `shell.rs` names `ShellLine`/`ShellTurn`/`ShellResize`/
+`ShellEnded` for a **line** typed at a shell the daemon keeps, and this branch deliberately did
+**not** add them: a `Turn`'s status and cwd have no meaning for a screen program, so the pane
+has a byte-stream pair of its own. That module's own TODOs are now narrowed to the *line* case
+(streaming a line, a keystroke at a shell that is not a pane, the registry) and are still open.
+
+**still open?** `cargo test -p letibot-sessionlog --test term_pane` and
+`cargo test -p letibot-tools --lib exec::term` — and `!term mc` at a live head, which is the
+one check that is not a test and is the operator's.
+
+---
+
 ## A stop unlinks the socket without the daemon going, so the next start adds a SECOND daemon to one folder — **OPEN, diagnosed on the operator's box 2026-10-04**
 
 **The symptom the operator met:** a session that could not be written to at all. Every append refused:

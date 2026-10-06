@@ -87,6 +87,15 @@
 //! defect the sibling `bang-term` branch closed rather than reopened. Two lines of
 //! bash's own diagnostics are the cheaper defect, and they are true.
 //!
+//! **And it stays rejected, which is the half a later branch could have broken.**
+//! [`super::term`] *does* do both, and it is the right answer there for the one reason
+//! that does not apply here: **in a pane, keystrokes arrive.** A person is at the other
+//! end of that pty and the head forwards their keys down it, so `/dev/tty` being
+//! openable is the feature rather than the hazard. This module's pty is a *capture* —
+//! one transcript row, `/dev/null` on stdin — and a capture with a controlling terminal
+//! is a program that waits for ever. The two paths differ in exactly that, and neither
+//! should borrow the other's answer.
+//!
 //! # Why `libc`, in a crate whose manifest said it had none
 //!
 //! There is no pty in `std`. The alternatives were read and rejected: `script(1)`

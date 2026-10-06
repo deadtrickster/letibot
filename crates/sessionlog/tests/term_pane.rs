@@ -1,0 +1,529 @@
+//! `!term` — the pane's byte stream, through the frames, with no daemon and no pty.
+//!
+//! The operator's ask, in their words: *"i mean i want it broooo"* — `! mc`, `! nano` running
+//! **in the pane**, the conversation's rectangle given to the program with the composer keeping
+//! its rows. `crates/tools/src/exec/terminal.rs` refuses those by name today and its own
+//! message calls the fix `!term`.
+//!
+//! # What this file is for, and what it deliberately is not
+//!
+//! The pty itself has its own tests in `letibot-tools` (a real child on a real pty: the
+//! controlling terminal, keys in and bytes back, `TIOCSWINSZ`, the ending), and the screen has
+//! its own in `letibot-ui` (a byte stream turned into exactly `room` rows). **What cannot be
+//! seen from either half is the wire between them**, and that is this file:
+//!
+//! 1. **The six frames survive the wire**, byte for byte — including the one thing a JSON
+//!    round trip could quietly change, which is a `Vec<u8>` that comes back as a string or as
+//!    a list of the wrong numbers.
+//! 2. **The daemon hands the driver the command and the rectangle**, and the driver's bytes
+//!    reach the head as [`ServerFrame::TermOutput`] — the whole path from `ClientFrame` to
+//!    `ServerFrame` through a canned driver, so the framing is asserted and not the pty.
+//! 3. **Keys go down verbatim.** `ESC O A` is the application-cursor spelling of *up*, and a
+//!    head that decoded and re-encoded it would send `ESC [ A` — a different byte string to a
+//!    program that asked for the first. The assertion is on the bytes.
+//! 4. **A pane is not a command.** No row, no seq, nothing on the queue. This is the frame
+//!    class `Screen` and `Secret` belong to, and the reason is sharper here than anywhere: a
+//!    keystroke that queued behind a running turn is a key that arrives after the thing it was
+//!    answering.
+//! 5. **Leaving is the daemon's act**, not a key the program sees, and a pane that never
+//!    started is the same frame as one that ended.
+//!
+//! **What is not here, and cannot be:** the *feel*. Whether `nano` is usable, whether the
+//! rectangle is the right rectangle, whether ctrl-\ is where a person's fingers go — none of
+//! that is answerable without a live head on a real terminal, and the operator is the one who
+//! drives it.
+
+use std::os::unix::net::UnixStream;
+use std::sync::{Arc, Mutex};
+
+use letibot_sessionlog::hub::Hub;
+use letibot_sessionlog::protocol::{Caps, ClientFrame, PROTOCOL_VERSION, ServerFrame};
+use letibot_sessionlog::registry::{Registry, SessionWiring, TerminalDriver};
+use letibot_sessionlog::server::serve_conn;
+use letibot_sessionlog::term_command;
+use letibot_sessionlog::wire::{FrameReader, FrameWriter};
+
+/// **A driver that runs nothing and remembers everything.** It is a `TerminalDriver` and not
+/// `harnessd`'s `Terminals` on purpose: this file is about the seam between the daemon and
+/// whoever owns a pty, so the pty — which has its own tests over a real child — is replaced by
+/// the case we care about, which is *the daemon asked, with this line and this rectangle*, and
+/// *these bytes went up*.
+#[derive(Default)]
+struct Canned {
+    opened: Mutex<Vec<(String, String, usize, usize)>>,
+    input: Mutex<Vec<Vec<u8>>>,
+    resized: Mutex<Vec<(usize, usize)>>,
+    closed: Mutex<Vec<String>>,
+    /// The hub `open` was handed, so a test can push bytes the way a pty's reader thread
+    /// would. `None` until a pane has been opened.
+    hub: Mutex<Option<Arc<Hub>>>,
+    /// What `open` answers. `None` is a pane that started.
+    refuse: Mutex<Option<String>>,
+}
+
+impl Canned {
+    fn new() -> Arc<Canned> {
+        Arc::new(Canned::default())
+    }
+
+    /// What `open` was told, in order: (session, command, cols, rows).
+    fn opened(&self) -> Vec<(String, String, usize, usize)> {
+        self.opened.lock().unwrap().clone()
+    }
+
+    fn input(&self) -> Vec<Vec<u8>> {
+        self.input.lock().unwrap().clone()
+    }
+
+    fn resized(&self) -> Vec<(usize, usize)> {
+        self.resized.lock().unwrap().clone()
+    }
+
+    fn closed(&self) -> Vec<String> {
+        self.closed.lock().unwrap().clone()
+    }
+
+    /// **What the pty's reader thread would do**: a frame that is not the record, straight to
+    /// the session's heads.
+    fn say(&self, bytes: &[u8]) {
+        let hub = self.hub.lock().unwrap().clone().expect("a pane was opened");
+        hub.push_frame(ServerFrame::TermOutput {
+            bytes: bytes.to_vec(),
+        });
+    }
+
+    fn end(&self, reason: &str) {
+        let hub = self.hub.lock().unwrap().clone().expect("a pane was opened");
+        hub.push_frame(ServerFrame::TermEnded {
+            reason: reason.to_string(),
+        });
+    }
+}
+
+impl TerminalDriver for Canned {
+    fn open(
+        &self,
+        session_id: &str,
+        hub: &Arc<Hub>,
+        command: &str,
+        cols: usize,
+        rows: usize,
+    ) -> Result<(), String> {
+        self.opened
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), command.to_string(), cols, rows));
+        if let Some(why) = self.refuse.lock().unwrap().clone() {
+            return Err(why);
+        }
+        *self.hub.lock().unwrap() = Some(hub.clone());
+        Ok(())
+    }
+
+    fn input(&self, _session_id: &str, bytes: &[u8]) -> Result<(), String> {
+        self.input.lock().unwrap().push(bytes.to_vec());
+        Ok(())
+    }
+
+    fn resize(&self, _session_id: &str, cols: usize, rows: usize) -> Result<(), String> {
+        self.resized.lock().unwrap().push((cols, rows));
+        Ok(())
+    }
+
+    fn close(&self, session_id: &str) -> Result<(), String> {
+        self.closed.lock().unwrap().push(session_id.to_string());
+        Ok(())
+    }
+}
+
+fn start(driver: Option<Arc<Canned>>) -> Arc<Registry> {
+    let registry = Registry::new();
+    if let Some(d) = driver {
+        registry.set_terminal(d);
+    }
+    registry
+        .create(
+            "s-1",
+            "one",
+            SessionWiring {
+                model: "qwen3-4b".into(),
+                dialect: "qwen".into(),
+                endpoint: "127.0.0.1:8080".into(),
+                workspace: "/tmp/ws".into(),
+            },
+        )
+        .expect("create");
+    registry
+}
+
+/// Attach a head to `s-1` and hand back the wire.
+fn attach(registry: &Arc<Registry>) -> (FrameWriter<UnixStream>, FrameReader<UnixStream>) {
+    let (a, b) = UnixStream::pair().expect("pair");
+    let reg = registry.clone();
+    let _server = std::thread::spawn(move || {
+        let _ = serve_conn(reg, a);
+    });
+    let mut w = FrameWriter::new(b.try_clone().expect("clone"));
+    let mut r = FrameReader::new(b);
+    w.write(&ClientFrame::Attach {
+        protocol_version: PROTOCOL_VERSION,
+        session_id: "s-1".into(),
+        since_seq: 0,
+        kind: "tui".into(),
+        identity: "test".into(),
+        caps: Caps::default(),
+    })
+    .expect("attach");
+    assert!(matches!(
+        r.read::<ServerFrame>().expect("hello"),
+        ServerFrame::Hello { .. }
+    ));
+    (w, r)
+}
+
+/// Read until a `TermOutput` or a `TermEnded`, skipping the session's own traffic.
+fn until_term(r: &mut FrameReader<UnixStream>) -> ServerFrame {
+    loop {
+        match r.read::<ServerFrame>().expect("a frame") {
+            f @ (ServerFrame::TermOutput { .. } | ServerFrame::TermEnded { .. }) => return f,
+            ServerFrame::Event(_) => continue,
+            other => panic!("expected a pane frame, got {other:?}"),
+        }
+    }
+}
+
+/// **The six frames survive the wire, byte for byte.**
+///
+/// The one thing a JSON round trip can quietly change is a byte vector: `serde_json` writes it
+/// as an array of integers, and a reader that got back a string, a list of characters or a list
+/// of the wrong numbers would be a pane that draws something other than what the program wrote.
+/// So the assertion is on the **bytes**, including the ones a text-shaped codec would eat —
+/// `ESC`, a NUL, and half of a UTF-8 character, which is exactly what a read that ends
+/// mid-character delivers.
+#[test]
+fn the_pane_frames_survive_the_wire_byte_for_byte() {
+    let raw: Vec<u8> = vec![0x1b, b'[', b'2', b'J', 0x00, 0xe2, 0x94]; // ED, NUL, half a '─'
+    let down = [
+        ClientFrame::TermOpen {
+            line: "!term mc /etc".into(),
+            cols: 97,
+            rows: 23,
+        },
+        ClientFrame::TermInput { bytes: raw.clone() },
+        ClientFrame::TermResize { cols: 97, rows: 23 },
+        ClientFrame::TermClose,
+    ];
+    for f in down {
+        let json = serde_json::to_string(&f).expect("encode");
+        let back: ClientFrame = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, f, "a client frame did not survive the wire: {json}");
+    }
+    let up = [
+        ServerFrame::TermOutput { bytes: raw.clone() },
+        ServerFrame::TermEnded {
+            reason: "the program exited with 0".into(),
+        },
+    ];
+    for f in up {
+        let json = serde_json::to_string(&f).expect("encode");
+        let back: ServerFrame = serde_json::from_str(&json).expect("decode");
+        assert_eq!(back, f, "a server frame did not survive the wire: {json}");
+    }
+    // And the bytes really are bytes, not a lossy string: the NUL and the half-character are
+    // both still there.
+    let back: ServerFrame = serde_json::from_str(
+        &serde_json::to_string(&ServerFrame::TermOutput { bytes: raw }).unwrap(),
+    )
+    .unwrap();
+    match back {
+        ServerFrame::TermOutput { bytes } => {
+            assert_eq!(bytes, vec![0x1b, 0x5b, 0x32, 0x4a, 0, 0xe2, 0x94])
+        }
+        other => panic!("not TermOutput: {other:?}"),
+    }
+}
+
+/// **`!term` reaches the driver with the command and the conversation's rectangle**, and the
+/// program's bytes come back as `TermOutput` — the whole path, through a canned driver.
+///
+/// The rectangle is the head's fact and the daemon has no screen, so this is the only place the
+/// two numbers can be checked against each other: `97×23` in, `97×23` at the driver, which is
+/// what becomes the pty's `winsize` before the program's first byte.
+#[test]
+fn the_verb_the_command_and_the_rectangle_reach_the_driver() {
+    let driver = Canned::new();
+    let registry = start(Some(driver.clone()));
+    let (mut w, mut r) = attach(&registry);
+
+    w.write(&ClientFrame::TermOpen {
+        line: "!term mc /etc".into(),
+        cols: 97,
+        rows: 23,
+    })
+    .expect("open");
+
+    // The driver's `open` runs on the connection's reader thread, so give it the moment it
+    // needs before pushing what the pty's own thread would have pushed after it.
+    for _ in 0..200 {
+        if !driver.opened().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    // What the pty's reader thread would push a moment later.
+    driver.say(b"\x1b[2J\x1b[Hmc's screen\r\n");
+    assert_eq!(
+        until_term(&mut r),
+        ServerFrame::TermOutput {
+            bytes: b"\x1b[2J\x1b[Hmc's screen\r\n".to_vec()
+        }
+    );
+    assert_eq!(
+        driver.opened(),
+        vec![("s-1".to_string(), "mc /etc".to_string(), 97usize, 23usize)],
+        "the driver must get the command with the verb stripped and the pane's own rectangle"
+    );
+}
+
+/// **Keys go down verbatim, as bytes.** `ESC O A` is the application-cursor spelling of *up*,
+/// and a head that decoded it into `Key::Up` and re-encoded it would send `ESC [ A` — a
+/// different byte string to a program that asked for the first, and the reason
+/// [`ClientFrame::TermInput`] carries a vector rather than a keycode.
+#[test]
+fn keys_are_forwarded_as_bytes_and_are_not_decoded() {
+    let driver = Canned::new();
+    let registry = start(Some(driver.clone()));
+    let (mut w, _r) = attach(&registry);
+    w.write(&ClientFrame::TermOpen {
+        line: "!term nano notes.txt".into(),
+        cols: 80,
+        rows: 24,
+    })
+    .expect("open");
+
+    // An application-cursor arrow, a control byte, a plain letter, and half a UTF-8
+    // character — every shape a keystroke read can have.
+    let keys: Vec<u8> = vec![0x1b, b'O', b'A', 0x03, b'x', 0xe2];
+    w.write(&ClientFrame::TermInput {
+        bytes: keys.clone(),
+    })
+    .expect("keys");
+    w.write(&ClientFrame::TermResize {
+        cols: 120,
+        rows: 40,
+    })
+    .expect("resize");
+
+    // The reader thread is the connection's, so give it the moment it needs and then assert.
+    for _ in 0..200 {
+        if !driver.input().is_empty() && !driver.resized().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        driver.input(),
+        vec![keys],
+        "the keys must arrive exactly as the operator's terminal produced them"
+    );
+    assert_eq!(driver.resized(), vec![(120, 40)]);
+}
+
+/// **A pane is not a command.** No row, no seq, nothing on the queue — the frame class
+/// `Screen` and `Secret` belong to, and the reason is sharper here than anywhere else: a
+/// keystroke that queued behind a running turn would be a key that arrives after the thing it
+/// was answering.
+#[test]
+fn a_pane_writes_no_row_and_moves_no_seq() {
+    let driver = Canned::new();
+    let registry = start(Some(driver.clone()));
+    let (mut w, _r) = attach(&registry);
+    let hub = registry.resolve("s-1").expect("the session");
+    let before = hub.head_seq();
+    let items_before = hub.snapshot().items.len();
+
+    w.write(&ClientFrame::TermOpen {
+        line: "!term top".into(),
+        cols: 80,
+        rows: 24,
+    })
+    .expect("open");
+    w.write(&ClientFrame::TermInput {
+        bytes: b"q".to_vec(),
+    })
+    .expect("keys");
+    w.write(&ClientFrame::TermClose).expect("close");
+    for _ in 0..200 {
+        if !driver.closed().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    assert_eq!(
+        hub.head_seq(),
+        before,
+        "a pane must move no seq: its repaints are not the record"
+    );
+    assert_eq!(
+        hub.snapshot().items.len(),
+        items_before,
+        "a pane must write no row: the transcript comes back exactly as it was"
+    );
+    assert!(
+        hub.try_command().is_none(),
+        "a pane must queue nothing: a keystroke behind a turn is not a keystroke"
+    );
+}
+
+/// **Leaving is the daemon's act, and it is the only way out that exists.**
+///
+/// The head intercepts `Ctrl-\` before any byte is written, so the program never receives it
+/// and cannot trap it — which is why there is no `TermInput` in this test. `TermClose` reaches
+/// the driver, the driver ends the pane's scope, and the ending arrives as `TermEnded` with the
+/// operator's own act in the sentence.
+#[test]
+fn leaving_ends_the_pane_and_never_reaches_the_program() {
+    let driver = Canned::new();
+    let registry = start(Some(driver.clone()));
+    let (mut w, mut r) = attach(&registry);
+    w.write(&ClientFrame::TermOpen {
+        line: "!term mc".into(),
+        cols: 80,
+        rows: 24,
+    })
+    .expect("open");
+    // The way out, as the head would report it: a close and no key.
+    w.write(&ClientFrame::TermClose).expect("close");
+    for _ in 0..200 {
+        if !driver.closed().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(driver.closed(), vec!["s-1".to_string()]);
+    assert!(
+        driver.input().is_empty(),
+        "the way out must not be a byte the program could read, or trap"
+    );
+
+    // And the ending the operator reads is the one the pane composes, not a second one.
+    driver.end("you left the terminal");
+    assert_eq!(
+        until_term(&mut r),
+        ServerFrame::TermEnded {
+            reason: "you left the terminal".into()
+        }
+    );
+}
+
+/// **A pane that never started is the same frame as one that ended**, and the sentence is the
+/// whole of the difference — so a refusal is never silence.
+///
+/// Three refusals, in the three places one can happen: a line that is not the verb, the verb
+/// with no command, and a daemon with no driver at all.
+#[test]
+fn a_pane_that_cannot_start_says_so_in_one_sentence() {
+    // A daemon with no driver: the daemon says so rather than pretending to run something.
+    let registry = start(None);
+    let (mut w, mut r) = attach(&registry);
+    w.write(&ClientFrame::TermOpen {
+        line: "!term mc".into(),
+        cols: 80,
+        rows: 24,
+    })
+    .expect("open");
+    match until_term(&mut r) {
+        ServerFrame::TermEnded { reason } => assert!(
+            reason.contains("no terminal driver"),
+            "a daemon with no driver must say so: {reason}"
+        ),
+        other => panic!("expected TermEnded, got {other:?}"),
+    }
+
+    // A line that is not the verb at all, and the verb with nothing after it.
+    let driver = Canned::new();
+    let registry = start(Some(driver.clone()));
+    let (mut w, mut r) = attach(&registry);
+    for (line, needle) in [
+        ("!terminal x", "not a `!term` line"),
+        ("!term", "needs a command"),
+        ("!term   ", "needs a command"),
+    ] {
+        w.write(&ClientFrame::TermOpen {
+            line: line.into(),
+            cols: 80,
+            rows: 24,
+        })
+        .expect("open");
+        match until_term(&mut r) {
+            ServerFrame::TermEnded { reason } => assert!(
+                reason.contains(needle),
+                "`{line}` must be refused with a sentence naming why, got: {reason}"
+            ),
+            other => panic!("expected TermEnded for `{line}`, got {other:?}"),
+        }
+    }
+    assert!(
+        driver.opened().is_empty(),
+        "nothing may be started for a line that is not the verb"
+    );
+
+    // And a driver that refuses — a pty that would not open, a scope that would not be joined
+    // — reaches the head as the driver's own sentence rather than as a silence.
+    *driver.refuse.lock().unwrap() = Some("no pty: /dev/ptmx is not there".into());
+    w.write(&ClientFrame::TermOpen {
+        line: "!term mc".into(),
+        cols: 80,
+        rows: 24,
+    })
+    .expect("open");
+    match until_term(&mut r) {
+        ServerFrame::TermEnded { reason } => {
+            assert_eq!(reason, "no pty: /dev/ptmx is not there")
+        }
+        other => panic!("expected TermEnded, got {other:?}"),
+    }
+}
+
+/// **The verb is a whole word, and the parse is the one both halves share.**
+///
+/// The head recognises `!term` at the composer and the daemon re-checks it at the socket —
+/// because a frame is a socket and not a keyboard — and the two cannot disagree, because there
+/// is one function. The contrast cases are here because a recogniser is only honest next to
+/// what it must NOT take: `!terminal` and `!terms` are ordinary `!` lines, and they always were.
+#[test]
+fn the_verb_is_a_whole_word_and_the_parse_is_shared() {
+    assert_eq!(term_command("!term mc"), Some("mc"));
+    assert_eq!(
+        term_command("!term   nano notes.txt"),
+        Some("nano notes.txt")
+    );
+    assert_eq!(term_command("!term\tmc"), Some("mc"));
+    // The verb with nothing after it: a `!term` line whose command is empty, which is a
+    // different answer from *not this verb*, because the head says a different sentence.
+    assert_eq!(term_command("!term"), Some(""));
+    assert_eq!(term_command("!term   "), Some(""));
+    // Not the verb.
+    assert_eq!(term_command("!terminal x"), None);
+    assert_eq!(term_command("!terms x"), None);
+    assert_eq!(term_command("!term-x"), None);
+    assert_eq!(term_command("term mc"), None);
+    assert_eq!(term_command(" !term mc"), None);
+    assert_eq!(term_command(""), None);
+    // And the command is whole: it is a shell line and the shell is what reads it, so
+    // `FOO=1`, `&&` and a pipe all survive the parse untouched.
+    assert_eq!(
+        term_command("!term FOO=1 mc /etc && echo done | less"),
+        Some("FOO=1 mc /etc && echo done | less")
+    );
+    // The control that makes the word boundary mean something: an ordinary `!` line is still
+    // an ordinary `!` line.
+    assert_eq!(
+        letibot_sessionlog::operator_shell_command("!term mc"),
+        Some("term mc"),
+        "the `!` line's own parse is untouched — `!term` is a `!` line with a command, which \
+         is why the head has to check the verb first"
+    );
+}

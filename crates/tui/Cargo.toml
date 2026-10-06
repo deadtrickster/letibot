@@ -13,6 +13,11 @@ letibot-transcript.workspace = true
 # tool card, and the composer's model half. See `crates/ui/DESIGN.md` — this head
 # is the seam that crate was written against.
 letibot-ui.workspace = true
+# **The screen model**, and the head names it directly rather than through `letibot-ui`: the model
+# is a crate *below* the painting crate, so `TermPane` holds the type it actually holds. The other
+# half — a screen's cells drawn as this head's roles — is `letibot_ui::ansi`'s, which is why both
+# are here.
+letibot-vt.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Raw mode and the window size. The only C this crate needs, and `libc` is already

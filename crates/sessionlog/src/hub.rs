@@ -41,6 +41,18 @@ use crate::view::{SessionView, Snapshot, ViewBounds};
 pub enum Delivery {
     /// Events, in seq order, contiguous with the last delivery.
     Events(Batch),
+    /// **Frames that are not the record** — the pane's byte stream, and anything else that
+    /// belongs to *this connection, now* rather than to the session's log.
+    ///
+    /// A second variant rather than a second channel, because the pump in
+    /// `server.rs` owns one ordering and two sources of frames on one socket need one
+    /// ordering. **Delivered ahead of [`Delivery::Events`]**, and that is the point of the
+    /// variant: a screen program's redraw must not sit behind a batch of a thousand deltas,
+    /// and a keystroke that arrives after the row it was answering is not a keystroke.
+    ///
+    /// Nothing here is ever appended to the log, replayed, or scrubbed. See
+    /// [`crate::protocol::ServerFrame::TermOutput`] for the argument.
+    Frames(Vec<ServerFrame>),
     /// This head fell behind, or asked. **Not an error.** Reset to the snapshot and
     /// continue from `snapshot.seq + 1`.
     Resync {
@@ -85,6 +97,15 @@ pub struct Attached {
 /// admitted for an [`CommandKind::Interrupt`] and a relayed [`CommandKind::Message`], and for
 /// nothing else.
 pub const DAEMON_SUBMITTER: &str = "\0daemon";
+
+/// **How many unread pane frames one head may hold before the oldest is dropped.**
+///
+/// A bound rather than a queue that grows: the pane's bytes are produced by a *process* — a
+/// program redrawing as fast as it likes — and an unbounded queue would be a program that can
+/// make the daemon hold a gigabyte by painting. The number is generous for a screen and small
+/// against a runaway: a full repaint of a 200×50 pane is about 4 KB, so this is several hundred
+/// frames of slack and about a megabyte of JSON in the worst case.
+const MAX_SIDE: usize = 256;
 
 /// A mutating command, after validation, waiting for the session's single command
 /// worker. §13.2: *"Commands are serialized on a per-session queue."*
@@ -364,6 +385,15 @@ struct Head {
     identity: String,
     caps: Caps,
     queue: VecDeque<Envelope>,
+    /// **Frames addressed to this head alone, and never to the log.** The pane's byte
+    /// stream, and nothing else today — see [`Delivery::Frames`]. Drained before `queue`.
+    ///
+    /// Bounded, and **the bound is a drop rather than a wait**: a head that cannot keep up
+    /// with a screen's repaints is a head that has stopped reading its socket, and blocking
+    /// the writer here would stop the pty's reader thread, which would stop the program.
+    /// A dropped pane frame is a repaint that is one frame stale, which a terminal survives;
+    /// a blocked one is a program that stops drawing.
+    side: VecDeque<ServerFrame>,
     /// `Some(reason)` once this head has been demoted. Its queue is cleared and
     /// stays cleared until it takes the resync.
     needs_resync: Option<String>,
@@ -704,6 +734,32 @@ impl Hub {
         env
     }
 
+    /// **A frame that is not the record, fanned out to every head of this session.**
+    ///
+    /// The pane's byte stream is the only caller today. It is not [`Hub::publish`] and cannot
+    /// be: an event is appended to the log, replayed on attach and scrubbed on the way, and a
+    /// screen's repaints are none of those things — see
+    /// [`crate::protocol::ServerFrame::TermOutput`]. So this appends nothing, moves no seq,
+    /// writes no row, and wakes every head the way an event does.
+    ///
+    /// **Never blocks, and drops the oldest pane frame when a head is behind.** See
+    /// [`Head::side`]: a blocked writer here is the pty's reader thread blocked, which is the
+    /// program blocked in `write`, which is a pane that has stopped. A dropped repaint is a
+    /// frame that is one stale, and a terminal survives that by construction — the next
+    /// repaint carries the whole screen anyway.
+    pub fn push_frame(&self, frame: ServerFrame) {
+        {
+            let mut g = self.lock();
+            for h in &mut g.heads {
+                if h.side.len() >= MAX_SIDE {
+                    h.side.pop_front();
+                }
+                h.side.push_back(frame.clone());
+            }
+        }
+        self.cv.notify_all();
+    }
+
     /// Attach content to an already-appended transcript row, **and fan it out**.
     ///
     /// §4.5's `TranscriptAppended` has no content field, so this is the route the
@@ -799,6 +855,7 @@ impl Hub {
                 identity,
                 caps,
                 queue: VecDeque::new(),
+                side: VecDeque::new(),
                 needs_resync: None,
                 mark: ReadMark {
                     seq: since_seq.min(at),
@@ -834,6 +891,7 @@ impl Hub {
             if let Some(reason) = g.heads[idx].needs_resync.take() {
                 let snapshot = g.view.snapshot(at, dropped);
                 g.heads[idx].queue.clear();
+                g.heads[idx].side.clear();
                 g.heads[idx].mark.seq = at;
                 return Delivery::Resync {
                     reason,
@@ -841,6 +899,12 @@ impl Hub {
                     snapshot: Box::new(snapshot),
                     scrubbed: ScrubReport::default(),
                 };
+            }
+            // **The side channel first**, so a screen's repaint is not stuck behind a batch
+            // of a thousand deltas — see [`Delivery::Frames`].
+            if !g.heads[idx].side.is_empty() {
+                let frames: Vec<ServerFrame> = g.heads[idx].side.drain(..).collect();
+                return Delivery::Frames(frames);
             }
             if !g.heads[idx].queue.is_empty() {
                 let n = max.min(g.heads[idx].queue.len());
@@ -883,6 +947,10 @@ impl Hub {
             let mut g = self.lock();
             if let Some(h) = g.heads.iter_mut().find(|h| h.id == head_id) {
                 h.queue.clear();
+                // **The pane's frames go too.** A repaint from before the resync would be
+                // drawn as though it were the screen now, which is the one thing a resync
+                // exists to stop being true.
+                h.side.clear();
                 h.needs_resync = Some(reason.into());
             }
         }

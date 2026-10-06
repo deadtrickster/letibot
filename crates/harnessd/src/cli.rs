@@ -763,6 +763,20 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             ep, model,
         )));
     }
+    // **The pane's pty, owned by this daemon.** (`!term`.)
+    //
+    // Installed unconditionally, and **deliberately not behind a capability check**: unlike
+    // the suggester, a pane needs no model, no endpoint and no configuration — it needs a
+    // pty, which is either there or is not, and a box without one says so in the pane's own
+    // ending rather than at startup. A driver that is absent is a `!term` that answers *no
+    // pty here*; a driver that is present and cannot open one answers the same sentence a
+    // moment later, and the difference is a `libc` call.
+    //
+    // `Weak`, because the registry stores this driver and the driver reads the registry's
+    // wiring for a session's workspace — see `Terminals`' own note.
+    registry.set_terminal(std::sync::Arc::new(crate::term::Terminals::new(
+        std::sync::Arc::downgrade(&registry),
+    )));
     registry
         .create(
             cfg.session_id.clone(),

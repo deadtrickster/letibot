@@ -401,7 +401,14 @@ impl Link {
     /// were `client.ack(...)?` on the ack, `?` on each command, and the head's own
     /// `main` propagating either — measured: the process was gone and the session view
     /// with it, for a daemon that had merely restarted.
-    pub fn tick(&mut self, app: &mut App, size: (usize, usize), keys: &[Key], draw: &mut Draw<'_>) {
+    pub fn tick(
+        &mut self,
+        app: &mut App,
+        size: (usize, usize),
+        keys: &[Key],
+        raw: &[u8],
+        draw: &mut Draw<'_>,
+    ) {
         app.clock(now_ms());
         // **The workspace's branch, read from the LOOP and never from a paint.** See
         // `gitfield`: it spawns a process, and the rule is the dash collectors' — a
@@ -467,13 +474,31 @@ impl Link {
         // being created. Ahead of the key actions, because they are the answer to
         // something the operator already asked for.
         let mut actions = app.take_actions();
-        for k in keys {
-            // Cloned rather than copied: `Key::Paste` carries the paste, because the
-            // point of bracketed paste is that a 3 KB stack trace is one key.
-            if let Some(a) = app.key(k.clone()) {
-                actions.push(a);
+        // **The pane owns the keyboard while it is open**, and this is where that is decided.
+        //
+        // `raw` is the bytes the reader consumed, verbatim, and it is what the program gets:
+        // the `Key`s beside it are this head's *reading* of those bytes, and a program fed a
+        // reading is a program that never sees the byte its own terminal sent. So the two
+        // paths are exclusive, not layered — while a pane is open, `App::key` is not called
+        // at all, and the way out is found in the byte stream by `App::pane_keys` before
+        // anything is forwarded.
+        if app.pane_open() {
+            actions.extend(app.pane_keys(raw));
+        } else {
+            for k in keys {
+                // Cloned rather than copied: `Key::Paste` carries the paste, because the
+                // point of bracketed paste is that a 3 KB stack trace is one key.
+                if let Some(a) = app.key(k.clone()) {
+                    actions.push(a);
+                }
             }
         }
+        // **And the pane's rectangle is not asked for here.** The pane is resized by
+        // `compose_screen`, which is the only layer that knows how many rows the pane actually
+        // got — `room` is the terminal's height minus the chrome and the header — and the frame
+        // it queues is sent on the next tick. Asking here would send the *terminal's* size as
+        // though it were the pane's, which is a program laying out for a rectangle nobody drew
+        // it in.
 
         // 2. Draw. Every frame is built; whether any of it reaches the terminal is
         //    `Terminal::draw`'s business, and for an unchanged frame the answer is no
@@ -509,6 +534,12 @@ impl Link {
             // than failing once per action. Every write below would fail the same way,
             // and a batch of them would bury the one sentence that matters.
             if app.detached() {
+                // **A pane whose open never left is not a pane.** The submit refused a line on
+                // a link that was already down, but the link can go down between the
+                // keystroke and this send — inside one tick — and what is left behind is a
+                // rectangle with no program in it and no ending coming. See
+                // [`App::drop_pane`].
+                app.drop_pane();
                 app.refused_while_detached();
                 break;
             }
@@ -661,6 +692,29 @@ impl Link {
                     // daemon appends, which is the same text by construction.
                     Action::OperatorShell { line } => {
                         self.client.operator_shell(app.seq, &line)?;
+                    }
+                    // **`!term <command>` — the pane, opened with the terminal's own
+                    // rectangle.**
+                    //
+                    // This is the one action that carries a size, and it takes it from `tick`'s
+                    // own argument rather than from `App`: the rectangle is the *terminal's*,
+                    // and the driver is the layer that read it. Sending a pane at 80×24 and
+                    // resizing it a moment later would make every program lay out twice, and
+                    // the first layout is the one a full-screen program caches.
+                    Action::TermOpen { line } => {
+                        self.client.term_open(&line, size.0, size.1)?;
+                    }
+                    // **The keys, verbatim.** No `client_request_id` and nothing to wait for:
+                    // a keystroke has no answer, and the pane's next `TermOutput` is the
+                    // program's reply to whatever it did with it.
+                    Action::TermInput { bytes } => {
+                        self.client.term_input(&bytes)?;
+                    }
+                    Action::TermResize { cols, rows } => {
+                        self.client.term_resize(cols, rows)?;
+                    }
+                    Action::TermClose => {
+                        self.client.term_close()?;
                     }
                     // **The model's half of the `!` completion.** The history is the
                     // head's own and was already tried; this is the fallback, asked when

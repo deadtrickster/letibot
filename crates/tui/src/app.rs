@@ -1165,6 +1165,37 @@ pub enum Action {
     OperatorShell {
         line: String,
     },
+    /// **`!term <command>` — open the pane and run a screen program in it.**
+    ///
+    /// `line` travels verbatim, `!term` first, exactly as [`Action::OperatorShell`]'s does: the
+    /// daemon strips the verb (one rule, at the execution site) and the head has already
+    /// checked at the composer that there *is* a command after it — see [`App::submit`].
+    ///
+    /// **The rectangle is not on this action and cannot be**: it is the terminal's, and the
+    /// driver is the thing that knows it. `Link::tick` sends the frame with the size it was
+    /// handed, which is also what makes a pane opened after a resize open at the right size
+    /// rather than at the default of 80×24.
+    TermOpen {
+        line: String,
+    },
+    /// **The operator's keys, verbatim, to the pane's program.** Bytes and not a `Key`: the
+    /// pane is a terminal and the head is not the thing that reads it — see
+    /// [`ClientFrame::TermInput`](letibot_sessionlog::protocol::ClientFrame::TermInput) for why
+    /// a decoded-and-re-encoded arrow would be a different byte string to a program that asked
+    /// for the application-cursor spelling.
+    TermInput {
+        bytes: Vec<u8>,
+    },
+    /// **The pane's rectangle moved.** The head's fact — the daemon has no screen — and the
+    /// only way the program is told the size it is being drawn at.
+    TermResize {
+        cols: usize,
+        rows: usize,
+    },
+    /// **The operator pressed `ctrl-\`.** The one unambiguous way out, and it is this head's
+    /// act rather than a key the program sees: see [`TermPane`] for why it is this byte and
+    /// why intercepting it is what makes it untrappable.
+    TermClose,
     /// **Ask the model to propose `!` completions for a prefix** — the smart half of
     /// the `!` completion. The history is this head's own and is the first answer;
     /// this is asked for only when the history has no match for the prefix (or its
@@ -1897,6 +1928,90 @@ struct CallRow {
     decision: Option<SettledDecision>,
 }
 
+/// **The way out of a pane: `Ctrl-\`.** See [`TermPane`] for why this byte and not `Esc`.
+///
+/// It is looked for on the raw byte stream, before anything is forwarded, so the program never
+/// receives it — see [`App::pane_keys`]. `0x1c` is `FS` in ASCII and `QUIT` only under `ISIG`,
+/// which raw mode clears; it is one of the three bytes `term.rs`'s decoder has no arm for, and
+/// its own comment says so.
+const WAY_OUT: u8 = 0x1c;
+
+/// **The pane: a program that owns the screen, drawn in the conversation's rectangle.**
+///
+/// # What it is, and the two things it is not
+///
+/// It is [`letibot_vt::Screen`] — a rectangle of cells, a cursor, a pen and an alternate
+/// buffer, driven by the bytes a pty's far end wrote — plus the three facts a head needs about
+/// the program that is drawing in it. **It is not an emulator of this head's own**: there is one
+/// in `letibot-vt`, it is a crate *below* this one, and this head's half of it is
+/// `letibot_ui::ansi::pane_rows`. And it
+/// is not the conversation: nothing here is a transcript row, and when the pane closes the
+/// transcript is exactly what it was.
+///
+/// # The rectangle is the contract
+///
+/// [`TermPane::rows`] is `letibot_ui::ansi::pane_rows(&mut screen, cols, room, palette)` and it
+/// returns **exactly `room` rows** — the same property `ansi.rs` keeps for the pane it was written for. That is the
+/// whole of *"the composer, header and status keep their rows"*: the pane takes the
+/// conversation's rectangle and gives it back, so nothing above it moves by a line when it
+/// opens and nothing below it loses a row it had.
+///
+/// # The way out, and why it is `ctrl-\`
+///
+/// **`Ctrl-\` (0x1c), and it is intercepted on the raw byte stream before a single byte is
+/// forwarded**, so the program never receives it and cannot trap it — which is the whole
+/// requirement. The tree chose it long before this branch: `term.rs`'s own decoder lists the
+/// bytes with no arm and says *"`0x1c`-`0x1e` are the only bytes left in this table with no
+/// arm, and none of the three has a mnemonic worth having"*. It is not a tty control character
+/// (`cfmakeraw` clears `IXON`/`IEXTEN`, and `0x1c` is `QUIT` only under `ISIG`, which raw mode
+/// clears), it is not a chord this head binds, and it is not one a program expects to be
+/// typed at it.
+///
+/// **Esc was the other candidate and it is wrong**: Esc is a key `vi`, `mc`, `nano` and every
+/// `less` read on purpose — it is *cancel*, it is the first byte of every meta sequence, and a
+/// pane that ate it would be a pane the program could not be driven from. `Ctrl-\` is the one
+/// key whose whole meaning is *stop this*, and the operator asked for exactly that: *"one
+/// unambiguous way out."*
+struct TermPane {
+    /// The program's screen, fed the daemon's bytes and asked for rows.
+    screen: letibot_vt::Screen,
+    /// The line the operator submitted, verb included — kept for the one sentence this head
+    /// says when the pane ends, so *what ended* is not a mystery.
+    line: String,
+    /// **The rectangle last sent to the daemon.** A resize is a frame, and a frame per tick
+    /// would be a frame per keystroke — this is what makes `TermResize` fire on a change and
+    /// not on a redraw.
+    sent: (usize, usize),
+    /// **The operator has left and the daemon has not answered yet.** Set by the `Ctrl-\`
+    /// interception, and it stops the keys: between the close and the `TermEnded` there is a
+    /// kill in flight, and a byte written into a pty whose program is being signalled is a byte
+    /// nobody will read. The window is milliseconds, and this is what makes it closed rather
+    /// than merely short.
+    closing: bool,
+}
+
+impl TermPane {
+    fn new(line: &str, cols: usize, rows: usize) -> TermPane {
+        TermPane {
+            screen: letibot_vt::Screen::new(rows, cols),
+            line: line.to_string(),
+            sent: (cols, rows),
+            closing: false,
+        }
+    }
+
+    /// **The pane's rows for this frame** — exactly `room` of them, which is the property the
+    /// composer's own row budget depends on. See the type's note.
+    fn rows(
+        &mut self,
+        cols: usize,
+        room: usize,
+        palette: letibot_ui::style::Palette,
+    ) -> Vec<String> {
+        letibot_ui::ansi::pane_rows(&mut self.screen, cols, room, palette)
+    }
+}
+
 #[derive(Debug, Default)]
 struct TurnPane {
     turn_id: String,
@@ -2038,6 +2153,18 @@ pub struct App {
     prefs_path: Option<std::path::PathBuf>,
     /// The daemon's settings, as last listed. Empty until asked.
     settings: Vec<letibot_sessionlog::protocol::SettingRow>,
+    /// **`!term` — the pane, when a screen program is running in it.**
+    ///
+    /// `None` is *no pane*, which is the head's ordinary state: the transcript is drawn in
+    /// the conversation's rectangle and every key is the composer's. `Some` is a program the
+    /// operator started with `!term`, drawn in that same rectangle with the header, the
+    /// status row and the composer keeping the rows they had — see [`TermPane`].
+    ///
+    /// **One at a time, and the daemon is what enforces that.** A second `!term` while one is
+    /// live comes back as a `TermEnded` carrying the refusal's sentence, which is drawn where
+    /// the pane's own ending is drawn; this head does not refuse it locally, because the
+    /// authority on *is a pane open* is the daemon that owns the pty.
+    term: Option<TermPane>,
     session_id: String,
     head_id: String,
     /// The head id the daemon just handed out, for the driver to give the client.
@@ -3713,6 +3840,7 @@ impl App {
             config_sel: 0,
             prefs_path: None,
             settings: Vec::new(),
+            term: None,
             session_id: String::new(),
             head_id: String::new(),
             seated: None,
@@ -4367,6 +4495,10 @@ impl App {
         if self.stopping.is_some() {
             return;
         }
+        // **And the pane goes with the connection.** See [`App::drop_pane`]: the pty is the
+        // daemon's, and a head that cannot reach it can neither feed the screen nor forward
+        // the one key that leaves.
+        self.drop_pane();
         if self.link.is_down() {
             // Already known: refresh the reason if this report has one and keep the
             // clock. Both reports are true; the first is the more useful clock.
@@ -5049,6 +5181,45 @@ impl App {
                 self.behind = seq.saturating_sub(self.seq);
                 Disposition::Control
             }
+            ServerFrame::TermOutput { bytes } => {
+                // **A pane this head opened, fed its bytes.** Not an event and not counted as
+                // one: `TermOutput` carries no seq, so it is `Control` for the same reason a
+                // `Jobs` reply is — the ack's `rendered`/`filtered` are this head's disclosure
+                // about *the batch*, and this frame is not in any batch.
+                //
+                // **A pane this head did NOT open is dropped, quietly.** The frames are fanned
+                // out to every head of the session like events (one pane per session, see
+                // `TerminalDriver`), and a second head attached to the same session has no
+                // rectangle to draw them in. Dropping them is the honest reading of *a pane
+                // this head did not open*, and the alternative — opening a pane from a frame
+                // nobody asked for — would be a screen program appearing on a head that never
+                // ran `!term`.
+                //
+                // **And no `redraw` flag**, which is the difference between a pane and a
+                // transcript. `redraw` makes the driver call `Terminal::invalidate`, which
+                // forgets the glass so the next frame is written whole — right for Ctrl-L, a
+                // resize and a fold, and *wrong here*: a screen program repaints ten times a
+                // second and the terminal's own diff writes exactly the rows that changed. A
+                // flag per frame would pin the terminal rewriting all 24 rows ten times a
+                // second, which is the flicker `term.rs`'s whole diff encoder exists to
+                // remove. The frame is composed and drawn every tick either way — this flag
+                // is about the *glass*, not about whether to draw.
+                if let Some(p) = self.term.as_mut() {
+                    p.screen.feed(&bytes);
+                }
+                Disposition::Control
+            }
+            ServerFrame::TermEnded { reason } => {
+                // **The one place a pane closes, and the reason always comes from the daemon**
+                // — *"the program exited with 3"*, *"you left the terminal"*, *"a pane is
+                // already open in this session"*. So a head never guesses why its rectangle
+                // came back, and a refusal to start is the same frame as an ending.
+                if let Some(p) = self.term.take() {
+                    self.say(&format!("{} — {reason}", p.line));
+                    self.redraw = true;
+                }
+                Disposition::Control
+            }
             ServerFrame::Rejected {
                 reason,
                 expected_seq,
@@ -5110,6 +5281,17 @@ impl App {
             self.model.clear();
             self.turn = None;
             self.heads = 0;
+            // **The pane goes with the session it was opened in.**
+            //
+            // A screen belongs to the conversation it was drawn over: carried across a switch it
+            // would be another session's program drawn in this one's rectangle, which is the
+            // same lie a carried-over model name is. **The daemon's pane is not closed here**,
+            // and it cannot be — a `TermClose` sent now would arrive *after* the `Switch`, on
+            // the new session's hub, and kill the wrong thing. So the program is left running
+            // for the session it belongs to, and it ends when the daemon stops or when a head in
+            // that session leaves it. Filed as a TODO in `TermPane`'s own note: a head that
+            // switches back does not find its pane again, it finds the transcript.
+            self.term = None;
             // The subagent tree is the PARENT's fact. Carried across a switch it
             // put "1 subagent running" on the composer of the very subagent being
             // looked at (measured 2026-09-16), and Enter in the pane there would
@@ -8270,9 +8452,136 @@ impl App {
         })
     }
 
+    /// **A pane with no daemon is a pane with no program.**
+    ///
+    /// The pty is the *daemon's*, so a head that cannot reach the daemon cannot feed the
+    /// screen and cannot forward a key: the rectangle would sit frozen on whatever the
+    /// program drew last, with `ctrl-\` — the one way out, and a frame — going nowhere. The
+    /// transcript is the honest thing to show, and this is the two moments it is known:
+    /// the link going down, and an action the driver could not send.
+    ///
+    /// **The daemon's pane is not closed here**, and cannot be: the close is a frame, and the
+    /// frame is exactly what cannot be sent. The program is left to the session it belongs to
+    /// — the same bargain [`App::load`] makes on a switch, and the same TODO.
+    ///
+    /// Returns whether there was a pane, so a caller can say so once rather than per report.
+    pub fn drop_pane(&mut self) -> bool {
+        let had = self.term.take().is_some();
+        if had {
+            self.redraw = true;
+        }
+        had
+    }
+
+    /// Whether a pane is open and therefore owns the keyboard. See [`TermPane`].
+    ///
+    /// The one question `Link::tick` asks before it decides whether a byte this head read is a
+    /// key of its own or the program's, and it is asked of `App` because the pane is the
+    /// head's state and not the terminal's.
+    pub fn pane_open(&self) -> bool {
+        self.term.is_some()
+    }
+
+    /// **The pane's keyboard: the raw bytes the reader consumed, turned into actions.**
+    ///
+    /// # The way out is found HERE, and that is what makes it untrappable
+    ///
+    /// `0x1c` — `Ctrl-\` — is looked for in the byte stream **before anything is forwarded**,
+    /// and the bytes before it are the last thing the program ever gets. A key the program
+    /// never receives is a key no program can trap, whatever it does to `SIGQUIT` or to its own
+    /// input handling; and the close itself is `TermClose`, which is the daemon ending the
+    /// pane's cgroup, so a program that ignored the key would still die. Two mechanisms, one
+    /// act, and neither of them is a byte the program can see.
+    ///
+    /// **The byte cannot be part of anything else.** `0x1c` is below `0x20`, so it is not a
+    /// UTF-8 continuation and cannot appear inside a character; and it is not a CSI final byte
+    /// (those are `0x40`-`0x7e`), so it cannot appear inside an escape sequence the reader is
+    /// holding. It *can* appear inside a bracketed paste — somebody pasting a file that
+    /// contains a literal `0x1c` — and the pane closes: the honest reading of *the operator's
+    /// terminal sent the way-out byte*, and a hole named in [`TermPane`] rather than a
+    /// silent one.
+    pub fn pane_keys(&mut self, raw: &[u8]) -> Vec<Action> {
+        let Some(p) = self.term.as_ref() else {
+            return Vec::new();
+        };
+        // Leaving: between the way out and the daemon's ending there is a kill in flight, and a
+        // byte written into a pty whose program is being signalled is a byte nobody will read.
+        if p.closing {
+            return Vec::new();
+        }
+        match raw.iter().position(|b| *b == WAY_OUT) {
+            Some(at) => {
+                let mut out = Vec::new();
+                if at > 0 {
+                    out.push(Action::TermInput {
+                        bytes: raw[..at].to_vec(),
+                    });
+                }
+                if let Some(p) = self.term.as_mut() {
+                    p.closing = true;
+                }
+                out.push(Action::TermClose);
+                out
+            }
+            None if raw.is_empty() => Vec::new(),
+            None => vec![Action::TermInput {
+                bytes: raw.to_vec(),
+            }],
+        }
+    }
+
     /// What a submitted line means: a command, an answer to an open decision, or
     /// a prompt.
     fn submit(&mut self, text: String) -> Option<Action> {
+        // **`!term` is checked before the bare `!`**, because `!term mc` is also a perfectly
+        // good `!` line — `operator_shell_command` reads it as the command `term mc`, which is
+        // a program nobody has. The verb has to be taken first, and the parse is the daemon's
+        // own function so the two halves cannot disagree about what a `!term` line is.
+        //
+        // **No gate, no card, no ladder** — the same sentence `!` gets, for the same reason:
+        // it is the operator's own act. The difference from `!` is that this appends no row: a
+        // pane is not a transcript item, it is the conversation's rectangle given to a
+        // program, and when it closes the transcript is exactly what it was. So the line does
+        // not join `pending_prompts` either — there is no `User` row coming to retire it, and
+        // an echo that waited for one would wait for ever.
+        if let Some(cmd) = letibot_sessionlog::term_command(&text) {
+            if cmd.is_empty() {
+                self.set_composer(&text);
+                self.say(
+                    "!term COMMAND — the verb has to be followed by the command to run, e.g. \
+                     `!term mc` or `!term nano notes.txt`",
+                );
+                self.redraw = true;
+                return None;
+            }
+            if self.detached() {
+                self.set_composer(&text);
+                self.say(
+                    "no daemon connection — your line is held here. It sends when the daemon \
+                     is back.",
+                );
+                self.redraw = true;
+                return None;
+            }
+            self.scroll = 0;
+            // **The pane is created now, empty, and the daemon's first bytes fill it.** The
+            // alternative — wait for `TermOutput` before opening the rectangle — would show
+            // the transcript for as long as the pty takes to start a program, which is the
+            // flicker this pane exists to remove. A pane that never starts is closed by the
+            // `TermEnded` that carries the refusal, a moment later.
+            //
+            // The rectangle here is the **last frame's**, which is the best this layer can
+            // know; the first `compose_screen` corrects it to the pane's own and sends the
+            // `TermResize` that tells the program.
+            self.term = Some(TermPane::new(
+                &text,
+                self.term_cols.max(1),
+                self.screen_rows.max(1),
+            ));
+            self.redraw = true;
+            return Some(Action::TermOpen { line: text });
+        }
+
         // **A line whose first character is `!` is the operator's own shell command.**
         //
         // The operator's ask: *"when prompt starts with ! it is going to be a shell command
@@ -12446,7 +12755,37 @@ impl App {
         let room = h
             .saturating_sub(chrome.len() + usize::from(header.is_some()))
             .max(1);
-        let mut out = if let Some((echo, lines)) = self.slash_out.clone() {
+        let mut out = if self.term.is_some() {
+            // **The pane takes the conversation's rectangle and gives it back.**
+            //
+            // First in the chain, and that is a decision rather than an ordering: while a pane
+            // is open it owns the keyboard (see `App::pane_keys`), so a card, a picker or a
+            // pane drawn *under* it would be a screen the operator could see and not answer.
+            // The chrome below still draws — the composer keeps its rows and the header keeps
+            // its line, which is the whole requirement — and a card that arrives while a pane
+            // is up waits until the operator leaves with `ctrl-\`.
+            //
+            // **`pane_rows` returns exactly `room`**, so nothing above the pane moves by a line
+            // and nothing below it loses a row. See `TermPane`.
+            let palette = self.cfg.palette();
+            let (rows, moved) = {
+                let p = self.term.as_mut().expect("just checked");
+                let rows = p.rows(w, room, palette);
+                let moved = (p.sent != (w, room)).then(|| {
+                    p.sent = (w, room);
+                    (w, room)
+                });
+                (rows, moved)
+            };
+            // **The program is told the rectangle it is drawn in**, and this is the only place
+            // that is known: `room` is `h` minus the chrome and the header, and neither is the
+            // daemon's to compute. A change detector rather than a frame per tick, because a
+            // resize frame per redraw would be a frame per keystroke.
+            if let Some((cols, rows_n)) = moved {
+                self.queued.push(Action::TermResize { cols, rows: rows_n });
+            }
+            rows
+        } else if let Some((echo, lines)) = self.slash_out.clone() {
             let p = self.cfg.palette();
             // **Not sanitised, and the regression is why.** The rows in `slash_out` are
             // **this head's own composed lines**: `/notes` draws them through
@@ -20107,6 +20446,18 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
             "five lines or more collapses to a marker and is sent in full",
         ),
         (
+            "! COMMAND",
+            "run it as YOUR shell command — no gate, and the line and its output go into the \
+             conversation",
+        ),
+        (
+            "!term COMMAND",
+            "run a program that owns the screen IN THE PANE — `!term mc`, `!term nano notes.txt`, \
+             `!term top`. The conversation's rectangle is given to the program and the composer \
+             keeps its rows; your keys go to it verbatim, and `ctrl-\\` leaves (the program \
+             never sees that key, so it cannot trap it)",
+        ),
+        (
             "ctrl-s",
             "the session list: type a number or part of a name to switch",
         ),
@@ -25725,6 +26076,290 @@ mod tests {
         for c in text.chars() {
             a.key(Key::Char(c));
         }
+    }
+
+    // ─────────────────────────── `!term`, the pane ───────────────────────────
+
+    /// Open a pane the way the operator does, and feed it the bytes a program would draw.
+    ///
+    /// The submit is a real key path — typed characters and an Enter — rather than a
+    /// constructed `Action`, because the recognition at the composer is half of what these
+    /// tests are about.
+    fn pane(a: &mut App, bytes: &[u8]) -> Action {
+        typed(a, "!term mc");
+        let opened = a.key(Key::Enter).expect("the verb opens a pane");
+        a.apply(ServerFrame::TermOutput {
+            bytes: bytes.to_vec(),
+        });
+        opened
+    }
+
+    /// **`!term <command>` is the pane, and nothing else stops being what it was.**
+    ///
+    /// The verb is a **whole word**: `!terminal x` and `!terms x` are ordinary `!` lines, which
+    /// is what they always were, and `! ls .` is untouched. A recogniser is only honest next to
+    /// what it must NOT take, which is why the contrast cases are in the same test.
+    ///
+    /// **And this is the refusal no longer firing.** `! mc` is refused by name
+    /// (`letibot_tools::exec::terminal`) because a plain `!` run's pty is a *capture* — one
+    /// transcript row and `/dev/null` on stdin — so a screen program draws into a row and waits
+    /// for a keystroke that cannot arrive. `!term mc` never reaches that path: it is a different
+    /// action, on a different frame, to a different daemon half, and the refusal's own remedy
+    /// now names the verb.
+    #[test]
+    fn a_term_line_opens_the_pane_and_an_ordinary_bang_line_is_still_a_shell_command() {
+        let mut a = app();
+        assert_eq!(
+            pane(&mut a, b"mc"),
+            Action::TermOpen {
+                line: "!term mc".into()
+            }
+        );
+        assert!(a.pane_open());
+
+        for line in ["!terminal x", "!terms x", "!term-x", "! ls ."] {
+            let mut b = app();
+            typed(&mut b, line);
+            assert_eq!(
+                b.key(Key::Enter),
+                Some(Action::OperatorShell { line: line.into() }),
+                "`{line}` is not the verb and is still the operator's shell line"
+            );
+            assert!(!b.pane_open(), "`{line}` opened a pane");
+        }
+
+        // The verb with nothing after it is refused here, with the words kept — there is no
+        // shell line to fall through to, and a bare `!term` is not a request for `$SHELL`.
+        let mut c = app();
+        typed(&mut c, "!term");
+        assert_eq!(c.key(Key::Enter), None);
+        assert_eq!(c.input(), "!term", "the words are kept, not eaten");
+        assert!(!c.pane_open());
+        assert!(
+            c.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("!term COMMAND")),
+            "the refusal says what the verb needs: {:?}",
+            c.notice
+        );
+    }
+
+    /// **The pane takes the conversation's rectangle and gives it back, exactly.**
+    ///
+    /// This is the whole of *"the conversation's rectangle given to the program with the
+    /// composer keeping its rows"*, and the property `letibot_ui::ansi::pane_rows` keeps:
+    /// the pane is resized to the rectangle it is given and returns **exactly** that many rows.
+    /// So the header keeps its line, the chrome under the pane keeps its rows, and nothing above
+    /// the pane moves when it opens.
+    ///
+    /// Asserted against the frame this head drew **without** a pane, at the same size and the
+    /// same state — so the comparison is not against a hand-written expectation of what the
+    /// chrome looks like, which would rot, but against the frame the pane is supposed to be
+    /// occupying a slice of.
+    #[test]
+    fn the_pane_keeps_the_header_the_composer_and_the_status_their_rows() {
+        let mut a = app();
+        a.session_id = "s".into();
+        a.head_id = "h1".into();
+        shell_row(&mut a, 1, "u1", "user", operator_row("! ls -la"));
+        shell_row(
+            &mut a,
+            3,
+            "u2",
+            "user",
+            operator_row("what is in this tree?"),
+        );
+
+        let before = a.screen(80, 24);
+        pane(&mut a, b"\x1b[2J\x1b[Hhello from mc\r\n");
+        let during = a.screen(80, 24);
+        // **`size().0`, and not `rows()`** — on this screen `rows()` hands back the cells of
+        // every row (`Chunks<Cell>`), and the number the pane was given is the size. The
+        // rectangle is what this test is about, so it is asked for by name.
+        let room = a.term.as_ref().expect("a pane").screen.size().0;
+
+        assert_eq!(
+            during.len(),
+            before.len(),
+            "the frame is the terminal's height, pane or no pane"
+        );
+        assert_eq!(during[0], before[0], "the header keeps its row");
+        assert_eq!(
+            &during[1 + room..],
+            &before[1 + room..],
+            "the composer and the status keep their rows"
+        );
+        assert!(
+            during.iter().any(|r| r.contains("hello from mc")),
+            "the program is drawn in the rectangle: {during:?}"
+        );
+        assert!(!before.iter().any(|r| r.contains("hello from mc")));
+        assert!(room >= 1, "the pane got a rectangle");
+    }
+
+    /// **The pane's rows are exactly `room`, at every size** — the property `vt-one` is
+    /// preserving, asserted from the head's side rather than from the screen's.
+    #[test]
+    fn the_pane_draws_exactly_the_rows_it_is_given() {
+        for h in [8usize, 24, 40] {
+            let mut a = app();
+            a.session_id = "s".into();
+            shell_row(&mut a, 1, "u1", "user", operator_row("! ls -la"));
+            pane(&mut a, b"\x1b[2Jone\r\ntwo\r\n");
+            let frame = a.screen(80, h);
+            assert_eq!(frame.len(), h, "a {h}-row terminal is a {h}-row frame");
+            let room = a.term.as_ref().unwrap().screen.size().0;
+            assert_eq!(
+                a.term.as_ref().unwrap().screen.size().1,
+                80 - 2 * App::gutter(80),
+                "the pane is the conversation's own width, gutter excluded"
+            );
+            assert!(
+                room <= h,
+                "the pane cannot be taller than the frame: {room} of {h}"
+            );
+        }
+    }
+
+    /// **Keys are forwarded as bytes, and the way out is not one of them.**
+    ///
+    /// The pane's keyboard is the program's, and what reaches it is the bytes the operator's
+    /// terminal sent — **not this head's reading of them**. `ESC O A` is the application-cursor
+    /// spelling of *up*, and a head that decoded it into `Key::Up` and re-encoded it would send
+    /// `ESC [ A`, a different string to a program that asked for the first. The assertion is on
+    /// the bytes, including a control byte and half a UTF-8 character.
+    ///
+    /// **`ctrl-\` (0x1c) is found in that stream before anything is forwarded**, so the program
+    /// never receives it and cannot trap it. It is also one of the three bytes this head's own
+    /// decoder has no arm for, so it could never have arrived as a `Key` at all — see
+    /// `Terminal::raw_keys`.
+    #[test]
+    fn the_panes_keys_go_down_verbatim_and_ctrl_backslash_is_the_way_out() {
+        let mut a = app();
+        pane(&mut a, b"mc");
+
+        let keys = vec![0x1b, b'O', b'A', 0x03, b'x', 0xe2];
+        assert_eq!(
+            a.pane_keys(&keys),
+            vec![Action::TermInput {
+                bytes: keys.clone()
+            }],
+            "the bytes, and not a key this head understood"
+        );
+
+        assert_eq!(
+            a.pane_keys(b"hi\x1cz"),
+            vec![
+                Action::TermInput {
+                    bytes: b"hi".to_vec()
+                },
+                Action::TermClose
+            ],
+            "the bytes before the way out are the last the program gets, and the key itself is \
+             never one of them"
+        );
+        assert!(
+            a.pane_keys(b"more").is_empty(),
+            "after the close the keys stop: a byte into a pty whose program is being signalled \
+             is a byte nobody will read"
+        );
+        assert_eq!(a.input(), "", "the composer saw none of it");
+        assert!(
+            a.pane_open(),
+            "the pane is drawn until the daemon's ending arrives"
+        );
+
+        // The control that makes the interception mean something: with no pane, the same bytes
+        // are the composer's and `0x1c` is a way out of nothing.
+        let mut b = app();
+        assert!(!b.pane_open());
+        assert!(b.pane_keys(&keys).is_empty());
+        assert!(b.pane_keys(b"\x1c").is_empty());
+    }
+
+    /// **Leaving gives the transcript back, byte for byte.**
+    ///
+    /// The strongest form of *"the transcript comes back intact when you leave"*: the frame is
+    /// compared with the frame this head drew before the pane ever opened, and it is equal.
+    ///
+    /// The ending is said as a **notice**, which is a chrome row, so the notice is cleared the
+    /// way the operator clears one — and that is not a dodge, it is the reason the comparison
+    /// can be exact: everything else about the screen is unchanged, which is the property.
+    #[test]
+    fn leaving_the_pane_gives_the_transcript_back_exactly_as_it_was() {
+        let mut a = app();
+        a.session_id = "s".into();
+        a.head_id = "h1".into();
+        shell_row(&mut a, 1, "u1", "user", operator_row("! ls -la"));
+        shell_row(
+            &mut a,
+            3,
+            "u2",
+            "user",
+            operator_row("what is in this tree?"),
+        );
+        let before = a.screen(80, 24);
+
+        pane(&mut a, b"\x1b[2J\x1b[Hmc's screen\r\n");
+        assert_ne!(
+            a.screen(80, 24),
+            before,
+            "the pane really did replace the conversation"
+        );
+
+        a.apply(ServerFrame::TermEnded {
+            reason: "you left the terminal".into(),
+        });
+        assert!(!a.pane_open(), "the pane is over");
+        assert!(
+            a.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("!term mc") && n.contains("you left the terminal")),
+            "the reason the daemon gave is said, next to the line that was run: {:?}",
+            a.notice
+        );
+        a.clear_notice();
+        assert_eq!(
+            a.screen(80, 24),
+            before,
+            "the transcript, the header and the composer are exactly what they were"
+        );
+    }
+
+    /// **A program that ends on its own is the same frame as a refusal to start**, and the
+    /// sentence is the whole of the difference.
+    #[test]
+    fn a_pane_that_ends_on_its_own_closes_the_same_way_a_refusal_does() {
+        let mut a = app();
+        a.session_id = "s".into();
+        a.head_id = "h1".into();
+        pane(&mut a, b"bye\r\n");
+        a.apply(ServerFrame::TermEnded {
+            reason: "the program exited with 3".into(),
+        });
+        assert!(!a.pane_open());
+        assert!(
+            a.notice
+                .as_deref()
+                .is_some_and(|n| n.contains("the program exited with 3")),
+            "{:?}",
+            a.notice
+        );
+
+        // And a `TermEnded` for a pane this head never opened — a second head attached to the
+        // same session, which the frames are fanned out to — is dropped rather than said: it is
+        // not this head's pane and it has no rectangle to restore.
+        let mut b = app();
+        b.session_id = "s".into();
+        b.apply(ServerFrame::TermEnded {
+            reason: "the program exited with 0".into(),
+        });
+        assert!(b.notice.is_none(), "{:?}", b.notice);
+        // The same for the bytes: a pane nobody opened is not opened by them.
+        b.apply(ServerFrame::TermOutput {
+            bytes: b"nobody's screen".to_vec(),
+        });
+        assert!(!b.pane_open());
     }
 
     /// Drive an app from a hub the way the real driver does.
