@@ -8801,6 +8801,38 @@ struct PlacedChild {
     placement: letibot_tools::builtins::task::WorktreePlacement,
 }
 
+impl PlacedChild {
+    /// **The record [`HarnessTaskRunner::start_worktree`] keeps for a child, or `None` for
+    /// one the queue has no business with.**
+    ///
+    /// One rule, and it is a rule about the MAIN checkout: **a `task_start` child put in the
+    /// main tree is not recorded.** It works on `main`'s own branch, so there is no branch of
+    /// its own to land and no base to land it on — [`crate::mergequeue::entry_for_finished`]
+    /// refuses one anyway, and a record here would only be a second place that has to know
+    /// it. Everything else — a fresh worktree, with a branch cut from the base the caller
+    /// named — is recorded, because it is exactly the shape the queue serves.
+    ///
+    /// **A function rather than three assignments at the call site**, for the reason every
+    /// other seam in this tree is one: the recording IS half of the enqueue (the `placed`
+    /// lookup in [`HarnessTaskRunner::enqueue_entry`] reads what this wrote), and a test that
+    /// built a `PlacedChild` of its own would be asserting against a copy of this rule rather
+    /// than against it. See `queue_e2e`, which calls this and then the enqueue.
+    fn of(
+        handle: &str,
+        brief: &str,
+        placement: &letibot_tools::builtins::task::WorktreePlacement,
+    ) -> Option<PlacedChild> {
+        if placement.main_tree {
+            return None;
+        }
+        Some(PlacedChild {
+            handle: handle.to_string(),
+            brief: brief.to_string(),
+            placement: placement.clone(),
+        })
+    }
+}
+
 /// **A subagent's model, resolved from the `task` tool's `model` argument.**
 ///
 /// The operator's ask, 2026-10-05: *"I want to be able to have subagents using different
@@ -9398,18 +9430,11 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         // **And the two facts the enqueue will need are kept, now that both exist.** The
         // handle is minted by `start`, and the placement and the ask are in hand here — so
         // this is the only moment at which *which child*, *which branch* and *what was asked*
-        // can be recorded together. A `task_start` that put its child in the MAIN checkout is
-        // not recorded: there is no branch of its own to land, and `entry_for_finished`
-        // refuses one anyway — recording it would only be a second place that has to know.
-        if !placement.main_tree {
-            self.placed
-                .lock()
-                .expect("placed children")
-                .push(PlacedChild {
-                    handle: handle.clone(),
-                    brief: prompt.to_string(),
-                    placement: placement.clone(),
-                });
+        // can be recorded together. Which children are recorded at all is
+        // [`PlacedChild::of`]'s rule, so the end-to-end test beside this file exercises the
+        // same one rather than a copy of it.
+        if let Some(record) = PlacedChild::of(&handle, prompt, &placement) {
+            self.placed.lock().expect("placed children").push(record);
         }
         Ok(WorktreeHandle { handle, placement })
     }
@@ -9738,6 +9763,60 @@ fn subagent_ask_target(
 }
 
 impl HarnessTaskRunner {
+    /// **A runner with only the ENQUEUE half wired** — the seam the end-to-end test needs, and
+    /// the whole of the visibility change that test required.
+    ///
+    /// [`HarnessTaskRunner`] is private and is built in exactly one place,
+    /// [`Harness::open_with_registry`], which needs a vocabulary, a live subagent host and a
+    /// gate. [`Self::enqueue_entry`] and [`Self::enqueue_finished`] need none of those three:
+    /// they read four facts — `placed` (what [`Self::start_worktree`] recorded), `base.store`
+    /// and `base.session_id`, `merge_store`, and `registry` — and the other eleven fields
+    /// exist for the SPAWN. So before this, the glue that turns a finished child into a queue
+    /// row was executed by no test at all: every piece it calls (`PlacedChild::of`,
+    /// `entry_for_finished`, `Store::open`, `Store::put_merge_entry`, the broadcast) had a test
+    /// of its own, and the wire between them was only read.
+    ///
+    /// **Why a constructor and not a widened API.** The alternative was `pub` on the struct,
+    /// its fields and the two methods so that an integration test could reach them, which
+    /// widens a daemon-internal type into the crate's public surface for the sake of a test.
+    /// This does not: the struct, every field and both methods keep the visibility they had,
+    /// and `#[cfg(test)]` means the function is not compiled into a binary at all. The test
+    /// that uses it is `queue_e2e`, beside this file and in this crate for the same reason.
+    ///
+    /// `parts` is taken rather than assembled because the two fields nothing here reads
+    /// (`vocab`, `wiring`) have no cheap stand-in — a [`Vocab`] is a loaded GGUF — and the
+    /// tree's own precedent for that is `compact.rs`: a test that needs the vocabulary and
+    /// not the server says so and skips when the GGUF is absent.
+    #[cfg(test)]
+    fn for_enqueue(
+        parts: &Parts,
+        base: Config,
+        registry: Arc<letibot_sessionlog::registry::Registry>,
+        placed: Vec<PlacedChild>,
+    ) -> Self {
+        let point = base.mode;
+        Self {
+            vocab: parts.vocab.clone(),
+            wiring: parts.wiring.clone(),
+            mode_store: parts.mode_store.clone(),
+            registry,
+            base,
+            tasks: parts.tasks.clone(),
+            skills: parts.skills.clone(),
+            lsp: parts.lsp.clone(),
+            slots: parts.tree_slots.clone().unwrap_or_default(),
+            // The three cells a SPAWN reads and an enqueue never does: a tree's watcher set,
+            // the head's answers, and the daemon's server window. A test that starts no child
+            // has nothing to put in them, and `None` is what a root session starts with.
+            tree_watch: Arc::new(std::sync::Mutex::new(None)),
+            head_answers: Arc::new(std::sync::Mutex::new(None)),
+            local_window: Arc::new(std::sync::Mutex::new(None)),
+            point: Arc::new(std::sync::Mutex::new(point)),
+            placed: Arc::new(std::sync::Mutex::new(placed)),
+            merge_store: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
     /// **This session's point, as it stands now** — see the field.
     fn point(&self) -> letibot_tools::mode::Mode {
         *self.point.lock().unwrap_or_else(|e| e.into_inner())
@@ -11078,6 +11157,13 @@ mod subagent_model_tests {
         assert!(!runs_on_the_parents_model(&ds("deepseek-flash"), &None));
     }
 }
+
+// **The end-to-end test of the merge queue's enqueue, in its own file** — declared here
+// because it is a test of THIS module's private `HarnessTaskRunner`, and because a crate
+// whose runner is private can only be tested from inside the crate. Its own header says what
+// it closes and what it still cannot reach.
+#[cfg(test)]
+mod queue_e2e;
 
 #[cfg(test)]
 mod tests {
