@@ -1164,3 +1164,219 @@ fn the_wall_is_checked_before_the_first_turn_after_a_resume() {
          auto_compact at {announced}, TurnStarted at {started}"
     );
 }
+
+/// `<tool_call>` and `</tool_call>` — Qwen's own control tokens, the same ids the
+/// turn crate's engine tests pin. Only this file's tool-call fixture needs them.
+const TOOL_CALL_OPEN: u32 = 248058;
+const TOOL_CALL_CLOSE: u32 = 248059;
+
+/// **A child's session compacts when its TOOL RESULT overruns, and finishes the task.**
+///
+/// The operator's requirement, in their words: *"subagent is a normal session. it must
+/// be able to compact on tool call overrun"*, and their question, *"we have overrun
+/// protection exactly for this case, why this resurfaces again and again"*. The
+/// measured answer this test is the regression guard for: a child of
+/// `s-1789462738453908838` stopped after 207 rounds at 1,131,717 of 1,146,137 tokens
+/// with a wall notice promising *"a compaction was ATTEMPTED"*, and the store showed
+/// ONE transcript for it — no fork, no compaction item — while its parent compacted
+/// 57 times in the same window. The seam that reacts to the wall lived only in
+/// `Sessions::after_turn`, and a child never passes through `Sessions`.
+///
+/// The fixture is a CHILD's shape on purpose: a bare [`Harness`] driven directly, the
+/// way `HarnessTaskRunner::run_to_completion` drives one — no `Sessions`, no daemon
+/// worker, nothing between the turn and the wall. The overrun is the operator's own
+/// case: round zero calls `read`, the result is appended between rounds, and the
+/// ledger crosses the wall BEFORE round one is sent — so what is asserted is exactly
+/// *"compacts before the next round rather than after the wall"*:
+///
+/// 1. the prompt still ANSWERS (the child's task finishes rather than dying with the
+///    wall notice);
+/// 2. the wall fired mid-turn, from the tool result — `context_wall` is in the log
+///    after the round that ran the call, and before the compaction;
+/// 3. the compaction ran — `compacting now` precedes a `compacted` warning, and the
+///    transcript FORKED (`#t1`), which is the store row the dead child never had.
+#[test]
+fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    use letibot_sessionlog::event::SessionEvent;
+
+    let dir = TempDir::new("harnessd-child-wall");
+    let path = dir.path().join("sessions.db");
+    let session_id = "child-wall-test";
+    let mut cfg = config(&path, session_id);
+    // The window that makes the tool results an overrun, at the scale the real
+    // ones are. The stable prefix of a seated session is ~3634 tokens of this
+    // vocabulary; `read` renders ~15 tokens per line (gutter and all) and is
+    // byte-capped per call, so the fixture reaches the wall the way the dead
+    // child did — by ACCUMULATION across a batch of calls, not one giant result.
+    // At 32768 the headroom is 2048 (`max(w/16, 2048).min(w/4)`), the wall at
+    // 30720, and prefix plus ten reads of a 260-line file (~3950 tokens each)
+    // lands at ~43000 — past the wall and past the window, which is the state
+    // `plan_overrun` calls `Cut` and answers with the two-half summary a local
+    // server takes. That is the arm a wall-triggered compaction really runs on
+    // big sessions; the ordinary arm needs resident + 8192 ≤ window, which no
+    // session at its wall ever satisfies.
+    cfg.context_window = Some(32768);
+
+    // The file the child reads: 260 numbered lines, ~3950 tokens as `read`
+    // renders them, under both the 200-line default cap's explicit-limit door and
+    // the 32 KiB byte cap. Written before the harness opens, because the tool
+    // that reads it is seated against this workspace at open.
+    let big = dir.path().join("big.txt");
+    let mut body = String::new();
+    for i in 0..260 {
+        body.push_str(&format!(
+            "line {i}: the quick brown fox jumps over the lazy dog\n"
+        ));
+    }
+    std::fs::write(&big, body).expect("the file to read is written");
+    // `read` takes a path relative to the session root, and the root is `/tmp`
+    // (`Config::for_this_box("/tmp")` in `config` above) — which is where this
+    // temp dir already is.
+    let rel = big
+        .strip_prefix("/tmp")
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| big.display().to_string());
+
+    let parts = load_parts(&cfg);
+    let vocab = &parts.vocab;
+
+    // Round zero: a BATCH of ten `read` calls, end — the turn hands the harness
+    // ten calls to run in order, which is how one round's results push a session
+    // past the wall (the operator's child crossed it on its 207th). Each body is
+    // the QWEN dialect's own tool-call shape — `<function=read>` with
+    // `<parameter>` entries, the format `parse.rs`'s round-trip test pins — and
+    // the fences carry their literal text, because that is what a boundary looks
+    // like on the wire. A final `eos` ends the turn with the calls pending, which
+    // is what makes the harness run them.
+    let mut round0 = vec![canned::Frame::Progress {
+        total: 30,
+        processed: 30,
+    }];
+    round0.push(canned::Frame::Token {
+        id: THINK_OPEN,
+        text: "",
+    });
+    round0.push(canned::Frame::Token {
+        id: THINK_CLOSE,
+        text: "",
+    });
+    let mut control = 2u64;
+    let mut spoken_ids = 0usize;
+    for offset in (0..10).map(|n| 1 + n * 260) {
+        let call = format!(
+            "\n<function=read>\n<parameter=path>\n{rel}\n</parameter>\n<parameter=offset>\n{offset}\n</parameter>\n<parameter=limit>\n260\n</parameter>\n</function>\n"
+        );
+        let call_ids = ids(vocab, &call);
+        spoken_ids += call_ids.len();
+        control += 2;
+        round0.push(canned::Frame::Token {
+            id: TOOL_CALL_OPEN,
+            text: "<tool_call>",
+        });
+        round0.extend(spoken(vocab, &call_ids));
+        round0.push(canned::Frame::Token {
+            id: TOOL_CALL_CLOSE,
+            text: "</tool_call>",
+        });
+    }
+    round0.push(canned::Frame::Final {
+        stop_type: "eos",
+        // Every control token besides the bodies: the think fences and, per call,
+        // the two tool-call fences. The accumulator counts what was streamed, so
+        // this has to agree with it exactly or the turn dies in `CountMismatch`
+        // before the wall is ever reached.
+        n_decoded: (spoken_ids as u64) + control,
+        n_prompt: 30,
+        cache_n: 0,
+    });
+
+    // The compaction's two half-summaries (a local overrun arm summarises BOTH
+    // halves, over a scratch transcript), then the continuation's answer: plain
+    // turns all, because a summary that proposed a tool call would refuse the
+    // fork and a continuation that answers has finished the task.
+    let half = a_plain_answer_turn(
+        vocab,
+        "summarising",
+        "the operator asked for a file; it was read ten times; the work continues",
+        30,
+    );
+    let half2 = a_plain_answer_turn(
+        vocab,
+        "summarising",
+        "the operator asked for a file; it was read ten times; the work continues",
+        30,
+    );
+    let continued = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
+    // Spares, in case a path through the fix asks one turn more than the three
+    // above: an undersupplied server turns a scripted answer into a socket error
+    // and the test would fail for a reason that is not the one under test.
+    // (`Frame` is not `Clone` — the turn crate's support keeps it minimal — so
+    // the spares are built, not copied.)
+    let spare = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
+    let spare2 = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
+    let scripts = vec![round0, half, half2, continued, spare, spare2];
+    let serv = canned::Canned::serve_each(scripts, 8);
+    cfg.endpoint = serv.endpoint.clone();
+
+    // A CHILD's harness: opened bare, held directly, no `Sessions` anywhere near
+    // it. That is the whole of the defect's setting — everything the daemon's own
+    // sessions get around a turn, this harness must supply itself.
+    let hub = Hub::new(session_id);
+    let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the child opens");
+
+    let out = h.submit_as_a_normal_session("read big.txt and finish the task");
+    assert!(
+        out.is_ok(),
+        "the child's task finishes past the wall: {out:?}"
+    );
+    assert!(
+        out.as_ref().is_ok_and(|r| !r.text.is_empty()),
+        "the answer is the continuation's, not a silent empty: {out:?}"
+    );
+
+    let events: Vec<SessionEvent> = hub.retained().iter().map(|e| e.event.clone()).collect();
+    let at = |code: &str, text: &str| {
+        events
+            .iter()
+            .position(|e| matches!(e, SessionEvent::Warning { code: c, detail, .. } if c == code && detail.contains(text)))
+            .unwrap_or_else(|| {
+                panic!("no {code} warning saying {text:?} — the child's own log:\n{events:#?}")
+            })
+    };
+    // The overrun came from the TOOL RESULT: the wall was announced after the
+    // round that ran the call, and the compaction before the next turn was sent.
+    let wall = at("context_wall", "stopping this turn");
+    let compacting = at("auto_compact", "compacting now");
+    let compacted = at("compacted", "tokens");
+    assert!(
+        wall < compacting,
+        "the wall is announced before the compaction reacts to it: {wall} < {compacting}"
+    );
+    assert!(
+        compacting < compacted,
+        "the compaction is attempted before it is reported: {compacting} < {compacted}"
+    );
+    // ...and the turn that finished the task ran AFTER the compaction, on the
+    // summary — a TurnStarted later than the report is the continuation.
+    let last_started = events
+        .iter()
+        .rposition(|e| matches!(e, SessionEvent::TurnStarted { .. }))
+        .expect("a turn ran after the compaction");
+    assert!(
+        compacted < last_started,
+        "the continuation runs on the summary, after the fork: compacted at {compacted}, \
+         last TurnStarted at {last_started}"
+    );
+
+    // **The store row the dead child never had.** The fork is what a compaction
+    // leaves behind — one transcript became two — and `transcript_id` is the
+    // store's own id for the new base.
+    assert_eq!(
+        h.transcript_id(),
+        format!("{session_id}#t1"),
+        "the child's transcript forked onto the compaction's base"
+    );
+}
