@@ -218,6 +218,20 @@ pub const TABLE: &[(&str, Class)] = &[
     // ended between that check and this drain. Routine, because nothing went wrong in the
     // session — the parent's next `task_result` reads a finished child and says so.
     ("message_idle", Class::Routine),
+    // **A finished `task_start` child's branch is in the merge queue**, said to the parent that
+    // started it. Routine by the rule at the top of this table, and for the reason
+    // `operator_call_ran` is: it reports something that worked, and what it puts on the screen
+    // is where the work went. The entry is in the queue either way — a reader who was not told
+    // has lost the sentence, not the branch — and the same fact is on the queue pane and in
+    // `task_result`'s own answer. See `HarnessTaskRunner::enqueue_finished`.
+    ("merge_queued", Class::Routine),
+    // **A finished child's branch could NOT be enqueued** — the store would not open, or this
+    // daemon was started without `--store`. A failure: the branch is still on its branch in
+    // its worktree and nothing is lost, but nothing will land it either, and that is not
+    // something the reader fixes by typing something else. The two words are one door's two
+    // verdicts, which is why they sit together — see `HarnessTaskRunner::enqueue_entry`,
+    // whose refusal is the sentence this code carries.
+    ("merge_not_queued", Class::Failure),
     // **A FAILURE, and the one code here that is a claim about the corpus rather than about
     // the session.** An operator's own call was admitted and the head that asked went away
     // before reporting what it did, so the record holds an `admit` whose outcome nobody
@@ -545,18 +559,28 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 78 codes, of which **7** are the reader's own input refused.
+    /// **The census, pinned.** 80 codes, of which **7** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_28_routine_7_refused_and_43_failures() {
+    fn the_table_is_29_routine_7_refused_and_44_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **78, not the 76 the last census was taken at.** Two arrivals, and they are the
-        // supervision tree's two ends — each counted rather than left implicit, because a
-        // census that quietly moves is not a census:
+        // **80, not the 78 the last census was taken at.** Two arrivals, and they are one
+        // door's two verdicts — the merge queue's enqueue, which had no words of its own
+        // until a finished `task_start` child's branch started going into the queue:
+        //
+        //   · `merge_queued` — the branch is in the queue, said to the parent that started
+        //     the child — is Routine by the same ruling as `operator_call_ran` above it: the
+        //     work happened, the sentence says where it went, and deleting it costs the reader
+        //     the sentence rather than the branch;
+        //   · `merge_not_queued` is the failure the same act's refusal is — the branch is
+        //     still in its worktree and nothing will land it until somebody enqueues it, which
+        //     no line the reader types can fix.
+        //
+        // The census before that, 78, kept its own list for the same reason:
         //
         //   · `subagents_stopped` — a stop took the session's children with it — is Routine
         //     by the rule at the top of the table: it reports an act somebody asked for (the
@@ -588,12 +612,12 @@ mod the_register_census {
         //     the daemon**, and it is a Failure by the same argument that keeps `anchor_lost`: the
         //     diagnostic reaches neither the conversation nor the triangle, so a reader who is not
         //     told has been told nothing at all.
-        assert_eq!(TABLE.len(), 78, "the table's size");
-        assert_eq!(count(Class::Routine), 28);
+        assert_eq!(TABLE.len(), 80, "the table's size");
+        assert_eq!(count(Class::Routine), 29);
         assert_eq!(count(Class::Refused), 7, "the seven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 43);
+        assert_eq!(count(Class::Failure), 44);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 43 of 78 and the middle is 7**, which is why the third register is a
+        // register is 44 of 80 and the middle is 7**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }
