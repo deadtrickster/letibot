@@ -121,6 +121,15 @@
 //! no race between *the pty closed* and *the program exited* over which sentence a head
 //! prints — and the sentence is the specific fact, from the process that knows it.
 //!
+//! **That thread is also what says the pane is over** ([`TermSession::ended`], and
+//! [`TermSession::live`] which reads it). The flag is set *before* the sink is told, so a
+//! caller that learns of the ending from the sink — which is every caller, and the daemon
+//! is the one that matters — cannot look at the session afterwards and be told it is still
+//! running. It was, and that is the ghost: a program that exits at once left
+//! `TermSession::closed` false (nothing had *closed* it) and the daemon holding its slot,
+//! so the next `!term` in that session was refused with *"a pane is already open"* about a
+//! pane that had not existed for a minute.
+//!
 //! **What it will not do.** A program that closes its own descriptors and keeps running
 //! leaves the master readable-for-ever, so the read does not end and the pane does not
 //! report; the operator's way out — `Ctrl-\`, intercepted by the head before it reaches
@@ -140,6 +149,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::Pty;
 use super::scope::{Cgroup2, Reaping, ScopeId, ScopeTree, join_script};
@@ -367,6 +377,11 @@ pub struct TermSession {
     /// way out is told *"you left the terminal"* rather than *"the program exited with
     /// 137"*, and there is still exactly one reporter.
     closing: Arc<Mutex<Option<String>>>,
+    /// **The program is over**, set by the reader thread the moment it knows — see
+    /// [`TermSession::live`]. An [`AtomicBool`] and not a `Mutex<bool>` because the reader
+    /// sets it on a thread nobody waits for and every reader of it is asking a yes/no
+    /// question about a pane, which is not a place to take a lock.
+    ended: Arc<AtomicBool>,
     closed: bool,
 }
 
@@ -376,6 +391,7 @@ impl std::fmt::Debug for TermSession {
             .field("pid", &self.pid)
             .field("scope", &self.scope)
             .field("closed", &self.closed)
+            .field("live", &self.live())
             .finish()
     }
 }
@@ -445,6 +461,7 @@ impl TermSession {
         set_size(&master, cfg.cols, cfg.rows);
 
         let closing: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let ended = Arc::new(AtomicBool::new(false));
         let mut reader = master
             .try_clone()
             .map_err(|e| TermError::Start(format!("the pty master: {e}")))?;
@@ -456,6 +473,7 @@ impl TermSession {
         {
             let sink = Arc::clone(&sink);
             let closing = Arc::clone(&closing);
+            let ended = Arc::clone(&ended);
             let thread = std::thread::Builder::new()
                 .name("term-pane".into())
                 .spawn(move || {
@@ -480,6 +498,10 @@ impl TermSession {
                             None => "the program was killed by a signal".to_string(),
                         },
                     };
+                    // **The pane is over before anyone is told**, so a caller woken by the
+                    // sink cannot find a session that still claims to be running — see
+                    // [`TermSession::live`] and the module header's *the ghost*.
+                    ended.store(true, Ordering::SeqCst);
                     sink.ended(&why);
                 });
             if let Err(e) = thread {
@@ -493,6 +515,7 @@ impl TermSession {
             scope: cfg.scope.clone(),
             tree: cfg.tree.clone(),
             closing,
+            ended,
             closed: false,
         })
     }
@@ -565,6 +588,28 @@ impl TermSession {
     /// thread.
     pub fn closed(&self) -> bool {
         self.closed
+    }
+
+    /// **The program is over**, set by the reader thread before it reports the ending.
+    ///
+    /// The other half of [`TermSession::closed`], and the half that was missing: `closed`
+    /// is about *somebody ending this pane*, and a program that exits on its own ends the
+    /// pane without anybody doing anything. A caller asking *is there a program in this
+    /// pane* wants both — see [`TermSession::live`].
+    pub fn ended(&self) -> bool {
+        self.ended.load(Ordering::SeqCst)
+    }
+
+    /// **Is there still a program in this pane?** — the question a caller asks before it
+    /// refuses to open a second one.
+    ///
+    /// `closed || ended`, and the two are different facts that are both *no*: a pane the
+    /// operator left, and a pane whose program finished. Before this, the daemon asked
+    /// `!closed` and a program that exited instantly left a **ghost** — the slot held by a
+    /// pane that was over, so the next `!term` in that session was refused with *"a pane is
+    /// already open"* and there was nothing on the screen to leave.
+    pub fn live(&self) -> bool {
+        !self.closed && !self.ended()
     }
 }
 
@@ -814,10 +859,53 @@ mod tests {
     fn closing_kills_the_program_and_says_the_operator_left() {
         let (mut s, sink) = pane("sleep 30");
         std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            s.live(),
+            "a program that is still running is a pane that is live"
+        );
         s.close("you left the terminal");
         let why = sink.wait_ended(PATIENCE).expect("an ending");
         assert_eq!(why, "you left the terminal");
         assert!(s.closed());
+        assert!(
+            !s.live(),
+            "a pane the operator left is not live, whether or not the reader thread has \
+             got round to saying so"
+        );
+    }
+
+    /// **A program that exits on its own ends the pane, and the pane says so.**
+    ///
+    /// This is the ghost the operator hit: `!term mc` printed one line and exited, the pane
+    /// was over, and `TermSession::closed` was still false — because nobody had *closed* it —
+    /// so the daemon kept the slot and the next `!term` was refused with *"a pane is already
+    /// open in this session"* about a pane that had been gone for a minute.
+    ///
+    /// **The control is the second assertion**: `closed` is false at the end of this test,
+    /// which is what makes it evidence that the question the daemon asked was the wrong one.
+    /// The ordering that matters for the daemon — the flag is stored *before* the sink is
+    /// told, so a caller woken by the report cannot find a session still claiming to be live
+    /// — is by construction in `start`, one line above the call, and the end-to-end half of it
+    /// is `crates/harnessd/tests/term_pane_live.rs`'s
+    /// `a_pane_whose_program_exited_frees_its_slot`.
+    #[test]
+    fn a_program_that_exits_on_its_own_leaves_no_ghost_of_a_pane() {
+        let (s, sink) = pane("printf 'bye\\n'; exit 7");
+        assert_eq!(
+            sink.wait_ended(PATIENCE).as_deref(),
+            Some("the program exited with 7"),
+            "the ending is the status, and it is what the daemon reads"
+        );
+        assert!(
+            sink.text().contains("bye"),
+            "and its last bytes are the head's"
+        );
+        assert!(!s.live(), "a program that exited leaves no live pane");
+        assert!(
+            !s.closed(),
+            "and nobody closed it — which is exactly why `closed` alone was the wrong \
+             question to refuse a second pane on"
+        );
     }
 
     /// **The command line is a shell line, and the shell is `/bin/sh`.**

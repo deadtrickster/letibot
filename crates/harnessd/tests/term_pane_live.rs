@@ -268,6 +268,56 @@ fn the_panes_program_gets_the_consoles_environment_and_not_the_daemons_own() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
+/// **A pane whose program exited frees its slot, and the next `!term` is not refused.**
+///
+/// The operator's own flash, end to end: `!term mc` printed one line and exited — *nothing
+/// running afterwards* — and a second `!term` then said *"a pane is already open in this
+/// session"*. The daemon kept the slot while the head had lost the rectangle, because the
+/// question it asked was `closed` (has anybody ended this pane) and nobody had: the program
+/// ended it by exiting. `TermSession::live` is the question that matters, and this is it
+/// measured through the real driver.
+///
+/// **The control is one test over**: `a_second_pane_is_refused_by_name_while_one_is_live`
+/// asserts that a pane whose program is *still running* is still refused, so this cannot pass
+/// by the refusal having been removed.
+#[test]
+fn a_pane_whose_program_exited_frees_its_slot() {
+    let _serial = serial();
+    let ws = workspace("ghost");
+    let registry = daemon("s-ghost", &ws);
+    let (mut w, mut r) = attach(&registry, "s-ghost");
+
+    // A program that prints one line and exits at once. `sh -c` rather than a name, so this
+    // does not depend on what is installed on the box — the shape is the same one `mc` on a
+    // box without it produced: bytes, then an exit status, in the same instant.
+    open(&mut w, "!term sh -c 'echo one-line; exit 7'", 80, 24);
+    let (said, reason) = read_to_end(&mut r);
+    let text = String::from_utf8_lossy(&said);
+    assert!(
+        text.contains("one-line"),
+        "the program's last bytes must reach the head: {text:?}"
+    );
+    assert_eq!(
+        reason, "the program exited with 7",
+        "and its exit status is the ending, which is half of the row the head files"
+    );
+
+    // **The slot is free.** This is the assertion the defect is about: the next pane starts
+    // rather than being refused by a ghost, and it runs.
+    open(&mut w, "!term echo second-pane", 80, 24);
+    let (said, reason) = read_to_end(&mut r);
+    let text = String::from_utf8_lossy(&said);
+    assert!(
+        text.contains("second-pane"),
+        "the second pane must have RUN rather than been refused: {text:?} (reason: {reason})"
+    );
+    assert!(
+        !reason.contains("already open"),
+        "and it must not have been refused by the pane that was already over: {reason:?}"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
 /// **A real program, on a real pty, its bytes on the wire, and its exit status in the ending.**
 ///
 /// This is the whole requirement in one test: `!term echo …` is the operator's line, the daemon

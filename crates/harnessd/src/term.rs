@@ -14,6 +14,18 @@
 //! | **the workspace** | the session's own, read from the registry — a pane runs where the conversation runs, not where the daemon does |
 //! | **the sink** | [`Sink`], which turns the pty's reader thread's bytes into [`ServerFrame::TermOutput`] on the session's heads |
 //!
+//! # The refusal asks whether a program is *running*, and not whether anybody closed it
+//!
+//! `open` refuses while a pane is live, and the question it asks is
+//! [`TermSession::live`] — not `closed`. That distinction is the **ghost** the operator hit:
+//! `!term mc` printed one line and exited, nothing had *closed* the pane, so `closed` was
+//! false, so the daemon kept the slot — and the next `!term` in that session was refused
+//! with *"a pane is already open in this session"* about a pane that had been gone for a
+//! minute, with nothing on the screen to leave and no way to clear it. A program that
+//! exits on its own ends the pane, and the pane now says so: `TermSession::ended` is set by
+//! the reader thread before it reports, and a dead pane's slot is dropped on the next
+//! `open` (and by [`Terminals::close`] and [`Terminals`]' own `Drop`).
+//!
 //! # Why the sink pushes through the hub and not a channel of its own
 //!
 //! A pane's bytes arrive on a thread this module owns, and they have to reach a socket the
@@ -96,6 +108,12 @@ pub struct Terminals {
 /// A live pane: the pty session, and nothing else. Its scope is the session's own
 /// ([`TermSession`] holds both ends of it) so that closing the pane and dropping the pane are
 /// the same act.
+///
+/// **A pane whose program has ended is kept here until the next `open`**, deliberately: its
+/// scope is still the cgroup that has to be ended (a program that forked something away
+/// leaves that something in it — see [`TermSession::close`]), and a slot that is dropped the
+/// instant a program exits would be a second path ending scopes. What must not happen is a
+/// *refusal*, and that is [`TermSession::live`]'s job.
 struct Pane {
     session: TermSession,
 }
@@ -171,8 +189,12 @@ impl TerminalDriver for Terminals {
         // **A live pane is refused by name, not replaced.** Killing a running program to make
         // room for the next keystroke is how an operator loses an edited file; the refusal
         // names the way out instead.
+        //
+        // **`live` and not `closed`** — see the module header's *the ghost*: a program that
+        // exits on its own ends the pane without anybody closing it, and refusing the next
+        // `!term` on that pane is refusing it on nothing.
         if let Some(p) = panes.get(session_id)
-            && !p.session.closed()
+            && p.session.live()
         {
             return Err(format!(
                 "a pane is already open in this session and `{command}` was not started. \
@@ -180,8 +202,9 @@ impl TerminalDriver for Terminals {
                  lose whatever that program had not saved."
             ));
         }
-        // A pane that has already ended leaves nothing to keep, and dropping it ends its
-        // scope (which the cgroup has usually already emptied).
+        // **A pane that has already ended leaves nothing to keep**, and this is where the
+        // slot is freed: dropping it ends its scope (which the cgroup has usually already
+        // emptied).
         panes.remove(session_id);
 
         // **The scope, before the process.** `join_script` writes the pid into `cgroup.procs`

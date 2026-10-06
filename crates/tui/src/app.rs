@@ -2010,6 +2010,30 @@ impl TermPane {
     ) -> Vec<String> {
         letibot_ui::ansi::pane_rows(&mut self.screen, cols, room, palette)
     }
+
+    /// **The last rows the program left on the screen**, for the row its ending becomes.
+    ///
+    /// **The screen and not the byte stream**: what a program *printed* is what a person can
+    /// read, and the bytes behind it are cursor addressing, `\r` and half a UTF-8 character —
+    /// the raw stream is for [`letibot_vt::Screen`] and this is for a transcript row.
+    ///
+    /// **Blank rows are dropped and the tail is kept**, because the two shapes are different
+    /// and the same rule answers both: a program that dies with a sentence about why put that
+    /// sentence last (and its rectangle is otherwise empty), and a full-screen program leaves
+    /// a grid of mostly blanks whose last rows are where its status line is. Capped at
+    /// [`PANE_LAST_LINES`], which is what makes an unfolded note safe to draw.
+    fn last_rows(&self) -> Vec<String> {
+        let (rows, _) = self.screen.size();
+        let mut said: Vec<String> = (0..rows)
+            .map(|r| self.screen.line(r))
+            .map(|l| l.trim_end().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if said.len() > PANE_LAST_LINES {
+            said.drain(..said.len() - PANE_LAST_LINES);
+        }
+        said
+    }
 }
 
 #[derive(Debug, Default)]
@@ -5214,8 +5238,21 @@ impl App {
                 // — *"the program exited with 3"*, *"you left the terminal"*, *"a pane is
                 // already open in this session"*. So a head never guesses why its rectangle
                 // came back, and a refusal to start is the same frame as an ending.
+                //
+                // **And it becomes a row, not a notice.** This was `self.say(…)` — a sentence
+                // on the chrome for `NOTICE_MS` — which is exactly why a program that dies at
+                // once was *invisible*: the rectangle came back, one line appeared, and a few
+                // seconds later the session said nothing about what had happened or what the
+                // program had printed. The screen the program left is read here, while the
+                // pane still holds it, and goes into the note with the daemon's sentence. See
+                // [`Note::Pane`].
                 if let Some(p) = self.term.take() {
-                    self.say(&format!("{} — {reason}", p.line));
+                    self.file_note(Note::Pane {
+                        line: p.line.clone(),
+                        said: p.last_rows(),
+                        left: p.closing,
+                        reason,
+                    });
                     self.redraw = true;
                 }
                 Disposition::Control
@@ -11988,6 +12025,20 @@ impl App {
         if holds(&self.notes, &n) {
             return;
         }
+        self.file_note(n);
+    }
+
+    /// **Put a note in the conversation**, with the bookkeeping and without the identity test.
+    ///
+    /// The split exists for [`Note::Pane`], which is the one disclosure that cannot be
+    /// *redelivered* and so must not be deduplicated: a pane's ending is filed by the head that
+    /// took the pane, the pane is taken on the first `TermEnded`, and the second `!term mc`
+    /// that exits 7 with the same sentence on its screen is a **second ending** and not the same
+    /// one announced twice. [`note_key`] cannot tell those two apart — they are the same line,
+    /// the same reason and the same rows — so the rule that protects a warning from a snapshot
+    /// would silently swallow every repeat of a pane that dies at once, which is the defect
+    /// this variant exists for.
+    fn file_note(&mut self, n: Note) {
         let at = self.items.len();
         self.notes.push((Placed::Seam(at), n));
         if self.notes.len() > 64 {
@@ -22981,6 +23032,33 @@ enum Note {
     /// prompt"* — and not as nothing either, which is what it rendered as before.
     /// A tool that was refused has to look refused.
     Decided(SettledDecision),
+    /// **A pane's ending, as a row that is still there a minute later.**
+    ///
+    /// The defect this exists for, in the operator's words: *"i typed `!term mc`, it
+    /// flashed and was gone"*. An ending used to be said as a **notice** — [`App::say`],
+    /// which lives for `NOTICE_MS` of wall time — and a program that dies at once is over
+    /// before the eye reaches the rectangle: the conversation came back, one sentence
+    /// appeared and faded, and what the program had printed went with the pane. A person
+    /// who looked a minute later saw nothing at all, and a person who came back to the
+    /// session saw less than that.
+    ///
+    /// So an ending is a disclosure like every other one this head has, and this head's
+    /// disclosures are notes: a row in the conversation, at the seam where it happened,
+    /// retirable with `ctrl-n`, listed by `/notes`.
+    Pane {
+        /// The line that was run, verb included — *what ended* is half the fact.
+        line: String,
+        /// **The last rows the program left on the screen**, in order and with the blank
+        /// ones dropped. See [`TermPane::last_rows`] for why the screen and not the bytes,
+        /// and why the tail.
+        said: Vec<String>,
+        /// The daemon's own sentence: the exit status, or the operator's act. Never
+        /// guessed here — see [`ServerFrame::TermEnded`].
+        reason: String,
+        /// **The operator is the one who ended it** — this head's own record that it sent
+        /// [`Action::TermClose`], and not a reading of the reason's wording.
+        left: bool,
+    },
 }
 
 /// **What a note is called when a reader wants to retire it.**
@@ -23007,6 +23085,9 @@ fn note_key(n: &Note) -> String {
         Note::Warned(w) => format!("w|{}|{}|{:016x}", w.code, w.ts, fnv1a(&w.detail)),
         Note::NotRun(w) => format!("n|{}|{}|{:016x}", w.code, w.ts, fnv1a(&w.detail)),
         Note::Decided(d) => format!("d|{}", d.req_id),
+        Note::Pane {
+            line, said, reason, ..
+        } => format!("t|{line}|{reason}|{:016x}", fnv1a(&said.join("\n"))),
     }
 }
 
@@ -23060,6 +23141,13 @@ const NOTE_LINES: usize = 3;
 
 /// One note, as the transcript draws it: at most [`NOTE_LINES`] lines and a seam.
 fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
+    // **A pane's ending is the one note that is not folded**, and the reason is the tail: what
+    // a program says as it dies is the *last* thing it printed, so a fold that kept the first
+    // three lines would keep the least useful three. The length is bounded where it is
+    // captured instead — [`PANE_LAST_LINES`] — so this cannot become a wall.
+    if matches!(n, Note::Pane { .. }) {
+        return note_lines_unfolded(cfg, n);
+    }
     let all = note_lines_unfolded(cfg, n);
     if all.len() <= NOTE_LINES {
         return all;
@@ -23069,6 +23157,16 @@ fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
     out.push(dim(cfg, &format!("  … +{hidden} lines · /notes")));
     out
 }
+
+/// **How many of a pane's last rows its ending carries** — the cap that replaces the fold.
+///
+/// See [`note_lines`]: a pane's ending is not folded to [`NOTE_LINES`], so it needs a bound of
+/// its own, and four is chosen the way `NOTE_LINES` was: the common case is one row (a program
+/// that dies with a sentence about why), a full-screen program leaves a whole rectangle, and a
+/// rectangle is not what a transcript row is for. What is past the cap is *not* kept anywhere —
+/// a pane's bytes are not recorded, see `harnessd`'s own TODO — so this is a disclosure
+/// decision and not a fold over a record.
+const PANE_LAST_LINES: usize = 4;
 
 /// The whole note, with no fold — what `/notes` lists and what the transcript
 /// shows the head of. One renderer for both, so the listing cannot disagree with
@@ -23122,6 +23220,33 @@ fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
         .into_iter()
         .map(|l| dim(cfg, &l))
         .collect(),
+        Note::Pane {
+            line,
+            said,
+            reason,
+            left,
+        } => {
+            // **The register is the operator's own act, and it is a fact this head holds.**
+            // A pane they left with `ctrl-\` is housekeeping — dim, a `·` — and a pane that
+            // ended without them is the answer to what they just typed: the notice register,
+            // a `×`. Reading that out of the reason's *wording* would be a head matching on a
+            // sentence the daemon composes; `left` is the head's own record that it sent
+            // `Action::TermClose`.
+            let (mark, tint) = if *left {
+                ("·", sgr::DIM)
+            } else {
+                ("×", sgr::YELLOW)
+            };
+            let mut rows: Vec<String> = Vec::with_capacity(said.len() + 1);
+            rows.push(format!("{mark} {line} — {reason}"));
+            // The program's own rows, indented under the line that ran it — and sanitised,
+            // because a cell holds anything the parser let through.
+            rows.extend(said.iter().map(|l| format!("    {l}")));
+            rows.iter()
+                .flat_map(|l| wrap(&without_control_lines(l), cfg.width))
+                .map(|l| colour(cfg, tint, &l))
+                .collect()
+        }
         Note::Decided(d) => {
             use letibot_sessionlog::event::DecisionOutcome as O;
             let (word, code) = match &d.outcome {
@@ -26277,16 +26402,21 @@ mod tests {
         assert!(b.pane_keys(b"\x1c").is_empty());
     }
 
-    /// **Leaving gives the transcript back, byte for byte.**
+    /// **Leaving gives the conversation back, and the ending stays as a row.**
     ///
-    /// The strongest form of *"the transcript comes back intact when you leave"*: the frame is
-    /// compared with the frame this head drew before the pane ever opened, and it is equal.
+    /// This test used to assert that the frame came back **byte for byte**, with the ending
+    /// cleared as a notice — and *that assertion was the defect*. A pane that ended left nothing
+    /// behind but a sentence that faded, so a program that died at once was invisible a few
+    /// seconds later and there was nothing to scroll back to. What is true now is the half that
+    /// matters and the half that changed:
     ///
-    /// The ending is said as a **notice**, which is a chrome row, so the notice is cleared the
-    /// way the operator clears one — and that is not a dodge, it is the reason the comparison
-    /// can be exact: everything else about the screen is unchanged, which is the property.
+    /// * **the program's own drawing is gone** — the rectangle is the conversation's again, and
+    ///   the rows the program painted are not in the frame;
+    /// * **the transcript is back**, which is the property this test has always been about;
+    /// * **and the ending is a row in it**, with the line that was run and the daemon's own
+    ///   sentence — see [`Note::Pane`].
     #[test]
-    fn leaving_the_pane_gives_the_transcript_back_exactly_as_it_was() {
+    fn leaving_the_pane_gives_the_conversation_back_and_the_ending_stays_as_a_row() {
         let mut a = app();
         a.session_id = "s".into();
         a.head_id = "h1".into();
@@ -26312,17 +26442,110 @@ mod tests {
         });
         assert!(!a.pane_open(), "the pane is over");
         assert!(
-            a.notice
-                .as_deref()
-                .is_some_and(|n| n.contains("!term mc") && n.contains("you left the terminal")),
-            "the reason the daemon gave is said, next to the line that was run: {:?}",
+            a.notice.is_none(),
+            "an ending is not a notice: it is a row that is still there a minute later, and \
+             the notice is what used to carry it and fade: {:?}",
             a.notice
         );
-        a.clear_notice();
+        let after = a.screen(80, 24);
+        // **The program's own drawing is gone from the rectangle, and the only copy of it is
+        // the ending's own quote of its last rows.** Asserted that way rather than as *the text
+        // is nowhere*, because the row deliberately carries what the program printed — that is
+        // the fix — and *the rectangle is the conversation's again* is the property.
+        let heading = after
+            .iter()
+            .position(|r| r.contains("!term mc"))
+            .expect("the ending is a row");
+        assert!(
+            after[heading].contains("you left the terminal"),
+            "the ending row carries the daemon's own sentence: {after:?}"
+        );
         assert_eq!(
-            a.screen(80, 24),
-            before,
-            "the transcript, the header and the composer are exactly what they were"
+            after[heading + 1].trim(),
+            "mc's screen",
+            "and the program's last rows are quoted under it, indented — not drawn as the \
+             rectangle they filled a moment ago: {after:?}"
+        );
+        assert_eq!(
+            after.iter().filter(|r| r.contains("mc's screen")).count(),
+            1,
+            "one copy of what the program printed, and it is the ending's: {after:?}"
+        );
+        assert!(
+            after.iter().any(|r| r.contains("! ls -la")),
+            "and the transcript is back: {after:?}"
+        );
+    }
+
+    /// **A program that dies at once leaves its sentence and its status, and they stay.**
+    ///
+    /// The operator's defect, in their words: *"i typed `!term mc`, it flashed and was gone"*.
+    /// The pane was taken, one sentence was posted as a **notice** — which lives for
+    /// `NOTICE_MS` of wall time — and what the program had printed went with the rectangle. A
+    /// person who looked a minute later, or who came back to the session, saw nothing at all.
+    ///
+    /// So the assertion is on the **frame**, not on a notice: the row is still there when the
+    /// notice is cleared, it names the line that ran, the daemon's own sentence with the exit
+    /// status in it, and the last thing the program printed.
+    #[test]
+    fn a_pane_that_dies_at_once_leaves_a_row_with_its_sentence_and_its_status() {
+        let mut a = app();
+        a.session_id = "s".into();
+        a.head_id = "h1".into();
+        a.clock(1_000);
+        // **One frame before the key**, because a pane's rectangle is the *last frame's* —
+        // `App::submit` says so, and it is what a head that has drawn anything always has. A
+        // test that opened a pane before drawing would be asking a 1×1 screen what the program
+        // left on it.
+        let _ = a.screen(80, 24);
+        pane(&mut a, b"mc: not found\r\n");
+        a.apply(ServerFrame::TermEnded {
+            reason: "the program exited with 127".into(),
+        });
+        assert!(!a.pane_open());
+
+        // **A row and not a notice.** `say` is what carried this, and it is the whole reason
+        // the ending was invisible: the notice is gone in `NOTICE_MS` and the row is not.
+        assert!(
+            a.notice.is_none(),
+            "an ending is not a notice: {:?}",
+            a.notice
+        );
+        a.clock(1_000 + 60_000);
+        let frame = a.screen(80, 24);
+        assert!(
+            frame.iter().any(|r| r.contains("!term mc")),
+            "the row names the line that was run: {frame:?}"
+        );
+        assert!(
+            frame
+                .iter()
+                .any(|r| r.contains("the program exited with 127")),
+            "and the daemon's own sentence, with the status in it: {frame:?}"
+        );
+        assert!(
+            frame.iter().any(|r| r.contains("mc: not found")),
+            "and the last thing the program printed — which is the sentence a person needs \
+             when a program dies instantly: {frame:?}"
+        );
+
+        // **And a second pane that dies the same way is a second row.** The identity a note is
+        // deduped by cannot tell two identical endings apart, so a pane's ending is filed without
+        // the redelivery test — otherwise the second `!term mc` would be swallowed by the first.
+        pane(&mut a, b"mc: not found\r\n");
+        a.apply(ServerFrame::TermEnded {
+            reason: "the program exited with 127".into(),
+        });
+        let rows = a
+            .screen(80, 24)
+            .iter()
+            .filter(|r| r.contains("!term mc"))
+            .count();
+        assert_eq!(
+            rows,
+            2,
+            "two endings are two rows, however alike they are: {:?}",
+            a.screen(80, 24)
         );
     }
 
@@ -26339,11 +26562,11 @@ mod tests {
         });
         assert!(!a.pane_open());
         assert!(
-            a.notice
-                .as_deref()
-                .is_some_and(|n| n.contains("the program exited with 3")),
-            "{:?}",
-            a.notice
+            a.screen(80, 24)
+                .iter()
+                .any(|r| r.contains("the program exited with 3")),
+            "the ending is a row, and the reason the daemon gave is on it: {:?}",
+            a.screen(80, 24)
         );
 
         // And a `TermEnded` for a pane this head never opened — a second head attached to the
