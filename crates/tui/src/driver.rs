@@ -774,6 +774,13 @@ impl Link {
                     Action::TermClose => {
                         self.client.term_close()?;
                     }
+                    // **The read behind a head's own line about a program it is not drawing.**
+                    // Asked on attach and before a `!term close` the head cannot answer from
+                    // what it holds; the answer arrives as `ServerFrame::TermStatus` on this
+                    // head's reader, like every other pane frame.
+                    Action::TermStatus => {
+                        self.client.term_status()?;
+                    }
                     // **The model's half of the `!` completion.** The history is the
                     // head's own and was already tried; this is the fallback, asked when
                     // the history has no match for the prefix or its cycle is exhausted.

@@ -462,7 +462,39 @@ use crate::view::Snapshot;
 /// purpose: the prompt card is drawn in the open, its field is not masked, and the secret
 /// path (`SUDO_ASKPASS`, an `askpass` head, the helper's own connection) keeps its rules.
 /// A later edit that merged them would be the change this paragraph exists to make hard.
-pub const PROTOCOL_VERSION: u32 = 33;
+///
+/// # 34: leaving a pane is not ending it, and a head can ask what is running
+///
+/// Two new variants — [`ClientFrame::TermStatus`] and [`ServerFrame::TermStatus`] — so the
+/// one bump covers both directions, the way 30 and 31 each did. A version-33 daemon would
+/// fail to parse the first (the version-4 argument, and the same ATTACH-time refusal); a
+/// version-33 head would fail to decode the second mid-session (the version-25 argument).
+///
+/// **What it is for, in the operator's words:** *"but i dont want it to exit"* — after
+/// `ctrl-\` had been made to end the pane's cgroup, so that leaving `nano` killed it. The
+/// whole point of the attach work (32) is that a pane **persists**; a way out that ends the
+/// program makes the pane pointless for anything the operator cares about. So the two acts
+/// are now separate and this version carries the read the second one needs:
+///
+/// * **`ctrl-\` detaches** — the head hides the rectangle and returns the conversation, the
+///   program keeps running on the daemon's pty, the daemon keeps its screen, and the pane's
+///   slot stays occupied. **It sends nothing at all**, which is why this is not a frame:
+///   *there is no frame whose arrival means detach*, and that is the design rather than an
+///   omission — a detach is the absence of an act, and nothing can be sent that ends
+///   anything because nothing is sent.
+/// * **`!term close` ends it** — deliberately, from the composer, and it is the head's own
+///   act: it asks first (see the head's confirmation card) and then sends the
+///   [`ClientFrame::TermClose`] that already existed. **No new ending frame is needed**, and
+///   that is the point of the split: the wire already had exactly one way to end a pane.
+///
+/// **What the new read is for.** A head that has detached, or switched session, or never
+/// drew the pane, still has to answer two questions — *is something running in this session*
+/// (so it can draw that fact, and **not as a transcript row**: a detach is not an event) and
+/// *what is it running* (so a confirmation can name what it is about to end). Neither is a
+/// head's to hold: the pane is the session's, the command was typed at whatever head was
+/// there at the time, and the daemon is the half that knows. So the head asks, and
+/// [`ServerFrame::TermStatus`] answers with the command or with nothing.
+pub const PROTOCOL_VERSION: u32 = 34;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -691,6 +723,64 @@ pub fn term_command(line: &str) -> Option<&str> {
         return None;
     }
     Some(rest.trim())
+}
+
+/// **What a `!term` line is asking for** — the whole parse, in the one crate both halves share.
+///
+/// [`term_command`] is the primitive (*what is after the verb*); this is the decision on top of
+/// it, and it exists because the verb has **three** readings and only one of them runs a
+/// program:
+///
+/// | line | what it is |
+/// |---|---|
+/// | `!term` | attach to the pane this session already has |
+/// | `!term close` | **end** that pane — the deliberate act |
+/// | `!term nano notes.txt` | run that line in a new pane |
+///
+/// **The three readings are the operator's own requirement**, in their words: *"but i dont want
+/// it to exit"*. `ctrl-\` used to end the pane, so leaving `nano` killed it; leaving is now a
+/// detach (which sends nothing at all) and **ending has to be said**, which is what the bare
+/// word is for. It is a word rather than a second verb or a flag because it has to be
+/// discoverable where the operator already types: the sentence a detach leaves behind names it,
+/// and so does the refusal a second `TermOpen` gets while a pane is live.
+///
+/// # The cost of a bare word, said rather than discovered
+///
+/// **A program named `close`, with no arguments, can no longer be started by the shortest
+/// spelling** — `!term close` means *end the pane* and there is no second reading for those
+/// bytes. That is the price of the word being discoverable, and it is paid in the open: the
+/// command is a **shell line** (`term_command`'s own rule), so `!term command close`,
+/// `!term ./close` and `!term close foo` all still run a program called `close`. The
+/// alternative — a flag (`!term --close`), a sigil, or a fourth verb — is a spelling a person
+/// has to be *told* about, and this one is a word they already know.
+///
+/// **A whole word, exactly as the verb is.** `!term closed`, `!term close-it` and
+/// `!term closing` are commands, not the ending: the word boundary `term_command` keeps is
+/// the same one, one space, no tabs and no second space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TermLine<'a> {
+    /// The verb with nothing after it: the pane this session already has.
+    Attach,
+    /// The verb with `close` after it: **end** the pane.
+    Close,
+    /// The verb with a command: run it in a new pane.
+    Run(&'a str),
+}
+
+/// The three readings of a `!term` line — see [`TermLine`].
+///
+/// `None` for a line that is not the verb at all (which is [`term_command`]'s own answer), so a
+/// caller can tell *not this verb* from *this verb, and here is what it asks for*.
+pub fn term_line(line: &str) -> Option<TermLine<'_>> {
+    let command = term_command(line)?;
+    Some(match command {
+        // The bare verb is an attach and never a request for the operator's `$SHELL` —
+        // `term_command`'s own docs say why. An operator who wants their shell types
+        // `!term bash`.
+        "" => TermLine::Attach,
+        "close" => TermLine::Close,
+        command => TermLine::Run(command),
+    })
 }
 
 /// **The line a `!send` line carries, or `None` when it is not one.**
@@ -1686,6 +1776,25 @@ pub enum ClientFrame {
     /// Its own frame rather than a field on [`ClientFrame::TermInput`], because a resize is
     /// not a keystroke and a terminal's two directions are not one message.
     TermResize { cols: usize, rows: usize },
+    /// **Is something running in this session's pane, and what?** — the read behind a head's
+    /// own line about a program it is not drawing.
+    ///
+    /// The operator's rule, and the reason this exists rather than a pushed notification: a
+    /// head that has **detached** (`ctrl-\`, which now ends nothing — see
+    /// [`PROTOCOL_VERSION`]'s 34 section) or switched session must still know the program is
+    /// there, and the alternative is a **transcript row for a fact that is not an event**. A
+    /// detach leaves no ending row; what a head draws instead is this answer — *a pane is
+    /// running `!term nano notes.txt`* — which is a fact about **now** and not a disclosure
+    /// about a moment, and which stops being drawn the moment it stops being true.
+    ///
+    /// **Not a command**, and answered on this connection like every other pane frame, for the
+    /// reason [`ClientFrame::TermInput`] gives: a question about a live program queued behind a
+    /// running turn is an answer about the past.
+    ///
+    /// The answer is [`ServerFrame::TermStatus`], and a session with no pane is not an error
+    /// here — *nothing is running* is the honest answer, and it is the one that makes a head
+    /// draw nothing at all.
+    TermStatus,
     /// **The operator's answer to a command that asked them something.**
     ///
     /// The daemon raised `SessionEvent::PromptRequested` for a run of the operator's own
@@ -1732,12 +1841,24 @@ pub enum ClientFrame {
         /// The line to write, verbatim. Empty is a bare Enter.
         line: String,
     },
-    /// **The operator left the pane.** The one unambiguous way out, and it is the operator's
-    /// act rather than a key the program sees: the daemon ends the pane's scope, which kills
-    /// the program and everything it started, and answers with
+    /// **End the pane.** The operator's deliberate act, and the daemon's own: the daemon ends
+    /// the pane's scope, which kills the program and everything it started, and answers with
     /// [`ServerFrame::TermEnded`].
     ///
-    /// **Idempotent and quiet when there is no pane**: a head that leaves twice, or leaves a
+    /// **Not the way out, and that is this version's whole correction.** `ctrl-\` used to send
+    /// this frame, so leaving `nano` killed it and the attach work (32) bought nothing. Leaving
+    /// is now a **detach** — the head hides the rectangle and sends *nothing* — and ending is
+    /// this frame, sent only after the head has asked the operator to confirm it (see the
+    /// variant's own story in `crates/tui/src/app.rs`, `TermAsk`). **Two acts, one frame, and
+    /// the destructive one is the one that has to be spelled out**: `!term close` at the
+    /// composer, named in the sentence a detach leaves behind and in the refusal `TermOpen`
+    /// gives when a pane is already live.
+    ///
+    /// **The confirmation is the head's and never travels.** This frame means *end it now*, and
+    /// a daemon that asked its own question would be a second card with a second set of keys —
+    /// the thing the operator named when they said the two questions must not be confusable.
+    ///
+    /// **Idempotent and quiet when there is no pane**: a head that ends one twice, or ends a
     /// pane that has already ended, gets nothing rather than a refusal, because *"stop"* is
     /// not a request that can be wrong about anything.
     TermClose,
@@ -2009,6 +2130,22 @@ pub enum ServerFrame {
     },
     /// The daemon is going away. Detach is not abort; this is the case that is.
     Bye { reason: String },
+    /// **What this session's pane is running, or nothing.** The answer to
+    /// [`ClientFrame::TermStatus`].
+    ///
+    /// `Some(command)` is a **live** pane and the command the daemon was handed at
+    /// [`ClientFrame::TermOpen`] — the verb stripped, [`term_command`] is where — so it is the
+    /// same string [`ServerFrame::TermAttached`] carries, deliberately: they are the same fact,
+    /// one volunteered at an attach and one asked for, and a head that had both could not tell
+    /// them apart (and should not).
+    ///
+    /// **`None` is not a refusal and not an ending.** It is *this session has no live pane*,
+    /// which is the ordinary state of a session nobody has run `!term` in, and of one whose
+    /// program has exited (the daemon frees that slot on the next `TermOpen`). The three pane
+    /// frames keep their jobs and this one is not a fourth ending: `TermAttached` is an attach
+    /// being answered, `TermEnded` is a pane being over, and this is a read — which is why a
+    /// head draws a `None` as **nothing at all** rather than as a row.
+    TermStatus { command: Option<String> },
     /// **The pane you asked to attach to, and what is running in it.**
     ///
     /// The answer to a [`ClientFrame::TermOpen`] whose line is the bare verb: the daemon
@@ -2054,7 +2191,7 @@ pub enum ServerFrame {
     /// command after the verb, a pty that would not open, a program that was not there — is a
     /// pane that is over before it began, and the head's act is the same either way. So
     /// `reason` is the whole of the difference and it is a sentence, not a code: *"the program
-    /// exited with 3"*, *"you left the terminal"*, *"`!term` needs a command to run"*.
+    /// exited with 3"*, *"you closed the terminal"*, *"`!term` needs a command to run"*.
     ///
     /// Its own frame rather than a field on the last [`ServerFrame::TermOutput`], because
     /// **there may be no last one**: a program that dies without writing a byte still ends,
@@ -2190,6 +2327,7 @@ mod tests {
                 | ClientFrame::TermInput { .. }
                 | ClientFrame::TermOpen { .. }
                 | ClientFrame::TermResize { .. }
+                | ClientFrame::TermStatus
                 | ClientFrame::WithdrawPrompts { .. } => {}
             }
         }
@@ -2259,6 +2397,7 @@ mod tests {
                 | ServerFrame::TermAttached { .. }
                 | ServerFrame::TermOutput { .. }
                 | ServerFrame::TermEnded { .. }
+                | ServerFrame::TermStatus { .. }
                 | ServerFrame::Resync { .. }
                 | ServerFrame::Accepted { .. }
                 | ServerFrame::Rejected { .. }
@@ -2269,8 +2408,13 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 33,
-            "the match above was last reconciled with the frame list at 33 — bumped for \
+            PROTOCOL_VERSION, 34,
+            "the match above was last reconciled with the frame list at 34 — bumped for \
+             `TermStatus`, one NEW client frame and one NEW server frame (a version-33 daemon \
+             would fail to parse the first, a version-33 head would fail to decode the second \
+             mid-session): `ctrl-\\` now DETACHES — it sends nothing at all — and `!term close` \
+             is the deliberate ending, so a head has to be able to ask what is running in a \
+             pane it is not drawing. 33 was \
              `PromptAnswer` and `SendLine`, two NEW client frames (a version-32 daemon would \
              fail to parse the first of them, the version-4 argument), and `PromptRequested` \
              and `PromptSettled`, two NEW events (a version-32 head would fail to decode them \

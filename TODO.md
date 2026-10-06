@@ -41,7 +41,7 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
-## R60 — `!term` is built; the pane has three things it still does not do — **OPEN, filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`**
+## R60 — `!term` is built; the pane has three things it still does not do — **OPEN, filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)**
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
 conversation's rectangle given to the program with the composer keeping its rows. It runs:
@@ -49,10 +49,22 @@ conversation's rectangle given to the program with the composer keeping its rows
 `setsid` + `TIOCSCTTY`), raw bytes both ways on protocol 31
 (`ClientFrame::TermOpen`/`TermInput`/`TermResize`/`TermClose`,
 `ServerFrame::TermOutput`/`TermEnded`), the head drawing them through `letibot_vt::Screen`
-painted by `letibot_ui::ansi::pane_rows` in the conversation's rectangle, and `ctrl-\` the one
-way out — intercepted on the raw byte stream, so the program never receives it and cannot trap
-it. **A bare `!term` attaches** to the pane the session has (protocol 32: `TermAttached`, and
-the daemon's replay of the screen it holds) — see item 4 below, which is done.
+painted by `letibot_ui::ansi::pane_rows` in the conversation's rectangle, and `ctrl-\`
+**leaving the pane without ending it** — intercepted on the raw byte stream, so the program
+never receives it and cannot trap it. **A bare `!term` attaches** to the pane the session has
+(protocol 32: `TermAttached`, and the daemon's replay of the screen it holds) — see item 4
+below, which is done.
+
+**And ending a pane is its own act, which asks** (protocol 34, `agent/term-detach`): `!term
+close` raises a confirmation card naming the program and sends nothing until the operator
+answers it with `y` — deliberately not Enter, which is the prompt card's key and the
+composer's, and anything else cancels. The two questions a pane can put on the screen must not
+be confusable, so they differ in words and in keys: the program's own `PromptRequested` card
+takes the screen back if it arrives while the confirmation is up. `ctrl-\` sending *nothing*
+is what makes the program keep running on the daemon's pty and a later `!term` an attach to the
+**same** run, and it is why the daemon needed a read to answer *what is this session's pane
+running* (`ClientFrame::TermStatus`, answered off `Terminals::status`) — a head that is not
+drawing the pane draws that fact instead, and files no row, because a detach is not an event.
 
 **What is not done, and none of it is a defect in what is:**
 
@@ -85,9 +97,45 @@ the daemon's replay of the screen it holds) — see item 4 below, which is done.
 has a byte-stream pair of its own. That module's own TODOs are now narrowed to the *line* case
 (streaming a line, a keystroke at a shell that is not a pane, the registry) and are still open.
 
-**still open?** `cargo test -p letibot-sessionlog --test term_pane` and
-`cargo test -p letibot-tools --lib exec::term` — and `!term mc` at a live head, which is the
-one check that is not a test and is the operator's.
+**still open?** `cargo test -p letibot-sessionlog --test term_pane`,
+`cargo test -p letibot-tools --lib exec::term`, `cargo test -p letibot-harnessd --test
+term_pane_live` (which is where a real pty, the real driver and the socket meet) and
+`cargo test -p letibot-tui --test term_way_out` (whose assertions are on **what the socket
+carried** — the only place *did anything leave the head* can be asked) — and `!term mc` at a
+live head, which is the one check that is not a test and is the operator's.
+
+---
+
+## A pane's first resize is a real `SIGWINCH` to a program that has not drawn yet, and one test races it — **OPEN, found while landing `agent/term-detach`**
+
+`TermSession::start` spawns the child (`crates/tools/src/exec/term.rs`, `cmd.spawn()`) and
+**then** sets the pty's size (`set_size(&master, cfg.cols, cfg.rows)`, four statements later).
+The pty is born at the kernel's default `0×0`, so that ioctl is a real change to a tty the child
+is already the foreground process group of, and the kernel raises `SIGWINCH` for it. A
+full-screen program therefore gets a resize before it has drawn once — harmless in itself, and
+the reason this is filed rather than treated as an emergency — and it makes `exec/term.rs`'s
+`a_same_size_resize_is_not_a_nudge` **flaky**: that test starts a shell with
+`trap 'echo WINCH' WINCH`, waits 300 ms, resizes to the size the pty already has, and asserts no
+`WINCH` appears. The trap catches the *startup* signal whenever the shell reached its `trap`
+statement before the parent's ioctl ran, which is a race the child wins on a loaded box.
+
+**MEASURED 2026-10-06** while landing `agent/term-detach`:
+`cargo test -p letibot-tools --lib a_same_size_resize_is_not_a_nudge` passed **8/8 alone**, and
+the same test failed inside one full `cargo test -p letibot-tools` run with
+`a TIOCSWINSZ that changes nothing must raise no SIGWINCH, and this one did: "WINCH\n"`. That
+branch's diff does not touch the test at all (`git diff main -- crates/tools/src/exec/term.rs`
+has no hunk inside it), so this is older than it and not caused by it.
+
+**The fix, and it is the ORDER rather than a tolerance:** set the size **before** `cmd.spawn()`,
+which is what the line's own comment already claims — *"The size before the first byte"*. It
+needs a `Pty::set_size(&self, cols, rows)`: the winsize belongs to the tty, so an ioctl on the
+master before the child opens the slave is enough, and `into_master`'s *call it after `spawn`*
+rule is about the parent's own slave handle and not about this. Nothing else changes: the child
+is born at the right rectangle instead of being resized into it.
+
+**still open?** `cargo test -p letibot-tools --lib a_same_size_resize_is_not_a_nudge` — which
+will pass alone, so the check that matters is the full `cargo test -p letibot-tools` on a loaded
+box, or reading the order of those two statements in `TermSession::start`.
 
 ---
 
