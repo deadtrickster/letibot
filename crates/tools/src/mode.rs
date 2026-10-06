@@ -328,6 +328,46 @@ pub struct Mode {
     pub summary: &'static str,
 }
 
+/// **What a child's point is, and where it came from** — the two arms of
+/// [`Mode::inherited_by`].
+///
+/// A `bool` beside a `Mode` would be the shape in which *was this clamped* stops
+/// being read. Naming the two states is what lets the disclosure — and the test —
+/// ask for the sentence rather than for a flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Inherited {
+    /// The parent's point, carried unchanged, because this seat's own supplies
+    /// satisfy it. **Consent travels this way and only this way** — see
+    /// [`Mode::ALLOW_ALL_HERE`].
+    Carried(Mode),
+    /// **The nearest point this seat can carry**, because it cannot carry the
+    /// parent's — and the sentence that says so, naming the seat. Never `Carried`
+    /// of a wider point, and never a point the seat's own supplies cannot satisfy.
+    Clamped { mode: Mode, why: String },
+}
+
+impl Inherited {
+    /// The point the child opens at.
+    pub fn mode(&self) -> Mode {
+        match self {
+            Inherited::Carried(m) => *m,
+            Inherited::Clamped { mode, .. } => *mode,
+        }
+    }
+
+    /// **Why this is not the parent's point**, or `None` when it is.
+    ///
+    /// Not a debugging aid: a clamp nobody can read is the silent downgrade under
+    /// another name, so this is the sentence the child's own settings row and the
+    /// note the open publishes carry.
+    pub fn why(&self) -> Option<&str> {
+        match self {
+            Inherited::Carried(_) => None,
+            Inherited::Clamped { why, .. } => Some(why),
+        }
+    }
+}
+
 impl Mode {
     /// Reads, and nothing else. Clause 4: a read inside the boundary never prompts,
     /// so there is nothing to attach and nothing that can refuse.
@@ -527,7 +567,29 @@ impl Mode {
     /// reachable through [`Mode::parse`] — a name that a config file, a project row
     /// or `--mode` could carry would be consent nobody gave, recorded once and
     /// replayed by every later daemon. It is selected by
-    /// `Harness::consent_to_allow_all` and nothing else.
+    /// [`Harness::consent_to_allow_all`] and nothing else.
+    ///
+    /// # A child of the session that consented carries it
+    ///
+    /// The confirmation was given for **a session and the work it is doing**, not for
+    /// one process. A subagent is that work: it is spawned by this session, opened by
+    /// it, answers into its root, and is bound by its downgrade. So the point travels
+    /// down through [`Mode::inherited_by`], which carries it unchanged when the
+    /// child's own seat can carry it and lands the child on the nearest point that
+    /// seat can carry when it cannot.
+    ///
+    /// That does not weaken the sentences above about it lasting as long as the
+    /// session — *no file records it and no later daemon starts here*. What travels is
+    /// the **live point of one session, down the one tree that session is spawning,
+    /// for as long as that session lives**; nothing is written down, and a daemon
+    /// started tomorrow gets no row for it and opens at whatever the store says. The
+    /// two are the same fact about the same session, not an exception to it.
+    ///
+    /// Nor can a child *acquire* it without one: it is not in [`Mode::NAMED`], so
+    /// [`Mode::parse`] cannot reach it, and it is not on the ladder
+    /// [`Mode::inherited_by`] clamps over, so a clamp can narrow it and can never
+    /// produce it. The one route to it stays a person's answer in a session that then
+    /// has children.
     pub const ALLOW_ALL_HERE: Mode = Mode {
         name: "allow-all (this box, consented)",
         role: "coder",
@@ -739,6 +801,136 @@ impl Mode {
              the operator would be the one to discover it.",
         );
         Err(s)
+    }
+
+    /// **Whether this point is no wider than `other`** — the clamp's rule, written
+    /// once so that it is one rule rather than four comparisons in a caller.
+    ///
+    /// The axes that **admit** are compared, because those are the ones a point can
+    /// widen: a disposition may narrow ([`Disposition::Admit`] to `Ask`, `Ask` to
+    /// `Absent`), a grant scope may shorten ([`GrantScope::Session`] to `Once`), and
+    /// a boundary may lose its licence (a consented box to the operator's, a
+    /// structural one to either).
+    ///
+    /// The axes that **name** are deliberately not compared. `role` is a label for a
+    /// seat this function must not touch — the tools are the seat's and a point does
+    /// not seat one; `decider` says *who answers*, not *how much is allowed*, and
+    /// `automode` is not wider than `writes allowed` on any axis that admits
+    /// anything; and `requires` is not a width at all, it is what the seat must
+    /// supply, which is [`Mode::check`]'s question and not this one's.
+    pub fn no_wider_than(self, other: Mode) -> bool {
+        fn rank(d: Disposition) -> u8 {
+            match d {
+                Disposition::Absent => 0,
+                Disposition::Ask => 1,
+                Disposition::Admit => 2,
+            }
+        }
+        fn licence(b: Boundary) -> u8 {
+            match b {
+                // The operator's own box, with the always-ask list reaching them.
+                Boundary::Operator => 0,
+                // The same box with the list taken off, by a person, in advance.
+                Boundary::OperatorConsented => 1,
+                // Nothing inside reaches the operator at all.
+                Boundary::Structural => 2,
+            }
+        }
+        !matches!(self.grants, GrantScope::Session if other.grants == GrantScope::Once)
+            && rank(self.write) <= rank(other.write)
+            && rank(self.exec) <= rank(other.exec)
+            && rank(self.network) <= rank(other.network)
+            && licence(self.boundary) <= licence(other.boundary)
+    }
+
+    /// **The point a child of a session at this point opens at, given that child's
+    /// own seat.**
+    ///
+    /// Two arms, and the second one exists because a child's point is not a choice
+    /// anybody makes: nothing asks a subagent what it would like to be. The parent's
+    /// point is **carried** down — that is the whole of [`Mode::ALLOW_ALL_HERE`]'s
+    /// paragraph about consent belonging to a session and its work rather than to one
+    /// process — and the child's *seat* decides whether it can carry it.
+    ///
+    /// # Why this is not the `best_available_mode` that `check` refuses to provide
+    ///
+    /// [`Mode::check`]'s own doc says there is deliberately no function that picks a
+    /// weaker point, because a function that picks one **for the operator** is the
+    /// silent downgrade — a banner saying one thing and a session doing another. That
+    /// rule is about a person who asked for a point by name and it is unchanged:
+    /// `/mode`, `--mode` and a project row still refuse by name and still hand back
+    /// no weaker point. This is the other case, where the point was not chosen at
+    /// all. A child inherits, and a seat that cannot carry what it inherited would
+    /// otherwise be **refused at open** — measured 2026-09-20, where a row naming a
+    /// point the child could not carry killed every subagent and the operator saw
+    /// only *"subagents dont work"*. So the child gets the nearest point its seat
+    /// *can* carry, and **says so by name**: the seat, the point that was inherited,
+    /// what was missing, and what it opened at instead.
+    ///
+    /// # Never wider than the seat
+    ///
+    /// A point is permission and a seat is capability, and they are not
+    /// interchangeable. `tools_json` is built from the **seat**, from the schemas the
+    /// role actually resolved — nothing here reads [`Mode::role`], seats a tool, or
+    /// widens one, so a point cannot hand a child a write tool it does not have: a
+    /// read-only reviewer is a read-only reviewer at every point, because the tool it
+    /// does not carry is not in its prompt at all (D9's rule — a capability boundary
+    /// beats a flag — and the reason [`Disposition::Absent`] is a schema decision
+    /// rather than a runtime check). What the clamp does own is the half that *can* be
+    /// got wrong, and it is checked against what the seat really seated rather than
+    /// against which role was asked for:
+    ///
+    ///   * the child's point is one this seat's own supplies satisfy
+    ///     ([`Mode::check`], over the classes this seat put in `tools_json` and the
+    ///     backend it actually built), and
+    ///   * it is **never wider than the parent's** ([`Mode::no_wider_than`]), so
+    ///     authority still only ever flows down: a stricter parent cannot spawn a
+    ///     looser child, whatever that child's seat could carry.
+    ///
+    /// # The ladder, and why the consented point is not on it
+    ///
+    /// The search is [`Mode::NAMED`], widest first, keeping only points that are no
+    /// wider than the parent's and that the seat can carry. [`Mode::ALLOW_ALL_HERE`]
+    /// is deliberately absent from that ladder: it is reachable **only by being
+    /// carried**, which is what makes *the consent was given for this session and
+    /// its work* true without it becoming *consent for any child on any box*. A clamp
+    /// can narrow a point that stands on a person's answer; it can never manufacture
+    /// one.
+    ///
+    /// `read-only` is the last rung, it requires nothing, and it is no wider than any
+    /// point — which is why the fallback below is unreachable rather than an error
+    /// path, and why `a_clamp_always_lands_somewhere_the_seat_can_carry` is a test
+    /// over the whole cross product rather than over the cases somebody remembered.
+    pub fn inherited_by(self, have: &[Prereq], seats: Seats, seat: &str) -> Inherited {
+        if self.check(have, seats).is_ok() {
+            return Inherited::Carried(self);
+        }
+        let mode = Mode::NAMED
+            .iter()
+            .rev()
+            .copied()
+            .find(|m| m.no_wider_than(self) && m.check(have, seats).is_ok())
+            .unwrap_or(Mode::READ_ONLY);
+        let missing: Vec<&str> = self
+            .requires_given(seats)
+            .into_iter()
+            .filter(|p| !have.contains(p))
+            .map(|p| p.as_str())
+            .collect();
+        let what = if missing.is_empty() {
+            "something this seat cannot supply".to_string()
+        } else {
+            missing.join(", ")
+        };
+        Inherited::Clamped {
+            mode,
+            why: format!(
+                "the `{seat}` seat cannot carry `{}`: missing {what}. This child opens at \
+                 `{}` instead — the nearest point that seat can carry, and never a wider \
+                 one than its parent's.",
+                self.name, mode.name
+            ),
+        }
     }
 
     /// One line for the startup disclosure.
@@ -1205,5 +1397,320 @@ mod tests {
             assert!(!p.as_str().is_empty());
             assert!(p.how().len() > 40, "{:?} has no real instruction", p);
         }
+    }
+
+    /// **A child inherits the point of the session that spawned it.** The operator's
+    /// ask, in their words: *"make subagent inherit allow-all"* — and it is a sentence
+    /// about the point, not about the seat: the child keeps its own role, its own tool
+    /// list and its own downgrade, and only the point travels down.
+    ///
+    /// Every named point is asserted, including the two that admit everything, because
+    /// the defect this replaces was a child that came up somewhere else — a permissive
+    /// parent and children at the point the parent had *opened* at.
+    #[test]
+    fn a_child_inherits_the_point_of_the_session_that_spawned_it() {
+        let seats = Seats {
+            write: true,
+            exec: true,
+            network: true,
+        };
+        let have = [
+            Prereq::WritableBackend,
+            Prereq::ReachableAdjudicator,
+            Prereq::Confinement,
+            Prereq::Oracle,
+        ];
+        for m in Mode::NAMED.iter().copied().chain([Mode::ALLOW_ALL_HERE]) {
+            let got = m.inherited_by(&have, seats, "coder");
+            assert_eq!(got.mode(), m, "`{}` did not travel", m.name);
+            assert_eq!(
+                got.why(),
+                None,
+                "`{}` was clamped with nothing to clamp on",
+                m.name
+            );
+        }
+
+        // And the tools are not what travelled: the point comes back whole, and it is
+        // the same coordinate — same axes, same boundary, same prerequisites.
+        let got = Mode::ALLOW_ALL_HERE.inherited_by(&have, seats, "coder");
+        assert_eq!(got.mode().boundary, Boundary::OperatorConsented);
+        assert_eq!(got.mode().write, Disposition::Admit);
+        assert_eq!(got.mode(), Mode::ALLOW_ALL_HERE);
+    }
+
+    /// **The clamp holds for a seat that cannot carry the point, and it says so by
+    /// name** — the seat, the point inherited, what was missing, and where the child
+    /// opened instead. A clamp nobody can read is the silent downgrade under another
+    /// name, which is the state this file refuses everywhere else.
+    #[test]
+    fn a_seat_that_cannot_carry_the_point_gets_the_nearest_one_and_says_so() {
+        // A seat with a command and no writable backend — a `runner` on the
+        // operator's own box. `allow-all` needs a confinement for what this seat
+        // execs, and `Confinement` is read off the placement, so on this box no
+        // bwrap probe and no cgroup could have supplied it.
+        let seats = Seats {
+            write: false,
+            exec: true,
+            network: false,
+        };
+        let have = [Prereq::ReachableAdjudicator];
+        let got = Mode::ALLOW_ALL.inherited_by(&have, seats, "runner");
+        let why = got
+            .why()
+            .expect("allow-all needs a confinement for an exec seat");
+        assert!(why.contains("`runner`"), "the seat is named: {why}");
+        assert!(
+            why.contains("allow-all"),
+            "the point inherited is named: {why}"
+        );
+        assert!(
+            why.contains("confinement"),
+            "what was missing is named: {why}"
+        );
+        assert!(
+            why.contains("`writes allowed`"),
+            "where it opened instead is named: {why}"
+        );
+        assert_eq!(got.mode().name, "writes allowed");
+
+        // Not an error and not a downgrade nobody chose: the child opens, at a point
+        // this seat's own supplies really do satisfy, and never wider than its parent.
+        assert!(got.mode().check(&have, seats).is_ok());
+        assert!(got.mode().no_wider_than(Mode::ALLOW_ALL));
+
+        // A seat that CAN carry it is carried, so the clamp is not simply "always
+        // narrower": the same seat with the confinement the point asks for keeps
+        // `allow-all`, which is the whole point of the mechanism.
+        let confined = [
+            Prereq::ReachableAdjudicator,
+            Prereq::Confinement,
+            Prereq::WritableBackend,
+        ];
+        assert_eq!(
+            Mode::ALLOW_ALL
+                .inherited_by(&confined, seats, "runner")
+                .mode(),
+            Mode::ALLOW_ALL
+        );
+    }
+
+    /// **The consented point reaches a child of the session that consented.** The
+    /// confirmation was given for a session and the work it is doing — a child is that
+    /// work — and the sentence on [`Mode::ALLOW_ALL_HERE`] about it lasting only for
+    /// the session is about *no file recording it and no later daemon starting here*,
+    /// not about how many processes one session may run.
+    #[test]
+    fn the_consented_point_reaches_a_child_of_the_session_that_consented() {
+        // The seat that normally holds it: a coder, whose backend is writable and
+        // whose confinement is not — which is exactly what the operator confirmed.
+        let seats = Seats {
+            write: true,
+            exec: false,
+            network: false,
+        };
+        let have = [Prereq::WritableBackend, Prereq::ReachableAdjudicator];
+        let got = Mode::ALLOW_ALL_HERE.inherited_by(&have, seats, "coder");
+        assert_eq!(got.mode(), Mode::ALLOW_ALL_HERE);
+        assert_eq!(got.mode().name, "allow-all (this box, consented)");
+        assert_eq!(got.why(), None);
+
+        // And what it does NOT do is survive the seat it was given for: the point
+        // still drops only `Confinement`, so a seat with no writable backend cannot
+        // carry it — the same rule the consent path in `Harness::set_mode_consented`
+        // applies, and the reason the clamp exists at all rather than an error.
+        let no_backend = Seats {
+            write: true,
+            ..Default::default()
+        };
+        let got =
+            Mode::ALLOW_ALL_HERE.inherited_by(&[Prereq::ReachableAdjudicator], no_backend, "coder");
+        assert_eq!(got.mode().name, "read-only", "{got:?}");
+        assert!(got.why().unwrap().contains("writable backend"));
+    }
+
+    /// **A child of a stricter parent is never more permissive than its parent**, even
+    /// when its seat could carry more. Authority flows down; the clamp is the whole of
+    /// that mechanism, and it searches only points that are **no wider** than the one
+    /// it inherited.
+    #[test]
+    fn a_child_of_a_stricter_parent_is_never_more_permissive() {
+        // An `automode` parent. The child seats no oracle, so it cannot carry the
+        // point — and the widest thing left is not the widest thing there is: a
+        // session-wide grant is what `automode` added over `always-ask`, and the
+        // clamp may not hand a child a scope its parent never had.
+        let seats = Seats::READS_ONLY;
+        let have = [Prereq::ReachableAdjudicator];
+        let got = Mode::AUTO.inherited_by(&have, seats, "orchestrator");
+        assert_eq!(got.mode().name, "always-ask", "{got:?}");
+        assert!(got.mode().no_wider_than(Mode::AUTO));
+        // The two the clamp must not have reached: both sit ABOVE `automode` on the
+        // ladder, and one of them passes `check` for this seat — the comparison that
+        // keeps it out is `no_wider_than`, not the prerequisites.
+        let rung = |m: Mode| Mode::NAMED.iter().position(|n| n.name == m.name).unwrap();
+        assert!(rung(got.mode()) < rung(Mode::AUTO_EDITS));
+        assert!(rung(got.mode()) < rung(Mode::ALLOW_ALL));
+        assert!(Mode::ALLOW_ALL.check(&have, seats).is_ok());
+        // A read-only parent can only ever produce a read-only child, whatever the
+        // seat beneath it: it is the floor of the ladder.
+        let full = Seats {
+            write: true,
+            exec: true,
+            network: true,
+        };
+        let all = [
+            Prereq::WritableBackend,
+            Prereq::ReachableAdjudicator,
+            Prereq::Confinement,
+            Prereq::Oracle,
+        ];
+        assert_eq!(
+            Mode::READ_ONLY.inherited_by(&all, full, "coder").mode(),
+            Mode::READ_ONLY
+        );
+    }
+
+    /// **A clamp can never make a point that stands on somebody's answer.**
+    /// [`Mode::ALLOW_ALL_HERE`] is reachable only by being *carried*: it is not in
+    /// [`Mode::NAMED`], so it is not on the ladder, and a child whose seat cannot carry
+    /// it lands on a point that never had a person behind it. Otherwise a VM parent at
+    /// `allow-all` could hand a host child a consented point nobody consented to.
+    #[test]
+    fn a_clamp_never_manufactures_a_point_that_stands_on_a_persons_answer() {
+        let seats = [
+            Seats::READS_ONLY,
+            Seats {
+                write: true,
+                ..Default::default()
+            },
+            Seats {
+                exec: true,
+                ..Default::default()
+            },
+            Seats {
+                write: true,
+                exec: true,
+                network: false,
+            },
+        ];
+        let haves: [&[Prereq]; 4] = [
+            &[],
+            &[Prereq::ReachableAdjudicator],
+            &[Prereq::WritableBackend, Prereq::Confinement],
+            &[
+                Prereq::WritableBackend,
+                Prereq::ReachableAdjudicator,
+                Prereq::Confinement,
+                Prereq::Oracle,
+            ],
+        ];
+        for parent in Mode::NAMED.iter().copied().chain([
+            Mode::ALLOW_ALL_HERE,
+            Mode::ALLOW_ALL,
+            Mode::ALWAYS_ASK,
+        ]) {
+            for seats in seats {
+                for have in haves {
+                    let got = parent.inherited_by(have, seats, "coder");
+                    if got.mode().name != Mode::ALLOW_ALL_HERE.name {
+                        continue;
+                    }
+                    assert_eq!(
+                        got.mode(),
+                        parent,
+                        "`{}` was produced by a clamp over `{}` ({:?}, {:?})",
+                        Mode::ALLOW_ALL_HERE.name,
+                        parent.name,
+                        have,
+                        seats
+                    );
+                    assert_eq!(got.why(), None);
+                }
+            }
+        }
+    }
+
+    /// **A clamp always lands somewhere the seat can carry** — over the whole cross
+    /// product, not over the cases somebody remembered. `read-only` is the last rung,
+    /// requires nothing and is no wider than any point, which is what makes the
+    /// fallback in `inherited_by` unreachable rather than a guess.
+    #[test]
+    fn a_clamp_always_lands_somewhere_the_seat_can_carry() {
+        let seats = [
+            Seats::READS_ONLY,
+            Seats {
+                write: true,
+                ..Default::default()
+            },
+            Seats {
+                exec: true,
+                ..Default::default()
+            },
+            Seats {
+                network: true,
+                ..Default::default()
+            },
+        ];
+        let haves: [&[Prereq]; 5] = [
+            &[],
+            &[Prereq::WritableBackend],
+            &[Prereq::ReachableAdjudicator],
+            &[Prereq::WritableBackend, Prereq::ReachableAdjudicator],
+            &[
+                Prereq::WritableBackend,
+                Prereq::ReachableAdjudicator,
+                Prereq::Confinement,
+                Prereq::Oracle,
+            ],
+        ];
+        for parent in Mode::NAMED.iter().copied().chain([Mode::ALLOW_ALL_HERE]) {
+            for seats in seats {
+                for have in haves {
+                    let got = parent.inherited_by(have, seats, "coder");
+                    assert!(
+                        got.mode().check(have, seats).is_ok(),
+                        "`{}` from `{}` is not something this seat can carry: {:?}",
+                        got.mode().name,
+                        parent.name,
+                        got.why()
+                    );
+                    assert!(
+                        got.mode().no_wider_than(parent),
+                        "`{}` from `{}` is wider than its parent",
+                        got.mode().name,
+                        parent.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// **The seat keeps the tools; the point is what travels.** A read-only reviewer
+    /// seats no write tool, and no point can hand it one — `tools_json` is built from
+    /// the schemas the role resolved, which is D9's capability boundary rather than a
+    /// check at call time. What the clamp owes that seat is the other half, and it
+    /// gives it: the same point is refused the moment the seat has something to write
+    /// with, because `WritableBackend` is demanded of a seat that writes and of no
+    /// other.
+    #[test]
+    fn a_point_cannot_hand_a_seat_a_tool_it_does_not_have() {
+        let have = [Prereq::WritableBackend, Prereq::Confinement];
+        let carried = Mode::ALLOW_ALL.inherited_by(&have, Seats::READS_ONLY, "orchestrator");
+        assert_eq!(carried.mode(), Mode::ALLOW_ALL);
+        assert_eq!(carried.why(), None);
+        // A seat with a write tool is a different question, and the same list answers
+        // it: the backend is required, and on a box that has none the point is refused
+        // by name rather than carried. See `a_read_only_seat_needs_no_writable_backend
+        // _whatever_the_point_says` for the other direction of this.
+        let e = Mode::ALLOW_ALL
+            .check(
+                &[Prereq::Confinement],
+                Seats {
+                    write: true,
+                    ..Default::default()
+                },
+            )
+            .expect_err("a writing seat needs somewhere to write");
+        assert!(e.contains("writable backend"), "{e}");
     }
 }
