@@ -1419,6 +1419,22 @@ struct SubagentState {
     /// draws as `[?] state unknown` rather than as a `done` nobody measured. See
     /// [`App::fold_subagents`].
     state: String,
+    /// **A turn is generating in this child at this instant** — the daemon's session list's
+    /// own word (`SessionStatus::running`: *"a turn is generating in this session at this
+    /// instant"*), and a measurement of NOW rather than of a life.
+    ///
+    /// **Kept BESIDE [`SubagentState::state`] and not folded into it**, which is the whole of
+    /// this field's reason. The two sources spell the same word — the event's `running` and the
+    /// list's `running` — and they mean different things: the event publishes its `running`
+    /// **once**, when the child's harness is open, and it is a lifecycle word (*this child is
+    /// up*), while the list's `running` is *a turn is generating in it right now*.
+    /// [`App::fold_subagents`] merged the two, so a child that had merely stopped between
+    /// turns went back to looking un-started: it left the count above the composer and moved
+    /// into the `finished` group beside children that had actually ended. The operator
+    /// measured exactly that on 2026-10-06 — the count reading `4, 2, 3, 1` over children
+    /// that were alive throughout, one of them parked on its own background job with two
+    /// commits already behind it.
+    generating: bool,
     /// **The legacy field, and the pre-`task` fallback**: the subtask's first line on the
     /// opening states, and the child's answer's first line once it has finished. A new
     /// row reads [`SubagentState::task`]; this is here so a daemon older than that field
@@ -1453,12 +1469,26 @@ struct SubagentState {
 }
 
 impl SubagentState {
-    /// **Whether this child is done** — the one thing the pane's two groups are made of.
+    /// **Whether this child is done** — the one thing the pane's two groups are made of, and
+    /// now the one thing the count above the composer is made of too.
     ///
     /// Anything that is not `running` or `opening` is finished, and that includes a row the
     /// daemon's list rebuilt with no state word at all: a child this head did not watch, whose
     /// brief said only *a turn is not generating here* — which a running child would have
     /// contradicted.
+    ///
+    /// **A life, and not a measurement of an instant.** The word here is the one the daemon
+    /// published for the child — `opening` at the spawn, `running` when its harness came up,
+    /// `done` or `failed` at the end — and the only thing that may end it is that end. A child
+    /// with a tool call in flight, a child between two rounds, a child parked on its own
+    /// background job: all three are `running` and all three are alive, which is the standard
+    /// the operator set in their own words — *"claude code for example shows subagent as alive
+    /// until it finished turn with reply. not 'pausing it' on tool calls"*.
+    ///
+    /// **A stale `answer` does not enter into it.** A row can hold the answer of a turn that
+    /// has since ended while the list says a second turn is generating in it right now, and
+    /// that child is alive — see [`SubagentState::generating`] and the merge in
+    /// [`App::fold_subagents`], which is where the two facts are kept apart.
     fn is_finished(&self) -> bool {
         !matches!(self.state.as_str(), "running" | "opening")
     }
@@ -5482,12 +5512,18 @@ impl App {
                 model,
                 answer,
             } => {
+                // **The event's own word for the instant**: it publishes `running` when the
+                // child's harness comes up and `opening` before that, so `running` is the one
+                // state it names in which a turn is generating. See
+                // [`SubagentState::generating`].
+                let generating = state == "running";
                 if let Some(row) = self
                     .subagents
                     .iter_mut()
                     .find(|s| s.session_id == subagent_id)
                 {
                     row.state = state;
+                    row.generating = generating;
                     row.prompt = prompt;
                     row.role = role;
                     row.task = task;
@@ -5497,6 +5533,7 @@ impl App {
                     self.subagents.push(SubagentState {
                         session_id: subagent_id,
                         state,
+                        generating,
                         prompt,
                         role,
                         task,
@@ -11064,13 +11101,31 @@ impl App {
                 // everything except whether a turn is generating in it right now.
                 Some(k) => {
                     let mut k = k.clone();
+                    // **The list's measurement of NOW**, kept beside the lifecycle word rather
+                    // than written over it. See [`SubagentState::generating`].
+                    k.generating = b.status.running;
                     k.state = if b.status.running {
+                        // **A positive measurement of life, and the one direction the list may
+                        // move a row**: a turn is generating in this child at this instant, so
+                        // it is working. This overrides a `done` on purpose — a child asked for
+                        // more work is generating whatever it last finished.
                         "running".into()
-                    } else if k.state == "running" {
-                        // The finish this row is still running on happened before the
-                        // list was cut, so the list's `false` is the later word.
+                    } else if k.state == "running" && k.answer.is_some() {
+                        // **`false` may retire a row that has ALREADY completed.** The finish
+                        // this row is still running on happened before the list was cut, and
+                        // the child holds the answer the daemon published with its `done` — so
+                        // the list's `false` is the later word about a child that has ended,
+                        // and the pane may stop claiming it is running.
                         String::new()
                     } else {
+                        // **And it may not touch any other row.** `false` here is *no turn is
+                        // generating in this child this instant* — which is exactly what a
+                        // child parked on its own background job, or sitting between two
+                        // rounds, looks like — and it is NOT a completion. Reading it as one is
+                        // the defect this change exists for: the count above the composer
+                        // dropped live children (`4, 2, 3, 1`) while they were working, and the
+                        // pane moved them into the `finished` group beside children that had
+                        // actually ended.
                         k.state
                     };
                     // **The daemon's own stamp wins over the event's**, when the list carries one:
@@ -11092,6 +11147,7 @@ impl App {
                     } else {
                         String::new()
                     },
+                    generating: b.status.running,
                     prompt: String::new(),
                     // **The child's name, or the id the daemon shows for one it has not
                     // named** — the fallback the picker's own rows make, and the reason
@@ -12190,11 +12246,15 @@ impl App {
             // session's other running things. One edge for *what this session has in flight* is
             // one place to look, and it is the same kind of fact as the subagent count beside it.
             let mut facts: Vec<String> = Vec::new();
-            let running = self
-                .subagents
-                .iter()
-                .filter(|s| s.state == "running")
-                .count();
+            // **The number is the rows the pane draws, and not a second rule about them.**
+            // This counted `state == "running"`, which is narrower than the predicate the
+            // pane's own active group is built from ([`SubagentState::is_finished`]): a child
+            // in `opening` was drawn as a live row and left out of the number, so the footer
+            // and the pane could disagree about the same list. Both now read the one
+            // lifecycle predicate — alive from the spawn until the completion, which is what
+            // the operator asked for in their own words: *"an agent is alive from spawn until
+            // it has finished"*.
+            let running = self.subagents.iter().filter(|s| !s.is_finished()).count();
             if running > 0 {
                 facts.push(format!(
                     "{running} subagent{} running",
@@ -15768,6 +15828,15 @@ impl App {
             // about this head rather than about the child — so it says which.
             if s.state.is_empty() {
                 facts.push("state unknown".into());
+            } else if s.state == "running" && !s.generating {
+                // **A child that is up with no turn generating this instant** — parked on its
+                // own background job, or sitting between two rounds. It is alive (the event
+                // said so and nothing has ended it) and it is not generating (the daemon's own
+                // list measured that), and this is the head saying both rather than drawing
+                // `running` for a child that is not, or dropping it from the count. The word is
+                // the head's, like `state unknown` beside it — the child's own words are
+                // `opening`, `running`, `done` and `failed`. See [`SubagentState::generating`].
+                facts.push("waiting".into());
             } else {
                 facts.push(without_control_lines(&s.state).to_string());
             }
@@ -32217,6 +32286,7 @@ mod tests {
             SubagentState {
                 session_id: "s-sub-1".into(),
                 state: "running".into(),
+                generating: true,
                 prompt: "audit the store".into(),
                 role: "coder".into(),
                 task: String::new(),
@@ -32227,6 +32297,7 @@ mod tests {
             SubagentState {
                 session_id: "s-sub-2".into(),
                 state: "done".into(),
+                generating: false,
                 prompt: "finished".into(),
                 role: "coder".into(),
                 task: String::new(),
@@ -39232,6 +39303,232 @@ mod tests {
         );
     }
 
+    /// A `Subagent` event as the daemon publishes one — the state word, and the child's
+    /// answer's first line **on a completion only**.
+    ///
+    /// `harness.rs` is the one publisher and it says which is which: `publish("opening", …, None)`,
+    /// `publish("failed", …, None)`, `publish("running", …, None)`, and
+    /// `publish("done", &first_line, Some(first_line.clone()))`. So `answer.is_some()` is
+    /// exactly *the completion arrived*, which is why the row can be asked whether a child has
+    /// finished without consulting a clock or an instant.
+    fn child_event(id: &str, state: &str, answer: Option<&str>) -> SessionEvent {
+        SessionEvent::Subagent {
+            subagent_id: id.into(),
+            state: state.into(),
+            prompt: "find the bug in the reader".into(),
+            role: "coder".into(),
+            task: "find the bug in the reader".into(),
+            model: String::new(),
+            answer: answer.map(str::to_string),
+        }
+    }
+
+    /// **The footer's `N subagents running` line, off the glass** — read from the frame rather
+    /// than recomputed, so the assertion is about what the operator sees.
+    fn count_row(a: &mut App) -> String {
+        let screen = a.screen(100, 24);
+        screen
+            .iter()
+            .find(|l| l.contains("subagent"))
+            .cloned()
+            .unwrap_or_else(|| panic!("no subagent count on the top edge:\n{}", screen.join("\n")))
+    }
+
+    /// **A child with a tool call in flight is a working child, and it is counted.**
+    ///
+    /// The operator's standard, in their own words: *"claude code for example shows subagent as
+    /// alive until it finished turn with reply. not 'pausing it' on tool calls."* The daemon's
+    /// session list measures an **instant** — `SessionStatus::running` is *"a turn is generating
+    /// in this session at this instant"* — and a child executing a `cargo test` generates nothing
+    /// while it runs. So the list says `false` about a child that is plainly at work, and reading
+    /// that `false` as *finished* is what took live children out of the count.
+    #[test]
+    fn a_child_with_a_tool_call_in_flight_is_counted() {
+        let mut a = app();
+        a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+        a.apply(ServerFrame::Event(env(
+            1,
+            child_event("s-sub-1", "running", None),
+        )));
+        // **The call is executing, so nothing is generating.** The list is cut now, and its word
+        // about this instant is the only thing it can say.
+        let mut list = a_family();
+        list[1].status.running = false;
+        a.apply(hello("s", list, Hub::new("s").snapshot()));
+        assert_eq!(
+            a.subagents[0].state, "running",
+            "the list's `false` retired a child that has not finished"
+        );
+        assert!(
+            !a.subagents[0].is_finished(),
+            "a child with a call in flight is a live row"
+        );
+        let row = count_row(&mut a);
+        assert!(row.contains("1 subagent running"), "{row}");
+        // **And the pane says which of the two facts it is** — up, with no turn generating this
+        // instant, which is exactly what a call in flight looks like from here. The word is the
+        // head's, like `state unknown` beside it; the child's own words are the four states.
+        a.key(Key::CtrlG);
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("[~]"), "the live mark is gone:\n{screen}");
+        assert!(
+            screen.contains("waiting"),
+            "the pane does not say the child is up and not generating:\n{screen}"
+        );
+    }
+
+    /// **A child that stopped its turn with an interim message has not finished, and it counts.**
+    ///
+    /// The operator's own child, verbatim: *"Waiting on `j228` (the workspace-wide test run) —
+    /// I'll report as soon as it ends"*, with two commits and a running suite behind it. That line
+    /// is not a completion — see [`child_event`]: `answer` rides the `done` and nothing else — so
+    /// the row holds no answer and the child has not ended. **The count must not move with the
+    /// list's instantaneous measurement**, however many times that measurement flaps; this is the
+    /// `4, 2, 3, 1` the operator watched, over children that were alive the whole time.
+    #[test]
+    fn a_child_that_stopped_its_turn_with_an_interim_message_still_counts() {
+        let mut a = app();
+        a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+        a.apply(ServerFrame::Event(env(
+            1,
+            child_event("s-sub-1", "running", None),
+        )));
+        assert_eq!(
+            a.subagents[0].answer, None,
+            "an interim line is not an answer, and the daemon says so by publishing no `answer`"
+        );
+        // The list is cut between the child's turns, so its `running` alternates. The count must
+        // read 1 at every one of them.
+        for (i, generating) in [false, true, false, false, true].into_iter().enumerate() {
+            let mut list = a_family();
+            list[1].status.running = generating;
+            a.apply(hello("s", list, Hub::new("s").snapshot()));
+            let row = count_row(&mut a);
+            assert!(
+                row.contains("1 subagent running"),
+                "frame {i} (generating={generating}) dropped a live child: {row}"
+            );
+        }
+    }
+
+    /// **A child whose completion arrived does not count.**
+    ///
+    /// The other end of the same rule: the daemon's `done` is the completion and it is the only
+    /// thing that may end a child's life in this pane. `answer` is `Some` on that event and on no
+    /// other, so the row and the count agree about what has ended without either of them reading
+    /// a clock, an instant, or the absence of one.
+    ///
+    /// **The list is the one frame the completion outlives**, and it is the frame this asserts in:
+    /// a brief saying *a turn is generating in that session now* still overrides a settled row —
+    /// *"a child asked for more work has started a second turn"*, which
+    /// `the_session_list_owns_the_word_running_…` holds and this change does not disturb. The list
+    /// is a positive measurement of life, and nothing here may retire a live child; what changed is
+    /// that a **negative** one may no longer end a child that has not completed.
+    #[test]
+    fn a_child_whose_completion_arrived_does_not_count() {
+        let mut a = app();
+        // The child has ended, and the daemon's list agrees: no turn is generating in it.
+        let mut list = a_family();
+        list[1].status.running = false;
+        a.apply(hello("s", list, Hub::new("s").snapshot()));
+        a.apply(ServerFrame::Event(env(
+            1,
+            child_event("s-sub-1", "running", None),
+        )));
+        assert!(
+            count_row(&mut a).contains("1 subagent running"),
+            "the premise: the child is up and counted"
+        );
+        // The completion, carrying the child's answer's first line.
+        a.apply(ServerFrame::Event(env(
+            2,
+            child_event("s-sub-1", "done", Some("3529 files")),
+        )));
+        assert_eq!(a.subagents[0].state, "done");
+        assert_eq!(a.subagents[0].answer.as_deref(), Some("3529 files"));
+        assert!(a.subagents[0].is_finished());
+        let screen = a.screen(100, 24).join("\n");
+        assert!(
+            !screen.contains("subagent running"),
+            "a finished child is still counted:\n{screen}"
+        );
+        // **And it is drawn where finished children go**, under the fold — with `s-sub-2`, the
+        // child this head never watched, which the list rebuilt and which is finished too.
+        a.key(Key::CtrlG);
+        let pane = a.screen(100, 24).join("\n");
+        assert!(pane.contains("finished (2)"), "{pane}");
+        assert!(
+            !pane.contains("[~]"),
+            "a finished child wears a live mark:\n{pane}"
+        );
+    }
+
+    /// **The footer's number is the rows the pane draws, and not a second rule about them.**
+    ///
+    /// The defect this pins: the footer counted `state == "running"` while the pane's active group
+    /// was built from [`SubagentState::is_finished`], so a child in `opening` was drawn as a live
+    /// row and left out of the number — two readings of one list, which is the two-enumerations
+    /// defect [`App::subagent_stops`] exists to prevent. Both now read the one lifecycle
+    /// predicate, and this asserts the agreement at three points: the pane's own enumeration, the
+    /// marks it drew on the glass, and the number on the composer's edge.
+    #[test]
+    fn the_footers_number_is_the_rows_the_pane_draws() {
+        let mut a = app();
+        // One child of each kind the pane can draw: up and generating, still opening, and ended.
+        let mut live = brief("s-sub-1", "the one that is up", true);
+        live.parent_session_id = Some("s".into());
+        let mut opening = brief("s-sub-2", "the one still opening", false);
+        opening.parent_session_id = Some("s".into());
+        let mut done = brief("s-sub-3", "the one that finished", false);
+        done.parent_session_id = Some("s".into());
+        a.apply(hello(
+            "s",
+            vec![brief("s", "parent", false), live, opening, done],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(
+            1,
+            child_event("s-sub-1", "running", None),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            child_event("s-sub-2", "opening", None),
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            child_event("s-sub-3", "done", Some("3529 files")),
+        )));
+        assert!(
+            !a.subagents_finished_open,
+            "the premise: the finished group is folded, so every `Agent` stop is a live row"
+        );
+        // **The pane's own enumeration**, read the way the pane and its keys read it.
+        let drawn = a
+            .subagent_stops()
+            .iter()
+            .filter(|s| matches!(s, SubStop::Agent(_)))
+            .count();
+        assert_eq!(drawn, 2, "the two live children are the pane's active rows");
+        let row = count_row(&mut a);
+        assert!(row.contains("2 subagents running"), "{row}");
+        // **And the same number, counted off the marks the pane drew.** The two live rows wear a
+        // mark — `[~]` for `running`, `[…]` for `opening` — and the finished one is under the fold.
+        a.key(Key::CtrlG);
+        let screen = a.screen(100, 24).join("\n");
+        let marks = screen
+            .lines()
+            .filter(|l| l.contains("[~]") || l.contains("[\u{2026}]"))
+            .count();
+        assert_eq!(
+            marks, drawn,
+            "the drawn live marks and the pane's stops disagree:\n{screen}"
+        );
+        assert_eq!(
+            drawn, 2,
+            "and the footer said `2 subagents running` for exactly these:\n{screen}"
+        );
+    }
+
     #[test]
     fn a_users_own_message_is_a_block_with_a_bar_and_the_time_it_was_sent() {
         let mut a = app();
@@ -41421,6 +41718,7 @@ mod tests {
         let sub = SubagentState {
             session_id: "s-p-sub-1".into(),
             state: "done".into(),
+            generating: false,
             // The legacy meaning on the finish: the ANSWER's first line. Which is why the task
             // field exists, and why the fallback below is not this.
             prompt: "ready.".into(),
@@ -41576,6 +41874,7 @@ mod tests {
         a.subagents = vec![SubagentState {
             session_id: "s-sub-1".into(),
             state: "failed".into(),
+            generating: false,
             prompt: String::new(),
             role: "coder".into(),
             task: BRIEF.into(),
