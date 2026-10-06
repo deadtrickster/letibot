@@ -678,7 +678,7 @@ impl Adjudicator for HeadAdjudicator {
 /// The operator, on who a subagent's ask belongs to: *"who asks subagents permissions? i
 /// think they should surface to the parent head all the way to the root obviously"*. A child
 /// has no head attached and **cannot be driven** — it is adopted into the session registry and
-/// not into `Sessions::open`, so `Sessions::wake` returns `Ignored` for it (R58) — so its
+/// not into `Sessions::open`, so `Sessions::wake` cannot run its turn — so its
 /// gate's card is posted to the one session in the tree that does have a head: the root.
 ///
 /// This is deliberately **not a second mechanism**: it is a [`HeadAdjudicator`] over the

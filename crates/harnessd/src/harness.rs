@@ -708,19 +708,21 @@ impl DenialSink for HubDenials {
 /// distinction is recorded here, at the moment the message is handed over, because after
 /// the engine appends it they are four identical `User` items. See [`TrailMirror`].
 ///
-/// # Why a settlement is here at all, when R7 gives it a wake
+/// # Why a settlement is here at all, when the session has a wake
 ///
 /// For a **root** it is not: [`Harness::wake`] is its door, and
 /// [`JobWatchers::take_mid_turn_completions`] returns nothing for it — a second
 /// delivery path for the R7 turn would be exactly the kind of duplicate this tree
-/// keeps finding. For a **child** the wake does not exist: `Sessions::wake` needs
-/// `self.open.get_mut(id)` and a child is adopted into the registry and never into
-/// `open`, so a ring for it is a condition that fires and is discarded (R58). The
-/// child's own turn is the only place it can be told that a job it backgrounded has
-/// ended, and the round boundary is the only place a turn can be told anything.
+/// keeps finding. A **child** has a between-turn wake too, and since 2026-10-06 it is one
+/// that ARRIVES: the ring names the child, `Sessions::wake` cannot run its turn (`open`
+/// holds no harness for it), so the daemon hands the wake to the thread that does
+/// ([`letibot_sessionlog::hub::Hub::wake_its_own_reader`], answered by `serve_child`) and
+/// the settlement becomes a turn of the child's own. What that door cannot reach is a turn
+/// already RUNNING — the child's serving thread is inside it — and the round boundary is
+/// the only place a turn in flight can be told anything. This is that place.
 ///
-/// That guard is the set's, not this struct's: it is the same question — *does this
-/// session have a between-turn wake* — and it is answered where the session ids are.
+/// That guard is the set's, not this struct's: it is the same question — *is this session
+/// the top of its tree* — and it is answered where the session ids are.
 pub struct HubSteering {
     hub: Arc<Hub>,
     /// Where the speaker of each injected message is recorded. `None` in a test
@@ -5212,9 +5214,11 @@ impl<'a> Harness<'a> {
     /// **Stop this session's children, and say so on its own log** — the downward edge, for a
     /// caller that holds a `Harness` rather than a `HubSteering`.
     ///
-    /// One caller: `Sessions::dispatch`'s interrupt arm, which is where an interrupt that
-    /// arrived between turns lands for a session the daemon holds. See [`stop_children_first`],
-    /// which is the one implementation all three doors go through.
+    /// Two callers, and they are two of the three doors a stop arrives through: [`serve_child`]'s
+    /// stop arm (a child between turns, on the thread that runs it) and `Sessions::dispatch`'s
+    /// interrupt arm (a session the daemon holds, with nothing generating). The third — the
+    /// steering source's interrupt arm, for a turn in flight — holds no `Harness` and calls
+    /// [`stop_children_first`] directly, which is the one implementation all three go through.
     pub fn stop_children(&self) -> Option<String> {
         stop_children_first(Some(&self.subagents), &self.hub)
     }

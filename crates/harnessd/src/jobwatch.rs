@@ -222,8 +222,10 @@ pub struct JobWatchers {
     /// **The queue of the set this one was built from, and whose session owns it** —
     /// the parent's, when this is a child's ([`JobWatchers::shares_tree`]).
     ///
-    /// The queue has exactly one writer: [`JobWatchers::stop`], handing up what this
-    /// session will never drain. A session that has finished its turn cannot be told
+    /// The queue has two writers, and both are this set handing something up that its own
+    /// session can no longer be told: [`JobWatchers::stop`], carrying what is left in this
+    /// queue when the session closes, and [`SettlementQueue::push`], for a settlement that
+    /// arrives after the owner has stopped. A session that has finished its turn cannot be told
     /// anything more, and a settlement of its own left in its queue would be a
     /// settlement nobody reads — the shape R58 was built to prevent, one level
     /// further down. The id beside it is the level above's **session**, because that is
@@ -444,10 +446,12 @@ impl JobWatchers {
     ///
     /// A **root** is driven: `Sessions::wake` names it, and this is what
     /// [`crate::harness::Harness::wake`] drains to run the settlement's own turn (R7).
-    /// A **child** is not — it is adopted into the registry and never into
-    /// `Sessions::open`, so `Sessions::wake` answers `Ignored` for it and nothing will
-    /// ever wake it between turns. Its own turn is therefore the only place it can be
-    /// told, and it is told there: [`JobWatchers::take_mid_turn_completions`], whose
+    /// A **child** is not in `Sessions::open` — its harness lives on the thread its parent
+    /// spawned it on — so `Sessions::wake` cannot run its turn. Since 2026-10-06 that is not
+    /// silence: the wake is handed to that thread ([`letibot_sessionlog::hub::Hub::wake_its_own_reader`],
+    /// answered by `harness::serve_child`), so a child's between-turns door exists too. What the
+    /// hand-over cannot reach is a turn already RUNNING — the child's serving thread is inside
+    /// it — and that is the door [`JobWatchers::take_mid_turn_completions`] opens, whose
     /// guard is exactly this root/child difference.
     pub fn take_completions(&self) -> Vec<JobCompletion> {
         let mut g = self.completions.lock().expect("job completions");
@@ -525,8 +529,8 @@ impl JobWatchers {
     ///
     /// # Why this is not only a flag
     ///
-    /// Setting the flag says *this session will not drain again* — `close_backend` runs
-    /// at the end of a child's turn, and a child is driven by nobody between turns (see
+    /// Setting the flag says *this session will not drain again* — `close_backend` runs when
+    /// the session's backend closes, and nothing drains this queue after it (see
     /// [`JobWatchers::take_completions`]). Anything still in the queue at that moment is
     /// a settlement no reader will ever reach: a job that settled between the child's
     /// last round boundary and its turn ending, or a grandchild still working when its
@@ -534,9 +538,10 @@ impl JobWatchers {
     /// parent can still be reawakened — 2026-10-04).
     ///
     /// So the queue is emptied into the level above, which is a session that is still
-    /// running — the child's parent, or the tree's root when the parent is the one that
-    /// stopped. The completion keeps its `owner`, so the notice at the other end says
-    /// whose it was rather than claiming *you backgrounded*.
+    /// running — the child's parent, one level at a time and never the tree's root (the ring
+    /// names the parent for the same reason: see the module header). The completion keeps its
+    /// `owner`, so the notice at the other end says whose it was rather than claiming *you
+    /// backgrounded*.
     ///
     /// **The hand-over and the queue are ordered by one lock.** A watcher pushes
     /// holding this queue's lock and reads the flag there
