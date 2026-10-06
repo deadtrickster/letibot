@@ -76,6 +76,12 @@ pub enum Verbosity {
     ///   hidden, **a ten-minute tool-heavy turn draws nothing at all**. The composer's border
     ///   keeps the spinner and the elapsed time, so working and wedged stay distinguishable —
     ///   see `App::turn_status`, which is not gated by any of this.
+    /// * **The operator's own act.** A `!` line and the `ToolResult` it produced are the
+    ///   conversation, not the head's working: *"an act of the person at the keyboard is never
+    ///   hidden by verbosity"* — this ladder governs how much of the MODEL's working you see,
+    ///   and it must not hide what YOU did. See [`Verbosity::keeps`], which is where the row's
+    ///   `origin` is read and where the ruling is argued — this docstring said *hidden: tool
+    ///   outcomes* until a `! ls` on a live head proved the sentence wrong.
     ///
     /// **It is a view.** Nothing is dropped from the transcript, the ledger, the corpus or
     /// what is sent to the model, and the filter is applied to the whole transcript at once,
@@ -152,9 +158,39 @@ impl Verbosity {
     /// evidence *about* the conversation — a tool call, its outcome and payload, the model's
     /// reasoning, a system update — and this rung is the one that shows the conversation and
     /// not the working.
+    ///
+    /// **Except when the person at the keyboard is the one who acted**, which is a second
+    /// sentence rather than a footnote to the first: the rows that carry such an act are their
+    /// own `User` line and the `ToolResult` whose `origin` says they ran it.
     pub fn keeps(self, item: &letibot_transcript::TranscriptItem) -> bool {
         use letibot_transcript::TranscriptItem as T;
         if !self.hides_the_working() {
+            return true;
+        }
+        // **An act of the person at the keyboard is never hidden by verbosity.**
+        //
+        // MEASURED on a live head, and this is the whole of the report: the operator typed
+        // `! ls`, the store held the right two rows — their own `User` line and the `bash`
+        // result with `origin: CallOrigin::Operator { … }` — the turn started correctly, and
+        // **the operator never saw the result on the screen**. Their own guess was the right
+        // one: *"i guess it was eaten by verbosity level"*, and their verbosity is
+        // `read-edits`, whose rung is this one.
+        //
+        // It is the wrong thing for a rung to eat, and the reason is the whole of what this
+        // ladder is for. **Verbosity governs how much of the MODEL's working you see; it must
+        // not hide what YOU did.** A `ToolResult` the operator ran is therefore the
+        // conversation exactly as the `User` row beside it is, and it is drawn at every rung of
+        // [`Verbosity::ALL`].
+        //
+        // **And it is still a tool row.** Being kept is a question about the filter and not
+        // about the fold: the row is drawn the way tool output is drawn — its header, its
+        // `+N lines`, and `ctrl-v`/`/t` to open it — and it is never expanded against the
+        // operator's wishes, because the fold is the operator's own switch and this clause
+        // does not touch it.
+        //
+        // [`operator_act`] reads the one fact that makes this knowable, and `origin` is on the
+        // row precisely so no head has to guess it: `None` is a call the MODEL proposed.
+        if operator_act(item) {
             return true;
         }
         matches!(item, T::User { .. } | T::Assistant { .. })
@@ -188,6 +224,13 @@ impl Verbosity {
 /// * **Liveness.** [`App::turn_status`] is not gated by anything here, and this list is why it
 ///   matters: `conversation` hides the tool rows, so a ten-minute tool-heavy turn would draw
 ///   nothing at all, and the composer's border is what keeps working and wedged apart.
+///
+/// **And the operator's own act is not on the list either**, though unlike those three it has a
+/// switch that appears to cover it: `tools` is *"tool calls, their outcomes and their
+/// payloads"*, and the `ToolResult` of a `!` line is one of those rows. It is drawn anyway —
+/// *"an act of the person at the keyboard is never hidden by verbosity"* — and the clause lives
+/// in [`Verbosity::keeps`] rather than as a sixth switch, because **a switch is something a
+/// reader can turn off and this is not.**
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Show {
     /// **The cards that say what the head CHANGED** — an `edit`/`write` call and its diff.
@@ -711,7 +754,18 @@ impl Visibility {
     /// (`src/cards/hidden-run.lisp:40`) — and **this is our one place**: `item_lines` and the run
     /// finder both ask this, so a second opinion about which rows are hidden cannot put a marker
     /// beside a row that is still on the screen.
+    ///
+    /// **And the operator's own act is asked BEFORE the switch**, because the switches are
+    /// verbosity too: `tools` is *"tool calls, their outcomes and their payloads"*, and the
+    /// `ToolResult` of a `!` line is one of those rows — *"an act of the person at the keyboard
+    /// is never hidden by verbosity"*. [`Verbosity::keeps`] carries the ruling and reads the
+    /// `origin`; it is asked here as well so the `edits` clause below cannot hide a call a
+    /// person made either. The door's list holds no `edit`/`write` name today and a list that can
+    /// grow is not a reason to leave the hole in the one predicate that decides.
     pub fn keeps(self, item: &letibot_transcript::TranscriptItem) -> bool {
+        if operator_act(item) {
+            return true;
+        }
         if is_edit_card(item) {
             return self.shows(Show::Edits);
         }
@@ -762,6 +816,29 @@ impl Visibility {
         }
         Some(Show::Thinking)
     }
+}
+
+/// **Is this row the act of the person at the keyboard** — the one fact verbosity may not hide.
+///
+/// R24 part two's [`letibot_transcript::CallOrigin`] is what makes it knowable, and it is the
+/// whole reason the field is on the row: a `ToolResult` the daemon appended for a call the
+/// OPERATOR ran — the `bash` behind their `!` line, a `/web-fetch` from their own console —
+/// carries `Some(CallOrigin::Operator { who })`, while one the model proposed carries `None`.
+/// A head that inferred it from *no proposing assistant row above* would be guessing, which is
+/// the defect the field was added to end.
+///
+/// **The `User` row beside such a result is the operator's too**, and it needs no predicate
+/// here: `User` is kept at every rung already, because it is the conversation. This answers only
+/// the half that was hidden — see [`Verbosity::keeps`] for the ruling and the measurement, and
+/// [`Visibility::keeps`] for why it is asked before the switch list.
+fn operator_act(item: &letibot_transcript::TranscriptItem) -> bool {
+    matches!(
+        item,
+        letibot_transcript::TranscriptItem::ToolResult {
+            origin: Some(letibot_transcript::CallOrigin::Operator { .. }),
+            ..
+        }
+    )
 }
 
 /// **Is this row one that says what the head CHANGED** — the one predicate `read-edits` differs
@@ -30452,6 +30529,31 @@ mod tests {
         )));
     }
 
+    /// **The control for the operator-act ruling**: the same row with no `origin`, which is a
+    /// call the MODEL proposed — and also every row written before `CallOrigin` existed, since
+    /// a missing key reads as `None`. No `User` row goes with it: nobody at the keyboard acted.
+    fn model_bash_rows(a: &mut App, seq: u64, id: &str, payload: &str) {
+        a.apply(ServerFrame::Event(env(
+            seq,
+            testing::appended(id, "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            seq + 1,
+            SessionEvent::TranscriptContent {
+                item_id: id.into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: format!("{id}c"),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: payload.into(),
+                    edit: None,
+                    origin: None,
+                    media: None,
+                }),
+            },
+        )));
+    }
+
     /// **The operator's command gets the tool-output treatment, the whole of it.**
     ///
     /// A long output is *collapsed with an honest count* — `… +N lines` naming N as the
@@ -30552,6 +30654,112 @@ mod tests {
             folded.contains("ctrl-v opens it") || folded.contains("+1 line"),
             "the row is still a folded tool row: {folded:?}"
         );
+    }
+
+    /// **An act of the person at the keyboard is never hidden by verbosity.**
+    ///
+    /// MEASURED on a live head, and this is the whole of the report: the operator typed `! ls`,
+    /// the store held the right two rows — their own `User` line and the `bash` result with
+    /// `origin: CallOrigin::Operator` — the turn started correctly, and **the operator never saw
+    /// the result on the screen**. Their own guess was the right one: *"i guess it was eaten by
+    /// verbosity level"*, and their verbosity is `read-edits`, whose rung is the bottom of the
+    /// ladder.
+    ///
+    /// So both rows are drawn at every rung of [`Verbosity::ALL`], and at `read-edits` — the
+    /// profile the report came from, which is `conversation`'s set with `edits` turned up and so
+    /// the same rung — and the ruling is about the FILTER only: the result is still a folded
+    /// tool row, elided with an honest count, and the payload is not dumped whole. The rungs are
+    /// taken by name through the verb, so what is pinned is the ladder a reader has and not a set
+    /// built by hand.
+    #[test]
+    fn the_operators_own_act_is_drawn_at_every_rung() {
+        // Long enough to fold: the row shows a line or two and counts the rest, so the last line
+        // of the payload is the one that must NOT be on the screen.
+        let body: String = (0..60).map(|i| format!("line {i}\n")).collect();
+        let mut sets: Vec<(String, Visibility)> = Verbosity::ALL
+            .into_iter()
+            .map(|r| {
+                let vis = Visibility::of(Profile::parse(r.as_str()).expect("a rung is a profile"));
+                assert_eq!(vis.rung(), r, "the premise: `{}` is that rung", r.as_str());
+                (r.as_str().to_string(), vis)
+            })
+            .collect();
+        // **And the profile the operator is actually on.** `read-edits` is not a rung — it is
+        // `conversation`'s set with the `edits` switch turned up — so its rung is `conversation`'s,
+        // which is why the two rows were eaten by a filter that was only ever about the model.
+        let read_edits = Visibility::of(Profile::READ_EDITS);
+        assert_eq!(read_edits.rung(), Verbosity::Conversation, "the premise");
+        sets.push(("read-edits".to_string(), read_edits));
+
+        for (name, vis) in sets {
+            let mut a = app();
+            a.visibility = vis;
+            a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+            typed(&mut a, "! seq 1 60");
+            assert!(matches!(
+                a.key(Key::Enter),
+                Some(Action::OperatorShell { .. })
+            ));
+            bang_rows(&mut a, 2, "i1", "! seq 1 60", &body);
+
+            let screen = a.screen(100, 40).join("\n");
+            assert!(
+                screen.contains("! seq 1 60"),
+                "the operator's own line is hidden at `{name}`:\n{screen}"
+            );
+            assert!(
+                screen.contains("+59 lines"),
+                "the result of the operator's own command is hidden at `{name}`:\n{screen}"
+            );
+            assert!(
+                !screen.contains("line 59"),
+                "the payload was dumped whole at `{name}` — kept is not unfolded:\n{screen}"
+            );
+        }
+    }
+
+    /// **The control that makes the ruling mean *who acted* and not *tool rows are drawn*.**
+    ///
+    /// A `ToolResult` the MODEL proposed — `origin: None`, which is also every row written before
+    /// the field existed — is the head's working and follows the ladder exactly as it always did:
+    /// hidden at the bottom rung, where the screen carries the run marker and the count instead,
+    /// and drawn (folded) above it. Beside the test above, this pair is what says the clause reads
+    /// the operator's `origin` rather than widening the filter for tool rows in general.
+    #[test]
+    fn a_models_tool_row_still_obeys_the_rung() {
+        let body: String = (0..60).map(|i| format!("line {i}\n")).collect();
+        for rung in Verbosity::ALL {
+            let mut a = app();
+            assert_eq!(a.command(&format!("verbosity {}", rung.as_str())), None);
+            assert_eq!(a.visibility.rung(), rung, "the premise: that is this rung");
+            a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+            model_bash_rows(&mut a, 2, "i1", &body);
+
+            let screen = a.screen(100, 40).join("\n");
+            if rung.hides_the_working() {
+                assert!(
+                    !screen.contains("+59 lines"),
+                    "a model's tool row was drawn at `{}`:\n{screen}",
+                    rung.as_str()
+                );
+                assert!(
+                    screen.contains("[1 tool call]"),
+                    "the row the rung hides is not even counted at `{}`:\n{screen}",
+                    rung.as_str()
+                );
+            } else {
+                assert!(
+                    screen.contains("+59 lines"),
+                    "a model's tool row is not drawn at `{}`:\n{screen}",
+                    rung.as_str()
+                );
+                assert!(
+                    !screen.contains("line 59"),
+                    "and it is not folded either at `{}`:\n{screen}",
+                    rung.as_str()
+                );
+            }
+        }
     }
 
     #[test]
