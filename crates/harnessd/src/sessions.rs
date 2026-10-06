@@ -116,6 +116,12 @@ pub enum Outcome {
     Compacted(Box<CompactReport>),
     Failed(String),
     Ignored,
+    /// **The daemon ran no turn because the session has its OWN reader**, and that reader was
+    /// handed the wake — see [`Sessions::wake`]. A subagent's harness lives on the thread its
+    /// parent spawned it on, so the wake goes there rather than being discarded, and this is the
+    /// word for that: not `Ignored` (the condition was acted on) and not `Replied` (no turn ran
+    /// here). Nothing is printed for it — a settlement inside a working tree is ordinary.
+    HandedOn,
 }
 
 /// Every session this daemon is serving, and the harness behind each one.
@@ -174,6 +180,38 @@ fn is_root(registry: &Registry, session_id: &str) -> bool {
         .find(|b| b.session_id == session_id)
         .map(|b| b.parent_session_id.is_none())
         .unwrap_or(true)
+}
+
+/// **What the daemon can do with a wake for a session** — and which of the three it is.
+///
+/// Pure, so the routing decision is assertable without a daemon, a socket or a model: it is two
+/// booleans the caller already has to look up, and the whole of the operator's requirement is
+/// which arms exist. The operator's design, in their words: *"think about it like it is an
+/// erlang supervision tree. we talk to parents and they own lifecycle."* — and a supervisor whose
+/// exits nobody can deliver is not a supervisor, so there is no arm here that throws one away
+/// while anything can still act on it.
+///
+/// * **`Drive`** — the daemon holds this session's harness (`Sessions::open`), so the worker runs
+///   the turn: `Harness::wake` for a root, and for every session the daemon opened.
+/// * **`ItsOwnReader`** — the session is live in the registry and the daemon does not hold it:
+///   a subagent, whose harness lives on the thread its parent spawned it on. The daemon hands the
+///   wake to that thread (`Hub::wake_its_own_reader`), which is what makes a ring naming a child
+///   a promise rather than the `Ignored` R58 measured.
+/// * **`Gone`** — no hub at all. Nothing to hand anything to, and nothing lost: a session that
+///   closed handed its undrained settlements up a level first (`jobwatch::JobWatchers::stop`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WakeRoute {
+    Drive,
+    ItsOwnReader,
+    Gone,
+}
+
+fn wake_route(held_by_the_daemon: bool, live_in_the_registry: bool) -> WakeRoute {
+    match (held_by_the_daemon, live_in_the_registry) {
+        (true, _) => WakeRoute::Drive,
+        (false, true) => WakeRoute::ItsOwnReader,
+        (false, false) => WakeRoute::Gone,
+    }
 }
 
 impl<'a> Sessions<'a> {
@@ -1664,21 +1702,44 @@ impl<'a> Sessions<'a> {
     /// pickup: the steering source and the harness share a cursor, so the firing
     /// had already reached the model and running a turn about it again would be
     /// telling the model the same thing twice.
+    ///
+    /// # A session the daemon does not HOLD is not a session nobody can serve
+    ///
+    /// This is R58's finding, and the correction is the operator's design in their own words:
+    /// *"think about it like it is an erlang supervision tree. we talk to parents and they own
+    /// lifecycle."* A subagent's harness is built inside the runner's thread and adopted into the
+    /// `registry` — which is exactly what lets a head peek at it and attach to it — and it is
+    /// **not** in `open`, so `Sessions::wake` cannot run its turn. What that used to mean was
+    /// that a ring naming a child was a condition that fires and is discarded, which made depth
+    /// 2 a hole: a grandchild's settlement reached the bell and stopped there.
+    ///
+    /// So the daemon HANDS IT ON. [`Hub::wake_its_own_reader`] wakes the hub's own condvar — the
+    /// one the thread that runs that session is blocked in — and the wake is answered there by
+    /// `harness::serve_child`, which calls [`crate::harness::Harness::wake`] exactly as this
+    /// function does for a root. **Every session that can start a child is now a session the
+    /// daemon can serve**; it is served by the thread that owns it, and the ring names the
+    /// session that owns the settlement (its parent) rather than the tree's root.
+    ///
+    /// `Ignored` is left for what it honestly means: the session is gone from the registry
+    /// altogether. Nothing is lost when that happens — a session that has closed handed its
+    /// undrained settlements up a level first (`jobwatch::JobWatchers::stop`).
     pub fn wake(&mut self, session_id: &str) -> Outcome {
         let hub = self.registry.get(session_id);
-        // **A session the daemon does not DRIVE is ignored here — and for a nested subagent that is
-        // silence rather than a no-op** (R58, and the finding is worth more than the framing around
-        // it). A child's harness is built inside the runner's thread and adopted into the `registry`,
-        // which is exactly what lets a head peek at it and attach to it — and it is **not** in
-        // `open`. So a *grandchild's* settlement rings `bell.ring_wake(&child.session_id())`, arrives
-        // here, and returns `Ignored`: the condition fires and is discarded.
-        //
-        // **At depth 1 this line is never reached for a child**, which is the only reason the chain
-        // closes today: the watcher that rings belongs to the PARENT, the parent is in `open`, and
-        // `Harness::wake` below drains the queue that the `[task]` row comes out of. Depth 2 moves
-        // the watcher down a level and lands here instead. The fix is not in this function — it is
-        // that the bell must ring for a session the daemon can drive, which is R58's "one slots list
-        // and one watcher set per TREE, rooted at the top session".
+        // **The decision is `wake_route`'s, so it can be asserted without a daemon.** The two
+        // facts it reads are asked of the layers that own them: `open` is this struct's, the
+        // registry is the daemon's.
+        match wake_route(self.open.contains_key(session_id), hub.is_some()) {
+            WakeRoute::Drive => {}
+            WakeRoute::ItsOwnReader => {
+                let handed = hub.map(|h| h.wake_its_own_reader()).unwrap_or(false);
+                return if handed {
+                    Outcome::HandedOn
+                } else {
+                    Outcome::Ignored
+                };
+            }
+            WakeRoute::Gone => return Outcome::Ignored,
+        }
         let Some(harness) = self.open.get_mut(session_id) else {
             return Outcome::Ignored;
         };
@@ -1909,6 +1970,28 @@ impl<'a> Sessions<'a> {
                 }
             }
             CommandKind::Interrupt { reason } => {
+                // **A stop delivered to a session the daemon does not hold belongs to the thread
+                // that owns it.** Both readers take from ONE queue (`Hub::take_own_work` for the
+                // thread that runs the session, `Hub::try_command` for the worker), so the worker
+                // can win an interrupt a parent aimed at its child — and its answer would be
+                // *"nothing was generating"*, which for a subagent that is mid-turn in its own
+                // thread is false. This is not about `Prompt`, which the daemon CAN serve by
+                // opening the session lazily: an interrupt has nothing to act on unless the turn
+                // already running is reached, and the daemon cannot reach one it does not hold.
+                // So it is put back for that thread, which is the same door a relayed wake takes.
+                if !self.open.contains_key(session_id)
+                    && let Some(hub) = &hub
+                    && hub.give_back_to_its_own_reader(cmd.clone())
+                {
+                    return Outcome::HandedOn;
+                }
+                // **AND THE SUBTREE GOES FIRST, whichever session this is.** A stop is a stop
+                // whether or not a turn is running: the children this session owns are stopped
+                // before it, so nothing is left computing for nobody — the operator's design in
+                // one line, *"we talk to parents and they own lifecycle"*.
+                if let Some(h) = self.open.get_mut(session_id) {
+                    h.stop_children();
+                }
                 if let Some(hub) = &hub {
                     hub.publish(SessionEvent::Warning {
                         code: "interrupt_idle".into(),
@@ -2772,6 +2855,46 @@ mod idle_nag {
             Some("2 of 3 not (in progress)"),
             Some("2 of 3 not")
         ));
+    }
+}
+
+#[cfg(test)]
+mod the_wake_route {
+    //! **Which of the three things the daemon does with a wake for a session** — the operator's
+    //! design in their own words: *"think about it like it is an erlang supervision tree. we talk
+    //! to parents and they own lifecycle."*
+    //!
+    //! Tested here rather than through a daemon because the whole of it is the decision, and the
+    //! decision is two facts the caller already looks up. The defect it replaces was one arm
+    //! short: a ring naming a session the daemon does not hold was DISCARDED (R58), which is what
+    //! made depth 2 a hole — a grandchild's settlement reached the bell and stopped there.
+    use super::{WakeRoute, wake_route};
+
+    /// The daemon's own session: the worker runs the turn, as it always did.
+    #[test]
+    fn a_session_the_daemon_holds_is_driven() {
+        assert_eq!(wake_route(true, true), WakeRoute::Drive);
+        // And `open` is the fact that decides it — a session in `open` whose hub has gone is
+        // still the daemon's to run, and the harness inside is what runs it.
+        assert_eq!(wake_route(true, false), WakeRoute::Drive);
+    }
+
+    /// **A live session the daemon does not hold is handed to the thread that does.** This is
+    /// the arm that was missing, and it is a subagent: its harness lives on the thread its
+    /// parent spawned it on, so the wake goes to that thread's own condvar rather than being
+    /// dropped.
+    #[test]
+    fn a_session_the_daemon_does_not_hold_goes_to_its_own_reader() {
+        assert_eq!(wake_route(false, true), WakeRoute::ItsOwnReader);
+    }
+
+    /// A session with no hub at all has nobody to hand anything to — and that is not a loss:
+    /// a session that closed handed its undrained settlements up a level first
+    /// (`jobwatch::JobWatchers::stop`), so the wake it would have been told by is no longer the
+    /// one holding the notice.
+    #[test]
+    fn a_session_that_is_gone_is_nothing() {
+        assert_eq!(wake_route(false, false), WakeRoute::Gone);
     }
 }
 

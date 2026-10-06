@@ -131,9 +131,18 @@ pub struct Parts {
     ///
     /// `None` for a root: a root's watcher set is its own, built at open. `Some` for a
     /// child, carrying its parent's, so the child's set can join the tree's — sharing the
-    /// watching/settled bookkeeping and the ring target that is the root's id. Without the
-    /// ring target a grandchild's settlement rings a session `Sessions::open` does not
-    /// hold, and `Sessions::wake` returns `Ignored`: the condition fires and is discarded.
+    /// watching/settled bookkeeping, **the level above** (whose queue what this session can
+    /// no longer drain goes to, and whose id the ring for it names) and the **ROOT**, which
+    /// is the one session in a tree that has a head and is therefore the one a permission
+    /// card can be drawn by (`tree_root`).
+    ///
+    /// **The RING is not among them any more** (2026-10-06). It used to carry the root's id
+    /// so a grandchild's settlement would ring a session `Sessions::open` holds, because a
+    /// ring for a child was `Ignored` — the condition fired and was discarded. The ring now
+    /// names the session that OWNS the settlement (the parent, at every depth) and the
+    /// daemon serves a session it does not hold by handing the wake to the thread that does
+    /// (`Sessions::wake` → `Hub::wake_its_own_reader`), so a card and an exit are two
+    /// questions with two answers. See `jobwatch`'s module header.
     ///
     /// **Not the completions queue** — each session drains its own (2026-10-05). A tree
     /// whose settlements all landed on the root's queue delivered a subagent's background
@@ -699,19 +708,21 @@ impl DenialSink for HubDenials {
 /// distinction is recorded here, at the moment the message is handed over, because after
 /// the engine appends it they are four identical `User` items. See [`TrailMirror`].
 ///
-/// # Why a settlement is here at all, when R7 gives it a wake
+/// # Why a settlement is here at all, when the session has a wake
 ///
 /// For a **root** it is not: [`Harness::wake`] is its door, and
 /// [`JobWatchers::take_mid_turn_completions`] returns nothing for it — a second
 /// delivery path for the R7 turn would be exactly the kind of duplicate this tree
-/// keeps finding. For a **child** the wake does not exist: `Sessions::wake` needs
-/// `self.open.get_mut(id)` and a child is adopted into the registry and never into
-/// `open`, so a ring for it is a condition that fires and is discarded (R58). The
-/// child's own turn is the only place it can be told that a job it backgrounded has
-/// ended, and the round boundary is the only place a turn can be told anything.
+/// keeps finding. A **child** has a between-turn wake too, and since 2026-10-06 it is one
+/// that ARRIVES: the ring names the child, `Sessions::wake` cannot run its turn (`open`
+/// holds no harness for it), so the daemon hands the wake to the thread that does
+/// ([`letibot_sessionlog::hub::Hub::wake_its_own_reader`], answered by `serve_child`) and
+/// the settlement becomes a turn of the child's own. What that door cannot reach is a turn
+/// already RUNNING — the child's serving thread is inside it — and the round boundary is
+/// the only place a turn in flight can be told anything. This is that place.
 ///
-/// That guard is the set's, not this struct's: it is the same question — *does this
-/// session have a between-turn wake* — and it is answered where the session ids are.
+/// That guard is the set's, not this struct's: it is the same question — *is this session
+/// the top of its tree* — and it is answered where the session ids are.
 pub struct HubSteering {
     hub: Arc<Hub>,
     /// Where the speaker of each injected message is recorded. `None` in a test
@@ -729,6 +740,10 @@ pub struct HubSteering {
     /// This session's watcher set, for the settlements it cannot be woken with. `None`
     /// in a test that has no daemon behind it.
     job_watch: Option<Arc<JobWatchers>>,
+    /// **This session's children** — the tree's downward edge. An `Interrupt` that reaches a
+    /// running turn IS this session being stopped, and a supervisor stops its children before
+    /// it goes (see [`HarnessTaskRunner`]). `None` in a test with no session behind it.
+    subagents: Option<Arc<dyn letibot_tools::builtins::task::TaskRunner>>,
     /// Messages handed back by a failed turn, drained before the hub's queue so the
     /// next poll finds them first. See [`SteeringSource::give_back`].
     held: VecDeque<SteeringMessage>,
@@ -743,6 +758,7 @@ impl HubSteering {
             monitors: None,
             monitor_cursor: Arc::new(AtomicUsize::new(0)),
             job_watch: None,
+            subagents: None,
             held: VecDeque::new(),
         }
     }
@@ -987,7 +1003,18 @@ impl SteeringSource for HubSteering {
                     }
                     Some(SteeringMessage::operator(text))
                 }
-                CommandKind::Interrupt { reason } => Some(SteeringMessage::urgent(reason)),
+                CommandKind::Interrupt { reason } => {
+                    // **THE CHILDREN FIRST, THEN THIS SESSION.** The operator's design in their
+                    // own words — *"we talk to parents and they own lifecycle"* — and this is
+                    // the one door an interrupt reaches a turn in flight through. Nothing here
+                    // waits for the children: a stop that blocked on its subtree would hold the
+                    // turn it is stopping open. Each child is told through its own runner, and
+                    // each child stops ITS children when the stop reaches it, which is how one
+                    // interrupt walks a whole tree without anybody holding a grandchild's
+                    // handle.
+                    stop_children_first(self.subagents.as_ref(), &self.hub);
+                    Some(SteeringMessage::urgent(reason))
+                }
                 CommandKind::Message { from, text } => {
                     // **A parent's live correction** — an agent's utterance in a session it is not
                     // seated in, so it is recorded as `Speaker::Agent` and NOT as the operator.
@@ -1214,6 +1241,20 @@ pub struct Harness<'a> {
     /// processes. Fed by the sink as backgrounded results pass; stopped when the
     /// backend closes.
     job_watch: Option<Arc<JobWatchers>>,
+    /// **The session's children, as the thing that owns their lifecycle.**
+    ///
+    /// The same `Arc` the tool registry holds for `task`/`task_result`/`task_message` and the
+    /// same one `job_watch` walks to their slots — one object, three readers, because a second
+    /// runner would hand out handles its sibling could not collect or stop.
+    ///
+    /// The harness keeps it because **stopping is the session's business and not a tool's**: an
+    /// interrupt arrives as a `CommandKind`, and *stop my children, then me* has to happen on
+    /// this session's own thread — mid-turn through [`HubSteering`]'s interrupt arm, between
+    /// turns through [`serve_child`]'s stop arm, and after the fact (nothing running) through
+    /// [`crate::sessions::Sessions::dispatch`]'s. Before this field the runner was reachable
+    /// only from the tool registry and the watcher set, so an interrupt had nothing to reach
+    /// its children with — which is the defect, measured, that this exists for.
+    subagents: Arc<dyn letibot_tools::builtins::task::TaskRunner>,
     /// The cloud provider the turns go to, when the session has one. `None` is
     /// the local server through the engine's own `/completion` path.
     provider: Option<Box<dyn letibot_backend::MessagesBackend>>,
@@ -2658,11 +2699,23 @@ impl<'a> Harness<'a> {
         // thread leaked per `task` call. Giving the watchers the runner is what makes
         // the handle route to its own wait (R7's hop, for a subagent).
         let job_watch = Some(job_watch.with_tasks(&subagent_runner));
-        // **And a child joins its TREE's set** (R58). What piece 4 needs is the ring: a
-        // settlement must waken a session the daemon can drive, and the only such session in
-        // a tree is its root — the only one in `Sessions::open`, so the only one
-        // `Sessions::wake` will serve. A root has no tree to join (`tree_watch` is `None`
-        // from `Parts::load`) and keeps its own set, whose `wake_target` is its own id.
+        // **And a child joins its PARENT's set** (R58, and the tree read as a supervision tree
+        // in 2026-10-06). What joining gives it is three facts, and none of them is a ring
+        // target any more:
+        //
+        //   * the `watching`/`settled` bookkeeping, so a tree does not watch or settle one
+        //     handle twice;
+        //   * **the level above** — whose queue what this session can no longer drain goes to,
+        //     and whose id the ring for it names;
+        //   * **the ROOT**, which the ask route posts a permission card to (`tree_root`), because
+        //     that is the one session in a tree a head can be attached to.
+        //
+        // The RING is not among them: it names the session that OWNS a settlement — this one,
+        // for what this session starts — and the daemon serves a session it does not hold by
+        // handing the wake to the thread that does. Ringing the root instead is what put a
+        // grandchild's notice somewhere nobody was looking; see `jobwatch`'s module header.
+        // A root has no tree to join (`tree_watch` is `None` from `Parts::load`) and keeps its
+        // own set, whose ring names itself.
         //
         // **The queue is NOT joined with it** (2026-10-05). A child's set keeps its own
         // completions, so what it backgrounds is drained by the child — and a settlement
@@ -2674,8 +2727,8 @@ impl<'a> Harness<'a> {
         };
         // **And this session's own set is what ITS children will join** (R58). Filled
         // here, after the join above, so the value a child reads is already the joined
-        // one — which is how the ring target stays the tree's root at every depth
-        // without anything walking a parent chain.
+        // one — which is how the ROOT (the session a permission card can be drawn by)
+        // stays the tree's root at every depth without anything walking a parent chain.
         if let Some(w) = &job_watch {
             *tree_watch_slot.lock().expect("tree watch") = Some(Arc::clone(w));
             // **Where a settlement gets written down.** The watcher threads settle jobs on
@@ -3296,6 +3349,9 @@ impl<'a> Harness<'a> {
             monitor_cursor,
             tool_sink,
             job_watch,
+            // The same `Arc` the tool registry has, cloned before it was moved in — see the
+            // field: an interrupt has to be able to stop this session's children.
+            subagents: subagent_runner,
             provider,
             // Filled on the first switch away from local, never at open: a session
             // that started on a provider has no local window to go back to, and
@@ -5155,6 +5211,18 @@ impl<'a> Harness<'a> {
         .map(Some)
     }
 
+    /// **Stop this session's children, and say so on its own log** — the downward edge, for a
+    /// caller that holds a `Harness` rather than a `HubSteering`.
+    ///
+    /// Two callers, and they are two of the three doors a stop arrives through: [`serve_child`]'s
+    /// stop arm (a child between turns, on the thread that runs it) and `Sessions::dispatch`'s
+    /// interrupt arm (a session the daemon holds, with nothing generating). The third — the
+    /// steering source's interrupt arm, for a turn in flight — holds no `Harness` and calls
+    /// [`stop_children_first`] directly, which is the one implementation all three go through.
+    pub fn stop_children(&self) -> Option<String> {
+        stop_children_first(Some(&self.subagents), &self.hub)
+    }
+
     /// **Something fired while nothing was running.** T24's wake, from the worker —
     /// and, since R7, **the same door a background job's completion comes through.**
     ///
@@ -6973,6 +7041,9 @@ impl<'a> Harness<'a> {
             // nothing will wake it with — and a root's own set answers nothing here, so
             // R7's wake keeps its monopoly on the root's settlements.
             job_watch: self.job_watch.clone(),
+            // **And the session's own children, so a stop takes them with it.** See the
+            // interrupt arm of `try_next`.
+            subagents: Some(self.subagents.clone()),
             held: VecDeque::new(),
         }
     }
@@ -8258,17 +8329,47 @@ pub(crate) struct TaskSlot {
     /// the child's last word. The flag is set by [`HarnessTaskRunner::kill`], before the
     /// interrupt is sent, so the settlement that follows cannot be read as an answer.
     killed: std::sync::atomic::AtomicBool,
+    /// **Which session started this child** — the one field supervision needs, because a
+    /// tree's handle list is shared and the runner that owns a child is the only one that may
+    /// stop it (see [`HarnessTaskRunner::stop_all`]).
+    ///
+    /// `task_result` deliberately reads the WHOLE list, so any ancestor can collect any
+    /// handle in its tree — a decision made on purpose and unchanged. Stopping is the other
+    /// direction and goes to parents, which is what this field says: one list, one owner per
+    /// entry.
+    owner: String,
+    /// **Whether the child's own thread has ended.**
+    ///
+    /// Not the same question as [`TaskSlot::state`], and the difference is the whole of what
+    /// `stop_all` has to get right: a child that has ANSWERED is still alive (a host child
+    /// parks in `serve_child` and can be asked more), so a `Done` slot is a child that still
+    /// owns whatever it started and must still be stopped. This flag is set where the child's
+    /// thread leaves `run_to_completion`, and it is what makes `stop_all` skip a child that is
+    /// really gone instead of submitting an interrupt nothing will read.
+    exited: std::sync::atomic::AtomicBool,
 }
 
 impl TaskSlot {
-    fn new() -> TaskSlot {
+    fn new(owner: &str) -> TaskSlot {
         TaskSlot {
             state: std::sync::Mutex::new(letibot_tools::builtins::task::TaskStatus::Running {
                 note: None,
             }),
             settled: std::sync::Condvar::new(),
             killed: std::sync::atomic::AtomicBool::new(false),
+            owner: owner.to_string(),
+            exited: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// **This child's thread has ended.** Read by [`HarnessTaskRunner::stop_all`], which is
+    /// the only caller that has to tell "already answered" from "still here".
+    fn mark_exited(&self) {
+        self.exited.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn has_exited(&self) -> bool {
+        self.exited.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The child's own last word about what it is doing. Kept only while it is
@@ -8371,18 +8472,25 @@ enum ChildCommand {
     /// another agent. its 'sub' is a way to inherit something and be managable. so mid turn, post
     /// turn whatever"*.
     Answer,
-    /// Leave it, and this says why.
+    /// **Leave, and stop this session's children on the way out.** See [`ChildCommand::Stop`].
     Leave(&'static str),
+    /// **A stop, and a stop walks the subtree downward.** See the supervision invariant on
+    /// [`HarnessTaskRunner`]: a parent owns its children's lifecycle, so the last thing this
+    /// session does is stop what it started, and then it goes.
+    Stop,
 }
 
 fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
     use letibot_sessionlog::CommandKind as K;
     match kind {
         K::Prompt { .. } => ChildCommand::Answer,
-        // Nothing is running between turns, so there is nothing to stop. A turn takes its own
-        // interrupt through the steering poll; one that arrives after the turn has ended has no
-        // turn to reach.
-        K::Interrupt { .. } => ChildCommand::Leave("nothing is running to interrupt"),
+        // **An interrupt IS this child's stop, whether or not a turn is running.** The turn it
+        // was written for is the common case and it never arrives here (a running turn takes its
+        // own interrupt through the steering poll); what DOES arrive here is the case that was
+        // measured: a parent stopped while this child sat between turns with children of its
+        // own still computing. Saying *nothing is running to interrupt* was true of the session
+        // and false of its subtree, which is the whole of what a supervision tree is for.
+        K::Interrupt { .. } => ChildCommand::Stop,
         // A message's contract is a turn IN FLIGHT — the parent's own `task_message` refuses to
         // send one to a child that is not running — so one here is the race that refusal names.
         // Answering it as a prompt would answer, in the parent's name, something the parent
@@ -8394,7 +8502,80 @@ fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
     }
 }
 
-/// **A child's own turns, after the task it was spawned for.**
+/// **The sentence a session leaves about the children it stopped on the way down** — or
+/// `None` when it had none.
+///
+/// Pure, so what a stop SAYS can be asserted without a daemon — the same reason
+/// [`subagent_depth_refusal`] and [`child_command`] are free functions. It is one function
+/// because there are three callers (the steering source's interrupt arm, a child's own serving
+/// loop, and the daemon's between-turns arm) and a sentence written three times is a sentence
+/// that drifts.
+///
+/// **A refusal is named, not counted away.** A child that could not be stopped is the one
+/// fact a reader needs, and "stopped 3 subagents" over a refusal is exactly the claim-versus-
+/// fact defect this tree keeps paying for.
+fn children_stopped_notice(results: &[(String, Result<String, String>)]) -> Option<String> {
+    if results.is_empty() {
+        return None;
+    }
+    let mut stopped = Vec::new();
+    let mut refused = Vec::new();
+    for (handle, said) in results {
+        match said {
+            Ok(_) => stopped.push(handle.clone()),
+            Err(why) => refused.push(format!("`{handle}` — {why}")),
+        }
+    }
+    let mut out = String::new();
+    if !stopped.is_empty() {
+        out.push_str(&format!(
+            "stopping this session stopped the {} subagent(s) it was still running, before \
+             stopping itself: {}. They stop their own children in turn, so the whole subtree \
+             goes; `task_result` on any of them says it was stopped.",
+            stopped.len(),
+            stopped.join(", ")
+        ));
+    }
+    if !refused.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "{} subagent(s) could NOT be stopped and are still running:\n  {}",
+            refused.len(),
+            refused.join("\n  ")
+        ));
+    }
+    Some(out)
+}
+
+/// **Stop every child this session owns, and say so on its own log.**
+///
+/// The downward edge of a supervision tree, in one place, for the three doors a stop arrives
+/// through: the steering source's interrupt arm (a turn in flight), [`serve_child`]'s stop arm
+/// (a child between turns), and `Sessions::dispatch`'s interrupt arm (a session the daemon holds
+/// and that has nothing running). One function, so a stop cannot mean different things at
+/// different doors — the same reason `subagent_depth_refusal` is one.
+///
+/// It publishes on the session's own hub and not the children's: the reader who has to know
+/// that this session stopped its subtree is the one looking at this session — the operator who
+/// pressed Esc, or the parent that killed it.
+fn stop_children_first(
+    runner: Option<&Arc<dyn letibot_tools::builtins::task::TaskRunner>>,
+    hub: &Hub,
+) -> Option<String> {
+    let runner = runner?;
+    let said = children_stopped_notice(&runner.stop_all())?;
+    hub.publish(letibot_sessionlog::SessionEvent::Warning {
+        code: "subagents_stopped".into(),
+        detail: said.clone(),
+        compaction: None,
+    });
+    Some(said)
+}
+
+/// **A child's own turns, after the task it was spawned for** — and the door its parent's
+/// stop comes through.
 ///
 /// The door is the one the first prompt came through — [`Harness::submit`] — and that is the whole
 /// of the honesty here: a child's turn IS that call (see `run_to_completion`), so a later prompt is
@@ -8403,18 +8584,47 @@ fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
 /// child's harness borrows `Parts` built on this thread — which is why the daemon cannot serve it
 /// (recorded, with the four hazards, on the row that would do that properly).
 ///
+/// **It is the child's own SERVANT, and that is what makes it a session the daemon can serve.**
+/// Something this child owns settling is queued on the child's own watch set and the ring names the
+/// child — who the daemon cannot run a turn for. So the daemon hands the wake HERE
+/// ([`Hub::wake_its_own_reader`] through `Sessions::wake`), and this loop answers it with
+/// [`Harness::wake`]: drain what you own, run the turn it makes. The alternative is what R58
+/// measured happening — a settlement that rings a bell with no worker behind it.
+///
 /// It ends when the hub is closed — the same liveness test `jobwatch::watch_task` uses for the
 /// thread it parks per child — and **nothing here is on a clock**: a child asked something an hour
 /// later answers it.
 fn serve_child(sub: &mut Harness<'_>, hub: &Hub, sub_id: &str) {
+    use letibot_sessionlog::hub::OwnWork;
     loop {
-        let Some(cmd) = hub.take_command() else {
+        let kind = match hub.take_own_work() {
             // The hub closed: the daemon is going away, or this session was reaped.
-            return;
+            OwnWork::Closed => return,
+            // **A wake has no command behind it and needs none**: its whole content is
+            // *something this session owns has settled*, and the settlement is in this session's
+            // own queue. `Harness::wake` takes it and runs the turn it makes — or finds it already
+            // taken at a round boundary, says `Ok(None)` and runs nothing, which is what stops one
+            // settlement being delivered twice.
+            OwnWork::Wake => {
+                if let Err(e) = sub.wake() {
+                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                        code: "wake_failed".into(),
+                        detail: format!(
+                            "{sub_id} was woken because a subagent it started had finished, \
+                             and the turn that would have read the settlement failed: {e}. \
+                             The settlement is still in this session's queue and the next \
+                             wake will find it."
+                        ),
+                        compaction: None,
+                    });
+                }
+                continue;
+            }
+            OwnWork::Command(cmd) => cmd.kind,
         };
-        match child_command(&cmd.kind) {
+        match child_command(&kind) {
             ChildCommand::Answer => {
-                let text = match &cmd.kind {
+                let text = match &kind {
                     letibot_sessionlog::CommandKind::Prompt { text } => text.clone(),
                     _ => unreachable!("`child_command` answers a Prompt and nothing else"),
                 };
@@ -8425,21 +8635,65 @@ fn serve_child(sub: &mut Harness<'_>, hub: &Hub, sub_id: &str) {
                     hub.publish(letibot_sessionlog::SessionEvent::Warning {
                         code: "turn_failed".into(),
                         detail: format!(
-                            "{sub_id} was asked something after its task and the turn failed: \
-                             {e}. The child is still here and can be asked again."
+                            "{sub_id} was asked something after its task and the turn \
+                             failed: {e}. The child is still here and can be asked again."
                         ),
                         compaction: None,
                     });
                 }
             }
+            // **The children first, then this session.** Stopping is a tree's downward edge — see
+            // the supervision invariant on [`HarnessTaskRunner`] — and this is where a child that
+            // is between turns receives it. It then leaves: an interrupt that reaches a session
+            // stops that session, and a stopped session that stayed would be the shape this whole
+            // change is against. Its exit is reported upward the way every child's exit is, by the
+            // slot its parent's watcher is blocked on.
+            ChildCommand::Stop => {
+                sub.stop_children();
+                return;
+            }
             ChildCommand::Leave(why) => eprintln!(
-                "  {sub_id}: left a command in this subagent's queue — {why}. A child's machinery \
-                 is its parent's, so nothing was run."
+                "  {sub_id}: left a command in this subagent's queue — {why}. A child's \
+                 machinery is its parent's, so nothing was run."
             ),
         }
     }
 }
 
+/// **The session's children, and the whole of the supervision edge between them.**
+///
+/// The operator's design, in their words: *"think about it like it is an erlang supervision
+/// tree. we talk to parents and they own lifecycle."* Four sentences are the whole of it, and
+/// every one of them is a line somewhere below:
+///
+///   1. **A parent owns its children's lifecycle.** A child is started by one session
+///      ([`HarnessTaskRunner::start`]) and that session is its owner — [`TaskSlot::owner`] —
+///      which is what lets a runner stop exactly what it started and not its siblings' work or
+///      its own grandchildren.
+///   2. **An exit goes parent-ward, never to the root.** What a child's settlement is queued
+///      on is the session that STARTED it (`jobwatch`'s own routing), never an ancestor's.
+///      The parent decides what it means — collect it, act on it, or finish — and when the
+///      parent itself finishes, ITS exit is what travels the next level up. That is why the
+///      operator is never handed a grandchild's exit, and why nothing here needs a parent
+///      pointer.
+///   3. **Termination walks the subtree downward.** A session that is stopped stops its
+///      children FIRST ([`TaskRunner::stop_all`], called from the interrupt doors and from a
+///      child's own serving loop) and only then goes itself; each child does the same, so the
+///      walk is one level per session and no runner needs to know its grandchildren.
+///   4. **Depth is a bound, not a prohibition.** `task` is seated at every level and refused at
+///      the cap by NAME — see [`subagent_depth_refusal`].
+///
+/// # What is NOT here, and is the second half of the design
+///
+/// **TODO(supervision-2, the operator's second half): the RESTART POLICY.** Nothing in this
+/// tree decides what a child's exit *means* beyond reporting it: a parent that wants a child
+/// restarted starts one again itself, and there is no `one_for_one`/`one_for_all`, no
+/// max-restarts-in-a-window, and no supervision strategy on the parent. The seam for it is the
+/// parent's own drain of its child's settlement — the notice `Harness::wake` builds — because
+/// that is the one place a parent already decides something about a child that has ended. The
+/// same half adds a configurable `max_depth`; today the bound is `--max-subagent-depth`
+/// ([`subagent_depth_refusal`]), which is the number the operator's design calls for and is
+/// left exactly as it is rather than invented a second time.
 #[derive(Clone)]
 struct HarnessTaskRunner {
     /// The shared pieces, held as `Arc` so the runner is `'static` while the parent
@@ -8471,9 +8725,10 @@ struct HarnessTaskRunner {
     /// A slot rather than a value because the runner is built before the harness has
     /// built its own `job_watch`, and the runner must outlive the assignment — so the
     /// harness fills this once, a few lines later, with the set a child should join.
-    /// For a root that set is the root's own; for a child it is the child's, which
-    /// already carries the tree's root as its ring target — so a `Parts` built for a
-    /// grandchild inherits the root all the way down without a parent-chain walk.
+    /// For a root that set is the root's own; for a child it is the child's, which carries the
+    /// tree's ROOT (for a permission card) and the level above (for what this session cannot
+    /// drain, and for the ring that says so) — so a `Parts` built for a grandchild inherits both
+    /// without a parent-chain walk.
     tree_watch: Arc<std::sync::Mutex<Option<Arc<crate::jobwatch::JobWatchers>>>>,
     /// **The head's answers a child of THIS session asks through** — the ask route's
     /// half of R58, and the same slot shape as `tree_watch` for the same reason: the
@@ -8753,6 +9008,16 @@ fn child_mode_source(why: Option<&str>) -> String {
 ///   configured number in between.
 ///
 /// A `max` of 0 refuses every `task` call, which is the honest reading of *no nesting*.
+///
+/// **TODO(supervision-2): `max_depth`, and it is the second half of the design rather than a
+/// missing knob.** The cap is IN FORCE tonight — `Config::max_subagent_depth`, default 3,
+/// `--max-subagent-depth` — and the half that is not built is a *runtime* depth the tree can be
+/// told at spawn (per-call, and per-child, so one branch can be told to go three deep while its
+/// sibling stops at one) together with the restart policy beside it. Depth is a BOUND here and
+/// never a prohibition: `task` is seated at every level and this refuses by naming the knob, so
+/// a model that hits it learns what to change rather than inventing a way round. Do not add a
+/// second number before that decision is made — the operator's design names one bound and this
+/// is it.
 fn subagent_depth_refusal(depth: u32, max: u32) -> Option<String> {
     if depth < max {
         return None;
@@ -8893,7 +9158,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         if !(role.is_empty() || role == "coder") {
             Seat::parse(role)?;
         }
-        let slot = Arc::new(TaskSlot::new());
+        let slot = Arc::new(TaskSlot::new(&self.base.session_id));
         self.slots
             .lock()
             .expect("task slots")
@@ -8923,6 +9188,10 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 // the hub closes — does not end until the daemon does. There is nothing for this
                 // thread to do with the answer; the slot already has it.
                 let _ = me.run_to_completion(&id, &prompt, &spec, &slot, &mut |n| slot2.note(n));
+                // **And this is where the child's thread ends — the fact stopping needs.** See
+                // [`TaskSlot::exited`]: a child that answered is still alive (it parks and can be
+                // asked more), so `stop_all` cannot read "has an answer" as "is gone".
+                slot.mark_exited();
             });
         if let Err(e) = spawned {
             // Nothing is running; say so rather than handing back a handle for a
@@ -9266,6 +9535,60 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             .map(|(h, _)| h.clone())
             .collect()
     }
+
+    /// **Stop every child this session still owns** — the downward edge of the tree.
+    ///
+    /// The operator's design, in their words: *"think about it like it is an erlang supervision
+    /// tree. we talk to parents and they own lifecycle."* A session that is being stopped stops
+    /// its children first, so nothing is left computing for nobody — which was measured, the
+    /// night this was written: a stalled grandchild survived the parent that owned it, because
+    /// the interrupt reached exactly one session.
+    ///
+    /// **Which children, and why each filter is a fact rather than a precaution**, is
+    /// [`stoppable_children`]'s — pure, so it is asserted without a vocabulary on this box.
+    /// What is left here is the delivery: [`Self::kill`] once per handle, which is the same door
+    /// `job_kill` uses — the child's own turn is interrupted, or its serving loop is woken, and
+    /// its OWN runner stops its children in turn. That is how one stop walks a whole tree
+    /// without any session holding a pointer to its grandchildren.
+    ///
+    /// **What this is NOT: a restart policy.** Nothing here decides whether a child should be
+    /// started again; see the TODO on [`HarnessTaskRunner`].
+    fn stop_all(&self) -> Vec<(String, Result<String, String>)> {
+        let mine = stoppable_children(
+            &self.slots.lock().expect("task slots"),
+            &self.base.session_id,
+        );
+        mine.into_iter()
+            .map(|handle| {
+                let said = self.kill(&handle);
+                (handle, said)
+            })
+            .collect()
+    }
+}
+
+/// **Which of a session's slots are children IT may stop** — the ownership filter, on its own so
+/// it can be read and asserted without a harness, a vocabulary or a live child.
+///
+/// Two filters, and each one is a fact rather than a precaution:
+///
+/// * **Owned by this session.** `slots` is the TREE's list (`Parts::tree_slots`), shared on
+///   purpose so any ancestor can `task_result` any handle in its tree — but stopping is the other
+///   direction, and a runner that stopped every entry it could see would stop its siblings'
+///   children (and, from a root, its own children's children) in the name of a stop that was
+///   never theirs. [`TaskSlot::owner`] is what tells them apart, and it is the field this whole
+///   function exists for.
+/// * **Not exited.** A child that has ANSWERED is still alive — a host child parks in
+///   [`serve_child`] and can be asked more, and it may own grandchildren at that moment — so
+///   "settled" cannot mean "gone". A child whose thread has ended is skipped: there is no
+///   reader left for an interrupt, and a stop reported for one would be a claim with nothing
+///   behind it.
+fn stoppable_children(slots: &[(String, Arc<TaskSlot>)], me: &str) -> Vec<String> {
+    slots
+        .iter()
+        .filter(|(_, slot)| slot.owner == me && !slot.has_exited())
+        .map(|(handle, _)| handle.clone())
+        .collect()
 }
 
 /// **Where a subagent's ask goes: the tree's ROOT, and the answers that settle it.**
@@ -9276,10 +9599,12 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
 /// be tested without a model turn, which is the only way anything inside that function can.
 ///
 /// **The root is read, not walked for.** `tree` is the watcher set a child of this session
-/// joins, whose ring target is the tree's ROOT at every depth (R58) — so the one field that
-/// says which session the bell wakes says which session has the head a card can be drawn by,
-/// and the card and the bell cannot name different sessions. `None` is a session with no tree
-/// above it, and then its parent IS the tree's root.
+/// joins, and `tree_root` is the ROOT it inherited: the one session in a tree that has a HEAD —
+/// the session `Sessions::open` holds and a card can be drawn by. **The card and the bell answer
+/// two different questions and no longer share a field**: a bell now names the session that OWNS
+/// a settlement (`jobwatch`'s module header), and a card needs the session that can ANSWER one,
+/// so `tree_root` reads its own field. `None` is a session with no tree above it, and then its
+/// parent IS the tree's root.
 ///
 /// The hub is resolved by that id. `None` — a root this daemon does not hold, or a tree with
 /// no head-wired adjudicator — is a refusal by name rather than a card nothing could settle.
@@ -9614,11 +9939,11 @@ impl HarnessTaskRunner {
             tasks: self.tasks.clone(),
             lsp: self.lsp.clone(),
             skills: self.skills.clone(),
-            // **The child joins this tree's watcher set** (R58): the parent's own set,
-            // whose `wake_target` is the tree's root — the parent is a root at depth 0,
-            // and at depth ≥ 1 the parent's set already carries the root's target from
-            // the same field one level up. So the whole tree rings one bell with no
-            // parent-chain walk.
+            // **The child joins this tree's watcher set** (R58): the parent's own set, which
+            // carries the tree's ROOT (for a permission card) and the level above (for what this
+            // session cannot drain, and for the ring that says so). The parent is a root at depth
+            // 0, and at depth ≥ 1 the parent's set already carries the same root from the same
+            // field one level up, so the card reaches the head with no parent-chain walk.
             tree_watch: self.tree_watch.lock().expect("tree watch").clone(),
             // **And the child shares this tree's handle list** (R58), the other half of
             // *"every ancestor's handle can be collected from any level"*: a grandchild
@@ -9675,12 +10000,14 @@ impl HarnessTaskRunner {
         // Open. Now it is a session a head can switch into, and now it is running.
         //
         // **Adopted into the REGISTRY and not into `Sessions::open`, and that difference is R58's
-        // whole constraint.** A head can peek at this session and attach to it (both go through
-        // `registry.resolve`), while the daemon cannot *drive* it: `Sessions::wake` needs
-        // `self.open.get_mut(session_id)` and returns `Ignored` when it is absent, so a settlement
-        // rung for a session created HERE is dropped. That is invisible at depth 1 — the watcher that
-        // rings belongs to the parent, which is in `open` — and fatal at depth 2, where the child's
-        // own watcher rings the child.
+        // whole constraint — and NOT a hole any more.** A head can peek at this session and attach
+        // to it (both go through `registry.resolve`), while the daemon holds no `Harness` for it:
+        // `Sessions::wake` cannot run its turn. What that used to mean is that a settlement rung
+        // for a session created HERE was discarded, which made depth 2 a hole — the child's own
+        // watcher rings the child, and nobody answered. **The daemon serves it by handing the wake
+        // to the thread that owns it** (`Hub::wake_its_own_reader`, answered by `serve_child`), so
+        // the ring names the session that owns the settlement and the delivery is real at every
+        // depth. See `Sessions::wake`.
         self.registry
             // **Cloned, because the serving loop below needs it back**: this hub is the child's
             // queue, and `serve_child` blocks on it until the daemon closes it — so the same
@@ -10724,8 +11051,8 @@ mod tests {
 
         // The answers the whole tree reaches: the root's own, handed down through `Parts`.
         let answers = Some(Arc::new(crate::answers::Answers::new()));
-        // The grandchild's set is built FROM the root's, which is what gives it the root's
-        // ring target — the same set `Parts` carries for a grandchild.
+        // The grandchild's set is built FROM the root's, which is what gives it the ROOT —
+        // the same set `Parts` carries for a grandchild.
         let root_watch = crate::jobwatch::JobWatchers::watching_tasks(&root_hub, None);
         let grandchild_watch = crate::jobwatch::JobWatchers::watching_tasks(&grandchild_hub, None)
             .shares_tree(&root_watch);
@@ -11255,7 +11582,7 @@ mod tests {
 
         // Unkilled: the answer is the answer. This arm is here because the kill flag must
         // not become the relabelling of every completion that happens to follow one.
-        let plain = TaskSlot::new();
+        let plain = TaskSlot::new("s-parent");
         plain.settle(TaskStatus::Done {
             answer: "half a sentence".into(),
         });
@@ -11264,7 +11591,7 @@ mod tests {
             TaskStatus::Done { .. }
         ));
 
-        let killed = TaskSlot::new();
+        let killed = TaskSlot::new("s-parent");
         killed.kill();
         killed.settle(TaskStatus::Done {
             answer: "half a sentence".into(),
@@ -11279,7 +11606,7 @@ mod tests {
 
         // **A real failure is not relabelled.** The flag must not overwrite the child's
         // own reason for dying, which is the more useful sentence of the two.
-        let failed = TaskSlot::new();
+        let failed = TaskSlot::new("s-parent");
         failed.kill();
         failed.settle(TaskStatus::Failed {
             why: "the model went away".into(),
@@ -11288,6 +11615,267 @@ mod tests {
             &*failed.state.lock().expect("slot"),
             TaskStatus::Failed { why } if why.contains("went away")
         ));
+    }
+
+    /// **A stop takes THIS session's children and nobody else's, and not the ones that are
+    /// gone** — the downward edge of the tree, at the size it can be asserted at.
+    ///
+    /// The list is the TREE's (`Parts::tree_slots`: one list, so any ancestor can `task_result`
+    /// any handle in it), which is exactly why stopping needs the owner back: a root that
+    /// stopped every slot it could see would stop its own children AND their children in one
+    /// go, and a child would stop its siblings' work. The operator's design says otherwise —
+    /// *"we talk to parents and they own lifecycle"* — and one level per session is what makes
+    /// the walk down finite and each session answerable for exactly its own.
+    ///
+    /// The second filter is the one that was measured into existence: a child that has ANSWERED
+    /// is still alive (a host child parks in `serve_child` and can be asked more) while a child
+    /// whose thread has ended has no reader for an interrupt at all. So "has an answer" cannot
+    /// stand for "is gone", and `TaskSlot::exited` is the fact that can.
+    #[test]
+    fn a_stop_takes_this_sessions_children_and_not_the_ones_that_are_gone() {
+        // The tree's one list, with four entries: three of mine — one still computing, one
+        // parked with an answer, one whose thread has ended — and one of my PARENT's, which is
+        // a sibling of mine and must not be in my answer.
+        let mine_running = Arc::new(TaskSlot::new("s-child"));
+        let mine_answered = Arc::new(TaskSlot::new("s-child"));
+        mine_answered.settle(letibot_tools::builtins::task::TaskStatus::Done {
+            answer: "done, and still here".into(),
+        });
+        let mine_and_gone = Arc::new(TaskSlot::new("s-child"));
+        mine_and_gone.mark_exited();
+        // **A slot's handle follows its OWNER** (`<owner>-sub-N`, the shape
+        // `HarnessTaskRunner::start` mints), so the parent's child cannot be called
+        // `s-child-sub-*`: a name that says `s-child` on a slot the root started is the
+        // confusion this whole test is about, and the owner field is what settles it.
+        let my_parents = Arc::new(TaskSlot::new("s-root"));
+        let slots = vec![
+            ("s-child-sub-1".to_string(), mine_running),
+            ("s-child-sub-2".to_string(), mine_answered),
+            ("s-child-sub-3".to_string(), mine_and_gone),
+            ("s-root-sub-1".to_string(), my_parents),
+        ];
+
+        let stop = stoppable_children(&slots, "s-child");
+        assert_eq!(
+            stop,
+            vec!["s-child-sub-1".to_string(), "s-child-sub-2".to_string()],
+            "my own children — the running one AND the one that has answered and is still \
+             parked — and no sibling's, no parent's, and none that has left"
+        );
+        // And from the other seat in the same tree: the root stops ITS children, not this
+        // session's. Same list, different answer — which is the whole reason the owner is on
+        // the slot.
+        assert_eq!(
+            stoppable_children(&slots, "s-root"),
+            vec!["s-root-sub-1".to_string()],
+            "a parent's stop is its own children, not its grandchildren's"
+        );
+        assert!(
+            stoppable_children(&slots, "s-nobody").is_empty(),
+            "a session with no children of its own in this tree stops nothing"
+        );
+    }
+
+    /// **The sentence a stopped session leaves names what it stopped, and what it could not.**
+    ///
+    /// The pure half of `stop_children_first`, and the reason it is asserted rather than the
+    /// `Warning` around it: a count that swallowed a refusal would be the claim-versus-fact
+    /// defect this tree keeps paying for — a reader told *stopped 2* while one of them is still
+    /// computing, and nothing anywhere saying so.
+    #[test]
+    fn a_stop_says_what_it_stopped_and_what_it_could_not() {
+        // No children: no sentence at all, which is the ordinary case — a session with nothing
+        // running says nothing on the way out.
+        assert_eq!(children_stopped_notice(&[]), None);
+
+        let stopped = children_stopped_notice(&[(
+            "s-child-sub-1".into(),
+            Ok("the daemon accepted the interrupt".into()),
+        )]);
+        let said = stopped.expect("one child stopped is one sentence");
+        assert!(said.contains("s-child-sub-1"), "{said}");
+        assert!(
+            said.contains("before stopping itself"),
+            "the order is the point of it — children first, then this session: {said}"
+        );
+
+        // A refusal is NAMED, with the daemon's own reason, and the sentence does not claim a
+        // stop it did not get.
+        let mixed = children_stopped_notice(&[
+            ("s-a".into(), Ok("accepted".into())),
+            (
+                "s-b".into(),
+                Err("`s-b` has already settled, or its session is gone".into()),
+            ),
+        ])
+        .expect("a partial stop is still a sentence");
+        assert!(mixed.contains("s-a"), "{mixed}");
+        assert!(mixed.contains("s-b"), "{mixed}");
+        assert!(
+            mixed.contains("could NOT be stopped") && mixed.contains("already settled"),
+            "the refusal is on the record, in the daemon's own words: {mixed}"
+        );
+    }
+
+    /// **A stop delivered to a running turn takes the session's CHILDREN with it first** — the
+    /// operator's design in one line, *"we talk to parents and they own lifecycle"*, and the
+    /// door an interrupt actually reaches a turn through.
+    ///
+    /// The instrument is a fake runner, because the claim is about WHO IS TOLD and WHEN rather
+    /// than about anything a child does: the parent is stopped by the very message the arm
+    /// returns, and the children have to be told before it — a stop that waited for its subtree
+    /// would hold the turn it is stopping open.
+    ///
+    /// **Two levels, because the recursion is the shape.** Each session's arm stops ITS OWN
+    /// runner and no other; the walk down is then one level per session, which is what makes it
+    /// finite and what makes every session answerable for exactly its own children.
+    #[test]
+    fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
+        /// Records that it was asked to stop, and what it was asked for after each stop.
+        struct Recording {
+            me: String,
+            stops: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl letibot_tools::builtins::task::TaskRunner for Recording {
+            fn start(
+                &self,
+                _prompt: &str,
+                _spec: &letibot_tools::builtins::task::TaskSpec,
+            ) -> Result<String, String> {
+                Err("this runner starts nothing".into())
+            }
+            fn collect(
+                &self,
+                _handle: &str,
+                _timeout: std::time::Duration,
+            ) -> letibot_tools::builtins::task::TaskStatus {
+                letibot_tools::builtins::task::TaskStatus::Unknown
+            }
+            fn stop_all(&self) -> Vec<(String, Result<String, String>)> {
+                self.stops.lock().expect("stops").push(self.me.clone());
+                vec![(
+                    format!("{}-sub-1", self.me),
+                    Ok("the daemon accepted the interrupt".into()),
+                )]
+            }
+        }
+
+        // Two levels of the same door: a parent's steering source and a child's, each with its
+        // OWN runner — which is what "one level per session" means in code.
+        let stops = Arc::new(Mutex::new(Vec::new()));
+        let parent_hub = Hub::new("s-root");
+        let mut parent = HubSteering {
+            hub: parent_hub.clone(),
+            trail: None,
+            injected: Arc::new(Mutex::new(VecDeque::new())),
+            monitors: None,
+            monitor_cursor: Arc::new(AtomicUsize::new(0)),
+            job_watch: None,
+            subagents: Some(Arc::new(Recording {
+                me: "s-root".into(),
+                stops: stops.clone(),
+            })),
+            held: VecDeque::new(),
+        };
+        let child_hub = Hub::new("s-child");
+        let mut child = HubSteering {
+            hub: child_hub.clone(),
+            trail: None,
+            injected: Arc::new(Mutex::new(VecDeque::new())),
+            monitors: None,
+            monitor_cursor: Arc::new(AtomicUsize::new(0)),
+            job_watch: None,
+            subagents: Some(Arc::new(Recording {
+                me: "s-child".into(),
+                stops: stops.clone(),
+            })),
+            held: VecDeque::new(),
+        };
+
+        // Nothing has been stopped to begin with, and a prompt is not a stop: it is a turn.
+        assert!(stops.lock().expect("stops").is_empty());
+        let head = parent_hub.attach(
+            "tui",
+            "dead@lab2x1",
+            letibot_sessionlog::protocol::Caps::default(),
+            0,
+        );
+        parent_hub.submit(
+            &head.head_id,
+            "c1",
+            0,
+            letibot_sessionlog::CommandKind::Prompt {
+                text: "carry on".into(),
+            },
+        );
+        assert!(
+            matches!(parent.try_next(), Some(m) if !m.urgent),
+            "a prompt is ordinary steering"
+        );
+        assert!(
+            stops.lock().expect("stops").is_empty(),
+            "and it stops nothing: children are taken by a STOP, not by every message"
+        );
+
+        // The stop, on both sessions.
+        for (hub, steering) in [(&parent_hub, &mut parent), (&child_hub, &mut child)] {
+            let f = hub.submit(
+                letibot_sessionlog::hub::DAEMON_SUBMITTER,
+                "job_kill-1",
+                0,
+                letibot_sessionlog::CommandKind::Interrupt {
+                    reason: "`job_kill` stopped this subagent".into(),
+                },
+            );
+            assert!(
+                matches!(f, letibot_sessionlog::ServerFrame::Accepted { .. }),
+                "the hub refused the interrupt: {f:?}"
+            );
+            let got = steering.try_next();
+            assert!(
+                matches!(&got, Some(m) if m.urgent),
+                "the interrupt is handed to the engine as urgent, which is what stops the \
+                 turn: {got:?}"
+            );
+        }
+        assert_eq!(
+            *stops.lock().expect("stops"),
+            vec!["s-root".to_string(), "s-child".to_string()],
+            "each session's own arm stopped its own children, in that order"
+        );
+
+        // **The ordering, which is the requirement and not tidiness.** The arm stops the
+        // children on the way IN, before the urgent message it returns can stop the session —
+        // and the notice is on the stopping session's own log, where the person who pressed
+        // Esc is looking.
+        let said = |hub: &Arc<Hub>| {
+            hub.retained()
+                .iter()
+                .filter_map(|e| match &e.event {
+                    letibot_sessionlog::SessionEvent::Warning { code, detail, .. }
+                        if code == "subagents_stopped" =>
+                    {
+                        Some(detail.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let root_said = said(&parent_hub);
+        assert_eq!(root_said.len(), 1, "one sentence per stop: {root_said:?}");
+        assert!(
+            root_said[0].contains("s-root-sub-1")
+                && root_said[0].contains("before stopping itself"),
+            "{}",
+            root_said[0]
+        );
+        let child_said = said(&child_hub);
+        assert!(
+            child_said[0].contains("s-child-sub-1"),
+            "and the child's own log names the child's own child — one level, each session \
+             answerable for its own: {child_said:?}"
+        );
     }
 
     /// **R7's tool-side half: the sentence says the result comes to you.**
@@ -11824,7 +12412,7 @@ mod tests {
         use letibot_tools::builtins::task::TaskStatus;
 
         // The ordinary ending.
-        let slot = TaskSlot::new();
+        let slot = TaskSlot::new("s-parent");
         {
             let answer = AnswerOnce::new(&slot);
             answer.say(TaskStatus::Done {
@@ -11840,7 +12428,7 @@ mod tests {
 
         // **A path out with no answer still settles** — the one that would hang a parent: a
         // thread ending with the slot still `Running` is a `task_result` that never returns.
-        let slot = TaskSlot::new();
+        let slot = TaskSlot::new("s-parent");
         {
             let _answer = AnswerOnce::new(&slot);
         }
@@ -11851,7 +12439,7 @@ mod tests {
         );
 
         // **And the first answer is the answer.**
-        let slot = TaskSlot::new();
+        let slot = TaskSlot::new("s-parent");
         {
             let answer = AnswerOnce::new(&slot);
             answer.say(TaskStatus::Done {
@@ -11870,11 +12458,17 @@ mod tests {
         );
     }
 
-    /// **A prompt is answered; everything else a child inherits is left, and named.**
+    /// **A prompt is answered, a stop is a STOP for the whole subtree, and everything else a
+    /// child inherits is left, and named.**
     ///
     /// The operator's ruling is what makes the first arm right — *"subagent is just another
     /// agent… mid turn, post turn whatever"* — and the other arms are what keeps this door from
     /// running the parent's machinery in the parent's name.
+    ///
+    /// **The interrupt arm is the correction, and it is the measured one.** It used to say
+    /// *"nothing is running to interrupt"*, which was true of the session and false of its
+    /// subtree: a child between turns, with children of its own still computing, was told
+    /// nothing and left them running. See the supervision invariant on [`HarnessTaskRunner`].
     #[test]
     fn a_child_answers_a_prompt_and_leaves_the_machinery_its_parent_owns() {
         use letibot_sessionlog::CommandKind as K;
@@ -11885,13 +12479,14 @@ mod tests {
             ChildCommand::Answer,
             "the operator asking a child something is a turn, not a no-op"
         );
+        assert_eq!(
+            child_command(&K::Interrupt {
+                reason: "esc".into()
+            }),
+            ChildCommand::Stop,
+            "an interrupt IS this child's stop between turns — its children go first, then it does"
+        );
         for (kind, why) in [
-            (
-                K::Interrupt {
-                    reason: "esc".into(),
-                },
-                "nothing is running to interrupt",
-            ),
             (
                 K::Message {
                     from: "s-parent".into(),
@@ -11967,6 +12562,8 @@ mod tests {
             monitors: None,
             monitor_cursor: Arc::new(AtomicUsize::new(0)),
             job_watch: None,
+            // No children either: what is asserted here is the message's scoping.
+            subagents: None,
             held: VecDeque::new(),
         };
 
@@ -12029,6 +12626,7 @@ mod tests {
             monitors: None,
             monitor_cursor: Arc::new(AtomicUsize::new(0)),
             job_watch: None,
+            subagents: None,
             held: VecDeque::new(),
         };
 

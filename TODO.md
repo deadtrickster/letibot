@@ -651,7 +651,8 @@ pieces, with the two that mattered made testable.**
     can `task_result`/`job_kill`/list every handle in its tree — without it the root is *told* about
     a grandchild's settlement and answered *"no subagent … in this session"* when it asks.
 
-Tests: `a_grandchilds_settlement_rings_the_tree_root` (jobwatch) drives a depth-2 settlement
+Tests: `a_grandchilds_settlement_reaches_its_parent_and_rings_its_parent` (jobwatch — renamed
+2026-10-06; the ring half of that sentence is the CORRECTION below) drives a depth-2 settlement
 through the CHILD's set and asserts the completion lands on the tree's queue and the ring names the
 root; `the_depth_cap_refuses_the_spawn_one_past_it_by_name` (harness) pins the boundary; 
 `the_coder_seat_names_the_delegation_pair` (runtime) pins the seating; and the plan-mode fixture
@@ -660,8 +661,10 @@ registers the pair — the same loud `resolve_role` path its own comment records
 
 **still open?** `grep -rn "max_subagent_depth" crates/` finds the field, the flag, the refusal and
 the two tests; `grep -n '"task"' crates/tools/src/runtime.rs` now names it three times
-(`orchestrator`, `leticode`, `m2_coder`); `grep -n "wake_target\|tree_slots\|shares_tree"
-crates/harnessd/src/` names the ring target and both shared channels. **Not yet exercised end to end**:
+(`orchestrator`, `leticode`, `m2_coder`); `grep -rn "wake_target\|tree_slots\|shares_tree"
+crates/harnessd/src/` names the ring target and both shared channels — **and it names the ring
+target no longer**: `wake_target` was renamed on 2026-10-06 and the grep finds `tree_slots` and
+`shares_tree` alone. The CORRECTION below says what the ring names now. **Not yet exercised end to end**:
 no test spawns a real depth-2 tree through the daemon, because that needs two live harnesses and a
 model — the mechanism is pinned at the `JobWatchers` layer, which is where the defect was, and the
 handle-list sharing rides the same untested path.
@@ -710,6 +713,42 @@ another.
 the tree exactly once, **every ancestor's handle can be collected from any level**, and a depth one
 past the knob is refused by name rather than by a stack that quietly runs out — with the correction
 above carried wherever `fd4aaad` is read.
+
+**CORRECTED 2026-10-06 (`agent/supervision`) — the ring does not go to the root, and the reason is the
+operator's own design.** *"think about it like it is an erlang supervision tree. we talk to parents and
+they own lifecycle."* Two things in the note above were the tree read as a **flat** structure and they
+are both wrong at depth > 1:
+
+  · **Ringing the ROOT put the ring and the notice on two different sessions.** The settlement is queued
+    on the session that STARTED the work (that half is right), and the ring named the root — so the root
+    woke, drained its own queue, found nothing and ran no turn, while the notice sat unread below it.
+    **The ring now names the session that owns the settlement**: its parent. `JobWatchers::wake_target`
+    became `me` (the owner) plus `parent` (the level above, whose queue a handed-up settlement goes to
+    and whose bell the hand-up rings), and `tree_root()` reads a separate `root` field, because a card
+    needs a session with a HEAD while an exit needs the session that STARTED it.
+  · **"the only session a worker can drive is the root" was a fact about the daemon's `open` set, not
+    about what can be served.** A child's harness lives on its parent's spawn thread, so `Sessions::wake`
+    cannot run its turn — and that is exactly why it must HAND THE WAKE ON rather than discard it:
+    `Hub::wake_its_own_reader` wakes the child's own condvar, the thread parked in `harness::serve_child`
+    answers with `Harness::wake`, and the notice becomes a turn of the child's own. `Sessions::wake` is
+    three arms now (`wake_route`): drive it, hand it to its own reader, or — a session with no hub at
+    all — nothing, which is safe because a closing session hands its undrained settlements up a level
+    first (`JobWatchers::stop`).
+
+**And the downward edge, which the "one watcher set per tree" note never had.** A stop is a stop for the
+subtree: `TaskRunner::stop_all` stops the children a session OWNS (`TaskSlot::owner`, `stoppable_children`)
+and only those that have not exited (`TaskSlot::exited` — "answered" is not "gone", a host child parks
+and can be asked more), it is called from the steering source's interrupt arm and from a child's serving
+loop, and each child then stops its own. One level per session, so the walk is finite and every session is
+answerable for exactly its own children. Measured before this landed: an interrupt reached exactly one
+session and left a stalled grandchild computing for nobody.
+
+**Still open, and it is the second half (marked `TODO(supervision-2)` in `harness.rs`): the restart
+policy** — what a child's exit MEANS is not decided anywhere; a parent that wants a child restarted starts
+one itself, and there is no `one_for_one`/`one_for_all`, no restarts-in-a-window, no strategy on the
+parent. The seam is the parent's own drain of its child's settlement. The same half adds a runtime
+`max_depth` (per-call and per-child); the bound in force tonight is `--max-subagent-depth`, and it is left
+exactly as it is rather than given a second number.
 
 ## R59 — the context wall's denominator moves a third between firings — **OPEN, raised by the operator 2026-10-03**
 

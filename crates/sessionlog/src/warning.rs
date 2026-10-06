@@ -200,6 +200,17 @@ pub const TABLE: &[(&str, Class)] = &[
     // Their interrupt and their promote arrived between turns, so there was nothing to
     // stop or move. The operator's own act, and a no-op.
     ("interrupt_idle", Class::Routine),
+    // **A stop took the session's children with it** — the downward edge of a supervision
+    // tree, said out loud. Routine by the rule above and for the same reason: it reports an
+    // act the operator (or the parent that killed it) asked for, and deleting it would lose
+    // only the list of what went with it. See the supervision invariant on
+    // `HarnessTaskRunner` and `stop_children_first`, which is the one place it is written.
+    ("subagents_stopped", Class::Routine),
+    // **A child was woken because something it started had settled, and the turn that would
+    // have read the settlement failed.** A failure: the settlement is still queued and the
+    // next wake finds it (the session is not stuck), but a notice the child was owed did not
+    // reach it, which is exactly what the wake exists to prevent.
+    ("wake_failed", Class::Failure),
     ("promote_idle", Class::Routine),
     // **A parent's message to a subagent that had already finished** — see
     // `CommandKind::Message`. The runner refuses these by name before submitting
@@ -534,17 +545,30 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 74 codes, of which **7** are the reader's own input refused.
+    /// **The census, pinned.** 78 codes, of which **7** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_27_routine_7_refused_and_42_failures() {
+    fn the_table_is_28_routine_7_refused_and_43_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **76, not the 74 the last census was taken at.** Two arrivals, each counted
-        // rather than left implicit, because a census that quietly moves is not a census:
+        // **78, not the 76 the last census was taken at.** Two arrivals, and they are the
+        // supervision tree's two ends — each counted rather than left implicit, because a
+        // census that quietly moves is not a census:
+        //
+        //   · `subagents_stopped` — a stop took the session's children with it — is Routine
+        //     by the rule at the top of the table: it reports an act somebody asked for (the
+        //     operator's Esc, or the parent that killed the session), and what it puts on the
+        //     screen is the list of what went with it. The one thing a reader would lose by
+        //     not being told is that list, and losing it is not a session in trouble.
+        //   · `wake_failed` — a child was woken because something it started had settled and
+        //     the turn that would have read the settlement failed — is a Failure, and it is
+        //     the register's ordinary shape: the settlement is still queued and the next wake
+        //     finds it, so the session is not stuck, but a notice it was owed did not reach it.
+        //
+        // The census before that, 76, kept its own list for the same reason:
         //
         //   · `operator_shell_ran` — the operator's own `!` line, and what it put in the
         //     conversation — is Routine by the same ruling as the door's
@@ -564,12 +588,12 @@ mod the_register_census {
         //     the daemon**, and it is a Failure by the same argument that keeps `anchor_lost`: the
         //     diagnostic reaches neither the conversation nor the triangle, so a reader who is not
         //     told has been told nothing at all.
-        assert_eq!(TABLE.len(), 76, "the table's size");
-        assert_eq!(count(Class::Routine), 27);
+        assert_eq!(TABLE.len(), 78, "the table's size");
+        assert_eq!(count(Class::Routine), 28);
         assert_eq!(count(Class::Refused), 7, "the seven in READER_INPUT");
-        assert_eq!(count(Class::Failure), 42);
+        assert_eq!(count(Class::Failure), 43);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 42 of 76 and the middle is 7**, which is why the third register is a
+        // register is 43 of 78 and the middle is 7**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

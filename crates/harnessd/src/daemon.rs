@@ -25,7 +25,7 @@
 //! # Why there is no async runtime and no timer
 //!
 //! §18.1-I12: *"the daemon spawns no timer or poll loop for message delivery"*.
-//! [`Hub::take_command`] blocks on a condvar until something is pushed, and the
+//! [`Hub::take_own_work`] blocks on a condvar until something is pushed, and the
 //! accept loop blocks on `accept`. Shutdown arrives on a **self-pipe** — the signal
 //! handler writes one byte, a thread blocked in `read` wakes and closes the hub —
 //! rather than on a flag some loop polls. Three blocking reads and no clock.
@@ -248,6 +248,12 @@ impl Daemon {
                         Outcome::Compacted(_) => {}
                         Outcome::Failed(e) => eprintln!("  {session_id} · monitor -> {e}"),
                         Outcome::Ignored => {}
+                        // **Said out loud in the outcome and silent in the log.** The daemon
+                        // served this wake by handing it to the thread that owns the session
+                        // (`Sessions::wake`), which is what a subagent's settlement needs — and
+                        // a tree churning is ordinary, so a line per settlement would bury the
+                        // lines that are not.
+                        Outcome::HandedOn => {}
                     },
                 },
             }

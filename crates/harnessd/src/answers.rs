@@ -678,7 +678,7 @@ impl Adjudicator for HeadAdjudicator {
 /// The operator, on who a subagent's ask belongs to: *"who asks subagents permissions? i
 /// think they should surface to the parent head all the way to the root obviously"*. A child
 /// has no head attached and **cannot be driven** — it is adopted into the session registry and
-/// not into `Sessions::open`, so `Sessions::wake` returns `Ignored` for it (R58) — so its
+/// not into `Sessions::open`, so `Sessions::wake` cannot run its turn — so its
 /// gate's card is posted to the one session in the tree that does have a head: the root.
 ///
 /// This is deliberately **not a second mechanism**: it is a [`HeadAdjudicator`] over the
@@ -687,9 +687,11 @@ impl Adjudicator for HeadAdjudicator {
 /// recorded brief and glob — is that one implementation, which is what makes a child's answer
 /// the same answer the root would have got.
 ///
-/// **What it does not do: make the child drivable.** Nothing here touches `Sessions::open`,
-/// the child's watcher set or its ring target; the card travels and the answer comes back on
-/// the asking thread, exactly as a root's does. R58 is untouched.
+/// **What it does not do: make the child drivable.** Nothing here touches `Sessions::open` or
+/// the child's watcher set; the card travels and the answer comes back on the asking thread,
+/// exactly as a root's does. A child that IS served is served by the thread that owns it —
+/// `Sessions::wake` handing the wake to `Hub::wake_its_own_reader` — which is a different
+/// door from this one.
 ///
 /// `head` is `None` when the tree has no head-wired adjudicator at all — a root run with
 /// `--adjudicator console`, or one whose answers a child cannot reach. There is then nothing
