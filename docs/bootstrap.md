@@ -31,7 +31,7 @@ on the download path:
 | `ldconfig` | `install.sh:132` | the host-library probe (`host_has_lib`), with a `/lib` walk as the fallback |
 | `git`, `cargo`, `cc`/`gcc`/`clang` | `install.sh:240-259` | the **source** path only |
 
-That set is honest and it is documented (`README.md:97-107`). Two things are not:
+That set is honest and it is documented (`README.md:97-107`). Three things are not:
 
 1. **`local_checkout()` at `install.sh:194-202` inverts the install for anyone standing in
    a checkout.** It asks whether the directory holding `$0` has a `Cargo.toml` with
