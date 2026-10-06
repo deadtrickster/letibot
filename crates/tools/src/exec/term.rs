@@ -62,11 +62,44 @@
 //!
 //! # The environment
 //!
-//! [`env_from`] is [`super::console::INHERITED`] and nothing else, and the difference from
-//! [`super::console::env_from`] is the point of having a second function: that one **forces**
-//! `PAGER=cat`, which is right for a capture — nobody can press a key, so a pager would
-//! hang — and wrong for a pane, where somebody can. `TERM` is supplied when the daemon has
-//! none, because a program on a pty with no `TERM` cannot colourise or address the cursor.
+//! **The pane's program is given the console's environment and nothing else** — the
+//! decision this section is, and the one that was missing. Until now the environment was
+//! whatever `TermSession::start`'s child *inherited*, which is the daemon's whole
+//! environment: measured through the real driver on 2026-09-26, `!term env` inside the
+//! pane printed `CARGO_MANIFEST_DIR`, `RUSTUP_TOOLCHAIN`, `LD_LIBRARY_PATH`,
+//! `SUDO_ASKPASS`, `LETIBOT_SOCKET` and `LETIBOT_SESSION` — the harness's own variables,
+//! including every token the daemon's environment carries, handed to a program the
+//! operator runs. `TERM` and `HOME` were in there too, and **by accident**: a daemon
+//! started without them gave a pane neither, and `mc` needs both (terminfo for the first,
+//! `~/.config/mc` for the second) — a program that prints one line and exits, which is
+//! the flash this whole defect is.
+//!
+//! So the environment is now **cleared and then stated**, exactly the shape
+//! [`super::host`]'s spawn uses (R10 layer 1), and it is stated from two tables that
+//! already exist plus one name a pane has to state for itself — nothing invented here:
+//!
+//! | group | pairs | why |
+//! |---|---|---|
+//! | the terminal the console is | [`super::console::INHERITED`] — `TERM`, `COLORTERM`, `LS_COLORS` | the row path's own table, so a console variable is stated once |
+//! | what a program cannot work without | [`super::confine::KEEP_ENV`] — `PATH`, `TERM`, `LANG`, `LC_ALL`, `TZ` | a confined command's keep-list, because both answer *what must a program have to run at all* |
+//! | where its config lives | [`PANE_HOME`] — `HOME` | named here and not on the console's table, because a run's `HOME` is a decision about *that run*: see [`super::console::INHERITED`] |
+//!
+//! The difference from [`super::console::env_from`] stays what it was, and it is the reason
+//! there are two functions: that one **forces** `PAGER=cat`, which is right for a capture —
+//! nobody can press a key, so a pager would hang — and wrong for a pane, where somebody can.
+//! The pane's table does not name a pager at all, so a pane's `git log` execs its own
+//! default (`less`), which is what a terminal is for. `TERM` is supplied when the daemon has
+//! none **or has one that is empty** ([`super::console::value`]: an empty value is not a
+//! value), because a program on a pty with no `TERM` cannot colourise or address the cursor
+//! and one with `TERM=` cannot find its terminfo.
+//!
+//! **What the pane's program therefore does not get, said rather than discovered.**
+//! `SSH_AUTH_SOCK` (so `!term ssh` asks for a passphrase in the pane rather than using the
+//! operator's agent — a grant is what that would be, and `confine`'s
+//! `Grant::AgentSocket` is where it lives), `XDG_*`, and every token in the daemon's
+//! environment. Each is a *variable a program may want* and not a hole: the answer to any
+//! of them is a pair on one of the two tables, which is a decision somebody makes, where
+//! inheriting the daemon's environment was one nobody made.
 //!
 //! # The lifetime is the cgroup's, and the vocabulary is [`super::scope`]'s
 //!
@@ -116,14 +149,33 @@ use super::shell::set_size;
 /// line and the shell is the thing that reads it.
 const SHELL: &str = "/bin/sh";
 
-/// **The `TERM` a pane's program is given when the daemon has none.**
+/// **The `TERM` a pane's program is given when the daemon has none — or has one that is
+/// empty.**
 ///
 /// Not a policy about the operator's terminal — [`super::console::INHERITED`] is read first,
 /// so a daemon started from their console passes their own value through. This is what is
 /// left when there is nothing to pass: a program on a pty with no `TERM` cannot colourise,
 /// cannot address the cursor, and is exactly the *"nano draws nothing"* failure this whole
-/// module exists to remove.
+/// module exists to remove. *Nothing to pass* includes `TERM=`, because an empty value is
+/// not a value — see [`super::console::value`], and the flash it caused.
 const DEFAULT_TERM: &str = "xterm-256color";
+
+/// **Where a pane's program keeps its config** — the one name a pane's environment has that
+/// neither of the two tables it reads carries.
+///
+/// **Not on [`super::console::INHERITED`], and that is a measurement rather than a taste.**
+/// A run's `HOME` is a decision about *that run*: the operator's row path is handed one on
+/// the daemon's standing environment, a confined run is handed the view's tmpfs home by
+/// [`super::confine`], and a pair on the request's own environment is applied **last** — so
+/// an inherited `HOME` beats both. The first was measured the day this was written
+/// (`crates/tools/tests/exec.rs`'s rc test stopped reading the rc the test wrote) and the
+/// second is the same mechanism with a boundary on it.
+///
+/// **A pane is neither of those.** It is the operator's program, on the operator's own box,
+/// with no view and no standing environment — so the console's home is the honest one, and
+/// it is the one `mc` writes `~/.config/mc` into and `git` reads `~/.gitconfig` from. A
+/// program that exits because it cannot find either is the flash this strand is about.
+const PANE_HOME: &str = "HOME";
 
 /// How many bytes one read from the master may carry. The same order as
 /// [`super::shell`]'s, and not a cap on anything: a read that fills it is one call to
@@ -181,7 +233,10 @@ pub struct TermConfig {
     /// **The command line, verbatim.** A shell line: see the module header for why it is
     /// not split here.
     pub command: String,
-    /// Pairs put in front of the program's environment. [`env_from`] is what a pane wants.
+    /// **The whole environment the program is given.** Not "pairs put in front of" one:
+    /// [`TermSession::start`] clears the environment first, so this is all of it. See the
+    /// module header for why the pane's environment is a decision rather than an
+    /// inheritance, and [`env_from`] for what a pane wants here.
     pub env: Vec<(String, String)>,
     /// Where the program starts. A startup fact — nothing reads a cwd back out of a pane,
     /// because a screen program has no trailer to report one in.
@@ -210,19 +265,38 @@ impl Default for TermConfig {
     }
 }
 
-/// **The environment a pane's program is given**: the console's terminal variables, and
-/// `TERM` when the daemon has none.
+/// **The environment a pane's program is given**: the console's own variables and the
+/// keep-list a program cannot work without — and **nothing else**.
 ///
 /// A second function beside [`super::console::env_from`] rather than a flag on it, because
 /// the two disagree about the pagers and the disagreement is the whole reason: that one
 /// **forces** `PAGER=cat` because a capture has nobody at the keyboard, and a pane has
 /// somebody. `!term git log` is allowed to page — it is a terminal, and that is what a
 /// terminal is for.
+///
+/// The two tables it reads are [`super::console::INHERITED`] (the row path's own) and
+/// [`super::confine::KEEP_ENV`] (a confined command's keep-list), plus [`PANE_HOME`] — which
+/// is named here rather than on the console's table for the reason its own doc gives. **No
+/// third table**, because the question *what environment does a program get* already has two
+/// answers in this tree and a third would be the defect. `TERM` is on both, so the tables are
+/// walked in order with the first pair for a name winning, and an empty value is no value at
+/// all — see [`super::console::value`].
+///
+/// See the module header for what this deliberately leaves out and why.
 pub fn env_from(source: &[(String, String)]) -> Vec<(String, String)> {
-    let mut pairs: Vec<(String, String)> = Vec::with_capacity(super::console::INHERITED.len() + 1);
-    for name in super::console::INHERITED {
-        if let Some((_, value)) = source.iter().find(|(k, _)| k == name) {
-            pairs.push(((*name).to_string(), value.clone()));
+    let mut pairs: Vec<(String, String)> =
+        Vec::with_capacity(super::console::INHERITED.len() + super::confine::KEEP_ENV.len() + 2);
+    for name in super::console::INHERITED
+        .iter()
+        .chain(super::confine::KEEP_ENV)
+        .chain([PANE_HOME].iter())
+    {
+        // `TERM` is on both tables; the first one to name it is the console's own.
+        if pairs.iter().any(|(k, _)| k == name) {
+            continue;
+        }
+        if let Some(value) = super::console::value(source, name) {
+            pairs.push(((*name).to_string(), value.to_string()));
         }
     }
     if !pairs.iter().any(|(k, _)| k == "TERM") {
@@ -321,6 +395,12 @@ impl TermSession {
         let mut cmd = std::process::Command::new(&prog);
         cmd.args(&args);
         cmd.current_dir(&cfg.cwd);
+        // **Cleared, then stated — the whole environment, and not an inheritance.** See
+        // the module header: the child used to inherit the daemon's own environment, which
+        // is the harness's variables and every token in them, and which gave a pane `TERM`
+        // and `HOME` only where the daemon happened to have them. `cfg.env` is
+        // [`env_from`]'s answer and it is the whole of what the program is handed.
+        cmd.env_clear();
         for (k, v) in &cfg.env {
             cmd.env(k, v);
         }
@@ -583,7 +663,10 @@ mod tests {
     fn pane(command: &str) -> (TermSession, Arc<Collected>) {
         let cfg = TermConfig {
             command: command.to_string(),
-            env: vec![("TERM".to_string(), "xterm-256color".to_string())],
+            env: vec![
+                ("TERM".to_string(), "xterm-256color".to_string()),
+                ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+            ],
             cwd: std::env::temp_dir(),
             cols: 80,
             rows: 24,
@@ -783,11 +866,11 @@ mod tests {
         assert_eq!(&args[5..], &["/bin/sh", "-c", "mc"]);
     }
 
-    /// **A pane's environment is the console's terminal variables and NOT a pager forced to
-    /// `cat`.**
+    /// **A pane's environment is the console's own variables plus the keep-list a program
+    /// cannot work without — and NOT a pager forced to `cat`.**
     ///
-    /// The contrast with [`super::super::console::env_from`] is the whole reason there are
-    /// two functions: a capture has nobody at the keyboard so `git log` must not page, and a
+    /// The contrast with [`super::super::console::env_from`] is one reason there are two
+    /// functions: a capture has nobody at the keyboard so `git log` must not page, and a
     /// pane has somebody at the keyboard so it may. Asserted without a process, which is the
     /// only way to hold the whole of it rather than the one variable a test thought to print.
     #[test]
@@ -797,15 +880,22 @@ mod tests {
             ("COLORTERM".into(), "truecolor".into()),
             ("PAGER".into(), "less".into()),
             ("HOME".into(), "/home/nobody".into()),
+            ("PATH".into(), "/usr/bin".into()),
+            ("LANG".into(), "en_GB.UTF-8".into()),
+            ("CARGO_MANIFEST_DIR".into(), "/build".into()),
         ];
-        let pane_env = env_from(&source);
         assert_eq!(
-            pane_env,
+            env_from(&source),
             vec![
                 ("TERM".to_string(), "screen-256color".to_string()),
                 ("COLORTERM".to_string(), "truecolor".to_string()),
+                ("PATH".to_string(), "/usr/bin".to_string()),
+                ("LANG".to_string(), "en_GB.UTF-8".to_string()),
+                ("HOME".to_string(), "/home/nobody".to_string()),
             ],
-            "the pane's environment is the console's terminal variables and nothing else"
+            "the pane's environment is the console's terminal variables, the keep-list a \
+             program cannot work without, and the console's HOME — and nothing else: no pager \
+             forced, and nothing of the harness's own"
         );
         // The control, in the same test: the capture's own builder does force it.
         assert!(
@@ -815,10 +905,107 @@ mod tests {
             "the capture's environment must still forbid paging, or this test measures \
              nothing about the difference"
         );
-        // And a daemon with no `TERM` still gives the pane one.
+    }
+
+    /// **`TERM` is supplied when the daemon has none — and when it has one that is empty.**
+    ///
+    /// The second half is the flash the operator hit: a daemon whose environment carries
+    /// `TERM=` (set, and saying nothing) handed the pane a *terminal type of the empty
+    /// string*, which every ncurses program answers by printing one line and exiting. `mc`
+    /// is one of them; `nano` says `Error opening terminal: unknown.` and is the one this
+    /// test can run.
+    ///
+    /// The control is the pair of cases around it: a `TERM` the console really has is passed
+    /// through untouched, so this is not a rule about the default winning.
+    #[test]
+    fn a_pane_is_given_a_usable_term_even_when_the_daemon_has_an_empty_one() {
         assert_eq!(
             env_from(&[]),
             vec![("TERM".to_string(), DEFAULT_TERM.to_string())]
+        );
+        assert_eq!(
+            env_from(&[("TERM".to_string(), String::new())]),
+            vec![("TERM".to_string(), DEFAULT_TERM.to_string())],
+            "`TERM=` is not a terminal type, and a pane given one cannot find its terminfo"
+        );
+        assert_eq!(
+            env_from(&[("TERM".to_string(), "st-256color".to_string())]),
+            vec![("TERM".to_string(), "st-256color".to_string())],
+            "the console's own TERM is the console's, and is passed through"
+        );
+        // And the terminfo lookup this is about, through a real program on a real pty: with
+        // the default the pane's program can resolve its terminal, and with `TERM=` it cannot.
+        // **`_s` and not `_`**: a `TermSession` bound to a bare `_` is dropped at the end of
+        // the statement, which closes the pane and kills the program before it has printed
+        // anything — measured here as an empty sink and *"the pane was dropped"*.
+        let (_s, sink) = pane("printf 'tput:%s\n' \"$(tput cols 2>&1)\"");
+        assert!(
+            sink.wait_for("tput:", PATIENCE),
+            "the pane's program must have run: {:?}",
+            sink.text()
+        );
+        let said = sink.text();
+        assert!(
+            !said.contains("unknown") && !said.contains("No such file"),
+            "a pane with a usable TERM must be able to find its terminfo: {said:?}"
+        );
+    }
+
+    /// **The pane's program's environment is a decision, not an inheritance.**
+    ///
+    /// This is the test the fix is for, and it is a real program on a real pty printing its
+    /// own environment: `env()` is what the daemon hands a pane, and the daemon's own
+    /// variables — `CARGO_MANIFEST_DIR` is this test process's, and is the shape of every
+    /// variable the harness runs with — must not be in it. Measured before the fix, they
+    /// were: the child inherited the daemon's whole environment, tokens and all.
+    ///
+    /// The other half is the pair the operator's `mc` needed: `TERM` for terminfo and `HOME`
+    /// to write its config, both of which used to arrive only where the daemon happened to
+    /// have them.
+    #[test]
+    fn the_panes_program_gets_the_console_and_nothing_of_the_harnesss_own() {
+        let cfg = TermConfig {
+            command: "printf 'TERM=[%s] HOME=[%s] PATH=[%s] MANIFEST=[%s]\n' \"$TERM\" \
+                      \"$HOME\" \"$PATH\" \"$CARGO_MANIFEST_DIR\""
+                .to_string(),
+            env: env(),
+            cwd: std::env::temp_dir(),
+            cols: 80,
+            rows: 24,
+            scope: None,
+            tree: None,
+        };
+        let sink = Arc::new(Collected::new());
+        let _s = TermSession::start(&cfg, sink.clone()).expect("a pane on this box");
+        assert!(
+            sink.wait_for("MANIFEST=", PATIENCE),
+            "the pane's program must have printed its environment: {:?}",
+            sink.text()
+        );
+        let said = sink.text();
+        let value = |name: &str| -> String {
+            said.split_whitespace()
+                .find_map(|w| w.strip_prefix(name))
+                .unwrap_or("")
+                .trim_matches(|c| c == '[' || c == ']')
+                .to_string()
+        };
+        assert!(
+            !value("TERM=").is_empty(),
+            "a pane's program needs a TERM to colourise and address the cursor: {said:?}"
+        );
+        assert!(
+            value("HOME=").starts_with('/'),
+            "`mc` writes its config under HOME and exits when it has none: {said:?}"
+        );
+        assert!(
+            !value("PATH=").is_empty(),
+            "a pane runs a program by name, so it needs the console's PATH: {said:?}"
+        );
+        assert!(
+            value("MANIFEST=").is_empty(),
+            "the daemon's own environment must not reach a program the operator runs, and \
+             this is the variable that says it did: {said:?}"
         );
     }
 

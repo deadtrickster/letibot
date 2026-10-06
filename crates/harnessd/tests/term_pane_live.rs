@@ -198,6 +198,76 @@ fn read_until(r: &mut FrameReader<UnixStream>, needle: &str) -> Vec<u8> {
     }
 }
 
+/// **The pane's program gets the console's environment, and not the daemon's own.**
+///
+/// This is the third defect of the operator's live report, end to end: the daemon's own
+/// driver, a real pty, a real program, and the environment it can read for itself.
+///
+/// **What it was.** `TermSession::start` set the pairs it was given and cleared nothing, so
+/// the pane's program inherited *the daemon's whole environment* — measured on this box,
+/// `!term env` printed `CARGO_MANIFEST_DIR`, `RUSTUP_TOOLCHAIN`, `LD_LIBRARY_PATH`,
+/// `SUDO_ASKPASS`, `LETIBOT_SOCKET` and `LETIBOT_SESSION`. That is the harness's own
+/// variables, including every token the daemon's environment carries, handed to a program
+/// the operator runs; and `TERM` and `HOME` were in there only *by accident*, which is a
+/// daemon started without them giving a pane neither. `mc` needs both — terminfo for the
+/// first, `~/.config/mc` for the second — and prints one line and exits without them, which
+/// is the flash.
+///
+/// **The control is the first assertion**, and it is what makes the absence mean anything:
+/// the variable this test asks for *is* in the daemon's own environment, so a pane that
+/// does not see it did not inherit — it was told.
+#[test]
+fn the_panes_program_gets_the_consoles_environment_and_not_the_daemons_own() {
+    let _serial = serial();
+    assert!(
+        std::env::var("CARGO_MANIFEST_DIR").is_ok(),
+        "this test is only evidence if the daemon's own environment carries the variable \
+         the pane must not see"
+    );
+    let ws = workspace("env");
+    let registry = daemon("s-env", &ws);
+    let (mut w, mut r) = attach(&registry, "s-env");
+
+    open(
+        &mut w,
+        "!term printf 'TERM=[%s] HOME=[%s] PATH=[%s] MANIFEST=[%s]\\n' \"$TERM\" \"$HOME\" \
+         \"$PATH\" \"$CARGO_MANIFEST_DIR\"",
+        80,
+        24,
+    );
+    let (said, _) = read_to_end(&mut r);
+    let text = String::from_utf8_lossy(&said);
+    // The pty translates the newline to `\r\n` and the program's own format has one field per
+    // pair, so the answer is read by name rather than by position.
+    let value = |name: &str| -> String {
+        text.split_whitespace()
+            .find_map(|word| word.strip_prefix(name))
+            .unwrap_or("")
+            .trim_matches(|c| c == '[' || c == ']')
+            .to_string()
+    };
+    assert!(
+        !value("TERM=").is_empty(),
+        "`mc` needs TERM for terminfo, and a pane whose program has none cannot address the \
+         cursor either: {text:?}"
+    );
+    assert!(
+        value("HOME=").starts_with('/'),
+        "`mc` writes its config under HOME and exits with a sentence when it has none, which \
+         is the flash: {text:?}"
+    );
+    assert!(
+        !value("PATH=").is_empty(),
+        "a pane runs a program by name, so it needs the console's PATH: {text:?}"
+    );
+    assert!(
+        value("MANIFEST=").is_empty(),
+        "the daemon's own environment must not reach a program the operator runs, and this is \
+         the variable that says it did: {text:?}"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
 /// **A real program, on a real pty, its bytes on the wire, and its exit status in the ending.**
 ///
 /// This is the whole requirement in one test: `!term echo …` is the operator's line, the daemon
