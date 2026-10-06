@@ -662,6 +662,28 @@ impl Link {
                     Action::OperatorShell { line } => {
                         self.client.operator_shell(app.seq, &line)?;
                     }
+                    // **The model's half of the `!` completion.** The history is the
+                    // head's own and was already tried; this is the fallback, asked when
+                    // the history has no match for the prefix or its cycle is exhausted.
+                    //
+                    // **`client_request_id` is the head's, and it is passed through.**
+                    // The answer comes back on the pump as a `ShellSuggestions`, and the
+                    // head has to match it to the (prefix, transcript position) it asked
+                    // about — so the key it filed the ask under is the key that has to
+                    // travel, and a second id minted by this writer would leave the head
+                    // holding one the daemon never echoes. The head only asks once per
+                    // (prefix, position); the cache and that rule are its own.
+                    //
+                    // **Nothing here submits.** The answer is a list of candidate lines
+                    // for the composer, drawn as candidates with their provenance, and
+                    // Enter is still the operator's.
+                    Action::SuggestShell {
+                        prefix,
+                        client_request_id,
+                    } => {
+                        self.client
+                            .suggest_shell(app.seq, &client_request_id, &prefix)?;
+                    }
                     Action::Secret { req_id, secret } => {
                         self.client.secret(&req_id, secret)?;
                     }
