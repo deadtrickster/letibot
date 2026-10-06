@@ -165,7 +165,10 @@ fn the_daemon_asks_the_suggester_for_this_session_and_answers_the_head() {
             lines,
         } => {
             assert_eq!(client_request_id, "head-1-s1", "the id it was asked under");
-            assert_eq!(prefix, "! git", "the prefix, echoed back for the head's cache");
+            assert_eq!(
+                prefix, "! git",
+                "the prefix, echoed back for the head's cache"
+            );
             assert_eq!(
                 lines,
                 vec!["! git status".to_string(), "! git log".to_string()],
@@ -176,7 +179,11 @@ fn the_daemon_asks_the_suggester_for_this_session_and_answers_the_head() {
     }
     assert_eq!(
         suggester.asked(),
-        vec![("s-1".to_string(), "/tmp/ws".to_string(), "! git".to_string())],
+        vec![(
+            "s-1".to_string(),
+            "/tmp/ws".to_string(),
+            "! git".to_string()
+        )],
         "the session's own hub and the workspace from the wiring"
     );
 }

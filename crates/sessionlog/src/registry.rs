@@ -745,7 +745,10 @@ impl Registry {
 
     /// The suggester this registry was given, or `None` when it was not.
     pub fn suggester(&self) -> Option<Arc<dyn ShellSuggester>> {
-        self.suggester.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.suggester
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// One half of one decision's exchange, or `None` when there is no source or no record.

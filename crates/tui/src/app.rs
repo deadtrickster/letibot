@@ -9496,7 +9496,11 @@ impl App {
         }
         // Already asked for this prefix at this position: the response is in flight.
         // Enter the waiting state and say so, rather than asking again.
-        if self.shell_ask.values().any(|(p, n)| p == text && *n == position) {
+        if self
+            .shell_ask
+            .values()
+            .any(|(p, n)| p == text && *n == position)
+        {
             self.shell_model = Some((text.to_string(), Vec::new(), 0));
             self.say(&format!(
                 "asking the model for a ! line starting with {text:?}…"
@@ -9506,7 +9510,8 @@ impl App {
         // Ask the model, once. The id is minted here so the head can recognise the
         // answer on the way back; the daemon echoes it in `ShellSuggestions`.
         let id = self.next_shell_ask_id();
-        self.shell_ask.insert(id.clone(), (text.to_string(), position));
+        self.shell_ask
+            .insert(id.clone(), (text.to_string(), position));
         self.shell_model = Some((text.to_string(), Vec::new(), 0));
         self.queued.push(Action::SuggestShell {
             prefix: text.to_string(),
@@ -9674,7 +9679,11 @@ impl App {
         }
         let mut parts: Vec<String> = Vec::new();
         // The history's candidates, plain: a command this session ran is a fact.
-        for line in self.shell_candidates().into_iter().filter(|l| l.starts_with(text)) {
+        for line in self
+            .shell_candidates()
+            .into_iter()
+            .filter(|l| l.starts_with(text))
+        {
             parts.push(line);
         }
         // The model's candidates, marked: a proposal is not a fact, and the mark
@@ -45988,7 +45997,11 @@ mod tests {
         // And the answer is cycled rather than the history's wrapping back.
         model_answers(&mut a, &id, "! ls -la", &["! ls -la --color"]);
         a.key(Key::Tab);
-        assert_eq!(a.input(), "! ls -la --color", "the model's line is the cycle");
+        assert_eq!(
+            a.input(),
+            "! ls -la --color",
+            "the model's line is the cycle"
+        );
     }
 
     /// An operator's own row, the way the session's log carries it.
@@ -46098,7 +46111,11 @@ mod tests {
         a.set_composer("! git");
         a.shell_model = None;
         a.key(Key::Tab);
-        assert_eq!(a.input(), "! git status", "the same prefix, the same answer");
+        assert_eq!(
+            a.input(),
+            "! git status",
+            "the same prefix, the same answer"
+        );
         assert!(
             a.take_actions().is_empty(),
             "the same prefix at the same position is one call"
@@ -46141,7 +46158,11 @@ mod tests {
         // reaches the composer.
         a.set_composer("! git");
         a.key(Key::Tab);
-        assert_eq!(a.input(), "! git", "the stale suggestion does not fill the composer");
+        assert_eq!(
+            a.input(),
+            "! git",
+            "the stale suggestion does not fill the composer"
+        );
         let (prefix, _) = the_one_ask(&mut a);
         assert_eq!(prefix, "! git", "asked again, at the new position");
     }
@@ -46194,7 +46215,12 @@ mod tests {
         a.key(Key::Tab);
         let (prefix, id) = the_one_ask(&mut a);
         assert_eq!(prefix, "! ls -la");
-        model_answers(&mut a, &id, "! ls -la", &["! ls -la --color", "! ls -la -R"]);
+        model_answers(
+            &mut a,
+            &id,
+            "! ls -la",
+            &["! ls -la --color", "! ls -la -R"],
+        );
         // The live row carries both kinds, told apart: the session's own plain, the
         // model's marked. This is the requirement in one string.
         let row = a

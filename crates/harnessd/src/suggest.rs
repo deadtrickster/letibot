@@ -23,9 +23,9 @@
 
 use std::time::Duration;
 
+use letibot_sessionlog::ShellSuggester;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::suggest::{self, RECENT_ROWS};
-use letibot_sessionlog::ShellSuggester;
 use letibot_transcript::TranscriptItem;
 use letibot_turn::http::{self, Endpoint};
 
@@ -104,11 +104,7 @@ impl ShellSuggester for LocalSuggester {
         // carries. A row whose body has not landed is `None` and is skipped — a
         // candidate built on a body nobody has is a candidate built on nothing.
         let snap = hub.snapshot();
-        let items: Vec<TranscriptItem> = snap
-            .items
-            .iter()
-            .filter_map(|s| s.item.clone())
-            .collect();
+        let items: Vec<TranscriptItem> = snap.items.iter().filter_map(|s| s.item.clone()).collect();
         let recent = suggest::recent_rows(&items, RECENT_ROWS);
         let commands = suggest::commands_run(&items);
         let prompt = suggest::suggestion_prompt(&recent, &commands, workspace, prefix);
@@ -280,7 +276,10 @@ mod tests {
             "the rule: {body}"
         );
         // The two bounds: the local model's name, and a small output cap.
-        assert!(body.contains(r#""model":"local""#), "the local model: {body}");
+        assert!(
+            body.contains(r#""model":"local""#),
+            "the local model: {body}"
+        );
         assert!(
             body.contains(&format!(r#""max_tokens":{SUGGEST_MAX_TOKENS}"#)),
             "the output cap: {body}"

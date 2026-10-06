@@ -256,9 +256,7 @@ mod tests {
     fn user(text: &str) -> TranscriptItem {
         TranscriptItem::User {
             speaker: letibot_transcript::Speaker::Operator,
-            parts: vec![UserPart::Text {
-                text: text.into(),
-            }],
+            parts: vec![UserPart::Text { text: text.into() }],
         }
     }
 
@@ -282,14 +280,14 @@ mod tests {
     /// of those would be a template, and a template invents.
     #[test]
     fn the_prompt_carries_the_context_and_the_prefix() {
-        let recent = vec![
-            "fix the login bug".to_string(),
-            "[tool bash]".to_string(),
-        ];
+        let recent = vec!["fix the login bug".to_string(), "[tool bash]".to_string()];
         let commands = vec!["! cargo test".to_string(), "! git status".to_string()];
         let p = suggestion_prompt(&recent, &commands, "/home/dead/Projects/letibot", "! git");
         // The workspace, the rows, the commands and the prefix are all in it.
-        assert!(p.contains("/home/dead/Projects/letibot"), "the workspace: {p}");
+        assert!(
+            p.contains("/home/dead/Projects/letibot"),
+            "the workspace: {p}"
+        );
         assert!(p.contains("fix the login bug"), "a recent row: {p}");
         assert!(p.contains("[tool bash]"), "a recent tool row: {p}");
         assert!(p.contains("! cargo test"), "a command already run: {p}");
@@ -313,8 +311,14 @@ mod tests {
     #[test]
     fn an_empty_context_is_a_prompt_without_the_sections() {
         let p = suggestion_prompt(&[], &[], "/tmp/empty", "! ls");
-        assert!(!p.contains("The conversation so far"), "no rows section: {p}");
-        assert!(!p.contains("Commands already run"), "no commands section: {p}");
+        assert!(
+            !p.contains("The conversation so far"),
+            "no rows section: {p}"
+        );
+        assert!(
+            !p.contains("Commands already run"),
+            "no commands section: {p}"
+        );
         assert!(p.contains("/tmp/empty"), "the workspace: {p}");
         assert!(p.contains("! ls"), "the prefix: {p}");
     }
@@ -447,7 +451,10 @@ Here are some commands:
         assert_eq!(rows.len(), 3, "every row is carried: {rows:?}");
         assert_eq!(rows[0], "first", "oldest first: {rows:?}");
         assert!(rows[1].ends_with('…'), "the long row is cut: {rows:?}");
-        assert!(rows[1].chars().count() <= ROW_CAP + 1, "the cut is bounded: {rows:?}");
+        assert!(
+            rows[1].chars().count() <= ROW_CAP + 1,
+            "the cut is bounded: {rows:?}"
+        );
         assert_eq!(rows[2], "[calls bash]", "a call row is named: {rows:?}");
     }
 
