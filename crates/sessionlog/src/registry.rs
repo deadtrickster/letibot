@@ -896,9 +896,7 @@ impl Registry {
     /// empty — see [`SessionSource::merge_entries`]. The queue is daemon-level, so there is no
     /// `session_id`.
     pub fn merge_entries(&self) -> Vec<crate::event::MergeEntry> {
-        self.source()
-            .map(|s| s.merge_entries())
-            .unwrap_or_default()
+        self.source().map(|s| s.merge_entries()).unwrap_or_default()
     }
 
     pub fn list(&self) -> Vec<SessionBrief> {
