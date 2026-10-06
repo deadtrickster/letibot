@@ -534,6 +534,12 @@ impl Link {
             // than failing once per action. Every write below would fail the same way,
             // and a batch of them would bury the one sentence that matters.
             if app.detached() {
+                // **A pane whose open never left is not a pane.** The submit refused a line on
+                // a link that was already down, but the link can go down between the
+                // keystroke and this send — inside one tick — and what is left behind is a
+                // rectangle with no program in it and no ending coming. See
+                // [`App::drop_pane`].
+                app.drop_pane();
                 app.refused_while_detached();
                 break;
             }

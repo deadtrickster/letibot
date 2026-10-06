@@ -4494,6 +4494,10 @@ impl App {
         if self.stopping.is_some() {
             return;
         }
+        // **And the pane goes with the connection.** See [`App::drop_pane`]: the pty is the
+        // daemon's, and a head that cannot reach it can neither feed the screen nor forward
+        // the one key that leaves.
+        self.drop_pane();
         if self.link.is_down() {
             // Already known: refresh the reason if this report has one and keep the
             // clock. Both reports are true; the first is the more useful clock.
@@ -5189,9 +5193,18 @@ impl App {
                 // this head did not open*, and the alternative — opening a pane from a frame
                 // nobody asked for — would be a screen program appearing on a head that never
                 // ran `!term`.
+                //
+                // **And no `redraw` flag**, which is the difference between a pane and a
+                // transcript. `redraw` makes the driver call `Terminal::invalidate`, which
+                // forgets the glass so the next frame is written whole — right for Ctrl-L, a
+                // resize and a fold, and *wrong here*: a screen program repaints ten times a
+                // second and the terminal's own diff writes exactly the rows that changed. A
+                // flag per frame would pin the terminal rewriting all 24 rows ten times a
+                // second, which is the flicker `term.rs`'s whole diff encoder exists to
+                // remove. The frame is composed and drawn every tick either way — this flag
+                // is about the *glass*, not about whether to draw.
                 if let Some(p) = self.term.as_mut() {
                     p.screen.feed(&bytes);
-                    self.redraw = true;
                 }
                 Disposition::Control
             }
@@ -8438,6 +8451,27 @@ impl App {
         })
     }
 
+    /// **A pane with no daemon is a pane with no program.**
+    ///
+    /// The pty is the *daemon's*, so a head that cannot reach the daemon cannot feed the
+    /// screen and cannot forward a key: the rectangle would sit frozen on whatever the
+    /// program drew last, with `ctrl-\` — the one way out, and a frame — going nowhere. The
+    /// transcript is the honest thing to show, and this is the two moments it is known:
+    /// the link going down, and an action the driver could not send.
+    ///
+    /// **The daemon's pane is not closed here**, and cannot be: the close is a frame, and the
+    /// frame is exactly what cannot be sent. The program is left to the session it belongs to
+    /// — the same bargain [`App::load`] makes on a switch, and the same TODO.
+    ///
+    /// Returns whether there was a pane, so a caller can say so once rather than per report.
+    pub fn drop_pane(&mut self) -> bool {
+        let had = self.term.take().is_some();
+        if had {
+            self.redraw = true;
+        }
+        had
+    }
+
     /// Whether a pane is open and therefore owns the keyboard. See [`TermPane`].
     ///
     /// The one question `Link::tick` asks before it decides whether a byte this head read is a
@@ -8485,7 +8519,6 @@ impl App {
                 if let Some(p) = self.term.as_mut() {
                     p.closing = true;
                 }
-                self.redraw = true;
                 out.push(Action::TermClose);
                 out
             }

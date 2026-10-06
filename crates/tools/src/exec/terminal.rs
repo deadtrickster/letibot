@@ -729,7 +729,11 @@ mod tests {
         let why = r.why();
         assert!(why.contains("nano"), "{why}");
         assert!(why.contains("cannot hand you one"), "{why}");
-        assert!(why.contains("run it in another window"), "{why}");
+        // **The remedy names the verb that works**, which is the half of this test that
+        // changed when `!term` was built: *"run it in another window"* was the answer while
+        // there was no pane, and it sent the operator out of the harness for a program this
+        // harness now runs itself. See `super::term`.
+        assert!(why.contains("`!term <command>`"), "{why}");
 
         let body = r.body();
         assert!(body.contains("`nano` was refused because"), "{body}");
@@ -741,8 +745,12 @@ mod tests {
         // What the run actually is, which is the fact the operator asked about.
         assert!(body.contains("ONE transcript row"), "{body}");
         assert!(body.contains("/dev/null"), "{body}");
-        // And the TODO, so the row does not read as a final answer.
-        assert!(body.contains("`!term`"), "{body}");
+        // And the way to run it, so the row does not read as a final answer.
+        assert!(body.contains("`!term <command>`"), "{body}");
+        assert!(
+            body.contains("ctrl-\\"),
+            "the row must name the way out of the pane it recommends: {body}"
+        );
 
         // The other two classes carry their own remedy and their own account of what
         // the rule looked at, rather than `nano`'s.
