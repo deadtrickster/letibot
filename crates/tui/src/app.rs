@@ -3691,6 +3691,11 @@ impl App {
 
     /// Whether the head wants the terminal repainted from scratch (Ctrl-L, or a
     /// fold that changed every cached line). Reading it clears it.
+    ///
+    /// **Not the scroll keys.** A moved viewport is a diff rather than an erase —
+    /// every row the window slid is a row whose text differs, and the encoder writes
+    /// exactly those — so the flag on the scroll path bought a whole-screen erase per
+    /// wheel notch and nothing else. See [`App::hold`].
     pub fn take_redraw(&mut self) -> bool {
         // **A held view does not let the glass be thrown away** (R56). A `true` here makes the
         // driver call `Terminal::invalidate`, which forces a full repaint — and a full repaint is
@@ -6679,6 +6684,12 @@ impl App {
                 return None;
             }
             Key::CtrlL => {
+                // **This one keeps `redraw`.** The flag means *throw the glass away* — the next
+                // frame erases and rewrites in full — and that is right exactly when this head's
+                // memory of the screen is known to be wrong. Ctrl-L is the operator saying
+                // something else wrote to their terminal, which is that case, and it is the only
+                // key that is. The scroll keys are the opposite case and take the diff; see
+                // [`App::hold`] for why the wheel does not.
                 self.redraw = true;
                 return None;
             }
@@ -6895,7 +6906,18 @@ impl App {
                     // deliberate read of the next screenful rather than a flick back to live.
                     self.scroll = 0;
                     self.anchor = None;
-                    self.redraw = true;
+                    // **And no `redraw`, which is the other half of the same act.** The flag is
+                    // spent at the top of the next frame as `Terminal::invalidate`, which sets
+                    // `full` — and a full frame is `ESC[2J` plus every row rewritten with the row
+                    // diff switched off. A slid window needs none of it: the rows whose text
+                    // differs are exactly the rows `paint_full` rewrites, and the rows that did
+                    // not slide are already right on the glass ([`crate::term`], *"the two cases
+                    // where the glass really is unknown"* — a resize and Ctrl-L, and this is
+                    // neither). What the erase bought was one flash per notch, and a touchpad's
+                    // inertial scroll is a notch per `read()`, so one flick was a dozen of them.
+                    // Ctrl-L below keeps the flag because it is the opposite case: something
+                    // outside this head wrote to the terminal, so the memory the diff is against
+                    // is known to be wrong and only a repaint fixes that.
                 } else {
                     // **The mirror, and it is `hold` for the same reason** (R36): moving
                     // down is moving over the same rows in the other direction, and it is
@@ -12620,7 +12642,9 @@ impl App {
         if want >= bottom && delta > 0 {
             self.anchor = None;
             self.scroll = 0;
-            self.redraw = true;
+            // **No `redraw` here either** — this is the flag's second home on the scroll path.
+            // See the note at the foot of this function: a moved viewport is a diff, not an
+            // erase.
             return;
         }
         // **The top of the transcript is as far as this goes**, and holding there is not
@@ -12666,7 +12690,22 @@ impl App {
         // been bitten by more than once. Anything that wants to know whether the reader is
         // at the bottom asks [`App::following`], which is a question about the anchor
         // rather than about a number.
-        self.redraw = true;
+        //
+        // **And this is where `redraw` used to be, for every key that scrolls the transcript** —
+        // `WheelUp` and `PageUp` through [`App::scroll_up`], `PageDown` and the parked arrows
+        // through this function directly. It should not have been. The flag *throws the glass
+        // away*: the head reads it before the next frame and calls `Terminal::invalidate`, which
+        // sets `full`, and a full frame is `ESC[2J` followed by every row rewritten with the row
+        // diff disabled ([`crate::term`]). A slid window wants the diff: `paint_full` rewrites the
+        // rows whose text differs and erases the rows the frame no longer has, which is the whole
+        // of what a scroll changed — the rest of the screen is already right, and rewriting it
+        // identically is the one thing this head's encoder exists not to do.
+        //
+        // What the erase cost was a flash per key, and on a touchpad it is a flash per *notch*:
+        // the inertial scroll arrives over many `read()`s, every read is its own tick and its own
+        // frame, and every frame erased the screen. Measured — see the commit that removed this.
+        // The state above is the part a scroll owes, and it is untouched; what to write to the
+        // glass is the frame's business and the diff already answers it.
     }
 
     /// **Draw rows until one of them is rendered** — R36.
