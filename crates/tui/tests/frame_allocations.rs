@@ -83,7 +83,12 @@ fn head() -> letibot_tui::app::App {
          two of them did. The prefix is frozen before the first turn, which is why a rewrite of \
          the prompt costs a full prefill and nothing else does. ",
     ));
-    hub.publish(testing::proposed_on("t1", "c1", "bash", "\"cargo test --release\""));
+    hub.publish(testing::proposed_on(
+        "t1",
+        "c1",
+        "bash",
+        "\"cargo test --release\"",
+    ));
     let mut app = letibot_tui::app::App::new(RenderConfig {
         width: 120,
         color: true,
@@ -114,7 +119,10 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
         std::hint::black_box(app.screen(120, 40));
     }
     let rows = app.screen(120, 40).len();
-    assert!(rows > 20, "the fixture does not draw a real frame: {rows} rows");
+    assert!(
+        rows > 20,
+        "the fixture does not draw a real frame: {rows} rows"
+    );
 
     let before = count();
     let frame = app.screen(120, 40);
@@ -145,7 +153,9 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
     // ---- the terminal's diff --------------------------------------------------------------
     use letibot_tui::term::paint_full;
 
-    let glass: Vec<String> = (0..40).map(|i| format!("row {i} of a settled screen")).collect();
+    let glass: Vec<String> = (0..40)
+        .map(|i| format!("row {i} of a settled screen"))
+        .collect();
     let mut edited = glass.clone();
     edited[7] = "row 7, and this one moved".into();
 
@@ -180,9 +190,142 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
     let s = paint_full(&shown, &edited, &mut scratch, None, None, false);
     let one_row = count() - before;
     println!("ALLOCS terminal one_row_changed={one_row}");
-    assert!(s.contains("row 7, and this one moved"), "the row was written");
+    assert!(
+        s.contains("row 7, and this one moved"),
+        "the row was written"
+    );
     assert!(
         one_row < 8,
         "changing one row of 40 cost {one_row} allocations — the per-row copy is back"
+    );
+
+    // ---- the scroll path, which never took the diff until now -----------------------------
+    //
+    // **The half this file never covered, and the one that was flickering.** A wheel notch is a
+    // key like any other, so it went through the same loop — but the arm that handled it set
+    // `App::redraw`, the driver read that before the next frame and called `Terminal::invalidate`,
+    // and every frame after a notch was therefore a `full` one: `ESC[2J`, then all forty rows
+    // rewritten with the row diff switched off. On a touchpad that is one erase per NOTCH: the
+    // inertial scroll arrives over many reads and every read is its own tick.
+    //
+    // Two things are asserted, and they are the fix and its shape. **The flag stays clear** —
+    // that is the whole change, and the assertion that fails on the old code. **And the frame a
+    // notch produces takes the diff**: it writes exactly the rows whose text differs and no
+    // screen erase at all, which is the claim that makes dropping the flag safe rather than
+    // optimistic.
+    use letibot_sessionlog::{Envelope, ServerFrame, testing};
+    use letibot_tui::app::Key;
+
+    let env = |seq: u64, event| Envelope {
+        session_id: "s".into(),
+        seq,
+        ts: 0,
+        event,
+    };
+    // **Tall enough for the window to MOVE**, or the test proves nothing: a screen whose rows do
+    // not change takes the diff path and the full path identically, both writing nothing. Forty
+    // rows of conversation against a forty-row terminal, added after the allocations above are
+    // measured so the fixture's cost is where it was.
+    for i in 0..40u64 {
+        let id = format!("q.{i}");
+        app.apply(ServerFrame::Event(env(
+            1_000 + i * 2,
+            testing::appended(&id, "user"),
+        )));
+        app.apply(ServerFrame::Event(env(
+            1_001 + i * 2,
+            testing::content(
+                &id,
+                &format!("row {i} of a conversation long enough to scroll"),
+            ),
+        )));
+    }
+
+    // Paint a frame onto the glass the way the head does, and hand back the bytes.
+    let put = |shown: &mut Vec<String>, scratch: &mut Vec<String>, frame: &[String]| {
+        let s = paint_full(shown, frame, scratch, None, None, false);
+        std::mem::swap(shown, scratch);
+        s
+    };
+
+    // **Spend the flag the arrivals set, the way the head's loop does.** `take_redraw` is read at
+    // the top of every pass and *before* the keys (`head.rs`), so the flag a key sets is spent by
+    // the frame after it — and the flag an arriving row set is spent by the frame before any key
+    // at all. Draining it here is what keeps the assertions below about the scroll rather than
+    // about the forty rows that built the fixture.
+    assert!(
+        app.take_redraw(),
+        "the fixture's own rows should have asked for a frame"
+    );
+
+    let mut before = app.screen(120, 40);
+    assert!(before.len() > 20, "the scroll fixture draws no frame");
+    put(&mut shown, &mut scratch, &before);
+
+    // **The state change the 2026-10-05 work added is kept**, because dropping a repaint must not
+    // drop a scroll: a notch up parks the reader on the anchor, and ONE notch down is the tail
+    // again however far the stream has moved under them.
+    assert!(app.following(), "the fixture starts on the stream");
+    assert_eq!(app.key(Key::WheelUp), None);
+    assert!(!app.following(), "a notch up parks the reader");
+    assert!(!app.take_redraw(), "a notch up asked for a full repaint");
+    assert_eq!(app.key(Key::WheelDown), None);
+    assert!(app.following(), "one notch down is the tail again");
+    assert_eq!(app.scroll, 0, "and the count agrees with the anchor");
+    assert!(
+        !app.take_redraw(),
+        "the tail notch asked for a full repaint"
+    );
+    before = app.screen(120, 40);
+    put(&mut shown, &mut scratch, &before);
+
+    // Every key the conversation pane scrolls with, one at a time. The order matters only in that
+    // the page keys have somewhere to move FROM — a notch up, a page up, the tail in one press,
+    // a page up again, then a page down.
+    for key in [
+        Key::WheelUp,
+        Key::PageUp,
+        Key::WheelDown,
+        Key::PageUp,
+        Key::PageDown,
+    ] {
+        let name = format!("{key:?}");
+        assert_eq!(app.key(key), None, "{name} is the head's own key");
+        assert!(
+            !app.take_redraw(),
+            "{name} asked for the glass to be thrown away — that is the `ESC[2J` per notch a \
+             touchpad flick was made of"
+        );
+        let after = app.screen(120, 40);
+        let differing = (0..before.len().max(after.len()))
+            .filter(|i| before.get(*i) != after.get(*i))
+            .count();
+        let painted = put(&mut shown, &mut scratch, &after);
+        assert!(
+            !painted.contains("\x1b[2J"),
+            "the frame after {name} erased the screen"
+        );
+        assert_eq!(
+            painted.matches("\x1b[K").count(),
+            differing,
+            "the frame after {name} did not write exactly the rows whose text differs: the \
+             diff is the whole reason the erase is not needed"
+        );
+        before = after;
+    }
+
+    // **Ctrl-L is the other half of the same decision, and it keeps its erase.** The flag means
+    // *this head's memory of the glass is wrong*, which is what the operator is saying when they
+    // press it — the one key whose whole job is to repaint. A resize is the other case and it is
+    // in `term.rs`, because that is where the new size is known.
+    assert_eq!(app.key(Key::CtrlL), None);
+    assert!(
+        app.take_redraw(),
+        "Ctrl-L no longer asks for a full repaint"
+    );
+    assert!(
+        paint_full(&[], &before, &mut scratch, None, None, true).contains("\x1b[2J"),
+        "and a full paint is still an erase, so the flag means what the scroll path no longer \
+         wants"
     );
 }
