@@ -2319,11 +2319,13 @@ pub struct App {
     /// Subagents this session has spawned, folded from the durable `Subagent`
     /// events. Keyed by session id: a `running` row becomes its `done` row.
     ///
-    /// **Two sources, one list, and only one of them can be replayed.** The live
-    /// `Subagent` events are the richer half — state, role, answer — and the daemon's
-    /// own session list is the durable half, which is what a fresh or switched head
-    /// rebuilds from; [`App::fold_subagents`] is where the two meet. A list built
-    /// from the events alone was empty for every head that did not watch the spawn.
+    /// **Three sources, one list, and the two durable ones are joined in one place.** The live
+    /// `Subagent` events are the richest — state, role, task, answer; the **snapshot's own
+    /// children** ([`letibot_sessionlog::view::Snapshot::subagents`], folded by the parent's
+    /// view) are the same facts' conclusion, and they are what a switch back is handed; and the
+    /// daemon's session list is the one measurement of NOW either half has. A list built from
+    /// the events alone was empty for every head that did not watch the spawn — and, once the
+    /// events were gone, empty for a head that had.
     subagents: Vec<SubagentState>,
     /// Background jobs this session started, folded from the `Backgrounded`
     /// outcome on a tool finish and the durable `JobSettled` event. In the order
@@ -4955,16 +4957,16 @@ impl App {
                     // not a silence nobody would have noticed.
                     skew_said = Some(said);
                 }
-                // **Ask for the settings on attach.** The daemon answers
-                // `ClientFrame::Settings` and never sends the rows unprompted, so
-                // a head that had not opened `/mode` or `/config` had none — and
-                // the header, which now reads the live `model` row, fell back to
-                // the model named in `Hello`. The operator, on a session answered
-                // by deepseek: *"restarted the letibot - still qwen"*. It was:
-                // the daemon knew, and nothing had asked it.
-                self.queued.push(Action::Settings);
+                // **And every session-scoped read this head owes itself, in one place.**
+                //
+                // This is the attach, the re-attach (a reconnect is answered with a
+                // `Hello` too) and the return from a switch — the daemon answers a
+                // `Switch` with a second `Hello`, which is why there is one call here
+                // and not three. See [`App::refetch_session_facts`] for what a switch
+                // drops and why each of the three is asked for rather than waited on.
+                //
                 // **And what this session's pane is running** — the read behind the head's own
-                // line about a program it is not drawing. Asked here, with the other two, for
+                // line about a program it is not drawing. Asked here, with the others, for
                 // the same shape of reason: the daemon answers a read and never volunteers one,
                 // and a head that has just been SEATED somewhere knows nothing about the pane
                 // there — its own pane went with the session it left (see [`App::load`]), and
@@ -4976,15 +4978,7 @@ impl App {
                 self.close_pending = false;
                 self.term_ask = None;
                 self.queued.push(Action::TermStatus);
-                // **And the job count, for a case the brief names as a moment:** *"for a job already
-                // running when this head attached, which no event announces."* R51 item 5 puts that
-                // at the end of a turn, which is the earliest a turn boundary can answer it — but a
-                // head that attaches to a session with jobs already running would show no count at
-                // all until the next turn ended, which is the souvenir the item exists to prevent.
-                // The attach is the other half of the same fact, and it is the same shape of reason
-                // as the ask above: the daemon answers `ListJobs` and never sends the table
-                // unprompted.
-                self.queued.push(Action::ListJobs);
+                self.refetch_session_facts();
                 self.head_id = head_id.clone();
                 self.seated = Some(head_id);
                 self.wiring = wiring;
@@ -5093,6 +5087,15 @@ impl App {
                 // Kept whole, like the `Hello` arm above — see it for why the filter is gone.
                 self.sessions = sessions;
                 self.session_id = current;
+                // **And the rows the list is the source of are re-derived from it, here.**
+                //
+                // A `Sessions` frame REPLACES `self.sessions`, and `self.sessions` is what
+                // [`App::fold_subagents`] folds the subagent rows and the composer's count
+                // from — so a list that lands without this line moves the picker and leaves
+                // the pane and the count standing on the list that was just thrown away.
+                // That is the defect this arm had, and it is what made a re-ask useless:
+                // the answer to *what are my children now* arrived and was not applied.
+                self.fold_subagents();
                 match created {
                     // A session was made *because this head asked*. Going there is
                     // what was meant — `/new` that leaves you where you were is a
@@ -5599,14 +5602,49 @@ impl App {
             // looked at (measured 2026-09-16), and Enter in the pane there would
             // have switched to itself.
             //
-            // **The clear STAYS and the reason survives it**: the rows in `subagents`
-            // are the ones the live events built here, and those events happened in the
-            // session being left. What changed is that this is no longer the end of the
-            // story — [`App::fold_subagents`] puts back the durable half below, from the
-            // daemon's own list, which is the half that made an empty pane (and an empty
-            // count) the permanent state of every head that attached late or switched
-            // back.
-            self.subagents.clear();
+            // **So the rows are REPLACED, by this session's own children out of the
+            // snapshot — not cleared, and not carried.** The snapshot's rows are the
+            // parent's fact and nobody else's: the view they are cut from is per-session,
+            // so a head that switches into `s-sub-1` is handed `s-sub-1`'s children and
+            // not `s`'s, and the rule above is kept by construction rather than by a
+            // clear. See `Snapshot::subagents` for the measurement that put them there.
+            //
+            // **This is the fix for a count that flapped.** The clear this replaces was
+            // what turned a live child into a finished one on the way back: the rows were
+            // gone, and the only thing left to rebuild them from was the daemon's session
+            // list — whose `running` is *a turn is generating in that session at this
+            // instant*, and `false` for a child parked on its own background job. So the
+            // operator's `N subagents running` segment went away on a switch and came back
+            // when some later list reply happened to catch the child generating, over a
+            // subagent that ran throughout (*"so the counter is gone"* … *"yep and now it
+            // is back. wtf"*). A switch sends `since_seq = 0`, so nothing is replayed and
+            // the snapshot is the only route by which the head can be told what it watched
+            // — see the `Subagent` arm in `letibot_sessionlog::view`.
+            //
+            // **What the clear was protecting is still protected.** A row can no longer
+            // arrive from a session the head is not in: this is the snapshot's list, keyed
+            // by the session the snapshot is of. And the fold below still refuses to emit a
+            // row for a child whose brief belongs to somebody else.
+            self.subagents = s
+                .subagents
+                .iter()
+                .map(|v| SubagentState {
+                    session_id: v.session_id.clone(),
+                    state: v.state.clone(),
+                    // **The event's own word for the instant**, read exactly as the live arm
+                    // reads it: `running` is the one state it names in which a turn is
+                    // generating. See [`SubagentState::generating`].
+                    generating: v.state == "running",
+                    prompt: v.prompt.clone(),
+                    role: v.role.clone(),
+                    task: v.task.clone(),
+                    model: v.model.clone(),
+                    answer: v.answer.clone(),
+                    // The daemon's own stamp for when the event was published. The list's
+                    // `created_ms` overrides it in the fold, the way it always did.
+                    spawned_ms: v.ts,
+                })
+                .collect();
             self.subagents_sel = 0;
             // Jobs are the session's, the same way. The rows survived a switch
             // and kept drawing the old session's ids with the old session's byte
@@ -5629,7 +5667,8 @@ impl App {
         self.session_id = s.session_id;
         self.seq = s.seq;
         self.dropped = self.dropped.max(s.dropped);
-        // **And the subagent rows are re-read from the daemon's list, every time.**
+        // **And the subagent rows are rebuilt from the snapshot's own children, then
+        // overlaid with the daemon's list.**
         //
         // Here, and not in the `Subagent` event arm, because this IS the late-join path
         // and the resync path at once (see the docstring above) — and a seed that ran
@@ -5637,6 +5676,11 @@ impl App {
         // the two come to disagree. Called for a same-session resync as well as a switch:
         // the fold is a rebuild from the current facts and is the same answer either way,
         // and a resync is exactly when a head's own list may be the stale one.
+        //
+        // The rows themselves were seeded by the `!same_session` block above, from
+        // `Snapshot::subagents` — the parent's own view of its children, which is what a
+        // switch can carry and a session list cannot. This call then folds the list over
+        // them: the list's `running` is the one measurement of NOW either half has.
         //
         // `self.sessions` is already the fresh list by now — the `Hello` arm assigns it
         // before calling this — so the fold is reading the daemon's word and not the
@@ -12158,18 +12202,68 @@ impl App {
         }
     }
 
+    /// **Everything a seated head must ASK FOR, in one place — attach, re-attach, and the
+    /// return from a switch.**
+    ///
+    /// # Why an ask at all, when the `Hello` already carries a list
+    ///
+    /// The operator's report is the whole argument: the composer's `N subagents running`
+    /// segment **disappeared and came back on its own** while a subagent ran throughout —
+    /// *"so the counter is gone"*, then, minutes later, *"yep and now it is back. wtf"*.
+    /// Nothing was restarted between the two. A drawn state that comes back by itself is a
+    /// state whose restore is **opportunistic**, and the thing that was restoring it was
+    /// some later list reply happening to arrive — the head was not asking for one.
+    ///
+    /// So every read here is a question the head puts to the daemon at the one moment it
+    /// knows it needs the answer, rather than a frame it hopes will land:
+    ///
+    /// * **`ListSessions`** — the subagent rows and the composer's count are folded from
+    ///   the daemon's own list ([`App::fold_subagents`]), and a `Hello` carries a copy of it
+    ///   cut at the instant the daemon answered. A copy is not an ask: the fold's source was
+    ///   whatever list the last frame happened to hold, and nothing re-asked. This does.
+    /// * **`ListJobs`** — the same shape, and the reason is the brief's own: *"for a job
+    ///   already running when this head attached, which no event announces."*
+    /// * **`Settings`** — the header reads the live `model` row, and the daemon never sends
+    ///   the rows unprompted. The operator, on a session answered by deepseek: *"restarted
+    ///   the letibot - still qwen"*.
+    ///
+    /// # Which three moments this is
+    ///
+    /// There is one call site, in the `Hello` arm, because the daemon answers all three with
+    /// the same frame: an **attach**, a **re-attach** (the driver's reconnect is an `ATTACH`
+    /// and the daemon answers it with a `Hello` like any other), and the **return from a
+    /// switch** — a `Switch` is answered with a second `Hello` on purpose, so that the
+    /// late-join path is the only seating path. The return from a *pane* is the same moment:
+    /// whether this session has a pane is asked on the same seating, by the same arm (see the
+    /// `TermStatus` push above, which is `Action::TermStatus`).
+    ///
+    /// **The asks are reads and they are cheap.** `ListSessions` and `ListJobs` are answered
+    /// off the registry on the connection's own thread, not through the command queue (see
+    /// the server's arms), so none of them waits behind a running turn — which is the whole
+    /// reason the daemon answers them here rather than as commands.
+    ///
+    /// **And every answer re-folds.** A re-ask whose reply is not applied is worse than no
+    /// re-ask, because it looks like one: the `Sessions` arm calls [`App::fold_subagents`]
+    /// and the `Jobs` arm replaces the table, for exactly this reason.
+    fn refetch_session_facts(&mut self) {
+        self.queued.push(Action::Settings);
+        self.queued.push(Action::ListJobs);
+        self.queued.push(Action::ListSessions);
+    }
+
     /// The same, for the subagent tree — `/subagents` and `ctrl-g`.
     ///
     /// **And the fold runs on the way in.** The pane used to be built only by the live
     /// `Subagent` events, and the comment here used to claim *"the tree is folded from
-    /// durable `Subagent` events, which a snapshot carries"* — **which is not true of this
-    /// daemon** (`SessionEvent::Subagent` is folded into nothing at all by the view: see
-    /// the arm in `letibot_sessionlog::view`). So a head that attached after the spawns
-    /// drew an empty pane and no count, and the only thing that could ever fill it was a
-    /// later spawn — the operator: *"i just restarted the head and the subagents list is
-    /// gone … when you started new subagents the subagents pane refreshed"*. The durable
-    /// half is the daemon's own session list, so [`App::fold_subagents`] reads it here,
-    /// where the rows are about to be looked at.
+    /// durable `Subagent` events, which a snapshot carries"* — **which was not true of this
+    /// daemon** (`SessionEvent::Subagent` was folded into nothing at all by the view: see
+    /// the arm in `letibot_sessionlog::view`, which now folds it). So a head that attached
+    /// after the spawns drew an empty pane and no count, and the only thing that could ever
+    /// fill it was a later spawn — the operator: *"i just restarted the head and the
+    /// subagents list is gone … when you started new subagents the subagents pane
+    /// refreshed"*. Two durable halves now feed it: the snapshot's own children, and the
+    /// daemon's session list — so [`App::fold_subagents`] reads it here, where the rows are
+    /// about to be looked at.
     fn toggle_subagents(&mut self) {
         self.subagents_pane = !self.subagents_pane;
         self.pane_scroll = 0;
@@ -12234,10 +12328,23 @@ impl App {
     /// it can only ever describe a spawn or a finish this head was attached for — a fresh
     /// head, a head that switched away and came back, and the parent of children spawned
     /// before it attached all drew an empty pane with no count, forever, because nothing
-    /// replays a spawn. `App::load` clears the rows on every switch for a reason it keeps
-    /// (a subagent's own session must not show its parent's rows), and there was nothing
-    /// to put back. Measured 2026-10-05: *"i just restarted the head and the subagents
-    /// list is gone"*.
+    /// replays a spawn. `App::load` used to clear the rows on every switch, on the belief
+    /// that the live events were the only other source — and there was then nothing to put
+    /// back, which is what made an empty pane (and an empty count) the permanent state of
+    /// every head that attached late or switched back. Measured 2026-10-05: *"i just
+    /// restarted the head and the subagents list is gone"*.
+    ///
+    /// **The rows are rebuilt from the snapshot's own children, then overlaid with the
+    /// daemon's list** — and that order is the whole of the fix for a count that flapped.
+    /// The snapshot half ([`letibot_sessionlog::view::Snapshot::subagents`], folded by the
+    /// parent's view) is the events' own conclusion: it knows `opening`, `running`, `done`,
+    /// `failed`, the role, the task and the answer. The list half knows one bit — whether a
+    /// turn is generating in the child *at this instant* — and that bit is `false` for a
+    /// child parked on its own background job or between two rounds. Rebuilding from the
+    /// list alone therefore read that `false` as *finished*, and the composer's count
+    /// dropped a live child on every switch back and picked it up again when some later
+    /// list reply happened to catch the child generating: the operator's *"so the counter
+    /// is gone"* … *"yep and now it is back. wtf"*, over a subagent that ran throughout.
     ///
     /// The durable half is on the wire already and needs no new frame: **`SessionBrief`
     /// carries `parent_session_id`** — the registry's own words for it are *"A head draws
@@ -12245,6 +12352,13 @@ impl App {
     /// a `Switch` is answered with) and every `Sessions` frame carries the whole list. So
     /// a row is rebuilt from the same fact the picker's tree is drawn from, and the two
     /// cannot disagree about who is whose child.
+    ///
+    /// **What the list is still for, now that the snapshot carries the children.** Two
+    /// things, and neither of them is redundant: the list's `running` is the only
+    /// measurement of NOW on the wire, so it is what moves a row between *generating* and
+    /// *between turns* without waiting for the child's next event; and a child of a daemon
+    /// generation this view did not see — one only in the store, after a daemon was
+    /// replaced — is on the list and nowhere else.
     ///
     /// # What a rebuilt row can and cannot say
     ///
@@ -31263,6 +31377,182 @@ mod tests {
         assert!(!a.subagents_pane);
     }
 
+    /// **A head that switches away and back RE-ASKS — the frames it sends are the assertion.**
+    ///
+    /// The operator's report is a drawn state that came back *on its own*: *"so the counter is
+    /// gone"*, then, minutes later, *"yep and now it is back. wtf"*, over a subagent that ran
+    /// throughout. A state restored by a frame nobody asked for is a state whose restore depends
+    /// on when an unrelated round-trip lands, and this is the half that removes the dependence:
+    /// the head puts the question at the one moment it knows it needs the answer.
+    ///
+    /// **Asserted on the actions, not on a helper.** `refetch_session_facts` is private and
+    /// calling it directly would prove that a function the head never calls does what it says —
+    /// which is the shape of test this file keeps deleting. The actions here are what the driver
+    /// turns into frames on the wire, so this is *the head asked*.
+    #[test]
+    fn a_switch_away_and_back_re_asks_for_the_rows_the_jobs_and_the_settings() {
+        let mut a = app();
+        a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+        let attached = a.take_actions();
+        for want in [Action::ListSessions, Action::ListJobs, Action::Settings] {
+            assert!(
+                attached.contains(&want),
+                "the attach did not ask for {want:?}: {attached:?}"
+            );
+        }
+
+        // **Away.** The daemon answers a `Switch` with a second `Hello` on the same connection,
+        // and that is the whole of the switch path — so the ask rides the same arm.
+        a.key(Key::CtrlG);
+        assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
+        a.apply(hello("s-sub-1", a_family(), Hub::new("s-sub-1").snapshot()));
+        assert!(
+            a.take_actions().contains(&Action::ListSessions),
+            "the switch into a child did not re-ask for its children"
+        );
+
+        // **And back**, which is the return the operator was watching.
+        assert_eq!(a.key(Key::Esc), Some(Action::Switch("s".into())));
+        a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+        let back = a.take_actions();
+        for want in [Action::ListSessions, Action::ListJobs, Action::Settings] {
+            assert!(
+                back.contains(&want),
+                "the return from the switch did not re-ask for {want:?}: {back:?}"
+            );
+        }
+    }
+
+    /// **THE REGRESSION: the counter does not go away on a switch and come back later.**
+    ///
+    /// This is the operator's report, reproduced. A child is watched alive; the head switches
+    /// into it and back; and at the instant it comes back the daemon's session list says
+    /// `running: false` — because the child is parked on its own background job, which is
+    /// `SessionStatus::running`'s own definition of *no turn is generating in it right now*.
+    ///
+    /// **Before the fix the count was gone here**, and stayed gone until some later list reply
+    /// happened to catch the child generating: a switch sends `since_seq = 0`, so nothing is
+    /// replayed, the rows were cleared, and the list's one bit was the only evidence left — and
+    /// the fold read that bit as *finished*. The parent's view now carries its children on every
+    /// snapshot, which is the events' own conclusion, so the row survives the round trip.
+    ///
+    /// **The control is the second half, and it is what makes the first mean something.** A
+    /// snapshot with no children in it is a head with no evidence, and there the list's `false`
+    /// is read as finished — the honest answer for a child nobody watched, and the reason the
+    /// fix is *the snapshot carries them* rather than *the count never drops*.
+    #[test]
+    fn a_running_child_is_still_counted_after_a_switch_away_and_back() {
+        // The parent's log, with one child watched come alive. **Through a real `Hub`**, so the
+        // snapshot is the daemon's own fold of the event and not a fixture written to agree
+        // with the head.
+        let hub = Hub::new("s");
+        hub.publish(SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: "running".into(),
+            prompt: "find the bug in the reader".into(),
+            role: "coder".into(),
+            task: "find the bug in the reader".into(),
+            model: String::new(),
+            answer: None,
+        });
+        let snapshot = hub.snapshot();
+        assert_eq!(
+            snapshot.subagents.len(),
+            1,
+            "the premise: the parent's view carries its child"
+        );
+
+        let mut a = app();
+        a.apply(hello("s", a_family(), snapshot.clone()));
+        assert!(
+            count_row(&mut a).contains("1 subagent running"),
+            "the premise: the child is counted while the head is at home"
+        );
+
+        // Away, and back. **The list says `running: false` at the instant of return** — the
+        // child is between turns — and it says it in both directions, so the only thing that
+        // differs between the two halves of this test is the snapshot.
+        let mut parked = a_family();
+        parked[1].status.running = false;
+        a.key(Key::CtrlG);
+        assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
+        a.apply(hello("s-sub-1", a_family(), Hub::new("s-sub-1").snapshot()));
+        assert_eq!(a.session_id, "s-sub-1");
+        a.apply(hello("s", parked.clone(), snapshot.clone()));
+        assert_eq!(a.session_id, "s");
+
+        // **The count is still there.** The child is alive: the head watched it come alive and
+        // has seen no completion, and the list's `false` is not one.
+        let row = count_row(&mut a);
+        assert!(
+            row.contains("1 subagent running"),
+            "the counter went away on a switch and would have to come back on its own: {row}"
+        );
+        assert_eq!(
+            a.subagents[0].state, "running",
+            "the row, not a second number"
+        );
+        assert_eq!(a.subagents[0].task, "find the bug in the reader");
+
+        // **THE CONTROL.** The same round trip with a snapshot that carries no children — a head
+        // that never watched the spawn. There the list is all there is, and its `false` is read
+        // as finished, because a head that cannot tell *parked* from *ended* must not count a
+        // child it cannot vouch for.
+        let mut blind = app();
+        blind.apply(hello("s", parked.clone(), Hub::new("s").snapshot()));
+        assert_eq!(
+            blind.subagents.len(),
+            2,
+            "the list still lists the children: the rows are drawn, they are just not vouched for"
+        );
+        assert!(
+            !count_row(&mut blind).contains("subagent running"),
+            "a child nobody watched is counted on the list's instantaneous word alone"
+        );
+    }
+
+    /// **The answer to the re-ask is APPLIED.** A `Sessions` frame replaces `self.sessions`, and
+    /// `self.sessions` is what the subagent rows and the composer's count are folded from — so a
+    /// list that lands without a fold moves the picker and leaves the pane and the count standing
+    /// on the list that was just thrown away.
+    ///
+    /// That is the defect the arm had, and it is what made a re-ask useless: the answer to *what
+    /// are my children now* arrived and was not read. A re-ask whose reply is dropped is worse
+    /// than no re-ask, because it looks like one.
+    #[test]
+    fn a_sessions_reply_re_folds_the_rows_and_the_count() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "parent", false)],
+            Hub::new("s").snapshot(),
+        ));
+        assert!(
+            a.subagents.is_empty(),
+            "the premise: no child is listed yet"
+        );
+        assert!(
+            !count_row(&mut a).contains("subagent running"),
+            "the premise: and none is counted"
+        );
+
+        // The daemon's answer to the `ListSessions` the seating asked for. **A `Sessions` frame,
+        // not a `Hello`** — this is the reply the re-ask actually produces, and it is the one the
+        // arm used to read only for the picker.
+        a.apply(ServerFrame::Sessions {
+            sessions: a_family(),
+            current: "s".into(),
+            created: None,
+        });
+        let ids: Vec<&str> = a.subagents.iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(ids, vec!["s-sub-1", "s-sub-2"], "{ids:?}");
+        let row = count_row(&mut a);
+        assert!(
+            row.contains("1 subagent running"),
+            "the list reply did not reach the count: {row}"
+        );
+    }
+
     /// **A fresh head rebuilds the subagent pane AND the count out of the daemon's own
     /// session list — no spawn event required.**
     ///
@@ -31271,8 +31561,8 @@ mod tests {
     /// pane refreshed and qwens showed up"*. So a head that attached after the spawns drew an
     /// empty pane and no count, and the only thing that could fill it was a later spawn —
     /// `SessionEvent::Subagent` carries exactly ONE child, so it cannot re-list an earlier
-    /// generation. Nothing folded the durable rows: `SessionEvent::Subagent` is folded into
-    /// nothing at all by the view (`letibot_sessionlog::view`), so the snapshot does not carry
+    /// generation. Nothing folded the durable rows: `SessionEvent::Subagent` was folded into
+    /// nothing at all by the view (`letibot_sessionlog::view`), so the snapshot did not carry
     /// them either, and the ONE push into `self.subagents` was the live event arm.
     ///
     /// The durable half is `SessionBrief::parent_session_id`, which is on the wire in every
