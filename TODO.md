@@ -661,8 +661,10 @@ registers the pair — the same loud `resolve_role` path its own comment records
 
 **still open?** `grep -rn "max_subagent_depth" crates/` finds the field, the flag, the refusal and
 the two tests; `grep -n '"task"' crates/tools/src/runtime.rs` now names it three times
-(`orchestrator`, `leticode`, `m2_coder`); `grep -n "wake_target\|tree_slots\|shares_tree"
-crates/harnessd/src/` names the ring target and both shared channels. **Not yet exercised end to end**:
+(`orchestrator`, `leticode`, `m2_coder`); `grep -rn "wake_target\|tree_slots\|shares_tree"
+crates/harnessd/src/` names the ring target and both shared channels — **and it names the ring
+target no longer**: `wake_target` was renamed on 2026-10-06 and the grep finds `tree_slots` and
+`shares_tree` alone. The CORRECTION below says what the ring names now. **Not yet exercised end to end**:
 no test spawns a real depth-2 tree through the daemon, because that needs two live harnesses and a
 model — the mechanism is pinned at the `JobWatchers` layer, which is where the defect was, and the
 handle-list sharing rides the same untested path.
