@@ -138,7 +138,14 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // Durable: the admission is recorded whether or not the head that asked is still
         // watching. A replay that dropped it would show a `ToolResult` row with an `origin`
         // and no decision standing behind it.
-        | SessionEvent::OperatorCallAllowed { .. } => false,
+        | SessionEvent::OperatorCallAllowed { .. }
+        // Durable: a merge-queue move is a fact about the queue that does not stop being
+        // true, and the queue's own rows are the durable record. A head replaying the
+        // backlog keeps the latest state for each entry, which is exactly what the queue
+        // is drawn from. Scrubbing it would put a head's picture of the queue back at an
+        // earlier state forever.
+        | SessionEvent::MergeEntryAdded { .. }
+        | SessionEvent::MergeEntryMoved { .. } => false,
     }
 }
 

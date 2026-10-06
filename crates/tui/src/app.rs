@@ -4660,6 +4660,12 @@ impl App {
                 }
                 Disposition::Control
             }
+            // **The merge queue, which this head does not draw yet.** The daemon answers
+            // `ListMergeQueue` with the whole queue and the two `MergeEntry*` events carry every
+            // move, so the wire is whole; the pane that would show it is its own piece of work,
+            // and a frame with no home in this head is read and counted rather than half-drawn.
+            // `Control` because it is a reply, like `Jobs` and `Todos`, not an event.
+            ServerFrame::MergeQueue { .. } => Disposition::Control,
             ServerFrame::Todos { session_id, todos } => {
                 if session_id == self.session_id {
                     self.todos = todos;
@@ -6322,6 +6328,13 @@ impl App {
                 } else {
                     Disposition::Filtered
                 }
+            }
+            // **The merge queue moved, and no pane of this head draws it yet.** The events are
+            // durable and the queue is daemon-level, so a head that missed one reads the whole
+            // queue with `ListMergeQueue` — which is why dropping these here loses nothing a
+            // pane could not ask for. The pane is its own piece of work.
+            SessionEvent::MergeEntryAdded { .. } | SessionEvent::MergeEntryMoved { .. } => {
+                Disposition::Filtered
             }
             // §6's plan is a document; the transcript is not where it goes.
             SessionEvent::Explain { .. } => Disposition::Filtered,

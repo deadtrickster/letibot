@@ -388,6 +388,17 @@ pub trait SessionSource: Send + Sync {
     fn todos(&self, _session_id: &str) -> Vec<crate::event::TodoEntry> {
         Vec::new()
     }
+    /// The merge queue, whole, for a head's bootstrap read.
+    ///
+    /// The default is empty rather than an error, for the reason [`Self::todos`] is: a source
+    /// with no store has no queue, and a daemon that has not enqueued anything has an empty
+    /// one — from the outside these are the same state, which is exactly what the pane should
+    /// show. The queue is daemon-level, not per-session, so there is no `session_id`. Live
+    /// changes do not come through here; they arrive as [`crate::SessionEvent::MergeEntryAdded`]
+    /// and [`crate::SessionEvent::MergeEntryMoved`].
+    fn merge_entries(&self) -> Vec<crate::event::MergeEntry> {
+        Vec::new()
+    }
 }
 
 struct Entry {
@@ -879,6 +890,13 @@ impl Registry {
         self.source()
             .map(|s| s.todos(session_id))
             .unwrap_or_default()
+    }
+
+    /// The merge queue, whole, from the source. Empty when there is no source or the queue is
+    /// empty — see [`SessionSource::merge_entries`]. The queue is daemon-level, so there is no
+    /// `session_id`.
+    pub fn merge_entries(&self) -> Vec<crate::event::MergeEntry> {
+        self.source().map(|s| s.merge_entries()).unwrap_or_default()
     }
 
     pub fn list(&self) -> Vec<SessionBrief> {

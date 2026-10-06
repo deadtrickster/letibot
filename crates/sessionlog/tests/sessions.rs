@@ -107,6 +107,7 @@ fn frame_kind(f: &ServerFrame) -> String {
             "RowFetched(row {row}, {} of {total})",
             body.as_ref().map(|b| b.len()).unwrap_or(0)
         ),
+        ServerFrame::MergeQueue { entries } => format!("MergeQueue({} entries)", entries.len()),
         ServerFrame::Peeked {
             session_id, events, ..
         } => format!("Peeked({}, {} events)", session_id, events.len()),

@@ -168,6 +168,81 @@ pub enum TodoCondition {
     Job { handle: String },
 }
 
+/// **The merge queue's priority, as the wire spells it** — a copy of
+/// `letibot_tokencore::store::MergePriority`, not a re-export, for the reason [`TodoCondition`]
+/// is already a copy: this crate is the wire, and a wire type that aliases a store type makes
+/// one crate's rename a protocol change. The conversion lives where the wire meets the store
+/// (harnessd's merge-queue daemon), and it is a `match`, so a rung added on one side fails to
+/// compile on the other rather than arriving as a priority nobody can order.
+///
+/// The tag is the contract: the snake_case names are what an older head reads past and what a
+/// newer one reads by, so a rung added here is additive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergePriority {
+    /// The operator's entry: it jumps every subagent entry, whatever the age.
+    Urgent,
+    /// A subagent's entry: it waits behind an operator's urgent entry; inside the rung it is
+    /// oldest-first.
+    Subagent,
+}
+
+/// **Where a merge-queue entry is, as the wire spells it** — a copy of
+/// `letibot_tokencore::store::MergeState`, not a re-export, for the reason [`MergePriority`]
+/// is already a copy. The states are the queue's own vocabulary, and a state that is not on
+/// this list is a state the pane cannot draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeState {
+    /// In the queue, not yet taken; ready once its `needs` have all `Landed`.
+    Waiting,
+    /// The daemon has it and is working — rebasing at the tip and running the gate.
+    Taken,
+    /// Merged to main; the worktree is removed and the branch deleted.
+    Landed,
+    /// The gate failed; the worktree stays, with the reason on the row.
+    Failed,
+    /// A rebase conflict; the worktree stays, with the reason on the row.
+    Conflict,
+    /// The gate job died with the daemon; it is listed with its reason, not dropped.
+    Stale,
+}
+
+/// **One entry in the merge queue, on the wire** — a copy of
+/// `letibot_tokencore::store::MergeEntry`, not a re-export, for the reason [`MergeState`] is
+/// already a copy. The snapshot carries the whole queue, every state, and an entry the queue
+/// cannot act on is listed with its reason — the `evidence` on the row says what it is waiting
+/// on, why it failed, or why it is stale.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeEntry {
+    /// The id the enqueuer minted, and the one the queue's events name.
+    pub id: String,
+    /// The session that enqueued it.
+    pub session_id: String,
+    /// The branch to merge, and the one checked out in the entry's worktree.
+    pub branch: String,
+    /// The SHA the entry was written against — the tip of main when the branch was cut.
+    pub base_sha: String,
+    /// The queue's priority, out of [`MergePriority`]'s closed set.
+    pub priority: MergePriority,
+    /// The entries this one depends on, by id.
+    pub needs: Vec<String>,
+    /// Where the entry is, out of [`MergeState`]'s closed set.
+    pub state: MergeState,
+    /// The reason for the state, in the queue's own words.
+    pub evidence: String,
+    /// When the entry was enqueued, Unix ms.
+    pub created_ms: u64,
+    /// When the entry last moved, Unix ms.
+    pub updated_ms: u64,
+    /// Where the branch is checked out, when it is.
+    #[serde(default)]
+    pub worktree: Option<String>,
+    /// The tip the entry landed at, set when it moves to `Landed`.
+    #[serde(default)]
+    pub landed_sha: Option<String>,
+}
+
 /// Why generation stopped.
 ///
 /// Shaped to match `letibot_turn::FinishReason` exactly, `Other` and its string
@@ -1439,6 +1514,33 @@ pub enum SessionEvent {
         /// Wall time from spawn to settlement.
         elapsed_ms: u64,
     },
+    /// **A merge-queue entry was added** — the whole entry, so a head that missed the
+    /// snapshot sees it rather than only later changes.
+    ///
+    /// The snapshot-plus-events pattern the todos and jobs use: the snapshot carries the whole
+    /// queue as of now, and from then on the events carry every change. A head attaching
+    /// mid-flight gets the snapshot, and a head that was attached gets this event, so neither
+    /// sees a shorter queue than the other.
+    MergeEntryAdded {
+        /// The entry, whole: the id, the branch, the priority, the `needs`, the state and the
+        /// evidence.
+        entry: MergeEntry,
+    },
+    /// **A merge-queue entry moved** — its new state and its evidence, so a head that was
+    /// attached sees the move rather than only the next snapshot.
+    ///
+    /// The evidence is the reason for the state, in the queue's own words: the unmet
+    /// dependencies while `Waiting` with some, the gate's failure while `Failed`, the conflict
+    /// while `Conflict`, the dead job while `Stale`, the landed tip while `Landed`. A move
+    /// without its reason is a row the pane draws and the operator cannot read.
+    MergeEntryMoved {
+        /// The id of the entry that moved.
+        id: String,
+        /// The state it moved to.
+        state: MergeState,
+        /// The reason for the state, in the queue's own words.
+        evidence: String,
+    },
     /// **A window of one background job's output, for a pane that draws it.**
     ///
     /// The jobs pane drew `N out` for every row and had no way to show the bytes it counted. Enter
@@ -1615,6 +1717,8 @@ impl SessionEvent {
             SessionEvent::DenialRaised { .. } => "DenialRaised",
             SessionEvent::Subagent { .. } => "Subagent",
             SessionEvent::JobSettled { .. } => "JobSettled",
+            SessionEvent::MergeEntryAdded { .. } => "MergeEntryAdded",
+            SessionEvent::MergeEntryMoved { .. } => "MergeEntryMoved",
             SessionEvent::OperatorCallAllowed { .. } => "OperatorCallAllowed",
             SessionEvent::JobOutput { .. } => "JobOutput",
             SessionEvent::Filling { .. } => "Filling",
