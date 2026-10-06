@@ -8502,6 +8502,33 @@ fn runs_on_the_parents_model(
     }
 }
 
+/// **How a child samples, as the project's `leticode.toml` says it does.**
+///
+/// The operator: *"when used in subagents mode we need to call qwen with the parameters
+/// similar to dense78 - otherwise it overthinks terribly"*. `role` is the seat the child
+/// was seated on, and the parameters are `[roles.<seat>]` over `[roles.subagent]` over the
+/// dense78 numbers the operator measured — see `LeticodeConfig::parameters_for`.
+///
+/// **They REPLACE what this config already carries rather than merging onto it**, the way a
+/// `[model.*]` block replaces the built-in: the project file is the more specific statement
+/// about this project's subagents, and a merge would keep the parent's greedy literal
+/// (`temperature = 0.0`, `top_k = 1`) in force under a profile that named only
+/// `presence_penalty` — the built-in deciding the most consequential knob in a profile
+/// somebody wrote.
+///
+/// **`sampling` and no other field.** The operator's second sentence is *"we dont have the
+/// same context limit as with dense obviously"*, so the child's window stays whatever was
+/// measured for the model it actually runs on: `context_window` is not touched here, and a
+/// project file has no way to state one at all (`LeticodeConfig` carries models and
+/// samplers, not walls). This function is one line wide so that stays true.
+fn apply_spawn_parameters(
+    sub_cfg: &mut Config,
+    leticode: &crate::leticode_config::LeticodeConfig,
+    role: &str,
+) {
+    sub_cfg.sampling = leticode.parameters_for(role).to_sampling();
+}
+
 /// See [`SubagentModel`]. `want` is `local`, a declared local model, or
 /// `PROVIDER[/MODEL]`.
 pub fn subagent_model(
@@ -9046,7 +9073,19 @@ impl HarnessTaskRunner {
         // own server. Three children died that way (see [`child_window_refusal`]). `local` is
         // not a guess about the absent case — it is what `models_choice` and `/models local`
         // already mean by it, and the child's `provider: None` below is that same door.
-        let want = spec.model.as_deref().unwrap_or("local");
+        // **The call's own word for the model, then the project file's for this seat, then
+        // `local`.** The two leticode keys are read here and nowhere else: the call's `model:`
+        // beats `[roles.<seat>] model`, which beats the file's `subagent_model`, which beats
+        // `local` below. Read at the spawn rather than at daemon start because the seat is
+        // only known now — and read at all because both keys were parsed, disclosed and
+        // answered by nobody until this line, which is the defect the feature is written
+        // against. The label the refusals below name is this one, so a child stopped for its
+        // window says the model the PROJECT chose for it.
+        let want = spec
+            .model
+            .as_deref()
+            .or_else(|| self.base.leticode.spawn_model(seat.as_str()))
+            .unwrap_or("local");
         // **And measure the local window when nobody remembered one.** `retune_window` fills it
         // *on the way out to a first provider*, so a session that STARTED on one has never
         // measured its own server — this session had not. `served_ctx` is the same `/props`
@@ -9238,6 +9277,12 @@ impl HarnessTaskRunner {
             // the provider's number stands rather than the parent's scaled one.
             sub_cfg.ledger_scale = None;
         }
+        // **And the project's parameters for the role this child was seated on**, which are
+        // the last word on how it samples: the file beats the `[model.*]` profile applied
+        // just above, the way the project beats `~/.config/letibot/` everywhere else. They
+        // touch `sampling` and nothing else — least of all the window set one statement
+        // above, which belongs to the box that answers this child.
+        apply_spawn_parameters(&mut sub_cfg, &self.base.leticode, seat.as_str());
 
         // Reassemble the shared parts so the sub harness can borrow them for the
         // duration of this call. Cheap: the vocabs and the wiring are already `Arc`.
@@ -9913,6 +9958,68 @@ mod subagent_model_tests {
             "{:?}",
             fleet[0].profile.unknown
         );
+    }
+
+    /// **The project's parameters reach the child, and its window does not come from them.**
+    ///
+    /// The operator: *"when used in subagents mode we need to call qwen with the parameters
+    /// similar to dense78 - otherwise it overthinks terribly"* — and in the same breath
+    /// *"we dont have the same context limit as with dense obviously"*. So the five samplers
+    /// land on the config the child is built from, replacing what it would otherwise have
+    /// inherited or taken from its model's `[model.*]` profile, and `context_window` — the
+    /// wall [`child_window_refusal`] above is about — is not touched: a child's room is the
+    /// number the box answering it reported.
+    #[test]
+    fn the_project_parameters_reach_the_child_and_the_window_is_not_taken_from_them() {
+        // A child's config as the spawn builds it: the daemon's greedy literal in force and
+        // the wall the server reported for the model this child actually runs on.
+        let mut sub_cfg = Config::for_this_box("/tmp");
+        sub_cfg.sampling = serde_json::json!({"temperature": 0.0, "top_k": 1, "seed": 7});
+        sub_cfg.context_window = Some(57_344);
+
+        let dir = std::env::temp_dir().join(format!("letibot-leticode-sub-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let path = dir.join(crate::leticode_config::FILE_NAME);
+        std::fs::write(&path, "[roles.coder]\ntemperature = 1.0\n").expect("write");
+        let leticode =
+            crate::leticode_config::LeticodeConfig::load(&path).expect("a role's samplers");
+
+        apply_spawn_parameters(&mut sub_cfg, &leticode, "coder");
+
+        assert_eq!(
+            sub_cfg.sampling["temperature"], 1.0,
+            "the seat's own number"
+        );
+        assert_eq!(
+            sub_cfg.sampling["top_p"], 0.8,
+            "over the operator's dense78 set, key by key"
+        );
+        assert_eq!(sub_cfg.sampling["top_k"], 20.0);
+        assert_eq!(
+            sub_cfg.sampling["min_p"], 0.0,
+            "and a min_p SET to zero is not absent"
+        );
+        assert_eq!(sub_cfg.sampling["presence_penalty"], 1.5);
+        assert_eq!(
+            sub_cfg.sampling["seed"],
+            serde_json::Value::Null,
+            "the daemon's greedy literal is replaced rather than merged under -- a profile that \
+             named `temperature` must not keep `top_k = 1` from the built-in"
+        );
+        assert_eq!(
+            sub_cfg.context_window,
+            Some(57_344),
+            "the wall is the box's, never dense78's: *\"we dont have the same context limit as \
+             with dense obviously\"*"
+        );
+
+        // And the file has no way to say otherwise: a role table carrying a window is refused
+        // where it is read, so there is no path by which a number from the profile could
+        // reach the field asserted just above.
+        std::fs::write(&path, "[roles.coder]\nwindow = 262144\n").expect("write");
+        let why = crate::leticode_config::LeticodeConfig::load(&path)
+            .expect_err("a window in a role's table is refused");
+        assert!(why.contains("window"), "named: {why}");
     }
 
     fn providers(tag: &str, body: &str) -> std::path::PathBuf {

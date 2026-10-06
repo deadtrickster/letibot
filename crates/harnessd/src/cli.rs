@@ -211,6 +211,14 @@ fn usage() -> String {
      \x20 --web-fetch             attach `curl` egress behind `web_fetch`: the page\n\
      \x20                           is reader-mode extracted and rendered as\n\
      \x20                           markdown before it reaches the model\n\
+     \x20 --no-project-config      ignore the project's own `leticode.toml`: its\n\
+     \x20                           `main_model`, `subagent_model`,\n\
+     \x20                           `gatekeeper_model` and `[roles]` overrides are\n\
+     \x20                           not read, and the session runs on the daemon's\n\
+     \x20                           own. Otherwise the nearest file at or above\n\
+     \x20                           --workspace is found by walking up, read, and\n\
+     \x20                           disclosed at startup; a file that does not parse\n\
+     \x20                           is reported and the session still starts\n\
      \n\
      store queries (no socket, no model):\n\
      \x20 --list-sessions [--tsv]   what is on disk: id, title, workspace, age, rows\n\
@@ -869,18 +877,42 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     // so applying the project file now is what makes it beat the
                     // user config; the command line is checked rather than
                     // re-applied.
+                    //
+                    // **This is the one level `precedence` itself is not called
+                    // for**, and the reason is in `apply_main_model`: its argument
+                    // is not a name but a whole `provider` block, and re-applying
+                    // the USER config's model through it would drop the key
+                    // resolved for it (the block it builds carries `api_key: None`).
+                    // So the two levels that can win are spelled out here, and the
+                    // third is left where `cfg` already has it.
                     if !cli_main_model {
                         if let Some(m) = &project.main_model {
                             apply_main_model(&mut cfg, m);
                         }
                     }
-                    if let Some(m) = &project.gatekeeper_model {
-                        cfg.oracle_model = Some(m.clone());
+                    // **The guard's model, and the adjudicator's — two words for the ONE oracle
+                    // this build has**, which `load` has already refused to see disagree. The
+                    // precedence goes through the one function that states it rather than being
+                    // spelled out again here: there is no command-line flag for the guard's
+                    // model, and `[gatekeeper] model` from providers.toml is already in
+                    // `cfg.oracle_model` above — so the project's word wins over the user's,
+                    // and an unset key leaves the user's where it was.
+                    if let Some(m) = crate::leticode_config::precedence(
+                        None,
+                        project
+                            .gatekeeper_model
+                            .as_deref()
+                            .or(project.judge_model.as_deref()),
+                        cfg.oracle_model.as_deref(),
+                    ) {
+                        cfg.oracle_model = Some(m);
                     }
-                    // The `subagent_model` and `judge_model` ride the config for the
-                    // disclosure and for the spawn and adjudication paths that read
-                    // them; an unset key is the daemon's own default, stated rather
-                    // than guessed.
+                    // **`subagent_model` and `[roles]` do not ride the config for a path to
+                    // read later** — the spawn reads them off `cfg.leticode` at the moment it
+                    // seats a child (`HarnessTaskRunner::run_to_completion`), which is the only
+                    // place a child's model and its samplers are decided. A key carried "for
+                    // the path that reads it" and read by no path is the defect this feature
+                    // is written against, and both were exactly that until now.
                     cfg.leticode = project;
                     let set = cfg.leticode.set_models();
                     if set.is_empty() {
@@ -1801,10 +1833,15 @@ mod tests {
         // A `provider/model` name sets the metered provider.
         let mut cfg = Config::for_this_box("/tmp");
         apply_main_model(&mut cfg, "deepseek/deepseek-chat");
-        let pc = cfg.provider.expect("a provider/model name sets the provider");
+        let pc = cfg
+            .provider
+            .expect("a provider/model name sets the provider");
         assert_eq!(pc.name, "deepseek");
         assert_eq!(pc.model.as_deref(), Some("deepseek-chat"));
-        assert!(pc.api_key.is_none(), "the key is resolved along the usual path");
+        assert!(
+            pc.api_key.is_none(),
+            "the key is resolved along the usual path"
+        );
 
         // A bare alias sets the local model and clears the provider.
         let mut cfg = Config::for_this_box("/tmp");
