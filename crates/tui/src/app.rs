@@ -7192,39 +7192,31 @@ impl App {
                     // the frame clamps against the rows rendered so far, so a press could
                     // never express "further up than I have drawn".
                     self.scroll_up(by);
-                } else if matches!(k, Key::WheelDown) {
-                    // **A notch back DOWN is the tail, not three lines closer.**
-                    //
-                    // The operator, 2026-10-05: *"I cant scroll back to bottom with a mouse wheel
-                    // - have to press escape"*. `hold` below is the right act for a WALK — it
-                    // moves by lines and returns to following when it *reaches* the bottom — and
-                    // a notch can never reach a bottom that moves: the stream adds rows while the
-                    // reader is three lines closer to where the bottom used to be. The parked
-                    // arrows below already answer this the only way it can be answered (*"↓ is
-                    // the bottom in ONE press"*), and this is the same act, reached by the same
-                    // clearing of the anchor. `WheelUp` keeps its three-line walk — nothing is
-                    // racing the reader in that direction — and so does `PageDown`, which is a
-                    // deliberate read of the next screenful rather than a flick back to live.
-                    self.scroll = 0;
-                    self.anchor = None;
-                    // **And no `redraw`, which is the other half of the same act.** The flag is
-                    // spent at the top of the next frame as `Terminal::invalidate`, which sets
-                    // `full` — and a full frame is `ESC[2J` plus every row rewritten with the row
-                    // diff switched off. A slid window needs none of it: the rows whose text
-                    // differs are exactly the rows `paint_full` rewrites, and the rows that did
-                    // not slide are already right on the glass ([`crate::term`], *"the two cases
-                    // where the glass really is unknown"* — a resize and Ctrl-L, and this is
-                    // neither). What the erase bought was one flash per notch, and a touchpad's
-                    // inertial scroll is a notch per `read()`, so one flick was a dozen of them.
-                    // Ctrl-L below keeps the flag because it is the opposite case: something
-                    // outside this head wrote to the terminal, so the memory the diff is against
-                    // is known to be wrong and only a repaint fixes that.
                 } else {
-                    // **The mirror, and it is `hold` for the same reason** (R36): moving
-                    // down is moving over the same rows in the other direction, and it is
-                    // the same conversion from lines to a row. It also lands the reader back
-                    // in *following* when it reaches the bottom, which is the one act that
-                    // does — arriving content never will.
+                    // **Down is a WALK, the wheel included — and arriving at the tail is what
+                    // resumes following.**
+                    //
+                    // The mirror of `scroll_up`, and `hold` for the same reason (R36): moving
+                    // down is moving over the same rows in the other direction, and it is the
+                    // same conversion from lines to a row. It also lands the reader back in
+                    // *following* when it reaches the bottom, which is the one act that does —
+                    // arriving content never will.
+                    //
+                    // **A `WheelDown` used to skip all of that and be the tail in ONE notch.**
+                    // That was 2026-10-05's answer to *"I cant scroll back to bottom with a
+                    // mouse wheel - have to press escape"*, and the cure cost more than the
+                    // complaint: clearing the anchor made a single notch a jump rather than a
+                    // step, so the reader could not walk *down* through a conversation at all.
+                    // The operator again, with a mouse: *"one simple stroke gets me to the
+                    // bottom immediately — effectively like Esc"*. Both reports are one coin,
+                    // and this is the reconciliation — the notch walks three lines like its up
+                    // twin, and a RUN of notches still returns the reader to the bottom, which
+                    // answers October's need without the one-notch jump.
+                    //
+                    // The deliberate act keeps its own meaning and is not folded in here: Esc
+                    // while parked — *"Esc while parked in the scrollback means \"follow the
+                    // stream again\""* — and the parked `↓` below still clear the anchor in one
+                    // press, and they are the keys the banner names for it.
                     self.hold(by as isize);
                 }
                 return None;
@@ -47507,16 +47499,29 @@ mod tests {
         );
     }
 
-    /// **A wheel notch DOWN returns to the tail even when the stream grew under the reader.**
+    /// **A wheel notch DOWN walks three lines, and a RUN of them is what reaches the tail.**
     ///
-    /// The operator, 2026-10-05: *"I cant scroll back to bottom with a mouse wheel - have to press
-    /// escape"*. A notch walks three lines and `following()` only comes back when the window
-    /// REACHES the bottom, so against a live session — which keeps adding rows — a notch is a step
-    /// toward a target that runs away from it. The test above passes either way, because its
-    /// transcript is STATIC; **the fixture is why this survived**, so this one adds rows between
-    /// the two notches, thirty of them against three the notch walks.
+    /// **What was true before, and why it changed.** The operator, 2026-10-05: *"I cant scroll back
+    /// to bottom with a mouse wheel - have to press escape"*. A notch walks three lines and
+    /// `following()` only comes back when the window REACHES the bottom, so against a live session —
+    /// which keeps adding rows — a notch is a step toward a target that runs away from it. The
+    /// answer then was to make ONE notch clear the anchor outright, and this test asserted that:
+    /// `a_wheel_notch_down_is_the_tail_even_when_the_stream_grew_under_the_reader`.
+    ///
+    /// **The cure cost more than the complaint.** With a mouse, so it is not a touchpad artefact,
+    /// the operator: *"one simple stroke gets me to the bottom immediately — effectively like
+    /// Esc"* — the reader could not walk *down* through a conversation at all, because the first
+    /// notch left the conversation behind them. Both reports are one coin, and this is the
+    /// reconciliation: a notch down walks like a notch up, and *arriving* at the tail is what
+    /// resumes following. A run of notches still returns the reader to the bottom, which answers
+    /// October's need without the one-notch jump — and the deliberate act keeps its own meaning,
+    /// because Esc and the parked `↓` still mean "follow again" in one press.
+    ///
+    /// The test above passes either way, because its transcript is STATIC. **The fixture is why
+    /// this survived**, so this one adds rows between the notches, thirty of them against three the
+    /// notch walks — the case that made 2026-10-05 look like a cure.
     #[test]
-    fn a_wheel_notch_down_is_the_tail_even_when_the_stream_grew_under_the_reader() {
+    fn a_wheel_notch_down_walks_and_a_run_of_notches_is_what_reaches_the_tail() {
         let mut a = app();
         let rows = |a: &mut App, from: u64, to: u64| {
             for i in from..to {
@@ -47545,18 +47550,122 @@ mod tests {
         // **And the stream keeps arriving while the reader is parked.**
         rows(&mut a, 60, 90);
         a.screen(80, 24);
+        let above = a.view_top;
+        // Drain the flag, so what is asserted below is about the notch rather than about anything
+        // the thirty rows did — the head's loop reads it at the top of every pass.
+        let _ = a.take_redraw();
 
-        // One notch down, and the reader is live again.
+        // **One notch down is a STEP, not the tail** — the opposite of what this test asserted
+        // before, and the whole of the reversal.
         assert_eq!(a.key(Key::WheelDown), None);
         a.screen(80, 24);
         assert!(
+            !a.following(),
+            "one notch down jumped to the bottom — that is the `effectively like Esc` report, and \
+             it is what leaves the reader unable to walk down through the conversation"
+        );
+        assert_eq!(
+            a.view_top,
+            above + 3,
+            "a notch down is three lines of conversation, not a jump to the end"
+        );
+        assert!(
+            !a.take_redraw(),
+            "the notch asked for the glass to be thrown away — that is the erase the flicker fix \
+             removed from the scroll path"
+        );
+
+        // **A RUN of notches is what returns the reader to the live stream**, because arriving at
+        // the bottom is the one act that resumes following. Bounded, so a walk that never gets
+        // there fails here rather than looping.
+        let mut notches = 1;
+        while !a.following() && notches < 40 {
+            assert_eq!(a.key(Key::WheelDown), None);
+            a.screen(80, 24);
+            notches += 1;
+        }
+        assert!(
             a.following(),
-            "one notch down left the reader parked against a stream that grew thirty rows \
-             under it: three lines a notch cannot catch that"
+            "{notches} notches down never reached the tail of a stream that had stopped growing"
+        );
+        assert!(
+            notches > 1,
+            "one notch was the tail again — the one-notch jump is back"
         );
         assert_eq!(
             a.scroll, 0,
             "and the count agrees with the anchor, because the two are one state"
+        );
+    }
+
+    /// **Three notches down walk three lines each, and only the one that ARRIVES follows.**
+    ///
+    /// The measurement the 2026-10-05 change stood in for. A notch is three lines, so a reader
+    /// walking down has to *see* three lines of conversation per notch, and the parked state has to
+    /// survive every notch that has not reached the bottom — otherwise a notch is a jump and the
+    /// conversation between the two positions is unreachable, which is the report this reverses.
+    /// Asserted on `view_top` rather than on `scroll`, because the line is what is on the glass.
+    ///
+    /// **And the scroll path still does not ask for a repaint**, which is the flicker fix this
+    /// must not undo: `redraw` is not "rebuild the frame", it is *throw the glass away*, and a
+    /// window that slid is a diff.
+    #[test]
+    fn three_notches_down_walk_three_lines_each_and_only_arriving_follows() {
+        let mut a = app();
+        for i in 0..40u64 {
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("s.{i}"), &format!("line {i}")),
+            )));
+        }
+        a.screen(80, 24);
+        // Drain the flag, so the assertions below are about the notches and not about the fixture.
+        let _ = a.take_redraw();
+        let bottom = a.body_len - a.view_room;
+
+        // Park nine lines up — three notches' worth — so the walk down has somewhere to go.
+        for _ in 0..3 {
+            a.key(Key::WheelUp);
+            a.screen(80, 24);
+        }
+        assert!(!a.following(), "three notches up parked the reader");
+        assert_eq!(
+            a.view_top,
+            bottom - 9,
+            "three notches up did not walk nine lines"
+        );
+
+        // **The walk down, three lines a notch**, and every notch short of the bottom leaves the
+        // reader parked exactly where the notch put them.
+        for (n, want) in [(1, bottom - 6), (2, bottom - 3)] {
+            assert_eq!(a.key(Key::WheelDown), None);
+            a.screen(80, 24);
+            assert!(
+                !a.following(),
+                "notch {n} down was still above the bottom and left the stream"
+            );
+            assert_eq!(a.view_top, want, "notch {n} down did not walk three lines");
+            assert!(
+                !a.take_redraw(),
+                "notch {n} down asked for the glass to be thrown away"
+            );
+        }
+
+        // **And the third one arrives, which is the one act that resumes following.**
+        assert_eq!(a.key(Key::WheelDown), None);
+        a.screen(80, 24);
+        assert!(
+            a.following(),
+            "the notch that reached the bottom did not resume following"
+        );
+        assert_eq!(a.scroll, 0, "and the count agrees with the anchor");
+        assert!(
+            !a.take_redraw(),
+            "the arriving notch asked for the glass to be thrown away"
         );
     }
 
