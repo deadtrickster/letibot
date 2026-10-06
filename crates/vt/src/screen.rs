@@ -44,7 +44,11 @@
 //! - **A reply to anything.** `CSI 6n` and `CSI c` are dropped, so a program that waits for the
 //!   terminal to answer a cursor-position report waits. **This is the one gap that can look like
 //!   a hang**, and the fix belongs to the pane rather than here: it is the one caller that has a
-//!   write path, and it is the one that should answer.
+//!   write path, and it is the one that should answer. It is named there as a TODO —
+//!   `letibot_tools::exec::shell`'s "What is deliberately NOT built here", which is the crate that
+//!   owns the pty — because a sentence in a library with no output path is a sentence nobody acts
+//!   on. **The other half is here**: a queued question the caller drains after a `feed` is what
+//!   the pane would need in order to know it was asked.
 //! - **Line reflow.** [`Screen::resize`] changes the shape and keeps what still fits; it does not
 //!   re-wrap a row that is now too long, because this crate has no line model — a row is a row.
 //!   A program that has been told about the new size redraws its own, which is what a full-screen

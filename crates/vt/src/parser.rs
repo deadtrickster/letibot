@@ -31,8 +31,10 @@
 //!   not, because a program that means to switch charsets on this box sends `smacs`.
 //! - **A reply to anything.** `CSI 6n` (report cursor position), `CSI 5n` and `CSI c` (device
 //!   attributes) are *received and dropped*: this crate has no output path by design, so a
-//!   program that waits for an answer waits. `mc` does not ask; see `Screen`'s header for the
-//!   one place that is a real gap.
+//!   program that waits for an answer waits. `mc` does not ask. **The fix is not here and is not
+//!   a missing parser state** — the sequence arrives whole and is recognised, so what is missing
+//!   is somewhere for the *question* to go, and the pane is where the answer comes from; see
+//!   `Screen`'s header, which names the other half and the TODO it lives in.
 //! - **`DECALN`** (`ESC # 8`) and the other test sequences: consumed, no effect.
 
 /// The most parameters a sequence can carry, which is `xterm`'s own order of magnitude.

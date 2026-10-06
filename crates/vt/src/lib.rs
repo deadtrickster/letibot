@@ -45,7 +45,9 @@
 //! stated where it is dropped — [`crate::attr`] for the pen, [`crate::screen`] for the modes,
 //! [`crate::parser`] for the sequences — together with what a pane therefore will not show. The
 //! tree's rule is that a deliberate gap is written down where it is made; the summary is
-//! [`crate::screen`]'s header.
+//! [`crate::screen`]'s header. **One of them has its other half somewhere else**, and it is named
+//! there: a reply to `CSI 6n`/`CSI c` is the pane's TODO, because the pane owns the write path —
+//! `letibot_tools::exec::shell`'s "What is deliberately NOT built here".
 //!
 //! # Map
 //!
