@@ -322,6 +322,41 @@ pub struct Snapshot {
     pub settled_decisions: Vec<SettledDecision>,
     pub warnings: Vec<Warned>,
     pub heads: Vec<HeadPresence>,
+    /// **The session's children, as its own `Subagent` events reported them.**
+    ///
+    /// The parent's fact, held by the parent's view — see the `SessionEvent::Subagent` arm for the
+    /// measurement that put it here: a head that switches back sends `since_seq = 0`, so nothing is
+    /// replayed, and the session list's `running` cannot tell a child parked between turns from one
+    /// that has ended.
+    ///
+    /// `#[serde(default)]` so a snapshot from a daemon built before the field parses: an absent
+    /// list and an empty one are the same statement here — *this daemon did not tell me about any
+    /// children* — and a head then draws the list-derived rows it always did.
+    #[serde(default)]
+    pub subagents: Vec<SubagentView>,
+}
+
+/// **One child of this session, as the `Subagent` event last reported it.**
+///
+/// Every field is the event's own, verbatim, and the whole of the point is that a head rebuilding
+/// its tree after a switch gets the SAME words the head that watched the spawn had — `state`
+/// (`opening`/`running`/`done`/`failed`), the role, the full task, the model and the answer —
+/// instead of the one bit the session list can supply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubagentView {
+    /// The child's own session id — the key, and the same one the list's brief carries.
+    pub session_id: String,
+    pub state: String,
+    pub prompt: String,
+    pub role: String,
+    #[serde(default)]
+    pub task: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub answer: Option<String>,
+    /// `Envelope::ts` of the event that last said this.
+    pub ts: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -386,6 +421,9 @@ pub struct SessionView {
     settled: Vec<SettledDecision>,
     warnings: Vec<Warned>,
     heads: Vec<HeadPresence>,
+    /// **This session's children, as the `Subagent` events reported them** — see the
+    /// `SessionEvent::Subagent` arm for why a snapshot carries them.
+    subagents: Vec<SubagentView>,
 }
 
 impl SessionView {
@@ -402,6 +440,7 @@ impl SessionView {
             settled: Vec::new(),
             warnings: Vec::new(),
             heads: Vec::new(),
+            subagents: Vec::new(),
         }
     }
 
@@ -746,10 +785,65 @@ impl SessionView {
             // covered by a second copy in a second update path, which is how the
             // picker and the header learned to disagree about a session's name.
             SessionEvent::DenialRaised { .. } => {}
-            // A subagent's state is carried by the durable event itself; a late head
-            // rebuilds the tree from the replayed events and the session list, so
-            // there is nothing to fold into the turn view here.
-            SessionEvent::Subagent { .. } => {}
+            // **A subagent spawn/finish, FOLDED — and this arm used to say there was
+            // nothing to fold.** It read: *"A subagent's state is carried by the durable event
+            // itself; a late head rebuilds the tree from the replayed events and the session
+            // list, so there is nothing to fold into the turn view here."* **Both halves of
+            // that are false for a switch**, which is the path that matters:
+            //
+            // * a `Switch` sends `since_seq = 0` (`App::switch_to`: *"this head has no state
+            //   for the session it is going to"*), so the daemon answers with a snapshot and an
+            //   **empty backlog** — nothing is replayed, and the parent's `Subagent` events
+            //   never reach that head again;
+            // * and the session list is the other half only through `SessionStatus::running`,
+            //   which is *a turn is generating in that session at this instant*. A child parked
+            //   on its own background job, or between two rounds, is `false` while being
+            //   perfectly alive — so a tree rebuilt from the list alone read that `false` as
+            //   *finished*, and the operator watched the composer's `N subagents running`
+            //   segment **disappear and come back on its own** over a subagent that ran
+            //   throughout: *"so the counter is gone"*, then, minutes later, *"yep and now it
+            //   is back. wtf"*. What restored it was some later list reply happening to catch
+            //   the child generating, which is exactly what a flapping counter is made of.
+            //
+            // So the parent's view holds the children and every snapshot carries them — the
+            // events' own conclusion, folded once per event, instead of depending on which
+            // frames a head happened to receive. `Snapshot::subagents` is where a head reads
+            // them and `App::load` is what it does with them.
+            //
+            // **What this cannot fix, and it is filed rather than hidden.** The view is in
+            // memory, so a daemon that is REPLACED rebuilds its views from the store — and the
+            // store keeps transcript rows, not this event. A head that outlives its daemon is
+            // therefore back to the list alone.
+            SessionEvent::Subagent {
+                subagent_id,
+                state,
+                prompt,
+                role,
+                task,
+                model,
+                answer,
+            } => {
+                let row = SubagentView {
+                    session_id: subagent_id.clone(),
+                    state: state.clone(),
+                    prompt: prompt.clone(),
+                    role: role.clone(),
+                    task: task.clone(),
+                    model: model.clone(),
+                    answer: answer.clone(),
+                    // When this happened, on the log's own clock — the head has its own
+                    // `now_ms` and this is not it, the same rule `SnapshotItem::ts` keeps.
+                    ts: env.ts,
+                };
+                match self
+                    .subagents
+                    .iter_mut()
+                    .find(|s| s.session_id == *subagent_id)
+                {
+                    Some(known) => *known = row,
+                    None => self.subagents.push(row),
+                }
+            }
             // Same shape: a job's start is the `bash` call's own `Backgrounded`
             // finish, which the call view already folds, and its end is carried by
             // the durable `JobSettled` event. The jobs pane folds both itself.
@@ -873,6 +967,7 @@ impl SessionView {
             settled_decisions: self.settled.clone(),
             warnings: self.warnings.clone(),
             heads: self.heads.clone(),
+            subagents: self.subagents.clone(),
         }
     }
 
@@ -1190,6 +1285,103 @@ mod tests {
         // value is the fact `TurnFinished`'s usage states.
         log.append(turn_finished("t1"));
         assert_eq!(fold(&log).snapshot(4, 0).turn.unwrap().tokens, 25);
+    }
+
+    /// **A switch back is handed the children the parent's own view folded.**
+    ///
+    /// This is the sessionlog half of the operator's flapping `N subagents running` segment, and
+    /// the arm that carried it was `SessionEvent::Subagent { .. } => {}` — with a comment saying a
+    /// late head rebuilds the tree from the replayed events and the session list. **Neither half
+    /// holds on a switch**: a `Switch` sends `since_seq = 0`, so the daemon answers with a snapshot
+    /// and an empty backlog and nothing is replayed; and the session list's `running` is *a turn is
+    /// generating in that session at this instant*, which is `false` for a child parked on its own
+    /// background job.
+    ///
+    /// So the assertion is that the snapshot CARRIES the event's own words — not just the id, and
+    /// not a bit the list could have supplied. `state`, `task`, `model` and `answer` are the ones a
+    /// list-derived row has to leave empty, and they are the ones a head rebuilds its pane from.
+    #[test]
+    fn a_snapshot_carries_the_sessions_children_as_their_events_reported_them() {
+        let mut log = SessionLog::new("s", LogBounds::default());
+        log.append(turn_started("t1"));
+        log.append(SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: "running".into(),
+            prompt: "find the bug in the reader".into(),
+            role: "coder".into(),
+            task: "find the bug in the reader".into(),
+            model: "local".into(),
+            answer: None,
+        });
+        let snap = fold(&log).snapshot(2, 0);
+        assert_eq!(snap.subagents.len(), 1, "the child is in the snapshot");
+        let row = &snap.subagents[0];
+        assert_eq!(row.session_id, "s-sub-1");
+        assert_eq!(row.state, "running");
+        assert_eq!(row.role, "coder");
+        assert_eq!(row.task, "find the bug in the reader");
+        assert_eq!(row.model, "local");
+        assert_eq!(row.answer, None);
+
+        // **A finish REPLACES the row rather than adding a second one** — the same rule the
+        // head's own fold keeps, so a child that has ended is one row and not two.
+        log.append(SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: "done".into(),
+            prompt: "find the bug in the reader".into(),
+            role: "coder".into(),
+            task: "find the bug in the reader".into(),
+            model: "local".into(),
+            answer: Some("the reader drops the last byte".into()),
+        });
+        let snap = fold(&log).snapshot(3, 0);
+        assert_eq!(snap.subagents.len(), 1, "one child, one row");
+        assert_eq!(snap.subagents[0].state, "done");
+        assert_eq!(
+            snap.subagents[0].answer.as_deref(),
+            Some("the reader drops the last byte")
+        );
+
+        // **And a second child is a second row**, so the field is a list and not a slot.
+        log.append(SessionEvent::Subagent {
+            subagent_id: "s-sub-2".into(),
+            state: "opening".into(),
+            prompt: "check the docs".into(),
+            role: "coder".into(),
+            task: "check the docs".into(),
+            model: String::new(),
+            answer: None,
+        });
+        let snap = fold(&log).snapshot(4, 0);
+        let ids: Vec<&str> = snap
+            .subagents
+            .iter()
+            .map(|s| s.session_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["s-sub-1", "s-sub-2"]);
+    }
+
+    /// **An older daemon's snapshot still parses.** The field is `#[serde(default)]`, so a head
+    /// built from this tree reads a daemon that never heard of it — and the absent list and an
+    /// empty one have to mean the same thing, because *this daemon told me about no children* is
+    /// the only honest reading of either.
+    #[test]
+    fn a_snapshot_without_the_children_field_still_parses() {
+        let snap = fold(&{
+            let mut log = SessionLog::new("s", LogBounds::default());
+            log.append(turn_started("t1"));
+            log
+        })
+        .snapshot(1, 0);
+        let mut json = serde_json::to_value(&snap).expect("a snapshot serialises");
+        json.as_object_mut()
+            .expect("a snapshot is an object")
+            .remove("subagents");
+        let back: Snapshot = serde_json::from_value(json).expect("an absent field is the default");
+        assert!(
+            back.subagents.is_empty(),
+            "an absent list and an empty one are one statement"
+        );
     }
 
     #[test]

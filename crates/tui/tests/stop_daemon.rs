@@ -501,7 +501,7 @@ fn a_successful_stop_says_nothing_on_the_way_out() {
 ///
 /// ```text
 /// letibot: the daemon was asked to stop and had not gone 0s later.
-///   the request was acknowledged and did not stop; pid 2291248 is still there.
+///   the request was acknowledged and did not stop; the daemon is still there (pid 2291248).
 ///   …
 /// letibot: the daemon ended this head — daemon shutting down
 /// ```
