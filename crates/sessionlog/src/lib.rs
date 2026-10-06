@@ -54,6 +54,7 @@ pub mod question;
 pub mod registry;
 pub mod scrub;
 pub mod server;
+pub mod suggest;
 pub mod testing;
 pub mod view;
 pub mod warning;
@@ -80,7 +81,9 @@ pub use protocol::{
     head_run_tool, head_run_verb, operator_shell_command, protocol_skew,
 };
 pub use question::{AnswerDefect, QuestionAnswer};
-pub use registry::{Bell, CreateError, Registry, RowSource, SessionBrief, SessionWiring};
+pub use registry::{
+    Bell, CreateError, Registry, RowSource, SessionBrief, SessionWiring, ShellSuggester,
+};
 pub use scrub::{Projection, ScrubReport, StoredProjection, is_interactive};
 pub use view::{
     CallState,

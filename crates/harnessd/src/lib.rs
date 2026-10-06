@@ -110,6 +110,7 @@ pub mod progress;
 pub mod sessions;
 pub mod slash;
 pub mod sudo;
+pub mod suggest;
 pub mod tasks;
 pub mod transcript_source;
 

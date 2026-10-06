@@ -1164,6 +1164,23 @@ pub enum Action {
     OperatorShell {
         line: String,
     },
+    /// **Ask the model to propose `!` completions for a prefix** — the smart half of
+    /// the `!` completion. The history is this head's own and is the first answer;
+    /// this is asked for only when the history has no match for the prefix (or its
+    /// cycle is exhausted).
+    ///
+    /// `client_request_id` is minted here, by the head, because the answer comes back
+    /// on the pump and the head has to recognise it: the id is the correlation, and a
+    /// head that could not tell one answer from another would cache a suggestion under
+    /// the wrong prefix. The daemon echoes it back in `ShellSuggestions`.
+    ///
+    /// **Nothing here submits.** The answer is a list of candidate lines for the
+    /// composer, drawn as candidates with their provenance, and Enter is still the
+    /// operator's.
+    SuggestShell {
+        prefix: String,
+        client_request_id: String,
+    },
     /// A password for `sudo`, or a refusal. Never logged by anything on the way.
     Secret {
         req_id: String,
@@ -2043,6 +2060,54 @@ pub struct App {
     /// str`, because half the list now comes from the daemon (R32) and a borrowed list
     /// could only ever hold this head's own table.
     completion: Option<(String, Vec<String>, usize)>,
+    /// **The model's half of the `!` completion, in flight and answered.**
+    ///
+    /// The history is the first answer and this is the fallback: when the history has
+    /// no match for the prefix (or its cycle is exhausted), the head asks the daemon,
+    /// and the daemon asks the local model. The operator's ask, in their words: *"i
+    /// want smart ! when a model suggest completions."*
+    ///
+    /// `shell_ask` is the asks in flight, keyed by the `client_request_id` the head
+    /// minted, mapping to the (prefix, transcript position) the ask was for. The id is
+    /// the correlation: the answer comes back on the pump and the head has to tell one
+    /// answer from another, because a suggestion cached under the wrong prefix is a
+    /// wrong suggestion. `shell_suggestions` is the answered asks, keyed by
+    /// (prefix, transcript position) — the same prefix asked twice at the same
+    /// position is not two model calls.
+    ///
+    /// **Both are cleared when the transcript advances**, because a suggestion built
+    /// on the conversation as it was is a suggestion about that conversation, and a
+    /// conversation that moved is a different question. The position in the key is the
+    /// number of transcript rows at the ask, so a row landing is a new position and a
+    /// stale answer.
+    shell_ask: std::collections::HashMap<String, (String, u64)>,
+    shell_suggestions: std::collections::HashMap<(String, u64), Vec<String>>,
+    /// The number the next `SuggestShell`'s `client_request_id` takes, beside
+    /// `head_run_seq` and for the same reason: the id has to be unique per head, and
+    /// the head is the one that has to recognise it on the way back.
+    shell_ask_seq: u64,
+    /// **The model's cycle, when it is live**: the prefix it was started for, the
+    /// lines it is cycling, and which one is showing. Separate from `completion`
+    /// (the history's cycle) because the two have different provenance and the render
+    /// has to tell them apart — a model line drawn as a history line is a line that
+    /// looks like the operator typed it and did not.
+    shell_model: Option<(String, Vec<String>, usize)>,
+    /// **The `!` candidates, computed from the rows and held until they move.**
+    ///
+    /// The list is the same for every frame that draws the live `!` row, and building
+    /// it walks the view and parses every `bash` call's arguments. **Measured: 14.2 ms
+    /// a frame** on a 2,000-row session, which is a stall rather than a cost —
+    /// `completions_line` runs once per frame, so the walk has to run once per row
+    /// change instead. [`App::the_rows_moved`] is the one place that drops it.
+    ///
+    /// `None` is *not built yet* and an empty `Some` is *there are none*, which is the
+    /// distinction a cache needs: a session with no `!` line in it must not walk the
+    /// view again on every frame to find that out.
+    shell_candidates_memo: Option<Vec<String>>,
+    /// **How many times that walk has run**, ever — the encoder for the memo above, and
+    /// for the same reason [`App::hist_renders`] exists: a wall time is not something a
+    /// test can assert on and a count is.
+    pub shell_walks: u64,
     /// Actions produced by a *frame* rather than by a key: the switch that follows
     /// a session being created. Drained by the driver, which is the only thing that
     /// can send.
@@ -3413,6 +3478,11 @@ pub const UNCONFIRMED: &str = "unconfirmed";
 /// R29's rule for a disclosure: it carries the act that ends it.
 pub const HOLD_MARKER: &str = "⏸ the view is held — ctrl-p follows again";
 
+/// The columns the live row puts between two candidates — `  ·  `, as [`App::completions_line`]
+/// joins them. A constant because the fit arithmetic in `shell_completions_line` has to count
+/// what the join will actually spend, and a number written twice is a number that drifts.
+const SEPARATOR_COLS: usize = 5;
+
 /// The commands the composer completes, in the order Tab offers them. Aliases
 /// (`s`, `q`, `h`, …) are deliberately absent: this list is what Tab offers
 /// and what the live line shows, and offering both spellings doubles the list
@@ -3618,6 +3688,12 @@ impl App {
             picker_rows_drawn: 0,
             screen_rows: 0,
             completion: None,
+            shell_ask: std::collections::HashMap::new(),
+            shell_suggestions: std::collections::HashMap::new(),
+            shell_ask_seq: 0,
+            shell_model: None,
+            shell_candidates_memo: None,
+            shell_walks: 0,
             queued: Vec::new(),
             pending_prompts: Vec::new(),
             bound_prompts: std::collections::HashMap::new(),
@@ -4238,6 +4314,14 @@ impl App {
         if self.quit || self.bye.is_some() {
             return;
         }
+        // **No answer is coming, so nothing is asked for.** A `SuggestShell` this head
+        // queued is dropped by the driver when the link is down ("nothing leaves a head
+        // whose link is down"), and a head that kept the ask would go on saying *asking
+        // the model* — for ever, because the id it is waiting on was never sent. Cleared
+        // here rather than in the driver's refusal arm because this is the fact: the
+        // socket the answer would arrive on is gone. The transcript's own snapshot after
+        // a reconnect clears them too, and both are the same rule.
+        self.clear_shell_suggestions();
         // **A link that went down because this head asked is not news.** R30: the daemon
         // closing our socket is the answer arriving, and drawing *"the daemon connection
         // is down — reconnecting"* over a shutdown the operator ordered would be this
@@ -4666,6 +4750,28 @@ impl App {
             // and a frame with no home in this head is read and counted rather than half-drawn.
             // `Control` because it is a reply, like `Jobs` and `Todos`, not an event.
             ServerFrame::MergeQueue { .. } => Disposition::Control,
+            // **The model's proposed `!` completions, answered.** The answer to a
+            // `SuggestShell` this head sent, correlated by the id it minted: a
+            // suggestion cached under the wrong prefix is a wrong suggestion, and the
+            // id is what tells one answer from another. An id this head is not
+            // holding — the transcript advanced and the ask was cleared — is stale
+            // and is dropped, because a suggestion about a conversation that moved is
+            // a suggestion about the wrong conversation.
+            //
+            // **Nothing here fills the composer.** The lines are cached and drawn as
+            // candidates, with their provenance; only a Tab fills the composer with
+            // one, and Enter is still the operator's.
+            ServerFrame::ShellSuggestions {
+                client_request_id,
+                prefix: _,
+                lines,
+            } => {
+                if let Some((prefix, position)) = self.shell_ask.remove(&client_request_id) {
+                    self.shell_suggestions.insert((prefix, position), lines);
+                    self.redraw = true;
+                }
+                Disposition::Control
+            }
             ServerFrame::Todos { session_id, todos } => {
                 if session_id == self.session_id {
                     self.todos = todos;
@@ -5067,6 +5173,9 @@ impl App {
             self.last_timings = Some(*timings);
         }
         self.items = s.items;
+        // A snapshot replaces the rows, so everything derived from them — the `!`
+        // candidates and the model's suggestions — is stale and goes with them.
+        self.the_rows_moved();
         // **And the fill's bar goes with the stream that carried it.**
         //
         // A `Filling` tick rides the event stream and its ONLY exit is a tick whose `done` has
@@ -6132,6 +6241,10 @@ impl App {
                     ts,
                     item: None,
                 });
+                // A row landed, so the transcript moved and everything derived from it
+                // — the `!` candidates and the model's suggestions — is stale. The next
+                // Tab for the same prefix is a fresh ask.
+                self.the_rows_moved();
                 Disposition::Rendered
             }
             // The body for a row already announced. Before this existed, a head
@@ -9253,13 +9366,22 @@ impl App {
         }
     }
 
-    /// **Tab on a `!` line completes from what this session has actually run.**
+    /// **Tab on a `!` line completes from what this session has actually run — and,
+    /// when the history has nothing, from what the model proposes.**
     ///
     /// The operator's own words for the feature: *"smart autocomplete here for ! -
-    /// you trying to suggest me commands based on conversation context"*. The
-    /// candidates are whole lines, newest first, deduped — the operator's own `!`
-    /// rows verbatim, and the model's `bash` calls as `! ` plus the command they
-    /// ran — and the match is a whole-line prefix, so `! ls` reaches `! ls .`.
+    /// you trying to suggest me commands based on conversation context"*, and then
+    /// *"i want smart ! when a model suggest completions."* The candidates are whole
+    /// lines, newest first, deduped — the operator's own `!` rows verbatim, and the
+    /// model's `bash` calls as `! ` plus the command they ran — and the match is a
+    /// whole-line prefix, so `! ls` reaches `! ls .`.
+    ///
+    /// **History first, model second.** The history is the first answer, because a
+    /// command this session actually ran is a fact and a model's proposal is a guess,
+    /// and a real command beats an invented one. The model is the fallback, asked
+    /// only when the history has no match for the prefix — or its cycle is exhausted
+    /// — and asked once per (prefix, transcript position), so the same prefix asked
+    /// twice is not two model calls.
     ///
     /// **The one recogniser for "is this a `!` line" is `operator_shell_command`**,
     /// the same rule the daemon re-checks at the send: a bang with nothing after it
@@ -9280,19 +9402,57 @@ impl App {
         if letibot_sessionlog::operator_shell_command(&text).is_none() {
             return;
         }
-        if let Some((_, lines, idx)) = &mut self.completion {
-            let live = lines.get(*idx).is_some_and(|current| text == *current);
-            if live && !lines.is_empty() {
+        // **The model's cycle, if it is live.** It is checked first because it is the
+        // more recent answer: the operator exhausted the history to get here. An empty
+        // lines list is the *waiting* state — the history is exhausted and the model
+        // has not answered yet — and a Tab in that state re-checks the cache rather
+        // than asking again.
+        if let Some((prefix, lines, idx)) = &mut self.shell_model {
+            let live = text.starts_with(prefix.as_str())
+                && (lines.is_empty() || lines.get(*idx).is_some_and(|current| text == *current));
+            if live {
+                if lines.is_empty() {
+                    self.shell_model_fallback(&text);
+                    return;
+                }
                 *idx = (*idx + 1) % lines.len();
                 let line = lines[*idx].clone();
                 self.set_composer(&line);
                 return;
             }
         }
+        // **The history's cycle, if it is live.** When it is exhausted — the next Tab
+        // would wrap to the first history candidate — the model is the fallback, asked
+        // once, and its suggestions are cycled instead. **The wrap is what changes**:
+        // the composer stays on the last candidate rather than snapping back to the
+        // first, and that candidate is the prefix the model is asked about, because a
+        // proposal for the line the operator is looking at is a completion and a
+        // proposal for a line they have already scrolled past is the same line offered
+        // twice. A model with nothing to offer leaves the composer where it is and says
+        // so; the history's candidates are all still one character away, since a prefix
+        // typed on is matched fresh.
+        if let Some((_, lines, idx)) = &mut self.completion {
+            let live = lines.get(*idx).is_some_and(|current| text == *current);
+            if live && !lines.is_empty() {
+                let next = (*idx + 1) % lines.len();
+                if next == 0 {
+                    self.completion = None;
+                    self.shell_model_fallback(&text);
+                    return;
+                }
+                *idx = next;
+                let line = lines[*idx].clone();
+                self.set_composer(&line);
+                return;
+            }
+        }
+        // No live cycle: start the history's, or fall to the model when the history
+        // has nothing for this prefix.
         let lines: Vec<String> = self
             .shell_candidates()
-            .into_iter()
+            .iter()
             .filter(|line| line.starts_with(&text))
+            .cloned()
             .collect();
         match lines.first() {
             Some(first) => {
@@ -9302,12 +9462,142 @@ impl App {
             }
             None => {
                 self.completion = None;
-                self.say(&format!("no ! line from this session starts with {text:?}"));
+                self.shell_model_fallback(&text);
             }
         }
     }
 
-    /// The whole `!` lines this session has run, newest first, deduped: the
+    /// **The model's half of the `!` completion, asked once per (prefix, position).**
+    ///
+    /// Called when the history has no match for the prefix, or its cycle is exhausted.
+    /// It is the whole of the "ask the model" decision, and the rule it keeps is that
+    /// **the same prefix asked twice is not two model calls**: an answered ask is
+    /// cycled from the cache, an in-flight ask is waited on, and only a prefix never
+    /// asked is sent to the daemon.
+    ///
+    /// **The prefix is the line in the composer, not the line the operator started
+    /// with.** The two are the same thing whenever the history had no match, which is
+    /// the case the feature is for. At the end of a history cycle they are not: the
+    /// composer holds the last candidate the history offered, and that is the line the
+    /// model is asked to complete. Asking about the typed prefix instead would let a
+    /// proposal come back that the operator has just cycled past — the same line
+    /// offered twice in a row, once as a fact and once as a guess — and the rule the
+    /// daemon's prompt carries is that a wrong suggestion is worse than none.
+    ///
+    /// **Presence in the cache is the answer, not the length of the list.** A model
+    /// that said nothing usable *said something*, and an empty answer read as *not
+    /// asked* would send a fresh call on every Tab for the same prefix — the one thing
+    /// the (prefix, position) key exists to prevent.
+    ///
+    /// The position is the number of transcript rows, so a row landing is a new
+    /// position and a fresh ask — the cache is cleared when the transcript advances,
+    /// and a suggestion built on the conversation as it was is a suggestion about
+    /// that conversation.
+    ///
+    /// **Nothing here submits.** The answer is a list of candidate lines for the
+    /// composer, drawn as candidates with their provenance, and Enter is still the
+    /// operator's.
+    fn shell_model_fallback(&mut self, text: &str) {
+        let position = self.items.len() as u64;
+        let key = (text.to_string(), position);
+        // Already answered for this prefix at this position: cycle the cached lines,
+        // or say that the model had nothing and do not ask again.
+        if let Some(lines) = self.shell_suggestions.get(&key) {
+            let lines = lines.clone();
+            if lines.is_empty() {
+                // The model said nothing usable. That is a good answer rather than a
+                // failure — the rule it was given is that a wrong suggestion is worse
+                // than none — so it is said plainly, and the cycle stays live with
+                // nothing in it: the next Tab says the same thing without a call.
+                self.shell_model = Some((text.to_string(), Vec::new(), 0));
+                self.say(&format!("the model has no ! line starting with {text:?}"));
+                return;
+            }
+            let first = lines[0].clone();
+            self.shell_model = Some((text.to_string(), lines, 0));
+            self.set_composer(&first);
+            return;
+        }
+        // Already asked for this prefix at this position: the response is in flight.
+        // Enter the waiting state and say so, rather than asking again.
+        if self
+            .shell_ask
+            .values()
+            .any(|(p, n)| p == text && *n == position)
+        {
+            self.shell_model = Some((text.to_string(), Vec::new(), 0));
+            self.say(&format!(
+                "asking the model for a ! line starting with {text:?}…"
+            ));
+            return;
+        }
+        // Ask the model, once. The id is minted here so the head can recognise the
+        // answer on the way back; the daemon echoes it in `ShellSuggestions`.
+        let id = self.next_shell_ask_id();
+        self.shell_ask
+            .insert(id.clone(), (text.to_string(), position));
+        self.shell_model = Some((text.to_string(), Vec::new(), 0));
+        self.queued.push(Action::SuggestShell {
+            prefix: text.to_string(),
+            client_request_id: id,
+        });
+        self.say(&format!(
+            "asking the model for a ! line starting with {text:?}…"
+        ));
+    }
+
+    /// The next `SuggestShell`'s `client_request_id`, beside `next_head_run` and for
+    /// the same reason: the id has to be unique per head, and the head is the one
+    /// that has to recognise it when the answer comes back on the pump.
+    fn next_shell_ask_id(&mut self) -> String {
+        self.shell_ask_seq += 1;
+        format!("{}-s{}", self.head_id, self.shell_ask_seq)
+    }
+
+    /// **The transcript moved, so everything derived from it is stale.**
+    ///
+    /// Two things are derived from the rows and both are held between frames: the `!`
+    /// candidate list ([`App::shell_candidates_memo`]), and the model's suggestions —
+    /// which are answers about the conversation *as it was*, and a conversation that
+    /// moved is a different question. One method, because the two call sites are the
+    /// two ways the transcript changes and a third caller is a third chance to
+    /// remember only one of them.
+    ///
+    /// **A body landing counts as a move**, which is why [`App::record_item`] calls it
+    /// too: a row announced with no body carries no tool calls yet, and a prompt built
+    /// on it would be a prompt about a row that had not arrived.
+    fn the_rows_moved(&mut self) {
+        self.shell_candidates_memo = None;
+        self.clear_shell_suggestions();
+    }
+
+    /// **The model's suggestions are stale: the conversation moved.**
+    ///
+    /// A suggestion is built on the conversation as it was when it was asked, and a
+    /// conversation that moved is a different question. So when a row lands — or a
+    /// snapshot replaces the rows — the asks in flight and the answered asks are
+    /// both dropped, and the next Tab for the same prefix is a fresh ask rather than
+    /// a stale answer. The model's cycle is dropped too: it is cycling lines about a
+    /// conversation that no longer is, and a character typed on would match fresh
+    /// anyway.
+    ///
+    /// **Called from [`App::the_rows_moved`], which is the only caller besides the link
+    /// going down** — that is deliberate, because the two are always stale together and
+    /// a call site that remembered one of them would be a call site that forgot the
+    /// other.
+    fn clear_shell_suggestions(&mut self) {
+        if self.shell_ask.is_empty()
+            && self.shell_suggestions.is_empty()
+            && self.shell_model.is_none()
+        {
+            return;
+        }
+        self.shell_ask.clear();
+        self.shell_suggestions.clear();
+        self.shell_model = None;
+    }
+
+    /// **The whole `!` lines this session has run**, newest first, deduped: the
     /// operator's own `!` rows verbatim, and the model's `bash` calls as `! ` plus
     /// the command they ran.
     ///
@@ -9316,12 +9606,26 @@ impl App {
     /// Deduped keeping the newest, so a command run twice is offered once, as the
     /// line it most recently was.
     ///
+    /// **Held between frames**, because this is the render path's as well as Tab's:
+    /// see [`App::shell_candidates_memo`] for the measurement that made it one walk
+    /// per row change rather than one per frame.
+    fn shell_candidates(&mut self) -> &[String] {
+        if self.shell_candidates_memo.is_none() {
+            self.shell_walks += 1;
+            self.shell_candidates_memo = Some(self.walk_shell_candidates());
+        }
+        self.shell_candidates_memo.as_deref().unwrap_or(&[])
+    }
+
+    /// The walk itself — what [`App::shell_candidates`] caches, and the only place that
+    /// reads the rows for it.
+    ///
     /// **The walk is the head's own rows** — the snapshot items, `item` an
     /// `Option` because a row can be announced before its body lands — walked the
     /// way `targets_before` walks them. A `bash` call whose arguments do not parse,
     /// or that carries no `command`, is skipped: a candidate that cannot be re-run
     /// is not a candidate.
-    fn shell_candidates(&self) -> Vec<String> {
+    fn walk_shell_candidates(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for r in self.items.iter().rev() {
             let Some(item) = r.item.as_ref() else {
@@ -9381,12 +9685,19 @@ impl App {
         self.editor.insert(text);
     }
 
-    /// The live completion row shown above the composer while a `/command` is
-    /// being typed: every match, name plus its hint, joined with `·`. A bare
-    /// `/` lists everything; a prefix nothing matches shows nothing, because
-    /// an empty line that appears and disappears is noise, and Tab will say
-    /// what went wrong when it is asked.
-    fn completions_line(&self, w: usize) -> Option<String> {
+    /// The live completion row shown above the composer while a `/command` or a
+    /// `!` line is being typed. A `/` line lists its matches, name plus hint; a
+    /// `!` line lists the history's candidates and the model's, with their
+    /// provenance. A prefix nothing matches shows nothing, because an empty line
+    /// that appears and disappears is noise, and Tab will say what went wrong
+    /// when it is asked.
+    fn completions_line(&mut self, w: usize) -> Option<String> {
+        // **The first character decides, and it is read without holding the borrow**:
+        // the `!` path needs `&mut self` for the candidate memo, and `editor.text()`
+        // hands back a `&str` borrowed from this same head.
+        if self.editor.text().starts_with('!') {
+            return self.shell_completions_line(w);
+        }
         let text = self.editor.text();
         if !text.starts_with('/') || text.contains(char::is_whitespace) {
             return None;
@@ -9404,6 +9715,66 @@ impl App {
                 }
             })
             .collect();
+        if parts.is_empty() {
+            return None;
+        }
+        let cfg = &self.cfg;
+        Some(dim(cfg, &trim_to(&format!("  {}", parts.join("  ·  ")), w)))
+    }
+
+    /// **The live `!` completion row, with provenance.**
+    ///
+    /// The history's candidates — the commands this session actually ran — are
+    /// facts, and are drawn plain. The model's candidates are proposals, not
+    /// facts, and are drawn marked with a leading `~`, because **a line that
+    /// looks like the operator typed it and did not is the same class of lie as
+    /// an unattributed quote**: the operator has to be able to tell, at a glance,
+    /// which candidates are the session's own and which the model invented.
+    ///
+    /// The mark is display-only: a Tab fills the composer with the line itself
+    /// (`! git status`), never the marked form (`~! git status`). And nothing
+    /// here is submitted — the row is a typing aid, and Enter is still the
+    /// operator's.
+    fn shell_completions_line(&mut self, w: usize) -> Option<String> {
+        let text = self.editor.text().to_string();
+        if !text.starts_with('!') {
+            return None;
+        }
+        // **Only as many candidates as fit on the row.** The line is trimmed to the
+        // width at the end anyway, so collecting every match and joining them into a
+        // string that is then thrown away is work for nothing — and it is not a small
+        // amount of it: measured at **10 ms a frame** on a session whose history holds
+        // two thousand commands that all match the prefix, because each one was cloned
+        // and the join built the whole of it. The cut is the one `trim_to` would make
+        // at the end, made here instead, and it is the same rule the `/` row keeps.
+        let mut parts: Vec<String> = Vec::new();
+        let mut used = 2usize; // the row's own leading indent
+        // The history's candidates, plain: a command this session ran is a fact.
+        for line in self
+            .shell_candidates()
+            .iter()
+            .filter(|l| l.starts_with(&text))
+        {
+            if used >= w {
+                break;
+            }
+            used += visible_width(line) + SEPARATOR_COLS;
+            parts.push(line.clone());
+        }
+        // The model's candidates, marked: a proposal is not a fact, and the mark
+        // is the provenance. Only the ones cached for this prefix at this
+        // position, so a suggestion about a conversation that moved is not drawn.
+        let position = self.items.len() as u64;
+        if let Some(lines) = self.shell_suggestions.get(&(text.to_string(), position)) {
+            for line in lines.iter().filter(|l| l.starts_with(&text)) {
+                if used >= w {
+                    break;
+                }
+                let marked = format!("~{line}");
+                used += visible_width(&marked) + SEPARATOR_COLS;
+                parts.push(marked);
+            }
+        }
         if parts.is_empty() {
             return None;
         }
@@ -10959,6 +11330,11 @@ impl App {
             return;
         };
         self.items[idx].item = Some(item);
+        // **A body landing is the transcript moving too.** The row was announced with no
+        // content, so it carried no tool calls a moment ago: a `!` candidate list built
+        // then is missing every command this row ran, and a model asked then was asked
+        // about a row that had not arrived. See [`App::the_rows_moved`].
+        self.the_rows_moved();
         // The row's rendered form changed, so the history cache from that row
         // on is stale. From that row on, and not from row zero: this is the
         // hottest of the invalidations — one per transcript row, so one per
@@ -34436,6 +34812,89 @@ mod tests {
         }
     }
 
+    /// An assistant row carrying one `bash` call, the way the session's log carries it.
+    fn bash_row(cmd: &str) -> TranscriptItem {
+        TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: format!(r#"{{"command": {cmd:?}}}"#),
+            }],
+            truncated: false,
+        }
+    }
+
+    /// **The live `!` row walks the history once, not once a frame.**
+    ///
+    /// `completions_line` runs on every frame and the live `!` row draws the candidates
+    /// out of it, so building them per frame meant walking the view and parsing every
+    /// `bash` call's arguments per frame. **Measured at 14.2 ms a frame** on a 2,000-row
+    /// session before the memo and 0.10 ms above the frame's own baseline after it, which
+    /// is the difference between a typing aid and a stall. `shell_walks` is the encoder —
+    /// a wall time is not something a test can assert on and a count is, the same rule
+    /// `hist_renders` follows.
+    #[test]
+    fn the_bang_row_walks_the_history_once_not_once_a_frame() {
+        let mut a = app();
+        for i in 0..200u64 {
+            shell_row(
+                &mut a,
+                i * 2 + 1,
+                &format!("s.{i}"),
+                "assistant",
+                bash_row(&format!("cargo test {i}")),
+            );
+        }
+        typed(&mut a, "! cargo");
+        for _ in 0..20 {
+            let _ = a.screen(100, 40);
+        }
+        assert_eq!(
+            a.shell_walks, 1,
+            "one walk for twenty frames of one transcript"
+        );
+        // **A row landing is a new walk.** The list is the transcript's and not this
+        // head's, so a command that has just run has to appear in it.
+        shell_row(&mut a, 1000, "a1", "assistant", bash_row("cargo build"));
+        let _ = a.screen(100, 40);
+        assert_eq!(a.shell_walks, 2, "and again when the rows move");
+        assert!(
+            a.shell_candidates().iter().any(|l| l == "! cargo build"),
+            "the command that just ran is in the list: {:?}",
+            a.shell_candidates()
+        );
+    }
+
+    /// **The live `!` row draws only the candidates that fit.**
+    ///
+    /// The cut is made while collecting rather than by `trim_to` at the end, because the
+    /// collection is where the cost was: a session with two thousand matching commands
+    /// cloned and joined every one of them on every frame to produce a row that was then
+    /// thrown away down to the width. What a reader sees is what they always saw — the
+    /// candidates that fit, newest first, and no marker for the rest.
+    #[test]
+    fn the_bang_row_draws_only_the_candidates_that_fit() {
+        let mut a = app();
+        for i in 0..200u64 {
+            shell_row(
+                &mut a,
+                i * 2 + 1,
+                &format!("s.{i}"),
+                "assistant",
+                bash_row(&format!("cargo test {i}")),
+            );
+        }
+        typed(&mut a, "! cargo");
+        let row = a.shell_completions_line(40).expect("the row");
+        assert!(visible_width(&row) <= 40, "the row fits: {row}");
+        assert!(row.contains("! cargo test 199"), "the newest leads: {row}");
+        assert!(
+            !row.contains("! cargo test 0"),
+            "and the far end is never collected: {row}"
+        );
+    }
+
     #[test]
     fn rendering_the_history_does_not_grow_with_the_session_either() {
         let mut a = app();
@@ -45676,33 +46135,14 @@ mod tests {
     ///
     /// The last thing the session ran is the most likely thing the operator is
     /// about to run again, so it is first in the cycle; Tab again walks the rest.
+    /// **The cycle does not wrap any more**: when it is exhausted the model is asked,
+    /// about the line in the composer. See
+    /// [`App::shell_model_fallback`] and the tests below it.
     #[test]
     fn the_newest_bang_candidate_wins_and_tab_cycles() {
         let mut a = app();
-        shell_row(
-            &mut a,
-            1,
-            "u1",
-            "user",
-            TranscriptItem::User {
-                speaker: letibot_transcript::Speaker::Operator,
-                parts: vec![UserPart::Text {
-                    text: "! ls -la".into(),
-                }],
-            },
-        );
-        shell_row(
-            &mut a,
-            3,
-            "u2",
-            "user",
-            TranscriptItem::User {
-                speaker: letibot_transcript::Speaker::Operator,
-                parts: vec![UserPart::Text {
-                    text: "! ls .".into(),
-                }],
-            },
-        );
+        shell_row(&mut a, 1, "u1", "user", operator_row("! ls -la"));
+        shell_row(&mut a, 3, "u2", "user", operator_row("! ls ."));
         // `! ls` matches both; the newest (`! ls .`) wins the first Tab.
         typed(&mut a, "! ls");
         a.key(Key::Tab);
@@ -45710,9 +46150,283 @@ mod tests {
         // A second Tab cycles to the older one.
         a.key(Key::Tab);
         assert_eq!(a.input(), "! ls -la", "the second Tab cycles");
-        // And the cycle wraps.
+        // The third Tab exhausts the history, and the hand-off is the model's: the
+        // composer stays on the last candidate the history offered — nothing the
+        // operator has just cycled past is shown again — and the ask is for THAT line,
+        // because that is the line being completed.
         a.key(Key::Tab);
-        assert_eq!(a.input(), "! ls .", "the cycle wraps");
+        assert_eq!(
+            a.input(),
+            "! ls -la",
+            "the composer stays on the last candidate"
+        );
+        let (prefix, id) = the_one_ask(&mut a);
+        assert_eq!(prefix, "! ls -la", "asked about the line in the composer");
+        // And the answer is cycled rather than the history's wrapping back.
+        model_answers(&mut a, &id, "! ls -la", &["! ls -la --color"]);
+        a.key(Key::Tab);
+        assert_eq!(
+            a.input(),
+            "! ls -la --color",
+            "the model's line is the cycle"
+        );
+    }
+
+    /// An operator's own row, the way the session's log carries it.
+    fn operator_row(text: &str) -> TranscriptItem {
+        TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![UserPart::Text { text: text.into() }],
+        }
+    }
+
+    /// The one ask a Tab on an unmatched `!` prefix queues, and the id it minted.
+    ///
+    /// **Exactly one**: the whole point of the cache is that a Tab asks once, so a
+    /// helper that took the first and ignored the rest would be blind to the defect it
+    /// exists to catch.
+    fn the_one_ask(a: &mut App) -> (String, String) {
+        let actions = a.take_actions();
+        assert_eq!(actions.len(), 1, "exactly one action: {actions:?}");
+        match actions.into_iter().next().expect("one") {
+            Action::SuggestShell {
+                prefix,
+                client_request_id,
+            } => (prefix, client_request_id),
+            other => panic!("not a SuggestShell: {other:?}"),
+        }
+    }
+
+    /// The daemon's answer to an ask, the way it arrives on the pump.
+    fn model_answers(a: &mut App, id: &str, prefix: &str, lines: &[&str]) {
+        a.apply(ServerFrame::ShellSuggestions {
+            client_request_id: id.into(),
+            prefix: prefix.into(),
+            lines: lines.iter().map(|l| l.to_string()).collect(),
+        });
+    }
+
+    /// **The history is the first answer, and the model is not asked when it matches.**
+    ///
+    /// The whole shape of the feature: a command this session actually ran is a fact
+    /// and a model's proposal is a guess, so the fact answers first and the guess is
+    /// never paid for. A head that asked anyway would spend a local model call on every
+    /// Tab, which is the cost the history-first rule exists to avoid.
+    #[test]
+    fn the_history_is_the_first_answer_and_the_model_is_not_asked_when_it_matches() {
+        let mut a = app();
+        shell_row(&mut a, 1, "u1", "user", operator_row("! ls -la"));
+        typed(&mut a, "! ls");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! ls -la", "the session's own row answers");
+        assert!(a.take_actions().is_empty(), "and no model was asked");
+    }
+
+    /// **A prefix the history does not have asks the model once, and only once.**
+    ///
+    /// The operator's ask, in their words: *"i want smart ! when a model suggest
+    /// completions."* The composer is untouched while the ask is out — nothing is
+    /// filled from a guess that has not arrived — and a second Tab in that state is not
+    /// a second call: the ask is filed under the id the head minted, and the head is
+    /// what recognises the answer.
+    #[test]
+    fn the_model_is_asked_once_for_a_prefix_the_history_does_not_have() {
+        let mut a = app();
+        shell_row(&mut a, 1, "u1", "user", operator_row("! ls -la"));
+        typed(&mut a, "! git");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! git", "the composer is untouched while asking");
+        let (prefix, id) = the_one_ask(&mut a);
+        assert_eq!(prefix, "! git");
+        assert!(a.notice.is_some(), "the wait is said, not silent");
+        assert!(
+            a.shell_ask.contains_key(&id),
+            "filed under the id the head minted, which is the one it recognises"
+        );
+        a.key(Key::Tab);
+        assert!(a.take_actions().is_empty(), "the same prefix is one call");
+        assert_eq!(a.input(), "! git");
+    }
+
+    /// **The answer is cached by (prefix, position), cycled, and never asked twice.**
+    ///
+    /// `shell_ask` is the asks in flight and `shell_suggestions` the answers, and the
+    /// rule both exist for is in one sentence: the same prefix at the same transcript
+    /// position is one model call. The operator may press Tab as often as they like.
+    #[test]
+    fn the_models_answer_is_cached_and_cycled_and_the_same_prefix_is_one_call() {
+        let mut a = app();
+        shell_row(&mut a, 1, "u1", "user", operator_row("! ls -la"));
+        typed(&mut a, "! git");
+        a.key(Key::Tab);
+        let (_, id) = the_one_ask(&mut a);
+        model_answers(&mut a, &id, "! git", &["! git status", "! git log"]);
+        // The ask is retired and the answer is cached under the prefix it was for.
+        assert!(a.shell_ask.is_empty(), "the ask was answered");
+        assert_eq!(a.shell_suggestions.len(), 1, "and the answer is held");
+        // The first Tab after the answer fills the composer with the model's first
+        // line, and asks nothing.
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! git status", "the model's first line");
+        assert!(a.take_actions().is_empty(), "answered from the cache");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! git log", "the second Tab cycles");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! git status", "and the model's own cycle wraps");
+        assert!(a.take_actions().is_empty(), "still no call");
+        // Back at the typed prefix: the cache is keyed by it, so this is the same ask
+        // and not a third call.
+        a.set_composer("! git");
+        a.shell_model = None;
+        a.key(Key::Tab);
+        assert_eq!(
+            a.input(),
+            "! git status",
+            "the same prefix, the same answer"
+        );
+        assert!(
+            a.take_actions().is_empty(),
+            "the same prefix at the same position is one call"
+        );
+    }
+
+    /// **A row landing makes the model's suggestion stale.**
+    ///
+    /// A suggestion is built on the conversation as it was when it was asked, so a
+    /// conversation that moved is a different question — and the answer to the old one
+    /// is not an answer to the new one. The cache and the cycle both go with the rows,
+    /// and the same prefix is a fresh ask rather than a stale answer.
+    #[test]
+    fn a_row_landing_makes_the_models_suggestion_stale() {
+        let mut a = app();
+        shell_row(&mut a, 1, "u1", "user", operator_row("! ls -la"));
+        typed(&mut a, "! git");
+        a.key(Key::Tab);
+        let (_, id) = the_one_ask(&mut a);
+        model_answers(&mut a, &id, "! git", &["! git status"]);
+        assert_eq!(a.shell_suggestions.len(), 1, "the answer is cached");
+        // A row lands.
+        shell_row(
+            &mut a,
+            3,
+            "a1",
+            "assistant",
+            TranscriptItem::Assistant {
+                text: "done".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        );
+        assert!(
+            a.shell_suggestions.is_empty(),
+            "the cache went with the conversation it was built on"
+        );
+        assert!(a.shell_model.is_none(), "and so did the cycle");
+        // The same prefix is a fresh ask at the new position, and the stale line never
+        // reaches the composer.
+        a.set_composer("! git");
+        a.key(Key::Tab);
+        assert_eq!(
+            a.input(),
+            "! git",
+            "the stale suggestion does not fill the composer"
+        );
+        let (prefix, _) = the_one_ask(&mut a);
+        assert_eq!(prefix, "! git", "asked again, at the new position");
+    }
+
+    /// **An empty answer is an answer, and it is said once.**
+    ///
+    /// The model was told that a wrong suggestion is worse than none, so *nothing* is
+    /// the answer it is supposed to be able to give — and a cache that read an empty
+    /// list as *not asked* would send a fresh call on every Tab for the same prefix,
+    /// which is exactly what the (prefix, position) key exists to prevent.
+    #[test]
+    fn an_empty_answer_is_said_once_and_is_not_asked_for_again() {
+        let mut a = app();
+        shell_row(&mut a, 1, "u1", "user", operator_row("! ls -la"));
+        typed(&mut a, "! git");
+        a.key(Key::Tab);
+        let (_, id) = the_one_ask(&mut a);
+        model_answers(&mut a, &id, "! git", &[]);
+        for _ in 0..3 {
+            a.key(Key::Tab);
+            assert_eq!(a.input(), "! git", "nothing is filled from nothing");
+            assert!(a.take_actions().is_empty(), "an empty answer is an answer");
+        }
+        assert!(
+            a.notice.as_deref().is_some_and(|n| n.contains("no ! line")),
+            "and it is said plainly: {:?}",
+            a.notice
+        );
+    }
+
+    /// **The model's lines are drawn as proposals and the history's as facts.**
+    ///
+    /// A line that looks like the operator typed it and did not is the same class of lie
+    /// as an unattributed quote, so the live row marks the model's candidates and leaves
+    /// the session's own plain. The mark is display-only: a Tab fills the composer with
+    /// the line itself.
+    ///
+    /// The state both kinds are drawn in is the hand-off: the history answered with its
+    /// own line, the operator cycled past it, and the model was asked about the line
+    /// they are now looking at.
+    #[test]
+    fn the_model_lines_are_drawn_as_proposals_and_the_historys_as_facts() {
+        let mut a = app();
+        shell_row(&mut a, 1, "u1", "user", operator_row("! ls -la"));
+        typed(&mut a, "! ls");
+        // The history answers first, with the line it actually ran.
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! ls -la", "the session's own line");
+        // The next Tab exhausts the history and asks the model about that line.
+        a.key(Key::Tab);
+        let (prefix, id) = the_one_ask(&mut a);
+        assert_eq!(prefix, "! ls -la");
+        model_answers(
+            &mut a,
+            &id,
+            "! ls -la",
+            &["! ls -la --color", "! ls -la -R"],
+        );
+        // The live row carries both kinds, told apart: the session's own plain, the
+        // model's marked. This is the requirement in one string.
+        let row = a
+            .shell_completions_line(110)
+            .expect("the live row above the composer");
+        assert_eq!(
+            row, "  ! ls -la  ·  ~! ls -la --color  ·  ~! ls -la -R",
+            "the history's plain and the model's marked"
+        );
+        // And it is on the screen, not merely computed.
+        let screen = a.screen(110, 24).join("\n");
+        assert!(screen.contains("~! ls -la --color"), "drawn: {screen}");
+        // The mark never reaches the composer: a Tab fills the line itself.
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! ls -la --color", "the line itself, unmarked");
+    }
+
+    /// **A suggestion only fills the composer.** Nothing in the path submits: a Tab
+    /// replaces the line, and Enter — the operator's own key — is what sends it.
+    #[test]
+    fn a_suggestion_only_fills_the_composer_and_never_submits() {
+        let mut a = app();
+        shell_row(&mut a, 1, "u1", "user", operator_row("! ls -la"));
+        typed(&mut a, "! git");
+        a.key(Key::Tab);
+        let (_, id) = the_one_ask(&mut a);
+        model_answers(&mut a, &id, "! git", &["! git status"]);
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! git status");
+        assert!(a.take_actions().is_empty(), "the Tab sent nothing");
+        assert!(a.pending_prompts.is_empty(), "and nothing is held as sent");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::OperatorShell {
+                line: "! git status".into()
+            }),
+            "Enter is still the operator's"
+        );
     }
 
     /// **A bare `!` is an empty command and does nothing** — the recogniser

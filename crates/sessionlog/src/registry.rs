@@ -466,6 +466,31 @@ pub trait DiagnosticSource: Send + Sync {
     -> Option<String>;
 }
 
+/// **Who proposes `!` completions when the history has none** — the smart half of the
+/// `!` completion the operator asked for: *"i want smart ! when a model suggest
+/// completions."*
+///
+/// A trait and not a method on the registry, for the reason `SessionSource` is: this
+/// crate holds no HTTP client and no endpoint, and the model call is the daemon's. The
+/// daemon passes an implementation in (the local model, bounded), and a registry with no
+/// suggester answers `SuggestShell` with an empty list — which the head reads as *no
+/// suggestion*, exactly as it reads a model that had none. That is the safe direction:
+/// a daemon without a local model offers nothing rather than reaching for a metered
+/// provider, because a suggestion must not cost money per keystroke.
+///
+/// The implementation builds the prompt from the session's own rows (see
+/// [`crate::suggest`]) and asks the model; the prompt and the defensive parse of the
+/// reply live in this crate so they are testable without standing up inference.
+pub trait ShellSuggester: Send + Sync {
+    /// The candidate lines for `prefix` in this session, `!` first, or none.
+    ///
+    /// `hub` is the session's own log — the conversation the prompt is built from — and
+    /// `workspace` is where the session runs, so a suggestion fits the tree it would be
+    /// run in. **Bounded by the implementer**: a small output cap and a timeout, and a
+    /// suggestion that does not arrive is nothing, never a reason to wait.
+    fn suggest(&self, hub: &Hub, workspace: &str, prefix: &str) -> Vec<String>;
+}
+
 pub struct Registry {
     inner: Mutex<Inner>,
     bell: Arc<Bell>,
@@ -476,6 +501,10 @@ pub struct Registry {
     rows: Mutex<Option<Arc<dyn RowSource>>>,
     /// Set once at startup, beside [`Registry::rows`]. See [`DiagnosticSource`].
     diagnostics: Mutex<Option<Arc<dyn DiagnosticSource>>>,
+    /// Set once at startup, beside [`Registry::diagnostics`]. See [`ShellSuggester`].
+    /// `None` in every head and every test that predates the smart `!`, and a
+    /// `SuggestShell` then answers with an empty list.
+    suggester: Mutex<Option<Arc<dyn ShellSuggester>>>,
 }
 
 /// What the worker was woken for.
@@ -538,6 +567,7 @@ impl Registry {
             source: Mutex::new(None),
             rows: Mutex::new(None),
             diagnostics: Mutex::new(None),
+            suggester: Mutex::new(None),
         })
     }
 
@@ -703,6 +733,22 @@ impl Registry {
     /// Where the oracle's exchange can be read. See [`DiagnosticSource`].
     pub fn set_diagnostic_source(&self, diagnostics: Arc<dyn DiagnosticSource>) {
         *self.diagnostics.lock().unwrap_or_else(|e| e.into_inner()) = Some(diagnostics);
+    }
+
+    /// Who proposes `!` completions when the history has none. See [`ShellSuggester`].
+    /// Set once at startup by the daemon, exactly as [`Registry::set_source`] is, and
+    /// `None` in every head and every test that predates it — in which case a
+    /// `SuggestShell` answers with an empty list, as the head reads *no suggestion*.
+    pub fn set_suggester(&self, suggester: Arc<dyn ShellSuggester>) {
+        *self.suggester.lock().unwrap_or_else(|e| e.into_inner()) = Some(suggester);
+    }
+
+    /// The suggester this registry was given, or `None` when it was not.
+    pub fn suggester(&self) -> Option<Arc<dyn ShellSuggester>> {
+        self.suggester
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// One half of one decision's exchange, or `None` when there is no source or no record.

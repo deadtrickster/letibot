@@ -1037,6 +1037,42 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                     writer.lock().unwrap().write(&f)?;
                 }
             }
+            // **The model's half of the `!` completion.** The history is the head's own and is
+            // the first answer; this is what the head asks for when the history has no match
+            // for the prefix. The daemon builds the prompt from the session's own rows and
+            // asks the LOCAL model — the suggester the daemon installed, or nothing when it
+            // installed none.
+            //
+            // **Answered here and now, off the queue, for the reason `ListJobs` is**: a
+            // completion must arrive while the operator is still typing, and queueing it
+            // behind a running turn would guarantee it arrives after the line is sent. The
+            // call is bounded by the suggester (a small output cap and a timeout), and a
+            // suggestion that does not arrive is nothing: the answer is an empty list, never
+            // a wait.
+            //
+            // **Nothing is submitted.** The answer is a list of candidate lines; the head
+            // draws them as candidates, marked as the model's, and only a Tab fills the
+            // composer with one. Enter is still the operator's.
+            Ok(ClientFrame::SuggestShell {
+                client_request_id,
+                expected_seq: _,
+                prefix,
+            }) => {
+                let lines = match registry.suggester() {
+                    Some(s) => s.suggest(
+                        &seat.hub,
+                        &registry.wiring(&seat.hub.session_id()).workspace,
+                        &prefix,
+                    ),
+                    None => Vec::new(),
+                };
+                let f = ServerFrame::ShellSuggestions {
+                    client_request_id,
+                    prefix,
+                    lines,
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
             // **R11's locator, leticl's ask.** A head names one decision and one half of its
             // exchange; the daemon answers with the bytes or with *not recorded*. The same
             // shape `FetchRow` uses, and for the same reason: this is the head asking for

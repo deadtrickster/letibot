@@ -331,7 +331,23 @@ use crate::view::Snapshot;
 /// the two events carry every change. The queue is daemon-level, not per-session: there is one
 /// main branch and one queue, and the `session_id` on each entry is the entry's origin, not a
 /// filter.
-pub const PROTOCOL_VERSION: u32 = 29;
+/// # 30: the model proposes `!` completions
+///
+/// [`ClientFrame::SuggestShell`] is a new client frame, so a version-29 daemon would fail to
+/// parse it — the version-4 argument, and the same ATTACH-time refusal. Its answer,
+/// [`ServerFrame::ShellSuggestions`], is a new server frame, and the version-25 argument
+/// applies to it in the other direction: a head with no arm for it would fail to decode it
+/// mid-session, so the one bump covers both halves.
+///
+/// It exists because the operator's ask — *"i want smart ! when a model suggest
+/// completions"* — is not the head's to answer: a head has no HTTP client and no
+/// transcript-wide context, while the daemon has both. The head sends the typed prefix and the
+/// daemon builds the prompt from the conversation and asks the LOCAL model (the `[gatekeeper]`
+/// endpoint, never a metered provider — a suggestion must not cost money per keystroke). The
+/// answer is a list of candidate lines, and **nothing in the path submits**: a suggestion only
+/// fills the composer, and Enter is still the operator's. See the variants' own docs for the
+/// shape and the defensive parse.
+pub const PROTOCOL_VERSION: u32 = 30;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1348,6 +1364,41 @@ pub enum ClientFrame {
         /// sends a different spelling than the one the operator typed.
         line: String,
     },
+    /// **Ask the model to propose `!` completions for a prefix** — the smart half of the
+    /// `!` completion the operator asked for: *"i want smart ! when a model suggest
+    /// completions"*.
+    ///
+    /// # Why a frame at all
+    ///
+    /// The head's history completion (the commands this session has actually run) is the first
+    /// answer, and it is the head's own: the rows are on the screen. But when the history has
+    /// no match for the prefix, the head has nothing left to offer — and it is the wrong
+    /// party to invent one, because it has **no HTTP client and no transcript-wide context**,
+    /// while the daemon has both. So the head sends what is typed and the daemon builds the
+    /// prompt from the conversation and asks the model.
+    ///
+    /// # What the daemon does with it
+    ///
+    /// Builds the prompt from the session's own rows — the last handful condensed, the
+    /// commands already run, the workspace path, and the prefix — and asks the **local**
+    /// model: the `[gatekeeper]` endpoint the daemon already resolved into `cfg.oracle`,
+    /// never a metered provider, because a suggestion must not cost money per keystroke. The
+    /// call is bounded (a small output cap and a timeout), and a suggestion that does not
+    /// arrive is nothing: the daemon answers with an empty list rather than waiting.
+    ///
+    /// **Nothing in the path submits.** The answer is a list of candidate lines for the
+    /// composer; the head draws them as candidates, with their provenance, and Enter is
+    /// still the operator's. This frame queues nothing, moves no seq, and writes no row —
+    /// it is a read of the conversation through a model, like `FetchDiagnostic` is a read
+    /// of the corpus.
+    ///
+    /// `prefix` is the composer's line as typed, `!` first — the same spelling the history
+    /// completion matches, so the two halves of the feature share one needle.
+    SuggestShell {
+        client_request_id: String,
+        expected_seq: u64,
+        prefix: String,
+    },
     /// **Ask for the bytes that justified one decision** — R11's locator, leticl's ask.
     ///
     /// A LOCATOR, not a payload: a head names one decision and one half of its exchange and
@@ -1589,6 +1640,29 @@ pub enum ServerFrame {
         /// cannot tell "empty" from "absent" either.
         total: usize,
     },
+    /// **The model's proposed `!` completions** — the answer to
+    /// [`ClientFrame::SuggestShell`].
+    ///
+    /// `lines` are candidate shell lines, `!` first, in the order the model offered them.
+    /// **Empty when the model said nothing usable** — no local endpoint, a timeout, or a
+    /// reply the defensive parse ([`crate::suggest::parse_suggestions`]) dropped to nothing.
+    /// An empty list and a missing frame are the same fact to the head (*no suggestion*),
+    /// so the daemon always answers rather than staying silent: a head that could not tell
+    /// "the model had no idea" from "the daemon never answered" would keep waiting on a
+    /// suggestion that is not coming.
+    ///
+    /// `prefix` is the ask's prefix, echoed back so the head can key its cache by it
+    /// without holding a request-id table — the same shape `Peeked` uses to name the
+    /// session it is about.
+    ///
+    /// **Nothing here is a command.** The head draws the lines as candidates, marked as
+    /// the model's rather than the operator's, and only a Tab fills the composer with one.
+    /// Enter is still the operator's.
+    ShellSuggestions {
+        client_request_id: String,
+        prefix: String,
+        lines: Vec<String>,
+    },
     /// One appended event, in seq order, with no gaps between consecutive frames.
     Event(Envelope),
     /// The head's queue overflowed, or its resume gap was too large. **Not an
@@ -1732,6 +1806,7 @@ mod tests {
                 | ClientFrame::Secret { .. }
                 | ClientFrame::Settings { .. }
                 | ClientFrame::Slash { .. }
+                | ClientFrame::SuggestShell { .. }
                 | ClientFrame::Stop { .. }
                 | ClientFrame::Switch { .. }
                 | ClientFrame::SetOperatorTodos { .. }
@@ -1798,6 +1873,7 @@ mod tests {
                 | ServerFrame::Peeked { .. }
                 | ServerFrame::RowFetched { .. }
                 | ServerFrame::Diagnostic { .. }
+                | ServerFrame::ShellSuggestions { .. }
                 | ServerFrame::Resync { .. }
                 | ServerFrame::Accepted { .. }
                 | ServerFrame::Rejected { .. }
@@ -1808,12 +1884,14 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 29,
-            "the match above was last reconciled with the frame list at 29 — bumped for \
-             `ListMergeQueue`/`MergeQueue` and the two merge-queue events, NEW frames and \
-             events (a version-28 daemon would fail to parse the client frame at ATTACH, the \
-             version-4 argument), as opposed to an added defaulted field, which is the case \
-             that needs no bump. 28 was `OperatorShell`"
+            PROTOCOL_VERSION, 30,
+            "the match above was last reconciled with the frame list at 30 — bumped for \
+             `SuggestShell`, a NEW client frame (a version-29 daemon would fail to parse \
+             it at ATTACH, the version-4 argument), and `ShellSuggestions`, its NEW server \
+             frame (a version-29 head would fail to decode it mid-session, the version-25 \
+             argument), as opposed to an added defaulted field, which is the case that \
+             needs no bump. 29 was `ListMergeQueue`/`MergeQueue` and the two merge-queue \
+             events"
         );
     }
 

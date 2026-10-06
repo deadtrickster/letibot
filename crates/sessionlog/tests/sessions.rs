@@ -121,6 +121,9 @@ fn frame_kind(f: &ServerFrame) -> String {
             body.as_ref().map(|b| b.len()).unwrap_or(0)
         ),
         ServerFrame::Settings { rows } => format!("Settings({} rows)", rows.len()),
+        ServerFrame::ShellSuggestions { prefix, lines, .. } => {
+            format!("ShellSuggestions({prefix}, {} lines)", lines.len())
+        }
         ServerFrame::Resync { .. } => "Resync".into(),
         ServerFrame::Accepted { .. } => "Accepted".into(),
         ServerFrame::Rejected { reason, .. } => format!("Rejected({reason})"),
