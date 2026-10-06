@@ -779,7 +779,8 @@ const QUIET: Duration = Duration::from_millis(250);
 /// 2. **Quiet for a beat.** A program that is asking and still drawing is a program that
 ///    is not blocked. `since_last_output` is `None` for a program that has written nothing
 ///    at all — `! cat`, blocked before its first byte, which is a real case — and the
-///    elapsed time is the same beat for it.
+///    elapsed time is the same beat for it. **This condition is the CARD's and only the
+///    card's** — see below.
 /// 3. **Some process of the run has its stdin on the pipe this daemon holds and is blocked
 ///    in a read on that descriptor.** That is [`crate::exec::ask`], and it is the whole of
 ///    the detection: **not one byte of the run's output is consulted to decide anything.**
@@ -800,6 +801,26 @@ const QUIET: Duration = Duration::from_millis(250);
 /// no signal at all and works under every miss the card has. Said **once per run**: it is a
 /// condition, not an event.
 ///
+/// # Why the beat gates the card and not this
+///
+/// The operator's report has a second half, and it is the reason this function's `match` is
+/// ordered the way it is:
+///
+/// > *"so i start it completely fresh and do apt install and harnessd hangs without printing
+/// > anything to me. I suppose it waits for y or n but doesnt show me anything"*
+///
+/// In that run `apt` was **streaming its progress** — their own transcript's words — and the
+/// daemon said nothing, because the `Unreadable` arm used to sit *behind* the quiet check: a
+/// run writing every 100 ms has no 250 ms gap for a 500 ms tick to land in, so the ask never
+/// happened. The two facts are not the same kind of fact. The card is a **reading** and a run
+/// that is still drawing is genuinely not blocked, so the beat belongs to it. `Unreadable` is
+/// the **absence** of a reading and is about permissions, not about the clock — exactly as
+/// true at a 100 ms write interval as at a 2 s one. And from the person's seat it is the only
+/// thing that can tell *working* from *blocked* at all: a `!` line's own output does not land
+/// until the run ends, so a streaming run and a hung one look identical until something says
+/// otherwise. So the beat is checked where it decides a **card**, and the inability is
+/// reported either way, carrying the beat so the sentence can say which of the two it is.
+///
 /// The text that travels with a card is the last line of the output, for the card to
 /// **show** — see [`crate::exec::ask::last_line`] and the module header's argument for why
 /// nothing anywhere may decide by it.
@@ -819,25 +840,37 @@ fn ask_if_waiting(
         Some(d) => d >= QUIET,
         None => v.elapsed >= QUIET,
     };
-    if !quiet {
-        return;
-    }
     // **The pipe is OURS**, and the comparison is what keeps a `grep` blocked on `ls`'s
     // pipe in `! ls | grep foo` from looking like a program waiting for a line.
     let pipe = host.job_handle(id).and_then(|j| j.stdin().pipe_inode());
     let pids = host.job_pids(id);
-    match crate::exec::ask::waiting_for_an_answer(&pids, pipe) {
-        // **The signal was read, and it says yes.** The card, as before.
-        crate::exec::ask::Waiting::Yes => {}
+    let verdict = crate::exec::ask::waiting_for_an_answer(&pids, pipe);
+    match verdict {
+        // **The signal was read, and it says yes** — and the card still needs the beat, which
+        // is what the beat is FOR: a card claims *some process of this run is blocked reading
+        // the answer we hold*, and a run that is still drawing is genuinely not blocked. A
+        // program between two lines of a slow build is not asking anything.
+        crate::exec::ask::Waiting::Yes if quiet => {}
+        // The signal was read and it says yes, but the run is still writing: not a card.
+        crate::exec::ask::Waiting::Yes => return,
         // **The signal was read, and it says no** — every process of the run was looked at
         // and none is reading our pipe. Nothing to say.
         crate::exec::ask::Waiting::No => return,
-        // **The signal could not be read.** No card — see this function's docs — and one
-        // sentence, because the alternative is the silence the operator read as a hang.
+        // **The signal could not be read**, and this one is NOT the card's kind of fact.
+        //
+        // The beat above is right for the card and wrong here: `Unreadable` is the *absence*
+        // of a reading — *one of this run's processes is not mine to look at* — and that is a
+        // fact about permissions, not about the clock. It is exactly as true at a 100 ms write
+        // interval as at a 2 s one, and gating it behind the beat is what made the daemon say
+        // nothing at all for the operator's second report: `apt` **streams its progress**, so
+        // a run they could not see the output of never went quiet long enough to be told
+        // about. One sentence, once per run, whether the run is quiet or not — and it says
+        // which of the two facts it is, so the person is not told *quiet for a beat* about a
+        // run that is writing.
         crate::exec::ask::Waiting::Unreadable => {
             if !told.unreadable {
                 told.unreadable = true;
-                ctx.operator_run(OperatorRun::Unreadable { job: &id.0 });
+                ctx.operator_run(OperatorRun::Unreadable { job: &id.0, quiet });
             }
             return;
         }

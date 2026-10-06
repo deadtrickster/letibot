@@ -274,10 +274,11 @@ pub type CompletionDelivered = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync
 ///   been quiet for a beat. See [`crate::exec::ask`]: this is a reading of the process and
 ///   not of its words, and the text that rides along is there to be **shown** and never to
 ///   be decided on.
-/// * [`OperatorRun::Unreadable`] — the run has been quiet for a beat and **this daemon may
-///   not look at one of its processes**, so it cannot tell whether the run is waiting. See
-///   the variant: this is the `sudo` case, and the report exists because silence there is
-///   what the operator read as *the daemon hangs*.
+/// * [`OperatorRun::Unreadable`] — **this daemon may not look at one of the run's
+///   processes**, so it cannot tell whether the run is waiting. See the variant: this is the
+///   `sudo` case, and the report exists because silence there is what the operator read as
+///   *the daemon hangs*. Reported whether or not the run has been quiet — see the variant's
+///   own section on why the beat is the card's and not this one's.
 /// * [`OperatorRun::Ended`] — the run is over, so whatever card was up for it comes down.
 ///   Without this the card would outlive the command it was about: a person would type an
 ///   answer into a program that had already exited.
@@ -315,8 +316,8 @@ pub enum OperatorRun<'a> {
         /// because the person answering needs to see what they are answering.
         question: Option<&'a str>,
     },
-    /// **This daemon cannot tell whether the run is waiting** — it has been quiet for a
-    /// beat, and at least one of its processes could not be looked at.
+    /// **This daemon cannot tell whether the run is waiting** — at least one of its
+    /// processes could not be looked at.
     ///
     /// # Why this is not [`OperatorRun::Waiting`] with a `None` in it
     ///
@@ -339,9 +340,38 @@ pub enum OperatorRun<'a> {
     /// **The report is a disclosure and not a question.** What the daemon does with it is
     /// say the one sentence that is true — *I cannot tell, and `!send` is the way in* —
     /// because `!send` needs no signal at all and works under every miss the card has.
+    ///
+    /// # Why this carries the beat, and why it is not gated by it
+    ///
+    /// `quiet` is *the run has written nothing for a beat*, which is the condition the
+    /// **card** needs and which this report deliberately does not: the card claims *some
+    /// process is blocked reading the answer we hold*, and a run that is still drawing is
+    /// genuinely not blocked — so the beat is the card's, and only the card's.
+    ///
+    /// This is the opposite kind of fact: it is the **absence** of a reading, and it is about
+    /// **permissions**, not about the clock. One of the run's processes is not this daemon's
+    /// to look at at a 100 ms write interval exactly as much as at a 2 s one. The operator's
+    /// second report is what gating it behind the beat costs — *"so i start it completely
+    /// fresh and do apt install and harnessd hangs without printing anything to me"* — where
+    /// `apt` was **streaming its progress** (their own transcript's words) and the run
+    /// therefore never had a beat's silence to be reported on. From the person's seat the
+    /// command's own output does not land until the run ends, so *working* and *blocked* look
+    /// the same; this report is the only thing that can tell them apart, and it may not be
+    /// withheld on a timer.
+    ///
+    /// The flag travels with the report so the sentence can **say which of the two facts it
+    /// is** — a run that has gone quiet may well be waiting, and a run that is still writing
+    /// is either working or blocked with something still drawing. One sentence for both would
+    /// be the defect the askpass deadline's own line has (`no head answered before the
+    /// deadline, or the person refused`), which is one sentence for two facts and wrong for
+    /// one of them.
     Unreadable {
         /// The job's handle.
         job: &'a str,
+        /// **Whether the run had been quiet for a beat when this was reported.** See the
+        /// variant's docs for why the report is made either way and why the sentence still
+        /// needs to know.
+        quiet: bool,
     },
     /// **The run is over.** Whatever card was up for it comes down.
     Ended {

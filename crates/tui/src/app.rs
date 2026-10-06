@@ -29710,6 +29710,57 @@ mod tests {
         assert_ne!(refused, routine);
     }
 
+    /// **The operator's own sentence, as the head draws it.**
+    ///
+    /// The other half of `sudo_ask_live.rs`'s assertion, and it is here because this is where
+    /// the head is. That file measures the daemon — that `operator_run_unreadable` is
+    /// **published** on the session log for a run it may not look at — and cannot measure what
+    /// a screen does with it: `letibot-harnessd` has no head in it. So the one thing the
+    /// operator's report turns on is pinned on this side: the warning is not one of the codes
+    /// that is counted on the edge and never drawn, and it is not filtered as a duplicate of
+    /// something the turn already says.
+    ///
+    /// The text is the real sentence, at its real length, because length is half of what could
+    /// go wrong: a note longer than the screen folds to its head, and a fold that lost the code
+    /// would leave the person with a paragraph and no name for it.
+    #[test]
+    fn the_sentence_for_a_run_the_daemon_may_not_look_at_is_drawn() {
+        let sentence = "`sudo apt install mc` has been quiet for a beat and this daemon cannot \
+                        tell whether it is waiting for a line: one of its processes belongs to \
+                        another user, so `/proc` refuses for it. If it is waiting — `sudo` \
+                        reaching `apt`'s `Continue? [Y/n]` is the case this was measured on — \
+                        the way in is `!send <line>`, which needs no card. Until the command ends \
+                        it holds this daemon's worker, so nothing else of yours runs either.";
+        let mut a = App::new(plain_cfg(120));
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Warning {
+                code: "operator_run_unreadable".into(),
+                detail: sentence.into(),
+                compaction: None,
+            },
+        )));
+        let screen = a.screen(120, 20).join("\n");
+        assert!(
+            screen.contains("operator_run_unreadable"),
+            "the sentence never reached the screen — which is the operator's own report, and \
+             the whole of what this test is for:\n{screen}"
+        );
+        // **And it is a ROW, not a counter.** `ALARM_ONLY` moves a code out of the conversation
+        // and onto the triangle; a fault drawn only as a number in `/status` is a fault nobody
+        // reads, and this one is the pointer to `!send`.
+        assert!(
+            !letibot_sessionlog::warning::to_the_alarm("operator_run_unreadable"),
+            "the code is edge-bound, so a head would never draw the way in"
+        );
+        // **And the way in survives the fold.** The sentence is a document and folds to its
+        // head; what may not be folded away is the verb the person needs.
+        assert!(
+            screen.contains("!send") || a.notes_lines().iter().any(|l| l.contains("!send")),
+            "neither the screen nor `/notes` kept the way in:\n{screen}"
+        );
+    }
+
     /// **A note that is a document folds to its head, and `/notes` still has all of it.**
     ///
     /// The other half of R10: the operator's wall was *two* gate timeouts at about

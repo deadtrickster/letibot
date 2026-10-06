@@ -222,7 +222,27 @@ impl Prompts {
     ///
     /// **Once per run.** A condition, not an event: the run stays unreadable for as long as it
     /// lasts, and one sentence per beat would be a red block nobody reads.
-    pub fn unreadable(&self, job: &str) {
+    ///
+    /// # And it says WHICH of the two facts it is
+    ///
+    /// `quiet` is the beat the run had — or had not — when the tool reported. The two facts are
+    /// different things to a person, and one sentence for both would be the defect the askpass
+    /// deadline's own line carries (*"no head answered before the deadline, or the person
+    /// refused"*, one sentence for two facts and wrong for one of them):
+    ///
+    /// * **quiet** — the run has written nothing for a beat, so it may well be *waiting*, and
+    ///   the sentence says so;
+    /// * **still writing** — the run is producing output, so it is either working or blocked
+    ///   with something still drawing, and **this daemon cannot tell the two apart**. That is
+    ///   the case the operator's second report is about: `! sudo apt install mc` on a fresh
+    ///   daemon, where `apt` streamed its progress and nothing was said to them at all.
+    ///
+    /// The second sentence has to do more work than the first, and the extra is the fact the
+    /// person cannot get anywhere else: **a `!` line's own output does not land until the run
+    /// ends**, so a command that is working and a command that is hung look exactly the same on
+    /// their screen. Saying *still writing* is what makes the difference legible, and saying
+    /// nothing — which is what the beat used to do — leaves them to guess.
+    pub fn unreadable(&self, job: &str, quiet: bool) {
         let command = {
             let mut g = self.lock();
             let Some(run) = g.as_mut() else {
@@ -236,15 +256,35 @@ impl Prompts {
             run.unreadable_said = true;
             run.command.clone()
         };
+        // **The two facts, in two sentences.** The first clause is the whole of what differs:
+        // a run that has been quiet may be waiting, and a run that is still writing is either
+        // working or blocked with something drawing. Everything after it — that `/proc` refuses,
+        // that `!send` is the way in, that the worker is held — is true of both and is said once.
+        let lead = if quiet {
+            format!(
+                "`{command}` has been quiet for a beat and this daemon cannot tell whether it is \
+                 waiting for a line"
+            )
+        } else {
+            format!(
+                "`{command}` is still writing output and this daemon cannot tell whether it is \
+                 waiting for a line"
+            )
+        };
+        let working = if quiet {
+            ""
+        } else {
+            " It is working, or it is blocked with something still drawing: from here those are \
+             the same picture, and none of the command's own output reaches you until it ends."
+        };
         self.hub.publish(SessionEvent::Warning {
             code: "operator_run_unreadable".to_string(),
             detail: format!(
-                "`{command}` has been quiet for a beat and this daemon cannot tell whether it \
-                 is waiting for a line: one of its processes belongs to another user, so \
-                 `/proc` refuses for it. If it is waiting — `sudo` reaching `apt`'s `Continue? \
-                 [Y/n]` is the case this was measured on — the way in is `!send <line>`, which \
-                 needs no card. Until the command ends it holds this daemon's worker, so \
-                 nothing else of yours runs either."
+                "{lead}: one of its processes belongs to another user, so `/proc` refuses for \
+                 it.{working} If it is waiting — `sudo` reaching `apt`'s `Continue? [Y/n]` is the \
+                 case this was measured on — the way in is `!send <line>`, which needs no card. \
+                 Until the command ends it holds this daemon's worker, so nothing else of yours \
+                 runs either."
             ),
 
             compaction: None,
@@ -407,7 +447,7 @@ mod tests {
         );
     }
 
-    /// **A run this daemon cannot look at is said out loud, once.**
+    /// **A run this daemon cannot look at is said out loud, once — and says WHICH fact it is.**
     ///
     /// The operator's report, as an assertion: `! sudo apt install mc`, the password given,
     /// and then *nothing* — `apt` waits at `Continue? [Y/n]` as root, `/proc/<pid>/fd/0` is
@@ -419,13 +459,21 @@ mod tests {
     /// **Once per run**, and that is the assertion this test exists for beside the wording: a
     /// condition reported per beat is a red block nobody reads, which is the failure mode the
     /// warning register is written against.
+    ///
+    /// **And the two facts are two sentences.** The operator's second report is a fresh daemon
+    /// where `apt` *streamed its progress* and nothing was said at all, because the report was
+    /// gated behind the beat the card needs and a streaming run never has one. So the report is
+    /// made either way now, and the sentence has to say which of the two it is: a run that has
+    /// gone quiet may well be waiting, and a run that is still writing is either working or
+    /// blocked with something drawing. One sentence for both would be the defect the askpass
+    /// deadline's line has — *"no head answered before the deadline, or the person refused"*.
     #[test]
     fn a_run_this_daemon_cannot_look_at_is_said_once_and_names_the_way_in() {
         let hub = a_hub();
         let p = Prompts::new("p-1", hub.clone());
         // Nothing running: a report about a run this daemon never saw start has nobody to tell
         // and no command to name.
-        p.unreadable("j1");
+        p.unreadable("j1", true);
         assert!(
             !events(&hub)
                 .into_iter()
@@ -434,9 +482,9 @@ mod tests {
         );
 
         p.opened("j1", "sudo apt install mc", Stdin::none());
-        p.unreadable("j1");
-        p.unreadable("j1");
-        p.unreadable("j1");
+        p.unreadable("j1", true);
+        p.unreadable("j1", true);
+        p.unreadable("j1", true);
         let said: Vec<String> = events(&hub)
             .into_iter()
             .filter_map(|e| match e {
@@ -454,6 +502,10 @@ mod tests {
             "it names the command the person typed: {said:?}"
         );
         assert!(
+            said[0].contains("has been quiet for a beat"),
+            "a quiet run is told so — it may well be the one that is waiting: {said:?}"
+        );
+        assert!(
             said[0].contains("!send"),
             "and the way in, which needs no card: {said:?}"
         );
@@ -468,7 +520,7 @@ mod tests {
         );
         // A report about a job that is not this run's is about something else, and a new run
         // starts its own once.
-        p.unreadable("j2");
+        p.unreadable("j2", true);
         assert_eq!(
             events(&hub)
                 .into_iter()
@@ -476,15 +528,31 @@ mod tests {
                 .count(),
             1
         );
-        p.opened("j2", "sudo -v", Stdin::none());
-        p.unreadable("j2");
-        assert_eq!(
-            events(&hub)
-                .into_iter()
-                .filter(|e| matches!(e, SessionEvent::Warning { .. }))
-                .count(),
-            2,
-            "a second run gets its own sentence"
+        p.opened("j2", "sudo apt install mc", Stdin::none());
+        // **The other fact, in the other sentence.** The run is still writing, so the sentence
+        // may not claim the beat it never earned — and it has to say the one thing the person
+        // cannot get from their own screen, which is that the command is still producing
+        // something, because a `!` line's output does not land until the run ends.
+        p.unreadable("j2", false);
+        let all: Vec<String> = events(&hub)
+            .into_iter()
+            .filter_map(|e| match e {
+                SessionEvent::Warning { detail, .. } => Some(detail),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(all.len(), 2, "a second run gets its own sentence: {all:?}");
+        assert!(
+            all[1].contains("is still writing output"),
+            "a run that is writing is told THAT, not told it was quiet: {all:?}"
+        );
+        assert!(
+            !all[1].contains("has been quiet for a beat"),
+            "the sentence claims a beat the run did not have: {all:?}"
+        );
+        assert!(
+            all[1].contains("!send"),
+            "and the way in is named on this path too: {all:?}"
         );
     }
 
