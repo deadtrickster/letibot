@@ -9775,23 +9775,47 @@ impl App {
         self.editor.insert(text);
     }
 
+    /// **Whether the composer holds a line the completion row belongs to** — the SHAPE
+    /// that *could* be completed, whether or not anything matches it right now.
+    ///
+    /// This is the row's gate and the frame's reservation in one place, because the height
+    /// is computed from it and the content is computed from it: two spellings of the shape
+    /// would be a frame that reserves a row and draws nothing in it, or draws a row it did
+    /// not count — and either one is the transcript moving on its own.
+    ///
+    /// **The shape, and not the candidate list.** A predicate that answered *there is a
+    /// match* would flicker as the operator types — `! cargo` matches and `! cargo x` does
+    /// not — and every flicker takes a line from the conversation above it, which is the
+    /// defect the reservation exists to stop. The shape changes only when the operator
+    /// starts or abandons such a line; an ordinary line, and an empty composer, are not
+    /// ones: `hello` completes nothing, so it pays nothing.
+    fn completion_slot(&self) -> bool {
+        let text = self.editor.text();
+        text.starts_with('!') || (text.starts_with('/') && !text.contains(char::is_whitespace))
+    }
+
     /// The live completion row shown above the composer while a `/command` or a
     /// `!` line is being typed. A `/` line lists its matches, name plus hint; a
     /// `!` line lists the history's candidates and the model's, with their
-    /// provenance. A prefix nothing matches shows nothing, because an empty line
-    /// that appears and disappears is noise, and Tab will say what went wrong
-    /// when it is asked.
+    /// provenance. A prefix nothing matches leaves the row empty rather than absent — the
+    /// row is a slot and its height does not follow its content (see [`App::completion_slot`]
+    /// and the composer block in `compose_screen`) — and Tab will say what went wrong when
+    /// it is asked.
     fn completions_line(&mut self, w: usize) -> Option<String> {
+        // **One gate, and it is the slot's.** The `/` arm below used to spell the shape
+        // out itself, which is the second rule about one row the reservation cannot
+        // afford: it would be free to disagree with the height.
+        if !self.completion_slot() {
+            return None;
+        }
         // **The first character decides, and it is read without holding the borrow**:
         // the `!` path needs `&mut self` for the candidate memo, and `editor.text()`
         // hands back a `&str` borrowed from this same head.
         if self.editor.text().starts_with('!') {
             return self.shell_completions_line(w);
         }
+        // A `/` line with no whitespace in it, which is what the slot just said.
         let text = self.editor.text();
-        if !text.starts_with('/') || text.contains(char::is_whitespace) {
-            return None;
-        }
         let needle = text[1..].replace('_', "-");
         let parts: Vec<String> = self
             .command_names()
@@ -12151,8 +12175,28 @@ impl App {
             .clone()
             .map(|n| colour(&self.cfg, sgr::MAGENTA, &trim_to(&format!("· {n}"), w)));
         // Live slash-command matches, one dim row above the composer. It is a
-        // typing aid, not a message — which is why it is the first thing the
-        // ladder gives up.
+        // typing aid, not a message.
+        //
+        // **And it is a SLOT, not an appearance.** The operator watched the transcript jump
+        // a line up and then a line back on every appearance and dismissal of this row: the
+        // conversation's height is `h` minus the chrome (`room`, below), so a row that comes
+        // and goes takes its line from the transcript and hands it back, and the reader's
+        // page moves under them while they type. So the row is counted and drawn while the
+        // composer holds a line that COULD be completed — [`App::completion_slot`], the same
+        // predicate the row's own content is gated on — and it is drawn empty when the
+        // prefix matches nothing: what appears and disappears is the text in the slot, never
+        // the slot. A pane that re-flows when a hint arrives makes the transcript move under
+        // the reader, which is worse than the hint is useful.
+        //
+        // **The slot is the line's shape and not the candidate list**, which is what keeps
+        // it still: the candidates come and go with every character typed, and a row whose
+        // height followed them would be the defect. The shape changes once, when the operator
+        // starts or abandons a `!` or `/` line — and an ordinary frame, with neither in the
+        // composer, is exactly the frame it was before: no row, no cost.
+        //
+        // This is the same trade the turn's own row makes one row below (see `let status`),
+        // and it is the reason that row is reserved too.
+        let completion_slot = self.completion_slot();
         let completions = self.completions_line(w);
 
         // How many rows the composer wants, and then what actually fits. The
@@ -12175,12 +12219,13 @@ impl App {
         // an idle session and buys a frame that does not move.
         //
         // So it is always counted in the height and always drawn, empty when there is nothing to
-        // say. The three rows below stay conditional, because each of them is *news* — a notice
-        // being read, a disclosure, a typing aid — and a reserved line for news is the furniture
-        // this head keeps deleting. This one is not news: the turn's own row is where the reader's
-        // eye is, every turn.
+        // say. The two rows below stay conditional, because each of them is *news* — a notice
+        // being read, a disclosure — and a reserved line for news is the furniture this head keeps
+        // deleting. This one is not news: the turn's own row is where the reader's eye is, every
+        // turn. (The third of them, the completion row, is a slot as well now — not because it is
+        // always there but because its height must not follow its content; see
+        // `let completion_slot` above.)
         let mut show_status = true;
-        let mut show_completions = completions.is_some();
         let mut boxed = true;
         // **The content viewport, and R20's one rule about it.** The loop used to shrink the
         // whole card (`dec_rows -= 1`), which trims from the END — and the END of a card is
@@ -12198,7 +12243,10 @@ impl App {
                 + usize::from(show_stuck)
                 + usize::from(show_status)
                 + usize::from(show_notice)
-                + usize::from(show_completions)
+                // **Counted by the SLOT, not by the text in it.** This is the whole fix: the
+                // row's height is a fact about the composer's line, so the transcript's
+                // budget does not change when the candidate list does.
+                + usize::from(completion_slot)
                 + link.len()
                 // **Counted in full and never sacrificed.** R30's sentence is the one
                 // thing on this screen the operator must not have to go looking for: it
@@ -12217,9 +12265,7 @@ impl App {
             if n < h {
                 break;
             }
-            if show_completions {
-                show_completions = false;
-            } else if hint {
+            if hint {
                 hint = false;
             } else if show_notice {
                 show_notice = false;
@@ -12276,8 +12322,13 @@ impl App {
         if show_notice && let Some(l) = notice {
             chrome.push(l);
         }
-        if show_completions && let Some(l) = completions {
-            chrome.push(l);
+        if completion_slot {
+            // **Drawn even when it is empty.** The row is furniture while a `!` or `/` line
+            // is in the composer, and the price of a transcript that does not move is a blank
+            // row when the prefix matches nothing. It is NOT a rung of the ladder above:
+            // a row the fit loop may delete is a row that appears and disappears again, which
+            // is the jump this whole arrangement exists to stop.
+            chrome.push(completions.unwrap_or_default());
         }
         // The turn's own row, last before the box: directly above the composer when nothing else
         // is up, and below the typing aids when they are — a completion list that is not adjacent
@@ -47504,6 +47555,268 @@ mod tests {
                 line: "! git status".into()
             }),
             "Enter is still the operator's"
+        );
+    }
+
+    /// **The suggestion row is a SLOT, so the transcript does not move under the reader.**
+    ///
+    /// The operator, watching the pane while they typed a `!` line: *"the conversation jumps
+    /// one line up and then down"*. The frame's arithmetic is why — the conversation is given
+    /// `h` minus the chrome, so a completion row that came and went took its line from the
+    /// transcript and handed it back, once per appearance and dismissal of the candidate list,
+    /// while the reader was typing.
+    ///
+    /// **What is pinned is the MOVE, not the row.** Asserting *the row is always there* would
+    /// pass on a frame that reserved it in the wrong place; what a reader feels is the shove,
+    /// so this compares the transcript's own last line, the conversation's rows and the
+    /// composer's top edge across three frames — candidates, none, candidates again. The
+    /// fixture FILLS the screen on purpose: a short transcript sits at the top, the row it
+    /// loses comes out of the blank space under it, and the shove cannot be seen at all (which
+    /// is how the first version of `a_turn_starting_does_not_shove_the_transcript_up_a_row`
+    /// passed against a reverted fix).
+    ///
+    /// **And the slot is still the typing aid it was**: the layout change may not cost the
+    /// completion, so the last act here is a Tab.
+    #[test]
+    fn the_suggestion_row_is_a_slot_and_the_transcript_does_not_move() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // A command this session actually ran, so `! cargo` has a candidate and one character
+        // further on — `! cargo x` — has none.
+        shell_row(&mut a, 1, "u1", "user", operator_row("! cargo test 199"));
+        for i in 0..30u64 {
+            // Contiguous sequence numbers: a gap here is a resync notice in the middle of
+            // the transcript, and this fixture wants the transcript and nothing else.
+            let (seq, id, text) = (
+                i + 2,
+                format!("s.{i}"),
+                format!("row {i} of the transcript"),
+            );
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::appended(&id, "assistant"),
+            )));
+            a.record_item(
+                &id,
+                TranscriptItem::Assistant {
+                    text,
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            );
+        }
+        let composer_at = |f: &[String]| {
+            f.iter()
+                .position(|l| l.contains('╭'))
+                .expect("the composer's top edge")
+        };
+        let last_row_at = |f: &[String]| {
+            f.iter()
+                .position(|l| l.contains("row 29 of the transcript"))
+                .expect("the newest line of the transcript")
+        };
+        let conversation = |f: &[String]| {
+            f.iter()
+                .filter(|l| l.contains(" of the transcript"))
+                .count()
+        };
+        let near_the_composer = |f: &[String]| {
+            let top = composer_at(f);
+            f[top.saturating_sub(3)..].join("\n")
+        };
+
+        // 1. Candidates.
+        typed(&mut a, "! cargo");
+        let candidates = a.screen(100, 24);
+        let top = composer_at(&candidates);
+        assert!(
+            candidates[top - 2].contains("! cargo test 199"),
+            "the slot above the status row is where the suggestion is drawn:\n{}",
+            near_the_composer(&candidates)
+        );
+        assert!(
+            !candidates[top - 2].contains('▌'),
+            "and it is the slot, not the session's own row from the transcript:\n{}",
+            near_the_composer(&candidates)
+        );
+        assert!(
+            last_row_at(&candidates) < top - 2,
+            "the transcript's last line is above the slot, which is above the status row, which \
+             is above the composer:\n{}",
+            near_the_composer(&candidates)
+        );
+
+        // 2. **Dismissed** — the same line one character on, where nothing matches. The row
+        //    stays and it is empty: what disappeared is the text, not the slot.
+        typed(&mut a, " x");
+        let dismissed = a.screen(100, 24);
+        assert_eq!(
+            composer_at(&dismissed),
+            top,
+            "the composer moved when the candidates went:\n{}",
+            near_the_composer(&dismissed)
+        );
+        assert_eq!(
+            last_row_at(&dismissed),
+            last_row_at(&candidates),
+            "**the transcript moved when the candidates went** — the row a hint takes from the \
+             conversation and gives back is the whole defect:\n{}",
+            near_the_composer(&dismissed)
+        );
+        assert_eq!(
+            conversation(&dismissed),
+            conversation(&candidates),
+            "the conversation was given a different number of rows:\n{}",
+            near_the_composer(&dismissed)
+        );
+        assert!(
+            dismissed[top - 2].is_empty(),
+            "the slot is reserved and EMPTY with nothing to suggest, which is the price of a \
+             frame that does not move:\n{}",
+            near_the_composer(&dismissed)
+        );
+
+        // 3. And back, which is the dismissal in reverse — the reader who goes on typing and
+        //    then backspaces must not watch the page move either way.
+        a.key(Key::Backspace);
+        a.key(Key::Backspace);
+        let again = a.screen(100, 24);
+        assert_eq!(composer_at(&again), top, "{:#?}", near_the_composer(&again));
+        assert_eq!(
+            last_row_at(&again),
+            last_row_at(&candidates),
+            "the transcript did not come back to where it was:\n{}",
+            near_the_composer(&again)
+        );
+        assert_eq!(conversation(&again), conversation(&candidates));
+        assert!(
+            again[top - 2].contains("! cargo test 199"),
+            "and the candidates are back in the slot:\n{}",
+            near_the_composer(&again)
+        );
+
+        // **The `/command` half is the same slot.** A half-typed verb is a line that could be
+        // completed, so it pays the row too — the jump must not come back on the other door.
+        a.set_composer("/se");
+        let slash = a.screen(100, 24);
+        assert_eq!(composer_at(&slash), top, "{:#?}", near_the_composer(&slash));
+        assert_eq!(last_row_at(&slash), last_row_at(&candidates));
+        assert!(
+            slash[top - 2].contains("/sessions"),
+            "the matches are in the slot:\n{}",
+            near_the_composer(&slash)
+        );
+
+        // **And the slot is still a completion.** Tab fills the line from it and sends
+        // nothing, which is the behaviour the layout change was not allowed to cost.
+        // The attach-time requests are drained first: what is asserted is that the Tab itself
+        // adds nothing to them.
+        let _ = a.take_actions();
+        a.set_composer("! cargo");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! cargo test 199", "Tab still completes");
+        let actions = a.take_actions();
+        assert!(actions.is_empty(), "and nothing was submitted: {actions:?}");
+    }
+
+    /// **A composer line that could not be completed pays no row at all.**
+    ///
+    /// The slot is not a permanent row: it exists while the composer holds a `!` or `/` line,
+    /// and not otherwise. So an ordinary frame is the frame it was before this existed — the
+    /// conversation keeps that row, and the transcript's own last line sits one row lower than
+    /// it sits under a `!` line, which is where every frame drew it. An unconditional
+    /// reservation would be a row of screen taken from the transcript for a hint nobody is
+    /// going to be offered.
+    #[test]
+    fn a_composer_line_that_could_not_be_completed_pays_no_row() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        shell_row(&mut a, 1, "u1", "user", operator_row("! cargo test 199"));
+        for i in 0..30u64 {
+            // Contiguous sequence numbers: a gap here is a resync notice in the middle of
+            // the transcript, and this fixture wants the transcript and nothing else.
+            let (seq, id, text) = (
+                i + 2,
+                format!("s.{i}"),
+                format!("row {i} of the transcript"),
+            );
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::appended(&id, "assistant"),
+            )));
+            a.record_item(
+                &id,
+                TranscriptItem::Assistant {
+                    text,
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            );
+        }
+        let composer_at = |f: &[String]| {
+            f.iter()
+                .position(|l| l.contains('╭'))
+                .expect("the composer's top edge")
+        };
+        let last_row_at = |f: &[String]| {
+            f.iter()
+                .position(|l| l.contains("row 29 of the transcript"))
+                .expect("the newest line of the transcript")
+        };
+        let conversation = |f: &[String]| {
+            f.iter()
+                .filter(|l| l.contains(" of the transcript"))
+                .count()
+        };
+
+        // Three frames of one session and one transcript: an EMPTY composer — the frame this
+        // head drew before any of this existed — an ordinary line, and the same line with the
+        // `!` that makes it completable.
+        let empty = a.screen(100, 24);
+        typed(&mut a, "cargo test 199");
+        let plain = a.screen(100, 24);
+        a.set_composer("! cargo test 199");
+        let bang = a.screen(100, 24);
+
+        assert_eq!(
+            composer_at(&plain),
+            composer_at(&empty),
+            "an ordinary line did not move the composer:\n{}",
+            plain.join("\n")
+        );
+        assert_eq!(
+            last_row_at(&plain),
+            last_row_at(&empty),
+            "**and it did not take a row from the conversation** — an ordinary line is the frame \
+             this head always drew:\nplain:\n{}\nempty:\n{}",
+            plain.join("\n"),
+            empty.join("\n")
+        );
+        assert_eq!(conversation(&plain), conversation(&empty));
+
+        assert_eq!(
+            last_row_at(&bang) + 1,
+            last_row_at(&plain),
+            "**the `!` line pays the row, not the session**: with the slot reserved the \
+             transcript's window is one row shorter and the same in every other respect:\n\
+             bang:\n{}\nplain:\n{}",
+            bang.join("\n"),
+            plain.join("\n")
+        );
+        assert_eq!(
+            composer_at(&bang),
+            composer_at(&plain),
+            "the composer itself does not move either — the row comes out of the conversation, \
+             which is why a stable slot is enough:\n{}",
+            bang.join("\n")
         );
     }
 
