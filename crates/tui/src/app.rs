@@ -22159,6 +22159,17 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // ctrl-t` over `  /target` was two, and the second of them carried the
             // count and the chord for a fold that has nothing to fold. At 34 rows
             // that halving is the difference between four calls fitting and eight.
+            //
+            // **And it is the one place on this row that does not paint.** `lines` is the
+            // *sanitised* text — `without_control`'s — so a one-line payload's SGR is removed
+            // whole and its colour goes with it: `! ls` is drawn plain while `! ls -la`'s four
+            // lines are drawn coloured by the body below. That is a **loss** and not a
+            // passthrough, and it is the only disagreement between the two readers on the
+            // operator's own row — `letibot_ui::ansi`'s header states the same fact from the
+            // other side. Left as it is rather than painted here: the header's registers are
+            // `Faint`/`Plain` and the one-line form's whole argument is that the payload's text
+            // is part of the header, so colouring it is a decision about the header and not a
+            // fix to the payload. A one-line `! ls` is the case to weigh if that changes.
             let inline = (!bad
                 && lines.len() == 1
                 // An edit with an excerpt draws its diff, not the tool's prose —
@@ -31321,6 +31332,197 @@ mod tests {
             && !rest
                 .chars()
                 .any(|c| ('\u{80}'..='\u{9f}').contains(&c) || c == '\u{7f}')
+    }
+
+    /// **The operator's own `ls -la`, byte for byte, as they pasted it.**
+    ///
+    /// Not a fixture invented for a test: this is the payload from the report — the header line
+    /// `total 124` and three directory rows — with every `ESC` the program wrote in it. The
+    /// synthetic payloads the first cut used (`"src/\u{1b}[01;34mthe-dir\u{1b}[0m…"`) had two
+    /// things the real one has and they did not: a **line with no escape on it at all**, and
+    /// `ls`'s own `ESC[0m` **before** the colour rather than only after it. The paste's `ESC`
+    /// bytes are invisible in a transcript, which is why the pasted text reads `[0m[01;34m.` —
+    /// a `[`-sequence body with no introducer in front of it.
+    const OPERATOR_LS_LA: &str = "total 124\n\
+        drwxrwxr-x 22 dead dead  4096 Oct  6 09:46 \u{1b}[0m\u{1b}[01;34m.\u{1b}[0m\n\
+        drwxrwxr-x  3 dead dead  4096 Oct  4 22:22 \u{1b}[01;34mcrates\u{1b}[0m\n\
+        drwxrwxr-x 14 dead dead  4096 Oct  6 11:11 \u{1b}[01;34mletibot\u{1b}[0m\n";
+
+    /// A `bash` result row, with the payload as the store holds it.
+    fn bash_result(payload: &str) -> TranscriptItem {
+        TranscriptItem::ToolResult {
+            call_id: "bang-1".into(),
+            name: "bash".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: payload.into(),
+            edit: None,
+            origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
+            media: None,
+        }
+    }
+
+    /// **What a reader actually sees on a row** — every escape this head wrote taken off it.
+    ///
+    /// `without_control` is the transcript crate's own sequence parser, so this is the frame's
+    /// bytes with the head's vocabulary removed rather than a second parser written here. A
+    /// `[` left in the result is a sequence's **body** that reached the glass as text: the
+    /// defect the operator pasted, `[0m[01;34m`, is exactly that — an introducer that is gone
+    /// and five characters that are not.
+    fn seen(row: &str) -> String {
+        letibot_transcript::sanitize::without_control(row)
+    }
+
+    /// **The operator's real payload is painted in the palette's own roles, and not one byte of
+    /// `ls`'s sequence reaches the glass as text.**
+    ///
+    /// The first cut's tests all used a synthetic payload, and the real one differs in the two
+    /// ways the fixture could not show: a line with no escape on it (`total 124`), and `ls`'s
+    /// own reset *before* the colour (`\u{1b}[0m\u{1b}[01;34m`) rather than only a close after it.
+    /// Neither defeats the painter — which is the assertion — and the point of pinning it here
+    /// is that the *proof* is now on the bytes the operator was looking at.
+    ///
+    /// `ctrl-v` is pressed because the fold draws the payload's **first** line and `ls -la`'s
+    /// first line is `total 124`, the one line of the payload with no colour in it; the window
+    /// is what puts the directory rows on the screen. That is a property of the fold and not of
+    /// the paint, and it is why the header says `4 lines` beside one shown row.
+    #[test]
+    fn the_operators_own_ls_payload_is_drawn_in_the_palettes_own_roles() {
+        let mut a = App::new(RenderConfig {
+            width: 100,
+            color: true,
+            ..RenderConfig::default()
+        });
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        bang_rows(&mut a, 2, "i1", "! ls -la", OPERATOR_LS_LA);
+        a.key(Key::CtrlV);
+        let rows = a.screen(100, 40);
+        let frame = rows.join("\n");
+        // The colour arrived — as **this head's** role for `ls`'s `01;34`, built from the palette
+        // rather than spelled as an escape here: a test that knew the sequence would pass on the
+        // day the role moved.
+        assert!(
+            frame.contains(letibot_ui::style::Palette::Colour.open(Role::Subheading)),
+            "`ls`'s directory colour must be drawn in the palette's own role: {frame:?}"
+        );
+        // And the text is kept, **line for line and column for column**: the visible frame, with
+        // this head's own sequences taken off, is the payload's own text with nothing in it — no
+        // `[0m`, no `[01;34m`, and no space where a sequence used to be.
+        let visible = rows.iter().map(|r| seen(r)).collect::<Vec<_>>().join("\n");
+        for kept in [
+            "total 124",
+            "drwxrwxr-x 22 dead dead  4096 Oct  6 09:46 .",
+            "drwxrwxr-x  3 dead dead  4096 Oct  4 22:22 crates",
+            "drwxrwxr-x 14 dead dead  4096 Oct  6 11:11 letibot",
+        ] {
+            assert!(
+                visible.contains(kept),
+                "{kept:?} is not on the glass as text: {visible:?}"
+            );
+        }
+        // **No sequence body survives as text**, and every escape that does reach the frame is
+        // one this head chose. The `[` in the paste is the thing being asserted absent.
+        for (n, row) in rows.iter().enumerate() {
+            assert!(
+                !seen(row).contains('['),
+                "a sequence's body reached the glass as text, row {n}: {:?}",
+                seen(row)
+            );
+            assert!(
+                only_the_heads_own_escapes(row),
+                "an escape reached the frame that the palette did not put there, row {n}: {row:?}"
+            );
+        }
+    }
+
+    /// **An escape at the START of a payload line, and one mid-line** — the two shapes named,
+    /// and neither defeats the painter.
+    ///
+    /// A line that opens with a colour is the case a fixture built as `"text\u{1b}[31mred…"`
+    /// never produces, and it is the shape `ls` writes for a *run* of coloured names. The
+    /// mid-line case is the same colour after text, which is `grep --color`'s shape. Both go
+    /// through one `item_lines` call with the fold open, so the body path is the one under test.
+    #[test]
+    fn a_colour_at_the_start_of_a_payload_line_and_one_mid_line_both_become_roles() {
+        let blue = letibot_ui::style::Palette::Colour.open(Role::Subheading);
+        for (what, payload, coloured) in [
+            (
+                "at the start of the line",
+                "\u{1b}[01;34mfirst\u{1b}[0m\nplain second",
+                "first",
+            ),
+            (
+                "mid-line",
+                "first \u{1b}[01;34msecond\u{1b}[0m tail\nplain third",
+                "second",
+            ),
+        ] {
+            let rows = item_rows(true, bash_result(payload));
+            let frame = rows.join("\n");
+            assert!(
+                frame.contains(blue),
+                "{what}: the colour was not drawn: {frame:?}"
+            );
+            assert!(
+                frame.contains(coloured),
+                "{what}: {coloured:?} was lost: {frame:?}"
+            );
+            assert!(
+                frame.contains("plain"),
+                "{what}: the next line is gone: {frame:?}"
+            );
+            for (n, row) in rows.iter().enumerate() {
+                assert!(
+                    !seen(row).contains('['),
+                    "{what}: a sequence's body reached the glass as text, row {n}: {:?}",
+                    seen(row)
+                );
+                assert!(
+                    only_the_heads_own_escapes(row),
+                    "{what}: an escape reached the frame that the palette did not put there, \
+                     row {n}: {row:?}"
+                );
+            }
+        }
+    }
+
+    /// **The same real payload, and everything that is NOT SGR is still removed whole.**
+    ///
+    /// The colour path is the new reader; §3.1's guarantee is the old one and it is not
+    /// weakened by the new one existing. A mode string, an OSC title, a C1 CSI/ST and a DEL
+    /// are all still gone — as escapes *and* as text — on the very payload the operator was
+    /// looking at, with `ls`'s own `\u{1b}[0m` in the middle of a line where a parser that
+    /// mis-read a reset would leave `[0m` behind.
+    #[test]
+    fn the_real_payload_still_loses_every_byte_that_is_not_a_colour() {
+        let mut a = App::new(RenderConfig {
+            width: 120,
+            color: true,
+            ..RenderConfig::default()
+        });
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        let hostile =
+            "\u{1b}[2J \u{1b}[?1002h \u{1b}[?1049h \u{1b}]0;pwned\u{7} \u{9b}31m \u{9c} \u{7f}";
+        bang_rows(
+            &mut a,
+            2,
+            "i1",
+            "! ls -la",
+            &format!("{}\n{}{hostile}", OPERATOR_LS_LA.trim_end(), "crates/"),
+        );
+        a.key(Key::CtrlV);
+        let rows = a.screen(120, 40);
+        let frame = rows.join("\n");
+        for gone in [
+            "[2J", "[?1002h", "[?1049h", "]0;", "pwned", "\u{7}", "\u{9b}", "\u{9c}", "\u{7f}",
+        ] {
+            assert!(!frame.contains(gone), "{gone:?} survived: {frame:?}");
+        }
+        // And the colour the payload legitimately carries is still there, so this is not
+        // "everything was dropped": the assertion above is about the other families.
+        assert!(
+            frame.contains(letibot_ui::style::Palette::Colour.open(Role::Subheading)),
+            "the payload's own colour went with the hostile bytes: {frame:?}"
+        );
     }
 
     /// **The same hostile payload on a head that DOES emit colour** — and this is the half the

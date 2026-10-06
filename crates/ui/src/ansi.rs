@@ -26,6 +26,27 @@
 //! *colour* is now a closed set of roles this head chose, and what it can say about anything
 //! else is nothing.
 //!
+//! **That is a statement about this function's output, and it is worth saying which caller's
+//! row it lands on.** There is exactly one renderer of a tool payload in the head —
+//! `letibot-tui`'s `item_lines`, in its `ToolResult` arm — and it draws the payload **twice**
+//! through two different readers:
+//!
+//! - **The body**, folded and in the window `ctrl-v` opens, is the one that calls [`painted`].
+//!   This is the path the operator's `! ls -la` takes: `ls`'s `\u{1b}[01;34m` arrives as
+//!   [`Role::Subheading`]'s own `\u{1b}[1;34m`, which is the same bold blue and this head's
+//!   sequence rather than the program's. A four-line payload is always this path, and a
+//!   payload whose first line has no colour on it — `ls -la`'s `total 124` — shows no colour
+//!   until the window is opened, which is a property of the fold and not of the paint.
+//! - **The one-line header form**, for a payload of exactly one line, draws
+//!   [`letibot_transcript::sanitize::without_control`]'s text instead: the escapes go whole
+//!   and the colour goes with them, so a one-line `! ls` is drawn plain where a four-line
+//!   `! ls -la` is drawn coloured. That is a **loss**, not a passthrough — nothing of the
+//!   program's sequence reaches the frame either way — and it is the only place on the
+//!   operator's own row where the two readers disagree.
+//!
+//! So *"no sequence is ever passed through"* holds on both paths, and it is **not** the same
+//! claim as *"every payload is painted"*. The second is false, in the one place named above.
+//!
 //! # The mapping, and why it is a table rather than a translation
 //!
 //! There is no role per SGR code, and there should not be: a [`Role`] is a *meaning*
@@ -309,6 +330,38 @@ mod tests {
             painted(colour(), "src/\u{1b}[01;31ma.rs\u{1b}[0m:12:fn a()"),
             format!("src/{}:12:fn a()", span(Role::Failure, "a.rs"))
         );
+    }
+
+    /// **The operator's own `ls -la`, as `ls` actually writes it** — not the fixture.
+    ///
+    /// The synthetic payload the first cut used was `"\u{1b}[01;34msrc\u{1b}[0m"`: a colour,
+    /// the text, a close. `ls` writes **three** sequences on a directory row and the middle one
+    /// is a reset *before* the colour — `\u{1b}[0m\u{1b}[01;34m.\u{1b}[0m` — because it restores
+    /// the default between entries. That extra leading `0` is the whole reason the operator's
+    /// paste reads `[0m[01;34m.`: the two bodies sit next to each other with no visible
+    /// introducer between them, which is what makes a paste look like "the escapes are printed
+    /// as text". The walk has to see it as *reset then open* and paint nothing for the first —
+    /// which is what the assertion on the exact bytes below holds.
+    #[test]
+    fn the_operators_own_ls_line_is_painted_from_its_real_bytes() {
+        // The directory row verbatim, `ls`'s own reset-before-colour included.
+        assert_eq!(
+            painted(colour(), "\u{1b}[0m\u{1b}[01;34m.\u{1b}[0m"),
+            span(Role::Subheading, "."),
+            "a reset before a colour is a no-op and the colour is still painted"
+        );
+        // The header line of the same capture carries no escape at all, and is handed back as
+        // it stands — the fast path, which is what makes the per-line call affordable.
+        let header = "total 124";
+        assert_eq!(painted(colour(), header), header);
+        // And the sequence bodies are nowhere in the painted line: no `[` a reader could see.
+        let out = painted(colour(), "\u{1b}[0m\u{1b}[01;34m.\u{1b}[0m");
+        let seen: String = letibot_transcript::sanitize::without_control(&out);
+        assert!(
+            !seen.contains('['),
+            "a sequence body survived as text: {seen:?}"
+        );
+        assert_eq!(seen, ".");
     }
 
     /// **A colour that runs to the end of the line is closed at the end of the line.**
