@@ -29051,6 +29051,7 @@ mod tests {
                 })
                 .collect(),
             heads: Vec::new(),
+            subagents: Vec::new(),
         };
         snapshot.warnings.truncate(facts.len());
         a.apply(hello("s", vec![brief("s", "one", false)], snapshot));
@@ -37877,6 +37878,7 @@ mod tests {
                 settled_decisions: Vec::new(),
                 warnings: Vec::new(),
                 heads: Vec::new(),
+                subagents: Vec::new(),
             },
         ));
         let frame = a.screen(80, 24);
@@ -41911,6 +41913,7 @@ mod tests {
                 settled_decisions: Vec::new(),
                 warnings: Vec::new(),
                 heads: Vec::new(),
+                subagents: Vec::new(),
             })),
             resumed_from: None,
             scrubbed: Default::default(),
