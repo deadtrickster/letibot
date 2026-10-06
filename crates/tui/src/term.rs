@@ -98,6 +98,11 @@ pub struct Terminal {
     /// that arrived in halves, or a bracketed paste whose terminator has not
     /// come. Carried to the next read rather than dropped.
     pending: std::cell::RefCell<Vec<u8>>,
+    /// **The bytes the last [`Terminal::keys`] call consumed, verbatim.**
+    ///
+    /// See [`Terminal::raw_keys`] for who reads this and why a decoded `Key` cannot be
+    /// re-encoded into it.
+    last_raw: std::cell::RefCell<Vec<u8>>,
     /// The terminal size the last frame was painted at, and whether the next
     /// frame must erase everything before it paints.
     last_size: std::cell::Cell<(usize, usize)>,
@@ -225,6 +230,7 @@ impl Terminal {
                 .ok()
                 .filter(|s| !s.is_empty()),
             pending: std::cell::RefCell::new(Vec::new()),
+            last_raw: std::cell::RefCell::new(Vec::new()),
             last_size: std::cell::Cell::new((0, 0)),
             full: std::cell::Cell::new(true),
         })
@@ -253,6 +259,10 @@ impl Terminal {
     pub fn keys(&self) -> Vec<Key> {
         let mut buf = [0u8; READ_CHUNK];
         let mut pending = self.pending.borrow_mut();
+        // **Cleared first, and that is not tidiness.** A stale carry would be re-forwarded to
+        // the pane on the next read — the same keystroke twice — and this is the only place the
+        // carry is allowed to be stale, so this is the only place it is cleared.
+        self.last_raw.borrow_mut().clear();
         while let Ok(n) = std::io::stdin().read(&mut buf) {
             if n == 0 {
                 break;
@@ -268,8 +278,34 @@ impl Terminal {
         }
         let force = pending.len() >= MAX_PENDING;
         let (keys, used) = decode_prefix(&pending, force);
+        // **What the decoding consumed, before it is dropped.** See [`Terminal::raw_keys`].
+        self.last_raw
+            .borrow_mut()
+            .extend_from_slice(&pending[..used]);
         pending.drain(..used);
         keys
+    }
+
+    /// **The bytes the last [`Terminal::keys`] call consumed, verbatim.**
+    ///
+    /// # Who reads this, and why `Key` cannot be re-encoded into it
+    ///
+    /// The pane. A program that owns the screen reads the bytes the operator's terminal
+    /// actually sent, and this head's [`Key`] is a **lossy reading** of them: `ESC [ A` and
+    /// `ESC O A` are both `Key::Up` and are *different byte strings* to a program that has
+    /// asked for the application-cursor spelling, `Key::Paste` has had its bracketed-paste
+    /// markers stripped, and a dozen `Key`s here are the composer's own vocabulary
+    /// (`KillToEnd`, `Yank`, `Undo`, `WordLeft`) whose bytes a program would read as something
+    /// else entirely. Re-encoding would be a keymap in front of a terminal, which is exactly
+    /// what `letibot_tools::exec::term`'s own note says must not happen.
+    ///
+    /// # And it is why the way out is `ctrl-\`
+    ///
+    /// `0x1c` is one of the three bytes this file's decoder has **no arm** for — it reaches the
+    /// `_ => i += 1` fallthrough and vanishes — so it can never arrive as a [`Key`] and can only
+    /// be found here, on the raw stream, before anything is forwarded. See `App::pane_keys`.
+    pub fn raw_keys(&self) -> Vec<u8> {
+        self.last_raw.borrow().clone()
     }
 
     /// Paint the **difference** between this frame and the one on the glass.
@@ -598,6 +634,7 @@ impl Terminal {
             prev_payload: std::cell::RefCell::new(String::new()),
             stats_to: None,
             pending: std::cell::RefCell::new(Vec::new()),
+            last_raw: std::cell::RefCell::new(Vec::new()),
             last_size: std::cell::Cell::new((80, 24)),
             full: std::cell::Cell::new(true),
         }
@@ -1401,5 +1438,36 @@ mod tests {
                 Key::Char('o')
             ]
         );
+    }
+
+    /// **`ctrl-\` decodes to nothing at all, and that is what makes it the pane's way out.**
+    ///
+    /// The pane's exit must be a key **the program never receives**, or a program can trap it.
+    /// This byte is one of the three this decoder has no arm for, so it can never arrive at
+    /// [`App::key`] as a `Key` — which is why the interception lives on the raw stream
+    /// ([`Terminal::raw_keys`]) and not on the key path, and why the way out cannot be
+    /// something a program could also be given.
+    ///
+    /// **The letters around it are two keys**, which is the other half: the byte is *eaten*,
+    /// not turned into a `Key::Char` or an `Esc`, so a head that forwarded keys would forward
+    /// `ab` and `cd` with nothing between them and no way out at all.
+    #[test]
+    fn the_way_out_byte_decodes_to_nothing_and_cannot_hide_in_anything() {
+        assert!(decode(&[0x1c]).is_empty(), "ctrl-\\ is not a `Key`");
+        assert_eq!(
+            decode(b"ab\x1ccd"),
+            vec![
+                Key::Char('a'),
+                Key::Char('b'),
+                Key::Char('c'),
+                Key::Char('d')
+            ],
+            "the byte is eaten, and the letters around it are two keys"
+        );
+        // It cannot be part of a character (it is below 0x20, so no UTF-8 sequence contains
+        // it) and it cannot be the final byte of a CSI sequence (those are 0x40-0x7e), so a
+        // raw scan for it is exact and not a guess about where a sequence ends.
+        assert!(0x1c < 0x20);
+        assert!(!(0x40..=0x7e).contains(&0x1c));
     }
 }

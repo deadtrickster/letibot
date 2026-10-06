@@ -730,17 +730,22 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
                     println!("{l}");
                 }
             };
-            link.tick(&mut app, (100, 40), &[], &mut sink);
+            link.tick(&mut app, (100, 40), &[], &[], &mut sink);
         }
         Some(term) => {
             let mut draw = |lines: &[String], cursor| term.draw_with_cursor(lines, cursor);
             while !app.should_quit() {
                 let keys = term.keys();
+                // **The same read, as bytes.** The pane is a terminal and its program reads the
+                // bytes the operator's terminal sent, not this head's decoding of them — and
+                // `ctrl-\`, the pane's one way out, is a byte this head's decoder has no arm
+                // for and therefore never sees as a `Key`. See `Terminal::raw_keys`.
+                let raw = term.raw_keys();
                 let size = term.size();
                 if app.take_redraw() {
                     term.invalidate();
                 }
-                link.tick(&mut app, size, &keys, &mut draw);
+                link.tick(&mut app, size, &keys, &raw, &mut draw);
                 // **Getting back is this loop's job, because the socket is this
                 // layer's.** The head knows *that* the link is down and how long it
                 // has been; only here is there a socket path to open and a `Link` to
