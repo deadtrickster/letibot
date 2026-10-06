@@ -24271,6 +24271,13 @@ enum PaneFact {
 ///
 /// **A prompt that arrives while this is up takes the screen back**, and the arm that does it
 /// says why: a program that has just asked a question must not be killable by the answer to it.
+///
+/// **And it outranks a card that was already waiting**, which is this head's rule for two
+/// questions at once rather than a choice made here: the newest question owns the screen and the
+/// older one waits its turn (`App::decision_card`'s slot says the same thing about a decision
+/// card under a picker). So a decision card that was up when the operator typed `!term close`
+/// comes back when this is answered, cancelled or confirmed — and `esc` is the way out of the
+/// stack, one question at a time, because *anything that is not a yes* cancels.
 #[derive(Debug, Clone)]
 struct TermAsk {
     /// **What is about to end, as a line a person reads** — `!term nano notes.txt`, the spelling

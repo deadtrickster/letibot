@@ -106,6 +106,39 @@ live head, which is the one check that is not a test and is the operator's.
 
 ---
 
+## A pane's first resize is a real `SIGWINCH` to a program that has not drawn yet, and one test races it — **OPEN, found while landing `agent/term-detach`**
+
+`TermSession::start` spawns the child (`crates/tools/src/exec/term.rs`, `cmd.spawn()`) and
+**then** sets the pty's size (`set_size(&master, cfg.cols, cfg.rows)`, four statements later).
+The pty is born at the kernel's default `0×0`, so that ioctl is a real change to a tty the child
+is already the foreground process group of, and the kernel raises `SIGWINCH` for it. A
+full-screen program therefore gets a resize before it has drawn once — harmless in itself, and
+the reason this is filed rather than treated as an emergency — and it makes `exec/term.rs`'s
+`a_same_size_resize_is_not_a_nudge` **flaky**: that test starts a shell with
+`trap 'echo WINCH' WINCH`, waits 300 ms, resizes to the size the pty already has, and asserts no
+`WINCH` appears. The trap catches the *startup* signal whenever the shell reached its `trap`
+statement before the parent's ioctl ran, which is a race the child wins on a loaded box.
+
+**MEASURED 2026-10-06** while landing `agent/term-detach`:
+`cargo test -p letibot-tools --lib a_same_size_resize_is_not_a_nudge` passed **8/8 alone**, and
+the same test failed inside one full `cargo test -p letibot-tools` run with
+`a TIOCSWINSZ that changes nothing must raise no SIGWINCH, and this one did: "WINCH\n"`. That
+branch's diff does not touch the test at all (`git diff main -- crates/tools/src/exec/term.rs`
+has no hunk inside it), so this is older than it and not caused by it.
+
+**The fix, and it is the ORDER rather than a tolerance:** set the size **before** `cmd.spawn()`,
+which is what the line's own comment already claims — *"The size before the first byte"*. It
+needs a `Pty::set_size(&self, cols, rows)`: the winsize belongs to the tty, so an ioctl on the
+master before the child opens the slave is enough, and `into_master`'s *call it after `spawn`*
+rule is about the parent's own slave handle and not about this. Nothing else changes: the child
+is born at the right rectangle instead of being resized into it.
+
+**still open?** `cargo test -p letibot-tools --lib a_same_size_resize_is_not_a_nudge` — which
+will pass alone, so the check that matters is the full `cargo test -p letibot-tools` on a loaded
+box, or reading the order of those two statements in `TermSession::start`.
+
+---
+
 ## A stop unlinks the socket without the daemon going, so the next start adds a SECOND daemon to one folder — **OPEN, diagnosed on the operator's box 2026-10-04**
 
 **The symptom the operator met:** a session that could not be written to at all. Every append refused:
