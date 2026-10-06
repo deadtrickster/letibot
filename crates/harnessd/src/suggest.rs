@@ -121,3 +121,205 @@ impl ShellSuggester for LocalSuggester {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc::{Receiver, channel};
+    use std::time::Instant;
+
+    use letibot_sessionlog::event::SessionEvent;
+    use letibot_transcript::{Speaker, UserPart};
+
+    use super::*;
+
+    /// A one-shot local model: it records the request body and answers `reply` as a
+    /// chat completion. The endpoint comes back as an `Endpoint`, not a URL, because
+    /// `Endpoint::parse` takes `HOST:PORT` and a `http://…` string is a hostname it
+    /// would try to resolve.
+    fn canned_model(reply: &str) -> (Endpoint, Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+        let addr = listener.local_addr().expect("the bound address");
+        let (tx, rx) = channel();
+        let reply = reply.to_string();
+        std::thread::spawn(move || {
+            let Ok((mut conn, _)) = listener.accept() else {
+                return;
+            };
+            let body = read_request(&mut conn);
+            let _ = tx.send(body);
+            let payload = serde_json::json!({
+                "choices": [{ "message": { "role": "assistant", "content": reply } }]
+            })
+            .to_string();
+            let _ = conn.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                )
+                .as_bytes(),
+            );
+            let _ = conn.flush();
+        });
+        (Endpoint::new("127.0.0.1", addr.port()), rx)
+    }
+
+    /// A local model that accepts the connection and then says nothing at all — the
+    /// one shape that tests the deadline, because there is no byte for a read to
+    /// return and no close for it to notice.
+    fn silent_model() -> Endpoint {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+        let addr = listener.local_addr().expect("the bound address");
+        std::thread::spawn(move || {
+            let Ok((conn, _)) = listener.accept() else {
+                return;
+            };
+            // Held open, unread and unanswered, for longer than the suggester's own
+            // deadline — the thread is detached and the test is done with it by then.
+            std::thread::sleep(Duration::from_secs(30));
+            drop(conn);
+        });
+        Endpoint::new("127.0.0.1", addr.port())
+    }
+
+    /// The request head, then exactly `Content-Length` bytes of body.
+    fn read_request(conn: &mut TcpStream) -> String {
+        let mut reader = BufReader::new(conn.try_clone().expect("a clone"));
+        let mut len = 0usize;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return String::new();
+            }
+            if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                len = v.trim().parse().unwrap_or(0);
+            }
+            if line.trim_end().is_empty() {
+                break;
+            }
+        }
+        let mut buf = vec![0u8; len];
+        let _ = reader.read_exact(&mut buf);
+        String::from_utf8_lossy(&buf).to_string()
+    }
+
+    /// A session that has run one `!` line and been told one thing, which is the
+    /// conversation the prompt is built from.
+    fn hub_with_a_conversation() -> std::sync::Arc<Hub> {
+        let hub = Hub::new("s");
+        let row = |id: &str, kind: &str, item: TranscriptItem| {
+            hub.publish(SessionEvent::TranscriptAppended {
+                item_id: id.into(),
+                kind: kind.into(),
+                ledger_head: "0000".into(),
+            });
+            hub.record_item(id, item);
+        };
+        row(
+            "t.0",
+            "user",
+            TranscriptItem::User {
+                speaker: Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: "! cargo test".into(),
+                }],
+            },
+        );
+        row(
+            "t.1",
+            "assistant",
+            TranscriptItem::Assistant {
+                text: "the tests are red".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        );
+        hub
+    }
+
+    /// **The prompt that goes on the wire is the conversation, and the answer is the
+    /// parsed reply.**
+    ///
+    /// This is the seam nothing else covers: `sessionlog::suggest` tests the prompt
+    /// and the parse as pure functions, and this is what proves the daemon half hands
+    /// them the session's own rows, names the local model, caps the output — and turns
+    /// a decorated reply into candidates rather than prose.
+    #[test]
+    fn the_local_model_is_asked_about_this_session_and_its_reply_is_parsed() {
+        let (endpoint, asked) = canned_model(
+            "```bash\n! git status\n! git log\nHere are some commands:\n! git status\n```",
+        );
+        let s = LocalSuggester::new(endpoint, "local".into());
+        let hub = hub_with_a_conversation();
+
+        let lines = s.suggest(&hub, "/tmp/ws", "! git");
+
+        assert_eq!(
+            lines,
+            vec!["! git status".to_string(), "! git log".to_string()],
+            "the fences, the prose and the duplicate are gone: {lines:?}"
+        );
+        let body = asked
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the request reached the model");
+        // The context halves: the workspace, the rows, the commands already run.
+        assert!(body.contains("/tmp/ws"), "the workspace: {body}");
+        assert!(body.contains("the tests are red"), "a recent row: {body}");
+        assert!(
+            body.contains("Commands already run in this session"),
+            "the commands already run: {body}"
+        );
+        assert!(body.contains("! cargo test"), "a command run: {body}");
+        // The prefix, and the rule that makes an empty answer acceptable.
+        assert!(body.contains("! git"), "the prefix: {body}");
+        assert!(
+            body.contains("a wrong suggestion is worse than none"),
+            "the rule: {body}"
+        );
+        // The two bounds: the local model's name, and a small output cap.
+        assert!(body.contains(r#""model":"local""#), "the local model: {body}");
+        assert!(
+            body.contains(&format!(r#""max_tokens":{SUGGEST_MAX_TOKENS}"#)),
+            "the output cap: {body}"
+        );
+    }
+
+    /// **A model that never answers is nothing, and it is nothing in three seconds.**
+    ///
+    /// The endpoint's own default read timeout is 180 s, which is right for a turn and
+    /// absurd for a completion: the operator would sit with a composer that says
+    /// *asking the model* for three minutes. So the suggester's own deadline is the
+    /// bound, and this is the test that would catch it being dropped — the call would
+    /// still answer `None`, three minutes later.
+    #[test]
+    fn a_model_that_never_answers_is_nothing_within_the_deadline() {
+        let s = LocalSuggester::new(silent_model(), "local".into());
+        let hub = hub_with_a_conversation();
+
+        let began = Instant::now();
+        let lines = s.suggest(&hub, "/tmp/ws", "! git");
+        let took = began.elapsed();
+
+        assert!(lines.is_empty(), "silence is not a suggestion: {lines:?}");
+        assert!(
+            took < SUGGEST_TIMEOUT + Duration::from_secs(5),
+            "bounded by the suggester's deadline and not the endpoint's 180 s: {took:?}"
+        );
+    }
+
+    /// **No endpoint at all is nothing**, which is what a daemon with no local model
+    /// answers: the head reads it as *no suggestion* and the operator's Tab does what
+    /// it did before the feature.
+    #[test]
+    fn a_dead_endpoint_suggests_nothing() {
+        let s = LocalSuggester::new(
+            Endpoint::parse("127.0.0.1:1").expect("a port nothing listens on"),
+            "local".into(),
+        );
+        let hub = hub_with_a_conversation();
+        assert!(s.suggest(&hub, "/tmp/ws", "! git").is_empty());
+    }
+}

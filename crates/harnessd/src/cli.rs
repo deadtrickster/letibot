@@ -743,8 +743,16 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // one the guard is attached on. A daemon with no local endpoint installs no
     // suggester, and a `SuggestShell` then answers with an empty list: a suggestion
     // must not cost money per keystroke, so the fallback is *nothing*, never a metered
-    // provider. The model name is the guard's own, so the two never disagree about
-    // which model is local.
+    // provider.
+    //
+    // **The name is the operator's `[gatekeeper] model` when they named one, and
+    // `local` otherwise — deliberately NOT the session's model.** The guard falls back
+    // to `cfg.model` (`harness.rs`), and it can afford to: its own body hardcodes
+    // `"model": "guard"` on the wire, so the name it was constructed with is only ever
+    // read by `describe`. This one puts its name in the request, and a name is a thing a
+    // proxy in front of the endpoint may ROUTE BY — an operator whose session model is a
+    // metered provider's and whose local box sits behind such a proxy would be billed per
+    // keystroke by exactly the line that exists to prevent it.
     if let Some(ep) = cfg.oracle.clone() {
         let model = cfg
             .oracle_model
