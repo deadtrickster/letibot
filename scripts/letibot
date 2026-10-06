@@ -764,6 +764,25 @@ retarget() {
   SOCKET="$RUNDIR/$KEY.sock"
   RECORD="$RUNDIR/$KEY.json"
 }
+# **Is this pid gone, waited for, bounded.** The one place the launcher decides
+# whether a daemon actually stopped, so the two verbs that stop one cannot disagree.
+#
+# Measured 2026-09-16: a daemon wedged on a `llama-server` that had gone away swallowed
+# SIGTERM, `--stop` printed "stopped", deleted the record, and left an orphan holding the
+# store and the GPU that `--daemons` could no longer see. So "stopped" is said after the
+# process is gone and never after the signal is sent. `--stop --all` had the other half of
+# that defect until now: it echoed `stopped` straight off `kill`'s exit status.
+wait_gone() { # wait_gone PID [TENTHS]
+  local p="$1" n="${2:-10}" i=0
+  while [ "$i" -lt "$n" ]; do
+    [ -d "/proc/$p" ] || return 0
+    sleep 0.5
+    i=$((i + 1))
+  done
+  [ -d "/proc/$p" ] && return 1
+  return 0
+}
+
 daemon_pid() {
   # The pid LISTENING on our socket, which is the daemon whatever the record says;
   # the record is a fallback for a box without `ss`.
@@ -976,17 +995,32 @@ SESSIONS_EOF
     # still this one's. Numbering comes from `--ls`.
     [ "${2:-}" = "--all" ] || [ "${2:-}" = "--force" ] || retarget "${2:-}"
     if [ "${2:-}" = "--all" ]; then
+      # **And the exit status agrees with the words**, as the single-target path's
+      # does: a run that said `NOT stopped` and exited 0 would be a script a caller
+      # cannot branch on, which is the same defect one layer out.
+      all_failed=0
       for r in "$RUNDIR"/*.json; do
         [ -f "$r" ] || continue
         pid="$(json_num pid "$r")"
         ws="$(json_str workspace "$r")"
         if [ -d "/proc/$pid" ] && tr '\0' '\n' < "/proc/$pid/cmdline" | head -1 | grep -q harnessd; then
-          kill "$pid" && echo "stopped $ws (pid $pid)"
+          # **Signal, then WAIT, then say it.** The exit status of `kill` says the
+          # signal was delivered and nothing about whether the process took it —
+          # which is the whole of the 2026-09-16 incident, one verb over.
+          kill "$pid" 2>/dev/null || true
+          if wait_gone "$pid"; then
+            echo "stopped $ws (pid $pid)"
+            rm -f "$r"
+          else
+            echo "NOT stopped: $ws (pid $pid) is ignoring SIGTERM after 5s." >&2
+            echo "  letibot --stop --force    sends SIGKILL; the record is kept until it is gone" >&2
+            all_failed=1
+          fi
         else
           echo "stale record for $ws (pid $pid gone)"; rm -f "$r"
         fi
       done
-      exit 0
+      exit "$all_failed"
     fi
     if p="$(daemon_pid)"; then
       if [ "$FORCE" = 1 ]; then
@@ -1002,16 +1036,10 @@ SESSIONS_EOF
       # store and the GPU that `--daemons` could no longer see.
       line="$(daemon_line)"
       kill "$p" || true
-      for _ in 1 2 3 4 5 6 7 8 9 10; do
-        [ -d "/proc/$p" ] || break
-        sleep 0.5
-      done
+      wait_gone "$p" || true
       if [ -d "/proc/$p" ] && [ "$FORCE" = 1 ]; then
         kill -9 "$p" 2>/dev/null || true
-        for _ in 1 2 3 4; do
-          [ -d "/proc/$p" ] || break
-          sleep 0.5
-        done
+        wait_gone "$p" 4 || true
       fi
       if [ -d "/proc/$p" ]; then
         echo "NOT stopped: $line (pid $p) is ignoring SIGTERM after 5s." >&2
