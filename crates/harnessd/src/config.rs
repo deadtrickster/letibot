@@ -333,6 +333,19 @@ pub struct Config {
     /// overrides) when the file is absent or was refused — which is also the
     /// byte-identical case. See [`Prompts`].
     pub prompts: Prompts,
+    /// The project's `leticode.toml`, discovered by walking up from the workspace
+    /// and loaded once at startup. `Default` (no models) when the file is absent
+    /// or was refused — which is also the byte-identical case: a daemon with no
+    /// project file runs on its own models and discloses nothing from the file.
+    /// See [`crate::leticode_config::LeticodeConfig`].
+    ///
+    /// **Models are configuration; permissions are not.** This field carries model
+    /// names and nothing else — no seat, no tool list, no access narrowing — so a
+    /// project file cannot widen a capability. The precedence that turns these into
+    /// the session's models is stated once, in
+    /// [`crate::leticode_config::precedence`]: command line beats the project file,
+    /// the project file beats `~/.config/letibot/`, and an unset key falls through.
+    pub leticode: crate::leticode_config::LeticodeConfig,
     /// `low` / `medium` / `high` / `xhigh`, interpreted per dialect. It is prefix
     /// bytes, so changing it mid-session re-prefills everything.
     pub effort: Option<String>,
@@ -1231,6 +1244,10 @@ impl Config {
             // is the byte-identical case: a daemon that never reads the file composes
             // `DEFAULT_SYSTEM` for every session.
             prompts: Prompts::default(),
+            // No project models until `run` discovers and loads the project's
+            // `leticode.toml`. `Default` is the byte-identical case: a daemon with
+            // no project file runs on its own models and discloses nothing from it.
+            leticode: crate::leticode_config::LeticodeConfig::default(),
             effort: None,
             // Deterministic by default: a harness whose own measurements move
             // between runs cannot tell a regression from a sample.
@@ -1830,6 +1847,28 @@ impl Config {
 
     pub fn disclosures(&self, wiring: &GateWiring) -> Vec<Disclosure> {
         let mut out = Vec::new();
+        // **Which models the project file set, said at startup.** The operator's
+        // ask, and the half of the loud-failure rule that answers "where did this
+        // model come from" from the screen: a file that changes which model answers
+        // is disclosed by name, so a session that runs on a project's models does not
+        // read as one that runs on the daemon's. Absent file, or a file that set
+        // nothing, discloses nothing — the byte-identical case, and a banner that
+        // named a file that set nothing would be a disclosure that is a guess.
+        if let Some(path) = &self.leticode.path {
+            let set = self.leticode.set_models();
+            if !set.is_empty() {
+                out.push(Disclosure::on(
+                    "project models",
+                    format!(
+                        "{} sets {} — command line beats this file, the file beats \
+                         ~/.config/letibot/, and a key it does not set falls through \
+                         to the daemon's own default",
+                        path.display(),
+                        set.join(", ")
+                    ),
+                ));
+            }
+        }
         match &self.spill {
             SpillPolicy::Unset => out.push(Disclosure::off(
                 "spill",

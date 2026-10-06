@@ -101,6 +101,7 @@ pub mod facts;
 pub mod harness;
 pub mod httphead;
 pub mod jobwatch;
+pub mod leticode_config;
 pub mod m1;
 pub mod modes;
 pub mod oracle;
