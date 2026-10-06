@@ -46,7 +46,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use letibot_tokencore::store::{MergeEntry, MergePriority, MergeState, Store};
+use letibot_tokencore::store::{MergeEntry, MergeState, Store};
 
 // ===== The pure core: the state machine, with no store, no git and no thread =====
 
@@ -264,7 +264,12 @@ fn push_main(repo: &Path) -> Result<(), String> {
 /// keeps the repo's worktree list honest. The `prune` follows, because a `remove` that fails
 /// partway leaves a stale entry in the list, and the `prune` is what clears it.
 fn remove_worktree(repo: &Path, worktree: &Path) -> Result<(), String> {
-    git(repo, &["worktree", "remove", "--force", worktree])?;
+    // `to_string_lossy` rather than `to_str().unwrap()`: a worktree path that is not UTF-8 is a
+    // path git will be told about lossily, which is what the enqueuer's own `worktree` column
+    // holds anyway (it is a `String` on the row). A refusal here would be a refusal to clean up
+    // a worktree that is really there.
+    let wt = worktree.to_string_lossy();
+    git(repo, &["worktree", "remove", "--force", &wt])?;
     git(repo, &["worktree", "prune"])?;
     Ok(())
 }
@@ -480,7 +485,10 @@ impl MergeQueueDaemon {
     /// mechanical check and the review is the judgment call, and both are required before an
     /// entry lands. The gatekeeper branch is not merged yet, so this is the requirement and
     /// its seam, not an interface.
-    pub fn run(&self, stop: &std::sync::atomic::AtomicBool) -> Result<(), letibot_tokencore::store::StoreError> {
+    pub fn run(
+        &self,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), letibot_tokencore::store::StoreError> {
         self.recover()?;
         loop {
             if stop.load(std::sync::atomic::Ordering::Relaxed) {
@@ -507,6 +515,9 @@ impl MergeQueueDaemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The tests build entries, so they name the priority; the module above does not, which is
+    // why the import is here rather than at the top.
+    use letibot_tokencore::store::MergePriority;
 
     /// A `MergeEntry` for the tests, with the fields the test does not care about set to
     /// defaults.
@@ -535,7 +546,11 @@ mod tests {
         let urgent = entry("urg", MergePriority::Urgent, MergeState::Waiting, 2_000);
         // The subagent entry is older, but the urgent entry is taken first.
         let entries = vec![subagent, urgent];
-        assert_eq!(next_ready(&entries), Some(1), "the urgent entry jumps the older subagent entry");
+        assert_eq!(
+            next_ready(&entries),
+            Some(1),
+            "the urgent entry jumps the older subagent entry"
+        );
     }
 
     /// **Ties inside a rung break by age** — the oldest first, and the id is the final
@@ -545,7 +560,11 @@ mod tests {
         let older = entry("b", MergePriority::Subagent, MergeState::Waiting, 1_000);
         let newer = entry("a", MergePriority::Subagent, MergeState::Waiting, 2_000);
         let entries = vec![newer, older];
-        assert_eq!(next_ready(&entries), Some(1), "the older entry is taken first");
+        assert_eq!(
+            next_ready(&entries),
+            Some(1),
+            "the older entry is taken first"
+        );
 
         // Same age: the id breaks the tie, so the order is stable.
         let a = entry("a", MergePriority::Subagent, MergeState::Waiting, 1_000);
@@ -560,22 +579,45 @@ mod tests {
     #[test]
     fn an_entry_waits_on_its_dependencies() {
         let dep = entry("dep", MergePriority::Subagent, MergeState::Waiting, 1_000);
-        let mut dependent = entry("dep-ent", MergePriority::Subagent, MergeState::Waiting, 2_000);
+        let mut dependent = entry(
+            "dep-ent",
+            MergePriority::Subagent,
+            MergeState::Waiting,
+            2_000,
+        );
         dependent.needs = vec!["dep".into()];
-        let entries = vec![dep, dependent];
+        let entries = vec![dep.clone(), dependent.clone()];
         // The dependency is not landed, so the dependent is not ready — and the dependency
         // itself is taken first.
-        assert_eq!(next_ready(&entries), Some(0), "the dependency is taken before the dependent");
-        assert!(!is_ready(&dependent, &entries), "the dependent is not ready");
-        assert_eq!(unmet_needs(&dependent, &entries), vec!["dep"], "the unmet dependency is named");
+        assert_eq!(
+            next_ready(&entries),
+            Some(0),
+            "the dependency is taken before the dependent"
+        );
+        assert!(
+            !is_ready(&dependent, &entries),
+            "the dependent is not ready"
+        );
+        assert_eq!(
+            unmet_needs(&dependent, &entries),
+            vec!["dep"],
+            "the unmet dependency is named"
+        );
 
         // The dependency lands, and the dependent is ready.
         let mut landed_dep = dep.clone();
         landed_dep.state = MergeState::Landed;
         landed_dep.landed_sha = Some("tip".into());
         let entries = vec![landed_dep, dependent.clone()];
-        assert!(is_ready(&dependent, &entries), "the dependent is ready once its dependency lands");
-        assert_eq!(next_ready(&entries), Some(1), "the dependent is taken once its dependency lands");
+        assert!(
+            is_ready(&dependent, &entries),
+            "the dependent is ready once its dependency lands"
+        );
+        assert_eq!(
+            next_ready(&entries),
+            Some(1),
+            "the dependent is taken once its dependency lands"
+        );
     }
 
     /// **A dependency that is not in the queue is unmet** — an entry that names a dependency
@@ -583,12 +625,28 @@ mod tests {
     /// *met* would be a guess.
     #[test]
     fn a_missing_dependency_is_unmet() {
-        let mut dependent = entry("dep-ent", MergePriority::Subagent, MergeState::Waiting, 1_000);
+        let mut dependent = entry(
+            "dep-ent",
+            MergePriority::Subagent,
+            MergeState::Waiting,
+            1_000,
+        );
         dependent.needs = vec!["ghost".into()];
         let entries = vec![dependent.clone()];
-        assert!(!is_ready(&dependent, &entries), "a missing dependency is not met");
-        assert_eq!(unmet_needs(&dependent, &entries), vec!["ghost"], "the missing dependency is named");
-        assert_eq!(next_ready(&entries), None, "the entry is not taken while its dependency is missing");
+        assert!(
+            !is_ready(&dependent, &entries),
+            "a missing dependency is not met"
+        );
+        assert_eq!(
+            unmet_needs(&dependent, &entries),
+            vec!["ghost"],
+            "the missing dependency is named"
+        );
+        assert_eq!(
+            next_ready(&entries),
+            None,
+            "the entry is not taken while its dependency is missing"
+        );
     }
 
     /// **The base becomes the landed tip rather than the stale SHA** — the half of the
@@ -599,9 +657,14 @@ mod tests {
         let mut dep = entry("dep", MergePriority::Subagent, MergeState::Landed, 1_000);
         dep.landed_sha = Some("landed-tip".into());
         dep.updated_ms = 5_000;
-        let mut dependent = entry("dep-ent", MergePriority::Subagent, MergeState::Waiting, 2_000);
+        let mut dependent = entry(
+            "dep-ent",
+            MergePriority::Subagent,
+            MergeState::Waiting,
+            2_000,
+        );
         dependent.needs = vec!["dep".into()];
-        dependent.base_sha = "stale-sha";
+        dependent.base_sha = "stale-sha".into();
         let entries = vec![dep, dependent.clone()];
         assert_eq!(
             effective_base(&dependent, &entries),
@@ -609,12 +672,24 @@ mod tests {
             "the base is the landed tip, not the stale SHA"
         );
 
-        // No dependencies: the base is the SHA it was written against.
+        // **And it is not the entry's own `needs` that decide the base.** The queue is serial
+        // and everything lands on main, so the last thing to land is the current tip whatever
+        // an entry's `needs` say: an entry with no dependencies at all still rebases onto it,
+        // which is the difference between a gating condition and a base condition.
         let independent = entry("ind", MergePriority::Subagent, MergeState::Waiting, 3_000);
         assert_eq!(
             effective_base(&independent, &entries),
-            "base",
-            "an entry with no dependencies rebases onto its own base"
+            "landed-tip",
+            "an entry with no dependencies rebases onto the current tip of main"
+        );
+
+        // **With nothing landed, the base is the SHA the entry was written against** — nothing
+        // has moved since it was cut, so its own `base_sha` IS the current tip.
+        let nothing_landed = vec![dependent.clone()];
+        assert_eq!(
+            effective_base(&dependent, &nothing_landed),
+            "stale-sha",
+            "nothing has landed, so the entry's own base is the tip"
         );
     }
 
@@ -629,7 +704,12 @@ mod tests {
         let mut dep2 = entry("dep2", MergePriority::Subagent, MergeState::Landed, 2_000);
         dep2.landed_sha = Some("tip2".into());
         dep2.updated_ms = 2_000;
-        let mut dependent = entry("dep-ent", MergePriority::Subagent, MergeState::Waiting, 3_000);
+        let mut dependent = entry(
+            "dep-ent",
+            MergePriority::Subagent,
+            MergeState::Waiting,
+            3_000,
+        );
         dependent.needs = vec!["dep1".into(), "dep2".into()];
         let entries = vec![dep1, dep2, dependent.clone()];
         assert_eq!(
@@ -645,20 +725,41 @@ mod tests {
     #[test]
     fn a_taken_entry_comes_back_stale() {
         let taken = entry("taken", MergePriority::Subagent, MergeState::Taken, 1_000);
-        let waiting = entry("waiting", MergePriority::Subagent, MergeState::Waiting, 2_000);
+        let waiting = entry(
+            "waiting",
+            MergePriority::Subagent,
+            MergeState::Waiting,
+            2_000,
+        );
         let landed = entry("landed", MergePriority::Subagent, MergeState::Landed, 3_000);
         let recovered = recover(vec![taken, waiting, landed]);
-        assert_eq!(recovered[0].state, MergeState::Stale, "the taken entry is stale");
+        assert_eq!(
+            recovered[0].state,
+            MergeState::Stale,
+            "the taken entry is stale"
+        );
         assert!(
             !recovered[0].evidence.is_empty(),
             "the stale entry has its reason"
         );
-        assert_eq!(recovered[1].state, MergeState::Waiting, "the waiting entry is untouched");
-        assert_eq!(recovered[2].state, MergeState::Landed, "the landed entry is untouched");
+        assert_eq!(
+            recovered[1].state,
+            MergeState::Waiting,
+            "the waiting entry is untouched"
+        );
+        assert_eq!(
+            recovered[2].state,
+            MergeState::Landed,
+            "the landed entry is untouched"
+        );
 
         // And the recovery is idempotent: a second pass does not move the stale entry again.
         let recovered_twice = recover(recovered);
-        assert_eq!(recovered_twice[0].state, MergeState::Stale, "the recovery is idempotent");
+        assert_eq!(
+            recovered_twice[0].state,
+            MergeState::Stale,
+            "the recovery is idempotent"
+        );
     }
 
     /// **The cleanup is decided by the state** — `Landed` removes the worktree and the branch,
@@ -667,7 +768,10 @@ mod tests {
     /// merged is a branch the queue cannot vouch for.
     #[test]
     fn the_cleanup_is_decided_by_the_state() {
-        assert_eq!(cleanup_for(MergeState::Landed), Cleanup::RemoveWorktreeAndBranch);
+        assert_eq!(
+            cleanup_for(MergeState::Landed),
+            Cleanup::RemoveWorktreeAndBranch
+        );
         assert_eq!(cleanup_for(MergeState::Failed), Cleanup::KeepWorktree);
         assert_eq!(cleanup_for(MergeState::Conflict), Cleanup::KeepWorktree);
         assert_eq!(cleanup_for(MergeState::Stale), Cleanup::KeepWorktree);
@@ -730,6 +834,22 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    /// **The store at `path`, opened** — the daemon's connection and the test's are two
+    /// connections to one file, which is the shape `jobwatch`'s recorder test uses and the only
+    /// one that proves a row is on disk rather than in the connection that wrote it.
+    fn store_at(path: &Path) -> Store {
+        Store::open(path).expect("a store")
+    }
+
+    /// **Enqueue one entry through its own connection** — the enqueuer's half: open the file,
+    /// write the row, close. The daemon then opens its own and the test opens a third to read,
+    /// so nothing asserted below is a value a shared connection kept in hand.
+    fn enqueue(path: &Path, entry: &MergeEntry) {
+        store_at(path)
+            .put_merge_entry(entry)
+            .expect("the entry row");
+    }
+
     /// **A repo with a `main` branch and a worktree for `branch`**, checked out at
     /// `root/worktrees/branch`. The repo is the shape the daemon serves: a main that the
     /// entry's branch will be fast-forwarded into, and a worktree where the branch is
@@ -750,7 +870,10 @@ mod tests {
         git(&root, &["branch", "feature"]);
         // The worktree, where the branch is checked out.
         let wt = root.join("worktrees").join("feature");
-        git(&root, &["worktree", "add", "-q", wt.to_str().unwrap(), "feature"]);
+        git(
+            &root,
+            &["worktree", "add", "-q", wt.to_str().unwrap(), "feature"],
+        );
         std::fs::write(wt.join("b.txt"), "three\n").expect("write");
         git(&wt, &["add", "-A"]);
         git(&wt, &["commit", "-qm", "feature work"]);
@@ -778,12 +901,15 @@ mod tests {
     #[test]
     fn the_rebase_and_fast_forward_land_the_branch() {
         let (root, wt, main_sha, _feature_sha) = repo_with_branch("land");
-        let store = Store::open_in_memory().expect("a store");
+        let db = root.join("sessions.db");
 
         // An `other` branch, cut from main, that lands first and moves main.
         git(&root, &["branch", "other"]);
         let other_wt = root.join("worktrees").join("other");
-        git(&root, &["worktree", "add", "-q", other_wt.to_str().unwrap(), "other"]);
+        git(
+            &root,
+            &["worktree", "add", "-q", other_wt.to_str().unwrap(), "other"],
+        );
         std::fs::write(other_wt.join("c.txt"), "other\n").expect("write");
         git(&other_wt, &["add", "-A"]);
         git(&other_wt, &["commit", "-qm", "other work"]);
@@ -804,7 +930,7 @@ mod tests {
             worktree: Some(other_wt.to_str().unwrap().to_string()),
             landed_sha: None,
         };
-        store.put_merge_entry(&other_entry).expect("the other entry");
+        enqueue(&db, &other_entry);
 
         // The `feature` entry, enqueued against the main it was cut from — which is now stale.
         let feature_entry = MergeEntry {
@@ -821,17 +947,25 @@ mod tests {
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
         };
-        store.put_merge_entry(&feature_entry).expect("the feature entry");
+        enqueue(&db, &feature_entry);
 
         // The daemon, with a no-op gate: the gate is the seam, and the test is about the
         // rebase and the fast-forward, not the gate.
-        let daemon = MergeQueueDaemon::new(store, root.clone(), Box::new(|_| Ok(())));
+        let daemon = MergeQueueDaemon::new(store_at(&db), root.clone(), Box::new(|_| Ok(())));
 
         // The first pass takes `other` (urgent) and lands it, moving main to the tip of
         // `other`.
         let outcome = daemon.step().expect("the pass");
-        assert_eq!(outcome, StepOutcome::Landed(other_sha.clone()), "other lands first");
-        assert_eq!(sha(&root, "main"), other_sha, "main moved to the tip of other");
+        assert_eq!(
+            outcome,
+            StepOutcome::Landed(other_sha.clone()),
+            "other lands first"
+        );
+        assert_eq!(
+            sha(&root, "main"),
+            other_sha,
+            "main moved to the tip of other"
+        );
 
         // The second pass takes `feature`, rebases it onto the current main (the tip of
         // `other`), and lands it.
@@ -841,20 +975,40 @@ mod tests {
             other => panic!("the feature entry should land, got {other:?}"),
         };
         // **main moved to the rebased feature tip** — the fast-forward, and the whole point.
-        assert_eq!(sha(&root, "main"), feature_tip, "main was fast-forwarded to the rebased feature tip");
+        assert_eq!(
+            sha(&root, "main"),
+            feature_tip,
+            "main was fast-forwarded to the rebased feature tip"
+        );
         // **The rebase was not a no-op**: the feature tip is not the original feature SHA,
         // because it was replayed on top of `other`.
-        assert_ne!(feature_tip, sha(&root, "main~1"), "the feature was rebased, not fast-forwarded as-is");
+        assert_ne!(
+            feature_tip,
+            sha(&root, "main~1"),
+            "the feature was rebased, not fast-forwarded as-is"
+        );
 
         // **The worktree is gone and the branch is deleted** — the cleanup `Landed` owns.
         assert!(!wt.exists(), "the worktree was removed");
         let branches = git_output(&root, &["branch", "--list", "feature"]);
-        assert!(branches.trim().is_empty(), "the branch was deleted: {branches:?}");
+        assert!(
+            branches.trim().is_empty(),
+            "the branch was deleted: {branches:?}"
+        );
 
-        // **The row says `Landed`, with the tip** — the durable record of the merge.
-        let landed = store.merge_entry("m-land").expect("reads").expect("the entry");
+        // **The row says `Landed`, with the tip** — the durable record of the merge, read
+        // through a connection the daemon never held.
+        let store = store_at(&db);
+        let landed = store
+            .merge_entry("m-land")
+            .expect("reads")
+            .expect("the entry");
         assert_eq!(landed.state, MergeState::Landed, "the row is landed");
-        assert_eq!(landed.landed_sha.as_deref(), Some(feature_tip.as_str()), "the row keeps the tip");
+        assert_eq!(
+            landed.landed_sha.as_deref(),
+            Some(feature_tip.as_str()),
+            "the row keeps the tip"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -869,7 +1023,7 @@ mod tests {
     #[test]
     fn a_conflict_is_reported_and_the_worktree_stays() {
         let (root, wt, main_sha, _feature_sha) = repo_with_branch("conflict");
-        let store = Store::open_in_memory().expect("a store");
+        let db = root.join("sessions.db");
 
         // The `feature` branch touches line 2 of a.txt, so it will conflict with `other`.
         std::fs::write(wt.join("a.txt"), "one\nTHREE\n").expect("write");
@@ -879,10 +1033,17 @@ mod tests {
         // An `other` branch, cut from main, that changes the same line and lands first.
         git(&root, &["branch", "other"]);
         let other_wt = root.join("worktrees").join("other");
-        git(&root, &["worktree", "add", "-q", other_wt.to_str().unwrap(), "other"]);
+        git(
+            &root,
+            &["worktree", "add", "-q", other_wt.to_str().unwrap(), "other"],
+        );
         std::fs::write(other_wt.join("a.txt"), "one\nTWO\n").expect("write");
         git(&other_wt, &["add", "-A"]);
         git(&other_wt, &["commit", "-qm", "other touches line two"]);
+        // The SHA, taken before the daemon runs: landing deletes the branch, so `other` is not
+        // a rev to ask for afterwards — and the assertion below is about where main is, not
+        // about a ref that the cleanup owns.
+        let other_sha = sha(&other_wt, "other");
 
         // The `other` entry, urgent so it is taken first.
         let other_entry = MergeEntry {
@@ -899,7 +1060,7 @@ mod tests {
             worktree: Some(other_wt.to_str().unwrap().to_string()),
             landed_sha: None,
         };
-        store.put_merge_entry(&other_entry).expect("the other entry");
+        enqueue(&db, &other_entry);
 
         // The `feature` entry, which will conflict when rebased onto the tip of `other`.
         let feature_entry = MergeEntry {
@@ -916,14 +1077,17 @@ mod tests {
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
         };
-        store.put_merge_entry(&feature_entry).expect("the feature entry");
+        enqueue(&db, &feature_entry);
 
-        let daemon = MergeQueueDaemon::new(store, root.clone(), Box::new(|_| Ok(())));
+        let daemon = MergeQueueDaemon::new(store_at(&db), root.clone(), Box::new(|_| Ok(())));
 
         // The first pass takes `other` (urgent) and lands it, moving main to the tip of
         // `other`.
         let outcome = daemon.step().expect("the pass");
-        assert!(matches!(outcome, StepOutcome::Landed(_)), "other lands first: {outcome:?}");
+        assert!(
+            matches!(outcome, StepOutcome::Landed(_)),
+            "other lands first: {outcome:?}"
+        );
 
         // The second pass takes `feature`, rebases it onto the current main (the tip of
         // `other`), and the rebase conflicts.
@@ -933,11 +1097,19 @@ mod tests {
         // **The worktree stays** — the evidence is there, and removing it would destroy it.
         assert!(wt.exists(), "the worktree stays after a conflict");
         // **The row says `Conflict`, with git's words** — the reason is on the row.
-        let conflict = store.merge_entry("m-conflict").expect("reads").expect("the entry");
+        let store = store_at(&db);
+        let conflict = store
+            .merge_entry("m-conflict")
+            .expect("reads")
+            .expect("the entry");
         assert_eq!(conflict.state, MergeState::Conflict, "the row is conflict");
         assert!(!conflict.evidence.is_empty(), "the row has the reason");
         // **main did not move past `other`** — the feature merge did not happen.
-        assert_eq!(sha(&root, "main"), sha(&root, "other"), "main is at the tip of other, not the feature");
+        assert_eq!(
+            sha(&root, "main"),
+            other_sha,
+            "main is at the tip of other, not the feature"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -947,7 +1119,7 @@ mod tests {
     #[test]
     fn a_gate_failure_keeps_the_worktree() {
         let (root, wt, main_sha, _feature_sha) = repo_with_branch("failed");
-        let store = Store::open_in_memory().expect("a store");
+        let db = root.join("sessions.db");
 
         let entry = MergeEntry {
             id: "m-failed".into(),
@@ -963,19 +1135,30 @@ mod tests {
             worktree: Some(wt.to_str().unwrap().to_string()),
             landed_sha: None,
         };
-        store.put_merge_entry(&entry).expect("the entry");
+        enqueue(&db, &entry);
 
         // The gate fails, with its own words.
-        let daemon = MergeQueueDaemon::new(store, root.clone(), Box::new(|_| Err("the gate is red".into())));
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(|_| Err("the gate is red".into())),
+        );
         let outcome = daemon.step().expect("the pass");
         assert_eq!(outcome, StepOutcome::Failed, "the failure is reported");
 
         // **The worktree stays** — the evidence is there.
         assert!(wt.exists(), "the worktree stays after a gate failure");
         // **The row says `Failed`, with the gate's words.**
-        let failed = store.merge_entry("m-failed").expect("reads").expect("the entry");
+        let store = store_at(&db);
+        let failed = store
+            .merge_entry("m-failed")
+            .expect("reads")
+            .expect("the entry");
         assert_eq!(failed.state, MergeState::Failed, "the row is failed");
-        assert_eq!(failed.evidence, "the gate is red", "the row has the gate's words");
+        assert_eq!(
+            failed.evidence, "the gate is red",
+            "the row has the gate's words"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -986,7 +1169,7 @@ mod tests {
     #[test]
     fn a_dead_gate_job_comes_back_stale() {
         let (root, _wt, main_sha, _feature_sha) = repo_with_branch("stale");
-        let store = Store::open_in_memory().expect("a store");
+        let db = root.join("sessions.db");
 
         // The entry, taken by a daemon that then died: the row is `Taken` on disk.
         let entry = MergeEntry {
@@ -1003,13 +1186,21 @@ mod tests {
             worktree: Some(_wt.to_str().unwrap().to_string()),
             landed_sha: None,
         };
-        store.put_merge_entry(&entry).expect("the entry");
+        enqueue(&db, &entry);
 
         // The next daemon recovers: the `Taken` row is moved to `Stale` on disk.
-        let daemon = MergeQueueDaemon::new(store, root.clone(), Box::new(|_| Ok(())));
+        let daemon = MergeQueueDaemon::new(store_at(&db), root.clone(), Box::new(|_| Ok(())));
         let recovered = daemon.recover().expect("the recovery");
-        assert_eq!(recovered[0].state, MergeState::Stale, "the taken entry is stale");
-        let on_disk = store.merge_entry("m-stale").expect("reads").expect("the entry");
+        assert_eq!(
+            recovered[0].state,
+            MergeState::Stale,
+            "the taken entry is stale"
+        );
+        let store = store_at(&db);
+        let on_disk = store
+            .merge_entry("m-stale")
+            .expect("reads")
+            .expect("the entry");
         assert_eq!(on_disk.state, MergeState::Stale, "the row on disk is stale");
         assert!(!on_disk.evidence.is_empty(), "the row has the reason");
         let _ = std::fs::remove_dir_all(&root);
