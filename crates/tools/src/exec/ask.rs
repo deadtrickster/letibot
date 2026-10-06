@@ -23,11 +23,14 @@
 //!    waiting for anything, and a card for it would be a card nobody can answer.
 //! 2. **It has written nothing for a beat.** A program that is asking and still drawing is
 //!    a program that is not blocked; see the misses below.
-//! 3. **Some process of the run has its stdin on OUR pipe and is blocked in a pipe read.**
-//!    `/proc/<pid>/fd/0` is a link to `pipe:[<inode>]` and the inode is compared with the
-//!    one `fstat` gives for the write end we hold — so *a process reading some other pipe*
-//!    (the `grep` in `! ls | grep foo`, waiting on `ls`) is not this, and neither is a
-//!    process reading a file. `/proc/<pid>/wchan` then says what it is blocked **in**.
+//! 3. **Some process of the run has its stdin on OUR pipe and is blocked in a pipe read**
+//!    **on that same descriptor.** `/proc/<pid>/fd/0` is a link to `pipe:[<inode>]` and the
+//!    inode is compared with the one `fstat` gives for the write end we hold — so *a process
+//!    reading some other pipe* (the `grep` in `! ls | grep foo`, waiting on `ls`) is not
+//!    this, and neither is a process reading a file. `/proc/<pid>/wchan` then says what it is
+//!    blocked **in**, and `/proc/<pid>/task/<tid>/syscall` says **which descriptor** — the
+//!    two together are the whole of it, and the second is what keeps `sudo` from reading as a
+//!    question (see miss 1).
 //!
 //! Conditions 1 and 2 are the caller's, because the caller is the one holding the clock and
 //! the job state; this module is 3, plus [`last_line`], which is the *display* half and
@@ -37,7 +40,7 @@
 //!
 //! A process blocked in `read(2)` on a pipe sits in the kernel's pipe read, and `wchan`
 //! names it. Measured on this box (2026-09-25, `anon_pipe_read`): the modern name. Older
-//! kernels call it `pipe_read`, and older still `pipe_wait`. [`blocked_reading`] accepts all
+//! kernels call it `pipe_read`, and older still `pipe_wait`. [`blocked_reading_fd0`] accepts all
 //! three by suffix and **nothing else**, and the reason it does not simply look for `read`
 //! is that `filemap_read`, `unix_stream_read_generic` and `tcp_recvmsg` all end in a read
 //! and none of them is a program waiting for a person.
@@ -53,11 +56,20 @@
 //!    config file before it prints its prompt, a program waiting on a network socket, a
 //!    program blocked writing to a full pipe — none of them is in a pipe read on fd 0, so
 //!    no card is raised even though the screen is asking.
+//!
+//!    **And the near miss inside this one, which is `sudo`.** `sudo -A` forks the askpass
+//!    helper with a pipe on the child's stdout and then blocks in `read(2)` on that pipe —
+//!    with its own fd 0 untouched, which in an operator's `!` run is the pipe the daemon
+//!    holds. So it satisfies both halves of a reading that only compares fd 0 and `wchan`,
+//!    and the daemon would raise a card for a question nobody asked while the person is
+//!    typing their password. `syscall`'s first argument is what tells the two apart —
+//!    measured on this box, the substitution that has sudo's shape is `read(3, …)` and a
+//!    program genuinely waiting is `read(0, …)`.
 //! 2. **A program that asks and keeps drawing.** A build with a spinner, `apt` between two
 //!    of its own progress lines: the process is not blocked, so nothing is raised. *What is
 //!    on the screen* is the whole question and this reads a process.
 //! 3. **A thread, not a process.** `wchan` is per thread and `/proc/<pid>/wchan` is the
-//!    thread group leader's. [`blocked_reading`] reads **every** thread under
+//!    thread group leader's. [`blocked_reading_fd0`] reads **every** thread under
 //!    `/proc/<pid>/task`, which is what makes a program whose reader is a spawned thread
 //!    visible — but a program blocked in a thread this process cannot see (another user, a
 //!    PID namespace it is not in) is invisible.
@@ -68,6 +80,15 @@
 //!    the job's processes says the same thing by listing none. **No card is raised on an
 //!    unreadable signal**, because a card raised on a guess is worse than a person deciding,
 //!    and the person's way in is `!send`.
+//!
+//!    **And it is not only the case where NOTHING could be read — that was this module's own
+//!    defect.** A `! sudo apt install mc` is `bash` (this uid, readable, in `wait(2)`) over
+//!    `sudo` and then `apt` (**root**, so `/proc/<pid>/fd/0` is `EACCES` for the daemon, and
+//!    `wchan` reads `0` — the kernel's own *could not look*). Reading the shell and reporting
+//!    `No` says *nobody is asking* about a process that was never looked at, which is the
+//!    empty-haystack mistake this enum exists to prevent; `apt` waiting at `Continue? [Y/n]`
+//!    is then invisible, no card is raised, and the run sits on the pipe until its deadline.
+//!    **`No` requires having looked at EVERY process** — see [`waiting_for_an_answer`].
 //! 5. **A kernel whose wchan name is none of the three.** Then nothing is raised and the
 //!    reason is invisible. Named here because it is the one miss that would look like the
 //!    feature never firing.
@@ -106,6 +127,24 @@ pub enum Waiting {
 /// **The whole of condition 3**, as one call: `pids` are the run's processes and `pipe` is
 /// the inode of the write end this daemon holds, or `None` when there is no such end.
 ///
+/// # `Yes`, `No`, and what each one costs to say
+///
+/// `Yes` is **knowledge** and short-circuits: one process of the run was *read*, its stdin is
+/// this pipe, and it is blocked in a read on that descriptor. Nothing another process could
+/// say makes that untrue, so an unreadable sibling does not turn it into a maybe.
+///
+/// `No` is knowledge too, and it is the one that has to be earned: **it is returned only when
+/// every process of the run was looked at** and none of them is reading our pipe. That is the
+/// correction this function needed. It used to answer `No` when *some* process had been read,
+/// which made the two facts the caller cares about — *nobody is asking* and *I cannot see
+/// whether anybody is* — into one, and the operator's own report is what that costs: a
+/// `! sudo apt install mc` runs `bash` (this uid, readable, in `wait(2)`) over `sudo` and then
+/// `apt`, both **root**, and `/proc/<pid>/fd/0` is `EACCES` for a uid that is not theirs. The
+/// shell was read, the process that was actually waiting on the pipe was not, and the answer
+/// came back `No` — so no card was ever raised and the run sat until its deadline. **A list
+/// with a hole in it is not an empty list**, which is the rule [`super::host::ProcessHost::job_pids`]
+/// states for the list itself and which this now keeps one layer up.
+///
 /// `None` for `pipe` is [`Waiting::Unreadable`] rather than `No`, and so is an empty `pids`
 /// — a host that cannot say which processes a job has has not said *nothing is running*.
 pub fn waiting_for_an_answer(pids: &[u32], pipe: Option<u64>) -> Waiting {
@@ -115,27 +154,27 @@ pub fn waiting_for_an_answer(pids: &[u32], pipe: Option<u64>) -> Waiting {
     if pids.is_empty() {
         return Waiting::Unreadable;
     }
-    let mut saw_one = false;
+    let mut unseen = false;
     for pid in pids {
         // `Unreadable` here is *this process could not be looked at* — a uid the daemon
-        // is not, a process that left between the cgroup read and this one. It is not a
-        // `No`, and the only way the whole call is `Unreadable` is if EVERY process was
-        // unreadable.
+        // is not (the `sudo` case), a process that left between the cgroup read and this
+        // one, a `/proc` a confined session's daemon may not open. It is not a `No`.
         match stdin_of(*pid) {
-            StdinRead::Unreadable => continue,
-            StdinRead::NotAPipe => saw_one = true,
+            StdinRead::Unreadable => unseen = true,
+            StdinRead::NotAPipe => {}
             StdinRead::Pipe(their_ino) => {
-                saw_one = true;
-                if their_ino == ino && blocked_reading(*pid) {
+                if their_ino == ino && blocked_reading_fd0(*pid) {
                     return Waiting::Yes;
                 }
             }
         }
     }
-    if saw_one {
-        Waiting::No
-    } else {
+    // **`No` only if there is nothing left unlooked-at.** See the docs above: one process the
+    // daemon could not open is one it cannot say *is not* asking.
+    if unseen {
         Waiting::Unreadable
+    } else {
+        Waiting::No
     }
 }
 
@@ -192,27 +231,68 @@ fn stdin_of(pid: u32) -> StdinRead {
     }
 }
 
-/// **Is any thread of this process blocked in a pipe read?**
+/// **Is any thread of this process blocked in a read on ITS fd 0?**
 ///
 /// Every thread, not the group leader: `/proc/<pid>/wchan` is the leader's, and a program
 /// whose reader is a thread it spawned would be invisible through that one file. A process
 /// this daemon cannot read has no threads it can read either, and `false` is the answer —
 /// [`waiting_for_an_answer`] is where that becomes `Unreadable` rather than `No`.
-fn blocked_reading(pid: u32) -> bool {
+///
+/// # The descriptor, which `wchan` alone does not give
+///
+/// `wchan` says *a* pipe read and not **whose**. `sudo -A` is the case that made this load
+/// bearing: it forks the askpass helper with a pipe on the child's stdout and blocks in
+/// `read(2)` on that pipe, while its own fd 0 is the pipe this daemon holds. Compared on
+/// `wchan` and fd 0 alone, that is indistinguishable from a program waiting for a person, and
+/// the card it raised was for a question nobody asked — MEASURED 2026-10-06, on a run of
+/// sudo's exact shape: `PromptRequested question=Some("bash: no job control in this shell")`
+/// while the person was still typing their password.
+///
+/// So the descriptor is read too. `/proc/<tid>/syscall`'s first field is the syscall number
+/// and the second is its first argument, which for `read(2)` and `readv(2)` **is the fd** —
+/// and those are the two a blocked pipe read can be. Measured on this box: the substitution
+/// with sudo's shape is `0 0x3 …` (`read(3, …)`) and a program genuinely waiting for a line is
+/// `0 0x0 …` (`read(0, …)`).
+///
+/// **A thread whose `syscall` cannot be read is not counted**, which is the conservative
+/// direction and the same one miss 4 takes: a card raised on a guess is worse than a person
+/// deciding, and the person's way in is `!send`. It costs nothing on a box where the two files
+/// move together — measured here, `/proc/<pid>/fd/0` and `/proc/<pid>/task/<tid>/syscall` are
+/// both readable for this uid and both `EACCES` for a uid that is not.
+fn blocked_reading_fd0(pid: u32) -> bool {
     let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
         return false;
     };
-    let mut any = false;
     for e in entries.flatten() {
-        any = true;
-        if let Ok(wchan) = std::fs::read_to_string(e.path().join("wchan"))
-            && is_a_pipe_read(wchan.trim())
-        {
+        let Ok(wchan) = std::fs::read_to_string(e.path().join("wchan")) else {
+            continue;
+        };
+        if !is_a_pipe_read(wchan.trim()) {
+            continue;
+        }
+        if blocked_on_fd(&e.path().join("syscall")) == Some(0) {
             return true;
         }
     }
-    let _ = any;
     false
+}
+
+/// **The descriptor a blocked thread is in a syscall on**, from `/proc/<tid>/syscall`.
+///
+/// `None` when the file cannot be read or does not hold a syscall: the kernel answers
+/// `running` for a task that is not in one, and `-1` with zeroes for a task it will not
+/// describe. Both are *could not look*, and both are answered by not counting the thread.
+fn blocked_on_fd(syscall: &std::path::Path) -> Option<i64> {
+    let text = std::fs::read_to_string(syscall).ok()?;
+    let mut fields = text.split_whitespace();
+    let _nr = fields.next()?;
+    // `0x3`, and never a negative: a descriptor is an index. A `-1` here is the kernel's
+    // *not described* and it parses as a number, so the sign is checked and not only the
+    // parse — otherwise a process the kernel declined to describe would read as fd `-1`,
+    // which is not fd 0 and is therefore already the safe answer.
+    let arg0 = fields.next()?;
+    let value = i64::from_str_radix(arg0.trim_start_matches("0x"), 16).ok()?;
+    (value >= 0).then_some(value)
 }
 
 /// **The three names a blocked pipe read has had**, and nothing else.
@@ -357,6 +437,135 @@ mod tests {
         let _ = other.kill();
         let _ = ours.wait();
         let _ = other.wait();
+    }
+
+    /// **A process blocked on a pipe that is NOT ours is not waiting on ours** — even when its
+    /// fd 0 *is* ours.
+    ///
+    /// This is `sudo`'s exact shape, and it is the false card the operator's own report was
+    /// first read as. `sudo -A` forks the askpass helper with a pipe on the child's stdout and
+    /// blocks in `read(2)` on **that** pipe, while its own fd 0 is the pipe the daemon holds —
+    /// so fd 0 matches and `wchan` says `anon_pipe_read`, and a reading that stops there raises
+    /// a card claiming the run is waiting for a line while the person is still typing their
+    /// password. MEASURED 2026-10-06 on a run of that shape: the daemon published
+    /// `PromptRequested question=Some("bash: no job control in this shell")` — a card for a
+    /// question nobody asked, which also takes the run's ONE open card, so the question the
+    /// command really asks later can never be raised.
+    ///
+    /// `pw=$(sleep 30)` is that shape: the shell forks the substitution with a pipe on its
+    /// stdout and blocks reading it, and its fd 0 is untouched. The control is in the same
+    /// test — the identical shell with `read x`, which is `read(0, …)` and must still be `Yes`.
+    #[test]
+    fn a_process_blocked_on_its_own_pipe_is_not_waiting_on_ours() {
+        let ours = |command: &str| {
+            let mut child = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(command)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("sh starts");
+            let w = child.stdin.take().expect("the pipe this test holds");
+            let ino = pipe_inode(w.as_raw_fd()).expect("the write end is a pipe");
+            let mut seen = Waiting::No;
+            for _ in 0..100 {
+                seen = waiting_for_an_answer(&[child.id()], Some(ino));
+                if seen != Waiting::No {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            (seen, child, w)
+        };
+
+        // ---- sudo's shape: a pipe of its own, and fd 0 left alone.
+        let (seen, mut child, _w) = ours("pw=$(sleep 30)");
+        assert_ne!(
+            seen,
+            Waiting::Yes,
+            "a process blocked reading a pipe it made itself is not waiting for a line from us, \
+             whatever its fd 0 is"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+
+        // ---- The control, which the correction must not have cost: the same shell, genuinely
+        //      blocked on the descriptor we hold.
+        let (seen, mut child, _w) = ours("read x");
+        assert_eq!(
+            seen,
+            Waiting::Yes,
+            "a program reading ITS STDIN — which is our pipe — is still waiting for a line"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// **A process the daemon may not look at is not a `No`.**
+    ///
+    /// The correction that the operator's report needed, and the reason is the shape of
+    /// `! sudo apt install mc` as a process tree: `bash` (this uid, readable, in `wait(2)`) over
+    /// `sudo` and then `apt`, which run as **root**. `/proc/<pid>/fd/0` is `EACCES` for a uid
+    /// that is not theirs — MEASURED 2026-10-06: `readlink /proc/1/fd/0` is `PermissionDenied`,
+    /// and so is the same read of a process of this uid that has made itself undumpable, which
+    /// is the flag a setuid exec sets. `wchan` for such a process reads `0` — the kernel's own
+    /// *could not look* — so it is not a pipe read either.
+    ///
+    /// Read as `No`, the daemon says *nobody is asking* about a process it never opened, `apt`
+    /// waits at `Continue? [Y/n]` invisible, no card is raised and the run sits on the pipe
+    /// until its deadline. A list with a hole in it is not an empty list.
+    #[test]
+    fn a_process_that_could_not_be_looked_at_is_not_a_no() {
+        // This process is readable and is not blocked on the pipe inode named here, so it
+        // alone would answer `No`. A pid that does not exist cannot be looked at at all — the
+        // same `Unreadable` a root-owned `sudo` gives, without needing one.
+        assert_eq!(
+            waiting_for_an_answer(&[std::process::id(), u32::MAX - 1], Some(1234)),
+            Waiting::Unreadable,
+            "one process of the run could not be looked at, so the run's answer is not `No`"
+        );
+        // And the same call with every process readable is `No`, which is what keeps the rule
+        // above from being *never say no*.
+        assert_eq!(
+            waiting_for_an_answer(&[std::process::id()], Some(1234)),
+            Waiting::No,
+            "every process was looked at and none is reading this pipe"
+        );
+    }
+
+    /// **`Yes` is knowledge, and a sibling that could not be read does not take it back.**
+    ///
+    /// The direction the correction must not break: one process *seen* blocked on our pipe is
+    /// the answer, whatever else in the run the daemon could not open. A card is raised on this
+    /// and it is right to raise it.
+    #[test]
+    fn a_process_seen_waiting_is_yes_even_beside_one_that_could_not_be_read() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("read x")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("sh starts");
+        let w = child.stdin.take().expect("the pipe this test holds");
+        let ino = pipe_inode(w.as_raw_fd()).expect("the write end is a pipe");
+        let mut seen = Waiting::No;
+        for _ in 0..100 {
+            seen = waiting_for_an_answer(&[child.id(), u32::MAX - 1], Some(ino));
+            if seen == Waiting::Yes {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            seen,
+            Waiting::Yes,
+            "a process seen reading our pipe is the answer, whatever else could not be opened"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     /// **No `/proc` reading is a fact, not a `No`.**

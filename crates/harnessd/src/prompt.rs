@@ -16,6 +16,7 @@
 //! | **the run** | the one operator command this session has in flight: its job, the command the person typed, and the pipe |
 //! | **the card** | the open `req_id` for that run, minted here and published as [`SessionEvent::PromptRequested`] |
 //! | **the write** | [`PromptDriver::send`], which is what a head's answer and a `!send` both become |
+//! | **the silence** | [`Prompts::unreadable`], for the run this daemon may not look at — see the report itself |
 //!
 //! # Why the state is here and not in the harness
 //!
@@ -34,7 +35,7 @@
 //! driver up by session id and [`Prompts::send`] checks the id it was given against its own.
 //! That check is not defensive: it is the assertion that the lookup was the right one.
 //!
-//! # The three reports, and which thread each comes from
+//! # The reports, and which thread each comes from
 //!
 //! * [`Prompts::opened`] and [`Prompts::ended`] come from the **worker**, on the tool's own
 //!   thread, around the wait. `opened` is what makes the manual way in work when no card is
@@ -43,6 +44,12 @@
 //! * [`Prompts::asking`] comes from the same thread, once per question, when
 //!   [`letibot_tools::exec::ask`] says the run is **blocked reading the pipe this daemon
 //!   holds**.
+//! * [`Prompts::unreadable`] comes from the same thread too, once per run, when `ask` says the
+//!   opposite of a reading: **it could not look** — a process of the run belongs to another
+//!   uid, which is every `! sudo …` that reaches a program running as root. There is no card
+//!   to raise on that, and this is the sentence the person is owed instead: *I cannot tell,
+//!   and `!send` is the way in.* See the method: the operator's own report is the state this
+//!   exists for.
 //! * [`PromptDriver::send`] comes from the **server's reader thread**, because the answer is
 //!   not an act on the session's timeline — it is the second half of one already in flight.
 //!   See the trait for why the queue cannot carry it.
@@ -82,6 +89,10 @@ struct Run {
     /// The card that is up for this run, if any. `None` between the run starting and the
     /// first question, and again after one is answered.
     req: Option<String>,
+    /// **Whether the daemon has already said it cannot tell whether this run is waiting.**
+    /// Once per run: the report is about a condition that holds for as long as the run does,
+    /// and a sentence per beat would be a sentence nobody reads. See [`Prompts::unreadable`].
+    unreadable_said: bool,
 }
 
 /// See the module header.
@@ -142,6 +153,7 @@ impl Prompts {
             command: command.to_string(),
             stdin,
             req: None,
+            unreadable_said: false,
         });
     }
 
@@ -179,6 +191,63 @@ impl Prompts {
             job: job.to_string(),
             command,
             question: question.map(str::to_string),
+        });
+    }
+
+    /// **This daemon cannot tell whether the run is waiting for a line**, and it says so.
+    ///
+    /// # Why this is a sentence and not a card
+    ///
+    /// The card is raised on a **reading of the process** — `letibot_tools::exec::ask` — and
+    /// the whole reason it is a reading rather than a guess is the operator's own correction:
+    /// *"i think `Continue?` is an overfit"*. [`OperatorRun::Unreadable`] is the third answer,
+    /// *"I could not look"*: one process of the run belongs to a uid this daemon is not (the
+    /// `sudo` case), or a `/proc` a confined session's daemon may not open. A card raised on
+    /// it would be a guess, and a wrong one for every long quiet command that is not asking
+    /// anything — so no card, which is what `ask`'s miss 4 already ruled.
+    ///
+    /// # What the person was owed instead
+    ///
+    /// *Something*. The operator's report — `! sudo apt install mc`, *"after entering the
+    /// sudo password, the command appears queued and the daemon hangs"* — is exactly this
+    /// state with nothing said about it: `apt` waits at `Continue? [Y/n]` as root, where
+    /// `/proc/<pid>/fd/0` is `EACCES` for the daemon, so no card can be raised and the run
+    /// holds the daemon's one worker until its deadline. The person has no way to learn that
+    /// the command is waiting at all.
+    ///
+    /// So the daemon says the one thing that is true and the one thing that helps: it cannot
+    /// tell, and **`!send` is the way in** — the verb that needs no signal, which the card's
+    /// own docs already name as the floor under every miss the heuristic has. The command is
+    /// named because the person typed it, and the job is named because `job_output` reads it.
+    ///
+    /// **Once per run.** A condition, not an event: the run stays unreadable for as long as it
+    /// lasts, and one sentence per beat would be a red block nobody reads.
+    pub fn unreadable(&self, job: &str) {
+        let command = {
+            let mut g = self.lock();
+            let Some(run) = g.as_mut() else {
+                // A report about a run this daemon never saw start, or one that has ended.
+                // There is nothing to name and nobody to tell.
+                return;
+            };
+            if run.job != job || run.unreadable_said {
+                return;
+            }
+            run.unreadable_said = true;
+            run.command.clone()
+        };
+        self.hub.publish(SessionEvent::Warning {
+            code: "operator_run_unreadable".to_string(),
+            detail: format!(
+                "`{command}` has been quiet for a beat and this daemon cannot tell whether it \
+                 is waiting for a line: one of its processes belongs to another user, so \
+                 `/proc` refuses for it. If it is waiting — `sudo` reaching `apt`'s `Continue? \
+                 [Y/n]` is the case this was measured on — the way in is `!send <line>`, which \
+                 needs no card. Until the command ends it holds this daemon's worker, so \
+                 nothing else of yours runs either."
+            ),
+
+            compaction: None,
         });
     }
 
@@ -335,6 +404,87 @@ mod tests {
             raised,
             vec!["sudo apt install mc".to_string()],
             "one card, naming the command the operator typed"
+        );
+    }
+
+    /// **A run this daemon cannot look at is said out loud, once.**
+    ///
+    /// The operator's report, as an assertion: `! sudo apt install mc`, the password given,
+    /// and then *nothing* — `apt` waits at `Continue? [Y/n]` as root, `/proc/<pid>/fd/0` is
+    /// `EACCES` for the daemon, so no card can be raised (a card is a reading and this is not
+    /// one) and the run holds the worker until its deadline. The sentence is the whole of what
+    /// the person is owed there, and it has to name the way in: **`!send`**, the verb that
+    /// needs no signal at all.
+    ///
+    /// **Once per run**, and that is the assertion this test exists for beside the wording: a
+    /// condition reported per beat is a red block nobody reads, which is the failure mode the
+    /// warning register is written against.
+    #[test]
+    fn a_run_this_daemon_cannot_look_at_is_said_once_and_names_the_way_in() {
+        let hub = a_hub();
+        let p = Prompts::new("p-1", hub.clone());
+        // Nothing running: a report about a run this daemon never saw start has nobody to tell
+        // and no command to name.
+        p.unreadable("j1");
+        assert!(
+            !events(&hub)
+                .into_iter()
+                .any(|e| matches!(e, SessionEvent::Warning { .. })),
+            "a report about no run says nothing"
+        );
+
+        p.opened("j1", "sudo apt install mc", Stdin::none());
+        p.unreadable("j1");
+        p.unreadable("j1");
+        p.unreadable("j1");
+        let said: Vec<String> = events(&hub)
+            .into_iter()
+            .filter_map(|e| match e {
+                SessionEvent::Warning { code, detail, .. } => Some(format!("{code}: {detail}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(said.len(), 1, "one sentence for one run: {said:?}");
+        assert!(
+            said[0].starts_with("operator_run_unreadable:"),
+            "the code is the register's, so the head paints it as the caveat it is: {said:?}"
+        );
+        assert!(
+            said[0].contains("sudo apt install mc"),
+            "it names the command the person typed: {said:?}"
+        );
+        assert!(
+            said[0].contains("!send"),
+            "and the way in, which needs no card: {said:?}"
+        );
+        // **No card.** This is the other half of the ruling and the reason the report is a
+        // Warning: `ask::Waiting::Unreadable` is *I could not look*, and a card raised on it
+        // would be a guess — wrong for every long quiet command that is not asking anything.
+        assert!(
+            !events(&hub)
+                .into_iter()
+                .any(|e| matches!(e, SessionEvent::PromptRequested { .. })),
+            "an unreadable run raises no card: a card is a reading of the process"
+        );
+        // A report about a job that is not this run's is about something else, and a new run
+        // starts its own once.
+        p.unreadable("j2");
+        assert_eq!(
+            events(&hub)
+                .into_iter()
+                .filter(|e| matches!(e, SessionEvent::Warning { .. }))
+                .count(),
+            1
+        );
+        p.opened("j2", "sudo -v", Stdin::none());
+        p.unreadable("j2");
+        assert_eq!(
+            events(&hub)
+                .into_iter()
+                .filter(|e| matches!(e, SessionEvent::Warning { .. }))
+                .count(),
+            2,
+            "a second run gets its own sentence"
         );
     }
 

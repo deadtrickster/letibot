@@ -167,6 +167,14 @@ pub const TABLE: &[(&str, Class)] = &[
     // the door's `operator_call_abandoned` is: the work happened and the record of it is
     // what is missing.
     ("operator_shell_failed", Class::Failure),
+    // **The daemon cannot tell whether the operator's own run is waiting for a line.** One of
+    // its processes belongs to another user — `! sudo apt install mc`, where `apt` waits at
+    // `Continue? [Y/n]` as root and `/proc/<pid>/fd/0` is `EACCES` for the daemon — so no card
+    // can be raised and the run holds the worker until its deadline. A **Failure** by the rule
+    // above and not a routine note: it is a check that did not happen, and the sentence's whole
+    // job is *look at this* — the way in is `!send`. Deleting it puts the operator back in front
+    // of a command that says nothing and never ends, which is the report it was written for.
+    ("operator_run_unreadable", Class::Failure),
     // The compaction also picked up the tools this daemon now seats, and the second
     // summary turn `/reseat` would have cost was not paid. It is a *report of a
     // repair that succeeded* — the compaction's own second half.
@@ -592,13 +600,20 @@ mod the_register_census {
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_29_routine_8_refused_and_46_failures() {
+    fn the_table_is_29_routine_8_refused_and_47_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
-        // **83, not the 82 the last census was taken at.** One arrival, and it is the HEAD's
-        // half of the same act: `prompt` is the note the head files when a card for the
-        // operator's own command settles — `answer sent by WHO`, or `nothing sent (WHY)`.
-        // It is a Failure for the reason `sudo` beside it is, and the instance that settles
-        // it is the second: an answer that did not reach a program that was waiting for it.
+        // **84, not the 83 the last census was taken at.** One arrival, and it is the daemon's
+        // half of the operator's own report: `operator_run_unreadable` is the sentence said when
+        // the process that is waiting cannot be looked at at all — `! sudo apt install mc`,
+        // where `apt` runs as root and `/proc/<pid>/fd/0` is `EACCES`. A Failure, because it is
+        // a check that did not happen and the reader's next move depends on being told.
+        //
+        // The census before that, 83, kept its own list for the same reason:
+        //
+        //   · `prompt` — the note the HEAD files when a card for the operator's own command
+        //     settles, `answer sent by WHO` or `nothing sent (WHY)` — is a Failure for the reason
+        //     `sudo` beside it is, and the instance that settles it is the second: an answer that
+        //     did not reach a program that was waiting for it.
         //
         // The census before that, 82, kept its own list for the same reason:
         //
@@ -641,13 +656,18 @@ mod the_register_census {
         //   · **`alarm_only_unregistered` is the first code here that the HEAD names rather than
         //     the daemon**, and it is a Failure by the same argument that keeps `anchor_lost`: the
         //     diagnostic reaches neither the conversation nor the triangle, so a reader who is not
-        //     told has been told nothing at all.
-        assert_eq!(TABLE.len(), 83, "the table's size");
+        //     told has been told nothing at all;
+        //   · **`operator_run_unreadable`** is the operator's own report — `! sudo apt install mc`,
+        //     where the process that is waiting cannot be looked at at all. A Failure by the rule
+        //     and not a routine note: it is a check that did not happen, and the sentence's job is
+        //     *look at this*, because the alternative is a command that says nothing and never
+        //     ends.
+        assert_eq!(TABLE.len(), 84, "the table's size");
         assert_eq!(count(Class::Routine), 29);
         assert_eq!(count(Class::Refused), 8, "the eight in READER_INPUT");
-        assert_eq!(count(Class::Failure), 46);
+        assert_eq!(count(Class::Failure), 47);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 46 of 83 and the middle is 8**, which is why the third register is a
+        // register is 47 of 84 and the middle is 8**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

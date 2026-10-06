@@ -274,6 +274,10 @@ pub type CompletionDelivered = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync
 ///   been quiet for a beat. See [`crate::exec::ask`]: this is a reading of the process and
 ///   not of its words, and the text that rides along is there to be **shown** and never to
 ///   be decided on.
+/// * [`OperatorRun::Unreadable`] — the run has been quiet for a beat and **this daemon may
+///   not look at one of its processes**, so it cannot tell whether the run is waiting. See
+///   the variant: this is the `sudo` case, and the report exists because silence there is
+///   what the operator read as *the daemon hangs*.
 /// * [`OperatorRun::Ended`] — the run is over, so whatever card was up for it comes down.
 ///   Without this the card would outlive the command it was about: a person would type an
 ///   answer into a program that had already exited.
@@ -310,6 +314,34 @@ pub enum OperatorRun<'a> {
         /// **Nothing anywhere decides anything by this string.** The card carries it
         /// because the person answering needs to see what they are answering.
         question: Option<&'a str>,
+    },
+    /// **This daemon cannot tell whether the run is waiting** — it has been quiet for a
+    /// beat, and at least one of its processes could not be looked at.
+    ///
+    /// # Why this is not [`OperatorRun::Waiting`] with a `None` in it
+    ///
+    /// Because it is not a question and must not become a card. `ask::Waiting::Unreadable`
+    /// is *"I could not look"*, which is the one thing a card must never be raised on —
+    /// the whole design of [`crate::exec::ask`] is that a card is a reading of the process
+    /// and not a guess about it, and a card raised here would be a guess that is *wrong*
+    /// for every long quiet command that is not asking anything.
+    ///
+    /// # The case it exists for, which is the operator's own
+    ///
+    /// `! sudo apt install mc`: `bash` runs as the operator and is readable, `sudo` and then
+    /// `apt` run as **root**, and `/proc/<pid>/fd/0` is `EACCES` for a uid that is not
+    /// theirs. So the process that is actually waiting at `Continue? [Y/n]` is invisible to
+    /// the daemon, no card can honestly be raised, and — before this report existed — the
+    /// daemon said nothing at all while the run held its one worker until the deadline. The
+    /// operator's report is that silence: *"the command appears queued and the daemon
+    /// hangs."*
+    ///
+    /// **The report is a disclosure and not a question.** What the daemon does with it is
+    /// say the one sentence that is true — *I cannot tell, and `!send` is the way in* —
+    /// because `!send` needs no signal at all and works under every miss the card has.
+    Unreadable {
+        /// The job's handle.
+        job: &'a str,
     },
     /// **The run is over.** Whatever card was up for it comes down.
     Ended {
