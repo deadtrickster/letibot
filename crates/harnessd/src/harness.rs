@@ -9633,70 +9633,18 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     ///   keeps refusing to tell.
     fn finished(&self, handle: &str) -> Result<letibot_tools::builtins::task::Finished, String> {
         use letibot_tools::builtins::task::Finished;
-        let Some(child) = self
-            .placed
-            .lock()
-            .expect("placed children")
-            .iter()
-            .find(|c| c.handle == handle)
-            .cloned()
-        else {
-            return Ok(Finished::NoBranch {
+        match self.enqueue_entry(handle)? {
+            Some(entry) => Ok(Finished::Queued {
+                id: entry.id,
+                branch: entry.branch,
+            }),
+            None => Ok(Finished::NoBranch {
                 why: format!(
-                    "`{handle}` was not a `task_start` child of this session, so it has no \
-                     branch of its own to land"
+                    "`{handle}` left no branch of its own to land — it was not a `task_start` \
+                     child of this session, or it worked in the main checkout"
                 ),
-            });
-        };
-        let Some(path) = self.base.store.clone() else {
-            return Err(format!(
-                "this daemon has no `--store`, and the merge queue lives in the session \
-                 store — so there is nowhere to write the entry for `{}`. The branch is still \
-                 in `{}`, and nothing is lost; a daemon started with `--store` will serve it \
-                 when the child is enqueued again.",
-                child.placement.branch, child.placement.path
-            ));
-        };
-        // **The row, built by the queue's own function** — so the enqueue and the daemon's
-        // reads agree about what an entry is by construction rather than by two copies of the
-        // same five assignments. The entry's `session_id` is the CHILD's, which is what the
-        // column documents itself as holding: the subagent that finished the branch, not the
-        // parent that noticed.
-        let now_ms = (crate::config::now_ns() / 1_000_000) as u64;
-        let Some(entry) = crate::mergequeue::entry_for_finished(
-            handle,
-            handle,
-            &child.brief,
-            &child.placement,
-            now_ms,
-        ) else {
-            return Ok(Finished::NoBranch {
-                why: format!(
-                    "`{handle}` worked in the main checkout, so it left no branch of its own \
-                     to land"
-                ),
-            });
-        };
-        // **The write, and a store that will not open is a refusal rather than a silent**
-        // **drop.** A branch reported as queued that is in no queue is exactly the claim this
-        // tree refuses to make; the entry is what the caller is told about, so it is written
-        // first and the sentence is built from what was written.
-        let mut cell = self.merge_store.lock().expect("merge store");
-        if cell.is_none() {
-            *cell = Some(
-                Store::open(&path)
-                    .map_err(|e| format!("the session store at {}: {e}", path.display()))?,
-            );
+            }),
         }
-        let store = cell.as_ref().expect("just opened");
-        store
-            .put_merge_entry(&entry)
-            .map_err(|e| format!("the entry for `{handle}` could not be written: {e}"))?;
-        drop(cell);
-        Ok(Finished::Queued {
-            id: entry.id,
-            branch: entry.branch,
-        })
     }
 
     /// **Stop every child this session still owns** — the downward edge of the tree.
@@ -9809,21 +9757,45 @@ impl HarnessTaskRunner {
     ///     is news the parent did not ask for and would otherwise learn only by calling
     ///     `task_result` — and a merge queue nothing announces is a merge queue nobody watches.
     ///
+    /// # Two readers of one fact, and they go to two different places
+    ///
+    /// The `Warning` goes to **the parent's hub** and the `MergeEntryAdded` goes to **every
+    /// session's log** ([`letibot_sessionlog::registry::Registry::broadcast`]), and the
+    /// difference is the whole of the events decision:
+    ///
+    ///   * *Your child's branch is queued* is a fact about THIS conversation. It belongs in the
+    ///     log the person reading this conversation is attached to, and nowhere else — the same
+    ///     rule `Subagent` and `JobSettled` follow.
+    ///   * *The queue now holds this entry* is a fact about the daemon, and a head attached to
+    ///     any other session can open the queue pane. So the structured event is broadcast, and
+    ///     the pane that folds it is the pane's own work.
+    ///
     /// The enqueue itself is idempotent by id (the handle), so a later `task_result` on the
-    /// same child is a no-op rather than a second entry.
+    /// same child is a no-op rather than a second entry — and the events are emitted once per
+    /// call rather than once per entry, which is why the second notice is not a second
+    /// `MergeEntryAdded`.
     ///
     /// [`TaskRunner::finished`]: letibot_tools::builtins::task::TaskRunner::finished
     fn enqueue_finished(&self, sub_id: &str) {
-        use letibot_tools::builtins::task::{Finished, TaskRunner};
-        match self.finished(sub_id) {
-            Ok(Finished::Queued { id, branch }) => {
+        use letibot_tools::builtins::task::Finished;
+        match self.enqueue_entry(sub_id) {
+            Ok(Some(entry)) => {
+                // **The pane's row**, for every session — see the doc above for why this one is
+                // broadcast and the sentence below is not. The whole entry travels, so a head
+                // that missed the snapshot sees it rather than only later changes.
+                self.registry
+                    .broadcast(letibot_sessionlog::SessionEvent::MergeEntryAdded {
+                        entry: crate::mergequeue::wire_entry(&entry),
+                    });
+                // **The person's sentence**, for this conversation only.
                 if let Some(hub) = self.registry.get(&self.base.session_id) {
                     hub.publish(letibot_sessionlog::SessionEvent::Warning {
                         code: "merge_queued".into(),
                         detail: format!(
-                            "`{branch}` is in the merge queue as `{id}` — the gatekeeper \
-                             reviews it against the brief the child was given, then the queue \
-                             rebases it at the tip of main and runs the gate."
+                            "`{}` is in the merge queue as `{}` — the gatekeeper reviews it \
+                             against the brief the child was given, then the queue rebases it at \
+                             the tip of main and runs the gate.",
+                            entry.branch, entry.id
                         ),
                         compaction: None,
                     });
@@ -9832,7 +9804,7 @@ impl HarnessTaskRunner {
             // **The ordinary case for a plain `task`, and it says nothing.** A child that works
             // in the parent's own tree leaves no branch to land, and a line per such child would
             // be noise on every `task` call there is.
-            Ok(Finished::NoBranch { .. }) => {}
+            Ok(None) => {}
             Err(why) => {
                 if let Some(hub) = self.registry.get(&self.base.session_id) {
                     hub.publish(letibot_sessionlog::SessionEvent::Warning {
@@ -9847,6 +9819,70 @@ impl HarnessTaskRunner {
                 }
             }
         }
+    }
+
+    /// **The write, and a store that will not open is a refusal rather than a silent drop.**
+    ///
+    /// The half of [`TaskRunner::finished`] that does the work, on its own so the two callers
+    /// can have different shapes of the same answer: the trait method needs the tool layer's
+    /// `Finished`, and the enqueue's own notice needs the row it wrote — for the
+    /// `MergeEntryAdded` it broadcasts.
+    ///
+    /// `Ok(None)` is *there is no branch of its own to land*: a plain `task` child, a child of
+    /// the main checkout, or a handle this session never placed. It is not a failure, and the
+    /// caller says nothing about it.
+    ///
+    /// [`TaskRunner::finished`]: letibot_tools::builtins::task::TaskRunner::finished
+    fn enqueue_entry(
+        &self,
+        handle: &str,
+    ) -> Result<Option<letibot_tokencore::store::MergeEntry>, String> {
+        let Some(child) = self
+            .placed
+            .lock()
+            .expect("placed children")
+            .iter()
+            .find(|c| c.handle == handle)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let Some(path) = self.base.store.clone() else {
+            return Err(format!(
+                "this daemon has no `--store`, and the merge queue lives in the session \
+                 store — so there is nowhere to write the entry for `{}`. The branch is still \
+                 in `{}`, and nothing is lost; a daemon started with `--store` will serve it \
+                 when the child is enqueued again.",
+                child.placement.branch, child.placement.path
+            ));
+        };
+        // **The row, built by the queue's own function** — so the enqueue and the daemon's
+        // reads agree about what an entry is by construction rather than by two copies of the
+        // same five assignments. The entry's `session_id` is the CHILD's, which is what the
+        // column documents itself as holding: the subagent that finished the branch, not the
+        // parent that noticed.
+        let now_ms = (crate::config::now_ns() / 1_000_000) as u64;
+        let Some(entry) = crate::mergequeue::entry_for_finished(
+            handle,
+            handle,
+            &child.brief,
+            &child.placement,
+            now_ms,
+        ) else {
+            return Ok(None);
+        };
+        let mut cell = self.merge_store.lock().expect("merge store");
+        if cell.is_none() {
+            *cell = Some(
+                Store::open(&path)
+                    .map_err(|e| format!("the session store at {}: {e}", path.display()))?,
+            );
+        }
+        let store = cell.as_ref().expect("just opened");
+        store
+            .put_merge_entry(&entry)
+            .map_err(|e| format!("the entry for `{handle}` could not be written: {e}"))?;
+        Ok(Some(entry))
     }
 
     fn run_to_completion(

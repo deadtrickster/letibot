@@ -444,14 +444,7 @@ pub fn wire_entry(entry: &MergeEntry) -> letibot_sessionlog::event::MergeEntry {
             MergePriority::Subagent => wire::MergePriority::Subagent,
         },
         needs: entry.needs.clone(),
-        state: match entry.state {
-            MergeState::Waiting => wire::MergeState::Waiting,
-            MergeState::Taken => wire::MergeState::Taken,
-            MergeState::Landed => wire::MergeState::Landed,
-            MergeState::Failed => wire::MergeState::Failed,
-            MergeState::Conflict => wire::MergeState::Conflict,
-            MergeState::Stale => wire::MergeState::Stale,
-        },
+        state: wire_state(entry.state),
         // **The ask travels with the entry.** The reviewer reads it, and a head that draws the
         // queue can show what a row was for without a second read of the child's session —
         // which may be gone by the time anybody asks.
@@ -472,6 +465,22 @@ pub fn wire_entry(entry: &MergeEntry) -> letibot_sessionlog::event::MergeEntry {
 /// listed with its reason, and so is a `Stale` one.
 pub fn wire_queue(entries: &[MergeEntry]) -> Vec<letibot_sessionlog::event::MergeEntry> {
     entries.iter().map(wire_entry).collect()
+}
+
+/// **One state, as the wire spells it** — the same `match` [`wire_entry`] makes, on its own so
+/// a `MergeEntryMoved` (which carries a state and not a whole entry) goes through the same
+/// door. A state added on either side fails to compile HERE, which is the whole reason the two
+/// vocabularies are two.
+pub fn wire_state(state: MergeState) -> letibot_sessionlog::event::MergeState {
+    use letibot_sessionlog::event as wire;
+    match state {
+        MergeState::Waiting => wire::MergeState::Waiting,
+        MergeState::Taken => wire::MergeState::Taken,
+        MergeState::Landed => wire::MergeState::Landed,
+        MergeState::Failed => wire::MergeState::Failed,
+        MergeState::Conflict => wire::MergeState::Conflict,
+        MergeState::Stale => wire::MergeState::Stale,
+    }
 }
 
 // ===== The enqueue: what a finished `task_start` child leaves behind =====
@@ -707,22 +716,34 @@ pub struct MergeQueueDaemon {
     /// for the reviewer's session, and the test's records that it was asked — and both are *the
     /// ask*. The seam is the door, and the daemon holds no opinion about what is behind it.
     reviewer: Box<dyn letibot_tools::gatekeeper::Reviewer + Send>,
+    /// **Where the queue's moves go** — the events decision, as a seam.
+    ///
+    /// The daemon says WHAT happened and this says where it goes, which is the split the
+    /// decision needs: *a queue is daemon-level* is a fact about the wire, and *every session's
+    /// log records it* is a choice about the logs
+    /// ([`letibot_sessionlog::registry::Registry::broadcast`] is the door, and its own doc
+    /// carries the cost). A closure rather than a trait, for the reason the gate is one: the
+    /// test's is a `Vec` push and the production one is a broadcast.
+    events: Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send>,
 }
 
 impl MergeQueueDaemon {
     /// Build the daemon over `store`, serving the repo at `repo`, with `gate` as the check
-    /// that runs at the tip and `reviewer` as the door an entry's review is asked through.
+    /// that runs at the tip, `reviewer` as the door an entry's review is asked through, and
+    /// `events` as where the queue's moves are announced.
     pub fn new(
         store: Store,
         repo: PathBuf,
         gate: Box<dyn Fn(&Path) -> Result<(), String> + Send>,
         reviewer: Box<dyn letibot_tools::gatekeeper::Reviewer + Send>,
+        events: Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send>,
     ) -> Self {
         Self {
             store,
             repo,
             gate,
             reviewer,
+            events,
         }
     }
 
@@ -821,11 +842,16 @@ impl MergeQueueDaemon {
         let entry = entries[idx].clone();
 
         // **Take it**: mark it `Taken`, so a daemon that dies now comes back to a row that
-        // says the job was running, not a row that says nothing.
-        let mut taken = entry.clone();
-        taken.state = MergeState::Taken;
-        taken.evidence = "rebasing at the tip".into();
-        self.store.put_merge_entry(&taken)?;
+        // says the job was running, not a row that says nothing. Through `move_to`, like every
+        // other move, so the pane is told this one too: an entry the queue is working on is not
+        // an entry that is still waiting, and a head that only saw the landing would draw a
+        // `waiting` row through the whole gate.
+        self.move_to(
+            &entry,
+            MergeState::Taken,
+            "rebasing at the tip".into(),
+            None,
+        )?;
 
         // **Rebase it at the tip**: onto the current main, not the SHA it was written
         // against. A conflict is reported, never resolved.
@@ -904,6 +930,16 @@ impl MergeQueueDaemon {
         }
         self.store.put_merge_entry(&moved)?;
         clean_up(&self.repo, entry, state);
+        // **The move is announced, and AFTER the row is written.** A head that folded the
+        // event before the row was on disk could re-read the queue and find the old state,
+        // which is the one order that makes the snapshot and the events disagree; writing
+        // first means a head that missed the event still reads the truth, and a head that got
+        // it reads a state the queue already holds.
+        (self.events)(letibot_sessionlog::SessionEvent::MergeEntryMoved {
+            id: moved.id.clone(),
+            state: crate::mergequeue::wire_state(state),
+            evidence: moved.evidence.clone(),
+        });
         Ok(())
     }
 
@@ -1027,6 +1063,7 @@ pub fn spawn_for(
     cfg: &crate::config::Config,
     stop: Arc<AtomicBool>,
     reviewer: Box<dyn letibot_tools::gatekeeper::Reviewer + Send>,
+    events: Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send>,
 ) -> Option<JoinHandle<()>> {
     let store_path = cfg.store.as_ref()?;
     let repo = match repo_root(&cfg.workspace) {
@@ -1043,7 +1080,9 @@ pub fn spawn_for(
             return None;
         }
     };
-    match MergeQueueDaemon::new(store, repo.clone(), Box::new(ci_gate), reviewer).spawn(stop) {
+    match MergeQueueDaemon::new(store, repo.clone(), Box::new(ci_gate), reviewer, events)
+        .spawn(stop)
+    {
         Ok(handle) => {
             eprintln!("  merge queue: serving {} toward main", repo.display());
             Some(handle)
@@ -1670,6 +1709,40 @@ mod tests {
         })
     }
 
+    /// **A sink that records every event the queue emits** — the events half of a pass, in the
+    /// queue's own tests. The production one broadcasts to every session's log; what these tests
+    /// are about is *what* the queue says and *in what order* relative to the row.
+    #[derive(Clone, Default)]
+    struct RecordingEvents(Arc<std::sync::Mutex<Vec<letibot_sessionlog::SessionEvent>>>);
+
+    impl RecordingEvents {
+        fn sink(&self) -> Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send> {
+            let me = self.clone();
+            Box::new(move |e| me.0.lock().unwrap().push(e))
+        }
+
+        fn moves(&self) -> Vec<(String, letibot_sessionlog::event::MergeState, String)> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|e| match e {
+                    letibot_sessionlog::SessionEvent::MergeEntryMoved {
+                        id,
+                        state,
+                        evidence,
+                    } => Some((id.clone(), *state, evidence.clone())),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    /// A sink that drops everything, for the tests that are not about the events.
+    fn quiet_events() -> Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send> {
+        Box::new(|_| {})
+    }
+
     /// **A repo with a `main` branch and a worktree for `branch`**, checked out at
     /// `root/worktrees/branch`. The repo is the shape the daemon serves: a main that the
     /// entry's branch will be fast-forwarded into, and a worktree where the branch is
@@ -1780,6 +1853,7 @@ mod tests {
             root.clone(),
             Box::new(|_| Ok(())),
             quiet_reviewer(),
+            quiet_events(),
         );
 
         // The first pass takes `other` (urgent) and lands it, moving main to the tip of
@@ -1917,6 +1991,7 @@ mod tests {
             root.clone(),
             Box::new(|_| Ok(())),
             quiet_reviewer(),
+            quiet_events(),
         );
 
         // The first pass takes `other` (urgent) and lands it, moving main to the tip of
@@ -1983,6 +2058,7 @@ mod tests {
             root.clone(),
             Box::new(|_| Err("the gate is red".into())),
             quiet_reviewer(),
+            quiet_events(),
         );
         let outcome = daemon.step().expect("the pass");
         assert_eq!(outcome, StepOutcome::Failed, "the failure is reported");
@@ -2036,6 +2112,7 @@ mod tests {
             root.clone(),
             Box::new(|_| Ok(())),
             quiet_reviewer(),
+            quiet_events(),
         );
         let recovered = daemon.recover().expect("the recovery");
         assert_eq!(
@@ -2099,6 +2176,7 @@ mod tests {
             root.clone(),
             Box::new(|_| Ok(())),
             Box::new(Shared(door.clone())),
+            quiet_events(),
         );
         let outcome = daemon.step().expect("the pass");
         assert_eq!(
@@ -2176,6 +2254,7 @@ mod tests {
             root.clone(),
             Box::new(|_| Ok(())),
             quiet_reviewer(),
+            quiet_events(),
         );
         assert_eq!(
             daemon.step().expect("the pass"),
@@ -2254,6 +2333,7 @@ mod tests {
             root.clone(),
             Box::new(|_| Ok(())),
             quiet_reviewer(),
+            quiet_events(),
         );
         assert_eq!(daemon.step().expect("the pass"), StepOutcome::Refused);
         assert_eq!(sha(&root, "main"), main_sha, "main did not move");
@@ -2346,6 +2426,7 @@ mod tests {
             root.clone(),
             Box::new(|_| Ok(())),
             Box::new(RecordingReviewer::default()),
+            quiet_events(),
         );
         assert_eq!(
             daemon.step().expect("the pass"),
@@ -2365,6 +2446,137 @@ mod tests {
             row.evidence.contains("no gatekeeper session"),
             "and it carries the door's own words: {:?}",
             row.evidence
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **Every move the queue makes is announced, after the row is written.** The events
+    /// decision's second half: a head that is attached when an entry moves sees the move rather
+    /// than only the next snapshot.
+    ///
+    /// The ORDER is asserted as well as the content, and it is the load-bearing half: an event
+    /// folded before the row was on disk would let a head re-read the queue and find the state
+    /// it just heard was over — the one way the snapshot and the events can disagree.
+    #[test]
+    fn every_move_is_announced_after_the_row() {
+        let (root, wt, main_sha, _feature_sha) = repo_with_branch("events");
+        let db = root.join("sessions.db");
+        let entry = MergeEntry {
+            id: "m-events".into(),
+            session_id: "s".into(),
+            branch: "feature".into(),
+            base_sha: main_sha.clone(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            brief: "do the work".into(),
+            evidence: String::new(),
+            created_ms: 1_000,
+            updated_ms: 1_000,
+            worktree: Some(wt.to_str().unwrap().to_string()),
+            landed_sha: None,
+        };
+        enqueue(&db, &entry);
+        approve(&db, "m-events");
+
+        let events = RecordingEvents::default();
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(|_| Ok(())),
+            quiet_reviewer(),
+            events.sink(),
+        );
+        assert!(matches!(
+            daemon.step().expect("the pass"),
+            StepOutcome::Landed(_)
+        ));
+
+        let moves = events.moves();
+        assert_eq!(
+            moves
+                .iter()
+                .map(|(id, state, _)| (id.as_str(), *state))
+                .collect::<Vec<_>>(),
+            vec![
+                ("m-events", letibot_sessionlog::event::MergeState::Taken),
+                ("m-events", letibot_sessionlog::event::MergeState::Landed),
+            ],
+            "the take and the landing are both announced, in that order"
+        );
+        // **The reason travels with the move.** A state without its reason is a row the pane
+        // draws and the operator cannot read — and the event carries the same words the row
+        // does, so the two readers see one account.
+        let on_disk = store_at(&db)
+            .merge_entry("m-events")
+            .expect("reads")
+            .expect("the entry");
+        assert_eq!(
+            moves.last().unwrap().2,
+            on_disk.evidence,
+            "the event's evidence is the row's"
+        );
+        assert!(
+            on_disk.evidence.contains("landed at"),
+            "{:?}",
+            on_disk.evidence
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A refusal is announced too** — a move to `Failed` by a verdict is a move, and a pane
+    /// that showed the entry `waiting` while its reviewer had refused it would be the lie the
+    /// `Stale` state exists to prevent, one state over.
+    #[test]
+    fn a_parked_entry_is_announced() {
+        let (root, wt, main_sha, _feature_sha) = repo_with_branch("events-refused");
+        let db = root.join("sessions.db");
+        let entry = MergeEntry {
+            id: "m-ref".into(),
+            session_id: "s".into(),
+            branch: "feature".into(),
+            base_sha: main_sha.clone(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            brief: "do the work".into(),
+            evidence: String::new(),
+            created_ms: 1_000,
+            updated_ms: 1_000,
+            worktree: Some(wt.to_str().unwrap().to_string()),
+            landed_sha: None,
+        };
+        enqueue(&db, &entry);
+        store_at(&db)
+            .put_review(&letibot_tokencore::store::ReviewRecord {
+                entry_id: "m-ref".into(),
+                session_id: "gatekeeper".into(),
+                branch: "feature".into(),
+                base_sha: main_sha.clone(),
+                asked_ms: 1,
+                answered_ms: Some(2),
+                decision: Some("reject".into()),
+                reasons: vec!["it does not do what the brief asked".into()],
+                files: vec![],
+                commands: vec![],
+            })
+            .expect("the verdict row");
+        let events = RecordingEvents::default();
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(|_| Ok(())),
+            quiet_reviewer(),
+            events.sink(),
+        );
+        assert_eq!(daemon.step().expect("the pass"), StepOutcome::Refused);
+        let moves = events.moves();
+        assert_eq!(moves.len(), 1, "{moves:?}");
+        assert_eq!(moves[0].1, letibot_sessionlog::event::MergeState::Failed);
+        assert!(
+            moves[0].2.contains("reject"),
+            "the verdict travels with the move: {:?}",
+            moves[0].2
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2592,6 +2804,7 @@ mod tests {
             std::env::temp_dir(),
             Box::new(|_| Ok(())),
             quiet_reviewer(),
+            quiet_events(),
         );
         let stop = Arc::new(AtomicBool::new(false));
         let handle = daemon.spawn(stop.clone()).expect("the thread starts");

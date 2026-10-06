@@ -823,7 +823,21 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             }
         },
     };
-    let merge_queue = crate::mergequeue::spawn_for(&cfg, merge_stop.clone(), reviewer);
+    let merge_queue = crate::mergequeue::spawn_for(
+        &cfg,
+        merge_stop.clone(),
+        reviewer,
+        // **Where the queue's moves go: EVERY session's log.** See
+        // `letibot_sessionlog::registry::Registry::broadcast` for the decision and its cost —
+        // in short, the queue is daemon-level and any head can open the pane, so the events
+        // that keep that pane current have to reach a log wherever the head is attached.
+        Box::new({
+            let registry = registry.clone();
+            move |event| {
+                registry.broadcast(event);
+            }
+        }),
+    );
 
     let socket = daemon.socket().display().to_string();
     let dialect = cfg.dialect.name();

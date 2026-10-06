@@ -945,6 +945,49 @@ impl Registry {
         self.source().map(|s| s.merge_entries()).unwrap_or_default()
     }
 
+    /// **Publish one event to EVERY session's log** — the door a daemon-level fact takes, and
+    /// the merge queue is the first thing that needed one.
+    ///
+    /// # Why a broadcast, and what it costs
+    ///
+    /// Every other `publish` in this daemon goes to ONE session's hub, because every other
+    /// event is a fact about that session: a job it backgrounded, a subagent it spawned, a
+    /// decision its gate made. The merge queue is not — there is one `main`, one queue and one
+    /// entry per branch, and the `session_id` on an entry is its ORIGIN rather than a filter.
+    ///
+    /// A head attached to any session can open the queue pane (`ListMergeQueue` is answered to
+    /// whoever asks), so the events that keep that pane current have to reach any session's
+    /// log. The alternative — one session, the daemon's own — is cheaper and wrong in the one
+    /// case the pane exists for: a head attached elsewhere, watching the queue it is about to
+    /// land into.
+    ///
+    /// **The cost is named rather than discovered:** every session's log carries every entry's
+    /// every move, so a daemon with M sessions and a queue that sees N moves records M×N
+    /// events. They are log events and not transcript items — `Hub::publish` appends and fans
+    /// out, it does not touch the conversation and does not ring the bell — so no prompt byte
+    /// and no token changes, no turn is started, and the log's own bounds age them out. What
+    /// it does cost is memory in every session's scrollback, which is why this is a door with
+    /// a name rather than a `for` loop at the call site.
+    ///
+    /// Returns how many logs it reached, so a caller can say *nobody heard* rather than
+    /// assuming somebody did.
+    pub fn broadcast(&self, event: crate::event::SessionEvent) -> usize {
+        // **The hubs are collected under the registry lock and published outside it.** The
+        // same ordering `list` and `get` follow: the registry lock is never held while a hub
+        // lock is taken, and a publish that blocked a session would otherwise block the whole
+        // registry.
+        let hubs: Vec<Arc<Hub>> = {
+            let g = self.lock();
+            g.entries.iter().map(|(_, e)| e.hub.clone()).collect()
+        };
+        let mut reached = 0;
+        for hub in hubs {
+            hub.publish(event.clone());
+            reached += 1;
+        }
+        reached
+    }
+
     pub fn list(&self) -> Vec<SessionBrief> {
         let rows: Vec<(String, String, u64, Arc<Hub>, SessionWiring, Option<String>)> = {
             let g = self.lock();
@@ -1201,6 +1244,54 @@ mod tests {
         assert!(
             matches!(&again, Err(CreateError::Exists(id)) if id == "s-a"),
             "a second create must not hand back the first session"
+        );
+    }
+
+    /// **A broadcast reaches every session's log, and only the log.**
+    ///
+    /// The door the merge queue's events take, and the two halves of the claim are separate:
+    ///
+    ///   * **Every session.** A head attached to any session can open the queue pane, so an
+    ///     event that reached only the daemon's own session would leave that head drawing the
+    ///     state it last saw. The count is asserted, so a door that reached one log and reported
+    ///     success would fail here.
+    ///   * **Only the log.** `publish` appends and fans out; it does not touch a conversation
+    ///     and does not ring the bell, which is what makes broadcasting affordable — no prompt
+    ///     byte changes and no turn is started. Asserted by reading back what the hub retained
+    ///     rather than by trusting the doc.
+    #[test]
+    fn a_broadcast_reaches_every_sessions_log_and_rings_no_bell() {
+        let r = reg();
+        for id in ["s-a", "s-b", "s-c"] {
+            r.create(id, "", SessionWiring::default()).unwrap();
+        }
+        let event = crate::event::SessionEvent::MergeEntryMoved {
+            id: "m-1".into(),
+            state: crate::event::MergeState::Landed,
+            evidence: "landed at deadbeef".into(),
+        };
+        assert_eq!(r.broadcast(event.clone()), 3, "every session's log");
+
+        // **Every one of them really holds it**, read back through the hub's own retained log.
+        for id in ["s-a", "s-b", "s-c"] {
+            let hub = r.get(id).expect("the session");
+            let retained = hub.retained();
+            assert!(
+                retained.iter().any(|e| matches!(
+                    &e.event,
+                    crate::event::SessionEvent::MergeEntryMoved { id, .. } if id == "m-1"
+                )),
+                "{id} did not record the move: {retained:?}"
+            );
+        }
+
+        // **And no wake was rung.** A broadcast that started a turn in every session would be
+        // a queue move that costs a generation per session, which is the cost this door exists
+        // to bound. The bell is drained and found empty.
+        r.bell().close();
+        assert!(
+            r.bell().next().is_none(),
+            "a broadcast must not wake anybody"
         );
     }
 
