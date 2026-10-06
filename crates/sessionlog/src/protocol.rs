@@ -2696,6 +2696,19 @@ mod tests {
                     by: crate::event::TodoBy::Model,
                     when: None,
                 },
+                // **And the fourth word, which is the one a head has to read back to draw the
+                // state**: the row the operator set aside. Spelled here rather than only in the
+                // store's own test, because the two are separate copies of one vocabulary and
+                // this is the side a head sees — a `postponed` that a head could not parse would
+                // fail the whole frame, taking the rows beside it with it.
+                crate::event::TodoEntry {
+                    content: "push once CI lands".into(),
+                    status: crate::event::TodoStatus::Postponed,
+                    by: crate::event::TodoBy::Operator,
+                    when: Some(crate::event::TodoCondition::Job {
+                        handle: "j121".into(),
+                    }),
+                },
             ],
         };
         let json = serde_json::to_string(&f).unwrap();
@@ -2703,6 +2716,7 @@ mod tests {
         // reader and a head reader agree.
         assert!(json.contains(r#""status":"completed""#), "{json}");
         assert!(json.contains(r#""status":"in_progress""#), "{json}");
+        assert!(json.contains(r#""status":"postponed""#), "{json}");
         assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
     }
 
