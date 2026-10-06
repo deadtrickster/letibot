@@ -381,6 +381,63 @@ Here are some commands:
         );
     }
 
+    /// **A line the prompt did not ask for is not a candidate.**
+    ///
+    /// The two that look most like candidates are the ones worth pinning, because both
+    /// are things a model told to answer with `! ` lines writes anyway: **a bare command
+    /// without the sigil** — which the parse drops rather than prefixing, because
+    /// `!`-first is the one recogniser for *this is a command* everywhere else in the
+    /// tree and a parser that guessed would be a second one — and **a bang with nothing
+    /// after it**, which is not a command here any more than it is at the send. The one
+    /// line that IS a candidate comes through, and a comment inside a fence does not.
+    #[test]
+    fn a_line_the_prompt_did_not_ask_for_is_not_a_candidate() {
+        let reply = "```bash\nls -la\ngit status\n# run the tests\n! \n!   \n! cargo test\n```";
+        assert_eq!(
+            parse_suggestions(reply),
+            vec!["! cargo test".to_string()],
+            "a bare command, a comment and a bare bang are all not candidates"
+        );
+    }
+
+    /// **A `bash` call that cannot be re-run is not a command the session ran.**
+    ///
+    /// The prompt's second context half is what tells the model which commands are already
+    /// facts, so a line it cannot stand behind would be a fact nobody ran: unparseable
+    /// arguments, no `command` at all, and a call that is not `bash` are all skipped.
+    #[test]
+    fn a_bash_call_that_cannot_be_re_run_is_not_a_command_the_session_ran() {
+        let items = vec![
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![
+                    letibot_transcript::ToolCall {
+                        id: "c1".into(),
+                        name: "bash".into(),
+                        arguments: "not json at all".into(),
+                    },
+                    letibot_transcript::ToolCall {
+                        id: "c2".into(),
+                        name: "bash".into(),
+                        arguments: r#"{"cwd": "/tmp"}"#.into(),
+                    },
+                    letibot_transcript::ToolCall {
+                        id: "c3".into(),
+                        name: "read".into(),
+                        arguments: r#"{"command": "cat x"}"#.into(),
+                    },
+                ],
+                truncated: false,
+            },
+            assistant_bash("cargo test"),
+        ];
+        assert_eq!(
+            commands_run(&items),
+            vec!["! cargo test".to_string()],
+            "only the call that is a command"
+        );
+    }
+
     /// **The rows are condensed, newest last, and a long row is cut.**
     #[test]
     fn the_rows_are_condensed_and_cut() {
