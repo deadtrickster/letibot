@@ -158,13 +158,23 @@ pub fn painted(p: Painter, line: &str) -> String {
 
 /// What the SGR seen so far on this line asks for, reduced to the three things a role can
 /// be built from.
+///
+/// **`pub` for one reason: it is the pen [`crate::vt::Screen`] holds, and a screen's
+/// SGR state is this state.** A cell keeps the role the pen had when the program wrote
+/// it, so a second table for the screen would be a second answer to *what does `1;33`
+/// mean* — the exact drift [`crate::ansi`]'s module header exists to prevent. The
+/// fields stay private: a caller folds sequences in with [`apply`] and reads the answer
+/// out with [`Wanted::role`], which is the whole of the interface either caller needs.
 #[derive(Default, Clone, Copy)]
-struct Wanted {
+pub struct Wanted {
     bold: bool,
     faint: bool,
     colour: Option<Colour>,
     /// The role the last painted run used, so a sequence that changes nothing paints
     /// nothing.
+    ///
+    /// A run's bookkeeping rather than a pen's, so [`crate::vt`] never reads it: a
+    /// screen's runs are grouped at `Screen::lines` time, from the roles the cells hold.
     last: Option<Role>,
 }
 
@@ -182,7 +192,7 @@ enum Colour {
 
 impl Wanted {
     /// The role this run is painted in, or `None` for the block's own style.
-    fn role(self) -> Option<Role> {
+    pub fn role(self) -> Option<Role> {
         match (self.bold, self.colour) {
             (_, Some(Colour::Red)) => Some(Role::Failure),
             (_, Some(Colour::Green)) => Some(Role::Success),
@@ -207,7 +217,7 @@ impl Wanted {
 /// A parameter this does not know is **ignored and the rest of the sequence still
 /// applies**: `4;31` is an underline this head has no role for and a red it does, and
 /// dropping the red over the underline would be the worse answer.
-fn apply(params: &[u16], want: &mut Wanted) {
+pub fn apply(params: &[u16], want: &mut Wanted) {
     let mut i = 0usize;
     while i < params.len() {
         let p = params[i];
