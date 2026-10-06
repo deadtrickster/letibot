@@ -413,7 +413,24 @@ use crate::view::Snapshot;
 /// answer is a list of candidate lines, and **nothing in the path submits**: a suggestion only
 /// fills the composer, and Enter is still the operator's. See the variants' own docs for the
 /// shape and the defensive parse.
-pub const PROTOCOL_VERSION: u32 = 31;
+///
+/// # 32: attaching to the pane a session already has
+///
+/// [`ServerFrame::TermAttached`] is a new server frame, so a version-31 head would fail to
+/// decode it mid-session — the version-25 argument, and the same one bump for one frame.
+///
+/// **What it is for, in the operator's words:** *"i typed `!term mc` … it flashed and was
+/// gone … a second `!term` then said 'term pane exists'"*, and then the requirement that
+/// follows from it: a person who closes the pane, or switches session, has **no way back**
+/// to a program that is still running. `!term` with no command is now *attach to the pane
+/// this session has* rather than a refusal, and this frame is the half of the answer that
+/// says **what is running in it** — the command, which only the daemon holds (it was handed
+/// the line at `TermOpen`, and the head that typed it may be long gone).
+///
+/// The other half is the screen, and it needs no frame of its own: the daemon holds the
+/// pane's bytes and replays them as [`ServerFrame::TermOutput`] — see
+/// `letibot_harnessd`'s `term` module for the decision and for what a capped log costs.
+pub const PROTOCOL_VERSION: u32 = 32;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1537,11 +1554,23 @@ pub enum ClientFrame {
     /// queueing a pane behind a running turn would make it open minutes after it was asked
     /// for, and the same argument is written at `ClientFrame::Screen` and `ClientFrame::Secret`.
     ///
+    /// **`!term` with nothing after it is *attach*, not a refusal.** The operator's own
+    /// sequence — *"i typed `!term mc` … it flashed and was gone … a second `!term` then said
+    /// 'term pane exists'"* — is a person with a program still running and no way back to it:
+    /// the pane is the session's, the head that typed the line may have switched away or
+    /// closed, and the daemon is the half that still holds the screen. So the bare verb means
+    /// *give me the pane this session has*: the daemon answers with
+    /// [`ServerFrame::TermAttached`] (what is running in it) and then replays what the program
+    /// has drawn as [`ServerFrame::TermOutput`]. A session with no pane answers with
+    /// [`ServerFrame::TermEnded`], like every other pane that could not start.
+    ///
     /// `cols` and `rows` are **the conversation's rectangle**, and they are here because the
     /// head is the half that knows it: the daemon has no screen. They go to the pty as its
     /// `winsize` before the program's first byte, so a full-screen program lays out for the
     /// pane it is actually drawn in rather than for a default of 80×24. After this frame
-    /// [`ClientFrame::TermResize`] moves it.
+    /// [`ClientFrame::TermResize`] moves it — and on an attach they are the attaching head's
+    /// own rectangle, which is what makes a pane come back at the size of the screen it is
+    /// coming back to rather than the size it left.
     ///
     /// Answered by [`ServerFrame::TermOutput`] as the program writes, and by
     /// [`ServerFrame::TermEnded`] once — which is also the answer to a pane that never
@@ -1844,6 +1873,21 @@ pub enum ServerFrame {
     },
     /// The daemon is going away. Detach is not abort; this is the case that is.
     Bye { reason: String },
+    /// **The pane you asked to attach to, and what is running in it.**
+    ///
+    /// The answer to a [`ClientFrame::TermOpen`] whose line is the bare verb: the daemon
+    /// replays what the program has drawn as [`ServerFrame::TermOutput`] (that is the screen
+    /// coming back) and sends this **first**, so the head knows what it is looking at and can
+    /// say so — the operator's own requirement, *"attaching … saying what is running in it"*.
+    ///
+    /// **A command and not the line.** The daemon was handed the command with the verb
+    /// stripped ([`term_command`] is where that happens) and never saw the spelling the
+    /// operator typed, so a head that wants to draw `!term mc` puts the verb back on itself.
+    /// Inventing a `line` here would be this frame claiming to know something nobody told it.
+    ///
+    /// **It is sent before the replay, and the order matters**: a head that drew the bytes
+    /// first and learned what they were afterwards would flash a screen it could not name.
+    TermAttached { command: String },
     /// **A pane's program wrote these bytes** — the up direction of the pane's byte stream.
     ///
     /// The answer to [`ClientFrame::TermOpen`], and then as many of these as the program has
@@ -2072,6 +2116,7 @@ mod tests {
                 | ServerFrame::RowFetched { .. }
                 | ServerFrame::Diagnostic { .. }
                 | ServerFrame::ShellSuggestions { .. }
+                | ServerFrame::TermAttached { .. }
                 | ServerFrame::TermOutput { .. }
                 | ServerFrame::TermEnded { .. }
                 | ServerFrame::Resync { .. }
@@ -2084,12 +2129,14 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 31,
-            "the match above was last reconciled with the frame list at 31 — bumped for \
+            PROTOCOL_VERSION, 32,
+            "the match above was last reconciled with the frame list at 32 — bumped for \
+             `TermAttached`, one NEW server frame (a version-31 head would fail to decode it \
+             mid-session, the version-25 argument), which is the answer to a bare `!term`: the \
+             pane a session already has, and what is running in it. 31 was `!term` whole — \
              `TermOpen`, `TermInput`, `TermResize` and `TermClose`, four NEW client frames (a \
              version-30 daemon would fail to parse the first at ATTACH, the version-4 \
-             argument), and `TermOutput` and `TermEnded`, two NEW server frames (a version-30 \
-             head would fail to decode them mid-session, the version-25 argument), as opposed \
+             argument), and `TermOutput` and `TermEnded`, two NEW server frames — as opposed \
              to an added defaulted field, which is the case that needs no bump. 30 was \
              `SuggestShell`/`ShellSuggestions`, and 29 `ListMergeQueue`/`MergeQueue` and the \
              two merge-queue events"

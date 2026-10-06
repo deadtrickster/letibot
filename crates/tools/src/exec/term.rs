@@ -837,6 +837,42 @@ mod tests {
         );
     }
 
+    /// **A resize to the size the pty already has is not a nudge, and this is the measurement
+    /// that says so.**
+    ///
+    /// It exists because *"a `TermResize` to its own size forces a redraw in every TUI"* is a
+    /// sentence somebody will believe — it is the obvious way to make a pane that came back
+    /// redraw itself — and it is **false on this platform**: `TIOCSWINSZ` compares the new
+    /// `winsize` with the current one and returns before it signals, so a program that redraws
+    /// on `SIGWINCH` gets nothing at all. A daemon that relied on it to prove an attach would be
+    /// relying on a no-op, which is why the attach is proved by the daemon **replaying the
+    /// screen it holds** (`letibot_harnessd`'s `term` module) and why this test is here: a
+    /// future edit that replaces the replay with a nudge fails here rather than in a person's
+    /// empty rectangle.
+    ///
+    /// **The control is in the same test**: the very same program, the very same trap, resized
+    /// to a *different* size, prints — so a green run cannot be a `trap` that never fired.
+    #[test]
+    fn a_same_size_resize_is_not_a_nudge() {
+        let (s, sink) = pane("trap 'echo WINCH' WINCH; while :; do sleep 0.2; done");
+        std::thread::sleep(Duration::from_millis(300));
+        // The pty was opened at 80×24 — `pane`'s own config — so this is the same size.
+        s.resize(80, 24);
+        assert!(
+            !sink.wait_for("WINCH", Duration::from_millis(700)),
+            "a `TIOCSWINSZ` that changes nothing must raise no SIGWINCH, and this one did: {:?}",
+            sink.text()
+        );
+        // The control: a real change, on the same program, is a real signal.
+        s.resize(81, 24);
+        assert!(
+            sink.wait_for("WINCH", PATIENCE),
+            "a size that really changed must reach the program, or this test measures the trap \
+             and not the ioctl: {:?}",
+            sink.text()
+        );
+    }
+
     /// **The ending is the exit status, said once, by the one thread that read.** A program
     /// that exits on its own is not the operator leaving, and the sentence says which.
     #[test]

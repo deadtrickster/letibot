@@ -1093,9 +1093,20 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                         "`{line}` is not a `!term` line: the verb is `!term`, and it has to be \
                          followed by whitespace. Nothing ran."
                     )),
-                    Some("") => Err("`!term` needs a command to run — `!term mc`, `!term nano \
-                                     notes.txt`. Nothing ran."
-                        .to_string()),
+                    // **The verb with no command is ATTACH** — see `TerminalDriver::attach`.
+                    // It was a refusal (*"`!term` needs a command to run"*), and the refusal
+                    // was wrong for the reason the operator hit: the pane is the session's,
+                    // so a person whose head lost the rectangle still has a program running
+                    // and nothing to leave. A session with no pane answers with a sentence
+                    // through the same `TermEnded` every other unstartable pane uses.
+                    Some("") => match registry.terminal() {
+                        None => Err("this daemon has no terminal driver, so there is no pane \
+                                     to attach to. Nothing was attached."
+                            .to_string()),
+                        Some(driver) => {
+                            driver.attach(&seat.hub.session_id(), &seat.hub, cols, rows)
+                        }
+                    },
                     Some(command) => match registry.terminal() {
                         None => Err("this daemon has no terminal driver, so there is no pty to \
                                      run a screen program on. Nothing ran."

@@ -27,6 +27,10 @@
 //!    answering.
 //! 5. **Leaving is the daemon's act**, not a key the program sees, and a pane that never
 //!    started is the same frame as one that ended.
+//! 6. **A bare `!term` attaches**: it reaches the driver's `attach` and not its `open`, the
+//!    rectangle it carries is the *attaching* head's, and what comes back is the name of what is
+//!    running followed by the screen the daemon kept. The screen itself is the daemon's — see
+//!    `letibot_harnessd`'s `term` module for why, and for what a capped log costs.
 //!
 //! **What is not here, and cannot be:** the *feel*. Whether `nano` is usable, whether the
 //! rectangle is the right rectangle, whether ctrl-\ is where a person's fingers go — none of
@@ -51,6 +55,13 @@ use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 #[derive(Default)]
 struct Canned {
     opened: Mutex<Vec<(String, String, usize, usize)>>,
+    /// **What `attach` was told**, in order: (session, cols, rows) — the sibling of `opened`,
+    /// and separate from it so a test can assert which of the two a line reached.
+    attached: Mutex<Vec<(String, usize, usize)>>,
+    /// **What the pane this session has is running.** `None` is *this session has no pane*,
+    /// which a real driver reports as an `Err` — the same sentence a pane that could not start
+    /// uses, because the head's act is the same either way.
+    running: Mutex<Option<String>>,
     input: Mutex<Vec<Vec<u8>>>,
     resized: Mutex<Vec<(usize, usize)>>,
     closed: Mutex<Vec<String>>,
@@ -69,6 +80,11 @@ impl Canned {
     /// What `open` was told, in order: (session, command, cols, rows).
     fn opened(&self) -> Vec<(String, String, usize, usize)> {
         self.opened.lock().unwrap().clone()
+    }
+
+    /// What `attach` was told, in order: (session, cols, rows).
+    fn attached(&self) -> Vec<(String, usize, usize)> {
+        self.attached.lock().unwrap().clone()
     }
 
     fn input(&self) -> Vec<Vec<u8>> {
@@ -117,6 +133,35 @@ impl TerminalDriver for Canned {
             return Err(why);
         }
         *self.hub.lock().unwrap() = Some(hub.clone());
+        Ok(())
+    }
+
+    fn attach(
+        &self,
+        session_id: &str,
+        hub: &Arc<Hub>,
+        cols: usize,
+        rows: usize,
+    ) -> Result<(), String> {
+        self.attached
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), cols, rows));
+        let Some(command) = self.running.lock().unwrap().clone() else {
+            return Err(
+                "this session has no pane to attach to — `!term COMMAND` starts one. Nothing \
+                 was attached."
+                    .to_string(),
+            );
+        };
+        *self.hub.lock().unwrap() = Some(hub.clone());
+        // **What a real driver does, in the order it does it**: what is running, and then the
+        // screen it has kept. Both are `push_frame`s, so this is the same door the pty's reader
+        // thread uses and the ordering is the one a head sees.
+        hub.push_frame(ServerFrame::TermAttached { command });
+        hub.push_frame(ServerFrame::TermOutput {
+            bytes: b"\x1b[2J\x1b[Hmc's screen".to_vec(),
+        });
         Ok(())
     }
 
@@ -181,11 +226,18 @@ fn attach(registry: &Arc<Registry>) -> (FrameWriter<UnixStream>, FrameReader<Uni
     (w, r)
 }
 
-/// Read until a `TermOutput` or a `TermEnded`, skipping the session's own traffic.
+/// Read until a pane frame, skipping the session's own traffic.
+///
+/// **All three of the pane's frames count**: the bytes, the ending, and the name of what is
+/// running (`TermAttached`, which a bare `!term` is answered with before the bytes). A helper
+/// that skipped one of them would make the tests that read a *sequence* of pane frames flaky in
+/// the direction that reads as a wrong assertion.
 fn until_term(r: &mut FrameReader<UnixStream>) -> ServerFrame {
     loop {
         match r.read::<ServerFrame>().expect("a frame") {
-            f @ (ServerFrame::TermOutput { .. } | ServerFrame::TermEnded { .. }) => return f,
+            f @ (ServerFrame::TermAttached { .. }
+            | ServerFrame::TermOutput { .. }
+            | ServerFrame::TermEnded { .. }) => return f,
             ServerFrame::Event(_) => continue,
             other => panic!("expected a pane frame, got {other:?}"),
         }
@@ -219,6 +271,9 @@ fn the_pane_frames_survive_the_wire_byte_for_byte() {
         assert_eq!(back, f, "a client frame did not survive the wire: {json}");
     }
     let up = [
+        ServerFrame::TermAttached {
+            command: "mc /etc".into(),
+        },
         ServerFrame::TermOutput { bytes: raw.clone() },
         ServerFrame::TermEnded {
             reason: "the program exited with 0".into(),
@@ -421,8 +476,8 @@ fn leaving_ends_the_pane_and_never_reaches_the_program() {
 /// **A pane that never started is the same frame as one that ended**, and the sentence is the
 /// whole of the difference — so a refusal is never silence.
 ///
-/// Three refusals, in the three places one can happen: a line that is not the verb, the verb
-/// with no command, and a daemon with no driver at all.
+/// Three refusals, in the three places one can happen: a line that is not the verb, a session
+/// with no pane to attach to, and a daemon with no driver at all.
 #[test]
 fn a_pane_that_cannot_start_says_so_in_one_sentence() {
     // A daemon with no driver: the daemon says so rather than pretending to run something.
@@ -442,14 +497,15 @@ fn a_pane_that_cannot_start_says_so_in_one_sentence() {
         other => panic!("expected TermEnded, got {other:?}"),
     }
 
-    // A line that is not the verb at all, and the verb with nothing after it.
+    // A line that is not the verb at all, and — now — the verb with nothing after it, which is
+    // an ATTACH and refuses only because this canned driver has no pane.
     let driver = Canned::new();
     let registry = start(Some(driver.clone()));
     let (mut w, mut r) = attach(&registry);
     for (line, needle) in [
         ("!terminal x", "not a `!term` line"),
-        ("!term", "needs a command"),
-        ("!term   ", "needs a command"),
+        ("!term", "no pane to attach to"),
+        ("!term   ", "no pane to attach to"),
     ] {
         w.write(&ClientFrame::TermOpen {
             line: line.into(),
@@ -467,7 +523,8 @@ fn a_pane_that_cannot_start_says_so_in_one_sentence() {
     }
     assert!(
         driver.opened().is_empty(),
-        "nothing may be started for a line that is not the verb"
+        "nothing may be STARTED for a line that is not the verb, and nothing may be started \
+         for a bare `!term` — that one attaches"
     );
 
     // And a driver that refuses — a pty that would not open, a scope that would not be joined
@@ -485,6 +542,66 @@ fn a_pane_that_cannot_start_says_so_in_one_sentence() {
         }
         other => panic!("expected TermEnded, got {other:?}"),
     }
+}
+
+/// **A bare `!term` reaches `attach` and not `open`, and what comes back is the pane.**
+///
+/// The operator's defect: `!term mc` flashed and was gone, and a second `!term` said *"a pane is
+/// already open in this session"*. The verb with nothing after it used to be refused
+/// (*"`!term` needs a command to run"*), and it is now the way back to a program that is still
+/// running — which is only possible because the screen is the **daemon's**, so the driver is
+/// what is asked and the driver is what replays.
+///
+/// Three assertions, and they are the whole of the seam:
+///
+/// * **`open` is never called** — a bare verb starts nothing, which is what makes this an attach
+///   rather than a second pane;
+/// * **`attach` gets the session and the rectangle** — the head's own rectangle, so a program is
+///   laid out for the screen it is being drawn in rather than for the one it left;
+/// * **and the head is told what is running before it is shown the screen.** The order is the
+///   assertion: a head that drew the bytes first and learned what they were afterwards would
+///   flash a rectangle it could not name.
+#[test]
+fn a_bare_term_line_attaches_to_the_pane_the_session_has() {
+    let driver = Canned::new();
+    *driver.running.lock().unwrap() = Some("mc /etc".into());
+    let registry = start(Some(driver.clone()));
+    let (mut w, mut r) = attach(&registry);
+
+    w.write(&ClientFrame::TermOpen {
+        line: "!term".into(),
+        cols: 97,
+        rows: 23,
+    })
+    .expect("attach");
+
+    // The name of what is running, first.
+    match until_term(&mut r) {
+        ServerFrame::TermAttached { command } => assert_eq!(
+            command, "mc /etc",
+            "the daemon was handed the command with the verb stripped, and that is what it \
+             can say back"
+        ),
+        other => panic!("expected TermAttached first, got {other:?}"),
+    }
+    // And then the screen it has kept.
+    match until_term(&mut r) {
+        ServerFrame::TermOutput { bytes } => assert!(
+            String::from_utf8_lossy(&bytes).contains("mc's screen"),
+            "the driver's replay is what comes back: {bytes:?}"
+        ),
+        other => panic!("expected the replayed screen, got {other:?}"),
+    }
+    assert!(
+        driver.opened().is_empty(),
+        "a bare `!term` must start nothing: {:?}",
+        driver.opened()
+    );
+    assert_eq!(
+        driver.attached(),
+        vec![("s-1".to_string(), 97usize, 23usize)],
+        "the driver is told the session and the ATTACHING head's rectangle"
+    );
 }
 
 /// **The verb is a whole word, and the parse is the one both halves share.**

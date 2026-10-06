@@ -5205,6 +5205,28 @@ impl App {
                 self.behind = seq.saturating_sub(self.seq);
                 Disposition::Control
             }
+            ServerFrame::TermAttached { command } => {
+                // **The daemon naming the pane this head attached to**, which is the half of the
+                // attach the head cannot know: it sent `!term` with no command, and the head that
+                // typed the original line may be another one or may have switched away. The
+                // command is what the daemon was handed at `TermOpen` — with the verb stripped,
+                // because that is how it received it — so the verb goes back on here, where the
+                // line is a thing a person reads.
+                //
+                // **The bytes follow this frame**, so the pane is up and empty when this lands.
+                // See `ClientFrame::TermOpen` for why the daemon sends the name first: a head
+                // that drew the screen and learned what it was afterwards would flash a
+                // rectangle it could not name.
+                if let Some(p) = self.term.as_mut() {
+                    p.line = format!("!term {command}");
+                }
+                self.say(&format!(
+                    "attached to `!term {command}` — the pane this session already has. \
+                     ctrl-\\ leaves it."
+                ));
+                self.redraw = true;
+                Disposition::Control
+            }
             ServerFrame::TermOutput { bytes } => {
                 // **A pane this head opened, fed its bytes.** Not an event and not counted as
                 // one: `TermOutput` carries no seq, so it is `Control` for the same reason a
@@ -5326,8 +5348,11 @@ impl App {
             // and it cannot be — a `TermClose` sent now would arrive *after* the `Switch`, on
             // the new session's hub, and kill the wrong thing. So the program is left running
             // for the session it belongs to, and it ends when the daemon stops or when a head in
-            // that session leaves it. Filed as a TODO in `TermPane`'s own note: a head that
-            // switches back does not find its pane again, it finds the transcript.
+            // that session leaves it. **And a head that switches back finds it again**: a bare
+            // `!term` attaches to the pane this session has, and the daemon — which held the
+            // screen all along — replays it. That is the half this rectangle's own TODO used to
+            // say was missing (*"a head that switches back does not find its pane again, it
+            // finds the transcript"*).
             self.term = None;
             // The subagent tree is the PARENT's fact. Carried across a switch it
             // put "1 subagent running" on the composer of the very subagent being
@@ -8581,16 +8606,15 @@ impl App {
         // program, and when it closes the transcript is exactly what it was. So the line does
         // not join `pending_prompts` either — there is no `User` row coming to retire it, and
         // an echo that waited for one would wait for ever.
-        if let Some(cmd) = letibot_sessionlog::term_command(&text) {
-            if cmd.is_empty() {
-                self.set_composer(&text);
-                self.say(
-                    "!term COMMAND — the verb has to be followed by the command to run, e.g. \
-                     `!term mc` or `!term nano notes.txt`",
-                );
-                self.redraw = true;
-                return None;
-            }
+        //
+        // **And the verb with nothing after it is not refused any more — it attaches.** It was
+        // a sentence (*"`!term` needs a command to run"*), and the operator's own report is why
+        // that was wrong: a pane is the *session's*, so a person whose head lost the rectangle
+        // still has a program running and no way back to it. `!term` means *the pane this
+        // session has*; a session with no pane says so through the same `TermEnded` every other
+        // pane that could not start uses, and the note that closes the rectangle is where that
+        // sentence is read.
+        if letibot_sessionlog::term_command(&text).is_some() {
             if self.detached() {
                 self.set_composer(&text);
                 self.say(
@@ -8605,11 +8629,14 @@ impl App {
             // alternative — wait for `TermOutput` before opening the rectangle — would show
             // the transcript for as long as the pty takes to start a program, which is the
             // flicker this pane exists to remove. A pane that never starts is closed by the
-            // `TermEnded` that carries the refusal, a moment later.
+            // `TermEnded` that carries the refusal, a moment later; an attach is closed by the
+            // same frame when the session has no pane, and filled by the daemon's replay when
+            // it has one.
             //
             // The rectangle here is the **last frame's**, which is the best this layer can
             // know; the first `compose_screen` corrects it to the pane's own and sends the
-            // `TermResize` that tells the program.
+            // `TermResize` that tells the program — and on an attach the daemon has already
+            // resized the pty to the rectangle this frame carries.
             self.term = Some(TermPane::new(
                 &text,
                 self.term_cols.max(1),
@@ -26253,19 +26280,123 @@ mod tests {
             assert!(!b.pane_open(), "`{line}` opened a pane");
         }
 
-        // The verb with nothing after it is refused here, with the words kept — there is no
-        // shell line to fall through to, and a bare `!term` is not a request for `$SHELL`.
+        // **The verb with nothing after it ATTACHES**, and it is not a request for `$SHELL`
+        // either: it is the pane this session already has. The head opens the rectangle and sends
+        // the bare line; the daemon answers with what is running and with the screen it kept —
+        // see `a_bare_term_line_attaches_and_the_daemon_says_what_is_running`.
         let mut c = app();
         typed(&mut c, "!term");
-        assert_eq!(c.key(Key::Enter), None);
-        assert_eq!(c.input(), "!term", "the words are kept, not eaten");
-        assert!(!c.pane_open());
+        assert_eq!(
+            c.key(Key::Enter),
+            Some(Action::TermOpen {
+                line: "!term".into()
+            }),
+            "a bare `!term` is an attach, and the line goes over as typed"
+        );
         assert!(
-            c.notice
+            c.pane_open(),
+            "the rectangle is up before the daemon answers"
+        );
+        assert_eq!(c.input(), "", "the line left the composer — it was sent");
+    }
+
+    /// **A bare `!term` attaches: the rectangle comes up, the daemon says what is running, and
+    /// the screen it kept is drawn in it.**
+    ///
+    /// This is the operator's way back, and the whole of it is three facts:
+    ///
+    /// * the head sends the **bare verb** — it does not know what is running, and cannot: the
+    ///   program is the session's and the line that started it may have been typed by another
+    ///   head, or by this one before a session switch;
+    /// * the daemon answers with [`ServerFrame::TermAttached`], and the head **says** what it
+    ///   was told — *"saying what is running in it"* is the requirement, and a screen alone
+    ///   does not say it (`mc`'s panels look like `mc`'s panels);
+    /// * and the bytes that follow are the **daemon's replay** of a screen the head never drew,
+    ///   which is what proves the attach rather than a redraw: the pane the head is holding was
+    ///   created empty a moment ago, so everything on it came from the daemon.
+    #[test]
+    fn a_bare_term_line_attaches_and_the_daemon_says_what_is_running() {
+        let mut a = app();
+        a.session_id = "s".into();
+        a.head_id = "h1".into();
+        // One frame first: a pane's rectangle is the last frame's, which is all this layer
+        // knows until it draws one.
+        let _ = a.screen(80, 24);
+
+        typed(&mut a, "!term");
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::TermOpen {
+                line: "!term".into()
+            })
+        );
+        assert!(a.pane_open());
+        // **Nothing has been drawn yet** — the rectangle is empty because the head has never
+        // seen this program. That is the state the replay has to fill.
+        assert!(
+            !a.screen(80, 24).iter().any(|r| r.contains("mc's screen")),
+            "the head cannot have this screen: it never drew it"
+        );
+
+        a.apply(ServerFrame::TermAttached {
+            command: "mc /etc".into(),
+        });
+        assert!(
+            a.notice
                 .as_deref()
-                .is_some_and(|n| n.contains("!term COMMAND")),
-            "the refusal says what the verb needs: {:?}",
-            c.notice
+                .is_some_and(|n| n.contains("!term mc /etc")),
+            "the operator is told what is running in the pane they attached to: {:?}",
+            a.notice
+        );
+        a.apply(ServerFrame::TermOutput {
+            bytes: b"\x1b[2J\x1b[Hmc's screen\r\n".to_vec(),
+        });
+        assert!(
+            a.screen(80, 24).iter().any(|r| r.contains("mc's screen")),
+            "the daemon's replay is drawn in the rectangle: {:?}",
+            a.screen(80, 24)
+        );
+
+        // **And the line the daemon named is what an ending names**, not the bare verb the head
+        // typed: the row a person reads has to say which pane ended.
+        a.apply(ServerFrame::TermEnded {
+            reason: "you left the terminal".into(),
+        });
+        assert!(
+            a.screen(80, 24)
+                .iter()
+                .any(|r| r.contains("!term mc /etc") && r.contains("you left the terminal")),
+            "the ending names the pane the daemon said was running: {:?}",
+            a.screen(80, 24)
+        );
+    }
+
+    /// **A session with no pane says so, and the sentence is a row.**
+    ///
+    /// The other half of the attach: `!term` with nothing running is not silence and not a
+    /// rectangle left standing empty — the daemon answers with the same `TermEnded` every pane
+    /// that could not start uses, and the head files it like any other ending.
+    #[test]
+    fn attaching_to_a_session_with_no_pane_says_so() {
+        let mut a = app();
+        a.session_id = "s".into();
+        a.head_id = "h1".into();
+        let _ = a.screen(80, 24);
+        typed(&mut a, "!term");
+        assert!(a.key(Key::Enter).is_some());
+        assert!(a.pane_open());
+        a.apply(ServerFrame::TermEnded {
+            reason: "this session has no pane to attach to — `!term COMMAND` starts one. \
+                     Nothing was attached."
+                .into(),
+        });
+        assert!(!a.pane_open(), "the rectangle comes back");
+        assert!(
+            a.screen(80, 24)
+                .iter()
+                .any(|r| r.contains("no pane to attach to")),
+            "and the daemon's sentence is a row: {:?}",
+            a.screen(80, 24)
         );
     }
 

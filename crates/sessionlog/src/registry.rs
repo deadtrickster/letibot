@@ -535,6 +535,30 @@ pub trait TerminalDriver: Send + Sync {
         cols: usize,
         rows: usize,
     ) -> Result<(), String>;
+    /// **Give this head the pane the session already has** — a bare `!term`.
+    ///
+    /// The operator's defect, and the reason the screen has to be the daemon's: a person who
+    /// closes the pane, or switches session, has no way back to a program that is still
+    /// running, and the code admitted it (*"a head that switches back does not find its pane
+    /// again, it finds the transcript"*). So this is the other half of `open`, and it is the
+    /// driver's because **the driver is what holds the screen**: `open` hands the program's
+    /// bytes up as they arrive, and a driver that keeps them can replay them to whoever asks.
+    ///
+    /// `cols`/`rows` are **the attaching head's rectangle**, and they are not a formality: a
+    /// head that switched sessions has a different one, so the pty is resized to what it is
+    /// being drawn at. That also raises `SIGWINCH` for a program that redraws on a resize —
+    /// which is a redraw, not the mechanism, and `letibot_harnessd`'s `term` module says so.
+    ///
+    /// `Err` is a sentence for a session with no pane — the same `TermEnded` a refusal uses,
+    /// because a head that asked for a pane and did not get one is in the same place either
+    /// way: close the rectangle and say why.
+    fn attach(
+        &self,
+        session_id: &str,
+        hub: &Arc<Hub>,
+        cols: usize,
+        rows: usize,
+    ) -> Result<(), String>;
     /// The operator's keys, verbatim. Quietly ignored when there is no pane.
     fn input(&self, session_id: &str, bytes: &[u8]) -> Result<(), String>;
     /// The pane's rectangle moved.
