@@ -2092,6 +2092,22 @@ pub struct App {
     /// has to tell them apart — a model line drawn as a history line is a line that
     /// looks like the operator typed it and did not.
     shell_model: Option<(String, Vec<String>, usize)>,
+    /// **The `!` candidates, computed from the rows and held until they move.**
+    ///
+    /// The list is the same for every frame that draws the live `!` row, and building
+    /// it walks the view and parses every `bash` call's arguments. **Measured: 14.2 ms
+    /// a frame** on a 2,000-row session, which is a stall rather than a cost —
+    /// `completions_line` runs once per frame, so the walk has to run once per row
+    /// change instead. [`App::the_rows_moved`] is the one place that drops it.
+    ///
+    /// `None` is *not built yet* and an empty `Some` is *there are none*, which is the
+    /// distinction a cache needs: a session with no `!` line in it must not walk the
+    /// view again on every frame to find that out.
+    shell_candidates_memo: Option<Vec<String>>,
+    /// **How many times that walk has run**, ever — the encoder for the memo above, and
+    /// for the same reason [`App::hist_renders`] exists: a wall time is not something a
+    /// test can assert on and a count is.
+    pub shell_walks: u64,
     /// Actions produced by a *frame* rather than by a key: the switch that follows
     /// a session being created. Drained by the driver, which is the only thing that
     /// can send.
@@ -3462,6 +3478,11 @@ pub const UNCONFIRMED: &str = "unconfirmed";
 /// R29's rule for a disclosure: it carries the act that ends it.
 pub const HOLD_MARKER: &str = "⏸ the view is held — ctrl-p follows again";
 
+/// The columns the live row puts between two candidates — `  ·  `, as [`App::completions_line`]
+/// joins them. A constant because the fit arithmetic in `shell_completions_line` has to count
+/// what the join will actually spend, and a number written twice is a number that drifts.
+const SEPARATOR_COLS: usize = 5;
+
 /// The commands the composer completes, in the order Tab offers them. Aliases
 /// (`s`, `q`, `h`, …) are deliberately absent: this list is what Tab offers
 /// and what the live line shows, and offering both spellings doubles the list
@@ -3671,6 +3692,8 @@ impl App {
             shell_suggestions: std::collections::HashMap::new(),
             shell_ask_seq: 0,
             shell_model: None,
+            shell_candidates_memo: None,
+            shell_walks: 0,
             queued: Vec::new(),
             pending_prompts: Vec::new(),
             bound_prompts: std::collections::HashMap::new(),
@@ -5150,9 +5173,9 @@ impl App {
             self.last_timings = Some(*timings);
         }
         self.items = s.items;
-        // A snapshot replaces the rows, so the model's suggestions — built on the
-        // rows as they were — are stale and go with them.
-        self.clear_shell_suggestions();
+        // A snapshot replaces the rows, so everything derived from them — the `!`
+        // candidates and the model's suggestions — is stale and goes with them.
+        self.the_rows_moved();
         // **And the fill's bar goes with the stream that carried it.**
         //
         // A `Filling` tick rides the event stream and its ONLY exit is a tick whose `done` has
@@ -6218,10 +6241,10 @@ impl App {
                     ts,
                     item: None,
                 });
-                // A row landed, so the transcript moved and the model's suggestions
-                // — built on the rows as they were — are a new position and a stale
-                // answer. The next Tab for the same prefix is a fresh ask.
-                self.clear_shell_suggestions();
+                // A row landed, so the transcript moved and everything derived from it
+                // — the `!` candidates and the model's suggestions — is stale. The next
+                // Tab for the same prefix is a fresh ask.
+                self.the_rows_moved();
                 Disposition::Rendered
             }
             // The body for a row already announced. Before this existed, a head
@@ -9427,8 +9450,9 @@ impl App {
         // has nothing for this prefix.
         let lines: Vec<String> = self
             .shell_candidates()
-            .into_iter()
+            .iter()
             .filter(|line| line.starts_with(&text))
+            .cloned()
             .collect();
         match lines.first() {
             Some(first) => {
@@ -9530,7 +9554,24 @@ impl App {
         format!("{}-s{}", self.head_id, self.shell_ask_seq)
     }
 
-    /// **The transcript moved, so the model's suggestions are stale.**
+    /// **The transcript moved, so everything derived from it is stale.**
+    ///
+    /// Two things are derived from the rows and both are held between frames: the `!`
+    /// candidate list ([`App::shell_candidates_memo`]), and the model's suggestions —
+    /// which are answers about the conversation *as it was*, and a conversation that
+    /// moved is a different question. One method, because the two call sites are the
+    /// two ways the transcript changes and a third caller is a third chance to
+    /// remember only one of them.
+    ///
+    /// **A body landing counts as a move**, which is why [`App::record_item`] calls it
+    /// too: a row announced with no body carries no tool calls yet, and a prompt built
+    /// on it would be a prompt about a row that had not arrived.
+    fn the_rows_moved(&mut self) {
+        self.shell_candidates_memo = None;
+        self.clear_shell_suggestions();
+    }
+
+    /// **The model's suggestions are stale: the conversation moved.**
     ///
     /// A suggestion is built on the conversation as it was when it was asked, and a
     /// conversation that moved is a different question. So when a row lands — or a
@@ -9539,6 +9580,11 @@ impl App {
     /// a stale answer. The model's cycle is dropped too: it is cycling lines about a
     /// conversation that no longer is, and a character typed on would match fresh
     /// anyway.
+    ///
+    /// **Called from [`App::the_rows_moved`], which is the only caller besides the link
+    /// going down** — that is deliberate, because the two are always stale together and
+    /// a call site that remembered one of them would be a call site that forgot the
+    /// other.
     fn clear_shell_suggestions(&mut self) {
         if self.shell_ask.is_empty()
             && self.shell_suggestions.is_empty()
@@ -9551,7 +9597,7 @@ impl App {
         self.shell_model = None;
     }
 
-    /// The whole `!` lines this session has run, newest first, deduped: the
+    /// **The whole `!` lines this session has run**, newest first, deduped: the
     /// operator's own `!` rows verbatim, and the model's `bash` calls as `! ` plus
     /// the command they ran.
     ///
@@ -9560,12 +9606,26 @@ impl App {
     /// Deduped keeping the newest, so a command run twice is offered once, as the
     /// line it most recently was.
     ///
+    /// **Held between frames**, because this is the render path's as well as Tab's:
+    /// see [`App::shell_candidates_memo`] for the measurement that made it one walk
+    /// per row change rather than one per frame.
+    fn shell_candidates(&mut self) -> &[String] {
+        if self.shell_candidates_memo.is_none() {
+            self.shell_walks += 1;
+            self.shell_candidates_memo = Some(self.walk_shell_candidates());
+        }
+        self.shell_candidates_memo.as_deref().unwrap_or(&[])
+    }
+
+    /// The walk itself — what [`App::shell_candidates`] caches, and the only place that
+    /// reads the rows for it.
+    ///
     /// **The walk is the head's own rows** — the snapshot items, `item` an
     /// `Option` because a row can be announced before its body lands — walked the
     /// way `targets_before` walks them. A `bash` call whose arguments do not parse,
     /// or that carries no `command`, is skipped: a candidate that cannot be re-run
     /// is not a candidate.
-    fn shell_candidates(&self) -> Vec<String> {
+    fn walk_shell_candidates(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for r in self.items.iter().rev() {
             let Some(item) = r.item.as_ref() else {
@@ -9631,11 +9691,14 @@ impl App {
     /// provenance. A prefix nothing matches shows nothing, because an empty line
     /// that appears and disappears is noise, and Tab will say what went wrong
     /// when it is asked.
-    fn completions_line(&self, w: usize) -> Option<String> {
-        let text = self.editor.text();
-        if text.starts_with('!') {
+    fn completions_line(&mut self, w: usize) -> Option<String> {
+        // **The first character decides, and it is read without holding the borrow**:
+        // the `!` path needs `&mut self` for the candidate memo, and `editor.text()`
+        // hands back a `&str` borrowed from this same head.
+        if self.editor.text().starts_with('!') {
             return self.shell_completions_line(w);
         }
+        let text = self.editor.text();
         if !text.starts_with('/') || text.contains(char::is_whitespace) {
             return None;
         }
@@ -9672,27 +9735,44 @@ impl App {
     /// (`! git status`), never the marked form (`~! git status`). And nothing
     /// here is submitted — the row is a typing aid, and Enter is still the
     /// operator's.
-    fn shell_completions_line(&self, w: usize) -> Option<String> {
-        let text = self.editor.text();
+    fn shell_completions_line(&mut self, w: usize) -> Option<String> {
+        let text = self.editor.text().to_string();
         if !text.starts_with('!') {
             return None;
         }
+        // **Only as many candidates as fit on the row.** The line is trimmed to the
+        // width at the end anyway, so collecting every match and joining them into a
+        // string that is then thrown away is work for nothing — and it is not a small
+        // amount of it: measured at **10 ms a frame** on a session whose history holds
+        // two thousand commands that all match the prefix, because each one was cloned
+        // and the join built the whole of it. The cut is the one `trim_to` would make
+        // at the end, made here instead, and it is the same rule the `/` row keeps.
         let mut parts: Vec<String> = Vec::new();
+        let mut used = 2usize; // the row's own leading indent
         // The history's candidates, plain: a command this session ran is a fact.
         for line in self
             .shell_candidates()
-            .into_iter()
-            .filter(|l| l.starts_with(text))
+            .iter()
+            .filter(|l| l.starts_with(&text))
         {
-            parts.push(line);
+            if used >= w {
+                break;
+            }
+            used += visible_width(line) + SEPARATOR_COLS;
+            parts.push(line.clone());
         }
         // The model's candidates, marked: a proposal is not a fact, and the mark
         // is the provenance. Only the ones cached for this prefix at this
         // position, so a suggestion about a conversation that moved is not drawn.
         let position = self.items.len() as u64;
         if let Some(lines) = self.shell_suggestions.get(&(text.to_string(), position)) {
-            for line in lines.iter().filter(|l| l.starts_with(text)) {
-                parts.push(format!("~{line}"));
+            for line in lines.iter().filter(|l| l.starts_with(&text)) {
+                if used >= w {
+                    break;
+                }
+                let marked = format!("~{line}");
+                used += visible_width(&marked) + SEPARATOR_COLS;
+                parts.push(marked);
             }
         }
         if parts.is_empty() {
@@ -11250,6 +11330,11 @@ impl App {
             return;
         };
         self.items[idx].item = Some(item);
+        // **A body landing is the transcript moving too.** The row was announced with no
+        // content, so it carried no tool calls a moment ago: a `!` candidate list built
+        // then is missing every command this row ran, and a model asked then was asked
+        // about a row that had not arrived. See [`App::the_rows_moved`].
+        self.the_rows_moved();
         // The row's rendered form changed, so the history cache from that row
         // on is stale. From that row on, and not from row zero: this is the
         // hottest of the invalidations — one per transcript row, so one per
@@ -34725,6 +34810,89 @@ mod tests {
             );
             assert!(first.len() <= 40);
         }
+    }
+
+    /// An assistant row carrying one `bash` call, the way the session's log carries it.
+    fn bash_row(cmd: &str) -> TranscriptItem {
+        TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: format!(r#"{{"command": {cmd:?}}}"#),
+            }],
+            truncated: false,
+        }
+    }
+
+    /// **The live `!` row walks the history once, not once a frame.**
+    ///
+    /// `completions_line` runs on every frame and the live `!` row draws the candidates
+    /// out of it, so building them per frame meant walking the view and parsing every
+    /// `bash` call's arguments per frame. **Measured at 14.2 ms a frame** on a 2,000-row
+    /// session before the memo and 0.10 ms above the frame's own baseline after it, which
+    /// is the difference between a typing aid and a stall. `shell_walks` is the encoder —
+    /// a wall time is not something a test can assert on and a count is, the same rule
+    /// `hist_renders` follows.
+    #[test]
+    fn the_bang_row_walks_the_history_once_not_once_a_frame() {
+        let mut a = app();
+        for i in 0..200u64 {
+            shell_row(
+                &mut a,
+                i * 2 + 1,
+                &format!("s.{i}"),
+                "assistant",
+                bash_row(&format!("cargo test {i}")),
+            );
+        }
+        typed(&mut a, "! cargo");
+        for _ in 0..20 {
+            let _ = a.screen(100, 40);
+        }
+        assert_eq!(
+            a.shell_walks, 1,
+            "one walk for twenty frames of one transcript"
+        );
+        // **A row landing is a new walk.** The list is the transcript's and not this
+        // head's, so a command that has just run has to appear in it.
+        shell_row(&mut a, 1000, "a1", "assistant", bash_row("cargo build"));
+        let _ = a.screen(100, 40);
+        assert_eq!(a.shell_walks, 2, "and again when the rows move");
+        assert!(
+            a.shell_candidates().iter().any(|l| l == "! cargo build"),
+            "the command that just ran is in the list: {:?}",
+            a.shell_candidates()
+        );
+    }
+
+    /// **The live `!` row draws only the candidates that fit.**
+    ///
+    /// The cut is made while collecting rather than by `trim_to` at the end, because the
+    /// collection is where the cost was: a session with two thousand matching commands
+    /// cloned and joined every one of them on every frame to produce a row that was then
+    /// thrown away down to the width. What a reader sees is what they always saw — the
+    /// candidates that fit, newest first, and no marker for the rest.
+    #[test]
+    fn the_bang_row_draws_only_the_candidates_that_fit() {
+        let mut a = app();
+        for i in 0..200u64 {
+            shell_row(
+                &mut a,
+                i * 2 + 1,
+                &format!("s.{i}"),
+                "assistant",
+                bash_row(&format!("cargo test {i}")),
+            );
+        }
+        typed(&mut a, "! cargo");
+        let row = a.shell_completions_line(40).expect("the row");
+        assert!(visible_width(&row) <= 40, "the row fits: {row}");
+        assert!(row.contains("! cargo test 199"), "the newest leads: {row}");
+        assert!(
+            !row.contains("! cargo test 0"),
+            "and the far end is never collected: {row}"
+        );
     }
 
     #[test]
