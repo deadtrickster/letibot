@@ -21694,8 +21694,9 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
             "!term COMMAND",
             "run a program that owns the screen IN THE PANE — `!term mc`, `!term nano notes.txt`, \
              `!term top`. The conversation's rectangle is given to the program and the composer \
-             keeps its rows; your keys go to it verbatim, and `ctrl-\\` leaves (the program \
-             never sees that key, so it cannot trap it)",
+             keeps its rows; your keys go to it verbatim, and `ctrl-\\` LEAVES it running (the \
+             program never sees that key, so it cannot trap it) — `!term` comes back to the same \
+             run, and `!term close` ends it, after asking",
         ),
         (
             "!send LINE",

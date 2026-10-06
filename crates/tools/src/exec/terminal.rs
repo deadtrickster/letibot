@@ -123,7 +123,8 @@
 //!   pane's own cgroup), the renderer is `letibot_vt::Screen` painted by `letibot_ui::ansi`,
 //!   and the head's half is the
 //!   pane in `letibot-tui` — the conversation's rectangle given to the program, the composer
-//!   keeping its rows, and `ctrl-\` the one way out. **This refusal stays**, and that is not an
+//!   keeping its rows, `ctrl-\` leaving it (a detach that ends nothing) and `!term close`
+//!   ending it. **This refusal stays**, and that is not an
 //!   oversight: a plain `! nano` is still a program that would draw cursor-addressing escapes
 //!   into one transcript row and wait for a keystroke that cannot arrive. What changed is that
 //!   every sentence below now names the verb that works instead of filing it as a TODO.
@@ -359,8 +360,8 @@ the screen draws cursor-addressing escapes into that row and then waits for a ke
 that can never arrive. That is why this is refused rather than run — the run would not \
 hang the session, it would hang itself, in a row you cannot answer. \
 **`!term <command>` is the way to run it**: the daemon owns a pty for the pane, the head \
-is the terminal emulator that draws it in the conversation's rectangle, and `ctrl-\\` \
-leaves. `!term nano notes.txt`, `!term mc`, `!term top`.";
+is the terminal emulator that draws it in the conversation's rectangle, `ctrl-\\` \
+leaves it running and `!term close` ends it. `!term nano notes.txt`, `!term mc`, `!term top`.";
 
 /// **Given a command line: is it refused, by which program, and why.**
 ///

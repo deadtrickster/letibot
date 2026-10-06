@@ -132,8 +132,9 @@
 //!
 //! **What it will not do.** A program that closes its own descriptors and keeps running
 //! leaves the master readable-for-ever, so the read does not end and the pane does not
-//! report; the operator's way out — `Ctrl-\`, intercepted by the head before it reaches
-//! this pty, and documented there — still kills it through the scope. A program that forks a
+//! report; the operator's deliberate end — `!term close`, confirmed at the head and sent as
+//! `TermClose`, which `harnessd` turns into [`TermSession::close`] — still kills it through the
+//! scope. A program that forks a
 //! daemon away from the pty is reported as ended the moment the *pane's* program exits, which
 //! is the honest answer to *is this pane still live*, and the daemon it left behind is the
 //! cgroup's business and not this module's.
@@ -530,7 +531,7 @@ impl TermSession {
     ///
     /// Verbatim: this module does not decode, translate or filter, because the program is
     /// the thing that reads keys and a head that understood a key the program did not get
-    /// would be a head with a keymap in front of a terminal. **The way out is intercepted
+    /// would be a head with a keymap in front of a terminal. **The detach byte is intercepted
     /// before this is called** — see the head's own module — which is what makes it
     /// untrappable: a byte that never arrives cannot be caught.
     pub fn input(&self, bytes: &[u8]) -> Result<(), TermError> {
