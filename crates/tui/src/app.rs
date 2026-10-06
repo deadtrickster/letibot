@@ -4305,17 +4305,38 @@ impl App {
         // answered until the daemon has gone or the deadline has passed, and until then
         // there is nothing honest for this to return but `false`.
         //
-        // A `Bye` still ends everything: the daemon saying goodbye is the daemon going,
-        // so nothing is left to wait for.
-        if self.bye.is_some() {
-            return true;
-        }
+        // **A stop this head asked for outranks a `Bye`, and that is a correction.**
+        //
+        // The line above used to read *"a `Bye` still ends everything: the daemon saying
+        // goodbye is the daemon going"*, and that is true of every `Bye` **but the one a
+        // stop produces**. That one is not the daemon going: it is published by
+        // `registry.close()` on the **connection thread**, the moment the request is
+        // taken, and the worker that is running the operator's command has not ended yet.
+        // MEASURED on a live daemon, 2026-10-06: the `Bye` arrives **519 µs** after the
+        // stop goes out, the daemon's process is still in `/proc` at that moment, and it
+        // stays there for as long as the run holds the worker.
+        //
+        // So a head that left on it reported a stop that had not happened. The operator's
+        // words: *"it reports the server exited within a second — while `harnessd` is in
+        // fact hung and has to be killed with `--force`."* The head has the one
+        // observation that is a fact about the **process** — `watch_stop`'s `gone`, read
+        // from `/proc` and from `waitpid` — and this is the check that stops it being
+        // overruled by a frame from a connection that is still open.
+        //
+        // `bye` is not discarded, and nothing else changes about it: it is still the end
+        // of the conversation for a head that did **not** ask (a skew, a refusal, another
+        // head's stop), and `should_quit` still returns `true` for those at once. What it
+        // no longer is, is an answer to a question this head asked and has not had
+        // answered.
         if self
             .stopping
             .as_ref()
             .is_some_and(|s| !s.resolved(self.now_ms))
         {
             return false;
+        }
+        if self.bye.is_some() {
+            return true;
         }
         self.quit
     }
@@ -4389,18 +4410,18 @@ impl App {
     /// operator who chose *stop* and got a running daemon learns it here, once, on stderr,
     /// rather than from `ps` a day later — which is exactly how this one was found.
     ///
-    /// `None` when there is nothing to say — no stop was asked for, it worked, or **the
-    /// daemon said goodbye**. The sentences below are four because the operator's next move
-    /// differs: it did not go and a turn was running (legitimate, and it will finish); it did
-    /// not go and nothing was running or it could not even be asked (the wedge, and here is
-    /// the verb); or the daemon ended the connection itself, which is a different fact with
-    /// its own sentence in [`App::farewell`].
+    /// `None` when there is nothing to say: no stop was asked for, or the daemon's process
+    /// is gone and the question is answered. **A `Bye` is not one of those cases** — see
+    /// below. The sentences below are four because the operator's next move differs: it did
+    /// not go and a turn was running (legitimate, and it will finish); it did not go and
+    /// nothing was running or it could not even be asked (the wedge, and here is the verb);
+    /// or the daemon ended the connection itself, which is a different fact with its own
+    /// sentence in [`App::farewell`].
     pub fn stop_farewell(&self) -> Option<String> {
         let s = self.stopping.as_ref()?;
         let secs = s.since_ms.max(self.now_ms).saturating_sub(s.since_ms) / 1000;
-        // **A `Bye` is the daemon saying it is going, and it is the last word this head
-        // gets.** The operator was reading this pair on nearly every orderly stop, four
-        // lines apart and in this order:
+        // **A `Bye` is not the daemon going, on this path.** The operator was reading this
+        // pair on nearly every orderly stop, four lines apart and in this order:
         //
         // ```text
         // letibot: the daemon was asked to stop and had not gone 0s later.
@@ -4412,30 +4433,43 @@ impl App {
         //
         // The second line is the daemon saying goodbye. The first said it did not go — and
         // recommended `--force`, which *aborts in-flight turns over the protocol*, against a
-        // daemon that had just left politely.
+        // daemon that had just left politely. The fix for that was to treat the `Bye` as the
+        // answer — and **that over-corrected into the operator's second report**: *"it
+        // reports the server exited within a second — while `harnessd` is in fact hung and
+        // has to be killed with `--force`."*
         //
-        // **`gone` could not have been true here, by construction, and that is the whole
-        // defect.** `gone` is *the process has exited and been collected* — observed by
-        // reaping — and the head leaves the moment this frame arrives, which is the moment
-        // the daemon has *begun* shutting down and the earliest point at which it cannot yet
-        // have been reaped. So the one observation available at this call site is *not yet*,
-        // and a farewell keyed on it can only report failure. `should_quit` already knows
-        // better, in its own comment: *"saying goodbye is the daemon going, so nothing is
-        // left to wait for."* This is the same fact, said on the way out, so the two
-        // sentences agree because they share a cause.
+        // **The frame is published before the process ends, and by a thread that is not the
+        // one being waited for.** `registry.close()` runs on the connection thread the
+        // instant the `Stop` is taken; the **worker** that is running the operator's command
+        // is a different thread, is inside that command, and has not ended. Measured on a
+        // live daemon, 2026-10-06: `Bye` at 519 µs, the process still in `/proc`, and it
+        // stayed there for the rest of the run. So the `Bye` is evidence that the request
+        // was **read**, which is a real and useful fact — and it is not evidence about the
+        // process, which is the only thing the operator's question is about.
         //
-        // **`gone` is not overloaded to mean this.** It goes on meaning exactly what its
-        // docstring says — the strongest observation, and the only one that is *the daemon
-        // has actually gone* — and a `Bye` is a second, weaker answer to the same question
-        // with its own name. The `0s` in the message above is the arithmetic of the same
-        // mistake rather than a second one: the frame arrives milliseconds after the ack, so
-        // the wait really was under a second — it was simply too early to judge. On the only
-        // path that still prints it, the deadline has passed and the figure is at least 5.
-        if s.gone || self.bye.is_some() {
+        // **`gone` is the observation that is about the process**, and it is not overloaded
+        // to mean anything else: it is read from `waitpid` for this head's own child and
+        // from `/proc` — zombie-aware — for anybody else's. It goes on meaning exactly what
+        // its docstring says, and it is now the only thing that silences this sentence.
+        //
+        // The line below used to read `if s.gone || self.bye.is_some() { return None; }`,
+        // so the arrival of the goodbye **silenced the farewell** — the head left saying
+        // nothing, which a person reads as *it stopped*.
+        //
+        // The wait is no longer cut short (see [`App::should_quit`]), so this composes its
+        // sentence when the question is actually settled: the process is gone, or the
+        // deadline passed with it still there. A `Bye` then makes the sentence **stronger**
+        // rather than quieter — the daemon did hear the request and did begin shutting
+        // down, and its process is still in `/proc` — which is the fact a person needs in
+        // order to know that `--force` is the right next move and not a workaround for a
+        // lie.
+        if s.gone {
             return None;
         }
         let pid = pid_word(s.pid);
-        let ask = if s.acked {
+        let ask = if self.bye.is_some() {
+            "was acknowledged, and the daemon began shutting down"
+        } else if s.acked {
             "was acknowledged and did not stop"
         } else if s.sent {
             "was sent and never acknowledged"
@@ -4443,8 +4477,15 @@ impl App {
             "could NOT be sent"
         };
         let because = if s.turn_busy {
-            "A turn was running, and the daemon finishes its round before it stops — this \
-             is a slow stop rather than a refused one."
+            // **And a round can be inside a command.** The daemon has one worker and a
+            // round calls its tools on that worker, so a stop that arrives mid-`! sudo apt
+            // install mc` waits for that command — whose own deadline is what ends it, and
+            // which is two minutes at the default. That is the difference between a stop
+            // that is merely slow and one that has to be forced, and the operator is the
+            // only one who can tell which they are looking at.
+            "A turn was running, and the daemon finishes its round before it stops — and a \
+             round can be inside a command, whose own deadline is what ends it. This is a \
+             slow stop rather than a refused one."
         } else {
             "No turn was running, so there was nothing for it to finish."
         };
@@ -31023,11 +31064,106 @@ mod tests {
         assert!(drawn.contains("connection refused"), "{drawn}");
     }
 
+    /// **A `Bye` does not answer a stop this head asked for, and it does not silence the
+    /// farewell.**
+    ///
+    /// The operator's second report, in one test: *"it reports the server exited within a
+    /// second — while `harnessd` is in fact hung and has to be killed with `--force`."*
+    ///
+    /// The `Bye` on this path is published by the daemon's **connection thread** the moment
+    /// the `Stop` is taken (`registry.close()`), and the **worker** running the operator's
+    /// command is a different thread that has not ended. MEASURED on a live daemon,
+    /// 2026-10-06: `Bye` at 519 µs after the stop, the daemon's process still in `/proc`.
+    ///
+    /// So both halves are asserted here, and both were wrong before the change: the head
+    /// used to leave on the `Bye` (`should_quit` true), and it used to say **nothing at
+    /// all** on the way out (`stop_farewell` `None`), which a person reads as *it stopped*.
+    #[test]
+    fn a_bye_does_not_report_a_stop_that_has_not_happened() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        // The head asks, and the daemon does what it does: the ack, then the goodbye from
+        // the connection thread — with the worker still inside the command.
+        a.stop_began("dead", true, Some(4242), 1_000);
+        a.apply(ServerFrame::Bye {
+            reason: "daemon shutting down".into(),
+        });
+        a.clock(1_200);
+
+        assert!(
+            !a.should_quit(),
+            "the daemon's process has NOT gone — `gone` is false and nothing has observed \
+             it leave — so the head must not leave on a frame that the connection thread \
+             published before the worker ended. This is the lie: it reported the server \
+             exited within a second."
+        );
+
+        // And when the deadline passes with the process still there, the head says what it
+        // saw rather than nothing.
+        a.clock(1_000 + STOP_DEADLINE_MS + 1);
+        assert!(a.should_quit(), "the deadline is the head's own way out");
+        let said = a
+            .stop_farewell()
+            .expect("a stop that did not happen must be said on the way out");
+        assert!(
+            said.contains("began shutting down"),
+            "the daemon DID hear the request — that is what the goodbye is evidence for, \
+             and it is the useful half: {said}"
+        );
+        assert!(
+            said.contains("still there"),
+            "the sentence is about the PROCESS, and the process is still there: {said}"
+        );
+        assert!(said.contains("4242"), "and it names it: {said}");
+        assert!(
+            said.contains("--force"),
+            "`--force` is the next move and it is said as what it is: {said}"
+        );
+    }
+
+    /// **And when the process really has gone, there is nothing to say.** The correction
+    /// above must not turn every orderly stop into a warning.
+    #[test]
+    fn a_stop_whose_process_is_gone_says_nothing_even_after_a_bye() {
+        let mut a = app();
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.stop_began("dead", true, Some(4242), 1_000);
+        a.apply(ServerFrame::Bye {
+            reason: "daemon shutting down".into(),
+        });
+        // What `Link::watch_stop` observes on every tick, and the only thing that is a fact
+        // about the process.
+        a.stopping_mut().expect("a stop is in flight").gone = true;
+        a.clock(1_200);
+        assert!(
+            a.should_quit(),
+            "the process has gone, so the question is answered"
+        );
+        assert_eq!(
+            a.stop_farewell(),
+            None,
+            "a stop that worked is not worth a sentence"
+        );
+    }
+
     /// **A `Bye` is final and a dropped socket is not.** The daemon saying goodbye is the
     /// end of the conversation — a refusal, a skew, a shutdown — and the head leaves with
     /// the reason on it. Turning that into a retry is leticl's measured defect: a refusal
     /// the daemon meant as final became a two-second loop under a head that never
     /// attached and never exited.
+    ///
+    /// **And it is still final for a head that did not ask for the stop**, which is the
+    /// half the correction above must not break: a skew, a refusal and another head's stop
+    /// all arrive this way, with no `stopping` in flight, and none of them is a question
+    /// this head is waiting on.
     #[test]
     fn a_bye_leaves_and_never_looks_like_a_link_to_reconnect() {
         let mut a = app();

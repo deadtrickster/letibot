@@ -484,20 +484,20 @@ fn a_successful_stop_says_nothing_on_the_way_out() {
     let _ = std::fs::remove_file(&peer.path);
 }
 
-/// **The daemon's own goodbye is the stop being answered, and saying otherwise puts two
-/// contradicting sentences on stderr four lines apart.**
+/// **The daemon's own goodbye is not the daemon being gone, and treating it as one is how
+/// the head came to report a stop that had not happened.**
 ///
 /// A real daemon shutting down does not close the socket silently: the seat's pump answers
-/// `Delivery::Closed` with `Bye { reason: "daemon shutting down" }`, so the last thing an
-/// orderly stop produces is a farewell. The head leaves on that frame — `should_quit` says
-/// so in its own comment, *"saying goodbye is the daemon going, so nothing is left to
-/// wait for"* — and it leaves **before it has reaped anything**, because the goodbye is
-/// written before the process exits and `Stopping::gone` means *observed gone by reaping*.
-/// So on this path `gone` is `false` by construction: the earliest the goodbye can arrive
-/// is before the observation is possible.
+/// `Delivery::Closed` with `Bye { reason: "daemon shutting down" }`, and that is the last
+/// frame an orderly stop produces.
 ///
-/// Read together with a farewell that requires `gone`, that produced this, in the
-/// operator's scrollback for days, on nearly every orderly stop:
+/// # The first correction, and what it over-corrected into
+///
+/// This test used to assert the opposite of what it asserts now, and its reasoning was half
+/// right. The half that was right: the goodbye is written **before the process exits**, so
+/// `Stopping::gone` — *observed gone, by reaping or by `/proc`* — cannot be true at the
+/// instant it arrives. Read together with a farewell that required `gone`, that produced
+/// this, in the operator's scrollback for days, on nearly every orderly stop:
 ///
 /// ```text
 /// letibot: the daemon was asked to stop and had not gone 0s later.
@@ -506,18 +506,42 @@ fn a_successful_stop_says_nothing_on_the_way_out() {
 /// letibot: the daemon ended this head — daemon shutting down
 /// ```
 ///
-/// The second line is the daemon saying goodbye; the first says it did not go. The advice
-/// is worse than the contradiction: `--force` *aborts in-flight turns over the protocol*,
-/// and it was being recommended against a daemon that had just left politely.
+/// Two contradicting sentences four lines apart, and the advice is worse than the
+/// contradiction: `--force` *aborts in-flight turns over the protocol*, and it was being
+/// recommended against a daemon that had just left politely.
 ///
-/// Both halves are asserted, because the fix must not silence a real failure: the goodbye
-/// is named by `farewell`, and the stop is not reported as one that did not take.
+/// The half that was wrong is the conclusion. *A fact that cannot yet be observed* is not
+/// *a fact that will not be*, and the answer to that is to keep waiting for the one
+/// observation the head actually has — not to stop looking and call the frame the answer.
+/// That is what this file asserted, and it is what produced the operator's **second**
+/// report: *"it reports the server exited within a second — while `harnessd` is in fact
+/// hung and has to be killed with `--force`."*
+///
+/// # Why the frame is not the answer, measured
+///
+/// `registry.close()` runs on the daemon's **connection thread**, the instant the `Stop` is
+/// taken. The **worker** running the operator's command is a different thread, is inside
+/// that command, and has not ended. On a live daemon, 2026-10-06: the `Bye` arrives **519 µs**
+/// after the stop goes out, the daemon's process is still in `/proc` at that moment, and it
+/// stays there for as long as the run holds the worker.
+///
+/// # What is asserted now, and the half that must not regress
+///
+/// The goodbye is still named by `farewell` (the reason outlives the screen), and the head
+/// **does not leave on it** — it waits for the process. When the deadline passes with the
+/// process still there, the sentence is the honest one: the daemon heard the request and
+/// began shutting down, and it is still there. That is *not* the old contradicting pair,
+/// because it is composed once, when the question is settled.
+///
+/// And the half the old test existed to defend is defended by the test below it: a stop
+/// whose process really goes says **nothing at all**, goodbye or no goodbye.
 #[test]
-fn the_daemons_goodbye_is_the_stop_being_answered() {
+fn the_daemons_goodbye_is_not_the_daemon_being_gone() {
     let path = socket_path("goodbye");
     let peer = Peer::start_with(path.clone(), OnStop::AcceptedThenBye);
-    // No pid: this head did not spawn the daemon, so the weaker half of the evidence is
-    // all it ever has — and the goodbye is what it must act on.
+    // The peer runs in this test's own process, so the pid the head reads from
+    // `SO_PEERCRED` is this process's — which never exits. That is the shape being
+    // measured: a daemon that answered and did not go.
     let mut link = Link::open(&path, SESSION, 0, "tui", "test").expect("attach");
     let mut a = app();
     step(&mut link, &mut a);
@@ -533,8 +557,8 @@ fn the_daemons_goodbye_is_the_stop_being_answered() {
         stop.contains("Stop"),
         "the request reached the socket: {stop}"
     );
-    wait_ticking(&mut link, &mut a, "the goodbye to end the head", |a| {
-        a.should_quit().then_some(())
+    wait_ticking(&mut link, &mut a, "the goodbye to arrive", |a| {
+        a.farewell().is_some().then_some(())
     });
 
     assert!(
@@ -547,12 +571,74 @@ fn the_daemons_goodbye_is_the_stop_being_answered() {
         Some("daemon shutting down"),
         "the goodbye is the fact the operator is left with"
     );
+    assert!(
+        !a.should_quit(),
+        "**The correction.** The goodbye is published by the connection thread before the \
+         worker has ended, so it is evidence that the request was READ and not that the \
+         process has gone. Leaving here is how the head reported a stop that had not \
+         happened — the operator then had to kill `harnessd` with `--force`."
+    );
+
+    // The deadline is the head's own way out, and the sentence it leaves says what it saw.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !a.should_quit() && Instant::now() < deadline {
+        step(&mut link, &mut a);
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(a.should_quit(), "the deadline must end the wait");
+    let said = a
+        .stop_farewell()
+        .expect("the process is still there, so the head owes a sentence");
+    assert!(
+        said.contains("began shutting down"),
+        "the daemon did hear the request, and that is the useful half: {said}"
+    );
+    assert!(
+        said.contains("still there"),
+        "and the sentence is about the PROCESS, which is the thing that has not gone: {said}"
+    );
+    assert!(
+        said.contains("letibot --stop --force"),
+        "and `--force` is offered as what it is, against a daemon that is genuinely still \
+         there: {said}"
+    );
+    let _ = std::fs::remove_file(&peer.path);
+}
+
+/// **A stop whose process really went says nothing — goodbye or no goodbye.**
+///
+/// This is the half `the_daemons_goodbye_is_not_the_daemon_being_gone` used to defend, and
+/// it must not regress: the operator's complaint that started it was *two contradicting
+/// sentences on stderr four lines apart*. With the wait no longer cut short by the frame,
+/// the sentence is composed only when the question is settled — and when the process is
+/// gone, there is no sentence at all.
+#[test]
+fn a_stop_whose_process_really_went_says_nothing_even_with_a_goodbye() {
+    let path = socket_path("goodbye-gone");
+    let peer = Peer::start_with(path.clone(), OnStop::AcceptedThenBye);
+    // A process that is already dead, standing in for a daemon that went promptly.
+    let mut child = spawn_a_process_that_stays();
+    let pid = child.id() as i32;
+    child.kill().expect("kill");
+    let _ = child.wait();
+
+    let mut link = Link::open(&path, SESSION, 0, "tui", "test").expect("attach");
+    let mut a = app();
+    step(&mut link, &mut a);
+    a.set_daemon_pid(Some(pid));
+    choose_stop(&mut link, &mut a);
+    wait_ticking(&mut link, &mut a, "the head to leave", |a| {
+        a.should_quit().then_some(())
+    });
+    assert!(
+        a.stopping().is_some_and(|s| s.gone),
+        "the process really is gone, and that is the observation the head acts on"
+    );
     assert_eq!(
         a.stop_farewell(),
         None,
-        "the daemon said goodbye, so the question is answered. A sentence here would \
-         contradict the line printed under it and recommend `--force` against a daemon \
-         that had already left."
+        "it went; there is nothing to report, and a sentence here would be the two \
+         contradicting lines the operator reported in the first place"
     );
     let _ = std::fs::remove_file(&peer.path);
 }

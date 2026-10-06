@@ -36,12 +36,12 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::ExecError;
 use super::confine::{ConfinePlan, Confinement, Unconfined};
-use super::jobs::{Job, JobId, JobState, Lifetime, OutputSlice};
+use super::jobs::{DEADLINE_KILL, Due, Job, JobId, JobState, Lifetime, OutputSlice};
 use super::monitor::Monitors;
 use super::scope::{
     Cgroup2, EXIT_NOT_SCOPED, Migration, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree,
@@ -224,6 +224,17 @@ pub trait ProcessHost: Send + Sync {
 
     fn spawn(&self, req: &SpawnRequest) -> Result<JobId, ExecError>;
 
+    /// **Arm a run's deadline, so that something other than the run enforces it.**
+    ///
+    /// Required rather than defaulted, and that is deliberate: a default that did nothing
+    /// would be a backend where the timeout is silently the caller's problem again, which
+    /// is precisely the shape this method exists to end. A backend that cannot arm one
+    /// must say so by answering, not by staying quiet.
+    ///
+    /// The tool that started the run calls this; the host decides who fires it. See
+    /// [`Deadlines`] for why the answer cannot be *the thread that is running the command*.
+    fn arm_deadline(&self, job: &JobId, after: Duration);
+
     /// Block on a **handle**, never a pattern. `job` waits for one job to leave
     /// `Running`; `scope` waits for a cgroup to empty, and applies the
     /// presence-before-absence rule itself.
@@ -235,7 +246,41 @@ pub trait ProcessHost: Send + Sync {
     fn output(&self, job: &JobId, from: u64, limit: usize) -> Result<OutputSlice, ExecError>;
 
     /// Kill one job by killing its cgroup, and record it.
-    fn kill_job(&self, job: &JobId) -> Result<Reaping, ExecError>;
+    fn kill_job(&self, job: &JobId) -> Result<Reaping, ExecError> {
+        self.kill_job_as(job, "job_kill")
+    }
+
+    /// The same, with **who ended it** as an argument.
+    ///
+    /// `by` is what [`JobState::Killed`] carries and what every reader of the row is shown,
+    /// so it is a sentence about the cause and not a label: *the model asked*, *its deadline
+    /// passed* and *the daemon was stopping* are three different things to have happened to
+    /// one command, and a single word for all three would be F5 with the sign flipped — a
+    /// caller's decision reported as the command's own.
+    fn kill_job_as(&self, job: &JobId, by: &str) -> Result<Reaping, ExecError>;
+
+    /// **End every run this host still has, and say why.**
+    ///
+    /// The daemon's shutdown is the caller: a stop that arrives while a run holds the
+    /// worker must end that run rather than wait out its deadline, because the alternative
+    /// is a stop that takes two minutes and a head that has to be told so. The run's own
+    /// row is where it is said — it settles as [`JobState::Killed`] carrying `by`, and
+    /// `bash` renders that on the row the session keeps.
+    ///
+    /// Returns one reap record per run ended, so *it ended nothing* and *it ended nothing
+    /// because nothing was running* are different answers to the caller that asked.
+    fn end_running(&self, by: &str) -> Vec<Reaping> {
+        let running: Vec<JobId> = self
+            .jobs()
+            .into_iter()
+            .filter(|v| v.state.is_running())
+            .map(|v| v.id)
+            .collect();
+        running
+            .iter()
+            .filter_map(|id| self.kill_job_as(id, by).ok())
+            .collect()
+    }
     /// End a scope: kill everything under it, and record it.
     fn end_scope(&self, scope: &ScopeId) -> Result<Reaping, ExecError>;
 
@@ -399,9 +444,180 @@ pub trait ProcessHost: Send + Sync {
     }
 }
 
+/// **The run's deadline, and the thread that enforces it.**
+///
+/// # Why this is not the run's own loop
+///
+/// The deadline used to be enforced in exactly one place: the top of `bash`'s wait loop,
+/// which runs **on the thread the run occupies**. That is the deadline being enforced
+/// *inside the thing it guards*, and it has one consequence that no amount of care in the
+/// loop can fix — if that thread does not come back round the loop, nothing ends the run.
+/// The worker that ran the command is then held for as long as the command lives, and
+/// since the daemon has one worker, so is every session it serves.
+///
+/// The loop's tick is a *bounded* condvar wait and the run's own processes are waited on by
+/// other threads, so the loop is not itself the thing that blocks — measured, 2026-10-06: a
+/// root `su` blocked on the daemon's pipe with its whole tree unreadable was killed by its
+/// deadline at 120.02 s, with the worker in `futex_do_wait` throughout. What is true, and
+/// is the whole of the defect, is that the check is **only** there: it is the only thing
+/// that would end the run, so anything that stops that thread reaching it removes the
+/// timeout from the system entirely.
+///
+/// So the deadline gets a thread of its own, it belongs to the **host** rather than to the
+/// tool, and what it does is what [`HostProcesses::kill_job`] does: end the run's cgroup.
+/// `cgroup.kill` is a write to a file this daemon owns — it is not this uid signalling a
+/// stranger's process, so it reaches a root `sudo`, a confined child in another pid
+/// namespace and everything a run forked, whether or not the run's own thread is moving.
+///
+/// # What it does not replace
+///
+/// The loop keeps its own check. That is the fast path and the one with the precise
+/// sentence — it can say *how long* the run outlived its deadline, and it can do it up to
+/// half a second earlier. This is the **backstop**, and the two agree because they do the
+/// same thing at the same moment; a run ended by either settles as
+/// [`JobState::Killed`] with [`DEADLINE_KILL`] as the reason, so one row says what happened
+/// however the run was ended.
+///
+/// # No timer for message delivery
+///
+/// `daemon.rs`'s §18.1-I12 rule is that the daemon spawns no timer or poll loop **for
+/// message delivery**: a hub blocks on a condvar and a signal arrives on a self-pipe. This
+/// is neither. It is the one thing a deadline is, and it is armed per run and disarmed by
+/// firing, so an idle session has this thread asleep on a condvar and nothing else.
+pub struct Deadlines {
+    /// Armed deadlines, earliest first by construction of the wait below.
+    inner: Mutex<Vec<Due>>,
+    /// Rung when a deadline is armed or the list changes, so the watchdog re-reads it
+    /// rather than polling.
+    armed: Condvar,
+    /// What the watchdog did, so a caller can read back *the deadline ended this run* —
+    /// the same reason `reaps` exists beside it.
+    fired: Mutex<Vec<DeadlineFired>>,
+}
+
+/// One firing, as a record rather than a side effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadlineFired {
+    pub job: JobId,
+    /// How long the run had been alive when its deadline ended it.
+    pub after: Duration,
+    /// The cgroup reap, which is the same record `job_kill` leaves.
+    pub reaping: Reaping,
+}
+
+impl std::fmt::Debug for Deadlines {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n = self.inner.lock().map(|g| g.len()).unwrap_or(0);
+        let fired = self.fired.lock().map(|g| g.len()).unwrap_or(0);
+        f.debug_struct("Deadlines")
+            .field("armed", &n)
+            .field("fired", &fired)
+            .finish()
+    }
+}
+
+impl Deadlines {
+    /// An empty set, with the watchdog already running.
+    fn new(tree: Arc<dyn ScopeTree>) -> Arc<Deadlines> {
+        let d = Arc::new(Deadlines {
+            inner: Mutex::new(Vec::new()),
+            armed: Condvar::new(),
+            fired: Mutex::new(Vec::new()),
+        });
+        let watch = Arc::clone(&d);
+        // **A failure to spawn is not swallowed.** A host whose watchdog could not start is
+        // a host with no deadline at all, which is the state this whole type exists to end —
+        // so it is said on stderr, where a daemon's operator already reads, and the loop's
+        // own check remains the only enforcement exactly as it was before.
+        if let Err(e) = std::thread::Builder::new()
+            .name("letibot-deadline".into())
+            .spawn(move || watch.run(tree))
+        {
+            eprintln!(
+                "letibot: the deadline watchdog did not start ({e}); a run that outlives its \
+                 timeout is ended by the tool's own wait loop and by nothing else"
+            );
+        }
+        d
+    }
+
+    /// Arm one run's deadline.
+    fn arm(&self, job: Arc<Job>, after: Duration) {
+        let at = Instant::now() + after;
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        // A second arm for one job replaces the first: a run has one deadline, and two
+        // entries for it would be two firings for one fact.
+        g.retain(|d| d.job.id != job.id);
+        g.push(Due { at, job });
+        drop(g);
+        self.armed.notify_all();
+    }
+
+    /// What has fired, oldest first. The read-back half of the record.
+    pub fn fired(&self) -> Vec<DeadlineFired> {
+        self.fired.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// **The watchdog.** Sleeps until the earliest armed deadline, then ends that run's
+    /// cgroup — on this thread, which is not the run's.
+    fn run(&self, tree: Arc<dyn ScopeTree>) {
+        loop {
+            let due: Vec<Due> = {
+                let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    let now = Instant::now();
+                    match g.iter().map(|d| d.at).min() {
+                        // Nothing armed: sleep until something is.
+                        None => {
+                            g = self.armed.wait(g).unwrap_or_else(|e| e.into_inner());
+                        }
+                        // The earliest is still ahead: sleep exactly that long, and no
+                        // longer — a shorter deadline armed meanwhile rings the condvar.
+                        Some(t) if t > now => {
+                            let (g2, _) = self
+                                .armed
+                                .wait_timeout(g, t - now)
+                                .unwrap_or_else(|e| e.into_inner());
+                            g = g2;
+                        }
+                        // At least one is due.
+                        Some(_) => break,
+                    }
+                }
+                let now = Instant::now();
+                let (due, keep): (Vec<Due>, Vec<Due>) = g.drain(..).partition(|d| d.at <= now);
+                *g = keep;
+                due
+            };
+            for d in due {
+                // **The run is ended the same way `job_kill` ends one**, and only while it
+                // is still running: a job that exited on its own a moment before its
+                // deadline is a job that finished, and reaping its cgroup would report a
+                // kill of an empty scope as if it were the deadline's doing.
+                if !d.job.state().is_running() {
+                    continue;
+                }
+                let after = d.job.elapsed();
+                d.job.settle(JobState::Killed {
+                    by: DEADLINE_KILL.to_string(),
+                });
+                let reaping = tree.end(&d.job.lifetime().scope);
+                self.fired
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(DeadlineFired {
+                        job: d.job.id.clone(),
+                        after,
+                        reaping,
+                    });
+            }
+        }
+    }
+}
+
 /// The host implementation: real processes, real cgroups.
 pub struct HostProcesses {
-    tree: Box<dyn ScopeTree>,
+    tree: Arc<dyn ScopeTree>,
     /// What bounds the process's **view**, as against its lifetime.
     ///
     /// Not an `Option`. An absent field is a question nobody answered, and the
@@ -422,6 +638,8 @@ pub struct HostProcesses {
     session: Mutex<Option<ScopeId>>,
     turn: Mutex<Option<ScopeId>>,
     jobs: Mutex<Vec<Arc<Job>>>,
+    /// **The deadlines, and the thread that enforces them.** See [`Deadlines`].
+    deadlines: Arc<Deadlines>,
     reaps: Mutex<Vec<Reaping>>,
     /// Every promotion, for the same reason `reaps` exists: a lifetime that
     /// changed under the model is a fact somebody has to be able to read back.
@@ -520,7 +738,9 @@ impl HostProcesses {
     }
 
     pub fn with_tree(root: impl Into<PathBuf>, tree: Box<dyn ScopeTree>) -> HostProcesses {
+        let tree: Arc<dyn ScopeTree> = Arc::from(tree);
         let h = HostProcesses {
+            deadlines: Deadlines::new(Arc::clone(&tree)),
             tree,
             // **Not asked for**, and named as such rather than left absent, so a
             // reader of `describe()` cannot mistake silence for a boundary.
@@ -750,6 +970,15 @@ impl HostProcesses {
             produced: cap.produced(),
             since_last_output: cap.since_last(),
         }
+    }
+
+    /// **What the deadline watchdog has ended, oldest first.**
+    ///
+    /// The read-back half of the mechanism, for the same reason [`HostProcesses::reap_log`]
+    /// exists: *the deadline ended this run* is a claim, and a claim that nothing can be
+    /// checked against is the unfalsifiable zero this substrate refuses everywhere else.
+    pub fn deadlines_fired(&self) -> Vec<DeadlineFired> {
+        self.deadlines.fired()
     }
 
     /// Every job id this host knows, for clause 1's benefit when one is unknown.
@@ -1178,6 +1407,18 @@ impl ProcessHost for HostProcesses {
         Ok(id)
     }
 
+    /// **Give this run a deadline, and hand its enforcement to the host.**
+    ///
+    /// The tool that starts a run is the one that knows how long it may live —
+    /// `timeout_ms` is its argument — so it is the one that arms this. What it must not be
+    /// is the one that *enforces* it, and that is the whole of [`Deadlines`]: the run's own
+    /// thread reports the deadline, and this thread ends the run.
+    fn arm_deadline(&self, job: &JobId, after: Duration) {
+        if let Some(j) = self.find(job) {
+            self.deadlines.arm(j, after);
+        }
+    }
+
     fn wait_job(&self, id: &JobId, deadline: Duration) -> Result<Waited, ExecError> {
         let job = self.find(id).ok_or(ExecError::NoSuchJob(id.0.clone()))?;
         let started = Instant::now();
@@ -1251,16 +1492,14 @@ impl ProcessHost for HostProcesses {
         Ok(cap.slice(from, limit))
     }
 
-    fn kill_job(&self, id: &JobId) -> Result<Reaping, ExecError> {
+    fn kill_job_as(&self, id: &JobId, by: &str) -> Result<Reaping, ExecError> {
         let job = self.find(id).ok_or(ExecError::NoSuchJob(id.0.clone()))?;
         // Mark first, so the waiter thread does not overwrite `Killed` with the
         // SIGKILL it is about to see. F5: the reason it stopped is a fact and the
         // signal is only its shape.
         let running = job.state().is_running();
         if running {
-            job.settle(JobState::Killed {
-                by: "job_kill".into(),
-            });
+            job.settle(JobState::Killed { by: by.to_string() });
         }
         let mut r = self.tree.end(&job.lifetime().scope);
         if !running && r.observed.is_empty() {

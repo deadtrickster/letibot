@@ -96,8 +96,11 @@ pub use confine::{
     Boundary, Bwrap, ConfinePlan, Confinement, Egress, Grant, HomeView, Namespace, NoConfinement,
     NsState, Presence, Seal, SealKind, Unconfined, ViewSpec,
 };
-pub use host::{HostProcesses, JobView, ProcessHost, Promotion, Protected, SpawnRequest, Waited};
-pub use jobs::{JobId, JobState, OutputSlice, Stdin};
+pub use host::{
+    DeadlineFired, Deadlines, HostProcesses, JobView, ProcessHost, Promotion, Protected,
+    SpawnRequest, Waited,
+};
+pub use jobs::{DEADLINE_KILL, JobId, JobState, OutputSlice, Stdin};
 pub use monitor::{
     ChannelCondition, CommandCondition, CommandExpect, Condition, CustomWatch, Fired, Firing,
     LogTailCondition, Monitor, MonitorError, Monitors, PortState, TimerCondition, Wait, Watch,

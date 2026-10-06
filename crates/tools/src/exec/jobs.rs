@@ -54,6 +54,14 @@ impl std::fmt::Display for JobId {
     }
 }
 
+/// **What `by` says when the run's own deadline ended it.**
+///
+/// A named constant rather than a literal in two places, because it is read back: the
+/// watchdog writes it into [`JobState::Killed`] and `bash` matches on it to report a
+/// deadline rather than a failure. Two spellings of this string would be a timeout
+/// rendered as an error, which is the one thing the deadline branch exists to avoid.
+pub const DEADLINE_KILL: &str = "its deadline";
+
 /// Where a job is. Five states, and the last three are **not** interchangeable:
 /// a command that exited non-zero, one that was killed with its scope, and one
 /// that never joined its cgroup are three different things to have happened, and
@@ -424,6 +432,19 @@ pub struct Lifetime {
     /// plain foreground command — which is a different fact from
     /// `Some(Backgrounding::Asked)` and is stored as one.
     pub background: Option<letibot_transcript::Backgrounding>,
+}
+
+/// **A deadline, and the run it belongs to.**
+///
+/// The pair travels together because a deadline with no job is a number and a job with no
+/// deadline is one nobody can end; see [`super::host::Deadlines`] for the thread that reads
+/// these.
+pub struct Due {
+    /// When the run must be gone.
+    pub at: std::time::Instant,
+    /// The run. Held as an `Arc` so the watchdog can settle it and end its cgroup without
+    /// taking any lock the run's own thread might be holding.
+    pub job: std::sync::Arc<Job>,
 }
 
 /// One job, shared between the tool that started it and the threads draining it.
