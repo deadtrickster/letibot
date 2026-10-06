@@ -112,6 +112,7 @@ pub mod slash;
 pub mod sudo;
 pub mod suggest;
 pub mod tasks;
+pub mod term;
 pub mod transcript_source;
 
 pub use answers::{Answers, HeadAdjudicator};
@@ -122,3 +123,4 @@ pub use harness::{Harness, HarnessError, HubSteering, Parts, Reply};
 pub use modes::ModeStore;
 pub use sessions::{Outcome, Sessions};
 pub use tasks::{TaskEntry, TaskJournal};
+pub use term::Terminals;

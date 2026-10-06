@@ -1073,6 +1073,74 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
+            // **A program that owns the screen, in a pane the daemon owns.** (`!term`.)
+            //
+            // Not a command, and the sharpest case of it in this file: this appends no row,
+            // moves no seq and is answered on this connection. Queueing a pane behind a
+            // running turn would make it open minutes after it was asked for.
+            //
+            // **Every refusal is a `TermEnded`, and there is no second spelling.** A pane
+            // that could not start is a pane that is over before it began, and the head's act
+            // is the same either way — close the pane and say why — so the sentence is the
+            // whole of the difference. `Rejected` would need a `client_request_id` and an
+            // `expected_seq`, and this frame has neither: it is not a command and it has
+            // nothing to be stale against.
+            Ok(ClientFrame::TermOpen { line, cols, rows }) => {
+                let said = match crate::term_command(&line) {
+                    // Not this verb at all. A head that sent one is a head this daemon does
+                    // not understand, so it is told rather than ignored.
+                    None => Err(format!(
+                        "`{line}` is not a `!term` line: the verb is `!term`, and it has to be \
+                         followed by whitespace. Nothing ran."
+                    )),
+                    Some("") => Err("`!term` needs a command to run — `!term mc`, `!term nano \
+                                     notes.txt`. Nothing ran."
+                        .to_string()),
+                    Some(command) => match registry.terminal() {
+                        None => Err("this daemon has no terminal driver, so there is no pty to \
+                                     run a screen program on. Nothing ran."
+                            .to_string()),
+                        Some(driver) => {
+                            driver.open(&seat.hub.session_id(), &seat.hub, command, cols, rows)
+                        }
+                    },
+                };
+                if let Err(reason) = said {
+                    writer
+                        .lock()
+                        .unwrap()
+                        .write(&ServerFrame::TermEnded { reason })?;
+                }
+            }
+            // **The operator's keys, verbatim.** Not a command either, and for a sharper
+            // reason than the pane's: a keystroke that queued behind a running turn would be
+            // a key that arrives after the thing it was answering.
+            Ok(ClientFrame::TermInput { bytes }) => {
+                if let Some(driver) = registry.terminal() {
+                    // A failed write is the pty's far end being gone, which the pane's own
+                    // reader thread is about to report with a better sentence than this arm
+                    // could — so it is dropped here rather than turned into a second ending.
+                    let _ = driver.input(&seat.hub.session_id(), &bytes);
+                }
+            }
+            // **The pane's rectangle moved** — the head's fact, since the daemon has no
+            // screen. `TIOCSWINSZ` on the pty, and the kernel raises `SIGWINCH` for the
+            // program's foreground process group by itself.
+            Ok(ClientFrame::TermResize { cols, rows }) => {
+                if let Some(driver) = registry.terminal() {
+                    let _ = driver.resize(&seat.hub.session_id(), cols, rows);
+                }
+            }
+            // **The operator left.** Idempotent and quiet when there is no pane: *"stop"* is
+            // not a request that can be wrong about anything, and a head that leaves twice
+            // gets nothing rather than a refusal. The ending itself comes from the driver's
+            // reader thread, with the operator's own act in the sentence — see
+            // `TermSession::close`.
+            Ok(ClientFrame::TermClose) => {
+                if let Some(driver) = registry.terminal() {
+                    let _ = driver.close(&seat.hub.session_id());
+                }
+            }
             // **R11's locator, leticl's ask.** A head names one decision and one half of its
             // exchange; the daemon answers with the bytes or with *not recorded*. The same
             // shape `FetchRow` uses, and for the same reason: this is the head asking for
@@ -1520,6 +1588,21 @@ fn seat_in(
                         Err(p) => p.into_inner(),
                     };
                     let r = match d {
+                        Delivery::Frames(frames) => {
+                            // **Frames that are not the record**: the pane's byte stream.
+                            // See [`Delivery::Frames`] — they are written ahead of the
+                            // events because a screen's repaint must not sit behind a batch
+                            // of deltas, and none of them touches the log, the seq or the
+                            // ack.
+                            let mut r = Ok(());
+                            for f in frames {
+                                r = w.write(&f);
+                                if r.is_err() {
+                                    break;
+                                }
+                            }
+                            r
+                        }
                         Delivery::Events(b) => {
                             let mut r = Ok(());
                             for env in b.events() {

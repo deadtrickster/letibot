@@ -491,6 +491,59 @@ pub trait ShellSuggester: Send + Sync {
     fn suggest(&self, hub: &Hub, workspace: &str, prefix: &str) -> Vec<String>;
 }
 
+/// **Who owns a pane's pty** — `!term`, the program that owns the screen.
+///
+/// A trait and not a method on the registry, for the reason [`ShellSuggester`] is one: this
+/// crate has no `libc`, no pty and no business holding a child process, while the daemon has
+/// all three. The daemon passes an implementation in (`letibot-harnessd`'s `term` module,
+/// built on `letibot_tools::exec::term`), and **a registry with no driver answers `TermOpen`
+/// with a pane that is over before it began** — the same safe direction the suggester takes:
+/// a daemon that cannot run a pane says so rather than pretending to.
+///
+/// # Why the hub comes in rather than going out
+///
+/// A pane's bytes travel *up*, and they travel from a **reader thread** the driver owns — not
+/// from the connection thread that handled the frame. So `open` is handed the hub, and the
+/// driver keeps it: `Hub::push_frame` is the one door for a frame that is not the record, and
+/// it is the same door every other head-visible thing goes through. A driver holding a
+/// `Sender<ServerFrame>` of its own would be a second ordering on one socket.
+///
+/// # Why every method is keyed by the session and not by the head
+///
+/// **One pane per session**, and the pane is the session's: a screen program is a process in
+/// the session's workspace, in the session's cgroup, and a second head attached to the same
+/// session draws the same rectangle. The frames are fanned out like events (see
+/// `Hub::push_frame`) and a head with no pane drops them, which is the honest reading of *a
+/// pane this head did not open*.
+///
+/// **Nothing here may block.** `input` is called on the connection's reader thread, so a
+/// driver that waited for the program to read its keystrokes would stop this head's acks and
+/// its frames for as long as the program was busy — and a `nano` saving a file is a program
+/// that is not reading keys.
+pub trait TerminalDriver: Send + Sync {
+    /// **Start the program in a pty this daemon owns.** `command` is the shell line the
+    /// operator typed after the verb, `cols`/`rows` the pane's rectangle, and `hub` the
+    /// session whose heads will receive the bytes.
+    ///
+    /// `Err` is the sentence the operator reads: it becomes [`crate::protocol::ServerFrame::TermEnded`]'s
+    /// `reason`, so it must be something a person can act on.
+    fn open(
+        &self,
+        session_id: &str,
+        hub: &Arc<Hub>,
+        command: &str,
+        cols: usize,
+        rows: usize,
+    ) -> Result<(), String>;
+    /// The operator's keys, verbatim. Quietly ignored when there is no pane.
+    fn input(&self, session_id: &str, bytes: &[u8]) -> Result<(), String>;
+    /// The pane's rectangle moved.
+    fn resize(&self, session_id: &str, cols: usize, rows: usize) -> Result<(), String>;
+    /// **The operator left.** Ends the pane's scope, which kills the program and everything
+    /// it started. Quiet when there is no pane: *"stop"* is not a request that can be wrong.
+    fn close(&self, session_id: &str) -> Result<(), String>;
+}
+
 pub struct Registry {
     inner: Mutex<Inner>,
     bell: Arc<Bell>,
@@ -505,6 +558,10 @@ pub struct Registry {
     /// `None` in every head and every test that predates the smart `!`, and a
     /// `SuggestShell` then answers with an empty list.
     suggester: Mutex<Option<Arc<dyn ShellSuggester>>>,
+    /// Set once at startup by the daemon, beside [`Registry::suggester`]. See
+    /// [`TerminalDriver`]. `None` in every head and every test that predates `!term`, and a
+    /// `TermOpen` then answers with a pane that is over and the reason it is.
+    terminal: Mutex<Option<Arc<dyn TerminalDriver>>>,
 }
 
 /// What the worker was woken for.
@@ -568,6 +625,7 @@ impl Registry {
             rows: Mutex::new(None),
             diagnostics: Mutex::new(None),
             suggester: Mutex::new(None),
+            terminal: Mutex::new(None),
         })
     }
 
@@ -746,6 +804,22 @@ impl Registry {
     /// The suggester this registry was given, or `None` when it was not.
     pub fn suggester(&self) -> Option<Arc<dyn ShellSuggester>> {
         self.suggester
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// **Who owns a pane's pty.** See [`TerminalDriver`]. Set once at startup by the daemon,
+    /// exactly as [`Registry::set_suggester`] is, and `None` in every head and every test that
+    /// predates `!term` — in which case a `TermOpen` answers with a pane that is over and the
+    /// sentence saying there is no driver, rather than with silence.
+    pub fn set_terminal(&self, driver: Arc<dyn TerminalDriver>) {
+        *self.terminal.lock().unwrap_or_else(|e| e.into_inner()) = Some(driver);
+    }
+
+    /// The pane's driver, or `None` when this registry was given none.
+    pub fn terminal(&self) -> Option<Arc<dyn TerminalDriver>> {
+        self.terminal
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()

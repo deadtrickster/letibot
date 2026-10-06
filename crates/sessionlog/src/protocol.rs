@@ -331,6 +331,72 @@ use crate::view::Snapshot;
 /// the two events carry every change. The queue is daemon-level, not per-session: there is one
 /// main branch and one queue, and the `session_id` on each entry is the entry's origin, not a
 /// filter.
+/// # 31: a program that owns the screen runs in a pane, and the head is the terminal
+///
+/// **Six frames, and the count is the decision.** Four new [`ClientFrame`]s —
+/// [`ClientFrame::TermOpen`], [`ClientFrame::TermInput`], [`ClientFrame::TermResize`] and
+/// [`ClientFrame::TermClose`] — so a version-30 daemon would fail to parse the first of them:
+/// the version-4 argument, and the same ATTACH-time refusal, which is a clean `Bye` rather
+/// than a mid-session deserialization failure that hangs the connection in silence. Two new
+/// [`ServerFrame`]s — [`ServerFrame::TermOutput`] and [`ServerFrame::TermEnded`] — and the
+/// version-25 argument applies to those in the other direction: a head with no arm for one
+/// would fail to decode it mid-session. One bump covers all six, the way 23 and 29 each
+/// carried a whole feature at one version.
+///
+/// **What it is for, in the operator's words:** *"i mean i want it broooo"* — `! mc`, `! nano`
+/// **running in the pane**, the conversation's rectangle given to the program with the
+/// composer keeping its rows. `crates/tools/src/exec/terminal.rs` refuses those by name today
+/// and its own message calls the fix `!term`.
+///
+/// # Why this is a byte stream and not the sibling's `ShellLine`/`ShellTurn`
+///
+/// `crates/tools/src/exec/shell.rs` names a pair — `ShellLine`, `ShellTurn`, `ShellResize`,
+/// `ShellEnded` — for a **line** typed at a shell the daemon keeps: a submitted line in, one
+/// `Turn { bytes, status, cwd }` out when the trailer arrives. **That is the wrong shape here,
+/// and `shell.rs` says so in its own TODOs**: *"a full-screen program — `mc`, `top`, `vim` —
+/// never returns to the shell, so its trailer never arrives and `ShellSession::run` waits out
+/// its deadline."* A pane's traffic is not a line's:
+///
+/// | | the sibling's pair | here |
+/// |---|---|---|
+/// | the far end | one long-lived shell per session | the program the operator named, one per pane |
+/// | what comes back | one `Turn` per line, at the trailer | every byte, as it is written |
+/// | what goes in | a line | the operator's keystrokes, verbatim |
+/// | the end | the shell exits | the program exits, or the operator leaves |
+///
+/// **A `Turn`'s `status` and `cwd` have no meaning for a program that is still running**, and
+/// a `ShellResize` would be a resize for a session that may not exist. So this is a pair of its
+/// own — `TermInput`/`TermOutput`, plus the two frames that are neither a line nor an answer
+/// (`TermResize` is the head's rectangle and `TermClose`/`TermEnded` is an ending) — and the
+/// sibling's four stay where they are, named in `shell.rs` and **not added by this branch**.
+/// That module's own note says why the version bump belongs with the daemon's half:
+/// *"a frame the daemon has no arm for is a head sending into a void, and the version bump is
+/// a refusal."* The arm is in `crates/sessionlog/src/server.rs` and `crates/harnessd/src/term.rs`,
+/// and it is present at this version — which is the whole reason this constant moved.
+///
+/// # Why the pane is not an event
+///
+/// [`crate::SessionEvent`] is durable, replayable and scrubbed. A screen's repaints are none of
+/// those things: `nano` redraws a row when a character is typed, and a `SessionEvent::TermOutput`
+/// would put every one of those redraws in the transcript a model reads and the store keeps.
+/// So the pane travels on frames — *this connection, now, not the record* — which is the same
+/// line `Filling` and `ToolProgress` are drawn on from the other side.
+///
+/// # What a pane deliberately does not do
+///
+/// **It appends no row.** The operator's `!` line becomes two transcript rows; a pane is not a
+/// row, it is the conversation's rectangle given to a program, and when it closes the
+/// transcript comes back exactly as it was. The `!term` line is not lost — the operator typed
+/// it and it is in their terminal's own scrollback, and the pane drew over the rectangle it
+/// would have gone in.
+///
+/// **It is not recorded in the corpus and it is not a tool call.** Nothing a model proposed
+/// reaches it: the frame carries a line the operator pressed Enter on, the same rule
+/// [`ClientFrame::OperatorShell`] keeps, and the way in is `!term` at the composer.
+///
+/// **One pane per session at a time.** A second `TermOpen` while one is live is refused in
+/// [`ServerFrame::TermEnded`]'s sentence rather than replacing the first, because a pane whose
+/// program is silently killed by the next keystroke is a pane that loses work.
 /// # 30: the model proposes `!` completions
 ///
 /// [`ClientFrame::SuggestShell`] is a new client frame, so a version-29 daemon would fail to
@@ -347,7 +413,7 @@ use crate::view::Snapshot;
 /// answer is a list of candidate lines, and **nothing in the path submits**: a suggestion only
 /// fills the composer, and Enter is still the operator's. See the variants' own docs for the
 /// shape and the defensive parse.
-pub const PROTOCOL_VERSION: u32 = 30;
+pub const PROTOCOL_VERSION: u32 = 31;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -544,6 +610,38 @@ pub fn operator_shell_command(line: &str) -> Option<&str> {
     let rest = line.strip_prefix('!')?;
     let cmd = rest.trim();
     (!cmd.is_empty()).then_some(cmd)
+}
+
+/// **The command a `!term` line carries, or `None` when it is not one.**
+///
+/// Beside [`operator_shell_command`] and for its reason: this is the one place both halves of
+/// the parse live, so the head that recognises the verb at the composer and the daemon that
+/// re-checks it at the socket cannot disagree about what a `!term` line is.
+///
+/// **The verb is a whole word.** `!term mc` and `!term` are `!term` lines; `!terminal`, `!terms`
+/// and `!term-mc` are not, and they fall through to [`operator_shell_command`] — which is what
+/// they always were, an operator's shell line that happens to start with the same four letters.
+/// One space, and no tolerance for a tab or a second one: the verb is followed by whitespace and
+/// the command is the rest, trimmed.
+///
+/// `Some("")` for `!term` with nothing after it — the verb with no command. **A bare `!term`
+/// is not a request for the operator's `$SHELL`**: that would be a second meaning for one
+/// spelling, and an operator who wants their shell types `!term bash`, which is one word and
+/// says so. The empty string is returned rather than `None` so that *"the verb, with nothing
+/// after it"* and *"not this verb at all"* are two answers a caller can tell apart — the head
+/// says one sentence for the first and falls through to the `!` line for the second.
+///
+/// The command is returned **whole and unsplit**: it is a shell line, and
+/// `letibot_tools::exec::term` hands it to `/bin/sh -c` rather than inventing a second grammar
+/// in front of the shell. That is what makes `!term FOO=1 mc` and `!term cd /tmp && mc` work.
+pub fn term_command(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("!term")?;
+    // A word boundary, not a prefix: the character after the verb must be whitespace or the
+    // end of the line, or this is not the verb at all.
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(rest.trim())
 }
 
 /// **How a daemon's protocol version compares with this build's** — as the one sentence a
@@ -1430,6 +1528,61 @@ pub enum ClientFrame {
     /// A clean goodbye. **Not** required: TCP close is detach too, and detach is
     /// never abort (§13.2).
     Detach,
+    /// **`!term <command>` — open a pane, and run a program that owns the screen in it.**
+    ///
+    /// The operator's own line, verb included, exactly as [`ClientFrame::OperatorShell`]
+    /// carries its own: the daemon strips the verb (one rule, at the execution site) and the
+    /// parse is [`term_command`]. **Not a command**, and that is the load-bearing half of the
+    /// design: it appends no row, moves no seq, and is answered on this connection — because
+    /// queueing a pane behind a running turn would make it open minutes after it was asked
+    /// for, and the same argument is written at `ClientFrame::Screen` and `ClientFrame::Secret`.
+    ///
+    /// `cols` and `rows` are **the conversation's rectangle**, and they are here because the
+    /// head is the half that knows it: the daemon has no screen. They go to the pty as its
+    /// `winsize` before the program's first byte, so a full-screen program lays out for the
+    /// pane it is actually drawn in rather than for a default of 80×24. After this frame
+    /// [`ClientFrame::TermResize`] moves it.
+    ///
+    /// Answered by [`ServerFrame::TermOutput`] as the program writes, and by
+    /// [`ServerFrame::TermEnded`] once — which is also the answer to a pane that never
+    /// started, because the head's act is the same in both cases: close the pane and say why.
+    TermOpen {
+        line: String,
+        cols: usize,
+        rows: usize,
+    },
+    /// **The operator's keys, verbatim** — the down direction of the pane's byte stream.
+    ///
+    /// A byte vector and not a keycode, and that is not an implementation detail: the pane is
+    /// a terminal, and a head that decoded `ESC [ A` into *up* and re-encoded it as `ESC O A`
+    /// would be a keymap in front of a program — the program in application-cursor mode asks
+    /// for the second spelling and the head would send the first. So the bytes go down as the
+    /// operator's terminal produced them.
+    ///
+    /// **Not a command, and the sharpest case of it in the protocol.** A keystroke that
+    /// queued behind a running turn would be a key that arrives after the thing it was
+    /// answering, and a terminal whose input is delayed by a turn is not a terminal.
+    ///
+    /// **The way out does not travel here.** `Ctrl-\` is intercepted by the head before any
+    /// byte is written, so the program never receives it and cannot trap it — see
+    /// [`ClientFrame::TermClose`].
+    TermInput { bytes: Vec<u8> },
+    /// **The pane's rectangle moved.** The head's fact, sent down because the daemon has no
+    /// screen: the daemon `TIOCSWINSZ`es the pty, the kernel raises `SIGWINCH` for the
+    /// program's foreground process group, and the program redraws at the size it now has.
+    ///
+    /// Its own frame rather than a field on [`ClientFrame::TermInput`], because a resize is
+    /// not a keystroke and a terminal's two directions are not one message.
+    TermResize { cols: usize, rows: usize },
+    /// **The operator left the pane.** The one unambiguous way out, and it is the operator's
+    /// act rather than a key the program sees: the daemon ends the pane's scope, which kills
+    /// the program and everything it started, and answers with
+    /// [`ServerFrame::TermEnded`].
+    ///
+    /// **Idempotent and quiet when there is no pane**: a head that leaves twice, or leaves a
+    /// pane that has already ended, gets nothing rather than a refusal, because *"stop"* is
+    /// not a request that can be wrong about anything.
+    TermClose,
 }
 
 /// The read mark, as a type.
@@ -1691,6 +1844,47 @@ pub enum ServerFrame {
     },
     /// The daemon is going away. Detach is not abort; this is the case that is.
     Bye { reason: String },
+    /// **A pane's program wrote these bytes** — the up direction of the pane's byte stream.
+    ///
+    /// The answer to [`ClientFrame::TermOpen`], and then as many of these as the program has
+    /// something to say, in the order it said it. **Raw**: cursor addressing, `\r`, a partial
+    /// UTF-8 character, `ESC[?1049h` and all, because the head's half of this pair is a
+    /// terminal emulator and not a text filter — `letibot_ui::vt::Screen::feed` takes these
+    /// bytes and `Screen::pane_rows` returns the rectangle. **No byte a program writes
+    /// reaches the frame**: a cell holds a `char` and a role, so a program cannot paint with
+    /// an escape this head did not choose.
+    ///
+    /// **A `Vec<u8>` and not a base64 string, and the cost is named rather than discovered.**
+    /// `serde_json` writes a byte vector as an array of integers, so a screen byte costs
+    /// about four on the wire. That is deliberate for now: the alternative is a base64
+    /// dependency or a second framing layer under [`crate::wire`], and a screen program is
+    /// human-paced — measured on this box, `top` repaints about 2 KB per frame, and a pane
+    /// redrawing four times a second is 32 KB/s on a unix socket. The day a pane has to carry
+    /// a megabyte a second is the day this becomes a `String` and a codec, and that day is
+    /// not today.
+    ///
+    /// **These are not events and are never logged.** A screen's repaints are not
+    /// conversation: `SessionEvent` is durable, replayable and scrubbed, and a `nano`
+    /// keystroke-by-keystroke redraw has no business in a transcript that a model reads and a
+    /// store keeps. This is why the pane is a *frame* and not an event — the same distinction
+    /// `Filling` and `ToolProgress` make from the other side.
+    TermOutput { bytes: Vec<u8> },
+    /// **The pane is over, and this is why.** Written once per pane, and it is the answer to
+    /// [`ClientFrame::TermOpen`] as much as the end of one: a pane that could not start — no
+    /// command after the verb, a pty that would not open, a program that was not there — is a
+    /// pane that is over before it began, and the head's act is the same either way. So
+    /// `reason` is the whole of the difference and it is a sentence, not a code: *"the program
+    /// exited with 3"*, *"you left the terminal"*, *"`!term` needs a command to run"*.
+    ///
+    /// Its own frame rather than a field on the last [`ServerFrame::TermOutput`], because
+    /// **there may be no last one**: a program that dies without writing a byte still ends,
+    /// and an ending that had to ride on output would be an ending that never arrives. This is
+    /// the argument [`ClientFrame::OperatorCall`]'s pair makes one version earlier, applied to
+    /// a stream instead of a call.
+    ///
+    /// **Not the same thing as a `Bye` or a `Rejected`**: the connection is fine, the session
+    /// is fine, and the composer gets its rows back.
+    TermEnded { reason: String },
 }
 
 /// Why a `Rejected` was sent, as a stable code a head can branch on.
@@ -1810,6 +2004,10 @@ mod tests {
                 | ClientFrame::Stop { .. }
                 | ClientFrame::Switch { .. }
                 | ClientFrame::SetOperatorTodos { .. }
+                | ClientFrame::TermClose
+                | ClientFrame::TermInput { .. }
+                | ClientFrame::TermOpen { .. }
+                | ClientFrame::TermResize { .. }
                 | ClientFrame::WithdrawPrompts { .. } => {}
             }
         }
@@ -1874,6 +2072,8 @@ mod tests {
                 | ServerFrame::RowFetched { .. }
                 | ServerFrame::Diagnostic { .. }
                 | ServerFrame::ShellSuggestions { .. }
+                | ServerFrame::TermOutput { .. }
+                | ServerFrame::TermEnded { .. }
                 | ServerFrame::Resync { .. }
                 | ServerFrame::Accepted { .. }
                 | ServerFrame::Rejected { .. }
@@ -1884,14 +2084,15 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 30,
-            "the match above was last reconciled with the frame list at 30 — bumped for \
-             `SuggestShell`, a NEW client frame (a version-29 daemon would fail to parse \
-             it at ATTACH, the version-4 argument), and `ShellSuggestions`, its NEW server \
-             frame (a version-29 head would fail to decode it mid-session, the version-25 \
-             argument), as opposed to an added defaulted field, which is the case that \
-             needs no bump. 29 was `ListMergeQueue`/`MergeQueue` and the two merge-queue \
-             events"
+            PROTOCOL_VERSION, 31,
+            "the match above was last reconciled with the frame list at 31 — bumped for \
+             `TermOpen`, `TermInput`, `TermResize` and `TermClose`, four NEW client frames (a \
+             version-30 daemon would fail to parse the first at ATTACH, the version-4 \
+             argument), and `TermOutput` and `TermEnded`, two NEW server frames (a version-30 \
+             head would fail to decode them mid-session, the version-25 argument), as opposed \
+             to an added defaulted field, which is the case that needs no bump. 30 was \
+             `SuggestShell`/`ShellSuggestions`, and 29 `ListMergeQueue`/`MergeQueue` and the \
+             two merge-queue events"
         );
     }
 

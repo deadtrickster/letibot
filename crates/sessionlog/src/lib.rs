@@ -78,11 +78,12 @@ pub use log::{LogBounds, SessionLog};
 pub use protocol::{
     Ack, Caps, ClientFrame, HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT, HEAD_RUN_KIND_URL,
     HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, HeadRunTool, NOTE_STOPPING, PROTOCOL_VERSION, ServerFrame,
-    head_run_tool, head_run_verb, operator_shell_command, protocol_skew,
+    head_run_tool, head_run_verb, operator_shell_command, protocol_skew, term_command,
 };
 pub use question::{AnswerDefect, QuestionAnswer};
 pub use registry::{
     Bell, CreateError, Registry, RowSource, SessionBrief, SessionWiring, ShellSuggester,
+    TerminalDriver,
 };
 pub use scrub::{Projection, ScrubReport, StoredProjection, is_interactive};
 pub use view::{
