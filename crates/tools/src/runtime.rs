@@ -2202,7 +2202,6 @@ mod tests {
         );
     }
 
-<<<<<<< HEAD
     /// **The gatekeeper seat is read-only by construction.**
     ///
     /// It may read, grep, glob, and run `bash` for `git diff`/`git log`, and it has
