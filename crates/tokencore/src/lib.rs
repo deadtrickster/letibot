@@ -59,9 +59,7 @@ pub use region::TokenRegion;
 /// two versions of it in one tree makes `&Connection` and `&Connection` two
 /// unrelated types with one spelling.
 pub use rusqlite;
-pub use store::{
-    MergeEntry, MergePriority, MergeState, SessionRecord, StablePrefixRecord, Store,
-};
+pub use store::{MergeEntry, MergePriority, MergeState, SessionRecord, StablePrefixRecord, Store};
 pub use vocab::{ResolveCause, TokenId, Vocab};
 
 #[cfg(test)]

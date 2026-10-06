@@ -1120,24 +1120,32 @@ fn merge_entry_raw_from_row(r: &rusqlite::Row) -> rusqlite::Result<RawMergeEntry
 /// build does not know is a row written by a newer build, and reading it as the lowest rung
 /// would be a silent misread of the queue's own vocabulary.
 fn merge_entry_from_raw(raw: RawMergeEntry) -> Result<MergeEntry> {
+    // **The closed sets are parsed first, and the word is named.** A refusal that printed the
+    // whole row would make the reader find the word; the word is the whole of the answer, and
+    // parsing before the moves below is also what lets the moves be plain moves.
+    let priority = MergePriority::parse(&raw.priority).ok_or_else(|| {
+        StoreError::Corrupt(format!(
+            "merge_queue priority {:?} is not in the closed set {:?}",
+            raw.priority,
+            MergePriority::ALL
+        ))
+    })?;
+    let state = MergeState::parse(&raw.state).ok_or_else(|| {
+        StoreError::Corrupt(format!(
+            "merge_queue state {:?} is not in the closed set {:?}",
+            raw.state,
+            MergeState::ALL
+        ))
+    })?;
+    let needs = serde_json::from_str(&raw.needs_json)?;
     Ok(MergeEntry {
         id: raw.id,
         session_id: raw.session_id,
         branch: raw.branch,
         base_sha: raw.base_sha,
-        priority: MergePriority::parse(&raw.priority).ok_or_else(|| {
-            StoreError::Corrupt(format!(
-                "merge_queue priority {raw:?} is not in the closed set {:?}",
-                MergePriority::ALL
-            ))
-        })?,
-        needs: serde_json::from_str(&raw.needs_json)?,
-        state: MergeState::parse(&raw.state).ok_or_else(|| {
-            StoreError::Corrupt(format!(
-                "merge_queue state {raw:?} is not in the closed set {:?}",
-                MergeState::ALL
-            ))
-        })?,
+        priority,
+        needs,
+        state,
         evidence: raw.evidence,
         created_ms: raw.created_ms as u64,
         updated_ms: raw.updated_ms as u64,
@@ -3553,9 +3561,23 @@ mod tests {
                 ..enqueued.clone()
             };
             s.put_merge_entry(&landed).expect("the move");
-            let moved = s.merge_entry("m-1").expect("reads");
-            assert_eq!(moved.expect("the entry"), landed, "the move made a second row");
-            assert_eq!(s.merge_entries().expect("reads").len(), 1, "the move made a second row");
+            let moved = s.merge_entry("m-1").expect("reads").expect("the entry");
+            // `updated_ms` is the store's clock — see the doc on `put_merge_entry` — so it is
+            // the one field that is not the caller's, and it is normalized away rather than
+            // asserted. Everything else is the row the caller wrote.
+            assert_eq!(
+                MergeEntry {
+                    updated_ms: moved.updated_ms,
+                    ..landed.clone()
+                },
+                moved,
+                "the move made a second row"
+            );
+            assert_eq!(
+                s.merge_entries().expect("reads").len(),
+                1,
+                "the move made a second row"
+            );
 
             // **And an id the queue has never held reads `None`** — "no such entry" and "the
             // table is missing" have to be different answers or the second shows up as the
@@ -3605,14 +3627,12 @@ mod tests {
         }
         {
             let c = rusqlite::Connection::open(&path).unwrap();
-            c.execute("DROP INDEX IF EXISTS merge_queue_state_idx", []).unwrap();
+            c.execute("DROP INDEX IF EXISTS merge_queue_state_idx", [])
+                .unwrap();
             c.execute("DROP TABLE merge_queue", []).unwrap();
             c.execute("DELETE FROM schema_version", []).unwrap();
-            c.execute(
-                "INSERT INTO schema_version (version) VALUES (15)",
-                [],
-            )
-            .unwrap();
+            c.execute("INSERT INTO schema_version (version) VALUES (15)", [])
+                .unwrap();
         }
         {
             let s = Store::open(&path).expect("the migration runs");
@@ -3631,7 +3651,8 @@ mod tests {
                 worktree: None,
                 landed_sha: None,
             };
-            s.put_merge_entry(&entry).expect("a row through the migrated table");
+            s.put_merge_entry(&entry)
+                .expect("a row through the migrated table");
             assert_eq!(s.merge_entries().expect("reads").len(), 1);
         }
     }
