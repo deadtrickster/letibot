@@ -102,6 +102,7 @@ pub mod harness;
 pub mod httphead;
 pub mod jobwatch;
 pub mod m1;
+pub mod mergequeue;
 pub mod modes;
 pub mod oracle;
 pub mod progress;

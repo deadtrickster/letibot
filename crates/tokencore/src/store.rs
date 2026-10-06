@@ -279,7 +279,9 @@ pub struct ShapelessAdmit {
     pub arguments_json: String,
 }
 
-/// **15** since the session's **job history** is a table of its own — `job`, one row per
+/// **16** since the **merge queue** is a table of its own — `merge_queue`, one row per
+/// entry, described at its migration arm below and in [`MergeEntry`]. **15** since the
+/// session's **job history** is a table of its own — `job`, one row per
 /// handle, described at its migration arm below and in [`JobRecord`]. **14** since a session's
 /// resolved **context window** is on its row — `context_window`,
 /// additive, described at its migration arm below. A child's window belongs to the model
@@ -290,7 +292,7 @@ pub struct ShapelessAdmit {
 /// (R12) — `oracle_reading`, additive, described at its migration arm below. **10** since it
 /// records whether an oracle was consulted and what it answered (R11), and **9** added
 /// `oracle_reply` for the same requirement.
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -415,6 +417,48 @@ CREATE TABLE IF NOT EXISTS job (
     updated_ms  INTEGER NOT NULL,
     PRIMARY KEY (session_id, handle)
 );
+
+-- **The merge queue.** One row per entry the daemon is serving toward main, durable in
+-- this file for the reason the job history is: the queue the daemon serves is the queue
+-- that must survive the daemon, because the daemon is the one thing that is restarted and
+-- a merge that dies mid-flight must come back as a row that says what happened, not as an
+-- empty queue that says nothing.
+--
+-- The daemon is the only writer; a head never writes one. The store cannot tell who a
+-- connection is, so the guarantee is that the daemon is the only caller, which is the same
+-- shape as the job history's.
+--
+-- `session_id` is NOT a foreign key, and that is the difference from `job`: a job belongs
+-- to a session and dies with it, but an entry is about a BRANCH, and a session that is
+-- deleted does not un-merge a branch that still needs merging. It is the entry's origin —
+-- the subagent that finished it, or the operator's session for an urgent entry — and it
+-- is metadata the queue reads, not a referent the queue depends on.
+--
+-- `needs_json` is a JSON array of entry ids, the dependencies the entry is not taken
+-- until have `landed`. `state` and `priority` are the closed sets' own words. `evidence`
+-- is the reason for the state, in the queue's own words: a state without its reason is a
+-- row the pane draws and the operator cannot read.
+CREATE TABLE IF NOT EXISTS merge_queue (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    branch      TEXT NOT NULL,
+    base_sha    TEXT NOT NULL,
+    priority    TEXT NOT NULL,
+    needs_json  TEXT NOT NULL,
+    state       TEXT NOT NULL,
+    evidence    TEXT NOT NULL,
+    created_ms  INTEGER NOT NULL,
+    updated_ms  INTEGER NOT NULL,
+    worktree    TEXT,
+    landed_sha  TEXT
+);
+
+-- The read the daemon does on every pass: the entries in a state, in priority order,
+-- oldest first. The queue is small and the pure core sorts in memory, but the index
+-- documents the read the way flowy's `tasks(to_user, state)` does its own, and it is the
+-- one a SQL-side read would use.
+CREATE INDEX IF NOT EXISTS merge_queue_state_idx
+    ON merge_queue (state, priority, created_ms);
 
 -- **The adjudication corpus.** Every decision this harness makes, and every
 -- decision the operator makes about it, as one row.
@@ -830,6 +874,276 @@ pub struct JobRecord {
     pub elapsed_ms: u64,
     /// Where its output went, when that was not this daemon's window (R41).
     pub redirect: Option<String>,
+}
+
+/// **What kind of merge an entry is, out of a closed set** — the queue's priority.
+///
+/// The operator's ask, in their words: *"we need a gated merge to main, and worktree
+/// cleanup. for this we might need a merge queue. look how flowy does it - it has a nice
+/// queue with priorities and dependencies."*
+///
+/// A closed set rather than a number, for the reason flowy's `category` is one and the
+/// reason [`Verbosity`]'s ladder is one list: a priority that is a free integer is a
+/// priority nobody can count or route on, and `3` and `high` and `urgent` are three
+/// populations that each look like a confident answer. The set is held closed by the
+/// column's own vocabulary, and a word outside it is a refusal rather than a guess.
+///
+/// **Two rungs, and the order is the rule.** An operator's urgent entry jumps subagent
+/// work — that is the whole of the scheduling, and it is why there are exactly two: a
+/// third rung would need a sentence about what the queue does differently with it, and
+/// there is not one. Ties inside a rung break by age, which is the queue's own `created_ms`
+/// and not a second number to keep in step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergePriority {
+    /// **The operator's entry.** It jumps every subagent entry, whatever the age.
+    Urgent,
+    /// **A subagent's entry.** It waits behind an operator's urgent entry and ahead of
+    /// nothing else; inside the rung it is oldest-first.
+    Subagent,
+}
+
+impl MergePriority {
+    /// **Every priority, in the order the queue climbs** — the one list, the one answer.
+    ///
+    /// The seeding, the parse and the ordering all ask *which of the values is this*, and a
+    /// second list is a second answer. `ALL[0]` is the highest priority: the queue sorts by
+    /// position in this list, so a rung added here is reachable by every reader and a rung
+    /// outside it is reachable by none.
+    pub const ALL: [MergePriority; 2] = [MergePriority::Urgent, MergePriority::Subagent];
+
+    /// The queue's rank: lower is taken first. A priority nobody recorded reads as the
+    /// lowest rung rather than the highest, because a row that jumps the queue on the
+    /// strength of a missing field is a row the queue cannot vouch for.
+    pub fn rank(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|p| *p == self)
+            .unwrap_or(Self::ALL.len())
+    }
+
+    /// The rung a stored word names, if it names one.
+    pub fn parse(stored: &str) -> Option<MergePriority> {
+        Self::ALL.into_iter().find(|p| p.as_str() == stored)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MergePriority::Urgent => "urgent",
+            MergePriority::Subagent => "subagent",
+        }
+    }
+}
+
+/// **Where an entry is in its life, out of a closed set** — the queue's state.
+///
+/// The states are the queue's own vocabulary, and the moves between them are the state
+/// machine the daemon serves. A state that is not on this list is a state the queue cannot
+/// draw, and a row that says `waiting` while its gate job is dead is the lie the pane would
+/// draw — which is why `Stale` exists rather than a `Waiting` that means two things.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeState {
+    /// **In the queue, not yet taken.** Ready to be taken once its `needs` have all
+    /// `Landed`; until then it is listed with the dependencies it is waiting on, not
+    /// dropped.
+    Waiting,
+    /// **The daemon has it and is working** — rebasing at the tip and running the gate.
+    /// A `Taken` row on disk is a job the daemon was running when it died, exactly as a
+    /// `running` job row is: the live process answers *is it running now*, and this row
+    /// answers *what happened*.
+    Taken,
+    /// **Merged to main.** The worktree is removed and the branch deleted; the row keeps
+    /// the tip it landed at, which is the base its dependents rebase onto.
+    Landed,
+    /// **The gate failed.** The worktree STAYS, with the reason on the row: removing a
+    /// tree after a failed test destroys the evidence.
+    Failed,
+    /// **A rebase conflict.** The worktree STAYS, with the reason on the row. A conflict
+    /// is reported, never auto-resolved: the queue's job is to notice, not to guess.
+    Conflict,
+    /// **The gate job died with the daemon.** It must not come back as `Waiting` — a row
+    /// that says `waiting` while its job is dead is a lie the pane would draw. It is
+    /// listed with its reason and waits for a re-enqueue rather than a silent retry.
+    Stale,
+}
+
+impl MergeState {
+    /// **Every state, in the order the life runs** — the one list.
+    pub const ALL: [MergeState; 6] = [
+        MergeState::Waiting,
+        MergeState::Taken,
+        MergeState::Landed,
+        MergeState::Failed,
+        MergeState::Conflict,
+        MergeState::Stale,
+    ];
+
+    /// A state the queue will never leave: `Landed` is merged and cleaned up, and
+    /// `Failed`/`Conflict`/`Stale` are parked with their reason for a person to answer.
+    /// Only `Waiting` and `Taken` still move.
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            MergeState::Landed | MergeState::Failed | MergeState::Conflict | MergeState::Stale
+        )
+    }
+
+    /// The state a stored word names, if it names one.
+    pub fn parse(stored: &str) -> Option<MergeState> {
+        Self::ALL.into_iter().find(|s| s.as_str() == stored)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MergeState::Waiting => "waiting",
+            MergeState::Taken => "taken",
+            MergeState::Landed => "landed",
+            MergeState::Failed => "failed",
+            MergeState::Conflict => "conflict",
+            MergeState::Stale => "stale",
+        }
+    }
+}
+
+/// **One entry in the merge queue, as the session store keeps it** — the durable half of
+/// the queue the daemon serves.
+///
+/// The operator's ask, in their words: *"merge queue is 2 - together with persistence and
+/// harnessd thread that serves it"* and *"it has to be durable so live in the session db."*
+///
+/// One row per entry, in `sessions.db` beside the job history and the todo list, because a
+/// queue that lives in the daemon's memory is a queue that dies with the daemon — and the
+/// daemon is the one thing that is restarted. The row is written when the entry is
+/// enqueued and updated as it moves, so a daemon that dies mid-merge comes back to a queue
+/// that says what happened rather than an empty one that says nothing.
+///
+/// **The daemon is the only writer; a head never writes one.** The row is the daemon's
+/// account of the merge, the way the `job` row is the daemon's account of a process: a head
+/// that could write it could mark its own branch `Landed` without a gate, which is the whole
+/// thing the queue exists to prevent. The store does not enforce the writer — it cannot
+/// know who a connection is — and the daemon is the only caller, which is the guarantee.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MergeEntry {
+    /// The id the enqueuer minted, and the one the queue's events name.
+    pub id: String,
+    /// **The session that enqueued it** — the subagent that finished the branch, or the
+    /// operator's session for an urgent entry. Metadata about the entry's origin, not a
+    /// foreign key: the entry is about the branch, and a session that is deleted does not
+    /// un-merge a branch that still needs merging.
+    pub session_id: String,
+    /// The branch to merge, and the one checked out in the entry's worktree.
+    pub branch: String,
+    /// **The SHA the entry was written against** — the tip of main when the branch was cut.
+    /// It goes stale the moment anything else lands, which is why the queue rebases onto
+    /// the *current* tip rather than this: two branches green in isolation are not green
+    /// together, and this column is the record of where the entry started, not where it
+    /// lands.
+    pub base_sha: String,
+    /// The queue's priority, out of [`MergePriority`]'s closed set.
+    pub priority: MergePriority,
+    /// **The entries this one depends on, by id.** It is not taken until every one of them
+    /// has `Landed`, and when they have, its base becomes the landed tip rather than the
+    /// stale `base_sha` it was written against.
+    pub needs: Vec<String>,
+    /// Where the entry is, out of [`MergeState`]'s closed set.
+    pub state: MergeState,
+    /// **The reason for the state, in the queue's own words.** Empty while `Waiting` with
+    /// no unmet dependencies; the unmet dependencies while `Waiting` with some; the gate's
+    /// failure while `Failed`; the conflict while `Conflict`; the dead job while `Stale`;
+    /// the landed tip while `Landed`. A state without its reason is a row the pane draws
+    /// and the operator cannot read.
+    pub evidence: String,
+    /// When the entry was enqueued, Unix ms. Ties inside a priority break by this, oldest
+    /// first.
+    pub created_ms: u64,
+    /// When the entry last moved, Unix ms.
+    pub updated_ms: u64,
+    /// **Where the branch is checked out**, when it is — the worktree the daemon rebases in
+    /// and the one it removes on `Landed`. `None` while the worktree does not exist yet
+    /// (the enqueuer's half, which is `task_start`'s to create) and after it is removed.
+    pub worktree: Option<String>,
+    /// **The tip the entry landed at**, set when it moves to `Landed`. It is the base its
+    /// dependents rebase onto: a dependent's `effective_base` is the `landed_sha` of the
+    /// last of its dependencies to land, which is the current tip of main because the queue
+    /// is serial.
+    pub landed_sha: Option<String>,
+}
+
+/// **One row of the merge queue, before the closed sets are parsed** — the shape the
+/// `SELECT` hands back and the shape [`merge_entry_from_raw`] turns into a [`MergeEntry`].
+///
+/// The two-step read exists for one reason: `priority` and `state` are the closed sets' own
+/// words, and a word that is not on the list is a row written by a build this one does not
+/// know. Parsing inside the `query_map` closure would force that refusal into a
+/// `rusqlite::Error`, which is the wrong error for a row the store can read fine; parsing
+/// after the read lets it be a [`StoreError::Corrupt`] that says which word was not on the
+/// list, which is the difference between *the file is damaged* and *a guess was made*.
+#[derive(Debug)]
+struct RawMergeEntry {
+    id: String,
+    session_id: String,
+    branch: String,
+    base_sha: String,
+    priority: String,
+    needs_json: String,
+    state: String,
+    evidence: String,
+    created_ms: i64,
+    updated_ms: i64,
+    worktree: Option<String>,
+    landed_sha: Option<String>,
+}
+
+/// The column order the merge-queue `SELECT`s use, read into a [`RawMergeEntry`].
+fn merge_entry_raw_from_row(r: &rusqlite::Row) -> rusqlite::Result<RawMergeEntry> {
+    Ok(RawMergeEntry {
+        id: r.get(0)?,
+        session_id: r.get(1)?,
+        branch: r.get(2)?,
+        base_sha: r.get(3)?,
+        priority: r.get(4)?,
+        needs_json: r.get(5)?,
+        state: r.get(6)?,
+        evidence: r.get(7)?,
+        created_ms: r.get(8)?,
+        updated_ms: r.get(9)?,
+        worktree: r.get(10)?,
+        landed_sha: r.get(11)?,
+    })
+}
+
+/// Turn a [`RawMergeEntry`] into a [`MergeEntry`], parsing the closed sets.
+///
+/// A `priority` or `state` word that is not on the list is a [`StoreError::Corrupt`] that
+/// names the word, for the reason [`RawMergeEntry`] exists: a row that names a priority this
+/// build does not know is a row written by a newer build, and reading it as the lowest rung
+/// would be a silent misread of the queue's own vocabulary.
+fn merge_entry_from_raw(raw: RawMergeEntry) -> Result<MergeEntry> {
+    Ok(MergeEntry {
+        id: raw.id,
+        session_id: raw.session_id,
+        branch: raw.branch,
+        base_sha: raw.base_sha,
+        priority: MergePriority::parse(&raw.priority).ok_or_else(|| {
+            StoreError::Corrupt(format!(
+                "merge_queue priority {raw:?} is not in the closed set {:?}",
+                MergePriority::ALL
+            ))
+        })?,
+        needs: serde_json::from_str(&raw.needs_json)?,
+        state: MergeState::parse(&raw.state).ok_or_else(|| {
+            StoreError::Corrupt(format!(
+                "merge_queue state {raw:?} is not in the closed set {:?}",
+                MergeState::ALL
+            ))
+        })?,
+        evidence: raw.evidence,
+        created_ms: raw.created_ms as u64,
+        updated_ms: raw.updated_ms as u64,
+        worktree: raw.worktree,
+        landed_sha: raw.landed_sha,
+    })
 }
 
 /// One line of a session's todo list, as the model wrote it.
@@ -1395,6 +1709,38 @@ impl Store {
                      updated_ms  INTEGER NOT NULL,
                      PRIMARY KEY (session_id, handle)
                  );",
+            )?;
+        }
+        if from < 16 {
+            // v16: **the merge queue** — see [`MergeEntry`] for what it is for.
+            //
+            // A table rather than a column, for the reason v15's job history is one: the
+            // daemon has many entries and each is its own row, and the reader that wants one
+            // entry's fate is not reading the whole queue.
+            //
+            // `session_id` is a plain column here and not a foreign key, and that is the
+            // deliberate difference from `job`: an entry is about a branch, and a session that
+            // is deleted does not un-merge a branch that still needs merging.
+            //
+            // `IF NOT EXISTS` for the same reason v6, v12, v13, v14 and v15 are idempotent: a
+            // fixture walks a current store backwards, so the table can already be here.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS merge_queue (
+                     id          TEXT PRIMARY KEY,
+                     session_id  TEXT NOT NULL,
+                     branch      TEXT NOT NULL,
+                     base_sha    TEXT NOT NULL,
+                     priority    TEXT NOT NULL,
+                     needs_json  TEXT NOT NULL,
+                     state       TEXT NOT NULL,
+                     evidence    TEXT NOT NULL,
+                     created_ms  INTEGER NOT NULL,
+                     updated_ms  INTEGER NOT NULL,
+                     worktree    TEXT,
+                     landed_sha  TEXT
+                 );
+                 CREATE INDEX IF NOT EXISTS merge_queue_state_idx
+                     ON merge_queue (state, priority, created_ms);",
             )?;
         }
         Ok(())
@@ -2054,6 +2400,80 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// **Write one merge-queue entry, replacing that id's last one — whole.**
+    ///
+    /// An upsert rather than an append: the row is an entry and not a log line, so an entry
+    /// has one state at a time and the move is the same entry as the enqueue. The
+    /// append-only record of every move is the queue's own events (`MergeEntryMoved`), which
+    /// is a different question from *where is this entry's row now* — and the reader that
+    /// wants the second one is the pane.
+    ///
+    /// `updated_ms` is stamped here rather than taken from the entry, for the reason
+    /// [`Store::put_job`] stamps it: the store is the clock, and a caller that supplies its
+    /// own would be a caller that could backdate a move. `created_ms` is the entry's, because
+    /// it is the enqueue time and the enqueue is the entry's own act.
+    pub fn put_merge_entry(&self, entry: &MergeEntry) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO merge_queue
+                (id, session_id, branch, base_sha, priority, needs_json, state, evidence,
+                 created_ms, updated_ms, worktree, landed_sha)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+              ON CONFLICT(id) DO UPDATE SET
+                session_id = ?2, branch = ?3, base_sha = ?4, priority = ?5, needs_json = ?6,
+                state = ?7, evidence = ?8, updated_ms = ?10, worktree = ?11, landed_sha = ?12",
+            params![
+                entry.id,
+                entry.session_id,
+                entry.branch,
+                entry.base_sha,
+                entry.priority.as_str(),
+                serde_json::to_string(&entry.needs)?,
+                entry.state.as_str(),
+                entry.evidence,
+                entry.created_ms as i64,
+                now_ms(),
+                entry.worktree,
+                entry.landed_sha,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// **Every merge-queue entry**, in the order the queue was filled — `created_ms`, then
+    /// `id`, so two entries enqueued in the same millisecond do not come back in an order
+    /// that changes between calls.
+    ///
+    /// The whole queue, every state: the read that answers *what is the queue* is the read
+    /// that must not drop a row it cannot act on, and the state and the evidence on each row
+    /// are what say why a row is where it is. The pure core sorts by priority on top of this;
+    /// this read is the durable order, which is the enqueue order.
+    pub fn merge_entries(&self) -> Result<Vec<MergeEntry>> {
+        let mut st = self.conn.prepare(
+            "SELECT id, session_id, branch, base_sha, priority, needs_json, state, evidence,
+                    created_ms, updated_ms, worktree, landed_sha
+               FROM merge_queue ORDER BY created_ms, id",
+        )?;
+        let rows = st.query_map([], merge_entry_raw_from_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(merge_entry_from_raw(r?)?);
+        }
+        Ok(out)
+    }
+
+    /// **One merge-queue entry by id**, or `None` when the queue has no such entry.
+    pub fn merge_entry(&self, id: &str) -> Result<Option<MergeEntry>> {
+        let mut st = self.conn.prepare(
+            "SELECT id, session_id, branch, base_sha, priority, needs_json, state,
+                    evidence, created_ms, updated_ms, worktree, landed_sha
+               FROM merge_queue WHERE id = ?1",
+        )?;
+        let raw: Option<RawMergeEntry> = st
+            .query_row(params![id], merge_entry_raw_from_row)
+            .optional()?;
+        Ok(raw.map(merge_entry_from_raw).transpose()?)
     }
 
     /// Remove a session that holds no transcript rows.
@@ -3070,6 +3490,150 @@ mod tests {
             assert!(s.jobs("s-other").expect("reads").is_empty());
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A merge-queue entry survives the daemon that enqueued it** — the whole point of the
+    /// table, and the half nothing could answer before it existed.
+    ///
+    /// The measured shape the job history pins, one level up: the queue the daemon serves is
+    /// the queue that must survive the daemon, because the daemon is the one thing that is
+    /// restarted and a merge that dies mid-flight must come back as a row that says what
+    /// happened. This closes the store and reopens it, which is the only thing that proves the
+    /// row is on disk rather than in a cache the next daemon would not have.
+    #[test]
+    fn a_merge_entry_survives_the_daemon_that_enqueued_it() {
+        let dir = std::env::temp_dir().join(format!("letibot-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+
+        let enqueued = MergeEntry {
+            id: "m-1".into(),
+            session_id: "s-merge".into(),
+            branch: "agent/merge-queue".into(),
+            base_sha: "abc123".into(),
+            priority: MergePriority::Subagent,
+            needs: vec!["m-0".into()],
+            state: MergeState::Waiting,
+            evidence: "waiting on m-0".into(),
+            created_ms: 1_000,
+            updated_ms: 1_000,
+            worktree: Some("/wt/agent-merge-queue".into()),
+            landed_sha: None,
+        };
+        {
+            let s = Store::open(&path).expect("a store");
+            s.put_merge_entry(&enqueued).expect("the entry row");
+        }
+        {
+            let s = Store::open(&path).expect("the same store, a second daemon");
+            let back = s.merge_entries().expect("the queue reads");
+            assert_eq!(back.len(), 1, "the entry did not come back: {back:?}");
+            // `updated_ms` is the store's clock, so it is not asserted equal to the entry's;
+            // everything else is the row the enqueuer wrote.
+            assert_eq!(back[0].id, enqueued.id);
+            assert_eq!(back[0].branch, enqueued.branch);
+            assert_eq!(back[0].base_sha, enqueued.base_sha);
+            assert_eq!(back[0].priority, enqueued.priority);
+            assert_eq!(back[0].needs, enqueued.needs);
+            assert_eq!(back[0].state, enqueued.state);
+            assert_eq!(back[0].evidence, enqueued.evidence);
+            assert_eq!(back[0].created_ms, enqueued.created_ms);
+            assert_eq!(back[0].worktree, enqueued.worktree);
+            assert_eq!(back[0].landed_sha, enqueued.landed_sha);
+
+            // **And the move is the SAME row.** An entry has one state at a time, so the
+            // second write updates it — a table that appended would make `merge_entries()` a
+            // history of states, when its caller wants one entry's fate.
+            let landed = MergeEntry {
+                state: MergeState::Landed,
+                evidence: "landed at def456".into(),
+                landed_sha: Some("def456".into()),
+                worktree: None,
+                ..enqueued.clone()
+            };
+            s.put_merge_entry(&landed).expect("the move");
+            let moved = s.merge_entry("m-1").expect("reads");
+            assert_eq!(moved.expect("the entry"), landed, "the move made a second row");
+            assert_eq!(s.merge_entries().expect("reads").len(), 1, "the move made a second row");
+
+            // **And an id the queue has never held reads `None`** — "no such entry" and "the
+            // table is missing" have to be different answers or the second shows up as the
+            // first.
+            assert!(s.merge_entry("m-nope").expect("reads").is_none());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A store written before the merge-queue table gains one** — the migration arm, guarded
+    /// the way the job table's is: build a real store, reverse the step by hand with
+    /// `DROP TABLE`, walk the version back, and assert the migration puts back exactly what
+    /// `SCHEMA_SQL` would have.
+    #[test]
+    fn a_v15_store_is_migrated_and_gains_a_merge_queue_table() {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-migrate-v15-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _clean = Clean(path.clone());
+
+        {
+            let s = Store::open(&path).unwrap();
+            s.put_session(&SessionRecord {
+                id: "s-v15".into(),
+                title: None,
+                model_id: "m".into(),
+                dialect_sha: "sha".into(),
+                workspace_root: "/w".into(),
+                owner: "dead".into(),
+                role: Some("coder".into()),
+                approvers: vec![],
+                parent_session_id: None,
+            })
+            .unwrap();
+        }
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute("DROP INDEX IF EXISTS merge_queue_state_idx", []).unwrap();
+            c.execute("DROP TABLE merge_queue", []).unwrap();
+            c.execute("DELETE FROM schema_version", []).unwrap();
+            c.execute(
+                "INSERT INTO schema_version (version) VALUES (15)",
+                [],
+            )
+            .unwrap();
+        }
+        {
+            let s = Store::open(&path).expect("the migration runs");
+            // The table is back, and a row written through it reads back.
+            let entry = MergeEntry {
+                id: "m-mig".into(),
+                session_id: "s-v15".into(),
+                branch: "b".into(),
+                base_sha: "sha".into(),
+                priority: MergePriority::Urgent,
+                needs: vec![],
+                state: MergeState::Waiting,
+                evidence: String::new(),
+                created_ms: 1,
+                updated_ms: 1,
+                worktree: None,
+                landed_sha: None,
+            };
+            s.put_merge_entry(&entry).expect("a row through the migrated table");
+            assert_eq!(s.merge_entries().expect("reads").len(), 1);
+        }
     }
 
     /// **A store written before the job table gains one** — and this is the test that guards a

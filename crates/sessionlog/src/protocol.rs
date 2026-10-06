@@ -317,7 +317,21 @@ use crate::view::Snapshot;
 /// through the execution path `bash` already uses, so confine, the sudo askpass shim and the
 /// scratch directory behave exactly as they do for a model's call. See the variant's own docs for
 /// why the door was not widened instead.
-pub const PROTOCOL_VERSION: u32 = 28;
+/// # 29: the merge queue, whole, and its two moves
+///
+/// [`ClientFrame::ListMergeQueue`] and [`ServerFrame::MergeQueue`] are a new client frame and its
+/// answer, and [`crate::SessionEvent::MergeEntryAdded`] and [`crate::SessionEvent::MergeEntryMoved`]
+/// are two new events, so a version-28 daemon would fail to parse the first — the version-4
+/// argument, and the same ATTACH-time refusal.
+///
+/// **What it is for, in the operator's words:** *"we need a gated merge to main, and worktree
+/// cleanup. for this we might need a merge queue. look how flowy does it - it has a nice queue
+/// with priorities and dependencies."* The snapshot carries the whole queue, every state, so a
+/// head attaching mid-flight sees the whole queue rather than only later changes; from then on
+/// the two events carry every change. The queue is daemon-level, not per-session: there is one
+/// main branch and one queue, and the `session_id` on each entry is the entry's origin, not a
+/// filter.
+pub const PROTOCOL_VERSION: u32 = 29;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1078,6 +1092,18 @@ pub enum ClientFrame {
     /// `/job` during a long turn arrived after it finished. A pane that opens
     /// must answer now. Added at `PROTOCOL_VERSION` 21.
     ListJobs,
+    /// The merge queue, whole: every entry, every state, in the order the queue was filled.
+    ///
+    /// Read-only and unserialised like [`ClientFrame::ListJobs`], and for the same reason: a
+    /// list is a question, not an act. This is the **bootstrap** read — the snapshot carries
+    /// the whole queue, so a head attaching mid-flight sees the whole queue rather than only
+    /// later changes; from then on the `MergeEntryAdded` and `MergeEntryMoved` events carry
+    /// every change.
+    ///
+    /// The queue is daemon-level, not per-session: there is one main branch and one queue, and
+    /// the `session_id` on each entry is the entry's origin, not a filter. So the read is not
+    /// scoped to the connection's session, and the answer is the whole queue.
+    ListMergeQueue,
     /// Make a new session in this daemon.
     ///
     /// It does **not** switch to it — the head does that with [`ClientFrame::Switch`]
@@ -1461,6 +1487,21 @@ pub enum ServerFrame {
         session_id: String,
         jobs: Vec<JobEntry>,
     },
+    /// The answer to [`ClientFrame::ListMergeQueue`]: the whole queue as of now, every state.
+    ///
+    /// The snapshot half of the snapshot-plus-events pattern: a head attaching mid-flight gets
+    /// this, and from then on the [`crate::SessionEvent::MergeEntryAdded`] and
+    /// [`crate::SessionEvent::MergeEntryMoved`] events carry every change. The queue is
+    /// daemon-level, so there is no `session_id` — the `session_id` on each entry is the
+    /// entry's origin, not a filter.
+    ///
+    /// **Nothing is dropped silently**: the queue is the whole queue, and an entry the queue
+    /// cannot act on is listed with its reason — the `evidence` on the row says what it is
+    /// waiting on, why it failed, or why it is stale. A shorter list would say *"that is all
+    /// the work there is"*, which is false.
+    MergeQueue {
+        entries: Vec<crate::event::MergeEntry>,
+    },
     Peeked {
         session_id: String,
         dropped: u64,
@@ -1671,6 +1712,7 @@ mod tests {
                 | ClientFrame::FetchRow { .. }
                 | ClientFrame::Interrupt { .. }
                 | ClientFrame::ListJobs { .. }
+                | ClientFrame::ListMergeQueue { .. }
                 | ClientFrame::ListSessions { .. }
                 | ClientFrame::ListTodos { .. }
                 | ClientFrame::Mode { .. }
@@ -1708,6 +1750,8 @@ mod tests {
                 | crate::SessionEvent::HeadDetached { .. }
                 | crate::SessionEvent::JobOutput { .. }
                 | crate::SessionEvent::JobSettled { .. }
+                | crate::SessionEvent::MergeEntryAdded { .. }
+                | crate::SessionEvent::MergeEntryMoved { .. }
                 | crate::SessionEvent::OperatorCallAllowed { .. }
                 | crate::SessionEvent::Filling { .. }
                 | crate::SessionEvent::CompactionProgress { .. }
@@ -1750,6 +1794,7 @@ mod tests {
                 | ServerFrame::Todos { .. }
                 | ServerFrame::Settings { .. }
                 | ServerFrame::Jobs { .. }
+                | ServerFrame::MergeQueue { .. }
                 | ServerFrame::Peeked { .. }
                 | ServerFrame::RowFetched { .. }
                 | ServerFrame::Diagnostic { .. }
@@ -1763,11 +1808,12 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 28,
-            "the match above was last reconciled with the frame list at 28 — bumped for \
-             `OperatorShell`, a NEW client frame (a version-27 daemon would fail to parse \
-             it at ATTACH, the version-4 argument), as opposed to an added defaulted field, \
-             which is the case that needs no bump. 27 was `CompactionProgress`"
+            PROTOCOL_VERSION, 29,
+            "the match above was last reconciled with the frame list at 29 — bumped for \
+             `ListMergeQueue`/`MergeQueue` and the two merge-queue events, NEW frames and \
+             events (a version-28 daemon would fail to parse the client frame at ATTACH, the \
+             version-4 argument), as opposed to an added defaulted field, which is the case \
+             that needs no bump. 28 was `OperatorShell`"
         );
     }
 
