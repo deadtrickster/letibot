@@ -680,6 +680,24 @@ enum Foreground {
     Promoted(Promotion),
 }
 
+/// **What has already been said about this run**, so one question is one card and one
+/// inability is one sentence.
+///
+/// A run that is blocked stays blocked for as long as nobody answers, and a run whose
+/// processes cannot be read stays unreadable for as long as it runs — so a loop that reported
+/// either every tick would put a hundred identical lines on the screen for one fact.
+#[derive(Default)]
+struct Told {
+    /// **What the last card was about.** Keyed on the pair (bytes produced, the line shown)
+    /// and not on the line alone: a program that asks the same question twice **after saying
+    /// something in between** has asked twice, and the second ask is a second thing to answer.
+    raised: Option<(u64, Option<String>)>,
+    /// Whether the daemon has already said it cannot tell whether this run is waiting. Once
+    /// per run: it is a disclosure about a condition, and the condition does not change while
+    /// the run lasts.
+    unreadable: bool,
+}
+
 /// Wait, emitting progress that is a measurement of work rather than a heartbeat,
 /// and honour a head's Ctrl+B by promoting the command mid-flight.
 ///
@@ -696,14 +714,7 @@ fn wait_with_progress(
     let started = std::time::Instant::now();
     let step = Duration::from_millis(500);
     let mut last_reported = 0u64;
-    // **What the last card was about**, so one question is raised once. A run that is
-    // blocked reading its stdin stays blocked for as long as nobody answers, and a loop
-    // that raised a card every tick would put a hundred identical cards on the screen.
-    //
-    // Keyed on the pair (bytes produced, the line shown) and not on the line alone: a
-    // program that asks the same question twice **after saying something in between** has
-    // asked twice, and the second ask is a second thing to answer.
-    let mut raised: Option<(u64, Option<String>)> = None;
+    let mut told = Told::default();
     loop {
         // A head asked to move this to the background. Honour it here, on the
         // worker's own poll, because the worker is the thing that is blocked and
@@ -742,7 +753,7 @@ fn wait_with_progress(
                     v.elapsed.as_secs_f32()
                 ));
             }
-            ask_if_waiting(ctx, host, id, &v, &mut raised);
+            ask_if_waiting(ctx, host, id, &v, &mut told);
         }
     }
     Foreground::State(host.job(id).map(|v| v.state).unwrap_or(JobState::Running))
@@ -770,10 +781,26 @@ const QUIET: Duration = Duration::from_millis(250);
 ///    at all — `! cat`, blocked before its first byte, which is a real case — and the
 ///    elapsed time is the same beat for it.
 /// 3. **Some process of the run has its stdin on the pipe this daemon holds and is blocked
-///    in a pipe read.** That is [`crate::exec::ask`], and it is the whole of the detection:
-///    **not one byte of the run's output is consulted to decide anything.**
+///    in a read on that descriptor.** That is [`crate::exec::ask`], and it is the whole of
+///    the detection: **not one byte of the run's output is consulted to decide anything.**
 ///
-/// The text that travels with the report is the last line of the output, for the card to
+/// # The third answer, which is not the second
+///
+/// [`crate::exec::ask::Waiting::Unreadable`] is *"this daemon could not look"* — a process of
+/// the run belongs to another uid (the `sudo` case), or a `/proc` this session's daemon may
+/// not open. **No card is raised on it**, and that is deliberate: a card is a reading of the
+/// process, and one raised here would be a guess that is wrong for every long quiet command
+/// that is not asking anything.
+///
+/// But it is not nothing, and saying nothing is what the operator met: `! sudo apt install
+/// mc`, the password given, `apt` waiting at `Continue? [Y/n]` as root where the daemon may
+/// not read it — so no card, no sentence, and the run holding the daemon's one worker until
+/// its deadline. *"the command appears queued and the daemon hangs."* The report below is the
+/// one thing that can honestly be said there, and it names the way in — `!send`, which needs
+/// no signal at all and works under every miss the card has. Said **once per run**: it is a
+/// condition, not an event.
+///
+/// The text that travels with a card is the last line of the output, for the card to
 /// **show** — see [`crate::exec::ask::last_line`] and the module header's argument for why
 /// nothing anywhere may decide by it.
 fn ask_if_waiting(
@@ -781,7 +808,7 @@ fn ask_if_waiting(
     host: &dyn ProcessHost,
     id: &crate::exec::JobId,
     v: &crate::exec::JobView,
-    raised: &mut Option<(u64, Option<String>)>,
+    told: &mut Told,
 ) {
     // A runtime nobody wired has no card to raise, and the read below is a whole ring of
     // output: skipped rather than paid for.
@@ -799,12 +826,21 @@ fn ask_if_waiting(
     // pipe in `! ls | grep foo` from looking like a program waiting for a line.
     let pipe = host.job_handle(id).and_then(|j| j.stdin().pipe_inode());
     let pids = host.job_pids(id);
-    if crate::exec::ask::waiting_for_an_answer(&pids, pipe) != crate::exec::ask::Waiting::Yes {
-        // `No` and `Unreadable` both raise nothing, and they are not the same fact: the
-        // second is a `/proc` this daemon could not read (a confined session's user
-        // namespace is the case), and the way in for it is `!send` — the manual floor,
-        // which needs no signal at all. See `crate::exec::ask`'s miss 4.
-        return;
+    match crate::exec::ask::waiting_for_an_answer(&pids, pipe) {
+        // **The signal was read, and it says yes.** The card, as before.
+        crate::exec::ask::Waiting::Yes => {}
+        // **The signal was read, and it says no** — every process of the run was looked at
+        // and none is reading our pipe. Nothing to say.
+        crate::exec::ask::Waiting::No => return,
+        // **The signal could not be read.** No card — see this function's docs — and one
+        // sentence, because the alternative is the silence the operator read as a hang.
+        crate::exec::ask::Waiting::Unreadable => {
+            if !told.unreadable {
+                told.unreadable = true;
+                ctx.operator_run(OperatorRun::Unreadable { job: &id.0 });
+            }
+            return;
+        }
     }
     // **The last line, and only to show.** Bounded by the ring: the question is at the end
     // of what a program wrote, and a program that wrote a megabyte before asking has its
@@ -818,10 +854,10 @@ fn ask_if_waiting(
         )
         .ok()
         .and_then(|s| crate::exec::ask::last_line(&s.text()));
-    if *raised == Some((v.produced, shown.clone())) {
+    if told.raised == Some((v.produced, shown.clone())) {
         return;
     }
-    *raised = Some((v.produced, shown.clone()));
+    told.raised = Some((v.produced, shown.clone()));
     ctx.operator_run(OperatorRun::Waiting {
         job: &id.0,
         question: shown.as_deref(),
