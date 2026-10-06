@@ -238,6 +238,32 @@ pub enum TaskStatus {
     Unknown,
 }
 
+/// **What a finished `task_start` child's branch became** — the answer to
+/// [`TaskRunner::finished`], in the tool layer's own vocabulary.
+///
+/// The tool layer does not know what a merge queue is, and that is the point of this enum: a
+/// `task_start` child leaves a BRANCH behind, the branch is the deliverable, and where it goes
+/// is the runner's business. What the tool needs is the one sentence a person reads — *it is
+/// in the queue*, *it was already there*, *there is no branch to land* — and a refusal when
+/// the enqueue could not be done.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Finished {
+    /// The child's branch was put in the queue for landing: this is the entry, or — when the
+    /// finish was noticed twice, which is ordinary — the same entry it already had. The two
+    /// are one value because they are one FACT: *this branch is in the queue*. A separate
+    /// `Already` variant would make a caller branch on a difference nobody can act on, and the
+    /// id is carried so a reader can find the row.
+    Queued {
+        /// The entry's id, which is the child's own handle.
+        id: String,
+        /// The branch the entry is about.
+        branch: String,
+    },
+    /// There is no branch to land, and this is why — a plain `task` child works in the
+    /// parent's own tree, and a `task_start` in the main checkout works on main itself.
+    NoBranch { why: String },
+}
+
 /// Starts subagents and collects them. **Starting is not running.**
 ///
 /// The trait used to have one method, `run`, which spawned a child and blocked
@@ -296,6 +322,41 @@ pub trait TaskRunner: Send + Sync {
     /// it without the operator.
     fn started(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    /// **A `task_start` child has finished: its branch goes to be landed** — the seam the
+    /// merge queue's enqueue hangs on.
+    ///
+    /// The operator's ask, in their words: *"we need a gated merge to main, and worktree
+    /// cleanup"*, and *"a permanent subagent that lazily starts as soon as task_start was
+    /// finished and item put into the queue"*. A `task_start` child works on a branch that is
+    /// **never pushed** — the tool says so in as many words — so the branch is a deliverable
+    /// with nobody to carry it until this call exists. `task_start`'s own docstring used to
+    /// carry the `TODO(merge-queue)` that stood here; this is that door.
+    ///
+    /// **Why the runner and not the tool.** The enqueue needs the brief the child was given,
+    /// the placement it worked in and the store the queue lives in, and the tool layer has
+    /// none of the three: it has no git, no store and no session. The runner arranged the
+    /// tree, so the runner is the one that knows what to hand over — and the tool is left
+    /// with the one thing it can honestly say, which is the sentence a person reads.
+    ///
+    /// **`NoBranch` is the ordinary answer for a plain `task`**, and it is not a failure: a
+    /// `task` child works in the parent's own workspace, so there is no branch of its own to
+    /// land. A runner that arranges nothing answers that rather than refusing, because a
+    /// refusal would put a line about the merge queue under every `task_result` a model ever
+    /// reads.
+    ///
+    /// **`Err` is a real failure and it is said rather than swallowed**, by the rule
+    /// [`Self::kill`] and [`Self::send`] follow: a branch reported as queued that is not in
+    /// the queue is worse than one that says it could not be, because the parent then
+    /// believes the work is on its way to main.
+    fn finished(&self, handle: &str) -> Result<Finished, String> {
+        let _ = handle;
+        Ok(Finished::NoBranch {
+            why: "this session's runner arranges no worktree, so a child of it leaves no \
+                  branch to land"
+                .into(),
+        })
     }
 
     /// **Stop a subagent.** `Ok` is what was done, in the words the operator gets;
@@ -545,10 +606,25 @@ fn first_line(prompt: &str) -> String {
 /// **The branch is the deliverable, and it is never pushed.** The tool does not push,
 /// and will not: the branch is to be landed by a merge queue.
 ///
-/// **TODO(merge-queue): the merge queue does not exist yet.** The branch is the
-/// deliverable and the landing is somebody else's job; this tool leaves the branch
-/// where it is and says so, rather than inventing an interface for a queue that is
-/// not built. When the queue lands, this is the door it takes.
+/// **TODO(merge-queue): CLOSED — the branch is enqueued when the child finishes.**
+///
+/// This docstring used to carry the seam: *"the merge queue does not exist yet. The branch is
+/// the deliverable and the landing is somebody else's job; this tool leaves the branch where it
+/// is and says so."* The queue exists, and the door is [`TaskRunner::finished`]: when a
+/// `task_start` child finishes, the runner mints the entry — the branch, the base SHA, the
+/// priority, the `needs` and **the brief the child was given**, which is the one thing the
+/// reviewer reads — and writes it to the session store the merge-queue daemon serves.
+///
+/// **The tool does not do it, and the split is deliberate.** The enqueue needs the brief, the
+/// placement and the store, and this layer has no git, no store and no session; it has the
+/// handle and the sentence. So the tool asks the runner when it sees the child finish
+/// (`task_result` on a `Done`) and reports what the runner answered — and the runner ALSO
+/// enqueues at the child's own settlement, because a branch whose answer is never collected is
+/// still a branch that finished. One entry, one id (the handle), so the two notices are one
+/// act rather than two.
+///
+/// **The branch is still never pushed by this tool**, and that has not changed: the queue
+/// fast-forwards main and pushes, and the tool's rule is that the deliverable is a branch.
 ///
 /// **A child in the wrong PLACE is corrected with `task_message`, not killed.**
 /// Killing is for wrong work. A child that is in the wrong tree is a placement
@@ -838,7 +914,35 @@ impl Tool for TaskResultTool {
             .map(std::time::Duration::from_millis)
             .unwrap_or(std::time::Duration::ZERO);
         match self.runner.collect(handle, timeout) {
-            TaskStatus::Done { answer } => Invocation::ok(answer),
+            TaskStatus::Done { answer } => {
+                // **The child has finished, so its branch goes to be landed.** This is the one
+                // door the tool layer has onto a child's finish, and `task_start`'s own answer
+                // already sends the model here (*"call `task_result` with task=…"*), so the
+                // ordinary path reaches it. The runner does the work and says what happened;
+                // a plain `task` child has no branch of its own and answers `NoBranch`, which
+                // is why nothing is appended for it and every existing answer reads exactly as
+                // it did.
+                //
+                // **The answer comes first and the queue line after it**, because the answer
+                // is what the model asked for and the queue line is news about it.
+                match self.runner.finished(handle) {
+                    Ok(Finished::Queued { id, branch }) => Invocation::ok(format!(
+                        "{answer}\n\n[merge queue] `{branch}` is enqueued as `{id}` and is \
+                         waiting to be landed: the gatekeeper reviews it against the brief it \
+                         was given, then the queue rebases it at the tip of main and runs the \
+                         gate. The worktree stays until it lands."
+                    )),
+                    Ok(Finished::NoBranch { .. }) => Invocation::ok(answer),
+                    // **A failure is said, not swallowed.** The branch is not pushed and nobody
+                    // else carries it, so a parent told nothing would believe the work was on
+                    // its way to main when it is sitting on a branch in a worktree.
+                    Err(why) => Invocation::ok(format!(
+                        "{answer}\n\n[merge queue] the branch of `{handle}` was NOT enqueued: \
+                         {why} It is still on its branch in its worktree, and nothing has been \
+                         lost — but nothing will land it until it is enqueued."
+                    )),
+                }
+            }
             TaskStatus::Failed { why } => Invocation::failed(
                 format!("subagent `{handle}` did not finish"),
                 format!(
@@ -1224,6 +1328,152 @@ mod tests {
         ));
         let listed = call(&mut rt, &mut sink, "task_result", "{}");
         assert!(listed.payload.contains("sub-slow"), "{}", listed.payload);
+    }
+
+    /// **A child finishing enqueues its branch** — the seam the merge queue's enqueue hangs on,
+    /// driven through the tool with a fake runner.
+    ///
+    /// The claim is the tool's half of `task_start`'s door: when a `task_start` child is seen
+    /// to finish, the tool asks its runner to enqueue the branch and reports what the runner
+    /// answered. The runner's own half — the row, the store, the brief — is
+    /// `harnessd::mergequeue::entry_for_finished`'s and is tested there; what this test holds is
+    /// that the ask happens at all, and that a plain `task` child does not trigger it.
+    #[test]
+    fn a_child_finishing_enqueues_its_branch() {
+        use crate::runtime::{Registry, ToolRuntime};
+        use letibot_transcript::ToolCall;
+
+        /// A runner that answers `Done` and records the enqueue it was asked for.
+        struct FinishedRunner {
+            finished: Arc<std::sync::Mutex<Vec<String>>>,
+            /// What `finished` answers with, so both arms can be driven.
+            answer: Option<Result<Finished, String>>,
+        }
+        impl TaskRunner for FinishedRunner {
+            fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+                Ok("sub-1".into())
+            }
+            fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+                TaskStatus::Done {
+                    answer: "the child answered".into(),
+                }
+            }
+            fn start_worktree(
+                &self,
+                _p: &str,
+                _s: &TaskSpec,
+                w: &WorktreeSpec,
+            ) -> Result<WorktreeHandle, String> {
+                Ok(WorktreeHandle {
+                    handle: "sub-1".into(),
+                    placement: WorktreePlacement {
+                        path: worktree_path("/repo", &w.slug),
+                        branch: worktree_branch(&w.slug),
+                        base_sha: "deadbeef".into(),
+                        main_tree: false,
+                    },
+                })
+            }
+            fn finished(&self, handle: &str) -> Result<Finished, String> {
+                self.finished.lock().unwrap().push(handle.to_string());
+                match &self.answer {
+                    Some(Ok(f)) => Ok(f.clone()),
+                    Some(Err(e)) => Err(e.clone()),
+                    None => Ok(Finished::NoBranch {
+                        why: "not a task_start child".into(),
+                    }),
+                }
+            }
+        }
+
+        let d = crate::backend::tempdir::TempDir::new();
+        let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+        let call = |runner: Arc<dyn TaskRunner>, args: &str| {
+            let mut reg = Registry::new();
+            reg.register(Box::new(TaskStartTool::new(runner.clone())))
+                .unwrap();
+            reg.register(Box::new(TaskResultTool::new(runner))).unwrap();
+            let mut rt = ToolRuntime::new(reg, Box::new(backend.clone()));
+            let mut sink = crate::NullToolSink;
+            let _ = rt.invoke(
+                "t1",
+                &ToolCall {
+                    id: "c0".into(),
+                    name: "task_start".into(),
+                    arguments: r#"{"prompt": "do the work", "slug": "do-the-work"}"#.into(),
+                },
+                &mut sink,
+            );
+            rt.invoke(
+                "t1",
+                &ToolCall {
+                    id: "c1".into(),
+                    name: "task_result".into(),
+                    arguments: args.into(),
+                },
+                &mut sink,
+            )
+        };
+
+        // **A `task_start` child's finish is reported.** The child answered, the runner was
+        // asked to enqueue its branch, and the answer says where the branch is going.
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let r = call(
+            Arc::new(FinishedRunner {
+                finished: seen.clone(),
+                answer: Some(Ok(Finished::Queued {
+                    id: "sub-1".into(),
+                    branch: "agent/do-the-work".into(),
+                })),
+            }),
+            r#"{"task": "sub-1"}"#,
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["sub-1"],
+            "the tool must ask its runner to enqueue the finished child's branch"
+        );
+        assert!(r.payload.starts_with("the child answered"), "{}", r.payload);
+        assert!(r.payload.contains("agent/do-the-work"), "{}", r.payload);
+        assert!(r.payload.contains("merge queue"), "{}", r.payload);
+
+        // **A runner with no branch to land says nothing extra.** The ordinary case for a plain
+        // `task` child, and the reason every existing `task_result` answer reads as it did.
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let r = call(
+            Arc::new(FinishedRunner {
+                finished: seen.clone(),
+                answer: None,
+            }),
+            r#"{"task": "sub-1"}"#,
+        );
+        assert_eq!(*seen.lock().unwrap(), vec!["sub-1"]);
+        assert_eq!(r.payload, "the child answered");
+
+        // **A refusal is SAID, not swallowed.** The branch is not pushed and nobody else carries
+        // it, so a parent told nothing would believe the work was on its way to main.
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let r = call(
+            Arc::new(FinishedRunner {
+                finished: seen.clone(),
+                answer: Some(Err("the store could not be opened".into())),
+            }),
+            r#"{"task": "sub-1"}"#,
+        );
+        assert!(r.payload.contains("was NOT enqueued"), "{}", r.payload);
+        assert!(r.payload.contains("could not be opened"), "{}", r.payload);
+    }
+
+    /// **A runner that arranges nothing answers `NoBranch`, and that is not a failure.**
+    ///
+    /// `NoTaskRunner` is the default seat, and a `task_result` against it must not grow a line
+    /// about a merge queue the session has no door to.
+    #[test]
+    fn a_runner_with_no_worktree_leaves_no_branch() {
+        match NoTaskRunner.finished("anything").unwrap() {
+            Finished::NoBranch { why } => assert!(why.contains("no worktree"), "{why}"),
+            other => panic!("a runner that arranges nothing must answer NoBranch: {other:?}"),
+        }
     }
 
     #[test]

@@ -452,6 +452,10 @@ pub fn wire_entry(entry: &MergeEntry) -> letibot_sessionlog::event::MergeEntry {
             MergeState::Conflict => wire::MergeState::Conflict,
             MergeState::Stale => wire::MergeState::Stale,
         },
+        // **The ask travels with the entry.** The reviewer reads it, and a head that draws the
+        // queue can show what a row was for without a second read of the child's session —
+        // which may be gone by the time anybody asks.
+        brief: entry.brief.clone(),
         evidence: entry.evidence.clone(),
         created_ms: entry.created_ms,
         updated_ms: entry.updated_ms,
@@ -468,6 +472,74 @@ pub fn wire_entry(entry: &MergeEntry) -> letibot_sessionlog::event::MergeEntry {
 /// listed with its reason, and so is a `Stale` one.
 pub fn wire_queue(entries: &[MergeEntry]) -> Vec<letibot_sessionlog::event::MergeEntry> {
     entries.iter().map(wire_entry).collect()
+}
+
+// ===== The enqueue: what a finished `task_start` child leaves behind =====
+
+/// **The entry a finished `task_start` child leaves for the queue** — the row, built from the
+/// three things only the runner knows: the ask the child was given, the placement it worked
+/// in, and the id it was minted under.
+///
+/// This is the enqueuer's half of the operator's ask — *"a permanent subagent that lazily
+/// starts as soon as task_start was finished and item put into the queue"* — and it is a pure
+/// function of its arguments for the reason the queue's own core is: the row is a decision
+/// about five fields, and a decision made inside a thread that also writes to a store and
+/// rings a bell is a decision nobody can test.
+///
+/// **The id is the child's own handle, and that is what makes the enqueue idempotent.** A
+/// `task_start` child's handle is already unique for ever (`mint_sub_id` mints it against the
+/// registry and the store), so *one entry per finished child* is true by construction rather
+/// than by a flag: the second enqueue of the same child is the same row, upserted. The queue
+/// would otherwise need a "have I already asked" cell, which is the shape that goes wrong
+/// across a daemon restart.
+///
+/// **Priority is `Subagent`, and there is no second answer yet.** The two rungs are the
+/// operator's (`Urgent`) and a subagent's, and a child of `task_start` is a subagent's work by
+/// definition. An operator's own entry is a door nobody has built, and inventing a rung for it
+/// here would be inventing the door.
+///
+/// **`needs` is empty, and that is a fact about the tool rather than a decision here.**
+/// `task_start` takes no dependency argument: a child is started, finishes, and its branch is
+/// enqueued, and nothing in the tool layer can name another entry it waits behind. The field
+/// is carried — the row has it, the queue's scheduler reads it, and an operator's entry (or a
+/// later `task_start` argument) fills it — and a `task_start` child's list is empty.
+///
+/// **The main tree is not an entry.** A `task_start` with `main_tree: true` works in the main
+/// checkout on main's own branch, so there is no branch to land and nothing for the queue to
+/// do: the caller is told by name rather than handed an entry whose branch is `main`.
+pub fn entry_for_finished(
+    id: &str,
+    session_id: &str,
+    brief: &str,
+    placement: &letibot_tools::builtins::task::WorktreePlacement,
+    now_ms: u64,
+) -> Option<MergeEntry> {
+    if placement.main_tree {
+        return None;
+    }
+    Some(MergeEntry {
+        id: id.to_string(),
+        // **The child that finished the branch**, which is what the column documents itself as
+        // being — the entry's origin rather than the parent that enqueued it.
+        session_id: session_id.to_string(),
+        branch: placement.branch.clone(),
+        base_sha: placement.base_sha.clone(),
+        priority: MergePriority::Subagent,
+        needs: Vec::new(),
+        state: MergeState::Waiting,
+        // **The ask, verbatim.** This is the whole reason the entry carries a brief: the
+        // reviewer is given it and NOT the child's report, so an entry that dropped it would
+        // be an entry nobody could review.
+        brief: brief.to_string(),
+        // **Empty, and it means what it says.** The entry is waiting on nothing but its own
+        // turn: the queue's `evidence` is where a reason lives, and "the worktree is not there
+        // yet" or "the review is not in" is written by whoever finds it out.
+        evidence: String::new(),
+        created_ms: now_ms,
+        updated_ms: now_ms,
+        worktree: Some(placement.path.clone()),
+        landed_sha: None,
+    })
 }
 
 // ===== The daemon thread: the thing that takes the next entry =====
@@ -798,6 +870,7 @@ mod tests {
             priority,
             needs: vec![],
             state,
+            brief: String::new(),
             evidence: String::new(),
             created_ms,
             updated_ms: created_ms,
@@ -1072,6 +1145,107 @@ mod tests {
         }
     }
 
+    // ===== The enqueue: what a finished `task_start` child leaves =====
+
+    /// **The entry a finished child leaves carries the five things the row needs** — and the
+    /// brief is the one that cannot be recovered later.
+    ///
+    /// The reviewer is handed the ask and NOT the child's report, so an entry whose brief was
+    /// dropped would be an entry nobody could review against anything. This is the assertion
+    /// that the enqueuer's own function fills it from the child's prompt rather than leaving it
+    /// empty and calling it somebody else's problem.
+    #[test]
+    fn a_finished_child_leaves_the_row_the_queue_needs() {
+        let placement = letibot_tools::builtins::task::WorktreePlacement {
+            path: "/repo/.claude/worktrees/agent-fix-the-bug".into(),
+            branch: "agent/fix-the-bug".into(),
+            base_sha: "deadbeef".into(),
+            main_tree: false,
+        };
+        let e = entry_for_finished(
+            "s-1-sub-42",
+            "s-1-sub-42",
+            "fix the bug in the parser",
+            &placement,
+            1_700_000_000_000,
+        )
+        .expect("a worktree child leaves an entry");
+
+        assert_eq!(e.id, "s-1-sub-42", "the id is the child's own handle");
+        assert_eq!(e.session_id, "s-1-sub-42");
+        assert_eq!(e.branch, "agent/fix-the-bug");
+        assert_eq!(e.base_sha, "deadbeef");
+        assert_eq!(
+            e.priority,
+            MergePriority::Subagent,
+            "a child of `task_start` is a subagent's work"
+        );
+        assert!(
+            e.needs.is_empty(),
+            "`task_start` takes no dependency argument, so a child waits behind nothing"
+        );
+        assert_eq!(e.state, MergeState::Waiting, "it is enqueued, not taken");
+        assert_eq!(
+            e.brief, "fix the bug in the parser",
+            "the ask travels with the entry: the reviewer starts from it and nothing else"
+        );
+        assert_eq!(e.worktree.as_deref(), Some(placement.path.as_str()));
+        assert_eq!(e.created_ms, 1_700_000_000_000);
+        assert_eq!(e.landed_sha, None);
+    }
+
+    /// **The main checkout leaves no entry, and it says so by returning nothing.** A
+    /// `task_start` with `main_tree: true` works on main's own branch: there is no branch of
+    /// its own to land, and an entry whose branch was `main` would be a queue entry that means
+    /// *land main on main*.
+    #[test]
+    fn a_child_of_the_main_tree_leaves_no_entry() {
+        let placement = letibot_tools::builtins::task::WorktreePlacement {
+            path: "/repo".into(),
+            branch: "main".into(),
+            base_sha: "cafe0000".into(),
+            main_tree: true,
+        };
+        assert!(
+            entry_for_finished("s-1-sub-7", "s-1-sub-7", "do the work", &placement, 1).is_none(),
+            "the main checkout has no branch of its own to land"
+        );
+    }
+
+    /// **The same child enqueued twice is one entry.** The id is the handle, so the second
+    /// write is the same row — which is what lets the two notices (the child's own settlement
+    /// and a later `task_result`) be one act rather than two.
+    #[test]
+    fn the_same_child_enqueued_twice_is_one_row() {
+        let placement = letibot_tools::builtins::task::WorktreePlacement {
+            path: "/repo/wt".into(),
+            branch: "agent/x".into(),
+            base_sha: "abc".into(),
+            main_tree: false,
+        };
+        let first = entry_for_finished("sub-1", "sub-1", "ask", &placement, 1_000).unwrap();
+        let second = entry_for_finished("sub-1", "sub-1", "ask", &placement, 2_000).unwrap();
+        assert_eq!(first.id, second.id, "one child, one id");
+        let mut entries = vec![first.clone()];
+        // What the store does with the second write: an upsert on the id.
+        let at = entries.iter().position(|e| e.id == second.id).unwrap();
+        entries[at] = second;
+        assert_eq!(entries.len(), 1, "a second enqueue is not a second entry");
+    }
+
+    /// **The wire carries the brief**, because the pane draws it and the reviewer reads it — and
+    /// the conversion is where the store's row and the head's row meet.
+    #[test]
+    fn the_wire_entry_carries_the_brief() {
+        let mut e = entry("m-1", MergePriority::Subagent, MergeState::Waiting, 1_000);
+        e.brief = "the ask, verbatim".into();
+        let wire = wire_entry(&e);
+        assert_eq!(wire.brief, "the ask, verbatim");
+        assert_eq!(wire.id, e.id);
+        assert_eq!(wire.branch, e.branch);
+        assert_eq!(wire.state, letibot_sessionlog::event::MergeState::Waiting);
+    }
+
     // ===== The git path: a real repo in a temp dir, driven through the daemon =====
 
     /// Run one git command in `root`, asserting it succeeds. The test's own harness, shaped
@@ -1192,6 +1366,7 @@ mod tests {
             priority: MergePriority::Urgent,
             needs: vec![],
             state: MergeState::Waiting,
+            brief: String::new(),
             evidence: String::new(),
             created_ms: 1_000,
             updated_ms: 1_000,
@@ -1209,6 +1384,7 @@ mod tests {
             priority: MergePriority::Subagent,
             needs: vec![],
             state: MergeState::Waiting,
+            brief: String::new(),
             evidence: String::new(),
             created_ms: 2_000,
             updated_ms: 2_000,
@@ -1322,6 +1498,7 @@ mod tests {
             priority: MergePriority::Urgent,
             needs: vec![],
             state: MergeState::Waiting,
+            brief: String::new(),
             evidence: String::new(),
             created_ms: 1_000,
             updated_ms: 1_000,
@@ -1339,6 +1516,7 @@ mod tests {
             priority: MergePriority::Subagent,
             needs: vec![],
             state: MergeState::Waiting,
+            brief: String::new(),
             evidence: String::new(),
             created_ms: 2_000,
             updated_ms: 2_000,
@@ -1397,6 +1575,7 @@ mod tests {
             priority: MergePriority::Subagent,
             needs: vec![],
             state: MergeState::Waiting,
+            brief: String::new(),
             evidence: String::new(),
             created_ms: 1_000,
             updated_ms: 1_000,
@@ -1448,6 +1627,7 @@ mod tests {
             priority: MergePriority::Subagent,
             needs: vec![],
             state: MergeState::Taken,
+            brief: String::new(),
             evidence: "rebasing at the tip".into(),
             created_ms: 1_000,
             updated_ms: 1_000,
@@ -1502,6 +1682,7 @@ mod tests {
             priority: MergePriority::Subagent,
             needs: vec![],
             state: MergeState::Waiting,
+            brief: String::new(),
             evidence: String::new(),
             created_ms: 1_000,
             updated_ms: 1_000,

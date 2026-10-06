@@ -292,7 +292,7 @@ pub struct ShapelessAdmit {
 /// (R12) — `oracle_reading`, additive, described at its migration arm below. **10** since it
 /// records whether an oracle was consulted and what it answered (R11), and **9** added
 /// `oracle_reply` for the same requirement.
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -438,6 +438,11 @@ CREATE TABLE IF NOT EXISTS job (
 -- until have `landed`. `state` and `priority` are the closed sets' own words. `evidence`
 -- is the reason for the state, in the queue's own words: a state without its reason is a
 -- row the pane draws and the operator cannot read.
+--
+-- `brief` (v17) is the ask the branch was produced under, verbatim, and it is here rather
+-- than in a session row because the reviewer reads it: the gatekeeper's protocol is
+-- brief-first, so an entry that cannot carry its ask is an entry nobody can review against
+-- anything. Empty means nobody recorded one.
 CREATE TABLE IF NOT EXISTS merge_queue (
     id          TEXT PRIMARY KEY,
     session_id  TEXT NOT NULL,
@@ -446,6 +451,7 @@ CREATE TABLE IF NOT EXISTS merge_queue (
     priority    TEXT NOT NULL,
     needs_json  TEXT NOT NULL,
     state       TEXT NOT NULL,
+    brief       TEXT NOT NULL DEFAULT '',
     evidence    TEXT NOT NULL,
     created_ms  INTEGER NOT NULL,
     updated_ms  INTEGER NOT NULL,
@@ -1048,6 +1054,21 @@ pub struct MergeEntry {
     pub needs: Vec<String>,
     /// Where the entry is, out of [`MergeState`]'s closed set.
     pub state: MergeState,
+    /// **The brief the child was given, verbatim** — the prompt the branch was produced
+    /// under, carried with the entry because the reviewer needs it and nothing else can
+    /// supply it.
+    ///
+    /// The gatekeeper's whole protocol is brief-first: its `ReviewRequest` has no field for
+    /// the child's own report, so the reviewer starts from the ask and reads the artifact
+    /// against it. That makes the ask part of the entry rather than a fact about a session
+    /// that may be gone by the time the review happens — a reviewer handed *"review branch
+    /// `agent/x`"* with no ask would be reviewing the code against nothing.
+    ///
+    /// Empty is a real value and it means *nobody recorded one*: an entry enqueued by a
+    /// door that had no brief (an operator's urgent entry, one day) says so rather than
+    /// inventing a sentence, and the reviewer refuses by name rather than reviewing against
+    /// a blank.
+    pub brief: String,
     /// **The reason for the state, in the queue's own words.** Empty while `Waiting` with
     /// no unmet dependencies; the unmet dependencies while `Waiting` with some; the gate's
     /// failure while `Failed`; the conflict while `Conflict`; the dead job while `Stale`;
@@ -1088,6 +1109,7 @@ struct RawMergeEntry {
     priority: String,
     needs_json: String,
     state: String,
+    brief: String,
     evidence: String,
     created_ms: i64,
     updated_ms: i64,
@@ -1105,11 +1127,12 @@ fn merge_entry_raw_from_row(r: &rusqlite::Row) -> rusqlite::Result<RawMergeEntry
         priority: r.get(4)?,
         needs_json: r.get(5)?,
         state: r.get(6)?,
-        evidence: r.get(7)?,
-        created_ms: r.get(8)?,
-        updated_ms: r.get(9)?,
-        worktree: r.get(10)?,
-        landed_sha: r.get(11)?,
+        brief: r.get(7)?,
+        evidence: r.get(8)?,
+        created_ms: r.get(9)?,
+        updated_ms: r.get(10)?,
+        worktree: r.get(11)?,
+        landed_sha: r.get(12)?,
     })
 }
 
@@ -1146,6 +1169,7 @@ fn merge_entry_from_raw(raw: RawMergeEntry) -> Result<MergeEntry> {
         priority,
         needs,
         state,
+        brief: raw.brief,
         evidence: raw.evidence,
         created_ms: raw.created_ms as u64,
         updated_ms: raw.updated_ms as u64,
@@ -1750,6 +1774,27 @@ impl Store {
                  CREATE INDEX IF NOT EXISTS merge_queue_state_idx
                      ON merge_queue (state, priority, created_ms);",
             )?;
+        }
+        if from < 17 {
+            // v17: **the ask a branch was produced under.**
+            //
+            // `merge_queue.brief` — the ask the child was given, carried on the entry because
+            // the gatekeeper reviews the artifact AGAINST the ask and nothing else can supply
+            // it once the child's session is gone. Added with a guard rather than a bare
+            // `ALTER TABLE`: a fixture walks a current store backwards by dropping columns and
+            // lowering the version, and a fixture that dropped only some of them would
+            // otherwise fail here with "duplicate column name" — which reads as corruption
+            // rather than as the idempotence every other step in this function has.
+            let has_brief: bool = self
+                .conn
+                .prepare("SELECT 1 FROM pragma_table_info('merge_queue') WHERE name = 'brief'")
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has_brief {
+                self.conn.execute_batch(
+                    "ALTER TABLE merge_queue ADD COLUMN brief TEXT NOT NULL DEFAULT ''",
+                )?;
+            }
         }
         Ok(())
     }
@@ -2425,12 +2470,13 @@ impl Store {
     pub fn put_merge_entry(&self, entry: &MergeEntry) -> Result<()> {
         self.conn.execute(
             "INSERT INTO merge_queue
-                (id, session_id, branch, base_sha, priority, needs_json, state, evidence,
+                (id, session_id, branch, base_sha, priority, needs_json, state, brief, evidence,
                  created_ms, updated_ms, worktree, landed_sha)
-              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
               ON CONFLICT(id) DO UPDATE SET
                 session_id = ?2, branch = ?3, base_sha = ?4, priority = ?5, needs_json = ?6,
-                state = ?7, evidence = ?8, updated_ms = ?10, worktree = ?11, landed_sha = ?12",
+                state = ?7, brief = ?8, evidence = ?9, updated_ms = ?11, worktree = ?12,
+                landed_sha = ?13",
             params![
                 entry.id,
                 entry.session_id,
@@ -2439,6 +2485,7 @@ impl Store {
                 entry.priority.as_str(),
                 serde_json::to_string(&entry.needs)?,
                 entry.state.as_str(),
+                entry.brief,
                 entry.evidence,
                 entry.created_ms as i64,
                 now_ms(),
@@ -2459,8 +2506,8 @@ impl Store {
     /// this read is the durable order, which is the enqueue order.
     pub fn merge_entries(&self) -> Result<Vec<MergeEntry>> {
         let mut st = self.conn.prepare(
-            "SELECT id, session_id, branch, base_sha, priority, needs_json, state, evidence,
-                    created_ms, updated_ms, worktree, landed_sha
+            "SELECT id, session_id, branch, base_sha, priority, needs_json, state, brief,
+                    evidence, created_ms, updated_ms, worktree, landed_sha
                FROM merge_queue ORDER BY created_ms, id",
         )?;
         let rows = st.query_map([], merge_entry_raw_from_row)?;
@@ -2474,7 +2521,7 @@ impl Store {
     /// **One merge-queue entry by id**, or `None` when the queue has no such entry.
     pub fn merge_entry(&self, id: &str) -> Result<Option<MergeEntry>> {
         let mut st = self.conn.prepare(
-            "SELECT id, session_id, branch, base_sha, priority, needs_json, state,
+            "SELECT id, session_id, branch, base_sha, priority, needs_json, state, brief,
                     evidence, created_ms, updated_ms, worktree, landed_sha
                FROM merge_queue WHERE id = ?1",
         )?;
@@ -3525,6 +3572,10 @@ mod tests {
             priority: MergePriority::Subagent,
             needs: vec!["m-0".into()],
             state: MergeState::Waiting,
+            // **The ask, and it is asserted byte-for-byte below** — the reviewer's only
+            // framing, so a store that mangled it (a trim, a re-encoding) would hand the
+            // gatekeeper a brief the child never saw.
+            brief: "build the merge queue, and make it durable\nsecond line".into(),
             evidence: "waiting on m-0".into(),
             created_ms: 1_000,
             updated_ms: 1_000,
@@ -3547,6 +3598,10 @@ mod tests {
             assert_eq!(back[0].priority, enqueued.priority);
             assert_eq!(back[0].needs, enqueued.needs);
             assert_eq!(back[0].state, enqueued.state);
+            assert_eq!(
+                back[0].brief, enqueued.brief,
+                "the brief is the reviewer's only framing and must survive verbatim"
+            );
             assert_eq!(back[0].evidence, enqueued.evidence);
             assert_eq!(back[0].created_ms, enqueued.created_ms);
             assert_eq!(back[0].worktree, enqueued.worktree);
@@ -3647,6 +3702,7 @@ mod tests {
                 priority: MergePriority::Urgent,
                 needs: vec![],
                 state: MergeState::Waiting,
+                brief: String::new(),
                 evidence: String::new(),
                 created_ms: 1,
                 updated_ms: 1,
@@ -3656,6 +3712,17 @@ mod tests {
             s.put_merge_entry(&entry)
                 .expect("a row through the migrated table");
             assert_eq!(s.merge_entries().expect("reads").len(), 1);
+            // **And v17 ran on the way here**: a v15 store is two steps behind, so the `brief`
+            // column is added by the same open. Asserted through a write, because a column that
+            // exists and refuses a value is not a column the queue can use.
+            let mut with_brief = entry.clone();
+            with_brief.brief = "the ask".into();
+            s.put_merge_entry(&with_brief)
+                .expect("a row carrying a brief");
+            assert_eq!(
+                s.merge_entry("m-mig").expect("reads").unwrap().brief,
+                "the ask"
+            );
         }
     }
 

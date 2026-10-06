@@ -229,6 +229,16 @@ pub struct MergeEntry {
     pub needs: Vec<String>,
     /// Where the entry is, out of [`MergeState`]'s closed set.
     pub state: MergeState,
+    /// **The ask the branch was produced under, verbatim** — the brief the child was given,
+    /// carried on the entry because the reviewer reads it.
+    ///
+    /// `serde(default)` and additive: a head older than the field reads past it, and a daemon
+    /// older than it sends none — an empty brief is *nobody recorded one*, which is a real
+    /// state and not an error. The gatekeeper's protocol is brief-first (it is given the ask
+    /// and NOT the child's report), so this is the field that makes a review possible at all
+    /// rather than a nice-to-have the pane draws.
+    #[serde(default)]
+    pub brief: String,
     /// The reason for the state, in the queue's own words.
     pub evidence: String,
     /// When the entry was enqueued, Unix ms.

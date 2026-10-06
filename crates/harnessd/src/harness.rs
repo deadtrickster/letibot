@@ -2122,6 +2122,8 @@ impl<'a> Harness<'a> {
                 head_answers: head_answers_slot.clone(),
                 local_window: local_window_cell.clone(),
                 point: point_cell.clone(),
+                placed: Arc::new(std::sync::Mutex::new(Vec::new())),
+                merge_store: Arc::new(std::sync::Mutex::new(None)),
             });
         // Cloned before `with_session_tools` takes it: `digest` folds its findings
         // through the same subagent runner `task` uses, so the two must be the
@@ -8760,6 +8762,43 @@ struct HarnessTaskRunner {
     /// child's own. Written by [`Harness::set_mode_consented`]; read by the spawn, which
     /// hands it to the child as `sub_cfg.mode`.
     point: Arc<std::sync::Mutex<letibot_tools::mode::Mode>>,
+    /// **The `task_start` children this session has put in a tree**, by handle — the ask each
+    /// was given and the placement it works in.
+    ///
+    /// A record rather than a second look at the child: the enqueue needs the brief and the
+    /// placement, and by the time a child has finished its own session may be gone, its
+    /// workspace torn down, and its transcript the only place the ask survives — which is not
+    /// a place a queue can read from. So the two facts are kept here, where the runner that
+    /// arranged the tree can answer for them, and the entry is built from them.
+    ///
+    /// **Keyed by handle, and the handle is the entry's id.** That is what makes *one entry
+    /// per finished child* true across the two notices (the child's own settlement and a
+    /// `task_result` that arrives later): both look the same child up and write the same row.
+    placed: Arc<std::sync::Mutex<Vec<PlacedChild>>>,
+    /// **Where a finished child's entry is written** — the session store, opened on first use.
+    ///
+    /// Opened lazily and held as a cell for [`crate::jobwatch::JobRecorder`]'s reasons, which
+    /// are the same two: a store opened at construction is opened for every session that never
+    /// starts a `task_start` child, and a `rusqlite::Connection` is `Send` and not `Sync`, so a
+    /// runner that must be both keeps it behind a mutex rather than in the struct's own hand.
+    merge_store: Arc<std::sync::Mutex<Option<Store>>>,
+}
+
+/// **One `task_start` child, as the runner remembers it** — see
+/// [`HarnessTaskRunner::placed`].
+///
+/// The two fields are the two things the enqueue needs and nothing else in this process can
+/// answer for: the ask the child was given (the reviewer's only framing) and where its branch
+/// is. The path is inside the placement rather than beside it because the entry's `worktree`
+/// column and the placement's `path` are one fact.
+#[derive(Debug, Clone)]
+struct PlacedChild {
+    /// The handle `task_result` collects by, and the id the entry is minted under.
+    handle: String,
+    /// The prompt the child was spawned with, verbatim.
+    brief: String,
+    /// Where the child was put: the path, the branch and the base SHA.
+    placement: letibot_tools::builtins::task::WorktreePlacement,
 }
 
 /// **A subagent's model, resolved from the `task` tool's `model` argument.**
@@ -9356,6 +9395,22 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         let mut spec = spec.clone();
         spec.worktree = Some(placement.clone());
         let handle = self.start(prompt, &spec)?;
+        // **And the two facts the enqueue will need are kept, now that both exist.** The
+        // handle is minted by `start`, and the placement and the ask are in hand here — so
+        // this is the only moment at which *which child*, *which branch* and *what was asked*
+        // can be recorded together. A `task_start` that put its child in the MAIN checkout is
+        // not recorded: there is no branch of its own to land, and `entry_for_finished`
+        // refuses one anyway — recording it would only be a second place that has to know.
+        if !placement.main_tree {
+            self.placed
+                .lock()
+                .expect("placed children")
+                .push(PlacedChild {
+                    handle: handle.clone(),
+                    brief: prompt.to_string(),
+                    placement: placement.clone(),
+                });
+        }
         Ok(WorktreeHandle { handle, placement })
     }
 
@@ -9536,6 +9591,114 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             .collect()
     }
 
+    /// **The child has finished, so its branch goes to be landed** — the merge queue's enqueue,
+    /// on the runner that arranged the tree.
+    ///
+    /// The operator's ask, in their words: *"we need a gated merge to main, and worktree
+    /// cleanup"*, and *"a permanent subagent that lazily starts as soon as task_start was
+    /// finished and item put into the queue"*.
+    ///
+    /// # Why this is a runner's act and not a tool's
+    ///
+    /// The row needs the ask the child was given, the placement it worked in, and the store the
+    /// queue lives in — and the tool layer has none of the three. The runner arranged the tree,
+    /// so the runner is the one that can hand them over; see
+    /// [`letibot_tools::builtins::task::TaskRunner::finished`] for the seam itself.
+    ///
+    /// # Two doors, one entry
+    ///
+    /// This is called from two places, and they are one act rather than two answers:
+    ///
+    ///   * **The child's own settlement**, inside `run_to_completion` — the true moment the
+    ///     child finished. A host child parks after its turn and serves its own queue until the
+    ///     daemon closes it, so *the thread ending* is not the finish; the answer being given is
+    ///     (see `AnswerOnce`).
+    ///   * **`task_result` on a `Done`** — the tool layer's one sight of a finish, and the door
+    ///     that makes this callable by a fake runner in a test.
+    ///
+    /// The two write **the same row under the same id** (the child's handle), and `put_merge_entry`
+    /// is an upsert, so the second is a no-op that reports the same entry. That is deliberate:
+    /// the alternative — one door only — is either a branch that never lands because nobody
+    /// collected the child, or a queue that depends on the model remembering to call
+    /// `task_result`.
+    ///
+    /// # What is refused, and what is not
+    ///
+    /// * **A plain `task` child** answers [`Finished::NoBranch`]: it works in the parent's own
+    ///   tree and has no branch of its own. Not an error — the ordinary case.
+    /// * **A child of the main checkout** answers the same, by name: there is no branch to land.
+    /// * **A session with no `--store`** cannot be enqueued at all, and that is a refusal rather
+    ///   than a quiet `NoBranch`: the queue lives in `sessions.db`, so a daemon without one has
+    ///   no queue, and a parent told *queued* about a branch in no queue is the lie this tree
+    ///   keeps refusing to tell.
+    fn finished(&self, handle: &str) -> Result<letibot_tools::builtins::task::Finished, String> {
+        use letibot_tools::builtins::task::Finished;
+        let Some(child) = self
+            .placed
+            .lock()
+            .expect("placed children")
+            .iter()
+            .find(|c| c.handle == handle)
+            .cloned()
+        else {
+            return Ok(Finished::NoBranch {
+                why: format!(
+                    "`{handle}` was not a `task_start` child of this session, so it has no \
+                     branch of its own to land"
+                ),
+            });
+        };
+        let Some(path) = self.base.store.clone() else {
+            return Err(format!(
+                "this daemon has no `--store`, and the merge queue lives in the session \
+                 store — so there is nowhere to write the entry for `{}`. The branch is still \
+                 in `{}`, and nothing is lost; a daemon started with `--store` will serve it \
+                 when the child is enqueued again.",
+                child.placement.branch, child.placement.path
+            ));
+        };
+        // **The row, built by the queue's own function** — so the enqueue and the daemon's
+        // reads agree about what an entry is by construction rather than by two copies of the
+        // same five assignments. The entry's `session_id` is the CHILD's, which is what the
+        // column documents itself as holding: the subagent that finished the branch, not the
+        // parent that noticed.
+        let now_ms = (crate::config::now_ns() / 1_000_000) as u64;
+        let Some(entry) = crate::mergequeue::entry_for_finished(
+            handle,
+            handle,
+            &child.brief,
+            &child.placement,
+            now_ms,
+        ) else {
+            return Ok(Finished::NoBranch {
+                why: format!(
+                    "`{handle}` worked in the main checkout, so it left no branch of its own \
+                     to land"
+                ),
+            });
+        };
+        // **The write, and a store that will not open is a refusal rather than a silent**
+        // **drop.** A branch reported as queued that is in no queue is exactly the claim this
+        // tree refuses to make; the entry is what the caller is told about, so it is written
+        // first and the sentence is built from what was written.
+        let mut cell = self.merge_store.lock().expect("merge store");
+        if cell.is_none() {
+            *cell = Some(
+                Store::open(&path)
+                    .map_err(|e| format!("the session store at {}: {e}", path.display()))?,
+            );
+        }
+        let store = cell.as_ref().expect("just opened");
+        store
+            .put_merge_entry(&entry)
+            .map_err(|e| format!("the entry for `{handle}` could not be written: {e}"))?;
+        drop(cell);
+        Ok(Finished::Queued {
+            id: entry.id,
+            branch: entry.branch,
+        })
+    }
+
     /// **Stop every child this session still owns** — the downward edge of the tree.
     ///
     /// The operator's design, in their words: *"think about it like it is an erlang supervision
@@ -9630,6 +9793,60 @@ impl HarnessTaskRunner {
     /// **This session's point, as it stands now** — see the field.
     fn point(&self) -> letibot_tools::mode::Mode {
         *self.point.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// **The child has finished: enqueue its branch, and say so where a person is looking.**
+    ///
+    /// A thin wrapper around [`TaskRunner::finished`], and it exists for the two things a
+    /// caller inside `run_to_completion` cannot do for itself:
+    ///
+    ///   * **It is infallible from the child's side.** The child's turn is over either way, and
+    ///     a merge queue that could not be reached must not turn a finished subagent into a
+    ///     failed one — the child's answer is already settled by the time this runs, and
+    ///     `task_result` must keep returning it. So a refusal is printed on the parent's own log
+    ///     (where the operator watching a tree is looking) rather than propagated.
+    ///   * **It says what happened, unprompted.** A `task_start` child's branch being enqueued
+    ///     is news the parent did not ask for and would otherwise learn only by calling
+    ///     `task_result` — and a merge queue nothing announces is a merge queue nobody watches.
+    ///
+    /// The enqueue itself is idempotent by id (the handle), so a later `task_result` on the
+    /// same child is a no-op rather than a second entry.
+    ///
+    /// [`TaskRunner::finished`]: letibot_tools::builtins::task::TaskRunner::finished
+    fn enqueue_finished(&self, sub_id: &str) {
+        use letibot_tools::builtins::task::{Finished, TaskRunner};
+        match self.finished(sub_id) {
+            Ok(Finished::Queued { id, branch }) => {
+                if let Some(hub) = self.registry.get(&self.base.session_id) {
+                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                        code: "merge_queued".into(),
+                        detail: format!(
+                            "`{branch}` is in the merge queue as `{id}` — the gatekeeper \
+                             reviews it against the brief the child was given, then the queue \
+                             rebases it at the tip of main and runs the gate."
+                        ),
+                        compaction: None,
+                    });
+                }
+            }
+            // **The ordinary case for a plain `task`, and it says nothing.** A child that works
+            // in the parent's own tree leaves no branch to land, and a line per such child would
+            // be noise on every `task` call there is.
+            Ok(Finished::NoBranch { .. }) => {}
+            Err(why) => {
+                if let Some(hub) = self.registry.get(&self.base.session_id) {
+                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                        code: "merge_not_queued".into(),
+                        detail: format!(
+                            "the branch of `{sub_id}` was NOT enqueued: {why} It is still on \
+                             its branch in its worktree, and nothing is lost — but nothing will \
+                             land it until it is enqueued."
+                        ),
+                        compaction: None,
+                    });
+                }
+            }
+        }
     }
 
     fn run_to_completion(
@@ -10086,6 +10303,11 @@ impl HarnessTaskRunner {
             answer.say(letibot_tools::builtins::task::TaskStatus::Done {
                 answer: said.clone(),
             });
+            // **The child has finished, so its branch goes to the queue** — the runner's own
+            // half of `task_start`'s door, taken here because THIS is the finish. See
+            // [`HarnessTaskRunner::finished`]: the two notices (this one and a `task_result`
+            // that arrives later) are one entry under one id.
+            self.enqueue_finished(&sub_id);
             return Ok(said);
         }
         // **A host child stays reachable** — the operator's ruling (*"mid turn, post turn
@@ -10096,6 +10318,12 @@ impl HarnessTaskRunner {
         answer.say(letibot_tools::builtins::task::TaskStatus::Done {
             answer: reply.text.clone(),
         });
+        // **The child has finished, so its branch goes to the queue.** Here rather than at the
+        // thread's exit, and the difference is the whole reason `AnswerOnce` exists: a host
+        // child parks in `serve_child` below and does not leave this function until the daemon
+        // closes its hub, so enqueueing on the way out would hold a finished branch out of the
+        // queue for the life of the daemon. The answer being given IS the finish.
+        self.enqueue_finished(&sub_id);
         serve_child(&mut sub, &sub_hub, &sub_id);
         // The hub closed, so the daemon is going away. Released here rather than when the harness
         // is dropped, for the reason it always was — and there is no placement sentence to add on
