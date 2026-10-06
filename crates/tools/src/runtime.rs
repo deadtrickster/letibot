@@ -758,10 +758,16 @@ pub mod roles {
             // collect it would be a seat that can start work and never read it.
             // `task_message` completes the trio for the same reason one step on: a seat
             // that can read a child and not correct it can only wait for the wrong answer.
+            // `task_start` is seated with `task` for the operator's ask — *"we will need
+            // a new tool - task_start or what that will arrange worktree, firecode and
+            // subagent"*: a seat that can start a child but not arrange its placement is
+            // the seat that spawns it into the main tree and then kills it for being in
+            // the wrong place, which is the two mistakes the tool exists to prevent.
             &[
                 "task",
                 "task_result",
                 "task_message",
+                "task_start",
                 "read",
                 "grep",
                 "glob",
@@ -814,6 +820,12 @@ pub mod roles {
                 "task",
                 "task_result",
                 "task_message",
+                // `task_start` beside `task`: the operator's ask — *"we will need a new
+                // tool - task_start or what that will arrange worktree, firecode and
+                // subagent"*. A seat that can start a child but not arrange its placement
+                // is the seat that spawns it into the main tree and then kills it for
+                // being in the wrong place.
+                "task_start",
                 // The background-job surface, so a `bash` call that is backgrounded
                 // (asked, promoted, or by the operator) can be waited, read, killed
                 // and listed — and a condition can be watched across turns. Seated
@@ -862,9 +874,14 @@ pub mod roles {
         // that is stated rather than hidden: `task` starts a child, `task_result` reads it
         // and `job_kill` stops it, and without this a parent's only remedies when its child
         // goes down the wrong path are to wait out a wrong answer or throw the work away.
+        // **Twenty-five since `task_start`**, the operator's ask — *"we will need a new
+        // tool - task_start or what that will arrange worktree, firecode and subagent"* —
+        // and it takes its own seat for the same reason: a seat that can start a child but
+        // not arrange its placement is the seat that spawns it into the main tree and then
+        // kills it for being in the wrong place.
         // Declared here, like `m2_runner`'s ninth, because a ceiling quietly raised for
         // everybody is not a ceiling.
-        r.max_tools = 24;
+        r.max_tools = 25;
         r
     }
 
@@ -1030,9 +1047,9 @@ pub mod roles {
             // seat's own ceiling is `DEFAULT_MAX_TOOLS` (16), so both fit. `goal` is
             // still not here: a separate capability is a separate decision.
             //
-            // **`task`, `task_result` and `task_message` are seated here for R58** — *"subagents
-            // are absolutely allowed to spawn subagents up to configured nesting level"* — and
-            // they are seated rather than stripped at the limit **on purpose**: the
+            // **`task`, `task_result`, `task_message` and `task_start` are seated here for R58** —
+            // *"subagents are absolutely allowed to spawn subagents up to configured nesting
+            // level"* — and they are seated rather than stripped at the limit **on purpose**: the
             // depth cap is enforced where the call is made (`HarnessTaskRunner::start`,
             // refused by name against `--max-subagent-depth`), because a seat that simply
             // lacked `task` at the limit manufactures the workaround, which is exactly
@@ -1040,6 +1057,11 @@ pub mod roles {
             // and ~15k tokens for. The trio goes together for `orchestrator`'s reason, and
             // `task_message` is the same rule one step on: a parent that can start a child,
             // read it and stop it but not correct it has only the wrong answer to wait for.
+            // `task_start` is the operator's ask — *"we will need a new tool - task_start or
+            // what that will arrange worktree, firecode and subagent"* — and it is seated with
+            // `task` for the same reason: a subagent that can start a child but not arrange its
+            // placement is the one that spawns it into the main tree and then kills it for
+            // being in the wrong place.
             &[
                 "read",
                 "write",
@@ -1052,6 +1074,7 @@ pub mod roles {
                 "task",
                 "task_result",
                 "task_message",
+                "task_start",
             ],
         )
     }
@@ -2179,6 +2202,7 @@ mod tests {
         );
     }
 
+<<<<<<< HEAD
     /// **The gatekeeper seat is read-only by construction.**
     ///
     /// It may read, grep, glob, and run `bash` for `git diff`/`git log`, and it has
@@ -2211,6 +2235,45 @@ mod tests {
             seat.tools.len(),
             seat.max_tools
         );
+    }
+
+    /// **`task_start` is seated wherever `task` is.**
+    ///
+    /// The operator's ask — *"we will need a new tool - task_start or what that will
+    /// arrange worktree, firecode and subagent"* — is that placement lives in the tool,
+    /// not in the caller's memory. A seat that can start a child but not arrange its
+    /// placement is the seat that spawns it into the main tree and then kills it for
+    /// being in the wrong place: the two mistakes the tool exists to prevent. So every
+    /// role that names `task` must name `task_start` beside it, and this pins that for
+    /// the three seats that do.
+    #[test]
+    fn task_start_is_seated_wherever_task_is() {
+        for (name, seat) in [
+            ("orchestrator", roles::orchestrator()),
+            ("leticode", roles::leticode()),
+            ("m2_coder", roles::m2_coder()),
+        ] {
+            let has_task = seat.tools.iter().any(|t| t == "task");
+            let has_task_start = seat.tools.iter().any(|t| t == "task_start");
+            assert!(
+                has_task,
+                "the {name} seat is expected to name `task` in this test: {:?}",
+                seat.tools
+            );
+            assert!(
+                has_task_start,
+                "a seat that can start a child but not arrange its placement spawns it \
+                 into the main tree and then kills it for being in the wrong place: {:?}",
+                seat.tools
+            );
+            // Seated, not pushed: a role over its ceiling is refused at resolve.
+            assert!(
+                seat.tools.len() <= seat.max_tools,
+                "the {name} seat is over its own ceiling: {} > {}",
+                seat.tools.len(),
+                seat.max_tools
+            );
+        }
     }
 
     #[test]
