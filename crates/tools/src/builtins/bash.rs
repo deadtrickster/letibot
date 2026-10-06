@@ -279,6 +279,17 @@ impl Tool for Bash {
             // So a helper the command runs can say what it is running for —
             // `letibot-askpass` puts it on the password card.
             env: vec![("LETIBOT_COMMAND".to_string(), command.to_string())],
+            // **The operator's own run gets a terminal; a model's does not.**
+            //
+            // The operator reported it more than once: *"i run `! ls -la` and the
+            // output is plain, while in a proper terminal directory names are
+            // highlighted"*. `ls` colours only when `isatty(1)` is true, and a pipe
+            // is not a terminal, so the fix is to give the run one — see
+            // `exec::pty` for the measurement, the cost, and why the environment
+            // alone cannot do it. The model's call keeps its pipe: the payload is
+            // tokens it reads, and `ESC[01;34m` around every directory name is a
+            // cost it pays and cannot see.
+            tty: ctx.tty,
         };
         let id = match host.spawn(&req) {
             Ok(id) => id,

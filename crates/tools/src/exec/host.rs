@@ -80,6 +80,18 @@ pub struct SpawnRequest {
     pub background: bool,
     /// Additions to the environment, in a fixed order so a run is reproducible.
     pub env: Vec<(String, String)>,
+    /// **Does this run get a terminal on its output side?**
+    ///
+    /// `true` for the OPERATOR's own run — the `!` line and the door's calls, which
+    /// are the same ungated path ([`crate::runtime::ToolRuntime::invoke_operator`]) —
+    /// and `false` for a model's call. It is a property of **who reads the bytes** and
+    /// not of the host or the session: the operator is looking at a screen, where
+    /// `ls --color=auto` colouring a directory is the whole point, and the model is
+    /// reading tokens, where `ESC[01;34m` around every name is a cost it cannot see.
+    ///
+    /// A run with this set gets a pty for stdout and stderr instead of pipes — see
+    /// [`super::pty`] for what that buys, what it costs, and why stdin stays null.
+    pub tty: bool,
 }
 
 /// How a wait ended. **Three outcomes and they are never conflated** — a deadline
@@ -813,10 +825,37 @@ impl ProcessHost for HostProcesses {
             cmd.arg(s);
         }
         cmd.arg(&req.command);
-        cmd.current_dir(&cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.current_dir(&cwd).stdin(Stdio::null());
+        // **A terminal on the output side, for the operator's own run** — see
+        // [`SpawnRequest::tty`] for who gets it and why, and [`super::pty`] for what it
+        // buys and what it costs. stdin is `/dev/null` either way: a command that reads
+        // it must get EOF rather than wait for a person who is not there.
+        //
+        // A box where the pty cannot be opened falls back to pipes rather than refusing:
+        // the terminal is what the operator's colour needs, not what the command needs,
+        // and a run that would have answered correctly is not worth failing over a
+        // cosmetic. `None` here is that fallback, taken silently and only for this.
+        let mut pty: Option<super::pty::Pty> = None;
+        if req.tty {
+            match super::pty::Pty::open() {
+                // Both streams are the one pty, so one `Stdio` per stream and no pipe
+                // between them: the capture ring is fed by the master.
+                Ok(p) => match (p.stdio(), p.stdio()) {
+                    (Ok(out), Ok(err)) => {
+                        cmd.stdout(out).stderr(err);
+                        pty = Some(p);
+                    }
+                    _ => {
+                        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+                    }
+                },
+                Err(_) => {
+                    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+                }
+            }
+        } else {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
         // **Env hygiene is layer 1 (R10 / `docs/boundary-and-adjudication.md` §5).**
         // The environment is cleared before anything is set, so `PATH` is the
         // pinned one captured at construction and a bare name resolves through
@@ -861,6 +900,22 @@ impl ProcessHost for HostProcesses {
             ExecError::Spawn(e.to_string())
         })?;
         let pid = child.id();
+        // **The parent's own copies of the slave close HERE, and this is load-bearing.**
+        //
+        // A `Command` keeps every `Stdio` it was given for as long as it lives, and this
+        // one lives to the end of this function — so without this the parent still holds
+        // two slave descriptors while the drains below read the master, and a pty whose
+        // slave is open anywhere does not report the child's exit. Measured, first cut,
+        // 2026-09-25: the drain blocked, the waiter behind it never reaped, the finished
+        // child stayed a zombie, **a zombie is not in `cgroup.procs`** — so the
+        // membership check below timed out at five seconds and killed a command that had
+        // already run to completion, in two of the twenty-four exec tests. `Stdio::null`
+        // here is a drop, not a redirection: nothing is spawned again with this `Command`.
+        //
+        // [`super::pty::Pty::into_master`] is the other half of the same rule, for this
+        // process's own slave handle.
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
 
         let job = Arc::new(Job::new(
             id.clone(),
@@ -881,8 +936,18 @@ impl ProcessHost for HostProcesses {
 
         let out = child.stdout.take();
         let err = child.stderr.take();
+        // **The slave handle goes now, once the child holds its own copy.** A slave this
+        // process keeps open is a slave that never closes, so the master would never
+        // report the child's exit and this drain would block for ever — see
+        // [`super::pty::Pty::into_master`]. Both streams are the one pty, so there is one
+        // master to read and the second drain has nothing to do; the capture is one ring
+        // either way, which is what makes the merge no loss.
+        let master = pty.map(|p| p.into_master());
         let a = drain(out, Arc::clone(&job));
-        let b = drain(err, Arc::clone(&job));
+        let b = match master {
+            Some(m) => drain(Some(m), Arc::clone(&job)),
+            None => drain(err, Arc::clone(&job)),
+        };
 
         let waiter = Arc::clone(&job);
         std::thread::Builder::new()
@@ -1529,6 +1594,8 @@ mod tests {
                 scope_name: None,
                 background: false,
                 env: vec![],
+                // No terminal: these are the substrate's own tests, not an operator's run.
+                tty: false,
             })
             .unwrap_err();
         assert!(format!("{e}").contains("no cgroup v2 here"), "{e}");
@@ -1574,6 +1641,8 @@ mod tests {
                 // A session's env configuration must not re-arm what the clear
                 // removed: the four are filtered even when asked for by name.
                 env: vec![("BASH_ENV".into(), "/tmp/letibot-absent.rc".into())],
+                // No terminal: the substrate's own test, not an operator's run.
+                tty: false,
             })
             .unwrap();
         let waited = h.wait_job(&id, std::time::Duration::from_secs(30)).unwrap();

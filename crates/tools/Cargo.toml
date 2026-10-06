@@ -39,7 +39,17 @@ regex-syntax = "0.8"
 # separate crate because the grammars are C and pull a `cc` build, and this
 # crate deliberately has no `build.rs` — see below.
 letibot-code.workspace = true
-# No `libc`, no HTTP client, no async runtime.
+# The pty. Four calls — `posix_openpt`, `grantpt`, `unlockpt`, `ptsname_r` — and the
+# one `tcsetattr` that keeps `\r` out of the capture. See the note below.
+libc = "0.2"
+# **`libc`, for the pty and nothing else.** The note that stood here said "No `libc`,
+# no HTTP client, no async runtime", and the first two words are now amended rather
+# than left to disagree with the list: there is no pty in `std`, and a pty is what
+# makes a colour-aware program colourise for the OPERATOR's own run (`exec/pty.rs`
+# carries the measurement — `ls --color=auto` consults `isatty` and no environment
+# variable can answer it). The alternative, `script(1)`, was read and rejected: it
+# adds a program and an `stty` to every operator run and re-shells the command
+# through its own `sh -c`. No HTTP client, no async runtime, and still no `build.rs`.
 #
 # No `build.rs` either: nothing here links `libllama` (T10.5's rpath problem is
 # for crates that do), because a tool runtime that needed a vocab to grep a file

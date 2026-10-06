@@ -1113,6 +1113,7 @@ dependencies = [
  "letibot-tokencore",
  "letibot-tools",
  "letibot-transcript",
+ "libc",
  "regex",
  "regex-syntax",
  "serde",

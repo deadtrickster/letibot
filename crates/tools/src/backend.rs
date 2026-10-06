@@ -682,6 +682,11 @@ impl ExecBackend for HostBackend {
                 scope_name: None,
                 background: false,
                 env: cmd.env.clone(),
+                // **No terminal.** This is the synchronous `run(cmd, cwd, env)` seam
+                // a built-in reaches the world through, and its reader is a tool
+                // that wants bytes: the operator's own colour is set on the `bash`
+                // path, where the caller is known to be the person.
+                tty: false,
             })
             .map_err(|e| BackendError::Io(e.to_string()))?;
         let waited = host
