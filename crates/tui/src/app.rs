@@ -7469,6 +7469,40 @@ impl App {
                 _ => {}
             }
         }
+        // **An entry's detail overlay owns Esc, the arrows and nothing else.** Esc goes back to
+        // the LIST, which is still behind it — the jobs pane's rule, one pane along.
+        //
+        // **It sits ABOVE the block that closes every pane on Esc, and that is load-bearing.**
+        // Below it, the first Esc closed the PANE and left the overlay standing — and because
+        // the overlay is drawn before the pane, the screen did not change: one press did
+        // nothing, two presses left the queue. Every other overlay in this file (`sub_out`,
+        // `job_out`) is above that block for the same reason, and
+        // `esc_leaves_the_entry_overlay_with_the_queue_still_behind_it` is the test that holds
+        // this one there.
+        if self.queue_open.is_some() {
+            if matches!(k, Key::Esc | Key::CtrlC) {
+                self.queue_open = None;
+                self.pane_scroll = 0;
+                self.redraw = true;
+                return None;
+            }
+            if matches!(k, Key::Up | Key::Down | Key::PageUp | Key::PageDown) {
+                let page = self.pane_room.max(1);
+                match k {
+                    Key::Up => self.pane_scroll = self.pane_scroll.saturating_sub(1),
+                    Key::Down => self.pane_scroll += 1,
+                    Key::PageUp => self.pane_scroll = self.pane_scroll.saturating_sub(page),
+                    _ => self.pane_scroll += page,
+                }
+                // Clamped against the last draw's own numbers: the key handler has no width and
+                // no height, and a scroll clamped against a guess walks past the end.
+                let max = self.pane_len.saturating_sub(self.pane_room);
+                self.pane_scroll = self.pane_scroll.min(max);
+                self.redraw = true;
+                return None;
+            }
+        }
+
         if (self.help
             || self.picker
             || self.pick.is_some()
@@ -7999,32 +8033,6 @@ impl App {
                     }
                 },
                 _ => {}
-            }
-        }
-
-        // **An entry's detail overlay owns Esc, the arrows and nothing else.** Esc goes back to
-        // the LIST, which is still behind it — the jobs pane's rule, one pane along.
-        if self.queue_open.is_some() {
-            if matches!(k, Key::Esc | Key::CtrlC) {
-                self.queue_open = None;
-                self.pane_scroll = 0;
-                self.redraw = true;
-                return None;
-            }
-            if matches!(k, Key::Up | Key::Down | Key::PageUp | Key::PageDown) {
-                let page = self.pane_room.max(1);
-                match k {
-                    Key::Up => self.pane_scroll = self.pane_scroll.saturating_sub(1),
-                    Key::Down => self.pane_scroll += 1,
-                    Key::PageUp => self.pane_scroll = self.pane_scroll.saturating_sub(page),
-                    _ => self.pane_scroll += page,
-                }
-                // Clamped against the last draw's own numbers: the key handler has no width and
-                // no height, and a scroll clamped against a guess walks past the end.
-                let max = self.pane_len.saturating_sub(self.pane_room);
-                self.pane_scroll = self.pane_scroll.min(max);
-                self.redraw = true;
-                return None;
             }
         }
 
@@ -11570,7 +11578,6 @@ impl App {
     /// Takes `&mut self` only to record where each row was drawn, which is what the arrows and
     /// a click scroll by.
     fn queue_lines(&mut self, w: usize) -> Vec<String> {
-        let p = self.cfg.palette();
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "merge queue")];
         out.push(String::new());
         if self.merge.is_empty() {
@@ -11640,7 +11647,6 @@ impl App {
             "    enter opens the entry: the ask it was built from, the gate's own words, and \
              the reviewer's verdict",
         ));
-        let _ = p;
         self.queue_stop_rows = stop_rows;
         out
     }
@@ -11680,10 +11686,7 @@ impl App {
             ("base", e.base_sha.clone()),
             ("age", dur_human(self.now_ms.saturating_sub(e.created_ms))),
         ] {
-            out.push(format!(
-                "  {}",
-                p.paint(Role::Faint, &format!("{k:<9}"))
-            ));
+            out.push(format!("  {}", p.paint(Role::Faint, &format!("{k:<9}"))));
             // The value goes on the same row as its label: one `format!` per row rather than
             // two pushes, because a label alone on a line reads as a heading.
             let last = out.len() - 1;
@@ -11744,11 +11747,7 @@ impl App {
             }
         }
         out.push(String::new());
-        out.push(colour(
-            &self.cfg,
-            sgr::BOLD,
-            "  the reviewer's verdict",
-        ));
+        out.push(colour(&self.cfg, sgr::BOLD, "  the reviewer's verdict"));
         out.push(String::new());
         match self.review_of(&e.id) {
             None => out.push(dim(
@@ -50456,5 +50455,252 @@ mod tests {
             "no board read queued for a seed that is not due"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ===== The merge queue pane =====
+    //
+    // The pane is the HEAD's half of the queue, and it is drawn from two arrivals: the
+    // snapshot the daemon answers `ListMergeQueue` with, and the `MergeEntryAdded` /
+    // `MergeEntryMoved` events that keep it current. These tests are about this head's side
+    // of that — what it asks for, what it folds, and what it draws — and not about the queue
+    // itself, which is `harnessd`'s and is tested where it lives.
+
+    fn queue_entry(
+        id: &str,
+        state: letibot_sessionlog::event::MergeState,
+    ) -> letibot_sessionlog::event::MergeEntry {
+        letibot_sessionlog::event::MergeEntry {
+            id: id.into(),
+            session_id: "s1".into(),
+            branch: "agent/child-one".into(),
+            base_sha: "abc123".into(),
+            priority: letibot_sessionlog::event::MergePriority::Subagent,
+            needs: Vec::new(),
+            state,
+            brief: "make the widget blue".into(),
+            evidence: String::new(),
+            created_ms: 1_000,
+            updated_ms: 1_000,
+            worktree: None,
+            landed_sha: None,
+        }
+    }
+
+    fn queue_review(
+        entry_id: &str,
+        decision: Option<&str>,
+    ) -> letibot_sessionlog::event::MergeReview {
+        letibot_sessionlog::event::MergeReview {
+            entry_id: entry_id.into(),
+            session_id: "reviewer".into(),
+            branch: "agent/child-one".into(),
+            base_sha: "abc123".into(),
+            asked_ms: 2_000,
+            answered_ms: decision.map(|_| 3_000),
+            decision: decision.map(str::to_string),
+            reasons: vec!["the ask is met and the tests pass".into()],
+            files: vec!["crates/widget.rs".into()],
+            commands: vec!["cargo test -p widget".into()],
+        }
+    }
+
+    fn queue_frame(
+        entries: Vec<letibot_sessionlog::event::MergeEntry>,
+        reviews: Vec<letibot_sessionlog::event::MergeReview>,
+    ) -> ServerFrame {
+        ServerFrame::MergeQueue { entries, reviews }
+    }
+
+    /// **The bootstrap read, and the two halves the answer carries.** `/queue` asks the daemon
+    /// for the whole queue and draws nothing until it answers — the jobs pane's shape, one pane
+    /// along. The verdict is drawn beside the entry it is about, which is why it travels in the
+    /// same frame rather than inside the entry.
+    #[test]
+    fn the_queue_pane_asks_for_the_queue_and_draws_what_comes_back() {
+        use letibot_sessionlog::event::MergeState;
+        let mut a = app();
+        a.session_id = "s1".into();
+        assert_eq!(a.command("queue"), Some(Action::ListMergeQueue));
+        assert!(a.queue_pane);
+        // Nothing has arrived: the pane says so rather than drawing a queue nobody sent.
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("merge queue"), "{screen}");
+        assert!(screen.contains("none. A branch lands here"), "{screen}");
+
+        a.apply(queue_frame(
+            vec![queue_entry("c1", MergeState::Waiting)],
+            vec![queue_review("c1", Some("accept"))],
+        ));
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("agent/child-one"), "{screen}");
+        assert!(screen.contains("waiting"), "{screen}");
+        assert!(screen.contains("reviewer: accept"), "{screen}");
+
+        // Closing it asks for nothing and puts the conversation back.
+        assert_eq!(a.command("queue"), None);
+        assert!(!a.queue_pane);
+        assert!(!a.screen(100, 24).join("\n").contains("merge queue"));
+    }
+
+    /// **Esc in the entry overlay goes back to the LIST** — the overlay's own words, and the
+    /// jobs pane's rule one pane along: the queue is still behind it, so Esc must not take the
+    /// pane down with the overlay.
+    ///
+    /// This is the one thing the pane slice got wrong, and it was invisible on paper: the
+    /// overlay's key block sat *below* the block that closes every pane on Esc, so the first
+    /// Esc closed the pane and left the overlay standing (the overlay is drawn before the pane,
+    /// so the screen did not change) and the second Esc closed the overlay over an empty
+    /// screen. One press did nothing, two presses left the queue.
+    #[test]
+    fn esc_leaves_the_entry_overlay_with_the_queue_still_behind_it() {
+        use letibot_sessionlog::event::MergeState;
+        let mut a = app();
+        a.session_id = "s1".into();
+        a.command("queue");
+        // A review that has been ASKED FOR and has not answered — the overlay says which,
+        // rather than showing a decision nobody made.
+        a.apply(queue_frame(
+            vec![queue_entry("c1", MergeState::Waiting)],
+            vec![queue_review("c1", None)],
+        ));
+        assert_eq!(a.key(Key::Enter), None);
+        assert_eq!(a.queue_open.as_deref(), Some("c1"), "enter opens the entry");
+        let screen = a.screen(100, 60).join("\n");
+        assert!(screen.contains("merge queue · entry"), "{screen}");
+        assert!(screen.contains("(asked, no answer yet)"), "{screen}");
+
+        a.key(Key::Esc);
+        assert!(a.queue_open.is_none(), "esc leaves the overlay");
+        assert!(
+            a.queue_pane,
+            "esc goes back to the queue, not out of everything"
+        );
+        assert!(!a.screen(100, 24).join("\n").contains("merge queue · entry"));
+    }
+
+    /// **Folded, never invented** — the jobs pane's rule, and the two arrivals it is about.
+    /// A move for an entry this head was never told about adds nothing (the next snapshot
+    /// carries it), and the same id twice is the same row, because the enqueue is idempotent
+    /// by the child's own handle.
+    #[test]
+    fn an_entry_is_folded_from_the_events_and_never_invented() {
+        use letibot_sessionlog::event::MergeState;
+        let mut a = app();
+        a.session_id = "s1".into();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::MergeEntryMoved {
+                id: "c9".into(),
+                state: MergeState::Landed,
+                evidence: "merged as deadbee".into(),
+            },
+        )));
+        assert!(a.merge.is_empty(), "a move is not an entry");
+
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::MergeEntryAdded {
+                entry: queue_entry("c1", MergeState::Waiting),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::MergeEntryMoved {
+                id: "c1".into(),
+                state: MergeState::Landed,
+                evidence: "merged as deadbee".into(),
+            },
+        )));
+        assert_eq!(a.merge.len(), 1);
+        assert_eq!(a.merge[0].state, MergeState::Landed);
+        assert_eq!(a.merge[0].evidence, "merged as deadbee");
+
+        // The same id again is the same row, with the newer word on it.
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::MergeEntryAdded {
+                entry: queue_entry("c1", MergeState::Taken),
+            },
+        )));
+        assert_eq!(a.merge.len(), 1, "one child, one entry");
+        assert_eq!(a.merge[0].state, MergeState::Taken);
+    }
+
+    /// **The ask is on the row and the overlay shows it.** It is what the reviewer reviews
+    /// against — the gatekeeper's protocol is brief-first and has no field for the child's
+    /// report — so a pane that could not show it would leave the operator reading a verdict
+    /// against an ask they cannot see. The verdict travels with its reasons, the files it was
+    /// based on and the commands that were run, because a word without those is an opinion.
+    #[test]
+    fn the_overlay_shows_the_ask_the_verdict_was_asked_against() {
+        use letibot_sessionlog::event::MergeState;
+        let mut a = app();
+        a.session_id = "s1".into();
+        a.command("queue");
+        a.apply(queue_frame(
+            vec![queue_entry("c1", MergeState::Waiting)],
+            vec![queue_review("c1", Some("reject"))],
+        ));
+        a.key(Key::Enter);
+        let screen = a.screen(100, 60).join("\n");
+        assert!(screen.contains("the ask it was built from"), "{screen}");
+        assert!(screen.contains("make the widget blue"), "{screen}");
+        assert!(screen.contains("the reviewer's verdict"), "{screen}");
+        assert!(screen.contains("reject"), "{screen}");
+        assert!(
+            screen.contains("the ask is met and the tests pass"),
+            "{screen}"
+        );
+        assert!(screen.contains("crates/widget.rs"), "{screen}");
+        assert!(screen.contains("cargo test -p widget"), "{screen}");
+    }
+
+    /// **`nobody has asked` and `asked and silent` are different facts**, and the pane says
+    /// which of the two it is looking at. Reading the first as the second would make a queue
+    /// nobody has looked at look like one that is being looked at now.
+    #[test]
+    fn nobody_has_asked_is_not_the_same_as_asked_and_silent() {
+        use letibot_sessionlog::event::MergeState;
+        let mut a = app();
+        a.session_id = "s1".into();
+        a.command("queue");
+        a.apply(queue_frame(
+            vec![queue_entry("c1", MergeState::Waiting)],
+            Vec::new(),
+        ));
+        let screen = a.screen(100, 24).join("\n");
+        assert!(screen.contains("nobody has reviewed it"), "{screen}");
+
+        a.apply(queue_frame(
+            vec![queue_entry("c1", MergeState::Waiting)],
+            vec![queue_review("c1", None)],
+        ));
+        let screen = a.screen(100, 24).join("\n");
+        assert!(
+            screen.contains("the reviewer has been asked and has not answered"),
+            "{screen}"
+        );
+        assert!(!screen.contains("nobody has reviewed it"), "{screen}");
+    }
+
+    /// **An entry with no review at all says so in the overlay too** — *nobody has asked*, which
+    /// is the state the gate waits in rather than a review with no verdict.
+    #[test]
+    fn an_entry_with_no_review_says_nobody_has_asked() {
+        use letibot_sessionlog::event::MergeState;
+        let mut a = app();
+        a.session_id = "s1".into();
+        a.command("queue");
+        a.apply(queue_frame(
+            vec![queue_entry("c1", MergeState::Waiting)],
+            Vec::new(),
+        ));
+        a.key(Key::Enter);
+        let screen = a.screen(100, 60).join("\n");
+        assert!(screen.contains("nobody has asked"), "{screen}");
+        assert!(
+            screen.contains("An entry with no review does not land"),
+            "{screen}"
+        );
     }
 }

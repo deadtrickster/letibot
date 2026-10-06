@@ -486,7 +486,9 @@ pub fn wire_state(state: MergeState) -> letibot_sessionlog::event::MergeState {
 /// **One verdict, as the wire spells it** — the pane's read, and a copy rather than a re-export
 /// for the reason [`wire_entry`] is one: the head draws the reviewer's answer and must not be
 /// able to write one.
-pub fn wire_review(rec: &letibot_tokencore::store::ReviewRecord) -> letibot_sessionlog::event::MergeReview {
+pub fn wire_review(
+    rec: &letibot_tokencore::store::ReviewRecord,
+) -> letibot_sessionlog::event::MergeReview {
     letibot_sessionlog::event::MergeReview {
         entry_id: rec.entry_id.clone(),
         session_id: rec.session_id.clone(),
