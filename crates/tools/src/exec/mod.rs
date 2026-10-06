@@ -75,6 +75,7 @@
 //! | [`console`] | the rest of what the operator's own run meets: their shell with their rc read, and the environment their terminal is described by |
 //! | [`terminal`] | the programs that pty must NOT be handed to — `nano`, `less`, a bare `python` — refused by name, before the run, with the reason and the remedy |
 //! | [`shell`] | **one long-lived shell per session**, with a controlling terminal: the sentinel framing that reads a line's output back, and the state that survives between lines |
+//! | [`term`] | **a program that owns the screen** — `!term mc`: raw bytes in both directions on a pty the daemon owns, with the pty as the program's *controlling* terminal, and the head as the emulator that draws them |
 
 pub mod confine;
 pub mod console;
@@ -86,6 +87,7 @@ pub mod procs;
 pub mod pty;
 pub mod scope;
 pub mod shell;
+pub mod term;
 pub mod terminal;
 
 pub use confine::{
@@ -102,6 +104,7 @@ pub use predicate::{Hazard, Predicate, Verdict, Witness};
 pub use pty::Pty;
 pub use scope::{Cgroup2, Migration, NoScopes, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree};
 pub use shell::{ShellConfig, ShellError, ShellSession, Turn};
+pub use term::{TermConfig, TermError, TermSession, TermSink};
 pub use terminal::{Class, Refusal, wants_the_terminal};
 
 /// Why an exec request did not become a process.

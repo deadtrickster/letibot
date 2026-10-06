@@ -1,0 +1,841 @@
+//! **A program that owns the screen, on a pty the daemon owns, streamed as raw bytes** —
+//! the mechanism behind `!term mc`, `!term nano`, `!term top`.
+//!
+//! # The defect, and the two things this module is between
+//!
+//! [`super::terminal`] refuses `nano`, `mc`, `top` and `less` by name on the `!` line, and
+//! says why: the operator's run *does* get a pty (so `ls --color=auto` colourises), but the
+//! pty is a **capture** — its output is folded into one transcript row and its input is
+//! `/dev/null` — so a program that draws a screen draws cursor-addressing escapes into that
+//! row and waits for a keystroke that cannot arrive. Its own doc names the fix: *"a `!term`
+//! verb and a head that is a terminal emulator."*
+//!
+//! [`super::shell`] is the other neighbour, and the difference is the whole of this module.
+//! That one frames a **line**: it appends a marked trailer and reads until the trailer
+//! arrives, so one `run` returns one [`super::shell::Turn`] with a status and a cwd. That
+//! framing is exactly wrong here and `shell.rs` says so in its own TODOs — *"a full-screen
+//! program never returns to the shell, so its trailer never arrives and `run` waits out its
+//! deadline."* A screen program is not a line and has no exit status to report while it
+//! runs. What it has is **a byte stream in both directions, for as long as it lives**, and
+//! that is what this module is.
+//!
+//! | | [`super::shell`] | here |
+//! |---|---|---|
+//! | the far end | an interactive shell, one per session | the program the operator named, one per pane |
+//! | what comes back | one `Turn` per line, at the trailer | every byte, as it is written |
+//! | what goes in | a line, plus this module's own trailer line | the operator's keystrokes, verbatim |
+//! | the end | the shell exits | the program exits, or the operator leaves |
+//!
+//! **It is not a screen.** Nothing here parses an escape, holds a cell or knows what a
+//! rectangle is: the bytes go out as they arrived and `letibot_ui::vt::Screen` is what
+//! turns them into rows. That is the seam the pane's coupling is kept to — [`TermSink`] in
+//! one direction and the screen's own `feed` in the other — so the two ends can be
+//! changed independently.
+//!
+//! # A controlling terminal, and why this path wants the one the row path declined
+//!
+//! [`super::pty`] records the decision that an operator's `!` run gets a pty that is **not**
+//! its controlling terminal: `setsid` plus `TIOCSCTTY` was rejected there because it makes
+//! `/dev/tty` *openable*, and a program reached **indirectly** — git's editor, `gpg`'s
+//! pinentry — would then wait for a keystroke that cannot arrive.
+//!
+//! **That hazard does not exist here.** In a pane, keystrokes arrive: the head forwards the
+//! operator's keys down this pty. So the child is given a new session ([`libc::setsid`])
+//! and this pty as its controlling terminal ([`libc::TIOCSCTTY`]) — which is also what
+//! makes `/dev/tty` the right device for `nano` and `mc`, what makes job control work, and
+//! what silences bash's two lines about job control that a capture's terminal produces on
+//! every row today. `the_program_gets_this_pty_as_its_controlling_terminal` is the test, and
+//! it asserts the two devices are the *same one* rather than that a controlling terminal
+//! merely exists.
+//!
+//! # The command line is the shell's to read
+//!
+//! `!term mc /etc` is a **shell line**, not an argv. Splitting it here would be a second
+//! grammar in front of the shell — the argument [`super::shell::ShellSession::run`] makes
+//! for the lines it writes — and it would break `!term FOO=1 mc`, `!term cd /tmp && mc` and
+//! `!term git log | less` on the first day. So the line goes to `/bin/sh -c`, and **that is
+//! the only thing this module does with it**: no quoting, no rewriting, no inspection.
+//!
+//! `/bin/sh` and not [`super::console::shell`]'s `/bin/bash -ic`: the operator's rc is a
+//! file full of aliases and prompts, and a pane's program is one the operator *named*. An
+//! operator who wants their shell types `!term bash`, which is one word and is honest.
+//!
+//! # The environment
+//!
+//! [`env_from`] is [`super::console::INHERITED`] and nothing else, and the difference from
+//! [`super::console::env_from`] is the point of having a second function: that one **forces**
+//! `PAGER=cat`, which is right for a capture — nobody can press a key, so a pager would
+//! hang — and wrong for a pane, where somebody can. `TERM` is supplied when the daemon has
+//! none, because a program on a pty with no `TERM` cannot colourise or address the cursor.
+//!
+//! # The lifetime is the cgroup's, and the vocabulary is [`super::scope`]'s
+//!
+//! A program that outlives the pane that drew it is a leak, and this tree already has the
+//! answer rather than needing a second one: the command is started **inside a
+//! [`ScopeKind::Session`] cgroup** through [`super::scope::join_script`] — the wrapper writes
+//! its own pid into `cgroup.procs` and *then* `exec`s, so there is no window in which the
+//! program or any of its children could be forked outside the scope — and the pane ends by
+//! [`ScopeTree::end`], which kills the tree and records what it killed. **Nothing here
+//! invents a lifetime**: no pid file, no `pkill`, no signal to a remembered number. The one
+//! fallback — a session opened with no scope at all, which is what a unit test does — is
+//! named in [`TermSession::close`] and says what it is.
+//!
+//! # The end, and there is one reporter
+//!
+//! [`TermSession::start`] spawns **one thread**, and it does the reading and the waiting:
+//! it reads the master until the far end goes, then `wait`s for the child, then calls
+//! [`TermSink::ended`] once with the exit status in the reason. One reporter, so there is
+//! no race between *the pty closed* and *the program exited* over which sentence a head
+//! prints — and the sentence is the specific fact, from the process that knows it.
+//!
+//! **What it will not do.** A program that closes its own descriptors and keeps running
+//! leaves the master readable-for-ever, so the read does not end and the pane does not
+//! report; the operator's way out — `Ctrl-\`, intercepted by the head before it reaches
+//! this pty, and documented there — still kills it through the scope. A program that forks a
+//! daemon away from the pty is reported as ended the moment the *pane's* program exits, which
+//! is the honest answer to *is this pane still live*, and the daemon it left behind is the
+//! cgroup's business and not this module's.
+//!
+//! # Provenance
+//!
+//! Nothing here is taken from grok-build or opencode, and no terminal emulator was read.
+//! The lifetime mechanism is [`super::scope`]'s and the pty is [`super::pty`]'s; both are
+//! reused rather than copied, which is why this file is mostly a reader thread and a
+//! comment.
+
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+
+use super::Pty;
+use super::scope::{Cgroup2, Reaping, ScopeId, ScopeTree, join_script};
+use super::shell::set_size;
+
+/// **The shell a pane's command line is read by.** See the module header: the line is a
+/// line and the shell is the thing that reads it.
+const SHELL: &str = "/bin/sh";
+
+/// **The `TERM` a pane's program is given when the daemon has none.**
+///
+/// Not a policy about the operator's terminal — [`super::console::INHERITED`] is read first,
+/// so a daemon started from their console passes their own value through. This is what is
+/// left when there is nothing to pass: a program on a pty with no `TERM` cannot colourise,
+/// cannot address the cursor, and is exactly the *"nano draws nothing"* failure this whole
+/// module exists to remove.
+const DEFAULT_TERM: &str = "xterm-256color";
+
+/// How many bytes one read from the master may carry. The same order as
+/// [`super::shell`]'s, and not a cap on anything: a read that fills it is one call to
+/// [`TermSink::output`] and the next read follows immediately.
+const READ_CHUNK: usize = 8192;
+
+/// Why a pane did not start, or stopped being usable. Small and local on purpose: this is
+/// not an [`super::ExecError`], because nothing here is a tool call and a caller should not
+/// have to read a variant that talks about gates and adjudication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TermError {
+    /// The program could not be started, or the scope could not be joined.
+    Start(String),
+    /// The pty's far end is gone, so keystrokes have nowhere to go.
+    Gone(String),
+    /// The caller asked for something a pane cannot do.
+    Config(String),
+}
+
+impl std::fmt::Display for TermError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TermError::Start(w) => write!(f, "the terminal could not be started: {w}"),
+            TermError::Gone(w) => write!(f, "the terminal is gone: {w}"),
+            TermError::Config(w) => write!(f, "{w}"),
+        }
+    }
+}
+
+impl std::error::Error for TermError {}
+
+/// **Where a pane's bytes go, and how it says it is over.**
+///
+/// The two methods are the whole coupling between this module and the head: bytes out as
+/// they arrive, and one ending. A trait rather than a channel because the caller already has
+/// the place they belong — the daemon's hub, a test's `Vec` — and a second buffer between
+/// the pty and that place would be a second place for bytes to be lost.
+///
+/// **`output` must not block.** It is called from the pane's reader thread, and a sink that
+/// waited on a socket write would stop reading the pty — which is the pty's own buffer
+/// filling up, and then the program blocking in `write`. The daemon's implementation hands
+/// the bytes to a queue that is never allowed to wait.
+pub trait TermSink: Send + Sync {
+    /// Bytes the program wrote. **Raw**: escapes, `\r`, partial UTF-8 and all, because a
+    /// screen is what consumes them.
+    fn output(&self, bytes: &[u8]);
+    /// **The pane is over, and this is why** — *"the program exited with 0"*, or the
+    /// operator's own departure. Called exactly once, from the one thread that read.
+    fn ended(&self, reason: &str);
+}
+
+/// **How to start a pane.** Everything a caller must decide, in one place.
+#[derive(Clone)]
+pub struct TermConfig {
+    /// **The command line, verbatim.** A shell line: see the module header for why it is
+    /// not split here.
+    pub command: String,
+    /// Pairs put in front of the program's environment. [`env_from`] is what a pane wants.
+    pub env: Vec<(String, String)>,
+    /// Where the program starts. A startup fact — nothing reads a cwd back out of a pane,
+    /// because a screen program has no trailer to report one in.
+    pub cwd: PathBuf,
+    /// The pane's rectangle at the moment it opens, from the head that owns it.
+    /// [`TermSession::resize`] moves it after that.
+    pub cols: usize,
+    pub rows: usize,
+    /// **The scope the pane lives in**, and the tree that will end it. `None` is a pane
+    /// nobody owns — a test's, and named as such by [`TermSession::close`].
+    pub scope: Option<ScopeId>,
+    pub tree: Option<Arc<dyn ScopeTree>>,
+}
+
+impl Default for TermConfig {
+    fn default() -> TermConfig {
+        TermConfig {
+            command: String::new(),
+            env: Vec::new(),
+            cwd: PathBuf::from("."),
+            cols: 80,
+            rows: 24,
+            scope: None,
+            tree: None,
+        }
+    }
+}
+
+/// **The environment a pane's program is given**: the console's terminal variables, and
+/// `TERM` when the daemon has none.
+///
+/// A second function beside [`super::console::env_from`] rather than a flag on it, because
+/// the two disagree about the pagers and the disagreement is the whole reason: that one
+/// **forces** `PAGER=cat` because a capture has nobody at the keyboard, and a pane has
+/// somebody. `!term git log` is allowed to page — it is a terminal, and that is what a
+/// terminal is for.
+pub fn env_from(source: &[(String, String)]) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = Vec::with_capacity(super::console::INHERITED.len() + 1);
+    for name in super::console::INHERITED {
+        if let Some((_, value)) = source.iter().find(|(k, _)| k == name) {
+            pairs.push(((*name).to_string(), value.clone()));
+        }
+    }
+    if !pairs.iter().any(|(k, _)| k == "TERM") {
+        pairs.push(("TERM".to_string(), DEFAULT_TERM.to_string()));
+    }
+    pairs
+}
+
+/// [`env_from`] over this process's own environment, which is the console's.
+pub fn env() -> Vec<(String, String)> {
+    env_from(&std::env::vars().collect::<Vec<_>>())
+}
+
+/// **What to run, and with what.** Pure, so the scope wrapper can be asserted without a
+/// process starting — the same discipline [`super::shell::argv`] keeps.
+///
+/// With no scope this is `/bin/sh -c <line>`. With a scope it is `/bin/sh -c <join_script>
+/// … /bin/sh -c <line>`, so that **the pid we hold is a member of the cgroup** and the shell
+/// `exec`s into that same pid: a pane that could not join its scope is not run, which is
+/// [`join_script`]'s own `exit 125` and its own sentence.
+pub fn argv(cfg: &TermConfig) -> Result<(String, Vec<String>), TermError> {
+    if cfg.command.trim().is_empty() {
+        return Err(TermError::Config("the command is empty".to_string()));
+    }
+    match &cfg.scope {
+        None => Ok((
+            SHELL.to_string(),
+            vec!["-c".to_string(), cfg.command.clone()],
+        )),
+        Some(scope) => Ok((
+            SHELL.to_string(),
+            vec![
+                "-c".to_string(),
+                join_script().to_string(),
+                // `$0` for the wrapper, which is only ever a name in a message.
+                "letibot-term".to_string(),
+                Cgroup2::procs_path(scope).display().to_string(),
+                // `$2` is the join token the host uses as *evidence* it can observe. This
+                // module has no use for one — a pane's proof that it started is its own
+                // first byte — so the wrapper's `: > "$2"` is pointed at the null device.
+                // Named rather than silently passed, because a reader who knows `host.rs`
+                // will look for a real file here.
+                "/dev/null".to_string(),
+                SHELL.to_string(),
+                "-c".to_string(),
+                cfg.command.clone(),
+            ],
+        )),
+    }
+}
+
+/// **One program, one pty, one cgroup, one reader thread.**
+///
+/// The master is held twice on purpose: this struct writes keystrokes to it, and the reader
+/// thread reads the program's bytes from a clone. Two descriptors on one pty is what a
+/// terminal is — the alternative, a mutex over one `File`, would put a keystroke behind a
+/// blocked read.
+pub struct TermSession {
+    /// The master end, for keystrokes and for `TIOCSWINSZ`.
+    master: std::fs::File,
+    /// The pid the scope wrapper `exec`ed into, so it is a member of the pane's cgroup.
+    pid: i32,
+    scope: Option<ScopeId>,
+    tree: Option<Arc<dyn ScopeTree>>,
+    /// **Why this pane ended, when the operator is the one who ended it.** Set by
+    /// [`TermSession::close`] before it kills anything, and read by the reader thread when
+    /// it composes the sentence for [`TermSink::ended`] — so the operator who pressed the
+    /// way out is told *"you left the terminal"* rather than *"the program exited with
+    /// 137"*, and there is still exactly one reporter.
+    closing: Arc<Mutex<Option<String>>>,
+    closed: bool,
+}
+
+impl std::fmt::Debug for TermSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TermSession")
+            .field("pid", &self.pid)
+            .field("scope", &self.scope)
+            .field("closed", &self.closed)
+            .finish()
+    }
+}
+
+impl TermSession {
+    /// **Start the program, and hand its bytes to `sink` as they arrive.**
+    ///
+    /// Returns as soon as the child is spawned: a pane has no readiness probe and needs
+    /// none, because the first thing a screen program does is draw. A command that does not
+    /// exist is a `sh` that exits 127, whose bytes and whose ending both arrive on the sink
+    /// like any other program's — which is the right shape, because *"command not found"* is
+    /// something the operator should read in the pane and not as a failed call.
+    pub fn start(cfg: &TermConfig, sink: Arc<dyn TermSink>) -> Result<TermSession, TermError> {
+        let (prog, args) = argv(cfg)?;
+        let pty = Pty::open().map_err(|e| TermError::Start(format!("no pty: {e}")))?;
+
+        let mut cmd = std::process::Command::new(&prog);
+        cmd.args(&args);
+        cmd.current_dir(&cfg.cwd);
+        for (k, v) in &cfg.env {
+            cmd.env(k, v);
+        }
+        // **A terminal on all three**, which is the difference between this and the row
+        // path: the program reads the keys a person types at it.
+        let (a, b, c) = (
+            pty.stdio().map_err(|e| TermError::Start(e.to_string()))?,
+            pty.stdio().map_err(|e| TermError::Start(e.to_string()))?,
+            pty.stdio().map_err(|e| TermError::Start(e.to_string()))?,
+        );
+        cmd.stdin(a).stdout(b).stderr(c);
+
+        // **`setsid` and `TIOCSCTTY`, and here rather than in `pty.rs` on purpose.** The row
+        // path declines both (see the module header); a pane wants both. Failure is not
+        // fatal: a program without a controlling terminal still runs on this pty, it just
+        // cannot open `/dev/tty` — which is a program that draws and does not answer, so the
+        // test that says it works is `the_program_gets_this_pty_as_its_controlling_terminal`.
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    // Already a group leader, which a forked child is not — so this is a
+                    // failure we do not understand, and the program still runs.
+                }
+                let _ = libc::ioctl(0, libc::TIOCSCTTY, 0);
+                Ok(())
+            });
+        }
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| TermError::Start(format!("{prog}: {e}")))?;
+        let pid = child.id() as i32;
+        // **The parent's own slave handles go now.** A slave this process still holds open is
+        // a master read that never reports the child's exit — `pty.rs`'s own test measures
+        // thirty seconds of that.
+        let master = pty.into_master();
+        drop(cmd);
+
+        // **The size before the first byte**, so a program that asks on startup — which is
+        // every full-screen program — gets the pane's rectangle rather than the default.
+        set_size(&master, cfg.cols, cfg.rows);
+
+        let closing: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let mut reader = master
+            .try_clone()
+            .map_err(|e| TermError::Start(format!("the pty master: {e}")))?;
+
+        // **One thread, and it is both the reader and the waiter.** See the module header:
+        // the reason a pane ended is the exit status, the process that knows it is the child
+        // this thread owns, and a second thread reporting the pty's end would race this one
+        // over which sentence a head prints.
+        {
+            let sink = Arc::clone(&sink);
+            let closing = Arc::clone(&closing);
+            let thread = std::thread::Builder::new()
+                .name("term-pane".into())
+                .spawn(move || {
+                    let mut buf = [0u8; READ_CHUNK];
+                    loop {
+                        match reader.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => sink.output(&buf[..n]),
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                            // **`EIO` is this platform's end-of-pty**, not a failure: it is
+                            // what a read on the master returns once the last slave is
+                            // closed. `pty.rs`'s own drain treats it the same way.
+                            Err(_) => break,
+                        }
+                    }
+                    let code = child.wait().ok().and_then(|s| s.code());
+                    let why = match closing.lock().ok().and_then(|c| c.clone()) {
+                        Some(said) => said,
+                        None => match code {
+                            Some(0) => "the program exited".to_string(),
+                            Some(c) => format!("the program exited with {c}"),
+                            None => "the program was killed by a signal".to_string(),
+                        },
+                    };
+                    sink.ended(&why);
+                });
+            if let Err(e) = thread {
+                return Err(TermError::Start(format!("no thread for the pane: {e}")));
+            }
+        }
+
+        Ok(TermSession {
+            master,
+            pid,
+            scope: cfg.scope.clone(),
+            tree: cfg.tree.clone(),
+            closing,
+            closed: false,
+        })
+    }
+
+    /// **The program's pid** — which is the pid the scope wrapper `exec`ed into, so it is a
+    /// member of the pane's cgroup.
+    pub fn pid(&self) -> i32 {
+        self.pid
+    }
+
+    /// **A keystroke, or a paste, or anything else the operator's terminal sent.**
+    ///
+    /// Verbatim: this module does not decode, translate or filter, because the program is
+    /// the thing that reads keys and a head that understood a key the program did not get
+    /// would be a head with a keymap in front of a terminal. **The way out is intercepted
+    /// before this is called** — see the head's own module — which is what makes it
+    /// untrappable: a byte that never arrives cannot be caught.
+    pub fn input(&self, bytes: &[u8]) -> Result<(), TermError> {
+        if self.closed {
+            return Err(TermError::Gone("the pane was closed".to_string()));
+        }
+        let mut m = &self.master;
+        m.write_all(bytes)
+            .map_err(|e| TermError::Gone(format!("the pty would not take the keys: {e}")))
+    }
+
+    /// **Move the pty's size.** The kernel raises `SIGWINCH` for the pty's foreground
+    /// process group, so a program that redraws on a resize does — this is the half of
+    /// *"the conversation's rectangle given to the program"* that a screen alone cannot do.
+    pub fn resize(&self, cols: usize, rows: usize) {
+        set_size(&self.master, cols, rows);
+    }
+
+    /// **End the pane.**
+    ///
+    /// `why` is the sentence the operator is told, and it is set *before* the kill so the
+    /// reader thread's report carries it: the operator who pressed the way out is told what
+    /// they did, and the operator whose program exited on its own is told what it said.
+    ///
+    /// With a scope this is [`ScopeTree::end`]: the cgroup is killed, **everything under it
+    /// dies with it**, and the record carries what was observed before and what survived
+    /// after. Without one — a unit test, or a box where cgroups are unavailable — the
+    /// fallback is `SIGHUP` to the pane's process group, which reaches the program and not
+    /// what it daemonised away. **The fallback is not the mechanism** and says so.
+    pub fn close(&mut self, why: &str) -> Option<Reaping> {
+        if self.closed {
+            return None;
+        }
+        self.closed = true;
+        if let Ok(mut c) = self.closing.lock() {
+            *c = Some(why.to_string());
+        }
+        match (&self.tree, &self.scope) {
+            (Some(tree), Some(scope)) => Some(tree.end(scope)),
+            _ => {
+                // The pane's own process group first — `setsid` made the child its leader,
+                // so `-pid` is the group — and the child itself second, for a pane that
+                // somehow never got one.
+                unsafe {
+                    libc::kill(-self.pid, libc::SIGHUP);
+                    libc::kill(self.pid, libc::SIGHUP);
+                }
+                None
+            }
+        }
+    }
+
+    /// Whether [`TermSession::close`] has been called. The reader thread outlives it — it
+    /// is the thing that reports — so this is a fact about the session and not about the
+    /// thread.
+    pub fn closed(&self) -> bool {
+        self.closed
+    }
+}
+
+impl Drop for TermSession {
+    /// **A pane nobody closed is still a pane that must not leak.** The reader thread is
+    /// deliberately not joined: it is blocked on a master read that ends when the child
+    /// does, and a `drop` that waited for it would wait for the very process it has just
+    /// been asked to kill.
+    fn drop(&mut self) {
+        if !self.closed {
+            self.close("the pane was dropped");
+        }
+    }
+}
+
+/// **A sink that keeps everything, for a test.** Not `#[cfg(test)]` because the daemon's
+/// own tests in other crates want it too, and because a collector with a `Condvar` in it is
+/// the only honest way to assert on a byte stream that arrives on another thread.
+#[derive(Default)]
+pub struct Collected {
+    bytes: Mutex<Vec<u8>>,
+    ended: Mutex<Option<String>>,
+    cv: std::sync::Condvar,
+}
+
+impl Collected {
+    pub fn new() -> Collected {
+        Collected::default()
+    }
+
+    /// Everything the program has written so far, as bytes.
+    pub fn bytes(&self) -> Vec<u8> {
+        self.bytes.lock().map(|b| b.clone()).unwrap_or_default()
+    }
+
+    /// Everything the program has written so far, lossily, for a readable assertion.
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.bytes()).into_owned()
+    }
+
+    /// Wait until `needle` is in what the program wrote, or until `d` passes. `true` if it
+    /// arrived — a poll for a *fact*, so a slow box is a longer wait and not a failure.
+    pub fn wait_for(&self, needle: &str, d: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + d;
+        loop {
+            if self.text().contains(needle) {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// Wait for the ending, or until `d` passes.
+    pub fn wait_ended(&self, d: std::time::Duration) -> Option<String> {
+        let guard = self.ended.lock().ok()?;
+        if guard.is_some() {
+            return guard.clone();
+        }
+        let (guard, _) = self.cv.wait_timeout_while(guard, d, |e| e.is_none()).ok()?;
+        guard.clone()
+    }
+
+    /// The ending, if it has happened.
+    pub fn ended(&self) -> Option<String> {
+        self.ended.lock().ok().and_then(|e| e.clone())
+    }
+}
+
+impl TermSink for Collected {
+    fn output(&self, bytes: &[u8]) {
+        if let Ok(mut b) = self.bytes.lock() {
+            b.extend_from_slice(bytes);
+        }
+    }
+
+    fn ended(&self, reason: &str) {
+        if let Ok(mut e) = self.ended.lock() {
+            *e = Some(reason.to_string());
+        }
+        self.cv.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// How long a pane's bytes get before a test calls it a failure. Generous: this is a
+    /// poll for a fact on a loaded box, and the assertions are on content and not on speed.
+    const PATIENCE: Duration = Duration::from_secs(10);
+
+    fn pane(command: &str) -> (TermSession, Arc<Collected>) {
+        let cfg = TermConfig {
+            command: command.to_string(),
+            env: vec![("TERM".to_string(), "xterm-256color".to_string())],
+            cwd: std::env::temp_dir(),
+            cols: 80,
+            rows: 24,
+            scope: None,
+            tree: None,
+        };
+        let sink = Arc::new(Collected::new());
+        let s = TermSession::start(&cfg, sink.clone()).expect("a pane on this box");
+        (s, sink)
+    }
+
+    /// **The property this module exists for: a program that owns the screen gets the pty
+    /// as its controlling terminal, and it is THIS one.**
+    ///
+    /// Not *"a controlling terminal exists"* — which a test run from an operator's terminal
+    /// would satisfy without any of this working — but *"`/dev/tty` and fd 0 are the same
+    /// device"*, asked from inside the child. That is the question `nano` asks when it opens
+    /// `/dev/tty`, and the reason [`super::super::pty`]'s own doc says the row path declines
+    /// `setsid`/`TIOCSCTTY`.
+    ///
+    /// **Two probes, and neither of the obvious ones works.** `tty < /dev/tty` prints
+    /// `/dev/tty` — the name it was *given* — and `stat -L /proc/self/fd/9` follows the
+    /// descriptor's own name to the `5:0` device node rather than to the pty behind it.
+    /// Measured, both. What does answer is `ps -o tty= -p $$`, which reads the process's
+    /// **controlling terminal** out of `/proc/<pid>/stat` rather than out of a descriptor,
+    /// against `readlink /proc/self/fd/0`, which names the device the child is actually on.
+    /// Two different questions, and *same device* is the only answer that means `TIOCSCTTY`
+    /// worked.
+    ///
+    /// The control is the same pty and the same shell **without** the two calls, and it is
+    /// in the same test so a green run cannot be a `stat` that answered `same` for another
+    /// reason.
+    #[test]
+    fn the_program_gets_this_pty_as_its_controlling_terminal() {
+        // `exec 9</dev/tty` is the question `nano` asks. Without a controlling terminal the
+        // open fails with `ENXIO` — measured on this box — so `no-ctty` is the control's
+        // answer and never the pane's.
+        const ASK: &str = "exec 9</dev/tty 2>/dev/null || { echo no-ctty; exit 0; }; \
+                           a=$(ps -o tty= -p $$ 2>/dev/null); \
+                           b=$(readlink /proc/self/fd/0 2>/dev/null); \
+                           if [ \"$a\" != \"?\" ] && [ -n \"$a\" ] && [ \"/dev/$a\" = \"$b\" ]; \
+                           then echo same; else echo \"diff:a=$a:b=$b\"; fi";
+
+        let (_s, sink) = pane(ASK);
+        assert!(
+            sink.wait_for("same", PATIENCE),
+            "the program must get this pty as its controlling terminal, saw {:?}",
+            sink.text()
+        );
+
+        // The control: the same pair, the same shell, no `setsid`, no `TIOCSCTTY`.
+        let p = Pty::open().expect("a pty");
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg(ASK);
+        let (a, b, c) = (p.stdio().unwrap(), p.stdio().unwrap(), p.stdio().unwrap());
+        cmd.stdin(a).stdout(b).stderr(c);
+        let mut child = cmd.spawn().expect("sh starts");
+        let master = p.into_master();
+        // **The `Command`'s own slave copies go now**, or the master never reports the
+        // child's exit and this read blocks for ever — `pty.rs`'s own test measures exactly
+        // that, and it is why `TermSession::start` drops its `Command` too.
+        drop(cmd);
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 512];
+        {
+            use std::io::Read;
+            let mut m = &master;
+            while let Ok(n) = m.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                seen.extend_from_slice(&buf[..n]);
+            }
+        }
+        let _ = child.wait();
+        let seen = String::from_utf8_lossy(&seen);
+        // **Two spellings of the same answer, because `sh` chooses one of them.** A
+        // redirection failure on `exec` is fatal for a non-interactive shell, so a `sh` that
+        // cannot open `/dev/tty` exits with its own sentence instead of reaching the
+        // `|| echo no-ctty` branch — and the sentence is the more useful half anyway.
+        assert!(
+            seen.contains("no-ctty") || seen.contains("cannot open /dev/tty"),
+            "without the two calls the pty must NOT be the controlling terminal, saw {seen:?}"
+        );
+    }
+
+    /// **A keystroke reaches the program, and what it writes comes back.** Both directions
+    /// of the pane, asserted as bytes: the program echoes what it read, so the assertion is
+    /// on a string the *program* composed and not on the pty's own echo of our write.
+    #[test]
+    fn keys_reach_the_program_and_its_bytes_come_back() {
+        let (s, sink) = pane("read x; printf 'GOT:%s\\n' \"$x\"");
+        // A little slack: the child has to be up before a line written to the pty is read
+        // by it. `read` blocks until the line discipline hands the line over, so a write
+        // that arrives first is buffered and not lost.
+        std::thread::sleep(Duration::from_millis(150));
+        s.input(b"hello\r").expect("the pty takes keys");
+        assert!(
+            sink.wait_for("GOT:hello", PATIENCE),
+            "the program must have read the keys we wrote, saw {:?}",
+            sink.text()
+        );
+        assert!(
+            sink.wait_ended(PATIENCE).is_some(),
+            "the program exited, so the pane must have reported an end"
+        );
+    }
+
+    /// **A resize is a fact the program is told, not a fact this head keeps.** `stty size`
+    /// inside the pane reads the pty's own `winsize`, so this asserts `TIOCSWINSZ` reached
+    /// the device the program is on — which is also what raises its `SIGWINCH`.
+    #[test]
+    fn a_resize_reaches_the_program() {
+        // The shell re-reads its size on every `WINCH`, which the kernel raises for the
+        // foreground process group when the pty's window changes.
+        let (s, sink) = pane("trap 'stty size' WINCH; while :; do sleep 0.2; done");
+        std::thread::sleep(Duration::from_millis(200));
+        s.resize(101, 37);
+        assert!(
+            sink.wait_for("37 101", PATIENCE),
+            "the pty must have taken the new size, saw {:?}",
+            sink.text()
+        );
+    }
+
+    /// **The ending is the exit status, said once, by the one thread that read.** A program
+    /// that exits on its own is not the operator leaving, and the sentence says which.
+    #[test]
+    fn the_ending_is_the_programs_own_exit_status() {
+        let (_s, sink) = pane("exit 3");
+        let why = sink.wait_ended(PATIENCE).expect("an ending");
+        assert_eq!(why, "the program exited with 3");
+        // And exactly once: the sink's slot is a single `Option`, so a second report would
+        // overwrite it — this asserts the sentence did not change under a second writer.
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(sink.ended().as_deref(), Some("the program exited with 3"));
+    }
+
+    /// **Closing kills the program and the operator is told they left.**
+    ///
+    /// The program is `sleep 30`, so a close that did not kill would leave the ending
+    /// unwritten for half a minute and this test would time out — the wait is the assertion,
+    /// and the sentence is the other half.
+    #[test]
+    fn closing_kills_the_program_and_says_the_operator_left() {
+        let (mut s, sink) = pane("sleep 30");
+        std::thread::sleep(Duration::from_millis(200));
+        s.close("you left the terminal");
+        let why = sink.wait_ended(PATIENCE).expect("an ending");
+        assert_eq!(why, "you left the terminal");
+        assert!(s.closed());
+    }
+
+    /// **The command line is a shell line, and the shell is `/bin/sh`.**
+    ///
+    /// Pure, so the shape is asserted without a process: no splitting, no quoting, no
+    /// inspection — which is what makes `!term FOO=1 mc`, `!term cd /tmp && mc` and
+    /// `!term git log | less` work on the first day.
+    #[test]
+    fn the_command_line_is_handed_to_the_shell_whole() {
+        let cfg = TermConfig {
+            command: "FOO=1 mc /etc && echo done".to_string(),
+            ..TermConfig::default()
+        };
+        let (prog, args) = argv(&cfg).expect("argv");
+        assert_eq!(prog, "/bin/sh");
+        assert_eq!(args, vec!["-c", "FOO=1 mc /etc && echo done"]);
+
+        // And an empty one is refused by name rather than starting a shell that reads EOF.
+        let empty = TermConfig::default();
+        assert!(matches!(argv(&empty), Err(TermError::Config(_))));
+    }
+
+    /// **With a scope the pid we hold is a member of the cgroup.** Pure, so the wrapper's
+    /// argument positions are asserted rather than discovered: `$1` is `cgroup.procs`, `$2`
+    /// the evidence token, and everything after `shift 2` is the program.
+    #[test]
+    fn a_scoped_pane_joins_its_cgroup_before_it_execs() {
+        use super::super::scope::ScopeKind;
+        let scope = ScopeId {
+            kind: ScopeKind::Session,
+            name: "s1".to_string(),
+            path: PathBuf::from("/sys/fs/cgroup/letibot/s1"),
+        };
+        let cfg = TermConfig {
+            command: "mc".to_string(),
+            scope: Some(scope.clone()),
+            ..TermConfig::default()
+        };
+        let (prog, args) = argv(&cfg).expect("argv");
+        assert_eq!(prog, "/bin/sh");
+        assert_eq!(args[0], "-c");
+        assert_eq!(args[1], join_script());
+        assert_eq!(args[2], "letibot-term");
+        assert_eq!(args[3], Cgroup2::procs_path(&scope).display().to_string());
+        assert_eq!(args[4], "/dev/null");
+        assert_eq!(&args[5..], &["/bin/sh", "-c", "mc"]);
+    }
+
+    /// **A pane's environment is the console's terminal variables and NOT a pager forced to
+    /// `cat`.**
+    ///
+    /// The contrast with [`super::super::console::env_from`] is the whole reason there are
+    /// two functions: a capture has nobody at the keyboard so `git log` must not page, and a
+    /// pane has somebody at the keyboard so it may. Asserted without a process, which is the
+    /// only way to hold the whole of it rather than the one variable a test thought to print.
+    #[test]
+    fn a_panes_environment_keeps_the_pager_the_console_would_have_forbidden() {
+        let source: Vec<(String, String)> = vec![
+            ("TERM".into(), "screen-256color".into()),
+            ("COLORTERM".into(), "truecolor".into()),
+            ("PAGER".into(), "less".into()),
+            ("HOME".into(), "/home/nobody".into()),
+        ];
+        let pane_env = env_from(&source);
+        assert_eq!(
+            pane_env,
+            vec![
+                ("TERM".to_string(), "screen-256color".to_string()),
+                ("COLORTERM".to_string(), "truecolor".to_string()),
+            ],
+            "the pane's environment is the console's terminal variables and nothing else"
+        );
+        // The control, in the same test: the capture's own builder does force it.
+        assert!(
+            super::super::console::env_from(&source)
+                .iter()
+                .any(|(k, v)| k == "PAGER" && v == "cat"),
+            "the capture's environment must still forbid paging, or this test measures \
+             nothing about the difference"
+        );
+        // And a daemon with no `TERM` still gives the pane one.
+        assert_eq!(
+            env_from(&[]),
+            vec![("TERM".to_string(), DEFAULT_TERM.to_string())]
+        );
+    }
+
+    /// **A command that does not exist is something the operator reads in the pane**, not a
+    /// failed call: the shell's own `not found` line arrives on the sink like any program's
+    /// output, and the ending is the shell's exit status.
+    #[test]
+    fn a_command_that_does_not_exist_says_so_in_the_pane() {
+        let (_s, sink) = pane("definitely-not-a-program-xyz");
+        assert!(
+            sink.wait_for("not found", PATIENCE),
+            "the shell's own sentence must reach the pane, saw {:?}",
+            sink.text()
+        );
+        assert_eq!(
+            sink.wait_ended(PATIENCE).as_deref(),
+            Some("the program exited with 127")
+        );
+    }
+}

@@ -938,7 +938,12 @@ impl Drop for ShellSession {
 /// `TIOCSWINSZ` on the master. Failure is ignored: a pty that will not take a size is a pty
 /// whose programs see the default, which is a cosmetic defect and not a reason to lose a
 /// session.
-fn set_size(master: &std::fs::File, cols: usize, rows: usize) {
+///
+/// **`pub(crate)` because [`super::term`] is the second caller and there is one answer to
+/// *how a pty is told its size*.** A pane and a shell session both have a rectangle that
+/// belongs to the head, and two `ioctl` wrappers would be two places for the clamp to be
+/// wrong.
+pub(crate) fn set_size(master: &std::fs::File, cols: usize, rows: usize) {
     use std::os::fd::AsRawFd;
     let ws = libc::winsize {
         ws_row: rows.clamp(1, u16::MAX as usize) as u16,
