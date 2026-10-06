@@ -1083,8 +1083,11 @@ fn an_interactive_program_on_the_operators_own_line_is_refused_by_name_with_the_
         body.contains("needs the terminal and letibot cannot hand you one"),
         "the refusal must be the operator's sentence: {body}"
     );
+    // **The remedy names the verb that works.** *"run it in another window"* was the
+    // answer while there was no pane, and it sent the operator out of the harness for a
+    // program this harness now runs itself — see `exec::term`.
     assert!(
-        body.contains("run it in another window"),
+        body.contains("`!term <command>`"),
         "the refusal must say what to do instead: {body}"
     );
     assert!(
@@ -1131,7 +1134,7 @@ fn an_interactive_program_on_the_operators_own_line_is_refused_by_name_with_the_
 /// in a screen nobody is watching. That is a different defect and `exec::terminal` lists
 /// it among its own misses; what this test pins is that the rule stays on the side of
 /// the line it was written for, because a rule that fired on both would tell the model
-/// to *run it in another window*, which is advice a model cannot take.
+/// to *run it in the pane*, which is advice a model cannot take.
 #[test]
 fn the_terminal_rule_does_not_fire_on_a_models_call() {
     let mut h = letibot_tools::testing::text_only_runner_harness();
@@ -1178,7 +1181,7 @@ fn on_a_real_substrate_the_operators_nano_is_refused_and_their_ls_still_runs() {
         refused.render()
     );
     assert!(
-        refused.render().contains("run it in another window"),
+        refused.render().contains("`!term <command>`"),
         "and it must say what to do instead: {}",
         refused.render()
     );
