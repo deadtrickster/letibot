@@ -42,6 +42,14 @@
 //! the process to what a pen is drawn as. [`pane_rows`] is the pane's own entry point, and the one
 //! property its caller depends on is in its signature: **exactly `room` rows**.
 //!
+//! **Two things differ between the readers, and both are deliberate.** A program's *background* and
+//! its *reverse* are painted by [`lines`] and dropped by [`painted`]: a payload row sits inside a
+//! block this head chose and its colour is a meaning, while a screen **is** the program's own
+//! drawing — `mc`'s panels, `less`'s status bar and `nano`'s status bar are backgrounds and
+//! reverses, and a pane that dropped them would draw their text on the transcript's own background
+//! and lose the selected row. Both are consumed through the same pen and both come out of
+//! [`Palette`], so there is still exactly one walk and one table of sequences.
+//!
 //! **No sequence is ever passed through.** The bytes on the frame come from [`Palette`] and
 //! from nowhere else — a foreign program's exact escape never reaches the terminal, however
 //! well-formed it is. That is the whole of the safety argument: what a command can say about
@@ -116,15 +124,19 @@
 //!   extended parameter is consumed and nothing is painted, so `38;5;1` can never be misread
 //!   as the `1` that means bold. **The consumption is `letibot_vt::attr`'s**, which is the same
 //!   rule the screen needs for the same reason.
-//! - **A background** (`40`–`47`, `100`–`107`). A row already sits on a block this head
-//!   chose; a program's background would fight it, and `ls`'s directory colours are
-//!   foregrounds in any case. Consumed there and not carried, so there is nothing here to drop.
-//! - **Reverse** (`7`). The pen now carries it — a *screen* needs it, and `mc`'s selected row is
-//!   one — and no role means it **on this path**, where the row already sits in a block and in a
-//!   palette slot the head chose. So a `\u{1b}[7m` in a payload paints nothing here, exactly as it
-//!   did before the pen learned the attribute; what is new is that the screen can draw it.
-//!   `Role::UserBlock` is reverse as well, and that is a coincidence of the palette rather than a
-//!   mapping: a program's reverse is not this head's raised user block.
+//! - **A background** (`40`–`47`, `100`–`107`). Consumed by the walk — `letibot_vt::attr` carries
+//!   the slot — and **dropped here, on the payload path only**. A payload row already sits on a
+//!   block this head chose and a program's background beside it would fight it, and `ls`'s
+//!   directory colours are foregrounds in any case. The screen is the reader that keeps it:
+//!   `mc`'s panels and `nano`'s status bar are backgrounds, and [`lines`] paints them from the same
+//!   pen. So the two readers of one parameter list disagree about exactly this, deliberately, and
+//!   the disagreement is one line of code in [`lines`] rather than a second walk.
+//! - **Reverse** (`7`). Carried by the pen — a *screen* needs it, and `mc`'s selected row is one —
+//!   and **dropped here**, for the same reason: the row already sits in a block and in a palette
+//!   slot the head chose, so a `\u{1b}[7m` in a payload paints nothing here, exactly as it did
+//!   before the pen learned the attribute. [`lines`] draws it. `Role::UserBlock` is reverse as
+//!   well, and that is a coincidence of the palette rather than a mapping: a program's reverse is
+//!   not this head's raised user block, and `Palette::reverse` is the one spelling of it.
 //! - **Underline, italic, blink, conceal, strike, a font.** No field on the pen and no role here,
 //!   so a program that underlines a menu accelerator draws it plain on both readers.
 //!
@@ -235,10 +247,56 @@ fn role(a: Attr) -> Option<Role> {
     }
 }
 
+/// What a cell's pen is drawn as: the head's role for its foreground, plus the two things a program
+/// asked for that **no role names** — reverse, and a background slot.
+///
+/// This is the key a frame groups its runs by, so two cells share a span exactly when a reader
+/// cannot tell them apart. `Eq` because that is what the grouping is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Look {
+    role: Option<Role>,
+    reverse: bool,
+    bg: Option<u8>,
+}
+
+impl Look {
+    fn of(a: Attr) -> Look {
+        Look {
+            role: role(a),
+            reverse: a.reverse,
+            bg: a.bg,
+        }
+    }
+
+    /// Nothing this head paints: no role, no reverse, no background. The common case — a screen is
+    /// mostly its own default pen — and it must cost no bytes.
+    fn is_plain(self) -> bool {
+        self.role.is_none() && !self.reverse && self.bg.is_none()
+    }
+
+    /// The sequences that open a run drawn this way: the attributes first, then the colours, which
+    /// is the order a program writes them in and the order a terminal expects them.
+    fn open(self, p: Painter) -> String {
+        let mut s = String::new();
+        if self.reverse {
+            s.push_str(p.reverse());
+        }
+        if let Some(slot) = self.bg {
+            s.push_str(p.background(slot));
+        }
+        if let Some(r) = self.role {
+            s.push_str(p.open(r));
+        }
+        s
+    }
+}
+
 /// **A screen's cells, as the rows a pane draws** — the second reader, and the head's half of it.
 ///
 /// [`painted`] is one *line* of a foreign program's output; this is a whole screen of it. Both go
-/// through [`role`], so a program's colour means one thing in this process.
+/// through [`role`], so a program's colour means one thing in this process. What this one adds is
+/// the two things a screen has and a payload row does not: a cell's **background** and its
+/// **reverse**, both of which [`painted`] deliberately drops — see the module header.
 ///
 /// # A cell is a column, so an untouched cell is a space
 ///
@@ -270,23 +328,26 @@ pub fn lines(screen: &Screen, palette: Palette) -> Vec<String> {
             .rposition(|c| !c.is_blank())
             .map_or(0, |i| i + 1);
         let mut row = String::new();
-        let mut open: Option<Role> = None;
+        let mut open: Option<Look> = None;
         for cell in &cells[..end] {
             if cell.is_wide_tail() {
                 continue;
             }
-            let r = role(cell.attr);
+            let l = Look::of(cell.attr);
+            // A plain run is *no* span rather than a span with nothing in it, so the bookkeeping
+            // below never opens one it would have to close.
+            let want = if l.is_plain() { None } else { Some(l) };
             // **Only a change is painted**, the same rule `painted` follows: a screen's runs are
-            // grouped here, from the roles the cells hold, and a sequence per cell would be a
-            // sequence per column.
-            if r != open {
+            // grouped here, from what the cells hold, and a sequence per cell would be a sequence
+            // per column.
+            if want != open {
                 if open.is_some() {
                     row.push_str(&p.close());
                 }
-                if let Some(r) = r {
-                    row.push_str(p.open(r));
+                if let Some(l) = want {
+                    row.push_str(&l.open(p));
                 }
-                open = r;
+                open = want;
             }
             row.push(cell.ch);
         }
@@ -547,6 +608,106 @@ mod tests {
         assert!(
             out.contains(&format!("{}{}", crate::width::RESET, p.open(Role::Faint))),
             "the run closed to the terminal rather than to the block: {out:?}"
+        );
+    }
+
+    /// **A program's background survives the feed and is not dropped**, and the frame draws it.
+    ///
+    /// This is the gap the operator's own programs name: `mc`'s blue panels and `nano`'s status bar
+    /// are backgrounds, and a pane that dropped the slot would draw their text on the transcript's
+    /// own background — the panel gone and the words left behind. The assertion is on the *bytes of
+    /// the row*, because a screen that kept the slot in its cells and painted nothing would pass
+    /// every assertion the model can make about itself.
+    #[test]
+    fn a_background_a_program_painted_reaches_the_frame() {
+        let mut screen = Screen::new(1, 6);
+        // `mc`'s panel, filled to the screen's edge: a blue background, and its rightmost column a
+        // *space* the program painted. `37` is white, which this head has no role for — a panel's
+        // text keeps the reader's own foreground, which is what the table above says about white.
+        screen.feed(b"\x1b[44;37mpanel \x1b[0m");
+        assert_eq!(
+            lines(&screen, Palette::Colour),
+            vec!["\x1b[44mpanel \x1b[0m"],
+            "the slot the program asked for, the panel's own trailing blank, and a close"
+        );
+        // Under `Palette::None` the panel is its text and nothing else — no sequence reaches a
+        // replay or a CI log from here either. The trailing blank is the *screen's* and stays: the
+        // row is the grid's, and only the painting is the palette's.
+        assert_eq!(lines(&screen, Palette::None), vec!["panel "]);
+    }
+
+    /// **A 256-colour or truecolour background is consumed and paints nothing.**
+    ///
+    /// The cube's indices are absolute RGB and a slot is a theme position, so `48;5;n` and
+    /// `48;2;r;g;b` set no background — and, the load-bearing half, their parameters are not read as
+    /// codes: `48;5;1`'s `1` is the cube's index and also the code for bold.
+    #[test]
+    fn a_256_colour_background_is_consumed_and_paints_nothing() {
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[48;5;1mabc\x1b[0m");
+        assert_eq!(
+            lines(&screen, Palette::Colour),
+            vec!["abc"],
+            "a colour the palette cannot name paints nothing, and is not guessed at"
+        );
+        // The truecolour form, whose `0` is not a reset and whose `2` is not a dim.
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[48;2;255;0;0mabc\x1b[0m");
+        assert_eq!(lines(&screen, Palette::Colour), vec!["abc"]);
+        // And a slot the palette *can* name, in the same feed, still arrives.
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[48;5;22m\x1b[44mabc\x1b[0m");
+        assert_eq!(lines(&screen, Palette::Colour), vec!["\x1b[44mabc\x1b[0m"]);
+    }
+
+    /// **Reverse still works**, and it is why this screen was chosen over the one that was retired:
+    /// `mc`'s selected row and `less`'s status bar are `SGR 7`, and a cell that held an
+    /// `Option<Role>` could not carry it at all.
+    #[test]
+    fn reverse_reaches_the_frame_beside_a_background() {
+        // A reverse row with no colour of its own, which is the whole of what `less`'s status bar
+        // is: no role means reverse, and the run is drawn reverse all the same.
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[7m sel \x1b[0m");
+        assert_eq!(
+            lines(&screen, Palette::Colour),
+            vec!["\x1b[7m sel \x1b[0m"],
+            "a program's reverse is drawn even where no role means it"
+        );
+        // And inside a panel, which is `mc`'s selected row: reverse *and* a background, and neither
+        // takes the other.
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[7;44m sel \x1b[0m");
+        assert_eq!(
+            lines(&screen, Palette::Colour),
+            vec!["\x1b[7m\x1b[44m sel \x1b[0m"],
+            "reverse is an attribute and a background is a slot: a selected row inside a panel"
+        );
+        // Under `Palette::None` there is no reverse to draw, and the text is what is left.
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[7m sel \x1b[0m");
+        assert_eq!(lines(&screen, Palette::None), vec![" sel "]);
+    }
+
+    /// **The payload path still drops a background and a reverse**, and this is the one place the
+    /// two readers of one parameter list deliberately disagree.
+    ///
+    /// It has to be asserted rather than assumed: `painted` and [`lines`] read the *same* pen, the
+    /// pen carries both, and a payload row sits inside a block this head chose — so a `\u{1b}[44m`
+    /// there would put a foreign panel's colour inside a card. The screen is the reader that keeps
+    /// them, because a screen **is** the program's own drawing.
+    #[test]
+    fn a_payload_row_still_drops_the_background_and_the_reverse_a_screen_keeps() {
+        let line = "\u{1b}[44;7mX\u{1b}[0m";
+        assert_eq!(painted(colour(), line), "X");
+        assert_eq!(painted(Painter::new(Palette::None), line), "X");
+        // And the screen, fed the same bytes, draws both — so the difference is the reader and not
+        // the pen.
+        let mut screen = Screen::new(1, 2);
+        screen.feed(line.as_bytes());
+        assert_eq!(
+            lines(&screen, Palette::Colour),
+            vec!["\x1b[7m\x1b[44mX\x1b[0m"]
         );
     }
 

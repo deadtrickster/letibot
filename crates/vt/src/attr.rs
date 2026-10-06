@@ -1,15 +1,15 @@
-//! The pen: the sixteen foreground slots and four attributes, and the one walk that reads
-//! an SGR parameter list into them.
+//! The pen: the sixteen foreground and background slots and four attributes, and the one walk that
+//! reads an SGR parameter list into them.
 //!
 //! # This is the terminal's vocabulary, and it is the only one of it
 //!
-//! A cell carries what the program **said**: a foreground slot `0`–`15`, bold, dim, reverse.
-//! Nothing here names a meaning. The head's vocabulary is `letibot_ui::style::Role` —
-//! *"something failed"*, *"this is syntax"* — and the mapping between the two lives in
-//! exactly one place, `letibot_ui::ansi`. That is why there is no `Role` in this crate and
-//! must not be: a screen model that knew what red *means* could not be reused by a head
-//! that means something else by it, and `Role::Failure` is `31` in *this* palette rather
-//! than in every one.
+//! A cell carries what the program **said**: a foreground slot `0`–`15`, a background slot
+//! `0`–`15`, bold, dim, reverse. Nothing here names a meaning. The head's vocabulary is
+//! `letibot_ui::style::Role` — *"something failed"*, *"this is syntax"* — and the mapping between
+//! the two lives in exactly one place, `letibot_ui::ansi`. That is why there is no `Role` in this
+//! crate and must not be: a screen model that knew what red *means* could not be reused by a head
+//! that means something else by it, and `Role::Failure` is `31` in *this* palette rather than in
+//! every one.
 //!
 //! # The walk moved down here, and why
 //!
@@ -25,19 +25,20 @@
 //!
 //! # What is deliberately not carried, and what that costs
 //!
-//! - **A background** (`40`–`47`, `100`–`107`, `48;5;n`, `48;2;…`). It is consumed whole and
-//!   nothing is set, which is the rule `ansi.rs` already had: the head's palette has no
-//!   background for a body cell, and a program's own background would put a colour *beside*
-//!   the reader's theme rather than within it. **The consequence for the pane is real and
-//!   worth stating**: `mc`'s classic blue panels are a background, so the pane shows their
-//!   text on the transcript's own background, and a `top`-style full-screen bar that is
-//!   only a background is invisible.
+//! - **A background** (`40`–`47`, `100`–`107`, `49`). It is carried, exactly as the foreground is,
+//!   because **a screen needs it and a payload line does not**: `mc`'s blue panels and `nano`'s
+//!   status bar are backgrounds, and a pane that dropped them would draw their text on the
+//!   transcript's own background — the panel gone and the words left behind. The two readers
+//!   disagree about it on purpose, and the disagreement is written down in `letibot_ui::ansi`: the
+//!   screen paints it, the payload row does not, because a payload row already sits on a block the
+//!   head chose.
 //! - **A 256-colour or truecolour value** (`38;5;167`, `38;2;r;g;b`). The cube's indices are
 //!   absolute RGB and a slot is a theme position, so the extended form is consumed and the
-//!   foreground is left as it was — **not** guessed at, and not reset. Consuming it whole is
-//!   the load-bearing half: `38;5;1`'s last parameter is the `1` that means bold, and reading
-//!   the parameters one by one would turn a colour this palette cannot name into an attribute
-//!   it can.
+//!   foreground — or the background — is left as it was, **not** guessed at, and not reset.
+//!   Consuming it whole is the load-bearing half: `38;5;1`'s last parameter is the `1` that means
+//!   bold, and reading the parameters one by one would turn a colour this palette cannot name into
+//!   an attribute it can. `48;5;1` is the same trap one slot over, and `48;2;255;0;0`'s zero is not
+//!   a reset.
 //! - **Underline, italic, blink, conceal, strike, overline** (`4`, `3`, `5`, `8`, `9`, `53`)
 //!   and the font selector (`10`–`19`). A cell carries four attributes and these are not
 //!   among them, so a program that underlines a menu accelerator draws it plain. Adding one
@@ -86,18 +87,26 @@ impl Hue {
 /// What a program asked the pen to be.
 ///
 /// `Default` is what a reset (`SGR 0`) leaves behind: no colour of its own, no attributes —
-/// the terminal's own foreground and nothing else.
+/// the terminal's own foreground and background, and nothing else.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Attr {
     /// The foreground slot, `0`–`15`, or `None` for the terminal's default foreground.
     pub fg: Option<u8>,
+    /// **The background slot, `0`–`15`**, or `None` for the terminal's default background.
+    ///
+    /// A screen needs this and a payload line does not: `mc`'s panels and `nano`'s status bar are
+    /// backgrounds, and a pane that dropped the slot would leave their words on the transcript's own
+    /// background. It is a *slot* rather than a colour for the same reason the foreground is: the
+    /// sixteen are theme positions, so what `44` looks like is the reader's decision and not this
+    /// crate's.
+    pub bg: Option<u8>,
     pub bold: bool,
     pub dim: bool,
     pub reverse: bool,
 }
 
 impl Attr {
-    /// Whether this is the terminal's own foreground with no attributes — what a blank cell has.
+    /// Whether this is the terminal's own pen with no attributes — what a blank cell has.
     pub fn is_default(self) -> bool {
         self == Attr::default()
     }
@@ -109,6 +118,14 @@ impl Attr {
     /// there, and `Attr::fg` still holds which of the two was asked for.
     pub fn hue(self) -> Option<Hue> {
         self.fg.map(Hue::of_slot)
+    }
+
+    /// The hue of the background, or `None` when the program asked for no background of its own.
+    ///
+    /// The same reduction, one slot over, for a reader that wants to ask *which* colour a panel is
+    /// rather than which of the sixteen.
+    pub fn bg_hue(self) -> Option<Hue> {
+        self.bg.map(Hue::of_slot)
     }
 }
 
@@ -148,10 +165,14 @@ pub fn apply_sgr(params: &[u16], pen: &mut Attr) -> bool {
             39 => pen.fg = None,
             // The bright half. Same hues, and the slot says which half.
             90..=97 => pen.fg = Some((p - 90 + 8) as u8),
-            // **A background is consumed and not carried.** See the module header: the pane
-            // will not show `mc`'s blue panels, and that is the stated cost rather than a
-            // colour chosen on the program's behalf.
-            40..=47 | 49 | 100..=107 => {}
+            // **The background, carried the same way.** `mc`'s panels are `44` and `nano`'s status
+            // bar is one of these, and a pane that dropped the slot would draw their text on the
+            // transcript's own background. The *slot* is what is kept: the sixteen are theme
+            // positions and the reader's theme is what turns `44` into a colour.
+            40..=47 => pen.bg = Some((p - 40) as u8),
+            // The background's own reset, as `39` is the foreground's.
+            49 => pen.bg = None,
+            100..=107 => pen.bg = Some((p - 100 + 8) as u8),
             // **An extended colour is consumed whole and paints nothing.** `38;5;n` and
             // `38;2;r;g;b` carry parameters that are *not* SGR codes, and reading them one by
             // one would take the `1` of `38;5;1` for a bold — which is a colour mistake this
@@ -217,6 +238,11 @@ mod tests {
         assert!(pen.dim);
         apply_sgr(&[27], &mut pen);
         assert!(!pen.reverse);
+        // The background is a slot of its own, set and reset on its own code.
+        apply_sgr(&[44], &mut pen);
+        assert_eq!(pen.bg, Some(4));
+        apply_sgr(&[49], &mut pen);
+        assert_eq!(pen.bg, None, "`49` is the background's own reset");
         // And `0` is everything, which the return value reports.
         assert!(
             apply_sgr(&[0], &mut pen),
@@ -237,9 +263,10 @@ mod tests {
         // The same for a code that is only meaningful to a terminal we are not: `5` blink.
         apply_sgr(&[5, 42, 33], &mut pen);
         assert_eq!(pen.hue(), Some(Hue::Yellow));
-        // A background is consumed and the foreground beside it still applies.
+        // A background and a foreground in one list are two slots, and neither takes the other.
         apply_sgr(&[44, 36], &mut pen);
         assert_eq!(pen.hue(), Some(Hue::Cyan));
+        assert_eq!(pen.bg_hue(), Some(Hue::Blue));
     }
 
     /// **An extended colour is consumed whole, and its parameters are not read as codes.**
@@ -272,6 +299,86 @@ mod tests {
         // And the parameters after the extended form still apply.
         apply_sgr(&[38, 5, 167, 32], &mut pen);
         assert_eq!(pen.hue(), Some(Hue::Green));
+    }
+
+    /// **A background is carried the way a foreground is**, and the bright half is a slot rather
+    /// than a second colour — the same rule [`Hue::of_slot`] states for the foreground.
+    ///
+    /// This is the slot `mc`'s panels and `nano`'s status bar are made of. It was consumed and
+    /// dropped once, and the cost was stated at the time: the panel disappeared and its words were
+    /// left on the transcript's own background.
+    #[test]
+    fn a_background_slot_is_carried_and_the_bright_half_is_the_same_hue() {
+        let mut pen = Attr::default();
+        apply_sgr(&[44], &mut pen);
+        assert_eq!(pen.bg, Some(4), "`mc`'s blue panel");
+        assert_eq!(pen.bg_hue(), Some(Hue::Blue));
+        // The bright half is a different *slot* and the same hue, exactly as `31`/`91` are.
+        apply_sgr(&[104], &mut pen);
+        assert_eq!(pen.bg, Some(12));
+        assert_eq!(pen.bg_hue(), Some(Hue::Blue));
+        // `49` clears the background and leaves the foreground beside it alone — the two slots have
+        // their own reset codes and neither is the other's.
+        apply_sgr(&[31, 49], &mut pen);
+        assert_eq!(pen.bg, None);
+        assert_eq!(pen.fg, Some(1));
+        // A full reset takes it with everything else.
+        apply_sgr(&[44, 0], &mut pen);
+        assert_eq!(pen, Attr::default());
+    }
+
+    /// **A 256-colour or truecolour background is consumed whole and paints nothing**, which is the
+    /// same rule as the foreground's and for the same reason one slot over: `48;5;1`'s `1` is the
+    /// cube's index and also the code for bold, and `48;2;255;0;0`'s zero is not a reset.
+    #[test]
+    fn an_extended_background_is_consumed_whole_and_sets_no_slot() {
+        let mut pen = Attr::default();
+        apply_sgr(&[48, 5, 1], &mut pen);
+        assert_eq!(
+            pen,
+            Attr::default(),
+            "the cube's index 1 is neither a bold nor a background this palette can name"
+        );
+        apply_sgr(&[48, 2, 255, 0, 0], &mut pen);
+        assert_eq!(
+            pen,
+            Attr::default(),
+            "and the truecolour form's zero is not one"
+        );
+        // The parameters *after* the extended form still apply, and the background beside them is
+        // not set on the way past.
+        apply_sgr(&[48, 5, 167, 44], &mut pen);
+        assert_eq!(
+            pen.bg,
+            Some(4),
+            "the extended form consumed its own parameters and no more"
+        );
+        assert_eq!(pen.fg, None, "and `48` is not `38`");
+    }
+
+    /// **A background does not disturb reverse, and reverse does not disturb a background.** They
+    /// are the two things a screen needs that a payload row does not, and `mc`'s selected row is
+    /// both at once: a reverse run inside a blue panel.
+    #[test]
+    fn reverse_and_a_background_are_independent() {
+        let mut pen = Attr::default();
+        apply_sgr(&[7, 44, 31], &mut pen);
+        assert!(pen.reverse, "a background does not clear reverse");
+        assert_eq!(pen.bg, Some(4));
+        assert_eq!(pen.fg, Some(1));
+        apply_sgr(&[27], &mut pen);
+        assert!(!pen.reverse);
+        assert_eq!(pen.bg, Some(4), "`27` is reverse off, not everything off");
+        apply_sgr(&[49], &mut pen);
+        assert_eq!(pen.fg, Some(1), "and `49` is the background's own code");
+        // A background alone is enough to make a cell not blank, which is what the frame's row
+        // trim reads: the edge of `mc`'s panel is a *space* with a pen on it.
+        let mut pen = Attr::default();
+        apply_sgr(&[44], &mut pen);
+        assert!(
+            !pen.is_default(),
+            "a blank cell with a background is not blank"
+        );
     }
 
     /// **A reset says so, and an extended colour that *contains* a zero does not.**

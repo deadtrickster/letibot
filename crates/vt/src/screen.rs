@@ -37,8 +37,10 @@
 //!   see [`crate::attr`] — so a program that asks for a specific RGB gets the pen it already had.
 //! - **Fonts, italic, underline, blink, strike.** A cell has four attributes and none of them is
 //!   a font. A program that underlines a menu accelerator draws it plain.
-//! - **A background.** Not carried; `mc`'s blue panels are the visible cost, and
-//!   [`crate::attr`]'s header says so.
+//! - **A background.** Carried, as the foreground is, because a *screen* needs it: `mc`'s panels and
+//!   `nano`'s status bar are backgrounds, and a pane that dropped the slot would leave their words
+//!   on the transcript's own background. [`crate::attr`]'s header states the rule and what it costs
+//!   on the head's payload path, where a background is still dropped.
 //! - **A reply to anything.** `CSI 6n` and `CSI c` are dropped, so a program that waits for the
 //!   terminal to answer a cursor-position report waits. **This is the one gap that can look like
 //!   a hang**, and the fix belongs to the pane rather than here: it is the one caller that has a
@@ -1326,6 +1328,45 @@ mod tests {
         assert_eq!(lines(&s), vec!["hello", "bar", "", ""]);
         assert!(s.rows().next().unwrap()[0].attr.bold);
         assert!(s.rows().nth(1).unwrap()[0].attr.reverse);
+        assert_well_formed(&s);
+    }
+
+    /// **A cell keeps the background the program gave it**, and the slot is what is kept: what `44`
+    /// looks like is the reader's theme and not this crate's.
+    ///
+    /// This is the property `mc`'s panels and `nano`'s status bar stand on. It was dropped once —
+    /// consumed and not carried — and the cost was stated at the time, which is why the assertion
+    /// here is on the *cell* rather than only on the pen: the walk setting the slot is not the same
+    /// claim as the grid keeping it.
+    #[test]
+    fn a_cell_keeps_the_background_the_program_gave_it() {
+        let mut s = screen(2, 6);
+        // `mc`'s panel: a blue background, filled to the screen's edge so its rightmost cell is a
+        // *space* the program painted rather than a cell nobody wrote on.
+        s.feed(b"\x1b[44;37mpanel \x1b[0m");
+        s.feed(b"\x1b[2;1H\x1b[7;44m sel \x1b[0m");
+        let first: Vec<Cell> = s.rows().next().unwrap().to_vec();
+        assert_eq!(first[0].attr.bg, Some(4), "the panel's background");
+        assert_eq!(first[0].attr.bg_hue(), Some(crate::attr::Hue::Blue));
+        assert_eq!(first[0].attr.fg, Some(7));
+        // **The panel's edge is a space with a pen on it, and it is not blank** — which is what the
+        // frame's row trim reads. A screen that could not tell this from an unwritten cell would
+        // draw the panel one cell short of its own border.
+        assert_eq!(first[5].ch, ' ');
+        assert_eq!(first[5].attr.bg, Some(4));
+        assert!(
+            !first[5].is_blank(),
+            "a space the program painted is the panel, not nothing"
+        );
+        // Reverse and a background at once, which is the selected row of a list inside a panel.
+        let second: Vec<Cell> = s.rows().nth(1).unwrap().to_vec();
+        assert!(second[0].attr.reverse, "`SGR 7` survives the walk");
+        assert_eq!(second[0].attr.bg, Some(4));
+        // And a reset clears both, so a cell after the panel is the transcript's own again.
+        s.feed(b"\x1b[2;1H\x1b[0m x");
+        let cleared: Vec<Cell> = s.rows().nth(1).unwrap().to_vec();
+        assert_eq!(cleared[0].attr, Attr::default());
+        assert!(cleared[0].is_blank(), "a space in the default pen is blank");
         assert_well_formed(&s);
     }
 

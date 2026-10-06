@@ -29,7 +29,8 @@
 //!
 //! # The one vocabulary, and where the head's half lives
 //!
-//! A cell carries the terminal's own vocabulary — a foreground slot `0`–`15`, bold, dim, reverse —
+//! A cell carries the terminal's own vocabulary — a foreground slot `0`–`15`, a background slot
+//! `0`–`15`, bold, dim, reverse —
 //! and nothing here names a *meaning*. The head's vocabulary is `letibot_ui::style::Role`
 //! (*"something failed"*, *"this is syntax"*), and the mapping between them has one definition:
 //! [`crate::attr`] owns the walk that reads an `SGR` parameter list into a pen, and
@@ -40,17 +41,17 @@
 //! # What this crate will not show, and why the list is in the code
 //!
 //! Mouse reporting, bracketed paste, hyperlinks, truecolour and 256-colour fidelity, fonts,
-//! underline and italic, a background, and an answer to a program that asks the terminal a
-//! question. Each is stated where it is dropped — [`crate::attr`] for the pen,
-//! [`crate::screen`] for the modes, [`crate::parser`] for the sequences — together with what a pane
-//! therefore will not show. The tree's rule is that a deliberate gap is written down where it is
-//! made; the summary is [`crate::screen`]'s header.
+//! underline and italic, and an answer to a program that asks the terminal a question. Each is
+//! stated where it is dropped — [`crate::attr`] for the pen, [`crate::screen`] for the modes,
+//! [`crate::parser`] for the sequences — together with what a pane therefore will not show. The
+//! tree's rule is that a deliberate gap is written down where it is made; the summary is
+//! [`crate::screen`]'s header.
 //!
 //! # Map
 //!
 //! | module | what it owns |
 //! |---|---|
-//! | [`attr`] | the pen: the sixteen slots, four attributes, and the one `SGR` walk |
+//! | [`attr`] | the pen: the sixteen slots foreground and background, four attributes, and the one `SGR` walk |
 //! | [`width`] | how many cells a character takes |
 //! | [`parser`] | the byte state machine: partial sequences, partial characters, strings |
 //! | [`screen`] | the grid, the cursor, the modes, and the sequences that act on them |
