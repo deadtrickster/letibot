@@ -20,6 +20,20 @@
 //! C1 control and a DEL are still removed, and a row that carried `ESC[?1002h` before still
 //! cannot turn the operator's mouse wheel off.
 //!
+//! # One walk, two readers, and which half is whose
+//!
+//! What an SGR parameter list *sets* — a foreground slot, bold, dim, reverse, and an extended
+//! colour consumed whole — is `letibot_vt::attr`'s, because **a screen is a second reader of the
+//! same parameters**: `Screen::feed` reads a program's whole byte stream into the same pen. That
+//! walk used to live here as `Wanted`/`apply`, and moving it down is what keeps `38;5;1` from
+//! meaning two things in one process.
+//!
+//! What is left here is the half that is the *head's*: **which role a pen is drawn as**. That is a
+//! table from a hue and a weight to a [`Role`], and a role is a meaning in this head's own
+//! vocabulary — `Role::Failure` is `31` in this palette and nowhere else — so it stays where the
+//! palette is. The tests below are the proof the move changed nothing: they are byte-exact, they
+//! were not touched, and they include the operator's own `ls -la`.
+//!
 //! **No sequence is ever passed through.** The bytes on the frame come from [`Palette`] and
 //! from nowhere else — a foreign program's exact escape never reaches the terminal, however
 //! well-formed it is. That is the whole of the safety argument: what a command can say about
@@ -74,6 +88,12 @@
 //! green, and a symlink `01;36` comes out bold cyan. `grep --color`'s match is `01;31` and
 //! comes out red.
 //!
+//! The rows are read off the **pen** rather than off the parameters: `letibot_vt::attr` has already
+//! applied them, so what this table asks is *"what is the pen now"* and not *"what did the program
+//! just write"*. A hue and a weight are the whole of it, which is why `Attr::hue` takes the
+//! intensity off — a bright red and a red are the same role here, for the same reason a bold blue
+//! and a blue are not.
+//!
 //! Bold and colour **compose to the bold role of that hue where one exists** and the bold is
 //! dropped where it does not, because the palette's two shades of one colour are an
 //! *attribute* and not a second hue (see `style.rs`'s header). A bright colour (`9x`) takes
@@ -86,12 +106,19 @@
 //!   absolute RGB: painting one would put a colour *beside* the reader's theme rather than
 //!   within it, which is the mistake `style.rs` records having made once already. The whole
 //!   extended parameter is consumed and nothing is painted, so `38;5;1` can never be misread
-//!   as the `1` that means bold.
+//!   as the `1` that means bold. **The consumption is `letibot_vt::attr`'s**, which is the same
+//!   rule the screen needs for the same reason.
 //! - **A background** (`40`–`47`, `100`–`107`). A row already sits on a block this head
 //!   chose; a program's background would fight it, and `ls`'s directory colours are
-//!   foregrounds in any case.
-//! - **Anything else** — underline, blink, conceal, reverse. No role means those, and a
-//!   sequence this module does not understand is consumed rather than forwarded.
+//!   foregrounds in any case. Consumed there and not carried, so there is nothing here to drop.
+//! - **Reverse** (`7`). The pen now carries it — a *screen* needs it, and `mc`'s selected row is
+//!   one — and no role means it **on this path**, where the row already sits in a block and in a
+//!   palette slot the head chose. So a `\u{1b}[7m` in a payload paints nothing here, exactly as it
+//!   did before the pen learned the attribute; what is new is that the screen can draw it.
+//!   `Role::UserBlock` is reverse as well, and that is a coincidence of the palette rather than a
+//!   mapping: a program's reverse is not this head's raised user block.
+//! - **Underline, italic, blink, conceal, strike, a font.** No field on the pen and no role here,
+//!   so a program that underlines a menu accelerator draws it plain on both readers.
 //!
 //! # Per line, and that is deliberate
 //!
@@ -101,6 +128,7 @@
 //! would ruin. A terminal would carry the state; a row list must not.
 
 use crate::style::{Painter, Role};
+use letibot_vt::attr::{Attr, Hue, apply_sgr};
 
 /// One line of a foreign program's output, with its SGR drawn as this head's roles and
 /// every other control byte dropped.
@@ -116,8 +144,14 @@ pub fn painted(p: Painter, line: &str) -> String {
         return line.to_string();
     }
     let mut out = String::with_capacity(line.len());
-    let mut want = Wanted::default();
+    // The pen the program has asked for so far on this line. `letibot_vt::attr` owns what a
+    // parameter list *sets*; this function owns what a pen is *painted as*.
+    let mut pen = Attr::default();
     let mut open = false;
+    // The role the last painted run used, so a sequence that changes nothing paints nothing. A
+    // reset clears it, and the walk says when one happened: a span a terminal would have ended
+    // must not be remembered as open.
+    let mut last: Option<Role> = None;
     for piece in letibot_transcript::sanitize::pieces(line) {
         let params = match piece {
             letibot_transcript::sanitize::Piece::Text(t) => {
@@ -126,8 +160,10 @@ pub fn painted(p: Painter, line: &str) -> String {
             }
             letibot_transcript::sanitize::Piece::Sgr(params) => params,
         };
-        apply(&params, &mut want);
-        let role = want.role();
+        if apply_sgr(&params, &mut pen) {
+            last = None;
+        }
+        let role = role(pen);
         // **Only a change is painted.** `ls` writes `ESC[0m` before every name and a reset
         // after it, and a head that emitted a span per sequence would put four sequences on
         // a line that needs two — and would close a span that was never opened.
@@ -140,13 +176,13 @@ pub fn painted(p: Painter, line: &str) -> String {
                 out.push_str(p.open(r));
                 open = true;
             }
-            (true, Some(r)) if Some(r) != want.last => {
+            (true, Some(r)) if Some(r) != last => {
                 out.push_str(&p.close());
                 out.push_str(p.open(r));
             }
             _ => {}
         }
-        want.last = role;
+        last = role;
     }
     // **A line that ends coloured is closed here.** A pty's state would run on into the
     // next row's gutter; a row list's must not.
@@ -156,108 +192,36 @@ pub fn painted(p: Painter, line: &str) -> String {
     out
 }
 
-/// What the SGR seen so far on this line asks for, reduced to the three things a role can
-/// be built from.
+/// The role a pen is drawn as, or `None` for the block's own style.
 ///
-/// **`pub` for one reason: it is the pen [`crate::vt::Screen`] holds, and a screen's
-/// SGR state is this state.** A cell keeps the role the pen had when the program wrote
-/// it, so a second table for the screen would be a second answer to *what does `1;33`
-/// mean* — the exact drift [`crate::ansi`]'s module header exists to prevent. The
-/// fields stay private: a caller folds sequences in with [`apply`] and reads the answer
-/// out with [`Wanted::role`], which is the whole of the interface either caller needs.
-#[derive(Default, Clone, Copy)]
-pub struct Wanted {
-    bold: bool,
-    faint: bool,
-    colour: Option<Colour>,
-    /// The role the last painted run used, so a sequence that changes nothing paints
-    /// nothing.
-    ///
-    /// A run's bookkeeping rather than a pen's, so [`crate::vt`] never reads it: a
-    /// screen's runs are grouped at `Screen::lines` time, from the roles the cells hold.
-    last: Option<Role>,
-}
-
-/// The six colours this module has a role for. The sixteen slots a theme defines are
-/// reached through [`Role`], and this is the subset of them that means something.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Colour {
-    Red,
-    Green,
-    Yellow,
-    Blue,
-    Magenta,
-    Cyan,
-}
-
-impl Wanted {
-    /// The role this run is painted in, or `None` for the block's own style.
-    pub fn role(self) -> Option<Role> {
-        match (self.bold, self.colour) {
-            (_, Some(Colour::Red)) => Some(Role::Failure),
-            (_, Some(Colour::Green)) => Some(Role::Success),
-            (true, Some(Colour::Yellow)) => Some(Role::Attention),
-            (false, Some(Colour::Yellow)) => Some(Role::Pending),
-            (true, Some(Colour::Blue)) => Some(Role::Subheading),
-            (false, Some(Colour::Blue)) => Some(Role::FuncName),
-            (_, Some(Colour::Magenta)) => Some(Role::Keyword),
-            (true, Some(Colour::Cyan)) => Some(Role::Heading),
-            (false, Some(Colour::Cyan)) => Some(Role::Code),
-            (true, None) => Some(Role::Strong),
-            // Faint only when it is all there is: no role is both dim and coloured, and
-            // the colour is the part a program meant.
-            (false, None) if self.faint => Some(Role::Faint),
-            (false, None) => None,
-        }
-    }
-}
-
-/// Fold one SGR sequence's parameters into `want`.
+/// **This is the whole of the head's half of the mapping**, and it is a function of the *pen*
+/// rather than of the parameters: by the time it is asked, `letibot_vt::attr::apply_sgr` has
+/// already applied whatever the program wrote, and the question here is only what this head calls
+/// the result. A hue the palette has no role for is no role, and the intensity is not a second
+/// shade — `Attr::hue` takes it off, which is why a bright red and a red are one role and a bold
+/// blue and a blue are two.
 ///
-/// A parameter this does not know is **ignored and the rest of the sequence still
-/// applies**: `4;31` is an underline this head has no role for and a red it does, and
-/// dropping the red over the underline would be the worse answer.
-pub fn apply(params: &[u16], want: &mut Wanted) {
-    let mut i = 0usize;
-    while i < params.len() {
-        let p = params[i];
-        i += 1;
-        match p {
-            // Reset, and the two "back to normal" codes a program writes instead of it.
-            0 => *want = Wanted::default(),
-            22 => {
-                want.bold = false;
-                want.faint = false;
-            }
-            1 => want.bold = true,
-            2 => want.faint = true,
-            30..=37 | 90..=97 => {
-                want.colour = match p % 10 {
-                    1 => Some(Colour::Red),
-                    2 => Some(Colour::Green),
-                    3 => Some(Colour::Yellow),
-                    4 => Some(Colour::Blue),
-                    5 => Some(Colour::Magenta),
-                    6 => Some(Colour::Cyan),
-                    // Black and white are not roles. `30` is invisible on half the themes
-                    // this tree is read on and `37`/`97` are the body text's own colour, so
-                    // both mean "no colour of mine".
-                    _ => None,
-                };
-            }
-            // The default foreground, which is where a reset of the colour alone goes.
-            39 => want.colour = None,
-            // **An extended colour is consumed whole and paints nothing.** `38;5;n` and
-            // `38;2;r;g;b` carry parameters that are *not* SGR codes, and reading them one
-            // by one would take the `1` of `38;5;1` for a bold — which is a colour mistake
-            // this module would be making rather than the program.
-            38 | 48 => match params.get(i) {
-                Some(5) => i += 2,
-                Some(2) => i += 4,
-                _ => i += 1,
-            },
-            _ => {}
-        }
+/// `Attr::reverse` is deliberately not read. See the module header: a program's reverse is not a
+/// role on this path, and it now *is* carried by the pen because a screen needs to draw it.
+fn role(a: Attr) -> Option<Role> {
+    match (a.bold, a.hue()) {
+        (_, Some(Hue::Red)) => Some(Role::Failure),
+        (_, Some(Hue::Green)) => Some(Role::Success),
+        (true, Some(Hue::Yellow)) => Some(Role::Attention),
+        (false, Some(Hue::Yellow)) => Some(Role::Pending),
+        (true, Some(Hue::Blue)) => Some(Role::Subheading),
+        (false, Some(Hue::Blue)) => Some(Role::FuncName),
+        (_, Some(Hue::Magenta)) => Some(Role::Keyword),
+        (true, Some(Hue::Cyan)) => Some(Role::Heading),
+        (false, Some(Hue::Cyan)) => Some(Role::Code),
+        // Black and white are not roles. `30` is invisible on half the themes this tree is read
+        // on and `37`/`97` are the body text's own colour, so both mean "no colour of mine".
+        (_, Some(Hue::Black)) | (_, Some(Hue::White)) => None,
+        (true, None) => Some(Role::Strong),
+        // Faint only when it is all there is: no role is both dim and coloured, and the
+        // colour is the part a program meant.
+        (false, None) if a.dim => Some(Role::Faint),
+        (false, None) => None,
     }
 }
 
