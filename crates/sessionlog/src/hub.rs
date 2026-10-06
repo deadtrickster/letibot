@@ -1401,20 +1401,27 @@ impl Hub {
         self.hand_to_its_own_reader_with(Some(cmd))
     }
 
-    /// **Set the flag and wake this hub's own condvar, with or without work attached.**
-    /// The one door both [`Hub::wake_its_own_reader`] and
-    /// [`Hub::give_back_to_its_own_reader`] go through, so the two cannot come to ring
-    /// or lock differently.
+    /// **Wake this hub's own condvar, with or without work attached.** The one door both
+    /// [`Hub::wake_its_own_reader`] and [`Hub::give_back_to_its_own_reader`] go through, so
+    /// the two cannot come to ring or lock differently.
+    ///
+    /// **A command is its own wake, and the flag is only for a wake with nothing behind
+    /// it.** Setting the flag alongside a command leaves a second, phantom wake behind it:
+    /// [`Hub::take_own_work`] hands back the command first and the flag survives that take,
+    /// so the reader's next pass finds a settlement that does not exist and spends a turn on
+    /// it. The flag is genuinely sticky across a command — a wake and a prompt can both be
+    /// waiting, and the wake must still be there after the prompt is answered — which is why
+    /// this is fixed where the flag is SET rather than where it is read.
     fn hand_to_its_own_reader_with(&self, cmd: Option<QueuedCommand>) -> bool {
         {
             let mut g = self.lock();
             if g.closed {
                 return false;
             }
-            if let Some(cmd) = cmd {
-                g.commands.push_back(cmd);
+            match cmd {
+                Some(cmd) => g.commands.push_back(cmd),
+                None => g.own_wake = true,
             }
-            g.own_wake = true;
         }
         // Outside the lock, for the reason `submit` rings outside it: a waiter takes its own
         // mutex on the way out and must not be doing that while this one is held.
@@ -1786,7 +1793,10 @@ mod tests {
         // rather than a promise: the settlement that prompted a wake was handed up a
         // level when this session stopped (`JobWatchers::stop`).
         hub.close();
-        assert!(!hub.wake_its_own_reader(), "a closed hub has nobody to wake");
+        assert!(
+            !hub.wake_its_own_reader(),
+            "a closed hub has nobody to wake"
+        );
         assert!(matches!(hub.take_own_work(), OwnWork::Closed));
     }
 
