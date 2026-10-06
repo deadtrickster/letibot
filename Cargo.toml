@@ -47,6 +47,12 @@ members = [
 # is what a person reads before upgrading one half and not the other, so it is the only
 # place that warning can be given.
 #
+# **0.3.0 rather than 0.2.4, for that reason and by that rule.** `v0.2.3` — the last
+# release — spoke `PROTOCOL_VERSION` 27, and this tree speaks 36. That is not a batch of
+# fixes the pairing survives: it is the one change that makes a correct head and a correct
+# daemon refuse each other by name. `v0.2.1`, `v0.2.2` and `v0.2.3` were patch bumps
+# precisely because the pairing did not move; this one moves, so the minor does too.
+#
 # **For a `0.x` tree the MINOR is the compatibility slot.** `^0.1.2` means
 # `>=0.1.2, <0.2.0`, exactly as `^1.2` means `<2.0` — so a minor bump is what tells
 # somebody pairing two installs that the pairing may no longer hold, and a patch bump
@@ -55,7 +61,7 @@ members = [
 # break invisible in a number that promised compatibility. leticl pins this tree by tag
 # (`LETIBOT_REF`) and must move that pin either way, so the number costs nobody a
 # mechanism; it is read by a human, and it has exactly one job.
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
