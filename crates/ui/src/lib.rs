@@ -43,6 +43,7 @@
 //! | [`editor`] | multi-line input, history, paste, kill ring |
 //! | [`style`] | the one place a colour is chosen |
 //! | [`ansi`] | SGR a foreign program wrote, drawn as the palette's own roles |
+//! | [`vt`] | a program's whole screen: cursor addressing, erase, the scroll region, the alternate buffer |
 
 pub mod ansi;
 pub mod card;
@@ -55,4 +56,5 @@ pub mod style;
 /// **Text this head did not author, made safe for a terminal** (§3.1). Here rather than
 /// in a head, because this crate draws every card and had no sanitiser at all.
 pub mod text;
+pub mod vt;
 pub mod width;

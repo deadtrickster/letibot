@@ -74,6 +74,7 @@
 //! | [`pty`] | a pseudo-terminal, for the operator's own run: a pipe is not a terminal, so `ls` prints plain |
 //! | [`console`] | the rest of what the operator's own run meets: their shell with their rc read, and the environment their terminal is described by |
 //! | [`terminal`] | the programs that pty must NOT be handed to — `nano`, `less`, a bare `python` — refused by name, before the run, with the reason and the remedy |
+//! | [`shell`] | **one long-lived shell per session**, with a controlling terminal: the sentinel framing that reads a line's output back, and the state that survives between lines |
 
 pub mod confine;
 pub mod console;
@@ -84,6 +85,7 @@ pub mod predicate;
 pub mod procs;
 pub mod pty;
 pub mod scope;
+pub mod shell;
 pub mod terminal;
 
 pub use confine::{
@@ -99,6 +101,7 @@ pub use monitor::{
 pub use predicate::{Hazard, Predicate, Verdict, Witness};
 pub use pty::Pty;
 pub use scope::{Cgroup2, Migration, NoScopes, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree};
+pub use shell::{ShellConfig, ShellError, ShellSession, Turn};
 pub use terminal::{Class, Refusal, wants_the_terminal};
 
 /// Why an exec request did not become a process.
