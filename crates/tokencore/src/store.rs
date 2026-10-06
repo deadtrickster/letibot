@@ -2481,7 +2481,9 @@ impl Store {
         let raw: Option<RawMergeEntry> = st
             .query_row(params![id], merge_entry_raw_from_row)
             .optional()?;
-        Ok(raw.map(merge_entry_from_raw).transpose()?)
+        // `transpose` and no `Ok(…?)`: the `Result` is already the answer, and wrapping it in
+        // another one to unwrap it again is the shape clippy's `needless_question_mark` names.
+        raw.map(merge_entry_from_raw).transpose()
     }
 
     /// Remove a session that holds no transcript rows.
