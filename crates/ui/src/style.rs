@@ -143,6 +143,17 @@ pub enum Palette {
     None,
 }
 
+/// Reverse video — an *attribute* the terminal applies to its own pair of colours,
+/// and not a colour this head chooses.
+///
+/// **It has two meanings in this file and one spelling, and both are deliberate.**
+/// [`Role::UserBlock`] is *the operator's own words, on a raised block*, and
+/// [`Palette::reverse`] is *the program asked for reverse* — `mc`'s selected row,
+/// `less`'s status bar. They are the same bytes because a terminal has one way to say
+/// it, and this constant is that way, so the two cannot drift into disagreeing about
+/// what reverse looks like.
+const REVERSE: &str = "\x1b[7m";
+
 impl Palette {
     /// The opening sequence for a role. Empty for [`Palette::None`].
     pub fn open(self, r: Role) -> &'static str {
@@ -169,7 +180,7 @@ impl Palette {
             // diff roles do name a background — but from the theme's slots,
             // which is the difference between *the theme decides* and *the
             // table overrides it*.)
-            Role::UserBlock => "\x1b[7m",
+            Role::UserBlock => REVERSE,
             Role::Success => "\x1b[32m",
             Role::Pending => "\x1b[33m",
             Role::Failure => "\x1b[31m",
@@ -239,6 +250,63 @@ impl Palette {
     pub fn is_colour(self) -> bool {
         self == Palette::Colour
     }
+
+    /// **A program's own background slot**, `0`–`15`, as a sequence — empty for
+    /// [`Palette::None`] and for a slot above the sixteen.
+    ///
+    /// # Why this is a slot and not a [`Role`]
+    ///
+    /// Every other colour in this file is reached through a role, because a role is a
+    /// *meaning* this head has ("something failed", "this is syntax") and the table is
+    /// what decides which theme position carries it. A full-screen program's panel is
+    /// not one of this head's meanings — it is the program's own drawing, and the head's
+    /// job is to put it on the glass rather than to re-mean it. So what a screen hands
+    /// here is the **theme position the program asked for** (`44`, the reader's blue) and
+    /// not an absolute colour: the reader's theme supplies the colour, exactly as it does
+    /// for every role above. `mc`'s panels and `nano`'s status bar are these sixteen.
+    ///
+    /// # What does not come through here
+    ///
+    /// A **payload row**. A tool result already sits on a block this head chose, and a
+    /// foreign program's background beside it would fight it — the rule `ansi.rs`'s header
+    /// states for the one reader that draws payloads. The screen is the other reader, and
+    /// it is the only caller of this method.
+    pub fn background(self, slot: u8) -> &'static str {
+        if self == Palette::None {
+            return "";
+        }
+        match slot {
+            0 => "\x1b[40m",
+            1 => "\x1b[41m",
+            2 => "\x1b[42m",
+            3 => "\x1b[43m",
+            4 => "\x1b[44m",
+            5 => "\x1b[45m",
+            6 => "\x1b[46m",
+            7 => "\x1b[47m",
+            8 => "\x1b[100m",
+            9 => "\x1b[101m",
+            10 => "\x1b[102m",
+            11 => "\x1b[103m",
+            12 => "\x1b[104m",
+            13 => "\x1b[105m",
+            14 => "\x1b[106m",
+            15 => "\x1b[107m",
+            // Not a slot a program can ask for, and it paints nothing rather than
+            // wrapping onto a colour nobody asked for.
+            _ => "",
+        }
+    }
+
+    /// **Reverse video**, as [`REVERSE`] — empty for [`Palette::None`].
+    ///
+    /// This is [`Palette::open`]'s shape without a role, because a program's reverse is
+    /// not one of this head's meanings: it is the terminal swapping the pair it already
+    /// has, which is legible under any theme by construction. The screen is the caller;
+    /// a payload row drops it, and says so in `ansi.rs`'s header.
+    pub fn reverse(self) -> &'static str {
+        if self == Palette::None { "" } else { REVERSE }
+    }
 }
 
 /// A palette **bound to the style of the block it is painting inside**.
@@ -301,6 +369,16 @@ impl Painter {
     /// The opening sequence for a role, as [`Palette::open`].
     pub fn open(self, r: Role) -> &'static str {
         self.palette.open(r)
+    }
+
+    /// A program's own background slot, as [`Palette::background`].
+    pub fn background(self, slot: u8) -> &'static str {
+        self.palette.background(slot)
+    }
+
+    /// Reverse video, as [`Palette::reverse`].
+    pub fn reverse(self) -> &'static str {
+        self.palette.reverse()
     }
 
     /// What re-establishes the enclosing block after a span: a reset, plus the
@@ -466,6 +544,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **A program's background is the reader's own theme slot, and the head chooses no
+    /// colour of its own.**
+    ///
+    /// `mc`'s panels and `nano`'s status bar arrive as `40`–`47` and `100`–`107`, which
+    /// are positions in whatever theme the reader is running — the same posture as every
+    /// role above, and the reason this is a *slot* rather than a role: a panel is the
+    /// program's drawing and not one of this head's meanings, so the head's job is to put
+    /// it on the glass rather than to re-mean it.
+    #[test]
+    fn a_programs_background_is_a_theme_slot_and_the_none_palette_has_none() {
+        // The sixteen, spelled the way a terminal spells them: the eight, then the bright
+        // eight at `100`.
+        for (slot, expected) in
+            (0u8..16).zip((40..48).chain(100..108).map(|n| format!("\x1b[{n}m")))
+        {
+            assert_eq!(Palette::Colour.background(slot), expected, "slot {slot}");
+        }
+        // Above the sixteen is not a slot a program can ask for, and it paints nothing rather
+        // than wrapping onto a colour nobody asked for.
+        assert_eq!(Palette::Colour.background(16), "");
+        assert_eq!(Palette::Colour.background(255), "");
+        // And a no-colour head emits no bytes for any of them — the replay and CI case.
+        for slot in 0..16 {
+            assert_eq!(Palette::None.background(slot), "", "slot {slot}");
+        }
+    }
+
+    /// **Reverse is one sequence with two meanings in this file and one spelling.**
+    ///
+    /// [`Role::UserBlock`] is the operator's own words on a raised block and
+    /// [`Palette::reverse`] is *the program asked for reverse* — `mc`'s selected row. They
+    /// are the same bytes because a terminal has one way to say it, and this test is what
+    /// stops the two drifting into disagreeing about what reverse looks like.
+    #[test]
+    fn reverse_is_one_spelling_and_the_user_block_is_that_spelling() {
+        assert_eq!(Palette::Colour.reverse(), "\x1b[7m");
+        assert_eq!(
+            Palette::Colour.reverse(),
+            Palette::Colour.open(Role::UserBlock)
+        );
+        assert_eq!(
+            Palette::None.reverse(),
+            "",
+            "a no-colour head has no reverse"
+        );
     }
 
     /// The half of the same report that a light terminal would have shown as a

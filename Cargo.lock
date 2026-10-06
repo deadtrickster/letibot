@@ -1162,8 +1162,13 @@ name = "letibot-ui"
 version = "0.2.3"
 dependencies = [
  "letibot-transcript",
+ "letibot-vt",
  "rano",
 ]
+
+[[package]]
+name = "letibot-vt"
+version = "0.2.3"
 
 [[package]]
 name = "letibot-webfetch"

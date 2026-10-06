@@ -43,7 +43,12 @@
 //! | [`editor`] | multi-line input, history, paste, kill ring |
 //! | [`style`] | the one place a colour is chosen |
 //! | [`ansi`] | SGR a foreign program wrote, drawn as the palette's own roles |
-//! | [`vt`] | a program's whole screen: cursor addressing, erase, the scroll region, the alternate buffer |
+//!
+//! **A program's whole screen is not here.** It is `letibot-vt` — a crate *below* this one, so
+//! the head depends on the model rather than the model on the head — and this crate owns the half
+//! of it that is the head's: [`ansi::lines`] turns a screen's cells into rows. There were two
+//! screens for a day (a `crate::vt` that painted a cell's *role* and this one), and the one kept
+//! is the one that carries the terminal's own pen per cell; see `ansi.rs`'s header.
 
 pub mod ansi;
 pub mod card;
@@ -56,5 +61,4 @@ pub mod style;
 /// **Text this head did not author, made safe for a terminal** (§3.1). Here rather than
 /// in a head, because this crate draws every card and had no sanitiser at all.
 pub mod text;
-pub mod vt;
 pub mod width;

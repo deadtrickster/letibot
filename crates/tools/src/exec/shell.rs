@@ -100,7 +100,7 @@
 //!    different moment. A `pwd` sent as a separate line would be a *second* command, and its
 //!    answer could belong to a directory the first command had already left.
 //! 4. **The marker is invisible to a screen.** It is an OSC sequence, and
-//!    [`letibot_ui::vt::Screen`] — the pane's renderer — consumes OSC sequences whole and
+//!    [`letibot_vt::Screen`] — the pane's renderer — consumes OSC sequences whole and
 //!    drops them. So one stream has two readers with no negotiation between them: the parser
 //!    stops at the trailer, and the pane draws the same bytes as a terminal would, with the
 //!    trailer invisible because a terminal would not draw it either.
@@ -231,11 +231,11 @@
 //! # What is deliberately NOT built here
 //!
 //! - **TODO: the head's pane, and the frame branch that would draw it.** The renderer exists
-//!   and is tested — `letibot_ui::vt::Screen` consumes this module's bytes and
-//!   `Screen::pane_rows(cols, room, palette)` returns **exactly `room` rows**, which is the
-//!   whole of the row budget: the pane takes the conversation's rectangle and gives it back,
-//!   so the composer, the status row and the header keep the rows they had and nothing above
-//!   the pane moves when it opens. **What is not built is the head's half**: the `App` field,
+//!   and is tested — `letibot_vt::Screen` consumes this module's bytes and
+//!   `letibot_ui::ansi::pane_rows(screen, cols, room, palette)` returns **exactly `room` rows**,
+//!   which is the whole of the row budget: the pane takes the conversation's rectangle and gives
+//!   it back, so the composer, the status row and the header keep the rows they had and nothing
+//!   above the pane moves when it opens. **What is not built is the head's half**: the `App` field,
 //!   the branch in `compose_screen`'s pane chain, and the verb. It is not built because there
 //!   is nothing that can put bytes in it — the bytes come from a session this module owns on
 //!   the *daemon's* side of a frame that does not exist yet — and a pane wired to a screen no
@@ -252,6 +252,26 @@
 //!   not get), and the way out is `Ctrl-\` or an escape the head intercepts *before* forwarding,
 //!   because a pane whose exit is a keystroke the program also sees is a pane a program can
 //!   trap. Not built: the frames below carry no input.
+//! - **TODO: an answer to a program that asks the terminal a question.** `CSI 6n` (report cursor
+//!   position), `CSI 5n` and `CSI c` (device attributes) are *received and dropped* —
+//!   `letibot_vt::Screen` consumes them whole and has no output path by design — so a program
+//!   that waits for a report **waits**. **This is the one gap in the pane that can look like a
+//!   hang rather than like a missing feature**, and the fix is here rather than there: the pane
+//!   is the half that owns the write path, and it is the only half that can answer.
+//!
+//!   It is two halves and both are named, because either one alone does nothing. The screen has
+//!   to **report** that it saw the question — `letibot_vt::parser` already builds the `Csi` and
+//!   `Screen::feed` already reads its final byte, so what is missing is a way *out* of the walk
+//!   (a queued question the caller drains after each `feed`, rather than a callback: the screen
+//!   is fed from a read loop that must not block on a write). And this module has to write the
+//!   **reply** down the pty — `ESC [ row ; col R` for `6n`, and a device-attributes answer for
+//!   `c` — which is the same `write` path `run` already uses for a line, and needs no new frame
+//!   on the wire.
+//!
+//!   **Which programs ask is a fact about the program and not about this crate.** `mc` does not,
+//!   which is why the pane's first slice is not blocked on this; the ones that do are the ones
+//!   that will look like a hang, and a report that is never answered is the worst way for a
+//!   pane to fail — no error, no exit status, just a program that has stopped.
 //! - **TODO: streaming.** `run` returns when the trailer arrives, so a screen program is a
 //!   deadline rather than a view. The decision it waits on is whether the daemon forwards bytes
 //!   as they arrive (a `ServerFrame::ShellBytes` per read, with the pane live) and how the

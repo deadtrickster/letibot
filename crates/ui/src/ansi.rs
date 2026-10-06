@@ -20,6 +20,36 @@
 //! C1 control and a DEL are still removed, and a row that carried `ESC[?1002h` before still
 //! cannot turn the operator's mouse wheel off.
 //!
+//! # One walk, two readers, and which half is whose
+//!
+//! What an SGR parameter list *sets* — a foreground slot, bold, dim, reverse, and an extended
+//! colour consumed whole — is `letibot_vt::attr`'s, because **a screen is a second reader of the
+//! same parameters**: `Screen::feed` reads a program's whole byte stream into the same pen. That
+//! walk used to live here as `Wanted`/`apply`, and moving it down is what keeps `38;5;1` from
+//! meaning two things in one process.
+//!
+//! What is left here is the half that is the *head's*: **which role a pen is drawn as**. That is a
+//! table from a hue and a weight to a [`Role`], and a role is a meaning in this head's own
+//! vocabulary — `Role::Failure` is `31` in this palette and nowhere else — so it stays where the
+//! palette is. The tests below are the proof the move changed nothing: they are byte-exact, they
+//! were not touched, and they include the operator's own `ls -la`.
+//!
+//! # The same table, asked of a grid
+//!
+//! [`lines`] is that second reader: a [`Screen`]'s cells turned into the rows a pane draws. It asks
+//! the *same* [`role`], which is the whole of why the walk moved down — `ls`'s `01;34` on a payload
+//! row and `mc`'s `1;34` on a screen come out as one [`Role::Subheading`] and there is one answer in
+//! the process to what a pen is drawn as. [`pane_rows`] is the pane's own entry point, and the one
+//! property its caller depends on is in its signature: **exactly `room` rows**.
+//!
+//! **Two things differ between the readers, and both are deliberate.** A program's *background* and
+//! its *reverse* are painted by [`lines`] and dropped by [`painted`]: a payload row sits inside a
+//! block this head chose and its colour is a meaning, while a screen **is** the program's own
+//! drawing — `mc`'s panels, `less`'s status bar and `nano`'s status bar are backgrounds and
+//! reverses, and a pane that dropped them would draw their text on the transcript's own background
+//! and lose the selected row. Both are consumed through the same pen and both come out of
+//! [`Palette`], so there is still exactly one walk and one table of sequences.
+//!
 //! **No sequence is ever passed through.** The bytes on the frame come from [`Palette`] and
 //! from nowhere else — a foreign program's exact escape never reaches the terminal, however
 //! well-formed it is. That is the whole of the safety argument: what a command can say about
@@ -74,6 +104,12 @@
 //! green, and a symlink `01;36` comes out bold cyan. `grep --color`'s match is `01;31` and
 //! comes out red.
 //!
+//! The rows are read off the **pen** rather than off the parameters: `letibot_vt::attr` has already
+//! applied them, so what this table asks is *"what is the pen now"* and not *"what did the program
+//! just write"*. A hue and a weight are the whole of it, which is why `Attr::hue` takes the
+//! intensity off — a bright red and a red are the same role here, for the same reason a bold blue
+//! and a blue are not.
+//!
 //! Bold and colour **compose to the bold role of that hue where one exists** and the bold is
 //! dropped where it does not, because the palette's two shades of one colour are an
 //! *attribute* and not a second hue (see `style.rs`'s header). A bright colour (`9x`) takes
@@ -86,12 +122,23 @@
 //!   absolute RGB: painting one would put a colour *beside* the reader's theme rather than
 //!   within it, which is the mistake `style.rs` records having made once already. The whole
 //!   extended parameter is consumed and nothing is painted, so `38;5;1` can never be misread
-//!   as the `1` that means bold.
-//! - **A background** (`40`–`47`, `100`–`107`). A row already sits on a block this head
-//!   chose; a program's background would fight it, and `ls`'s directory colours are
-//!   foregrounds in any case.
-//! - **Anything else** — underline, blink, conceal, reverse. No role means those, and a
-//!   sequence this module does not understand is consumed rather than forwarded.
+//!   as the `1` that means bold. **The consumption is `letibot_vt::attr`'s**, which is the same
+//!   rule the screen needs for the same reason.
+//! - **A background** (`40`–`47`, `100`–`107`). Consumed by the walk — `letibot_vt::attr` carries
+//!   the slot — and **dropped here, on the payload path only**. A payload row already sits on a
+//!   block this head chose and a program's background beside it would fight it, and `ls`'s
+//!   directory colours are foregrounds in any case. The screen is the reader that keeps it:
+//!   `mc`'s panels and `nano`'s status bar are backgrounds, and [`lines`] paints them from the same
+//!   pen. So the two readers of one parameter list disagree about exactly this, deliberately, and
+//!   the disagreement is one line of code in [`lines`] rather than a second walk.
+//! - **Reverse** (`7`). Carried by the pen — a *screen* needs it, and `mc`'s selected row is one —
+//!   and **dropped here**, for the same reason: the row already sits in a block and in a palette
+//!   slot the head chose, so a `\u{1b}[7m` in a payload paints nothing here, exactly as it did
+//!   before the pen learned the attribute. [`lines`] draws it. `Role::UserBlock` is reverse as
+//!   well, and that is a coincidence of the palette rather than a mapping: a program's reverse is
+//!   not this head's raised user block, and `Palette::reverse` is the one spelling of it.
+//! - **Underline, italic, blink, conceal, strike, a font.** No field on the pen and no role here,
+//!   so a program that underlines a menu accelerator draws it plain on both readers.
 //!
 //! # Per line, and that is deliberate
 //!
@@ -100,7 +147,9 @@
 //! payload line with a gutter (`  `) in front of it, which is exactly what a leaked colour
 //! would ruin. A terminal would carry the state; a row list must not.
 
-use crate::style::{Painter, Role};
+use crate::style::{Painter, Palette, Role};
+use letibot_vt::Screen;
+use letibot_vt::attr::{Attr, Hue, apply_sgr};
 
 /// One line of a foreign program's output, with its SGR drawn as this head's roles and
 /// every other control byte dropped.
@@ -116,8 +165,14 @@ pub fn painted(p: Painter, line: &str) -> String {
         return line.to_string();
     }
     let mut out = String::with_capacity(line.len());
-    let mut want = Wanted::default();
+    // The pen the program has asked for so far on this line. `letibot_vt::attr` owns what a
+    // parameter list *sets*; this function owns what a pen is *painted as*.
+    let mut pen = Attr::default();
     let mut open = false;
+    // The role the last painted run used, so a sequence that changes nothing paints nothing. A
+    // reset clears it, and the walk says when one happened: a span a terminal would have ended
+    // must not be remembered as open.
+    let mut last: Option<Role> = None;
     for piece in letibot_transcript::sanitize::pieces(line) {
         let params = match piece {
             letibot_transcript::sanitize::Piece::Text(t) => {
@@ -126,8 +181,10 @@ pub fn painted(p: Painter, line: &str) -> String {
             }
             letibot_transcript::sanitize::Piece::Sgr(params) => params,
         };
-        apply(&params, &mut want);
-        let role = want.role();
+        if apply_sgr(&params, &mut pen) {
+            last = None;
+        }
+        let role = role(pen);
         // **Only a change is painted.** `ls` writes `ESC[0m` before every name and a reset
         // after it, and a head that emitted a span per sequence would put four sequences on
         // a line that needs two — and would close a span that was never opened.
@@ -140,13 +197,13 @@ pub fn painted(p: Painter, line: &str) -> String {
                 out.push_str(p.open(r));
                 open = true;
             }
-            (true, Some(r)) if Some(r) != want.last => {
+            (true, Some(r)) if Some(r) != last => {
                 out.push_str(&p.close());
                 out.push_str(p.open(r));
             }
             _ => {}
         }
-        want.last = role;
+        last = role;
     }
     // **A line that ends coloured is closed here.** A pty's state would run on into the
     // next row's gutter; a row list's must not.
@@ -156,109 +213,164 @@ pub fn painted(p: Painter, line: &str) -> String {
     out
 }
 
-/// What the SGR seen so far on this line asks for, reduced to the three things a role can
-/// be built from.
+/// The role a pen is drawn as, or `None` for the block's own style.
 ///
-/// **`pub` for one reason: it is the pen [`crate::vt::Screen`] holds, and a screen's
-/// SGR state is this state.** A cell keeps the role the pen had when the program wrote
-/// it, so a second table for the screen would be a second answer to *what does `1;33`
-/// mean* — the exact drift [`crate::ansi`]'s module header exists to prevent. The
-/// fields stay private: a caller folds sequences in with [`apply`] and reads the answer
-/// out with [`Wanted::role`], which is the whole of the interface either caller needs.
-#[derive(Default, Clone, Copy)]
-pub struct Wanted {
-    bold: bool,
-    faint: bool,
-    colour: Option<Colour>,
-    /// The role the last painted run used, so a sequence that changes nothing paints
-    /// nothing.
-    ///
-    /// A run's bookkeeping rather than a pen's, so [`crate::vt`] never reads it: a
-    /// screen's runs are grouped at `Screen::lines` time, from the roles the cells hold.
-    last: Option<Role>,
+/// **This is the whole of the head's half of the mapping**, and it is a function of the *pen*
+/// rather than of the parameters: by the time it is asked, `letibot_vt::attr::apply_sgr` has
+/// already applied whatever the program wrote, and the question here is only what this head calls
+/// the result. A hue the palette has no role for is no role, and the intensity is not a second
+/// shade — `Attr::hue` takes it off, which is why a bright red and a red are one role and a bold
+/// blue and a blue are two.
+///
+/// `Attr::reverse` is deliberately not read here. See the module header: a program's reverse is not
+/// a role on the payload path, and it now *is* carried by the pen because a screen needs to draw
+/// it.
+fn role(a: Attr) -> Option<Role> {
+    match (a.bold, a.hue()) {
+        (_, Some(Hue::Red)) => Some(Role::Failure),
+        (_, Some(Hue::Green)) => Some(Role::Success),
+        (true, Some(Hue::Yellow)) => Some(Role::Attention),
+        (false, Some(Hue::Yellow)) => Some(Role::Pending),
+        (true, Some(Hue::Blue)) => Some(Role::Subheading),
+        (false, Some(Hue::Blue)) => Some(Role::FuncName),
+        (_, Some(Hue::Magenta)) => Some(Role::Keyword),
+        (true, Some(Hue::Cyan)) => Some(Role::Heading),
+        (false, Some(Hue::Cyan)) => Some(Role::Code),
+        // Black and white are not roles. `30` is invisible on half the themes this tree is read
+        // on and `37`/`97` are the body text's own colour, so both mean "no colour of mine".
+        (_, Some(Hue::Black)) | (_, Some(Hue::White)) => None,
+        (true, None) => Some(Role::Strong),
+        // Faint only when it is all there is: no role is both dim and coloured, and the
+        // colour is the part a program meant.
+        (false, None) if a.dim => Some(Role::Faint),
+        (false, None) => None,
+    }
 }
 
-/// The six colours this module has a role for. The sixteen slots a theme defines are
-/// reached through [`Role`], and this is the subset of them that means something.
+/// What a cell's pen is drawn as: the head's role for its foreground, plus the two things a program
+/// asked for that **no role names** — reverse, and a background slot.
+///
+/// This is the key a frame groups its runs by, so two cells share a span exactly when a reader
+/// cannot tell them apart. `Eq` because that is what the grouping is.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Colour {
-    Red,
-    Green,
-    Yellow,
-    Blue,
-    Magenta,
-    Cyan,
+struct Look {
+    role: Option<Role>,
+    reverse: bool,
+    bg: Option<u8>,
 }
 
-impl Wanted {
-    /// The role this run is painted in, or `None` for the block's own style.
-    pub fn role(self) -> Option<Role> {
-        match (self.bold, self.colour) {
-            (_, Some(Colour::Red)) => Some(Role::Failure),
-            (_, Some(Colour::Green)) => Some(Role::Success),
-            (true, Some(Colour::Yellow)) => Some(Role::Attention),
-            (false, Some(Colour::Yellow)) => Some(Role::Pending),
-            (true, Some(Colour::Blue)) => Some(Role::Subheading),
-            (false, Some(Colour::Blue)) => Some(Role::FuncName),
-            (_, Some(Colour::Magenta)) => Some(Role::Keyword),
-            (true, Some(Colour::Cyan)) => Some(Role::Heading),
-            (false, Some(Colour::Cyan)) => Some(Role::Code),
-            (true, None) => Some(Role::Strong),
-            // Faint only when it is all there is: no role is both dim and coloured, and
-            // the colour is the part a program meant.
-            (false, None) if self.faint => Some(Role::Faint),
-            (false, None) => None,
+impl Look {
+    fn of(a: Attr) -> Look {
+        Look {
+            role: role(a),
+            reverse: a.reverse,
+            bg: a.bg,
         }
+    }
+
+    /// Nothing this head paints: no role, no reverse, no background. The common case — a screen is
+    /// mostly its own default pen — and it must cost no bytes.
+    fn is_plain(self) -> bool {
+        self.role.is_none() && !self.reverse && self.bg.is_none()
+    }
+
+    /// The sequences that open a run drawn this way: the attributes first, then the colours, which
+    /// is the order a program writes them in and the order a terminal expects them.
+    fn open(self, p: Painter) -> String {
+        let mut s = String::new();
+        if self.reverse {
+            s.push_str(p.reverse());
+        }
+        if let Some(slot) = self.bg {
+            s.push_str(p.background(slot));
+        }
+        if let Some(r) = self.role {
+            s.push_str(p.open(r));
+        }
+        s
     }
 }
 
-/// Fold one SGR sequence's parameters into `want`.
+/// **A screen's cells, as the rows a pane draws** — the second reader, and the head's half of it.
 ///
-/// A parameter this does not know is **ignored and the rest of the sequence still
-/// applies**: `4;31` is an underline this head has no role for and a red it does, and
-/// dropping the red over the underline would be the worse answer.
-pub fn apply(params: &[u16], want: &mut Wanted) {
-    let mut i = 0usize;
-    while i < params.len() {
-        let p = params[i];
-        i += 1;
-        match p {
-            // Reset, and the two "back to normal" codes a program writes instead of it.
-            0 => *want = Wanted::default(),
-            22 => {
-                want.bold = false;
-                want.faint = false;
+/// [`painted`] is one *line* of a foreign program's output; this is a whole screen of it. Both go
+/// through [`role`], so a program's colour means one thing in this process. What this one adds is
+/// the two things a screen has and a payload row does not: a cell's **background** and its
+/// **reverse**, both of which [`painted`] deliberately drops — see the module header.
+///
+/// # A cell is a column, so an untouched cell is a space
+///
+/// A row is its cells, one column each, and nothing else: skipping the blank ones would slide
+/// everything left of the cursor into column zero, which is a screen that lines nothing up. The one
+/// cell that contributes no column is the trailing half of a wide glyph
+/// ([`letibot_vt::Cell::is_wide_tail`]) — the glyph is in the cell to its left and writing its
+/// space over would erase half of it.
+///
+/// # What ends a row, and why it is not `trim_end`
+///
+/// The row stops at its last cell that is not a blank in the default pen
+/// ([`letibot_vt::Cell::is_blank`]) — so a row of nothing is the empty string and costs no bytes,
+/// which is what a head that erases each row's tail before drawing it wants
+/// (`letibot_tui::term::paint_full`).
+/// **A trailing blank that a program *painted* is not a blank and is kept**, which `trim_end`
+/// cannot see: a run that ends in a background or a reverse is the edge of a panel, and trimming
+/// it would leave `mc`'s blue rectangle short of its own border.
+///
+/// The retired `crates/ui/src/vt.rs` did this with `trim_end` and therefore kept the trailing
+/// blanks of every row that ended coloured and dropped those of every row that did not. This is the
+/// same convenience with the property stated instead of approximated.
+pub fn lines(screen: &Screen, palette: Palette) -> Vec<String> {
+    let p = Painter::new(palette);
+    let mut out = Vec::with_capacity(screen.size().0);
+    for cells in screen.rows() {
+        let end = cells
+            .iter()
+            .rposition(|c| !c.is_blank())
+            .map_or(0, |i| i + 1);
+        let mut row = String::new();
+        let mut open: Option<Look> = None;
+        for cell in &cells[..end] {
+            if cell.is_wide_tail() {
+                continue;
             }
-            1 => want.bold = true,
-            2 => want.faint = true,
-            30..=37 | 90..=97 => {
-                want.colour = match p % 10 {
-                    1 => Some(Colour::Red),
-                    2 => Some(Colour::Green),
-                    3 => Some(Colour::Yellow),
-                    4 => Some(Colour::Blue),
-                    5 => Some(Colour::Magenta),
-                    6 => Some(Colour::Cyan),
-                    // Black and white are not roles. `30` is invisible on half the themes
-                    // this tree is read on and `37`/`97` are the body text's own colour, so
-                    // both mean "no colour of mine".
-                    _ => None,
-                };
+            let l = Look::of(cell.attr);
+            // A plain run is *no* span rather than a span with nothing in it, so the bookkeeping
+            // below never opens one it would have to close.
+            let want = if l.is_plain() { None } else { Some(l) };
+            // **Only a change is painted**, the same rule `painted` follows: a screen's runs are
+            // grouped here, from what the cells hold, and a sequence per cell would be a sequence
+            // per column.
+            if want != open {
+                if open.is_some() {
+                    row.push_str(&p.close());
+                }
+                if let Some(l) = want {
+                    row.push_str(&l.open(p));
+                }
+                open = want;
             }
-            // The default foreground, which is where a reset of the colour alone goes.
-            39 => want.colour = None,
-            // **An extended colour is consumed whole and paints nothing.** `38;5;n` and
-            // `38;2;r;g;b` carry parameters that are *not* SGR codes, and reading them one
-            // by one would take the `1` of `38;5;1` for a bold — which is a colour mistake
-            // this module would be making rather than the program.
-            38 | 48 => match params.get(i) {
-                Some(5) => i += 2,
-                Some(2) => i += 4,
-                _ => i += 1,
-            },
-            _ => {}
+            row.push(cell.ch);
         }
+        if open.is_some() {
+            row.push_str(&p.close());
+        }
+        out.push(row);
     }
+    out
+}
+
+/// **The rows, and the rectangle they came out of** — the pane's one entry point.
+///
+/// Resizes the screen to `cols` × `room` and returns **exactly `room` rows**, so a pane drawn with
+/// this takes the conversation's rectangle and gives it back: the composer, the status row and the
+/// header keep the rows they had, and nothing above the pane moves when it opens.
+///
+/// `room` is clamped to at least one by [`Screen::resize`], which is the model's own posture — a
+/// rectangle of no rows is a window that has told us nothing useful, and one row is the smaller
+/// lie. `cols` is clamped the same way.
+pub fn pane_rows(screen: &mut Screen, cols: usize, room: usize, palette: Palette) -> Vec<String> {
+    screen.resize(room, cols);
+    lines(screen, palette)
 }
 
 #[cfg(test)]
@@ -496,6 +608,190 @@ mod tests {
         assert!(
             out.contains(&format!("{}{}", crate::width::RESET, p.open(Role::Faint))),
             "the run closed to the terminal rather than to the block: {out:?}"
+        );
+    }
+
+    /// **A program's background survives the feed and is not dropped**, and the frame draws it.
+    ///
+    /// This is the gap the operator's own programs name: `mc`'s blue panels and `nano`'s status bar
+    /// are backgrounds, and a pane that dropped the slot would draw their text on the transcript's
+    /// own background — the panel gone and the words left behind. The assertion is on the *bytes of
+    /// the row*, because a screen that kept the slot in its cells and painted nothing would pass
+    /// every assertion the model can make about itself.
+    #[test]
+    fn a_background_a_program_painted_reaches_the_frame() {
+        let mut screen = Screen::new(1, 6);
+        // `mc`'s panel, filled to the screen's edge: a blue background, and its rightmost column a
+        // *space* the program painted. `37` is white, which this head has no role for — a panel's
+        // text keeps the reader's own foreground, which is what the table above says about white.
+        screen.feed(b"\x1b[44;37mpanel \x1b[0m");
+        assert_eq!(
+            lines(&screen, Palette::Colour),
+            vec!["\x1b[44mpanel \x1b[0m"],
+            "the slot the program asked for, the panel's own trailing blank, and a close"
+        );
+        // Under `Palette::None` the panel is its text and nothing else — no sequence reaches a
+        // replay or a CI log from here either. The trailing blank is the *screen's* and stays: the
+        // row is the grid's, and only the painting is the palette's.
+        assert_eq!(lines(&screen, Palette::None), vec!["panel "]);
+    }
+
+    /// **A 256-colour or truecolour background is consumed and paints nothing.**
+    ///
+    /// The cube's indices are absolute RGB and a slot is a theme position, so `48;5;n` and
+    /// `48;2;r;g;b` set no background — and, the load-bearing half, their parameters are not read as
+    /// codes: `48;5;1`'s `1` is the cube's index and also the code for bold.
+    #[test]
+    fn a_256_colour_background_is_consumed_and_paints_nothing() {
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[48;5;1mabc\x1b[0m");
+        assert_eq!(
+            lines(&screen, Palette::Colour),
+            vec!["abc"],
+            "a colour the palette cannot name paints nothing, and is not guessed at"
+        );
+        // The truecolour form, whose `0` is not a reset and whose `2` is not a dim.
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[48;2;255;0;0mabc\x1b[0m");
+        assert_eq!(lines(&screen, Palette::Colour), vec!["abc"]);
+        // And a slot the palette *can* name, in the same feed, still arrives.
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[48;5;22m\x1b[44mabc\x1b[0m");
+        assert_eq!(lines(&screen, Palette::Colour), vec!["\x1b[44mabc\x1b[0m"]);
+    }
+
+    /// **Reverse still works**, and it is why this screen was chosen over the one that was retired:
+    /// `mc`'s selected row and `less`'s status bar are `SGR 7`, and a cell that held an
+    /// `Option<Role>` could not carry it at all.
+    #[test]
+    fn reverse_reaches_the_frame_beside_a_background() {
+        // A reverse row with no colour of its own, which is the whole of what `less`'s status bar
+        // is: no role means reverse, and the run is drawn reverse all the same.
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[7m sel \x1b[0m");
+        assert_eq!(
+            lines(&screen, Palette::Colour),
+            vec!["\x1b[7m sel \x1b[0m"],
+            "a program's reverse is drawn even where no role means it"
+        );
+        // And inside a panel, which is `mc`'s selected row: reverse *and* a background, and neither
+        // takes the other.
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[7;44m sel \x1b[0m");
+        assert_eq!(
+            lines(&screen, Palette::Colour),
+            vec!["\x1b[7m\x1b[44m sel \x1b[0m"],
+            "reverse is an attribute and a background is a slot: a selected row inside a panel"
+        );
+        // Under `Palette::None` there is no reverse to draw, and the text is what is left.
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[7m sel \x1b[0m");
+        assert_eq!(lines(&screen, Palette::None), vec![" sel "]);
+    }
+
+    /// **The payload path still drops a background and a reverse**, and this is the one place the
+    /// two readers of one parameter list deliberately disagree.
+    ///
+    /// It has to be asserted rather than assumed: `painted` and [`lines`] read the *same* pen, the
+    /// pen carries both, and a payload row sits inside a block this head chose — so a `\u{1b}[44m`
+    /// there would put a foreign panel's colour inside a card. The screen is the reader that keeps
+    /// them, because a screen **is** the program's own drawing.
+    #[test]
+    fn a_payload_row_still_drops_the_background_and_the_reverse_a_screen_keeps() {
+        let line = "\u{1b}[44;7mX\u{1b}[0m";
+        assert_eq!(painted(colour(), line), "X");
+        assert_eq!(painted(Painter::new(Palette::None), line), "X");
+        // And the screen, fed the same bytes, draws both — so the difference is the reader and not
+        // the pen.
+        let mut screen = Screen::new(1, 2);
+        screen.feed(line.as_bytes());
+        assert_eq!(
+            lines(&screen, Palette::Colour),
+            vec!["\x1b[7m\x1b[44mX\x1b[0m"]
+        );
+    }
+
+    /// **The pane takes the conversation's rectangle and gives it back** — the one property the
+    /// frame's layout depends on, and the reason `pane_rows` exists rather than a caller doing
+    /// `resize` and `lines` itself.
+    ///
+    /// This is one of the two conveniences the retired `crates/ui/src/vt.rs` carried, and it is
+    /// asserted here rather than there because this is where it lives now.
+    #[test]
+    fn the_pane_gets_exactly_the_room_it_was_given() {
+        let mut screen = Screen::new(24, 80);
+        screen.feed(b"first\r\nsecond");
+        for room in [1, 2, 3, 10, 24, 25] {
+            let rows = pane_rows(&mut screen, 80, room, Palette::Colour);
+            assert_eq!(
+                rows.len(),
+                room,
+                "a pane given {room} rows came back with {} — the composer would move",
+                rows.len()
+            );
+            assert_eq!(
+                screen.size(),
+                (room, 80),
+                "and the screen is the shape it was asked for, so the next frame is too"
+            );
+        }
+        // A rectangle of no rows is clamped to one rather than panicking. That is the model's own
+        // posture (`Screen::new`'s clamp), and it is asserted from here because the pane is what
+        // would meet a degenerate window.
+        assert_eq!(pane_rows(&mut screen, 80, 0, Palette::Colour).len(), 1);
+        // And `lines` alone is one row per screen row, whatever the shape.
+        assert_eq!(lines(&screen, Palette::Colour).len(), screen.size().0);
+    }
+
+    /// **A cell is painted as the role a payload line would get for the same colour.** One table,
+    /// two readers: `mc`'s `1;34` and `ls`'s `01;34` come out as the same `Role::Subheading`, and
+    /// under `Palette::None` a screen is text and nothing else, exactly as a payload line is.
+    #[test]
+    fn a_screen_cell_is_painted_as_the_same_role_a_payload_line_gets() {
+        let mut screen = Screen::new(2, 6);
+        screen.feed(b"\x1b[1;34msrc\x1b[0m ok");
+        let rows = lines(&screen, Palette::Colour);
+        assert_eq!(rows[0], format!("{} ok", span(Role::Subheading, "src")));
+        assert_eq!(
+            rows[1], "",
+            "a row nothing was written on is empty, not six spaces"
+        );
+        assert_eq!(lines(&screen, Palette::None), vec!["src ok", ""]);
+    }
+
+    /// **A wide glyph is one glyph, and its tail is not a column.** The tail cell carries the same
+    /// pen and is skipped, so a coloured CJK filename is one run of two columns rather than two runs
+    /// of one — and the glyph is not overwritten by its own second half.
+    #[test]
+    fn a_wide_glyph_is_one_run_and_its_tail_contributes_no_column() {
+        let mut screen = Screen::new(1, 4);
+        screen.feed("\u{1b}[31m日\u{1b}[0m".as_bytes());
+        assert_eq!(
+            lines(&screen, Palette::Colour),
+            vec![span(Role::Failure, "日")]
+        );
+        let cells = screen.rows().next().unwrap();
+        assert!(
+            cells[1].is_wide_tail(),
+            "the tail is the cell beside the lead"
+        );
+    }
+
+    /// **A trailing blank a program painted is not a blank.**
+    ///
+    /// The row ends at the last cell in the *default* pen, not at the last cell that is not a
+    /// space: a run that ends in a colour, a background or a reverse is the edge of a panel, and a
+    /// frame that trimmed it would cut `mc`'s rectangle short of its own border. The retired screen
+    /// used `trim_end`, which cannot tell the two apart — it kept the trailing blanks of every row
+    /// that ended coloured and dropped those of every row that did not.
+    #[test]
+    fn a_trailing_blank_the_program_painted_is_part_of_the_run() {
+        let mut screen = Screen::new(1, 6);
+        screen.feed(b"\x1b[31mab   \x1b[0m");
+        assert_eq!(
+            lines(&screen, Palette::Colour),
+            vec![span(Role::Failure, "ab   ")],
+            "the run's own trailing blanks are the run"
         );
     }
 }

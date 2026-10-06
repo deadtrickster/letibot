@@ -1,0 +1,31 @@
+[package]
+name = "letibot-vt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# **No dependencies, and that is the specification rather than a happy accident.**
+#
+# This crate is a screen model: bytes in, a grid of cells out. It has to be usable by a
+# head, by a test, and by the pty-side crate that will feed it, and every one of those
+# would be blocked by a dependency it does not share. So there is none — not `vte`, not
+# `unicode-width`, not `letibot-ui`.
+#
+# The two that were actually considered:
+#
+#   * **`vte`**, the standard incremental parser. It is the right shape and it is what a
+#     large program should use. It is not used here for the reason `crates/ui` gives for
+#     writing its own editor: what a pane needs is a small, exactly-understood subset, and
+#     the crate would bring its own `Perform` trait and its own idea of what a screen is,
+#     which would then be the second one in this process. The subset this implements is
+#     stated at the top of `src/parser.rs`, together with what it leaves out.
+#   * **`unicode-width`**, for the East-Asian table. `crates/ui/src/width.rs` already
+#     carries the ranges this tree is willing to pay for, and a second width database in
+#     the process is the duplicate this tree keeps deleting. `src/width.rs` says which
+#     ranges it takes from there and which it deliberately leaves out.
+#
+# The one dependency edge that does exist runs the other way: `letibot-ui` depends on this
+# crate, because the SGR walk that turns a parameter list into pen state is the same walk
+# for a line of a payload and for a full screen. See `src/attr.rs`'s header.

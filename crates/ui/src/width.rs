@@ -861,4 +861,48 @@ mod tests {
         assert_eq!(width(&fit("你好世界", 5)), 5);
         assert_eq!(width(&fit("", 3)), 3);
     }
+
+    /// **The two width tables in this process agree, and where they do not it is written down.**
+    ///
+    /// A cell grid has to measure a character in columns for itself: `letibot_vt` is below this
+    /// crate and cannot call [`char_width`], and the ranges below are the ones this tree is willing
+    /// to carry, so they are the ones it copies. **A copy is a thing that drifts**, so the
+    /// agreement is asserted here rather than claimed in a comment — and the one deliberate
+    /// divergence is asserted too, because a difference nobody wrote down is a bug somebody will
+    /// "fix" in the wrong place.
+    ///
+    /// The divergence is the emoji planes: a grid has one cell per code point and this module has
+    /// one per *grapheme cluster*, so a single emoji is two columns to the head and one to the
+    /// screen, and a ZWJ sequence is one glyph here and its parts there. `letibot_vt::width`'s
+    /// header is where the cost is stated.
+    #[test]
+    fn the_cell_grid_measures_the_way_this_module_does_except_where_it_says_otherwise() {
+        // Everything a full-screen program's box, a path and a CJK filename are made of.
+        let agree = [
+            'a', 'Z', '~', ' ', '0', '-', '_', '\u{e9}', '\u{301}', '\u{200b}',
+            '\u{fe0f}', // combining and zero-width
+            '日', '本', '語', 'あ', 'ア', '한', 'Ａ', '。', '「',
+            '　', // CJK, kana, Hangul, fullwidth
+            '─', '│', '┌', '┐', '└', '┘', '├',
+            '┼', // box drawing: one column, and it must stay one
+            '\u{fffd}', '\u{a0}',
+        ];
+        for c in agree {
+            assert_eq!(
+                letibot_vt::width::char_width(c),
+                char_width(c),
+                "the two tables disagree about {c:?} ({:#x})",
+                c as u32
+            );
+        }
+        // And the divergence, named: two columns to the head, one to the grid.
+        for c in ['✅', '🦀', '👍'] {
+            assert_eq!(char_width(c), 2, "the head draws {c:?} double-width");
+            assert_eq!(
+                letibot_vt::width::char_width(c),
+                1,
+                "the grid gives {c:?} one cell, which is the documented cost"
+            );
+        }
+    }
 }
