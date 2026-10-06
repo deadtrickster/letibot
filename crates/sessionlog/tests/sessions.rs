@@ -131,6 +131,7 @@ fn frame_kind(f: &ServerFrame) -> String {
         ServerFrame::ShellSuggestions { prefix, lines, .. } => {
             format!("ShellSuggestions({prefix}, {} lines)", lines.len())
         }
+        ServerFrame::TermAttached { command } => format!("TermAttached({command})"),
         ServerFrame::TermOutput { bytes } => format!("TermOutput({} bytes)", bytes.len()),
         ServerFrame::TermEnded { reason } => format!("TermEnded({reason})"),
         ServerFrame::Resync { .. } => "Resync".into(),

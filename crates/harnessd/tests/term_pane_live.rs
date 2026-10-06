@@ -198,6 +198,246 @@ fn read_until(r: &mut FrameReader<UnixStream>, needle: &str) -> Vec<u8> {
     }
 }
 
+/// **The pane's program gets the console's environment, and not the daemon's own.**
+///
+/// This is the third defect of the operator's live report, end to end: the daemon's own
+/// driver, a real pty, a real program, and the environment it can read for itself.
+///
+/// **What it was.** `TermSession::start` set the pairs it was given and cleared nothing, so
+/// the pane's program inherited *the daemon's whole environment* — measured on this box,
+/// `!term env` printed `CARGO_MANIFEST_DIR`, `RUSTUP_TOOLCHAIN`, `LD_LIBRARY_PATH`,
+/// `SUDO_ASKPASS`, `LETIBOT_SOCKET` and `LETIBOT_SESSION`. That is the harness's own
+/// variables, including every token the daemon's environment carries, handed to a program
+/// the operator runs; and `TERM` and `HOME` were in there only *by accident*, which is a
+/// daemon started without them giving a pane neither. `mc` needs both — terminfo for the
+/// first, `~/.config/mc` for the second — and prints one line and exits without them, which
+/// is the flash.
+///
+/// **The control is the first assertion**, and it is what makes the absence mean anything:
+/// the variable this test asks for *is* in the daemon's own environment, so a pane that
+/// does not see it did not inherit — it was told.
+#[test]
+fn the_panes_program_gets_the_consoles_environment_and_not_the_daemons_own() {
+    let _serial = serial();
+    assert!(
+        std::env::var("CARGO_MANIFEST_DIR").is_ok(),
+        "this test is only evidence if the daemon's own environment carries the variable \
+         the pane must not see"
+    );
+    let ws = workspace("env");
+    let registry = daemon("s-env", &ws);
+    let (mut w, mut r) = attach(&registry, "s-env");
+
+    open(
+        &mut w,
+        "!term printf 'TERM=[%s] HOME=[%s] PATH=[%s] MANIFEST=[%s]\\n' \"$TERM\" \"$HOME\" \
+         \"$PATH\" \"$CARGO_MANIFEST_DIR\"",
+        80,
+        24,
+    );
+    let (said, _) = read_to_end(&mut r);
+    let text = String::from_utf8_lossy(&said);
+    // The pty translates the newline to `\r\n` and the program's own format has one field per
+    // pair, so the answer is read by name rather than by position.
+    let value = |name: &str| -> String {
+        text.split_whitespace()
+            .find_map(|word| word.strip_prefix(name))
+            .unwrap_or("")
+            .trim_matches(|c| c == '[' || c == ']')
+            .to_string()
+    };
+    assert!(
+        !value("TERM=").is_empty(),
+        "`mc` needs TERM for terminfo, and a pane whose program has none cannot address the \
+         cursor either: {text:?}"
+    );
+    assert!(
+        value("HOME=").starts_with('/'),
+        "`mc` writes its config under HOME and exits with a sentence when it has none, which \
+         is the flash: {text:?}"
+    );
+    assert!(
+        !value("PATH=").is_empty(),
+        "a pane runs a program by name, so it needs the console's PATH: {text:?}"
+    );
+    assert!(
+        value("MANIFEST=").is_empty(),
+        "the daemon's own environment must not reach a program the operator runs, and this is \
+         the variable that says it did: {text:?}"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// **A pane whose program exited frees its slot, and the next `!term` is not refused.**
+///
+/// The operator's own flash, end to end: `!term mc` printed one line and exited — *nothing
+/// running afterwards* — and a second `!term` then said *"a pane is already open in this
+/// session"*. The daemon kept the slot while the head had lost the rectangle, because the
+/// question it asked was `closed` (has anybody ended this pane) and nobody had: the program
+/// ended it by exiting. `TermSession::live` is the question that matters, and this is it
+/// measured through the real driver.
+///
+/// **The control is one test over**: `a_second_pane_is_refused_by_name_while_one_is_live`
+/// asserts that a pane whose program is *still running* is still refused, so this cannot pass
+/// by the refusal having been removed.
+#[test]
+fn a_pane_whose_program_exited_frees_its_slot() {
+    let _serial = serial();
+    let ws = workspace("ghost");
+    let registry = daemon("s-ghost", &ws);
+    let (mut w, mut r) = attach(&registry, "s-ghost");
+
+    // A program that prints one line and exits at once. `sh -c` rather than a name, so this
+    // does not depend on what is installed on the box — the shape is the same one `mc` on a
+    // box without it produced: bytes, then an exit status, in the same instant.
+    open(&mut w, "!term sh -c 'echo one-line; exit 7'", 80, 24);
+    let (said, reason) = read_to_end(&mut r);
+    let text = String::from_utf8_lossy(&said);
+    assert!(
+        text.contains("one-line"),
+        "the program's last bytes must reach the head: {text:?}"
+    );
+    assert_eq!(
+        reason, "the program exited with 7",
+        "and its exit status is the ending, which is half of the row the head files"
+    );
+
+    // **The slot is free.** This is the assertion the defect is about: the next pane starts
+    // rather than being refused by a ghost, and it runs.
+    open(&mut w, "!term echo second-pane", 80, 24);
+    let (said, reason) = read_to_end(&mut r);
+    let text = String::from_utf8_lossy(&said);
+    assert!(
+        text.contains("second-pane"),
+        "the second pane must have RUN rather than been refused: {text:?} (reason: {reason})"
+    );
+    assert!(
+        !reason.contains("already open"),
+        "and it must not have been refused by the pane that was already over: {reason:?}"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// Read until a pane frame, skipping the session's own traffic — the `Hello` a fresh attach is
+/// answered with, and the events behind it.
+fn until_pane(r: &mut FrameReader<UnixStream>) -> ServerFrame {
+    loop {
+        match r.read::<ServerFrame>().expect("a pane frame") {
+            f @ (ServerFrame::TermAttached { .. }
+            | ServerFrame::TermOutput { .. }
+            | ServerFrame::TermEnded { .. }) => return f,
+            ServerFrame::Event(_) | ServerFrame::Hello { .. } => continue,
+            other => panic!("expected a pane frame, got {other:?}"),
+        }
+    }
+}
+
+/// **A bare `!term` gives a head back the screen the daemon holds — and a live pane.**
+///
+/// The operator's requirement, through the real driver and a real pty: *"a person who closes it
+/// (or switches session) has no way back"*, and the decision underneath is **who holds the
+/// screen**. It is the daemon, so this is the test of the whole of it — and it is deliberately
+/// **a second head**, which is the operator's own sequence: the first head is the one that typed
+/// `!term mc`; the second never saw the program draw a byte, and gets the screen anyway.
+///
+/// **The proof is the replay, and it is proved as a replay** — the second head's own rectangle
+/// was created empty by a line it sent itself, so everything on it came from the daemon's log.
+/// The *nudge* is not what this relies on: `TIOCSWINSZ` with an unchanged size raises no
+/// `SIGWINCH` at all (`letibot-tools`' `a_same_size_resize_is_not_a_nudge`), so a redraw would
+/// have to come from somewhere else. What this test also does is prove the pane is **live**
+/// rather than a photograph: the attaching head types at it, and the program answers *that*
+/// head.
+#[test]
+fn a_bare_term_line_attaches_to_the_screen_the_daemon_holds() {
+    let _serial = serial();
+    let ws = workspace("attach");
+    let registry = daemon("s-attach", &ws);
+    let (mut w, mut r) = attach(&registry, "s-attach");
+
+    // A program that draws, then waits for a keystroke — so the pane is alive across the
+    // attach, which is the case the operator was in.
+    open(
+        &mut w,
+        "!term sh -c 'printf drawn-by-the-program; read x; printf \"GOT:%s\" \"$x\"'",
+        80,
+        24,
+    );
+    read_until(&mut r, "drawn-by-the-program");
+
+    // **A second head, which has never seen this pane.** `attach` is the session switch, and it
+    // is also the head that closed its rectangle and came back.
+    let (mut w2, mut r2) = attach(&registry, "s-attach");
+    open(&mut w2, "!term", 100, 30);
+
+    // What is running, first.
+    match until_pane(&mut r2) {
+        ServerFrame::TermAttached { command } => assert!(
+            command.contains("drawn-by-the-program"),
+            "the daemon must say what is running in the pane this session has: {command:?}"
+        ),
+        other => panic!("expected TermAttached first, got {other:?}"),
+    }
+    // And then the screen it held, replayed.
+    match until_pane(&mut r2) {
+        ServerFrame::TermOutput { bytes } => {
+            let said = String::from_utf8_lossy(&bytes);
+            assert!(
+                said.contains("drawn-by-the-program"),
+                "the daemon must replay what the program drew, and this head never saw it \
+                 draw: {said:?}"
+            );
+        }
+        other => panic!("expected the replayed screen, got {other:?}"),
+    }
+
+    // **And it is a live pane, not a picture**: the attaching head types at it, and the program
+    // answers this head.
+    w2.write(&ClientFrame::TermInput {
+        bytes: b"hi\n".to_vec(),
+    })
+    .expect("term input");
+    let mut said = Vec::new();
+    loop {
+        match until_pane(&mut r2) {
+            ServerFrame::TermOutput { bytes } => {
+                said.extend_from_slice(&bytes);
+                if String::from_utf8_lossy(&said).contains("GOT:hi") {
+                    break;
+                }
+            }
+            ServerFrame::TermEnded { reason } => panic!(
+                "the pane ended ({reason}) before the program answered; it said: {:?}",
+                String::from_utf8_lossy(&said)
+            ),
+            other => panic!("expected a pane frame, got {other:?}"),
+        }
+    }
+    // Leaving is the session's pane, so this head can leave it — and the first head is told.
+    w2.write(&ClientFrame::TermClose).expect("term close");
+    let (_, reason) = read_to_end(&mut r2);
+    assert_eq!(reason, "you left the terminal");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// **A session with no pane refuses the attach by name** — a sentence, not an empty rectangle.
+#[test]
+fn attaching_to_a_session_with_no_pane_says_so() {
+    let _serial = serial();
+    let ws = workspace("attach-none");
+    let registry = daemon("s-attach-none", &ws);
+    let (mut w, mut r) = attach(&registry, "s-attach-none");
+
+    open(&mut w, "!term", 80, 24);
+    match until_pane(&mut r) {
+        ServerFrame::TermEnded { reason } => assert!(
+            reason.contains("no pane to attach to"),
+            "a session with no pane must say so: {reason}"
+        ),
+        other => panic!("expected TermEnded, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
 /// **A real program, on a real pty, its bytes on the wire, and its exit status in the ending.**
 ///
 /// This is the whole requirement in one test: `!term echo …` is the operator's line, the daemon

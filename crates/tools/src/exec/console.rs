@@ -131,7 +131,38 @@ pub fn shell() -> Vec<String> {
 /// absent when it does not, and a fourth console variable goes here. `LS_COLORS`
 /// says *which* colours and never *whether* — the pty is the *whether* — but a
 /// console that has chosen a palette should get it back.
+///
+/// **`HOME` is deliberately NOT on this table, and it was tried.** A run's `HOME` is a
+/// decision about *that run* and not about the console: the operator's own run is handed
+/// one on the daemon's standing environment (`harness.rs`, set for the askpass shim's
+/// sake), and a confined run is handed the **view's** tmpfs home by `super::confine`. A
+/// pair on the request's own environment is applied **last** — `confine::plan` says so in
+/// as many words — so an inherited `HOME` here would beat both: `crates/tools/tests/exec.rs`
+/// caught the first (the rc the run reads stopped being the one the test wrote) and the
+/// second is the same mechanism with a boundary on it, which would put the operator's real
+/// home inside a view. **A pane has neither a view nor a standing environment** — it is the
+/// operator's program on the operator's own box — so it is the one path that names the
+/// console's home for itself: see `super::term::env_from`.
 pub const INHERITED: &[&str] = &["TERM", "COLORTERM", "LS_COLORS"];
+
+/// **What the console said about `name`** — `None` when it is not there, **and `None`
+/// when it is there and empty**.
+///
+/// *An empty value is not a value* is one rule rather than a special case for `TERM`:
+/// a variable set to the empty string says nothing at all, and handing it on is worse
+/// than handing nothing, because the reader of it believes it was told something. The
+/// case that measured this is a daemon whose environment carries `TERM=` — a launcher
+/// that ran `TERM= something`, a unit file with `Environment=TERM=` — which every
+/// ncurses program reads as *a terminal type of the empty string* and answers by
+/// printing one line and exiting. That is `!term mc`'s flash, and a pane with no `TERM`
+/// at all would not have produced it.
+pub fn value<'a>(source: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    source
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.as_str())
+        .filter(|v| !v.is_empty())
+}
 
 /// **The variables a program chooses a pager through**, all set to [`PAGER`].
 ///
@@ -153,8 +184,8 @@ pub const PAGER: &str = "cat";
 pub fn env_from(source: &[(String, String)]) -> Vec<(String, String)> {
     let mut pairs = Vec::with_capacity(INHERITED.len() + PAGERS.len());
     for name in INHERITED {
-        if let Some((_, value)) = source.iter().find(|(k, _)| k == name) {
-            pairs.push(((*name).to_string(), value.clone()));
+        if let Some(value) = value(source, name) {
+            pairs.push(((*name).to_string(), value.to_string()));
         }
     }
     // **Forced, not inherited, and that is the difference from the group above.**
@@ -185,9 +216,14 @@ mod tests {
     /// **The whole environment the operator's run is built with, asserted without
     /// a process.**
     ///
-    /// This is the test the change is for: it holds all six pairs at once, so a
+    /// This is the test the change is for: it holds every pair at once, so a
     /// later edit that drops one — or that starts inheriting a pager from the
     /// daemon — fails here rather than in an operator's row.
+    ///
+    /// **`HOME` is in the source and NOT in the answer**, which is the assertion that keeps
+    /// this table about the terminal: see [`INHERITED`] for the two runs whose own `HOME` an
+    /// inherited pair here would beat, and `super::term::env_from` for the pane, which names
+    /// the console's home for itself.
     #[test]
     fn the_operators_run_is_given_the_consoles_terminal_and_pagers_that_cannot_page() {
         let console = pairs(&[
@@ -210,6 +246,35 @@ mod tests {
             "the run gets the console's terminal variables and no others, plus the \
              three pager variables forced to `cat`"
         );
+    }
+
+    /// **An empty value is not a value.**
+    ///
+    /// The daemon's environment can carry a variable that is *set and empty* — a
+    /// launcher that ran `TERM= something`, a unit file with `Environment=TERM=` — and
+    /// passing that on is worse than passing nothing: a program reads the empty string
+    /// as *a terminal type*, fails to find its terminfo, and prints one line and exits.
+    /// That is the flash `!term mc` produced, and the sentence below is the same one a
+    /// run with no `TERM` at all does not get.
+    ///
+    /// The control is in the same test: a *non-empty* `TERM` is the console's and is
+    /// passed through untouched, so this is a rule about emptiness and not a rule about
+    /// `TERM`.
+    #[test]
+    fn a_console_variable_that_is_set_and_empty_is_not_a_value() {
+        let hollow = pairs(&[("TERM", ""), ("HOME", ""), ("PATH", "/usr/bin")]);
+        assert_eq!(
+            env_from(&hollow),
+            pairs(&[
+                ("PAGER", "cat"),
+                ("GIT_PAGER", "cat"),
+                ("SYSTEMD_PAGER", "cat"),
+            ]),
+            "a variable set to the empty string says nothing, and must not be handed on \
+             as though it had"
+        );
+        assert_eq!(value(&hollow, "TERM"), None);
+        assert_eq!(value(&hollow, "PATH"), Some("/usr/bin"));
     }
 
     /// **A variable the console does not have is not invented.**

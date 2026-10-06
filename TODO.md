@@ -41,7 +41,7 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
-## R60 — `!term` is built; the pane has four things it still does not do — **OPEN, filed with the branch that built it (`agent/term-run`)**
+## R60 — `!term` is built; the pane has three things it still does not do — **OPEN, filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`**
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
 conversation's rectangle given to the program with the composer keeping its rows. It runs:
@@ -51,7 +51,8 @@ conversation's rectangle given to the program with the composer keeping its rows
 `ServerFrame::TermOutput`/`TermEnded`), the head drawing them through `letibot_vt::Screen`
 painted by `letibot_ui::ansi::pane_rows` in the conversation's rectangle, and `ctrl-\` the one
 way out — intercepted on the raw byte stream, so the program never receives it and cannot trap
-it.
+it. **A bare `!term` attaches** to the pane the session has (protocol 32: `TermAttached`, and
+the daemon's replay of the screen it holds) — see item 4 below, which is done.
 
 **What is not done, and none of it is a defect in what is:**
 
@@ -66,13 +67,17 @@ it.
    terminal environment and **not** inside the namespace boundary a `bash` call gets.
    `exec::confine` is the seam; what a confined pane has to keep working (`/dev/tty`, the
    cgroup, the workspace mount) is the whole of the work.
-4. **A head that switches away does not find its pane again.** The pane is cleared on a
-   session change and the daemon's program is deliberately left to the session it belongs to
-   — a `TermClose` sent after a `Switch` would arrive on the new session's hub and kill the
-   wrong thing. Switching back shows the transcript, and the program ends when the daemon
-   stops. The fix is the daemon telling a head on `Hello` that a pane is open (its command and
-   whether it is alive), which is the same question `shell.rs`'s registry TODO already asks
-   about a shell.
+4. **DONE (`agent/term-attach`): a head that switches away finds its pane again.** A bare
+   `!term` attaches to the pane the session has. **The screen is the daemon's**: the driver keeps
+   the last 256 KiB the program wrote (`harnessd/src/term.rs`, `Pane::log`), a bare `TermOpen`
+   answers with `TermAttached` (what is running — only the daemon was ever told) and then
+   replays that log as `TermOutput`, and the pty is resized to the *attaching* head's rectangle.
+   The replay is what the attach is proved by, and the nudge is not: `TIOCSWINSZ` with an
+   unchanged size raises no `SIGWINCH` at all (`exec/term.rs`'s
+   `a_same_size_resize_is_not_a_nudge`), so a redraw would have to come from somewhere else.
+   What is still not here: **a scrollback** (item 1 above), and the two things the log's cap
+   costs — an attach to a pane that has drawn more than 256 KiB replays the tail, trimmed to the
+   next `ESC` so a cut cannot be painted as text.
 
 **And the sibling this waits on.** `shell.rs` names `ShellLine`/`ShellTurn`/`ShellResize`/
 `ShellEnded` for a **line** typed at a shell the daemon keeps, and this branch deliberately did

@@ -12,7 +12,61 @@
 //! |---|---|
 //! | **the panes** | one per session, held by session id, so a second `TermOpen` is refused rather than replacing a running program |
 //! | **the workspace** | the session's own, read from the registry — a pane runs where the conversation runs, not where the daemon does |
+//! | **the screen** | [`Pane::log`] — what the program has drawn, kept here and replayed to a head that asks for it (a bare `!term`) |
 //! | **the sink** | [`Sink`], which turns the pty's reader thread's bytes into [`ServerFrame::TermOutput`] on the session's heads |
+//!
+//! # Who holds the screen, and why it is the daemon
+//!
+//! A head draws the pane, but **the daemon holds it**, and the operator's own defect is what
+//! settles the question: *"i typed `!term mc` … it flashed and was gone … a second `!term`
+//! then said 'term pane exists'"*, and the code admitted the same thing in its own words
+//! (*"a head that switches back does not find its pane again, it finds the transcript"*).
+//! A head is one view of a session and there may be several; a program on a pty is the
+//! session's and there is exactly one. So the screen belongs to the half that outlives any
+//! one head — and putting it here buys three things a head cannot:
+//!
+//! * **any head that asks can be given it back** — `attach`, the answer to a bare `!term`;
+//! * **it survives a session switch**, because nothing about it was ever in a head;
+//! * **and it can be handed to the model as text later** (the `capture-pane` idea): the bytes
+//!   are here, and `letibot_vt::Screen` is what turns them into rows — a decision that needs
+//!   no wire change because the crate that would do it is already below both halves.
+//!
+//! **What is held is the byte log, and the screen is what those bytes are.** [`Pane::log`] is
+//! the last [`SCREEN_LOG`] bytes the program wrote; a replay is one [`ServerFrame::TermOutput`]
+//! and the head's own `letibot_vt::Screen` reconstructs the screen from it — the same crate,
+//! the same parser, the same cells, so the replay is not a rendering of the screen but the
+//! screen's own input. **No new frame is needed to carry a screen**, and that is not a
+//! saving: a frame carrying *cells* would have to invent a serialisation for a screen that
+//! the wire already has one for, and a head would have to learn a second way to be told what
+//! a program drew.
+//!
+//! **What a cap costs, said rather than discovered.** The log is bounded, so an attach to a
+//! pane that has been drawing for hours replays its *tail* — and the tail is trimmed to the
+//! next `ESC` so a cut mid-sequence cannot be painted as text. A program that drew its frame
+//! before the tail began and has not repainted since would come back incomplete; a program
+//! that repaints (which is what a screen program is) comes back whole, and the resize to the
+//! attaching head's rectangle gives it one more reason to redraw.
+//!
+//! **The nudge is not the mechanism, and it was measured.** Resizing the pty to the attaching
+//! head's rectangle raises `SIGWINCH` for a program that redraws on a resize — and
+//! `TIOCSWINSZ` **with the same size raises nothing at all**: the kernel compares the new
+//! `winsize` with the current one and returns before it signals (measured on this box,
+//! `crates/tools/src/exec/term.rs`'s `a_same_size_resize_is_not_a_nudge`). So an attach from
+//! the *same* head, at the same rectangle, would be nudged into nothing. **The replay is what
+//! the attach is proved by**; the resize is what makes a head that switched sessions get a
+//! program laid out for its own screen.
+//!
+//! # The refusal asks whether a program is *running*, and not whether anybody closed it
+//!
+//! `open` refuses while a pane is live, and the question it asks is
+//! [`TermSession::live`] — not `closed`. That distinction is the **ghost** the operator hit:
+//! `!term mc` printed one line and exited, nothing had *closed* the pane, so `closed` was
+//! false, so the daemon kept the slot — and the next `!term` in that session was refused
+//! with *"a pane is already open in this session"* about a pane that had been gone for a
+//! minute, with nothing on the screen to leave and no way to clear it. A program that
+//! exits on its own ends the pane, and the pane now says so: `TermSession::ended` is set by
+//! the reader thread before it reports, and a dead pane's slot is dropped on the next
+//! `open` (and by [`Terminals::close`] and [`Terminals`]' own `Drop`).
 //!
 //! # Why the sink pushes through the hub and not a channel of its own
 //!
@@ -46,11 +100,13 @@
 //!
 //! # What is deliberately not here
 //!
-//! - **TODO: the pane's bytes are not recorded anywhere.** No transcript row, no corpus entry,
-//!   no byte log. The operator's `!` line becomes two rows because it is a *command with a
-//!   result*; a pane is the conversation's rectangle given to a program, and its repaints are
-//!   not conversation. A scrollback of what a pane drew is a rendering question and a byte log
-//!   is a storage question, and neither is answered by putting it in the transcript.
+//! - **TODO: the pane's bytes are not recorded anywhere.** No transcript row, no corpus entry.
+//!   The operator's `!` line becomes two rows because it is a *command with a result*; a pane is
+//!   the conversation's rectangle given to a program, and its repaints are not conversation. The
+//!   log [`Pane::log`] keeps is **not a record** — it is the screen, capped at [`SCREEN_LOG`],
+//!   never written to the store and gone when the daemon stops. A *scrollback* (what a program
+//!   drew and then scrolled off) is still not kept, and it is a rendering question (the ring
+//!   would be `letibot_vt`'s) before it is a storage one.
 //! - **TODO: one pane per session, and no second one.** `open` refuses while a pane is live
 //!   rather than replacing it: a program killed by the next keystroke is a program that loses
 //!   work. Two panes on one screen is a layout question this head does not have an answer for.
@@ -79,6 +135,20 @@ use letibot_tools::exec::{
 /// that reason — see its own doc.
 const LEFT: &str = "you left the terminal";
 
+/// **How much of what a program drew the daemon keeps.**
+///
+/// The cap is what makes a log a screen rather than a leak: a program redrawing as fast as it
+/// likes would otherwise grow this without bound, and the only reader is an attach, which
+/// wants the screen as it is *now* — which is the tail. 256 KiB is chosen against the same
+/// measurement the pane's own frames were (`top` repaints about 2 KB, a 200×50 full repaint
+/// about 4 KB): it is **several hundred repaints**, so the tail of any pane that is drawing
+/// contains the current screen many times over, and a pane that has been idle for hours still
+/// has everything it drew in the last hour of it.
+///
+/// See the module header for what the cap costs a program that has not repainted since before
+/// the tail began, and for the trim that keeps a cut from being painted as text.
+const SCREEN_LOG: usize = 256 * 1024;
+
 /// **One pane per session, and the pty behind each.** See the module header.
 pub struct Terminals {
     /// **A `Weak` and not an `Arc`, because the registry holds this driver.** The cycle is
@@ -93,11 +163,40 @@ pub struct Terminals {
     panes: Mutex<HashMap<String, Pane>>,
 }
 
-/// A live pane: the pty session, and nothing else. Its scope is the session's own
-/// ([`TermSession`] holds both ends of it) so that closing the pane and dropping the pane are
-/// the same act.
+/// A pane: the pty session, what it is running, and **what it has drawn**.
+///
+/// Its scope is the session's own ([`TermSession`] holds both ends of it) so that closing the
+/// pane and dropping the pane are the same act.
+///
+/// **The command and the log are the daemon's answer to a bare `!term`** — see the module
+/// header for why the screen is the daemon's at all, and [`Terminals::attach`] for what it does
+/// with the two.
+///
+/// **A pane whose program has ended is kept here until the next `open`**, deliberately: its
+/// scope is still the cgroup that has to be ended (a program that forked something away
+/// leaves that something in it — see [`TermSession::close`]), and a slot that is dropped the
+/// instant a program exits would be a second path ending scopes. What must not happen is a
+/// *refusal*, and that is [`TermSession::live`]'s job.
 struct Pane {
     session: TermSession,
+    /// The line the operator typed after the verb, as the daemon was handed it — what a head
+    /// that attaches is told is running. The verb is not part of it: see
+    /// [`ServerFrame::TermAttached`].
+    command: String,
+    /// **The last [`SCREEN_LOG`] bytes the program wrote**, shared with the reader thread's
+    /// sink. See the module header.
+    log: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Pane {
+    /// **What the program has drawn**, as one block of bytes for a head that asked.
+    ///
+    /// Cloned rather than lent: the caller pushes it through the hub, which takes its own lock,
+    /// and a borrow held across that would be a pane's log lock held while another head's
+    /// queue is walked. One clone per attach, which is an operator's act and not a hot path.
+    fn screen(&self) -> Vec<u8> {
+        self.log.lock().map(|l| l.clone()).unwrap_or_default()
+    }
 }
 
 impl Terminals {
@@ -140,12 +239,25 @@ impl Terminals {
 
 /// **Where a pane's bytes go.** See the module header for why this is the hub and not a
 /// channel: one socket, one ordering.
+///
+/// **And it is where the daemon's copy of the screen is kept**, which is the second half of
+/// the same job: the bytes go up to the session's heads *and* into the pane's log, from the one
+/// place they already pass through. A log written by a second reader — a thread of its own,
+/// a tee on the pty — would be a second place the same bytes could be lost, delayed or
+/// reordered, and the replay would then disagree with what the heads saw.
 struct Sink {
     hub: Arc<Hub>,
+    log: Arc<Mutex<Vec<u8>>>,
 }
 
 impl TermSink for Sink {
     fn output(&self, bytes: &[u8]) {
+        // **Kept first, and never allowed to block**: this runs on the pty's reader thread,
+        // and the lock is held only for an append and a trim.
+        if let Ok(mut log) = self.log.lock() {
+            log.extend_from_slice(bytes);
+            trim(&mut log);
+        }
         self.hub.push_frame(ServerFrame::TermOutput {
             bytes: bytes.to_vec(),
         });
@@ -155,6 +267,25 @@ impl TermSink for Sink {
         self.hub.push_frame(ServerFrame::TermEnded {
             reason: reason.to_string(),
         });
+    }
+}
+
+/// **Keep the tail of what a program drew, and start it where a parser can read it.**
+///
+/// A cut lands wherever the program happened to be — inside an escape sequence, most of the
+/// time — and the head that receives the tail parses it from its ground state, so `[2J` would
+/// be painted as three characters at the cursor. Dropping to the next `ESC` costs at most the
+/// escape-free run before it, which a repainting program replaces on its next frame. **A tail
+/// with no `ESC` in it at all is left alone**: that is a program writing text (`!term cat
+/// file`), and text is what it wrote.
+fn trim(log: &mut Vec<u8>) {
+    if log.len() <= SCREEN_LOG {
+        return;
+    }
+    let over = log.len() - SCREEN_LOG;
+    log.drain(..over);
+    if let Some(at) = log.iter().position(|b| *b == 0x1b) {
+        log.drain(..at);
     }
 }
 
@@ -171,8 +302,12 @@ impl TerminalDriver for Terminals {
         // **A live pane is refused by name, not replaced.** Killing a running program to make
         // room for the next keystroke is how an operator loses an edited file; the refusal
         // names the way out instead.
+        //
+        // **`live` and not `closed`** — see the module header's *the ghost*: a program that
+        // exits on its own ends the pane without anybody closing it, and refusing the next
+        // `!term` on that pane is refusing it on nothing.
         if let Some(p) = panes.get(session_id)
-            && !p.session.closed()
+            && p.session.live()
         {
             return Err(format!(
                 "a pane is already open in this session and `{command}` was not started. \
@@ -180,8 +315,9 @@ impl TerminalDriver for Terminals {
                  lose whatever that program had not saved."
             ));
         }
-        // A pane that has already ended leaves nothing to keep, and dropping it ends its
-        // scope (which the cgroup has usually already emptied).
+        // **A pane that has already ended leaves nothing to keep**, and this is where the
+        // slot is freed: dropping it ends its scope (which the cgroup has usually already
+        // emptied).
         panes.remove(session_id);
 
         // **The scope, before the process.** `join_script` writes the pid into `cgroup.procs`
@@ -206,9 +342,80 @@ impl TerminalDriver for Terminals {
             scope,
             tree: Some(self.tree.clone()),
         };
-        let session = TermSession::start(&cfg, Arc::new(Sink { hub: hub.clone() }))
-            .map_err(|e: TermError| e.to_string())?;
-        panes.insert(session_id.to_string(), Pane { session });
+        // **The log is made before the program is**, because the reader thread starts writing
+        // into it the moment the pty has a byte — and because the pane that is inserted below
+        // and the sink the thread holds must be the *same* `Arc`.
+        let log: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::new(Sink {
+            hub: hub.clone(),
+            log: Arc::clone(&log),
+        });
+        let session = TermSession::start(&cfg, sink).map_err(|e: TermError| e.to_string())?;
+        panes.insert(
+            session_id.to_string(),
+            Pane {
+                session,
+                command: command.to_string(),
+                log,
+            },
+        );
+        Ok(())
+    }
+
+    /// **Give this head the pane the session already has** — a bare `!term`.
+    ///
+    /// Three things, in this order, and each of them is a decision:
+    ///
+    /// 1. **The attaching head's rectangle.** `TermSession::resize` is `TIOCSWINSZ`, so a
+    ///    program that lays out for the screen it is drawn in gets the *new* one — a head that
+    ///    switched sessions has a different rectangle from the one the pane opened at. It is
+    ///    **not** the mechanism the attach is proved by: `TIOCSWINSZ` with an unchanged size
+    ///    raises no `SIGWINCH` at all (the kernel compares before it signals — see
+    ///    `letibot_tools::exec::term::tests::a_same_size_resize_is_not_a_nudge`), so for the
+    ///    same head at the same size this is a no-op.
+    /// 2. **What is running**, as [`ServerFrame::TermAttached`] — *before* the bytes, because a
+    ///    head that drew the screen first and learned what it was afterwards would flash a
+    ///    rectangle it could not name.
+    /// 3. **The screen**: the whole log as **one** [`ServerFrame::TermOutput`]. One frame and
+    ///    not several, and that is not tidiness — `Hub::push_frame` drops the oldest pane frame
+    ///    for a head that is behind, so a replay split across frames could be delivered in part
+    ///    and a *partial* screen is a corrupt screen where no screen is an honest empty one.
+    ///
+    /// **A session with no pane is a sentence, not a silence.** The head opened the rectangle
+    /// the moment the operator pressed enter (it cannot wait for the daemon without showing the
+    /// transcript for as long as the round trip takes), so *there is nothing to attach to* has
+    /// to arrive as the `TermEnded` that closes it — the same frame a refusal uses, for the same
+    /// reason: the head's act is identical either way.
+    fn attach(
+        &self,
+        session_id: &str,
+        hub: &Arc<Hub>,
+        cols: usize,
+        rows: usize,
+    ) -> Result<(), String> {
+        let panes = self.panes();
+        let Some(p) = panes.get(session_id) else {
+            return Err(
+                "this session has no pane to attach to — `!term COMMAND` starts one. Nothing \
+                 was attached."
+                    .to_string(),
+            );
+        };
+        if !p.session.live() {
+            return Err(
+                "the pane in this session is over — its program has exited, so there is \
+                 nothing to attach to. `!term COMMAND` starts a new one."
+                    .to_string(),
+            );
+        }
+        p.session.resize(cols, rows);
+        hub.push_frame(ServerFrame::TermAttached {
+            command: p.command.clone(),
+        });
+        let screen = p.screen();
+        if !screen.is_empty() {
+            hub.push_frame(ServerFrame::TermOutput { bytes: screen });
+        }
         Ok(())
     }
 
