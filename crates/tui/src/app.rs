@@ -1955,7 +1955,12 @@ struct TurnPane {
     /// beside the run instead — two markers, and two different thinking counts.
     ///
     /// One turn is one `began_ms` (stamped once per prompt and carried on every round's
-    /// `TurnStarted`), so that is what this is carried on. Cleared when the turn changes.
+    /// `TurnStarted`), so that is what this is carried on. **Cleared only when the turn is PROVEN
+    /// to have changed** — a `began_ms` that differs from the one this pane is counting from. A
+    /// boundary that carries no `began_ms` at all is *nobody measured this one* and not *a new
+    /// prompt*: read as the latter it emptied this field, the run stopped reading as the turn's,
+    /// and one run's work was drawn by two markers again (see the `TurnStarted` arm for the frame
+    /// that made it reachable, and for the second `Responding` it manufactured).
     turn_rows: Vec<String>,
     /// How many of `calls` the transcript has already taken over.
     ///
@@ -5711,23 +5716,78 @@ impl App {
                 // drawn live are the previous turn's, and once its pane is gone
                 // there is nothing left to ask which they were.
                 let stale_from = self.turn_first_row();
+                let previous = self.turn.as_ref();
+                // **A boundary the head has ALREADY HAD, taken again.** The frame is an event like
+                // any other and may be delivered twice — and rebuilding the pane here is not
+                // idempotent: the round's own stream (its text, its reasoning, its proposed calls)
+                // is state the event does not describe and cannot restore, so a second copy of one
+                // boundary would throw the round's work away and re-open a run that is already
+                // open.
+                //
+                // `turn_id` is the key that can say so, and it is a sound one: `run_turn_steered`
+                // mints it as `{transcript_id}#{turn_seq}` with `turn_seq += 1` per round, and a
+                // restored session starts that counter at the number of restored items precisely
+                // so that *"within one transcript the ids never repeat"* (`crates/turn/src/
+                // resume.rs`, "`turn_seq` is a watermark, not a turn count"). So an equal
+                // non-empty `turn_id` is one round, and this event has already been folded in.
+                if !turn_id.is_empty() && previous.is_some_and(|t| t.turn_id == turn_id) {
+                    return Disposition::Filtered;
+                }
                 self.model = model.clone();
                 // Stamped, so the header can prefer this over a settings row it read
                 // earlier at attach. See `model_from_turn_at`.
                 self.model_from_turn_at = self.seq;
-                let started = began_ms.unwrap_or(ts);
-                // **A new ROUND of the same turn keeps the rows the turn has already produced.** See
-                // [`TurnPane::turn_rows`]: `began_ms` is stamped once per prompt and every round
-                // carries it, which is the only thing on the wire that distinguishes *the next round
-                // of this prompt* from *a new prompt* — `turn_id` is per round and everything else
-                // in the event is per round too.
-                let same_turn =
-                    began_ms.is_some_and(|b| self.turn.as_ref().is_some_and(|t| t.started_ms == b));
+                // **Which boundary is this?** — and only one of the answers is *a new run*.
+                //
+                // [`TurnPane::turn_rows`] hangs the run on `began_ms`, because it is stamped once
+                // per prompt and carried by every round of it: the one thing on the wire that
+                // distinguishes *the next round of this prompt* from *a new prompt*. What the head
+                // then does with it is the defect this closes, and the mistake is asking the wrong
+                // question — *does this number match* rather than *may I start a new run here*.
+                //
+                // A boundary the head cannot MATCH is not a boundary it can tell APART. `began_ms:
+                // None` means *nobody measured this one*, and two very different events carry it: a
+                // turn that began before this head attached, and **a turn the daemon ran without
+                // stamping its clock at all.** The second is real and reachable —
+                // `harnessd::sessions::run_prompt` calls `begin_turn_clock` and
+                // `Sessions::wake` does not, so the turn a job's settlement or a monitor's firing
+                // opens arrives with no start in it (`harnessd/src/sessions.rs`: `run_prompt` vs
+                // `wake`).
+                //
+                // Read as a new run, such a boundary emptied `turn_rows` and moved `started_ms` to
+                // the event's own `ts`: the run the work is still in stopped reading as this turn's,
+                // so `live_here` and `walk_carried_live` both answered no, the pane drew its OWN
+                // marker beside the walk's, and the `Responding` clock restarted. The operator's
+                // report, in their words: *"it looks like turn end or some other border is
+                // misinterpreted and Responding timer resets and I get new line with `[N thinking
+                // lines]` which then gets merged to the previous `[N tools, M thinking]`"* — and the
+                // merge is the next row landing, which puts a row of the turn back into
+                // `turn_rows`.
+                //
+                // **So an unmeasured boundary over a turn that is still RUNNING is the same run.**
+                // The head is drawing that turn right now; nothing the reader can see has separated
+                // the work before the event from the work after it; and the row filter, not this
+                // event, is what actually ends a run on the screen ([`row_drawn`]) — a new prompt
+                // is preceded by the operator's own message, which is a drawn row and ends the run
+                // by itself. A head that says *new run* here is inventing a border out of an event
+                // that carries no evidence for one, which is exactly the second `Responding` the
+                // operator watched appear.
+                let same_turn = match began_ms {
+                    Some(b) => previous.is_some_and(|t| t.started_ms == b),
+                    None => previous.is_some_and(|t| matches!(t.state, Some(TurnState::Running))),
+                };
+                // **The clock is never restarted by an event that carries no clock.** Same rule, on
+                // the one field the operator watches move: a boundary with no `began_ms` leaves the
+                // base where it was, so the row keeps counting from the prompt that is actually
+                // running rather than from the frame that arrived. `ts` stays the base for a turn
+                // nobody measured at all — the first `TurnStarted` of a head that joined late.
+                let started = match (began_ms, same_turn) {
+                    (Some(b), _) => b,
+                    (None, true) => previous.map(|t| t.started_ms).unwrap_or(ts),
+                    (None, false) => ts,
+                };
                 let turn_rows = if same_turn {
-                    self.turn
-                        .as_ref()
-                        .map(|t| t.turn_rows.clone())
-                        .unwrap_or_default()
+                    previous.map(|t| t.turn_rows.clone()).unwrap_or_default()
                 } else {
                     Vec::new()
                 };
@@ -32486,12 +32546,19 @@ mod tests {
         // `began_ms` is the PROMPT's stamp and the daemon sends the same one on every round of it
         // (`harnessd::sessions::run_prompt` → `begin_turn_clock`), which is what makes the clock a
         // clock for the turn rather than for a round.
-        let started = |seq, ts, began: u64| {
+        //
+        // **The id is the ROUND's, and it is a parameter because two rounds cannot share one.**
+        // `run_turn_steered` mints `{transcript}#{turn_seq}` with `turn_seq += 1` per round, so a
+        // second `TurnStarted` carrying the first round's id is not a round at all — it is that
+        // round taken twice, which the head now refuses to re-open (see
+        // `a_boundary_the_head_has_already_had_does_not_open_a_second_run`). This fixture used to
+        // hand both rounds `t1`, which no daemon does.
+        let started = |seq, ts, id: &str, began: u64| {
             ServerFrame::Event(env_at(
                 seq,
                 ts,
                 SessionEvent::TurnStarted {
-                    turn_id: "t1".into(),
+                    turn_id: id.into(),
                     model: "m".into(),
                     ledger_head: "0000".into(),
                     began_ms: Some(began),
@@ -32500,7 +32567,7 @@ mod tests {
         };
         let mut a = app();
         a.clock(1_000);
-        a.apply(started(1, 1_000, 1_000));
+        a.apply(started(1, 1_000, "t1", 1_000));
         a.apply(ServerFrame::Event(env(
             2,
             testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
@@ -32544,7 +32611,7 @@ mod tests {
         // **And a second round does not move the base** (R51 item 2's *must not differ*). Round
         // two's `TurnStarted` arrives three seconds later carrying the SAME `began_ms`, and the clock
         // must not restart at it — that is the `2.1s` a minute into a turn the operator reported.
-        a.apply(started(5, 4_000, 1_000));
+        a.apply(started(5, 4_000, "t2", 1_000));
         a.clock(6_000);
         let line = a.turn_status(120);
         assert!(
@@ -45981,6 +46048,266 @@ mod tests {
             !screen.contains("] ["),
             "and not two markers side by side, which is the pair they caught as `[1 tool call] \
              [1 tool call]`: {screen}"
+        );
+    }
+
+    /// **A turn mid-run, as the daemon drives one** — the narration that introduces the work, one
+    /// round's result row, and reasoning streaming with no row of its own yet.
+    ///
+    /// The shape is the operator's own, and it is the one that makes a second marker legible: the
+    /// run is the hidden row after the prose, and the only work in flight is thinking — so a
+    /// marker drawn beside the run reads `[N thinking lines]` next to `[1 tool call]`, which is
+    /// the pair they reported.
+    fn a_turn_mid_run(a: &mut App) {
+        a.visibility = Visibility::of(Profile::CONVERSATION);
+        a.apply(hello(
+            "s",
+            vec![brief("s", "one", false)],
+            Hub::new("s").snapshot(),
+        ));
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("s.0", "assistant"),
+        )));
+        a.record_item(
+            "s.0",
+            TranscriptItem::Assistant {
+                text: "let me check that for you:".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        );
+        // ROUND 1, carrying the prompt's own stamp — see `TurnPane::turn_rows`.
+        a.apply(ServerFrame::Event(env_at(
+            2,
+            1_000,
+            SessionEvent::TurnStarted {
+                turn_id: "r1".into(),
+                model: "qwen3-next-80b".into(),
+                ledger_head: "0000".into(),
+                began_ms: Some(1_000),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            3,
+            testing::appended("s.1", "tool_result"),
+        )));
+        a.record_item(
+            "s.1",
+            TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "read".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "SOMETHING LONG ENOUGH TO HIDE THE ROW".into(),
+                edit: None,
+                origin: None,
+                media: None,
+            },
+        );
+        // The work in flight: thinking, and no row of its own — the pane's half of the counts.
+        a.apply(ServerFrame::Event(env(
+            4,
+            SessionEvent::Delta {
+                turn_id: "r1".into(),
+                target: DeltaTarget::Reasoning,
+                text: "the first call told me it is in the reader, so let me check the caller\n\
+                       and the place it is constructed before I touch anything at all"
+                    .into(),
+            },
+        )));
+    }
+
+    /// **A boundary NOBODY MEASURED is the same run, not a new one.**
+    ///
+    /// This is the frame the operator's screen was built from, and it is the daemon's own shape:
+    /// `harnessd::sessions::run_prompt` stamps the whole turn's start (`begin_turn_clock`) and
+    /// **`Sessions::wake` does not** — so the turn a job's settlement or a monitor's firing opens
+    /// publishes `TurnStarted { began_ms: None }`, which is the one value the head used to read as
+    /// *a new prompt*.
+    ///
+    /// Read that way it emptied `turn_rows` and moved `started_ms` to the event's `ts`, so the run
+    /// the work is still in stopped reading as this turn's (`live_here` and `walk_carried_live`
+    /// both no), the pane drew its own marker beside the walk's, and the `Responding` clock
+    /// restarted — *"it looks like turn end or some other border is misinterpreted and Responding
+    /// timer resets and I get new line with `[N thinking lines]` which then gets merged to the
+    /// previous `[N tools, M thinking]`"*. The merge is the next row landing.
+    #[test]
+    fn a_boundary_nobody_measured_does_not_split_the_run() {
+        let mut a = app();
+        a_turn_mid_run(&mut a);
+        a.clock(5_000);
+        let before = a.screen(100, 30).join("\n");
+        // The premise, so a failure below is about the boundary and not about the fixture.
+        assert_eq!(markers(&before), 1, "one run, one marker: {before}");
+        assert!(
+            before.contains("1 tool call, 2 thinking lines"),
+            "and the run carries the work in flight: {before}"
+        );
+        assert!(
+            a.turn_status(120).contains("4.0s"),
+            "counting from the prompt: {}",
+            a.turn_status(120)
+        );
+
+        // **The boundary, with no start in it at all.**
+        a.apply(ServerFrame::Event(env_at(
+            5,
+            9_000,
+            SessionEvent::TurnStarted {
+                turn_id: "r2".into(),
+                model: "qwen3-next-80b".into(),
+                ledger_head: "0000".into(),
+                began_ms: None,
+            },
+        )));
+        // **And the thinking goes on across the boundary**, which is the whole point of it: the
+        // model is mid-thought when the event arrives and keeps streaming under the new round's
+        // id. It is also a DIFFERENT number of lines from the thinking before the boundary, so
+        // the assertion below cannot be satisfied by a row the last frame had already cached —
+        // the count has to be rebuilt from the run the work is in.
+        a.apply(ServerFrame::Event(env(
+            6,
+            SessionEvent::Delta {
+                turn_id: "r2".into(),
+                target: DeltaTarget::Reasoning,
+                text: "the call came back saying it is in the reader\n\
+                       and the caller is the place it is constructed\n\
+                       so the next thing to look at is who hands it over"
+                    .into(),
+            },
+        )));
+        a.clock(9_000);
+        let after = a.screen(100, 30).join("\n");
+        assert!(
+            !after.contains("] ["),
+            "one run is ONE marker: the pane drew a second one beside the walk's, which is the \
+             pair the operator reported (`[N thinking lines]` beside `[N tools, M thinking]`): \
+             {after}"
+        );
+        assert!(
+            after.contains("1 tool call, 3 thinking lines"),
+            "and the run's counts carry the thinking that is in flight NOW, not the thinking that \
+             was in flight when the frame before it was drawn: {after}"
+        );
+        let status = a.turn_status(120);
+        assert!(
+            status.contains("8.0s"),
+            "the clock keeps counting from the prompt that is running rather than restarting at \
+             the frame that arrived: {status}"
+        );
+    }
+
+    /// **A boundary the head has ALREADY HAD, taken again, does not open a second run** — and does
+    /// not throw the round's own stream away.
+    ///
+    /// The same `turn_id` is the same round: `run_turn_steered` mints `{transcript}#{turn_seq}` and
+    /// a restored session starts that counter at the item count so the ids never repeat within one
+    /// transcript. So a second copy of one boundary is a duplicate event, and the head's answer to
+    /// a duplicate has to be *nothing* — the round's text, its thinking and its proposed calls are
+    /// state the event does not describe and cannot restore, so rebuilding the pane here is how a
+    /// count of work done goes DOWN.
+    #[test]
+    fn a_boundary_the_head_has_already_had_does_not_open_a_second_run() {
+        let mut a = app();
+        a_turn_mid_run(&mut a);
+        a.clock(5_000);
+        // The same round again: same `turn_id`, same stamp, one frame later.
+        a.apply(ServerFrame::Event(env_at(
+            5,
+            5_000,
+            SessionEvent::TurnStarted {
+                turn_id: "r1".into(),
+                model: "qwen3-next-80b".into(),
+                ledger_head: "0000".into(),
+                began_ms: Some(1_000),
+            },
+        )));
+        let after = a.screen(100, 30).join("\n");
+        assert_eq!(markers(&after), 1, "one run, one marker: {after}");
+        assert!(
+            after.contains("1 tool call, 2 thinking lines"),
+            "the round's own stream survives a second copy of its boundary: {after}"
+        );
+        assert!(
+            a.turn_status(120).contains("4.0s"),
+            "and its clock is not restarted: {}",
+            a.turn_status(120)
+        );
+    }
+
+    /// **A prompt that IS new still opens a run** — the control for the two above, so the fix
+    /// cannot be *never split*.
+    ///
+    /// What makes it new is two facts and both are on the screen: it carries a `began_ms` of its
+    /// own, and the operator's message stands between it and the run before it — a drawn row, which
+    /// ends a run whatever any `TurnStarted` says. So the old run's marker stays where it is, the
+    /// new turn's work is its own marker, and the clock is the new prompt's.
+    #[test]
+    fn a_prompt_that_is_actually_new_still_opens_a_run() {
+        let mut a = app();
+        a_turn_mid_run(&mut a);
+        // The operator's own message: a row the reader can see, and therefore the border.
+        a.apply(ServerFrame::Event(env(5, testing::appended("s.2", "user"))));
+        a.record_item(
+            "s.2",
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: "and now the other one".into(),
+                }],
+            },
+        );
+        a.apply(ServerFrame::Event(env_at(
+            6,
+            20_000,
+            SessionEvent::TurnStarted {
+                turn_id: "r2".into(),
+                model: "qwen3-next-80b".into(),
+                ledger_head: "0000".into(),
+                began_ms: Some(20_000),
+            },
+        )));
+        a.apply(ServerFrame::Event(env(
+            7,
+            testing::appended("s.3", "tool_result"),
+        )));
+        a.record_item(
+            "s.3",
+            TranscriptItem::ToolResult {
+                call_id: "c2".into(),
+                name: "read".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "SOMETHING LONG ENOUGH TO HIDE THE ROW".into(),
+                edit: None,
+                origin: None,
+                media: None,
+            },
+        );
+        a.apply(ServerFrame::Event(env(
+            8,
+            SessionEvent::Delta {
+                turn_id: "r2".into(),
+                target: DeltaTarget::Reasoning,
+                text: "the second question is about the caller, so let me look at it here\n\
+                       and then at the place the value is handed over"
+                    .into(),
+            },
+        )));
+        a.clock(22_000);
+        let screen = a.screen(100, 30).join("\n");
+        assert_eq!(
+            markers(&screen),
+            2,
+            "the finished run and the new one, and nothing else: {screen}"
+        );
+        assert!(
+            screen.contains("1 tool call, 2 thinking lines"),
+            "the new run's marker carries its own work: {screen}"
+        );
+        let status = a.turn_status(120);
+        assert!(
+            status.contains("2.0s"),
+            "and the clock is the NEW prompt's, not the one before it: {status}"
         );
     }
 
