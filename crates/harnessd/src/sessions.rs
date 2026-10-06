@@ -69,7 +69,14 @@ const SHUTDOWN_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
 /// not a conversation recovering from the wall any more, it is a task that does
 /// not fit the window, and the fourth wall is the operator's to answer — by
 /// `/compact`, a fresh session, or a bigger `--context-window`.
-const WALL_CONTINUES: usize = 3;
+///
+/// **Read by both doors that continue past a wall.** The daemon's own sessions
+/// loop over it in [`Sessions::after_turn`]; a subagent's harness — which never
+/// passes through `Sessions`, and is continued by its own thread in
+/// [`Harness::submit_as_a_normal_session`] — bounds itself with the same number,
+/// because "a child may retry one fewer time than its parent" is not a policy
+/// anybody chose.
+pub(crate) const WALL_CONTINUES: usize = 3;
 
 /// How long a session sits IDLE before the unfinished-plan check is sent.
 ///
@@ -2628,7 +2635,16 @@ fn shown_tokens(scale: Option<(u64, u64)>) -> impl Fn(usize) -> u64 {
 /// `scale` is the session's `ledger_scale` — **the session's, not the daemon's**.
 /// `Sessions::base` is the command line, where it is always `None`, so reading it
 /// there would convert nothing and quietly print the ledger's figures again.
-fn compaction_said(r: &crate::harness::CompactReport, scale: Option<(u64, u64)>) -> String {
+///
+/// The sentence is shared by the two doors that publish it —
+/// [`Sessions::compact_if_at_the_wall`] for the daemon's own sessions and
+/// [`Harness::submit_as_a_normal_session`] for a subagent's — because a second
+/// copy of the wording would drift from the first exactly the way the seam
+/// itself did.
+pub(crate) fn compaction_said(
+    r: &crate::harness::CompactReport,
+    scale: Option<(u64, u64)>,
+) -> String {
     let shown = shown_tokens(scale);
     // **An empty summary is a re-ingest**, which is the same signal
     // `fork_to_summary` reads to decide what note to write. Nothing was
@@ -2704,7 +2720,7 @@ fn compaction_said(r: &crate::harness::CompactReport, scale: Option<(u64, u64)>)
 /// through. A head that printed a ledger figure beside this sentence would be printing
 /// two different numbers for one quantity — the defect `Config::shown_tokens`' own
 /// comment records.
-fn compaction_wire(
+pub(crate) fn compaction_wire(
     r: &crate::harness::CompactReport,
     kind: &str,
     scale: Option<(u64, u64)>,

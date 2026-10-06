@@ -5365,6 +5365,238 @@ impl<'a> Harness<'a> {
         })
     }
 
+    /// **A prompt through the seam every session has — the one a child was missing.**
+    ///
+    /// The operator's requirement, in their words: *"subagent is a normal session.
+    /// it must be able to compact on tool call overrun"* — and their question, *"we
+    /// have overrun protection exactly for this case, why this resurfaces again and
+    /// again"*. Measured 2026-10-06, and this method is the answer to both: a child
+    /// of `s-1789462738453908838` stopped after 207 rounds at 1,131,717 of 1,146,137
+    /// tokens, its wall notice promised *"a compaction was ATTEMPTED"*, and the
+    /// store shows ONE transcript for it — no fork, no compaction item — while its
+    /// parent compacted 57 times in the same window. The protection existed; the
+    /// child could not reach it.
+    ///
+    /// # Where the seam was, and why a child never passed it
+    ///
+    /// The wall is DETECTED here in the harness, between one round's tool results
+    /// and the next round's send (the round-loop check in [`Self::submit`] that
+    /// returns [`HarnessError::ContextWall`]) — so a child at the wall stops exactly
+    /// as a root does. What REACTS to the wall — compact, then continue on the
+    /// summary — lived only in `Sessions::after_turn` and
+    /// `Sessions::compact_if_at_the_wall`, and a child never gets there:
+    /// [`HarnessTaskRunner::run_to_completion`] drives `submit` directly on the
+    /// thread its parent spawned it on, and the child is adopted into the registry
+    /// and NOT into `Sessions::open` (by R58's design — the daemon cannot run its
+    /// turns), so even a compaction attempted by id would find nothing to compact.
+    /// A dead child with a notice that says a compaction was attempted is the
+    /// sentence `HarnessError::ContextWall`'s Display writes about `Sessions`'
+    /// behaviour — true for every session the daemon holds, false for every child,
+    /// every time.
+    ///
+    /// # What this adds over [`Harness::submit`]
+    ///
+    /// Exactly the tail the daemon gives its own sessions, no more:
+    ///
+    /// * the wall is checked BEFORE the send, as `Sessions::run_prompt` does for
+    ///   the first prompt after a resume;
+    /// * a turn that comes back [`HarnessError::ContextWall`] is compacted — the
+    ///   same `should_compact` predicate the round loop just fired on — and
+    ///   continued by [`Harness::continue_after_wall`], gated on
+    ///   [`Config::room_for_next_turn`] and bounded by
+    ///   [`WALL_CONTINUES`](crate::sessions::WALL_CONTINUES) exactly as
+    ///   `after_turn`'s loop is;
+    /// * every announcement is the same line the daemon's session gets, named with
+    ///   this session's id — the log contrast that settled the finding (a parent
+    ///   with `compacting:` lines beside a child with none) is evidence this must
+    ///   never leave unreadable again.
+    ///
+    /// This is NOT a second compaction policy: the predicate, the bound and the
+    /// wording are the same ones `Sessions` uses, reached from the side that owns
+    /// the harness. `Sessions::after_turn` keeps its own copy of the tail because it
+    /// owns obligations a child's thread has no part of — publishing the turn's
+    /// failure first, the todo nag, the turn clock — and collapsing the two now
+    /// would rewire the daemon's own path for a fix that is not about it.
+    pub fn submit_as_a_normal_session(&mut self, prompt: &str) -> Result<Reply, HarnessError> {
+        // Before the send, the same pre-turn check `Sessions::run_prompt` makes: a
+        // parked child taking a later prompt is the resumed-session case (its last
+        // turn may have filled the window with nothing behind it to check), and a
+        // fresh child's bare prefix fails `should_compact` and costs one comparison.
+        self.compact_if_at_the_wall();
+        let mut out = self.submit(prompt);
+        // **A wall that compacted is not the end of the prompt** — `after_turn`'s
+        // own rule, and the loop shape is deliberately the same: compact, MEASURE
+        // the room (never read it off `auto_compact` — the no-progress guard turns
+        // the flag off without freeing anything), continue, and let a continuation
+        // that meets the wall again come back around for another compaction until a
+        // gate closes. When one does, the wall error from the last turn is what the
+        // caller gets, which is the honest answer for a task that does not fit the
+        // window.
+        let mut walls = 0usize;
+        while matches!(out, Err(HarnessError::ContextWall { .. })) {
+            let attempted = self.compact_if_at_the_wall();
+            if !attempted {
+                // The same contradiction `after_turn` reports: a wall fired and
+                // nothing compacted, so WHICH number disagreed is said rather than
+                // left to be inferred from a silence the wall notice contradicts.
+                self.hub.publish(SessionEvent::Warning {
+                    code: "auto_compact_skipped".into(),
+                    detail: format!(
+                        "the turn stopped at the context wall and nothing was compacted: \
+                         automatic compaction is {} for this session. `/compact` does it \
+                         by hand.",
+                        if self.cfg.context_window.is_none() {
+                            "not configured — no --context-window is set, so there is no \
+                             wall to measure against"
+                        } else {
+                            "off"
+                        }
+                    ),
+                    compaction: None,
+                });
+                break;
+            }
+            if !self
+                .cfg
+                .room_for_next_turn(self.session.ledger.len() as u64)
+            {
+                break;
+            }
+            walls += 1;
+            if walls > crate::sessions::WALL_CONTINUES {
+                break;
+            }
+            out = self.continue_after_wall();
+        }
+        out
+    }
+
+    /// `Sessions::compact_if_at_the_wall`'s contract, from the side that owns the
+    /// harness: **compact when the next turn would not fit**, announce it in the
+    /// same words the daemon's own sessions get, and apply the no-progress guard
+    /// that stops a too-large summary from looping once per turn.
+    ///
+    /// Same name as the `Sessions` method on purpose: it is the same seam, and the
+    /// next person asking *why does this resurface* should find both doors in one
+    /// grep. The sibling's doc carries the history (the measured 2026-09-15 wall
+    /// that created it); this one carries the child's half.
+    ///
+    /// Returns whether a compaction was actually ATTEMPTED — `false` when the
+    /// session is not at the threshold, or automatic compaction is off, or no
+    /// window is configured. A wall notice that says *"a compaction was
+    /// ATTEMPTED"* needs that to be a fact rather than a hope, and until this
+    /// existed a child's was a promise nothing behind it kept.
+    fn compact_if_at_the_wall(&mut self) -> bool {
+        let resident = self.session.ledger.len() as u64;
+        if !self.cfg.should_compact(resident) {
+            return false;
+        }
+        // **Shown in the operator's units, decided in the ledger's** — the same rule
+        // the `Sessions` sibling states: `should_compact` above is the decision,
+        // `shown_tokens` is only the telling.
+        let scale = self.cfg.ledger_scale;
+        let (r, w, h) = (
+            self.cfg.shown_tokens(resident),
+            self.cfg
+                .shown_tokens(self.cfg.planning_window().unwrap_or(0)),
+            self.cfg.shown_tokens(self.cfg.headroom()),
+        );
+        // **And it names the session, for the reason the sibling's line does**: the
+        // log is one file every daemon appends to, and a child's compaction lines
+        // land between its parent's work with nothing to say whose they were.
+        eprintln!(
+            "  {}: compacting: {r} of {w} tokens resident, less than the {h} the next \
+             turn needs",
+            self.cfg.session_id
+        );
+        self.hub.publish(SessionEvent::Warning {
+            code: "auto_compact".into(),
+            detail: format!(
+                "{r} of {w} tokens resident, leaving less than the {h} the next turn \
+                 needs — compacting now, as one more message so the prefix the server \
+                 already holds is reused. This is the wall, not a judgement about the \
+                 conversation."
+            ),
+            compaction: None,
+        });
+        match self.compact() {
+            Ok(report) => {
+                self.hub.publish(SessionEvent::Warning {
+                    code: "compacted".into(),
+                    detail: crate::sessions::compaction_said(&report, scale),
+                    compaction: Some(Box::new(crate::sessions::compaction_wire(
+                        &report,
+                        "compacted",
+                        scale,
+                        r,
+                        w,
+                        h,
+                    ))),
+                });
+                let after = self.session.ledger.len() as u64;
+                // **If it did not help, stop trying** — the sibling's guard, for the
+                // sibling's reason: a summary that is itself over the threshold
+                // would compact again next turn, and again, a loop that spends a
+                // turn each time and never lets the conversation continue. Turning
+                // `auto_compact` off also stands down the round-loop wall check for
+                // this session, which is the same trade the daemon's sessions make.
+                if self.cfg.should_compact(after) {
+                    self.cfg.auto_compact = false;
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "auto_compact_no_progress".into(),
+                        detail: format!(
+                            "compacted from {r} to {} tokens and that is STILL within \
+                             {h} of the {w} window, so automatic compaction is now off \
+                             for this session rather than looping once per turn. The \
+                             summary itself is near the wall: start a fresh session, or \
+                             raise --context-window if the server really has more.",
+                            self.cfg.shown_tokens(after)
+                        ),
+                        compaction: None,
+                    });
+                } else {
+                    let cut = if report.fork.truncated {
+                        " The summary was CUT OFF at the model's length limit — it is \
+                         incomplete, and the base says so too."
+                    } else {
+                        ""
+                    };
+                    let after = self.cfg.shown_tokens(after);
+                    eprintln!(
+                        "  {}: compacted: {after} tokens resident now, was {r}.{cut}",
+                        self.cfg.session_id
+                    );
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "auto_compact".into(),
+                        detail: format!("compacted: {after} tokens resident now, was {r}.{cut}"),
+                        compaction: None,
+                    });
+                }
+            }
+            Err(e) => {
+                // Announced and swallowed, for the same reason as the sibling's: the
+                // room check in `submit_as_a_normal_session` is what decides the
+                // turn's fate, and a compaction that did not run leaves no room —
+                // so the wall error stands, and this line is why the operator can
+                // see it was tried rather than infer it never was.
+                eprintln!("  {}: compaction FAILED: {e}", self.cfg.session_id);
+                self.hub.publish(SessionEvent::Warning {
+                    code: "auto_compact_failed".into(),
+                    detail: format!(
+                        "the automatic compaction did not run: {e}. This session is over \
+                         its context budget and nothing made room, so the next turn will \
+                         hit the context wall. `/compact` retries it."
+                    ),
+                    compaction: None,
+                });
+            }
+        }
+        // It ran. Whether it HELPED is the branch above, in its own words either
+        // way; what this answers is the narrower question a caller asks before
+        // claiming an attempt was made.
+        true
+    }
+
     /// §5.3: change the system prompt mid-session, in the form the dialect can
     /// render.
     ///
@@ -8630,7 +8862,12 @@ fn serve_child(sub: &mut Harness<'_>, hub: &Hub, sub_id: &str) {
                     letibot_sessionlog::CommandKind::Prompt { text } => text.clone(),
                     _ => unreachable!("`child_command` answers a Prompt and nothing else"),
                 };
-                if let Err(e) = sub.submit(&text) {
+                // **The same door the first prompt took** — see `run_to_completion`.
+                // A steering message to a parked child is a prompt like any other,
+                // and a child near the wall must compact on ITS overrun exactly as
+                // on its first: the operator's rule is about the session, not about
+                // which prompt it was.
+                if let Err(e) = sub.submit_as_a_normal_session(&text) {
                     // **Said, and the child stays reachable.** A turn that failed is the same fact
                     // `turn_failed` reports for a root; a child has no worker to publish it, so it
                     // goes on the child's own log — which its parent and the operator both read.
@@ -10313,7 +10550,19 @@ impl HarnessTaskRunner {
             ));
         }
 
-        let reply = sub.submit(prompt).map_err(|e| fail(e.to_string()))?;
+        // **Through the seam every session has — the child's whole defect was that
+        // this call was a bare `submit`.** The operator's requirement, in their
+        // words: *"subagent is a normal session. it must be able to compact on tool
+        // call overrun"*. A bare `submit` returns `ContextWall` as an error and
+        // nothing behind this line reacts to it — the child's task failed with a
+        // notice promising a compaction nothing attempted (measured 2026-10-06:
+        // 207 rounds, 1,131,717 of 1,146,137 tokens, one transcript, no fork).
+        // [`Harness::submit_as_a_normal_session`] compacts at the wall and
+        // continues on the summary, bounded; a wall it cannot dig out of still
+        // comes back here as the honest failure it is.
+        let reply = sub
+            .submit_as_a_normal_session(prompt)
+            .map_err(|e| fail(e.to_string()))?;
         let tokens: u64 = reply.metrics.iter().map(|m| m.predicted_tokens).sum();
         let first_line = reply.text.lines().next().unwrap_or("").to_string();
         self.tasks.record(crate::tasks::TaskEntry {
