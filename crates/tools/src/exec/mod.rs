@@ -95,7 +95,7 @@ pub use confine::{
     NsState, Presence, Seal, SealKind, Unconfined, ViewSpec,
 };
 pub use host::{HostProcesses, JobView, ProcessHost, Promotion, Protected, SpawnRequest, Waited};
-pub use jobs::{JobId, JobState, OutputSlice};
+pub use jobs::{JobId, JobState, OutputSlice, Stdin};
 pub use monitor::{
     ChannelCondition, CommandCondition, CommandExpect, Condition, CustomWatch, Fired, Firing,
     LogTailCondition, Monitor, MonitorError, Monitors, PortState, TimerCondition, Wait, Watch,

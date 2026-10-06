@@ -89,18 +89,25 @@ pub struct SpawnRequest {
     /// `ls --color=auto` colouring a directory is the whole point, and the model is
     /// reading tokens, where `ESC[01;34m` around every name is a cost it cannot see.
     ///
-    /// **Three things follow from it, and they follow from this one flag.**
+    /// **Four things follow from it, and they follow from this one flag.**
     ///
     /// | what | where | why |
     /// |---|---|---|
     /// | a pty on stdout and stderr instead of pipes | the spawn below, and [`super::pty`] | a pipe is not a terminal, so `ls --color=auto` prints plain |
     /// | their shell, interactive, instead of the host's | [`HostProcesses::with_console_shell`] | the alias that colours `ls` is shell state in a rc file, and no rc is read by `/bin/sh -c` |
     /// | their terminal's variables, and pagers that cannot page | [`super::console::env`], put on the request by `bash` | `TERM` and `LS_COLORS` describe the screen; `less` waits for a keystroke that cannot arrive |
+    /// | **a pipe on stdin the daemon holds, instead of `/dev/null`** | the spawn below, and [`super::jobs::Stdin`] | the fourth thing *a person is there* means: a program that asks a question can be **answered**, and `/dev/null` is an EOF that is not a `Y` |
     ///
-    /// It is one flag and not three because it is one fact — *a person typed this and
-    /// is looking at a screen* — and three flags with the same value are three things
+    /// It is one flag and not four because it is one fact — *a person typed this and
+    /// is looking at a screen* — and four flags with the same value are four things
     /// a later edit can make disagree. [`super::console`] carries the decision, what
     /// it changes, and why a model's call gets none of it.
+    ///
+    /// **The fourth is the newest and it is the one with a cost.** A model's run reads
+    /// `/dev/null` and gets EOF; the operator's reads a pipe and **waits**, which is the
+    /// whole point and is also a behaviour change for a command that never wanted an
+    /// answer (`! cat`, `! grep x`). It is stated at the spawn and in
+    /// [`super::jobs::Stdin`] rather than left to be discovered.
     pub tty: bool,
 }
 
@@ -877,11 +884,32 @@ impl ProcessHost for HostProcesses {
             cmd.arg(s);
         }
         cmd.arg(&req.command);
-        cmd.current_dir(&cwd).stdin(Stdio::null());
+        // **stdin, which is the pipe the daemon holds for the operator's own run and
+        // `/dev/null` for everything else.**
+        //
+        // The second half is the older rule and it is unchanged: a command that reads
+        // stdin must get EOF rather than wait for a person who is not there. The first
+        // half is what makes the operator's own run *answerable* — see
+        // [`super::jobs::Stdin`] for the defect (`! sudo apt install mc` aborting at
+        // `Continue? [Y/n]` because EOF is not a `Y`) and for what the handle is.
+        //
+        // **The cost, said rather than discovered: a `!` command that reads stdin now
+        // blocks instead of exiting at once.** `! cat` with no argument used to print
+        // nothing and return; it now waits for a line, and its deadline (120 s, the
+        // `bash` default) is what ends it if the operator never sends one. That is the
+        // price of the feature and not a defect in it: the operator asked for a run that
+        // can be *answered*, and a run that can be answered is a run that waits.
+        cmd.current_dir(&cwd);
+        if req.tty {
+            cmd.stdin(Stdio::piped());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
         // **A terminal on the output side, for the operator's own run** — see
         // [`SpawnRequest::tty`] for who gets it and why, and [`super::pty`] for what it
-        // buys and what it costs. stdin is `/dev/null` either way: a command that reads
-        // it must get EOF rather than wait for a person who is not there.
+        // buys and what it costs. stdin is the pipe above either way: a command that
+        // reads it is answered by the operator when it is theirs, and gets EOF when it
+        // is a model's.
         //
         // A box where the pty cannot be opened falls back to pipes rather than refusing:
         // the terminal is what the operator's colour needs, not what the command needs,
@@ -969,6 +997,19 @@ impl ProcessHost for HostProcesses {
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
 
+        // **The write end of the child's stdin, out of the `Command` and into the job.**
+        //
+        // Taken here for the same reason the two `Stdio::null`s above are set here: the
+        // `Command` is about to go out of scope, and a write end left in it would be a
+        // pipe the daemon holds no handle on. `None` on every run whose stdin is
+        // `/dev/null` — which is every run but the operator's own — and
+        // [`super::jobs::Stdin::none`] is how that absence travels rather than as an
+        // `Option` every reader would have to unwrap.
+        let stdin = match child.stdin.take() {
+            Some(w) => super::jobs::Stdin::pipe(w),
+            None => super::jobs::Stdin::none(),
+        };
+
         let job = Arc::new(Job::new(
             id.clone(),
             req.command.clone(),
@@ -984,6 +1025,7 @@ impl ProcessHost for HostProcesses {
             req.cwd.clone(),
             pid,
             self.capture_bytes,
+            stdin,
         ));
 
         let out = child.stdout.take();
@@ -1709,6 +1751,100 @@ mod tests {
         let out = h.output(&id, 0, 4096).unwrap();
         let text = String::from_utf8(out.bytes).unwrap();
         assert!(text.starts_with("be=\npath=/"), "{text}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// **The operator's own run can be ANSWERED** — the whole of the branch, measured on
+    /// the real spawn path.
+    ///
+    /// The defect: `! sudo apt install mc` streamed its progress and then aborted at
+    /// `Continue? [Y/n]`, because fd 0 was `/dev/null` and an EOF is not a `Y`. The fix is
+    /// one line in `spawn` — a pipe on stdin when [`SpawnRequest::tty`] is set — and this is
+    /// the test that would have failed before it: the command **reads** its stdin, the
+    /// handle comes out of the job the spawn returned, a line goes in, and the command
+    /// finishes with that line in its output.
+    ///
+    /// **The control is in the same test, and it is the half that keeps the older rule.**
+    /// The identical command with `tty: false` has `/dev/null` for stdin, so its handle is
+    /// [`super::super::jobs::Stdin::none`] and the send is refused with a sentence rather
+    /// than writing into a pipe nobody holds. Without that half, a `spawn` that gave
+    /// *every* job a pipe would pass — and a model's `bash` call that reads stdin would
+    /// block for two minutes instead of getting EOF.
+    #[test]
+    fn the_operators_own_run_has_a_stdin_a_line_can_be_sent_to() {
+        // **The cgroup is apparatus** — the same skip the test above makes, for the same
+        // reason: a container with no delegatable cgroup v2 subtree is a fact about the
+        // machine and not a failure of this claim.
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a cgroup v2 tree",
+            letibot_tools::Cgroup2::probe().is_ok(),
+        ) else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("letibot-stdin-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let h = HostProcesses::new(&root).expect("this box has a cgroup v2 tree");
+        // `read` is a builtin in every shell this host can be configured with, so the
+        // assertion does not depend on anything outside the pinned PATH — the same rule
+        // the test above keeps for `printf`.
+        let command = "read answer; printf 'answered=%s\\n' \"$answer\"";
+        let spawn = |tty: bool| {
+            h.spawn(&SpawnRequest {
+                command: command.into(),
+                cwd: "/".into(),
+                scope: ScopeKind::Turn,
+                scope_name: None,
+                background: false,
+                env: vec![],
+                tty,
+            })
+            .unwrap()
+        };
+
+        // ---- The operator's own run: a pipe, and the line reaches the command.
+        let id = spawn(true);
+        let handle = h.job_handle(&id).expect("the job the spawn returned");
+        let stdin = handle.stdin();
+        assert!(
+            stdin.is_open(),
+            "the operator's own run must have a stdin the daemon holds"
+        );
+        stdin.send_line("Y").expect("the line reaches the command");
+        let waited = h.wait_job(&id, std::time::Duration::from_secs(30)).unwrap();
+        let Waited::Happened { state, .. } = waited else {
+            panic!("the answered command did not finish inside 30s: {waited:?}");
+        };
+        assert_eq!(
+            state,
+            Some(JobState::Exited { code: 0 }),
+            "the command read the line and exited"
+        );
+        let text = h.output(&id, 0, 4096).unwrap().text();
+        assert!(
+            text.contains("answered=Y"),
+            "the answer must reach the command's own stdin: {text:?}"
+        );
+
+        // ---- The control: a model's run is unchanged, and the send says so.
+        let id = spawn(false);
+        let handle = h.job_handle(&id).expect("the job the spawn returned");
+        let stdin = handle.stdin();
+        assert!(
+            !stdin.is_open(),
+            "a run that is not the operator's must keep /dev/null on stdin"
+        );
+        let refused = stdin.send_line("Y").unwrap_err();
+        assert!(
+            refused.contains("/dev/null"),
+            "the refusal must name what is missing: {refused}"
+        );
+        // And it got EOF rather than waiting, which is the older rule intact: the command
+        // ran `read` against `/dev/null` and exited at once.
+        let waited = h.wait_job(&id, std::time::Duration::from_secs(30)).unwrap();
+        assert!(
+            matches!(waited, Waited::Happened { .. }),
+            "a model's run must not wait for a person who is not there: {waited:?}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 }
