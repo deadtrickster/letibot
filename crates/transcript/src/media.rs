@@ -56,12 +56,24 @@ pub fn encode_base64(bytes: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(A[(n >> 18) as usize & 63] as char);
         out.push(A[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { A[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { A[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            A[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            A[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -181,7 +193,9 @@ impl Media {
     /// megabyte of it through every renderer, every `grep` over the log, and every scrollback.
     pub fn summary(&self) -> String {
         match (self.width, self.height) {
-            (Some(w), Some(h)) => format!("image {} {w}×{h} · {} KiB", self.mime, self.bytes / 1024),
+            (Some(w), Some(h)) => {
+                format!("image {} {w}×{h} · {} KiB", self.mime, self.bytes / 1024)
+            }
             _ => format!("image {} · {} KiB", self.mime, self.bytes / 1024),
         }
     }
@@ -231,7 +245,9 @@ fn dimensions(mime: &str, bytes: &[u8]) -> (Option<u32>, Option<u32>) {
     match mime {
         // IHDR is the first chunk: 8 bytes of signature, 4 of length, 4 of type, then w and h.
         "image/png" if bytes.len() >= 24 => {
-            let be = |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+            let be = |at: usize| {
+                u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+            };
             (Some(be(16)), Some(be(20)))
         }
         // A JPEG is a walk: SOI, then a chain of markers, and the frame header (SOF0…SOF3, SOF5…SOF7,
@@ -304,9 +320,9 @@ pub fn media_in_order(items: &[crate::TranscriptItem]) -> Vec<String> {
     let mut out = Vec::new();
     for item in items {
         match item {
-            crate::TranscriptItem::ToolResult {
-                media: Some(m), ..
-            } => out.push(m.wire_base64().to_string()),
+            crate::TranscriptItem::ToolResult { media: Some(m), .. } => {
+                out.push(m.wire_base64().to_string())
+            }
             crate::TranscriptItem::User { parts, .. } => {
                 for p in parts {
                     if let crate::UserPart::Image { data_ref, .. } = p {
@@ -383,11 +399,17 @@ mod tests {
 
     #[test]
     fn the_other_three_supported_types_sniff_by_magic() {
-        assert_eq!(sniff_mime("a", b"\xff\xd8\xff\xe0something"), Some("image/jpeg"));
+        assert_eq!(
+            sniff_mime("a", b"\xff\xd8\xff\xe0something"),
+            Some("image/jpeg")
+        );
         assert_eq!(sniff_mime("a", b"GIF89a______"), Some("image/gif"));
         assert_eq!(sniff_mime("a", b"GIF87a______"), Some("image/gif"));
         // RIFF has a length between the tag and the form, so the check cannot be a prefix.
-        assert_eq!(sniff_mime("a", b"RIFF\x24\x00\x00\x00WEBPVP8 "), Some("image/webp"));
+        assert_eq!(
+            sniff_mime("a", b"RIFF\x24\x00\x00\x00WEBPVP8 "),
+            Some("image/webp")
+        );
         assert_eq!(sniff_mime("a", b"RIFF\x24\x00\x00\x00WAVEfmt "), None);
     }
 
@@ -397,7 +419,11 @@ mod tests {
         assert_eq!((m.width, m.height), (Some(1920), Some(1080)));
         assert_eq!(m.mime, "image/png");
         assert_eq!(m.bytes, 33, "the size is the FILE's, not the base64's");
-        assert!(m.data_ref.starts_with("data:image/png;base64,"), "{}", m.data_ref);
+        assert!(
+            m.data_ref.starts_with("data:image/png;base64,"),
+            "{}",
+            m.data_ref
+        );
         assert!(m.summary().contains("1920×1080"), "{}", m.summary());
 
         // A JPEG: SOI, an APP0 segment to be walked over, then SOF0 with the size. The segment
@@ -436,7 +462,11 @@ mod tests {
         assert_eq!(at(64, 64), Some(4), "4 kilopixels");
         assert_eq!(at(1024, 1024), Some(1024), "1.05 MP");
         assert_eq!(at(2048, 2048), Some(4096), "4.19 MP is exactly the cap");
-        assert_eq!(at(4096, 4096), Some(4096), "and above it the server RESIZES, so it stays 4096");
+        assert_eq!(
+            at(4096, 4096),
+            Some(4096),
+            "and above it the server RESIZES, so it stays 4096"
+        );
         // Absent rather than zero — see the method's own note.
         let no_size = Media {
             mime: "image/gif".into(),
