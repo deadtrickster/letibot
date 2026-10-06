@@ -1552,6 +1552,13 @@ pub enum ServerFrame {
     /// the work there is"*, which is false.
     MergeQueue {
         entries: Vec<crate::event::MergeEntry>,
+        /// **The verdicts, beside the entries.** `serde(default)` and additive: a head older
+        /// than the field reads past it and draws the queue without the reviews, which is what
+        /// it did before — and a daemon older than it sends none, which is not an error but
+        /// *nobody recorded one*. See [`crate::event::MergeReview`] for why it travels here
+        /// rather than inside an entry.
+        #[serde(default)]
+        reviews: Vec<crate::event::MergeReview>,
     },
     Peeked {
         session_id: String,

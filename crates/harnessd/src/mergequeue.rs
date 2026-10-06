@@ -483,6 +483,35 @@ pub fn wire_state(state: MergeState) -> letibot_sessionlog::event::MergeState {
     }
 }
 
+/// **One verdict, as the wire spells it** — the pane's read, and a copy rather than a re-export
+/// for the reason [`wire_entry`] is one: the head draws the reviewer's answer and must not be
+/// able to write one.
+pub fn wire_review(rec: &letibot_tokencore::store::ReviewRecord) -> letibot_sessionlog::event::MergeReview {
+    letibot_sessionlog::event::MergeReview {
+        entry_id: rec.entry_id.clone(),
+        session_id: rec.session_id.clone(),
+        branch: rec.branch.clone(),
+        base_sha: rec.base_sha.clone(),
+        asked_ms: rec.asked_ms,
+        answered_ms: rec.answered_ms,
+        // **The word travels as the word.** The closed set is the gatekeeper's, and a head
+        // that rendered an unknown word as *rejected* would be inventing a decision — the pane
+        // prints what is on the row and lets a reader see that it is not one of the three.
+        decision: rec.decision.clone(),
+        reasons: rec.reasons.clone(),
+        files: rec.files.clone(),
+        commands: rec.commands.clone(),
+    }
+}
+
+/// **Every verdict, as the wire spells them** — beside [`wire_queue`] because the pane reads
+/// the two together: a queue without its verdicts cannot say why an entry is parked.
+pub fn wire_reviews(
+    recs: &[letibot_tokencore::store::ReviewRecord],
+) -> Vec<letibot_sessionlog::event::MergeReview> {
+    recs.iter().map(wire_review).collect()
+}
+
 // ===== The enqueue: what a finished `task_start` child leaves behind =====
 
 /// **The entry a finished `task_start` child leaves for the queue** — the row, built from the

@@ -399,6 +399,17 @@ pub trait SessionSource: Send + Sync {
     fn merge_entries(&self) -> Vec<crate::event::MergeEntry> {
         Vec::new()
     }
+
+    /// **The reviewer's verdicts, whole, for a head's bootstrap read** — the other half of what
+    /// the queue pane draws, and the reason it travels beside the entries rather than inside
+    /// one: see [`crate::event::MergeReview`].
+    ///
+    /// The default is empty for the reason [`Self::merge_entries`]' is: a source with no store
+    /// has no queue, and a queue nobody has reviewed has no verdicts — from the outside these
+    /// are the same state, and the pane says *nobody has asked* about an entry either way.
+    fn merge_reviews(&self) -> Vec<crate::event::MergeReview> {
+        Vec::new()
+    }
 }
 
 struct Entry {
@@ -943,6 +954,13 @@ impl Registry {
     /// `session_id`.
     pub fn merge_entries(&self) -> Vec<crate::event::MergeEntry> {
         self.source().map(|s| s.merge_entries()).unwrap_or_default()
+    }
+
+    /// The reviewer's verdicts, whole, from the source — see [`SessionSource::merge_reviews`].
+    /// Beside [`Self::merge_entries`] because the two answer the two halves of one question and
+    /// a pane that asked for one without the other would draw a verdict-less queue.
+    pub fn merge_reviews(&self) -> Vec<crate::event::MergeReview> {
+        self.source().map(|s| s.merge_reviews()).unwrap_or_default()
     }
 
     /// **Publish one event to EVERY session's log** — the door a daemon-level fact takes, and

@@ -253,6 +253,47 @@ pub struct MergeEntry {
     pub landed_sha: Option<String>,
 }
 
+/// **The reviewer's verdict on one entry, on the wire** — a copy of
+/// `letibot_tokencore::store::ReviewRecord`, for the reason [`MergeEntry`] is a copy of its own
+/// row: the head draws it and must not be able to write one.
+///
+/// **It travels beside the entries rather than inside one**, and the two are the two questions
+/// a reader asks: *what is the queue* (the entries) and *what did the reviewer say about it*
+/// (this). An entry can have no review at all — nobody has asked — which is a different fact
+/// from a review with no verdict yet, and `decision: None` is what tells them apart.
+///
+/// The pane's Enter opens this: a verdict without its reasons and the evidence it was based on
+/// is an opinion, so `reasons`, `files` and `commands` travel with the word.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeReview {
+    /// The entry this verdict is about.
+    pub entry_id: String,
+    /// The session that reviewed it — the one a person attaches to when they want to read the
+    /// argument rather than the verdict.
+    pub session_id: String,
+    /// The branch judged.
+    pub branch: String,
+    /// The base SHA judged.
+    pub base_sha: String,
+    /// When the reviewer was asked, Unix ms.
+    pub asked_ms: u64,
+    /// When the verdict came back, Unix ms. `None` while the review is outstanding.
+    #[serde(default)]
+    pub answered_ms: Option<u64>,
+    /// `accept`, `reject` or `needs_human`, or `None` for a review that has not answered.
+    #[serde(default)]
+    pub decision: Option<String>,
+    /// The reviewer's reasons, in its own words.
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    /// The files the reviewer read.
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// The commands the reviewer ran.
+    #[serde(default)]
+    pub commands: Vec<String>,
+}
+
 /// Why generation stopped.
 ///
 /// Shaped to match `letibot_turn::FinishReason` exactly, `Other` and its string

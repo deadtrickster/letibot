@@ -2786,6 +2786,25 @@ impl SessionSource for StoreSessions {
         crate::mergequeue::wire_queue(&rows)
     }
 
+    /// **The reviewer's verdicts, whole, for a head's bootstrap read** — the other half of what
+    /// the queue pane draws.
+    ///
+    /// The same posture as [`SessionSource::merge_entries`], one table over: a read that FAILED
+    /// is said out loud rather than answered as empty, because a pane drawing no verdicts over a
+    /// store that could not be read is the same confusion between *nobody asked* and *nothing is
+    /// there* that the whole queue is written to avoid.
+    fn merge_reviews(&self) -> Vec<letibot_sessionlog::event::MergeReview> {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let rows = match g.reviews() {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("  merge queue: the verdicts could not be read: {e}");
+                return Vec::new();
+            }
+        };
+        crate::mergequeue::wire_reviews(&rows)
+    }
+
     fn list(&self) -> Vec<StoredBrief> {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
         g.list_sessions()
