@@ -651,7 +651,8 @@ pieces, with the two that mattered made testable.**
     can `task_result`/`job_kill`/list every handle in its tree — without it the root is *told* about
     a grandchild's settlement and answered *"no subagent … in this session"* when it asks.
 
-Tests: `a_grandchilds_settlement_rings_the_tree_root` (jobwatch) drives a depth-2 settlement
+Tests: `a_grandchilds_settlement_reaches_its_parent_and_rings_its_parent` (jobwatch — renamed
+2026-10-06; the ring half of that sentence is the CORRECTION below) drives a depth-2 settlement
 through the CHILD's set and asserts the completion lands on the tree's queue and the ring names the
 root; `the_depth_cap_refuses_the_spawn_one_past_it_by_name` (harness) pins the boundary; 
 `the_coder_seat_names_the_delegation_pair` (runtime) pins the seating; and the plan-mode fixture
