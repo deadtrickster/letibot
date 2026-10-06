@@ -42,7 +42,7 @@ use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
 use letibot_sessionlog::protocol::{Ack, Caps, ServerFrame};
 use letibot_sessionlog::wire::FrameReader;
 
-use crate::app::{Action, App, Disposition, Key};
+use crate::app::{Action, App, Disposition, Key, WAY_OUT};
 
 /// Where the terminal's caret belongs: `(row, column)`, zero-based, or nowhere.
 pub type Caret = Option<(usize, usize)>;
@@ -79,6 +79,20 @@ pub struct Link {
     /// itself, not a number read out of a file that may be stale or belong to an older
     /// daemon with the same workspace. `None` when the kernel would not say.
     daemon_pid: Option<i32>,
+    /// **A way out the operator pressed while there was no pane to leave.**
+    ///
+    /// The byte is looked for on the stream the reader consumed, and one read can carry
+    /// both the keystroke that opens the pane and the `ctrl-\` after it — `!term nano` +
+    /// Enter + the way out, coalesced by the tty. The pane is not open yet when that read
+    /// is handled, and `term.rs`'s decoder has no arm for `0x1c`, so the byte would be
+    /// eaten on its `_ => i += 1` arm and the pane would open with no way out of it.
+    /// Measured on a live head: the pane opened and stayed open, with nano in it and no
+    /// key that would end it.
+    ///
+    /// So the byte is *kept* rather than acted on, and spent on the next tick where a
+    /// pane is open — which is the same tick the pane opened in, from the Enter in the
+    /// same read, or the next one, if the open was the daemon's `TermAttached`.
+    way_out: bool,
 }
 
 /// **Which process is at the other end of this socket.**
@@ -290,6 +304,7 @@ impl Link {
             identity,
             socket_path,
             daemon_pid,
+            way_out: false,
         }
     }
 
@@ -492,6 +507,40 @@ impl Link {
                     actions.push(a);
                 }
             }
+            // **And the same read can carry the keystroke that opens the pane and the way
+            // out of it.** This is the one hole the branch above leaves, and it is a hole
+            // with no exit from it: `!term nano` + Enter + `ctrl-\` in one coalesced tty
+            // read begins with no pane, so the whole stream goes down `App::key` — and
+            // `term.rs`'s decoder has no arm for `0x1c`, so it eats the byte on its
+            // `_ => i += 1` arm and the pane opens a moment later **with no way out at
+            // all**. A person in a full-screen program whose one way out was dropped before
+            // anything looked for it is stuck with no key that ends it, which is the whole
+            // reason the way out is intercepted on the byte stream rather than decoded.
+            //
+            // So the byte is not looked for once and thrown away: it is **kept**, and it is
+            // spent on the pane that opens. Measured on a live head before this: `!term
+            // nano` and `ctrl-\` written as one read opened the pane and left it open, with
+            // nano drawing in it and no key that would end it.
+            if raw.contains(&WAY_OUT) {
+                if app.pane_open() {
+                    actions.extend(
+                        app.pane_keys(&raw[raw.iter().position(|b| *b == WAY_OUT).unwrap_or(0)..]),
+                    );
+                } else {
+                    // The pane is not open *yet* — it is about to be, from the Enter above,
+                    // or the daemon's `TermAttached` has not landed. The operator asked to
+                    // leave; the next tick answers.
+                    self.way_out = true;
+                }
+            }
+        }
+        // **A way out the operator pressed while there was no pane to leave is still a way
+        // out.** Spent here, before the frame is drawn, so the pane it belongs to closes in
+        // the same tick it appears rather than standing there with the operator's key
+        // already eaten.
+        if self.way_out && app.pane_open() {
+            self.way_out = false;
+            actions.extend(app.pane_keys(&[WAY_OUT]));
         }
         // **And the pane's rectangle is not asked for here.** The pane is resized by
         // `compose_screen`, which is the only layer that knows how many rows the pane actually

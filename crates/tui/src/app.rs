@@ -1960,10 +1960,14 @@ struct CallRow {
 /// **The way out of a pane: `Ctrl-\`.** See [`TermPane`] for why this byte and not `Esc`.
 ///
 /// It is looked for on the raw byte stream, before anything is forwarded, so the program never
-/// receives it — see [`App::pane_keys`]. `0x1c` is `FS` in ASCII and `QUIT` only under `ISIG`,
-/// which raw mode clears; it is one of the three bytes `term.rs`'s decoder has no arm for, and
-/// its own comment says so.
-const WAY_OUT: u8 = 0x1c;
+/// receives it — see [`App::pane_keys`], and `Link::tick`, which looks for it on every read and
+/// not only on the reads where the pane was already open. `0x1c` is `FS` in ASCII and `QUIT`
+/// only under `ISIG`, which raw mode clears; it is one of the three bytes `term.rs`'s decoder
+/// has no arm for, and its own comment says so.
+///
+/// `pub` because the interception is the driver's as much as the app's: the byte is a fact
+/// about the stream, and `Link::tick` is where the stream is routed.
+pub const WAY_OUT: u8 = 0x1c;
 
 /// **The pane: a program that owns the screen, drawn in the conversation's rectangle.**
 ///
