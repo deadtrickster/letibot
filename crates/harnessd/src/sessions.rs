@@ -41,7 +41,10 @@ use std::time::{Duration, Instant};
 use letibot_sessionlog::hub::{CommandKind, QueuedCommand};
 use letibot_sessionlog::registry::{Registry, SessionSource, SessionWiring, StoredBrief};
 use letibot_sessionlog::{SessionEvent, hub::Hub};
-use letibot_tokencore::store::Store;
+use letibot_tokencore::store::{Store, TodoItem};
+// **The plan's own text, and the queue it is served from** — the one renderer, so the idle check
+// and the tool's reply cannot come to describe two different plans.
+use letibot_tools::builtins::todo::unfinished_plan;
 use std::sync::{Arc, Mutex};
 
 use crate::config::Config;
@@ -99,8 +102,41 @@ pub(crate) const WALL_CONTINUES: usize = 3;
 /// with something else is not idle.
 const TODO_NAG_AFTER: Duration = Duration::from_secs(60);
 
-/// Should the idle check be armed for a session whose plan reads NOTICE, given what it was
-/// last NAGGED with?
+/// **Whether a row is work the idle plan-check may speak about.**
+///
+/// The operator's ask, in their own words: *"can we handle postponed todo item properly? i.e. they
+/// persist but without nag and with some counter visible to me"*. A POSTPONED row is one they set
+/// aside: it stays on the board, the model still sees it (marked), and the whole of what the state
+/// means is that it stops asking. So it is not work this check may speak about — while a `Pending`
+/// or an `InProgress` row is, whoever wrote it.
+///
+/// **Beside `nag_should_arm` because it is the same decision**, and a free function for the same
+/// reason that one is: the rule is the whole of the behaviour, and a rule that can only be
+/// exercised through a daemon is a rule tested by accident. Three readers, one definition — the
+/// arming decision below, `Harness::nag_notice` (the `[todo check]` text) and `due_rows` (the
+/// `[todo] … is due` firing).
+pub(crate) fn the_check_may_ask_about(row: &TodoItem) -> bool {
+    !matches!(
+        row.status,
+        letibot_tokencore::store::TodoStatus::Completed
+            | letibot_tokencore::store::TodoStatus::Postponed
+    )
+}
+
+/// **The plan as the idle check reads it** — every row, minus the ones it may not speak about.
+///
+/// **This is where a plan is narrowed, and deliberately the only place.** `unfinished_plan` renders
+/// whatever it is handed, so the narrowing has to happen before the message and not inside it; two
+/// functions each deciding what a plan *is* is the two-answers failure this tree refuses, and a
+/// postponed row reaching the queue would be named as the next thing to do.
+pub(crate) fn the_plan_as_checked(rows: &[TodoItem]) -> Vec<TodoItem> {
+    rows.iter()
+        .filter(|row| the_check_may_ask_about(row))
+        .cloned()
+        .collect()
+}
+
+/// Should the idle check be armed for a plan of these ROWS, given what it was last NAGGED with?
 ///
 /// **The whole schedule's decision, as one predicate, and it exists so the rule can be
 /// tested without a daemon.** Both halves are load-bearing: a finished (or absent) plan has
@@ -108,9 +144,15 @@ const TODO_NAG_AFTER: Duration = Duration::from_secs(60);
 /// the operator called overkill, at a slower rate instead of a faster one. A model that ignores
 /// the check therefore gets silence rather than a metronome, while any real work on the plan
 /// earns a fresh check at the next idle period.
-fn nag_should_arm(notice: Option<&str>, nagged: Option<&str>) -> bool {
-    match notice {
-        Some(text) => nagged != Some(text),
+///
+/// **It takes the ROWS and not a rendered notice**, and that is what makes the third half of the
+/// rule — *a postponed row does not arm this* — assertable as a predicate instead of through a
+/// session. The reading it takes (`the_plan_as_checked`) is the same one `Harness::nag_notice`
+/// takes, so a plan whose only unfinished row is postponed is silent on both counts: no clock, and
+/// no `[todo check]` text to send if one were armed by an earlier state of the plan.
+fn nag_should_arm(todos: &[TodoItem], nagged: Option<&str>) -> bool {
+    match unfinished_plan(&the_plan_as_checked(todos)) {
+        Some(text) => nagged != Some(text.as_str()),
         None => false,
     }
 }
@@ -1181,12 +1223,17 @@ impl<'a> Sessions<'a> {
     /// already been said — re-sending it is the nagging the operator called overkill, just at a
     /// slower rate. So a model that ignores the check gets silence rather than a metronome, while
     /// any real work on the plan earns a fresh check at the next idle period.
+    ///
+    /// **The rows are handed over whole and `nag_should_arm` does the reading**, so the decision
+    /// about what the check may ask about — a postponed row is not it — lives in one place rather
+    /// than being pre-applied here and asserted somewhere else.
     fn rearm_todo_nag(&mut self, session_id: &str) {
-        let notice = self.open.get(session_id).and_then(|h| h.nag_notice());
-        if nag_should_arm(
-            notice.as_deref(),
-            self.nagged.get(session_id).map(String::as_str),
-        ) {
+        let rows = self
+            .open
+            .get(session_id)
+            .map(|h| h.todo_list())
+            .unwrap_or_default();
+        if nag_should_arm(&rows, self.nagged.get(session_id).map(String::as_str)) {
             self.nag_due
                 .insert(session_id.to_string(), Instant::now() + TODO_NAG_AFTER);
         } else {
@@ -2051,6 +2098,9 @@ impl<'a> Sessions<'a> {
                             letibot_sessionlog::event::TodoStatus::Completed => {
                                 letibot_tokencore::store::TodoStatus::Completed
                             }
+                            letibot_sessionlog::event::TodoStatus::Postponed => {
+                                letibot_tokencore::store::TodoStatus::Postponed
+                            }
                         },
                         by: letibot_tokencore::store::TodoBy::Operator,
                     })
@@ -2858,38 +2908,123 @@ mod idle_nag {
     //! The first was the turn-boundary check firing after every exchange; the second is the
     //! timeout; the third is the boundary condition the timeout must not violate, and it is
     //! `Sessions::note_operator_prompt`'s job.
+    //!
+    //! **And the fourth half is the state**: *"can we handle postponed todo item properly? i.e.
+    //! they persist but without nag"*. A row the operator has set aside is not work this check may
+    //! speak about, and that is asserted below as a predicate over ROWS — which is the only way it
+    //! can be told from a check that merely failed to arm.
     use super::nag_should_arm;
+    use letibot_tokencore::store::{TodoBy, TodoItem, TodoStatus};
+
+    /// One row of a plan, as the board holds it. The operator's half, because that is the half a
+    /// postponed row is written from.
+    fn row(content: &str, status: TodoStatus) -> TodoItem {
+        TodoItem {
+            content: content.into(),
+            status,
+            by: TodoBy::Operator,
+            when: None,
+        }
+    }
 
     /// A plan with nothing open is not a plan to nag about.
     #[test]
     fn a_finished_plan_is_never_armed() {
-        assert!(!nag_should_arm(None, None));
+        assert!(!nag_should_arm(&[], None), "no plan at all");
         // even if something WAS nagged before and has since been finished
-        assert!(!nag_should_arm(None, Some("[todo check] 2 of 3")));
+        assert!(!nag_should_arm(&[], Some("[todo check] 2 of 3")));
+        // and a plan whose rows are all answered
+        assert!(!nag_should_arm(&[row("done", TodoStatus::Completed)], None));
     }
 
     /// The first idle period after real work: armed.
     #[test]
     fn an_unfinished_plan_is_armed_once() {
-        assert!(nag_should_arm(Some("2 of 3 not"), None));
+        assert!(nag_should_arm(&[row("open", TodoStatus::Pending)], None));
     }
 
     /// **And silence after that, while the plan says the same thing.** This is the difference
     /// between a schedule and a metronome: a model that has been told and has not acted must not
     /// be told again every minute.
+    ///
+    /// The last-sent text is taken from the plan itself rather than written by hand, because that
+    /// is what the schedule actually stores — a hand-written string would test the comparison
+    /// against something this plan could never produce.
     #[test]
     fn an_unchanged_plan_is_not_armed_again() {
-        assert!(!nag_should_arm(Some("2 of 3 not"), Some("2 of 3 not")));
+        let plan = [row("open", TodoStatus::Pending)];
+        let sent = super::unfinished_plan(&super::the_plan_as_checked(&plan)).expect("open work");
+        assert!(!nag_should_arm(&plan, Some(&sent)));
     }
 
     /// Any change at all is a new thing to say — an item closed, one started, one added.
     #[test]
     fn a_plan_that_moved_is_armed_again() {
-        assert!(nag_should_arm(Some("1 of 3 not"), Some("2 of 3 not")));
+        let plan = [row("open", TodoStatus::Pending)];
+        let sent = super::unfinished_plan(&super::the_plan_as_checked(&plan)).expect("open work");
         assert!(nag_should_arm(
-            Some("2 of 3 not (in progress)"),
-            Some("2 of 3 not")
+            &[row("open", TodoStatus::InProgress)],
+            Some(&sent)
         ));
+        assert!(nag_should_arm(
+            &[
+                row("open", TodoStatus::Pending),
+                row("added", TodoStatus::Pending)
+            ],
+            Some(&sent)
+        ));
+    }
+
+    /// **A POSTPONED row does not arm the check, and an ordinary one beside it does.**
+    ///
+    /// The operator's ask — a postponed item *"persists but without nag"* — and both directions
+    /// are load-bearing: the first assertion is the feature, and the second is what says the first
+    /// did not simply switch the check off for everything.
+    ///
+    /// **Tested here, as a predicate over rows and no session**, which is the reason
+    /// `nag_should_arm` exists at all: through a daemon, *silent because the row is postponed* and
+    /// *silent because nothing armed the clock* are the same observation.
+    #[test]
+    fn a_postponed_row_does_not_arm_the_check() {
+        assert!(
+            !nag_should_arm(&[row("later", TodoStatus::Postponed)], None),
+            "the one row is set aside, so there is nothing to check"
+        );
+        // **Even after the check spoke about it**, which is the transition a session really makes:
+        // the model was told, the operator then set the row aside, and the next idle period must
+        // be silent rather than repeat the sentence.
+        assert!(
+            !nag_should_arm(
+                &[row("later", TodoStatus::Postponed)],
+                Some("[todo check] this turn is finished and one item is not done:\n  - later")
+            ),
+            "a postponement is not a reason to say the same thing again"
+        );
+        // …and the ordinary row beside it is the control.
+        assert!(
+            nag_should_arm(&[row("now", TodoStatus::Pending)], None),
+            "an ordinary open row arms the check, so the silence above is the STATE and not a \
+             check that stopped working"
+        );
+
+        // **A mixed plan asks about the ordinary row and says nothing about the other one.** The
+        // reading is `the_plan_as_checked`, which is the same one `Harness::nag_notice` takes — so
+        // the row is neither named nor counted as open, which are the two ways a postponed row
+        // could still reach the model.
+        let mixed = [
+            row("now", TodoStatus::Pending),
+            row("later", TodoStatus::Postponed),
+        ];
+        let notice = super::unfinished_plan(&super::the_plan_as_checked(&mixed))
+            .expect("the ordinary row is open work");
+        assert!(
+            !notice.contains("later"),
+            "the check must not name a row the operator set aside: {notice}"
+        );
+        assert!(
+            !notice.contains("more open"),
+            "and must not count it among what is open either: {notice}"
+        );
     }
 }
 

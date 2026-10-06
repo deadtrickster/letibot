@@ -76,13 +76,23 @@ pub struct PromptProgress {
 /// is unchanged: same fields, same names.
 pub use letibot_transcript::ToolEditExcerpt as ToolEdit;
 
-/// A todo's state, on the wire. The same three words the store spells.
+/// A todo's state, on the wire. The same four words the store spells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
     Pending,
     InProgress,
     Completed,
+    /// **The operator set the row aside** — see
+    /// `letibot_tokencore::store::TodoStatus::Postponed` for the whole of what the state means: the
+    /// row persists, the model still sees it, and the idle check stops asking about it. A copy of
+    /// that type and not a re-export, for the reason [`TodoBy`] gives, so the word is spelled on
+    /// both sides and a variant added to one fails to compile on the other.
+    ///
+    /// **Added at `PROTOCOL_VERSION` 36**, and it is the bump case this file's own history
+    /// section names: no frame is added, and the number still moves, because a head built before
+    /// it cannot decode the word — and the failure is the whole frame, not the row.
+    Postponed,
 }
 
 /// **Who wrote a todo**, on the wire — the whole of the difference between the operator's items and

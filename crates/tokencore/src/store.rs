@@ -1345,6 +1345,13 @@ pub struct TodoItem {
     /// manually (which is more robust) if next steps depend on it or just do your things if it
     /// was just a timeline"*.
     ///
+    /// **A POSTPONED row KEEPS its condition and does not fire while it is postponed.** Nothing
+    /// here is cleared and nothing is guessed at: the condition is left exactly as it is, the
+    /// evaluator skips the row while the operator has it set aside, and lifting the postponement
+    /// hands the same question back to the evaluator. That is what makes the state reversible
+    /// rather than a quiet way to drop a firing — a postponed row that had lost its handle would
+    /// be a condition nobody could ever answer.
+    ///
     /// `None` is the ordinary row — a thing to do, not a thing to do *when* — and
     /// `serde(default)` makes every row already in a store read back that way.
     #[serde(default)]
@@ -1394,6 +1401,20 @@ pub enum TodoStatus {
     Pending,
     InProgress,
     Completed,
+    /// **Set aside by the OPERATOR — the row persists, and it stops asking.**
+    ///
+    /// The operator's ask: *"can we handle postponed todo item properly? i.e. they persist but
+    /// without nag and with some counter visible to me"*. So this is a fourth word and not a
+    /// quieter spelling of one of the three: `Completed` is work that is answered, `Postponed` is
+    /// work still owed and deliberately not being asked for. The row stays on the board and the
+    /// model still sees it (marked), while the idle check stays silent about it — the `[todo
+    /// check]` nudge, the firing of a condition it carries, and the `[todo]` notice.
+    ///
+    /// **It is the operator's act and not the model's.** `todo_write` still takes the three other
+    /// words: a model that could postpone its own row would have a way to silence the check that
+    /// exists to stop it abandoning a plan, and that is the one thing the check must not offer.
+    /// Lifting it is the same act, spelled the other way — see the head's `/todo resume N`.
+    Postponed,
 }
 
 /// What a stable prefix was rendered from and by.
@@ -4145,6 +4166,60 @@ mod tests {
         // An empty write clears; the row remains and answers empty.
         s.put_todos("sess-1", &[]).unwrap();
         assert!(s.todos("sess-1").unwrap().is_empty());
+    }
+
+    /// **A postponed row is a row the store keeps, and the LIFT is the same round trip.**
+    ///
+    /// The operator's ask is that a postponed item *"persists"* — so the state has to survive the
+    /// one thing persistence means here, which is a write and a read. Asserted in both directions
+    /// because the two acts are one word apart and a store that read the lift back as a fresh
+    /// pending row would be the same defect wearing a shrug: the row's own words, its author and
+    /// its condition have to come back with it, or lifting a row would quietly lose the handle it
+    /// was waiting on.
+    ///
+    /// The spelling is asserted too: `postponed` is what a `sqlite3` reader sees in the row, the
+    /// same way `pending` and `completed` are.
+    #[test]
+    fn a_postponed_row_round_trips_through_the_store_and_so_does_lifting_it() {
+        let s = store();
+        let _seeded = seeded(&s);
+        let set_aside = TodoItem {
+            content: "push once CI lands".into(),
+            status: TodoStatus::Postponed,
+            by: TodoBy::Operator,
+            when: Some(TodoCondition::Job {
+                handle: "j121".into(),
+            }),
+        };
+        s.put_todos("sess-1", &[set_aside.clone()]).unwrap();
+        let back = s.todos("sess-1").unwrap();
+        assert_eq!(
+            back,
+            vec![set_aside],
+            "the postponed row, its author and its handle all survive the store"
+        );
+        // The word on the wire between this crate and `sqlite3`.
+        let raw: String = s
+            .conn
+            .query_row(
+                "SELECT todos_json FROM todo WHERE session_id = ?1",
+                params!["sess-1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            raw.contains(r#""status":"postponed""#),
+            "a store reader spells it the way every other status is spelled: {raw}"
+        );
+
+        // **And the lift.** Back to open work, which is a different row to the evaluator and to
+        // the idle check, and it must be a different row after a restart too.
+        let lifted = TodoItem {
+            status: TodoStatus::Pending,
+            ..s.todos("sess-1").unwrap().remove(0)
+        };
+        s.put_todos("sess-1", &[lifted.clone()]).unwrap();
+        assert_eq!(s.todos("sess-1").unwrap(), vec![lifted]);
     }
 
     #[test]

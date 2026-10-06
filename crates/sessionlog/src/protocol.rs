@@ -494,7 +494,30 @@ use crate::view::Snapshot;
 /// head's to hold: the pane is the session's, the command was typed at whatever head was
 /// there at the time, and the daemon is the half that knows. So the head asks, and
 /// [`ServerFrame::TermStatus`] answers with the command or with nothing.
-pub const PROTOCOL_VERSION: u32 = 34;
+///
+/// # 36: a todo row the operator can set ASIDE
+///
+/// [`crate::event::TodoStatus`] grows `Postponed`. **No frame is added, and the number still has
+/// to move**, by this file's own rule at 27: *"a new VARIANT is one it has no arm for at all"*, and
+/// `serde` has no catch-all on this enum — *"deliberately, so a head cannot silently skip a fact
+/// it does not understand"*. The word travels inside [`crate::SessionEvent::TodosUpdated`], which
+/// carries the whole list: a head built before this bump cannot DECODE `"postponed"`, and the
+/// failure takes every other row in the frame down with it, mid-session — the version-25 argument,
+/// arriving one level lower, at a field rather than at a variant. Both sides refuse the mismatch
+/// by name at ATTACH instead.
+///
+/// **What it is for, in the operator's words:** *"can we handle postponed todo item properly?
+/// i.e. they persist but without nag and with some counter visible to me"*. A postponed row is
+/// one the OPERATOR has set aside: it stays on the board, the model still sees it — marked `[p]`,
+/// with the mark's meaning spelled out under the list — and the idle check stops speaking about
+/// it, through one predicate the arming decision, the `[todo check]` text and the due-row filter
+/// all read. Setting a row aside and lifting it again are the operator's own acts
+/// (`/todo postpone|resume N`), so `todo_write` still takes the three words it took before.
+///
+/// **35 is skipped rather than spent.** It was reserved for `agent/agent-refresh` — a head
+/// re-seating itself asks the status read — and that branch has not landed, so the count steps
+/// over 35 here the way it steps over 4 for `session-resume`.
+pub const PROTOCOL_VERSION: u32 = 36;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -2408,8 +2431,17 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 34,
-            "the match above was last reconciled with the frame list at 34 — bumped for \
+            PROTOCOL_VERSION, 36,
+            "the match above was last reconciled with the frame list at 36 — bumped for \
+             `TodoStatus::Postponed`, a NEW VARIANT on an existing enum: **no frame is added and \
+             the number still has to move**, because a version-34 head cannot DECODE the word and \
+             the failure takes the whole `TodosUpdated`/`Todos` frame down with it (the \
+             version-25 argument, at the level of a field rather than of a variant). The operator \
+             can set a row ASIDE — it persists, the model still sees it marked, and the idle \
+             check stops asking — so the four words the store spells are four words a head has to \
+             be able to read. 35 is skipped rather than spent: it was reserved for \
+             `agent/agent-refresh` — a head that re-seats itself asks what its session's \
+             pane is running — and that branch has not landed. 34 was \
              `TermStatus`, one NEW client frame and one NEW server frame (a version-33 daemon \
              would fail to parse the first, a version-33 head would fail to decode the second \
              mid-session): `ctrl-\\` now DETACHES — it sends nothing at all — and `!term close` \
@@ -2696,6 +2728,19 @@ mod tests {
                     by: crate::event::TodoBy::Model,
                     when: None,
                 },
+                // **And the fourth word, which is the one a head has to read back to draw the
+                // state**: the row the operator set aside. Spelled here rather than only in the
+                // store's own test, because the two are separate copies of one vocabulary and
+                // this is the side a head sees — a `postponed` that a head could not parse would
+                // fail the whole frame, taking the rows beside it with it.
+                crate::event::TodoEntry {
+                    content: "push once CI lands".into(),
+                    status: crate::event::TodoStatus::Postponed,
+                    by: crate::event::TodoBy::Operator,
+                    when: Some(crate::event::TodoCondition::Job {
+                        handle: "j121".into(),
+                    }),
+                },
             ],
         };
         let json = serde_json::to_string(&f).unwrap();
@@ -2703,6 +2748,7 @@ mod tests {
         // reader and a head reader agree.
         assert!(json.contains(r#""status":"completed""#), "{json}");
         assert!(json.contains(r#""status":"in_progress""#), "{json}");
+        assert!(json.contains(r#""status":"postponed""#), "{json}");
         assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
     }
 

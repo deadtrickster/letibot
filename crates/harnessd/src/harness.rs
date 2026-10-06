@@ -5208,8 +5208,19 @@ impl<'a> Harness<'a> {
         }
     }
 
+    /// **The `[todo check]` text, or nothing** — and a row the operator has postponed is not part
+    /// of it.
+    ///
+    /// The rows are read through `sessions::the_plan_as_checked`, which is the same reading the
+    /// arming decision takes: a plan whose only unfinished row has been set aside is a plan with
+    /// nothing to check, and it must not produce this sentence **even if the clock was armed
+    /// before the row was postponed** — which is the one way a postponed row could still be
+    /// nagged about, and the reason this is filtered here rather than left to the arming alone.
+    /// One predicate, so the clock and the sentence cannot disagree about what the plan is.
     pub fn nag_notice(&self) -> Option<String> {
-        unfinished_plan(&self.todos.snapshot())
+        unfinished_plan(&crate::sessions::the_plan_as_checked(
+            &self.todos.snapshot(),
+        ))
     }
 
     /// **The plan's nudge as a turn of its own, when nothing else is happening.**
@@ -7518,6 +7529,7 @@ impl<'a> Harness<'a> {
                 letibot_tokencore::store::TodoStatus::Pending => WireTodoStatus::Pending,
                 letibot_tokencore::store::TodoStatus::InProgress => WireTodoStatus::InProgress,
                 letibot_tokencore::store::TodoStatus::Completed => WireTodoStatus::Completed,
+                letibot_tokencore::store::TodoStatus::Postponed => WireTodoStatus::Postponed,
             },
         }
     }
@@ -7874,14 +7886,34 @@ fn fate_of(live: Option<letibot_tools::exec::JobState>, record: Option<&JobRecor
 /// **Which of a board's rows the world now meets** — the filter and the pairing, apart from the
 /// harness that owns the rows and the world.
 ///
-/// The board is one union (`TodoBoard::snapshot`), so this walks the whole of it and skips two
-/// kinds: **a row with no condition is not this question's subject**, and **a running job is not
-/// due**. Those two skips are the whole of the policy, and they are here rather than in the caller
+/// The board is one union (`TodoBoard::snapshot`), so this walks the whole of it and skips four
+/// kinds: **a row with no condition is not this question's subject**, **a running job is not
+/// due**, and **a row the idle check may not speak about — one the operator has POSTPONED, or one
+/// already `Completed` — is not this question's subject either**. The postponed half is the
+/// operator's ask — a postponed item *"persists but without nag"* — and what it means for a
+/// conditioned row is exact: the handle is KEPT (nothing here clears it), the row does not fire
+/// while it is set aside, and lifting the postponement hands the same question back to this
+/// filter, which is what makes the state reversible rather than a quiet way to drop a firing.
+///
+/// **The fourth skip is this change's, and it is kept rather than reverted.** The skip reads
+/// `sessions::the_check_may_ask_about` — the same predicate the idle check arms on and the same
+/// one `Harness::nag_notice` reads through — and that predicate's whole answer is *the rows the
+/// check may speak about*, which are `Pending` and `InProgress`. Unifying the readers therefore
+/// stopped a `Completed` row that still carries a handle from firing, where this filter alone
+/// used to let it: a sentence telling the model that finished work is due, which is the nag the
+/// rest of the mechanism refuses to send. Reverting that would mean a second predicate and two
+/// answers to *what may the check ask about*; it is asserted below instead, so the widened answer
+/// is a decision on the record rather than a side effect nobody read.
+///
+/// Those skips are the whole of the policy, and they are here rather than in the caller
 /// so that the decision and the sentence [`fate_line`] writes for it cannot be tested apart from
 /// each other — which is what left this piece unasserted until now.
 fn due_rows(rows: &[TodoItem], fate: impl Fn(&str) -> JobFate) -> Vec<(String, String, JobFate)> {
     let mut out = Vec::new();
     for row in rows {
+        if !crate::sessions::the_check_may_ask_about(row) {
+            continue;
+        }
         let Some(letibot_tokencore::store::TodoCondition::Job { handle }) = &row.when else {
             continue;
         };
@@ -11569,6 +11601,20 @@ mod tests {
                 handle: handle.into(),
             })
         };
+        // **The same row, set aside.** Nothing else about it changes — the words, the author and
+        // the handle are `row`'s — so what the filter below is being asked about is the STATE and
+        // not some other difference between two fixtures.
+        let set_aside = |content: &str, when: Option<TodoCondition>| TodoItem {
+            status: TodoStatus::Postponed,
+            ..row(content, when)
+        };
+        // **The same row again, finished.** The fourth skip below, and it is the one this change
+        // widens rather than adds — see `due_rows`: the predicate is the idle check's, and a row
+        // that is already done is not work it may speak about.
+        let finished = |content: &str, when: Option<TodoCondition>| TodoItem {
+            status: TodoStatus::Completed,
+            ..row(content, when)
+        };
 
         // **The order of the two looks, which is the whole of the honesty.** The live table answers
         // first: only the process host can say a job runs *now*, so a record saying `running` — a
@@ -11608,13 +11654,26 @@ mod tests {
             "a job this daemon never heard of has ended; that is what a restart looks like"
         );
 
-        // **The filter, over a board the world answers for.** Two skips — a row with no condition,
-        // and a running job — and two firings, one of each kind of gone.
+        // **The filter, over a board the world answers for.** Four skips — a row with no
+        // condition, a running job, a row the operator has set aside, and a row already done — and
+        // two firings, one of each kind of gone.
         let rows = vec![
             row("ship the parity row", None),
             row("push once CI lands", waiting_on("j121")),
             row("wait for the build", waiting_on("j7")),
             row("after the restart", waiting_on("j900")),
+            // **A POSTPONED row does not fire, and it keeps its handle.** The handle is the same
+            // `j121` the row above is due on, so a firing here could only come from the state —
+            // and the absence of one is the whole of what *"persists but without nag"* means for
+            // a conditioned row. Nothing in `due_rows` clears the condition: lifting the
+            // postponement puts the row back in front of this same filter, which is what makes
+            // the state reversible rather than a quiet way to drop a firing.
+            set_aside("push once CI lands", waiting_on("j121")),
+            // **And a FINISHED row does not fire either**, again on `j121`, which is the same
+            // handle the open row above is due on: a firing here could only come from the state.
+            // The condition is not cleared by any of this, so the row keeps its handle — what the
+            // skip buys is silence about work that is over.
+            finished("push once CI lands", waiting_on("j121")),
         ];
         let due = due_rows(&rows, |handle| match handle {
             "j7" => JobFate::Running,
@@ -11639,8 +11698,9 @@ mod tests {
                     JobFate::Unknown
                 ),
             ],
-            "a row with no condition is not due, a running job is not due, and both kinds of gone \
-             are — with the handle the caller needs to consume the condition: {due:?}"
+            "a row with no condition is not due, a running job is not due, a row the operator \
+             postponed is not due, a row already done is not due, and both kinds of gone are — with \
+             the handle the caller needs to consume the condition: {due:?}"
         );
     }
 
