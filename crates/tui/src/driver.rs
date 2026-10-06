@@ -799,6 +799,29 @@ impl Link {
                     Action::Secret { req_id, secret } => {
                         self.client.secret(&req_id, secret)?;
                     }
+                    // **The operator's answer to a command that asked them something.**
+                    //
+                    // Off the queue and on this socket, for the sharpest version of the
+                    // reason `Action::TermInput` is: the daemon's worker is **blocked inside
+                    // the very command that is asking**, so a line queued behind that turn
+                    // would be drained by the thread waiting for it. No `client_request_id`
+                    // and nothing to wait for — the run's own output is the reply, and the
+                    // settlement comes back as a `PromptSettled` event like every other
+                    // change to the session's log.
+                    //
+                    // **Not `Action::Secret` and not a path to one.** What travels here is a
+                    // line for a program's stdin; a password has its own action and its own
+                    // frame, and the two must not be mergeable by a later edit.
+                    Action::PromptAnswer { req_id, line } => {
+                        self.client.prompt_answer(&req_id, &line)?;
+                    }
+                    // **The manual way in** — `!send`, one line to whatever command this
+                    // session is running. No card, no request id and no signal: a person
+                    // watching the stream can answer whether or not anything looked like a
+                    // question, which is what makes it the floor under the card.
+                    Action::SendLine { line } => {
+                        self.client.send_line(&line)?;
+                    }
                     // Leaving on purpose: a detach that fails is the socket that was
                     // already gone, which the loop is about to notice anyway. Not sent
                     // while a stop is in flight — see `App::wants_detach`.
