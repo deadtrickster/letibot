@@ -2,6 +2,7 @@
 
 use crate::app::*;
 use crate::render::{sgr, trim_to, wrap};
+use crate::ui::*;
 use letibot_sessionlog::registry::short_id;
 use letibot_ui::style::Role;
 use letibot_ui::text::without_control_lines;

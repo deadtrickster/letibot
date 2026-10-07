@@ -2,6 +2,7 @@
 
 use crate::app::*;
 use crate::render::{sgr, trim_to};
+use crate::ui::*;
 
 impl App {
     pub(crate) fn config_lines(&self, w: usize) -> Vec<String> {

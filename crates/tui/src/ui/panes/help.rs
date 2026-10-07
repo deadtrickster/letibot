@@ -1,7 +1,7 @@
 //! **The help screen** (`/help`).
 
-use crate::app::*;
 use crate::render::{RenderConfig, sgr, wrap};
+use crate::ui::*;
 
 pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
     let rows = [

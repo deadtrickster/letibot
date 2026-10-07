@@ -3,6 +3,7 @@
 
 use crate::app::*;
 use crate::render::{sgr, wrap};
+use crate::ui::*;
 use letibot_sessionlog::view::{OpenDecision, SettledDecision};
 use letibot_ui::progress;
 use letibot_ui::style::Role;

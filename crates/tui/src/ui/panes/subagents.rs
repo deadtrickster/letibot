@@ -2,6 +2,7 @@
 
 use crate::app::*;
 use crate::render::{sgr, trim_to};
+use crate::ui::*;
 use letibot_sessionlog::event::{Envelope, SessionEvent};
 use letibot_sessionlog::registry::short_id;
 use letibot_sessionlog::view::SnapshotItem;
