@@ -1,8 +1,10 @@
 //! **The model's working-out**, dimmed and folded.
 
 use crate::app::*;
-use crate::ui::render::{Decor, RenderConfig, trim_to, visible_width};
+use crate::ui::markdown::IncrementalMarkdown;
+use crate::ui::render::{BlockCache, Decor, RenderConfig, trim_to, visible_width};
 use crate::ui::*;
+use letibot_transcript::TranscriptItem;
 use letibot_ui::card;
 use letibot_ui::style::{Painter, Role};
 use letibot_ui::text::without_control_lines;
@@ -105,4 +107,40 @@ pub(crate) fn thinking_header(
         ),
         w,
     )
+}
+
+pub(crate) fn reasoning_row_lines(
+    item: &TranscriptItem,
+    ctx: &ItemCtx<'_>,
+    ind: usize,
+) -> (RowClass, Vec<String>) {
+    let ItemCtx { cfg, think, .. } = *ctx;
+    let TranscriptItem::Reasoning { text, .. } = item else {
+        unreachable!("reasoning_row_lines is handed only Reasoning rows");
+    };
+    // **The model's reasoning is text this head did not author** (§3.1), and it
+    // reaches the terminal through the markdown renderer with the head's own
+    // escapes around it — so a control byte in it is a control byte on the
+    // glass. Sanitised BEFORE the lexer, so what is lexed and what is measured
+    // are the same string: the escape becomes one space, which is what keeps the
+    // column arithmetic honest (`without_control`'s whole argument).
+    let text = without_control_lines(text);
+    // A `Cow`, and the borrow is what the change bought: this used to force the
+    // allocation even when the sanitiser had nothing to do.
+    let text: &str = &text;
+    // A settled row: `Thought`, with no duration. The head can compute one
+    // for a *live* turn from the delta timestamps, and a transcript row
+    // carries no timestamps at all — see `crates/ui/DESIGN.md` §4.4.
+    let mut out = step_in(
+        vec![thinking_header(cfg, text, think.is_open(), false, None)],
+        ind,
+    );
+    if think.is_open() {
+        let rcfg = reasoning_cfg(cfg);
+        let mut md = IncrementalMarkdown::new();
+        md.push(text);
+        let mut cache = BlockCache::decorated(reasoning_decor(cfg));
+        out.extend(cache.lines(&md, &rcfg, cfg.budget.reasoning_lines));
+    }
+    (RowClass::Activity, out)
 }
