@@ -625,7 +625,10 @@ mod tests {
         ];
         let msgs = convert("", &items, true);
         assert_eq!(msgs[0]["role"], "system", "the head stays a system message");
-        assert_eq!(msgs[1]["role"], "system", "an interior update stays one too");
+        assert_eq!(
+            msgs[1]["role"], "system",
+            "an interior update stays one too"
+        );
         assert_eq!(
             msgs.last().unwrap()["role"],
             "user",
