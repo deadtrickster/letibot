@@ -914,7 +914,7 @@ fn the_window_title_names_the_session_and_follows_a_rename() {
             title: "evil\u{1b}]0;pwned\u{7}\u{9b}31m title".into(),
         },
     )));
-    let written = crate::term::window_title_text(&a.window_title());
+    let written = crate::backend::terminal::window_title_text(&a.window_title());
     assert!(
         !written.chars().any(|c| c.is_control()),
         "a control character would reach the terminal: {written:?}"
@@ -27744,12 +27744,12 @@ fn a_png_result_is_drawn_inline_and_uploaded_once() {
     assert!(off.take_image_uploads().is_empty());
 
     let mut a = app();
-    a.set_features(crate::features::Features::ALL);
+    a.set_features(crate::backend::features::Features::ALL);
     row(&mut a);
     let screen = a.screen(160, 40);
-    let id = crate::render::image_id("r.img");
-    let box_cols = crate::render::image_box(a.cfg.width);
-    let (cols, rows) = crate::render::image_cells(Some(200), Some(100), box_cols);
+    let id = crate::backend::graphics::image_id("r.img");
+    let box_cols = crate::backend::graphics::image_box(a.cfg.width);
+    let (cols, rows) = crate::backend::graphics::image_cells(Some(200), Some(100), box_cols);
     assert_eq!(cols, box_cols, "as wide as the box");
     assert_eq!(rows, box_cols.div_ceil(4), "a 2:1 picture in 2:1 cells");
     assert_eq!(placeholders(&screen), rows as usize, "{screen:#?}");
@@ -27767,7 +27767,10 @@ fn a_png_result_is_drawn_inline_and_uploaded_once() {
         up.starts_with(&format!("\x1b_Ga=t,f=100,i={id},q=2,m=0;")),
         "{up}"
     );
-    assert_eq!(ups[1], crate::render::image_place(id, cols, rows));
+    assert_eq!(
+        ups[1],
+        crate::backend::graphics::image_place(id, cols, rows)
+    );
     a.screen(160, 40);
     assert!(
         a.take_image_uploads().is_empty(),
@@ -27777,15 +27780,15 @@ fn a_png_result_is_drawn_inline_and_uploaded_once() {
     // **A resize places it again at the new size**, without sending the bytes again — and
     // the rows drawn at the new width are the new placement's.
     let narrow = a.screen(60, 40);
-    let box2 = crate::render::image_box(a.cfg.width);
+    let box2 = crate::backend::graphics::image_box(a.cfg.width);
     assert_ne!(
         box2, box_cols,
         "the fixture has to change the box to show anything"
     );
-    let (c2, r2) = crate::render::image_cells(Some(200), Some(100), box2);
+    let (c2, r2) = crate::backend::graphics::image_cells(Some(200), Some(100), box2);
     assert_eq!(
         a.take_image_uploads(),
-        vec![crate::render::image_place(id, c2, r2)]
+        vec![crate::backend::graphics::image_place(id, c2, r2)]
     );
     assert_eq!(placeholders(&narrow), r2 as usize);
 }
@@ -27807,7 +27810,7 @@ fn a_png_the_reply_names_is_drawn_at_the_reference() {
     std::fs::write(&file, png_header(400, 100)).unwrap();
 
     let mut a = app();
-    a.set_features(crate::features::Features::ALL);
+    a.set_features(crate::backend::features::Features::ALL);
     a.apply(ServerFrame::Event(env(
         1,
         testing::appended("a.img", "assistant"),
@@ -27835,8 +27838,11 @@ fn a_png_the_reply_names_is_drawn_at_the_reference() {
         "the content arrived after the row: still uploaded"
     );
     let screen = a.screen(100, 40);
-    let (_, rows) =
-        crate::render::image_cells(Some(400), Some(100), crate::render::image_box(a.cfg.width));
+    let (_, rows) = crate::backend::graphics::image_cells(
+        Some(400),
+        Some(100),
+        crate::backend::graphics::image_box(a.cfg.width),
+    );
     assert_eq!(placeholders(&screen), rows as usize, "{screen:#?}");
     let first = screen
         .iter()
@@ -27876,7 +27882,7 @@ fn a_light_background_reply_switches_the_palette() {
     a.key(Key::Background { light: true });
     a.screen(80, 24);
     assert_eq!(a.cfg.palette(), letibot_ui::style::Palette::Colour);
-    a.set_features(crate::features::Features::ALL);
+    a.set_features(crate::backend::features::Features::ALL);
     a.screen(80, 24);
     assert_eq!(a.cfg.palette(), letibot_ui::style::Palette::Light);
     a.key(Key::Background { light: false });
@@ -27904,7 +27910,7 @@ fn copy_takes_the_open_window_else_the_last_reply() {
     assert_eq!(a.command("copy"), None);
     assert_eq!(a.take_clipboard(), None, "no OSC 52, nothing written");
 
-    a.set_features(crate::features::Features::ALL);
+    a.set_features(crate::backend::features::Features::ALL);
     a.command("copy");
     assert_eq!(a.take_clipboard().as_deref(), Some("the answer"));
 
@@ -27935,9 +27941,9 @@ fn copy_takes_the_open_window_else_the_last_reply() {
 /// the turn ending — and only for a window known to be unfocused.
 #[test]
 fn progress_follows_the_turn_and_notifications_go_to_an_absent_reader() {
-    use crate::term::Progress;
+    use crate::backend::terminal::Progress;
     let mut a = app();
-    a.set_features(crate::features::Features::ALL);
+    a.set_features(crate::backend::features::Features::ALL);
     assert_eq!(a.take_notification(), None, "the first look is a baseline");
     assert_eq!(a.progress(), Progress::Idle);
 

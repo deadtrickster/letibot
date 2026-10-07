@@ -2626,7 +2626,7 @@ pub struct App {
     key_secrets: Vec<String>,
     /// **What the terminal speaks beyond cells** (`crate::features`), told by the head after
     /// it entered the terminal. Default — nothing — for a test, a replay and a pipe.
-    features: crate::features::Features,
+    features: crate::backend::features::Features,
     /// Whether the terminal window has focus, from `?1004` reports. `None` until the first
     /// report, and read as focused: a notification goes only to somebody known to be away.
     focused: Option<bool>,
@@ -4208,7 +4208,7 @@ impl App {
             secret: None,
             secret_buf: String::new(),
             key_secrets: Vec::new(),
-            features: crate::features::Features::default(),
+            features: crate::backend::features::Features::default(),
             focused: None,
             light_background: None,
             attention: None,
@@ -4798,7 +4798,7 @@ impl App {
     }
 
     /// **Tell the head's state what the terminal speaks** (see `crate::features`).
-    pub fn set_features(&mut self, f: crate::features::Features) {
+    pub fn set_features(&mut self, f: crate::backend::features::Features) {
         if self.features != f {
             self.features = f;
             self.invalidate_history();
@@ -4809,8 +4809,8 @@ impl App {
     /// **The tab's progress bar** (OSC 9;4): what it should show this tick. Somebody waiting on
     /// the person outranks the model working — a tab that wants you must not look like one
     /// that is merely busy.
-    pub fn progress(&self) -> crate::term::Progress {
-        use crate::term::Progress;
+    pub fn progress(&self) -> crate::backend::terminal::Progress {
+        use crate::backend::terminal::Progress;
         if !self.open.is_empty() || self.secret.is_some() {
             return Progress::Waiting;
         }
@@ -4933,13 +4933,13 @@ impl App {
         // **The size follows the window.** Every image already in the terminal is placed again
         // at the box this frame's width gives — a placement command each, no image bytes — so
         // the rows the renderers draw at this width match what the terminal will fill.
-        let box_cols = crate::render::image_box(self.cfg.width);
+        let box_cols = crate::backend::graphics::image_box(self.cfg.width);
         if box_cols != self.images_box {
             self.images_box = box_cols;
             for (id, (w, h)) in &self.images_sent {
-                let (cols, rows) = crate::render::image_cells(*w, *h, box_cols);
+                let (cols, rows) = crate::backend::graphics::image_cells(*w, *h, box_cols);
                 self.image_uploads
-                    .push(crate::render::image_place(*id, cols, rows));
+                    .push(crate::backend::graphics::image_place(*id, cols, rows));
             }
         }
         if self.images_scanned > self.items.len() {
@@ -4956,7 +4956,7 @@ impl App {
             match item {
                 TranscriptItem::ToolResult { media: Some(m), .. } if m.mime == "image/png" => {
                     found.push((
-                        crate::render::image_id(&it.item_id),
+                        crate::backend::graphics::image_id(&it.item_id),
                         m.width,
                         m.height,
                         m.wire_base64().to_string(),
@@ -4967,7 +4967,8 @@ impl App {
                         let Some(m) = self.read_local_png(&target) else {
                             continue;
                         };
-                        let id = crate::render::image_id(&format!("{}#{target}", it.item_id));
+                        let id =
+                            crate::backend::graphics::image_id(&format!("{}#{target}", it.item_id));
                         crate::render::remember_reply_image(
                             &it.item_id,
                             &target,
@@ -4982,11 +4983,11 @@ impl App {
         self.images_scanned = scanned;
         for (id, w, h, b64) in found {
             if self.images_sent.insert(id, (w, h)).is_none() {
-                let (cols, rows) = crate::render::image_cells(w, h, box_cols);
+                let (cols, rows) = crate::backend::graphics::image_cells(w, h, box_cols);
                 self.image_uploads
-                    .push(crate::render::image_upload(id, &b64));
+                    .push(crate::backend::graphics::image_upload(id, &b64));
                 self.image_uploads
-                    .push(crate::render::image_place(id, cols, rows));
+                    .push(crate::backend::graphics::image_place(id, cols, rows));
             }
         }
     }
@@ -14246,7 +14247,7 @@ impl App {
         if self.features.links {
             for l in out.iter_mut() {
                 if l.contains("://") {
-                    *l = crate::render::link_urls(l);
+                    *l = crate::backend::links::link_urls(l);
                 }
             }
         }
@@ -24523,15 +24524,15 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // Each goes after the first line, past the previous picture, that shows its
             // reference; one whose reference is on no line goes at the end.
             if cfg.images {
-                let box_cols = crate::render::image_box(cfg.width);
+                let box_cols = crate::backend::graphics::image_box(cfg.width);
                 let mut from = 0;
                 for (alt, target) in crate::render::markdown_images(text) {
                     let Some((id, pw, ph)) = crate::render::reply_image(&it.item_id, &target)
                     else {
                         continue;
                     };
-                    let (cols, rows) = crate::render::image_cells(pw, ph, box_cols);
-                    let picture = crate::render::image_rows(id, cols, rows);
+                    let (cols, rows) = crate::backend::graphics::image_cells(pw, ph, box_cols);
+                    let picture = crate::backend::graphics::image_rows(id, cols, rows);
                     let at = crate::render::picture_anchor(&out, from, &alt, &target)
                         .unwrap_or(out.len());
                     from = at + picture.len();
@@ -24635,15 +24636,19 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // way out of this arm, the one-line form's included.
             let picture: Vec<String> = match media {
                 Some(m) if cfg.images && m.mime == "image/png" => {
-                    let (cols, rows) = crate::render::image_cells(
+                    let (cols, rows) = crate::backend::graphics::image_cells(
                         m.width,
                         m.height,
-                        crate::render::image_box(cfg.width),
+                        crate::backend::graphics::image_box(cfg.width),
                     );
-                    crate::render::image_rows(crate::render::image_id(&it.item_id), cols, rows)
-                        .into_iter()
-                        .map(|r| format!("  {r}"))
-                        .collect()
+                    crate::backend::graphics::image_rows(
+                        crate::backend::graphics::image_id(&it.item_id),
+                        cols,
+                        rows,
+                    )
+                    .into_iter()
+                    .map(|r| format!("  {r}"))
+                    .collect()
                 }
                 _ => Vec::new(),
             };
@@ -24859,7 +24864,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     Some(root),
                     Some(full),
                     card::Verb::Read | card::Verb::Edit | card::Verb::Write | card::Verb::List,
-                ) => crate::render::file_link(root, full, &painted),
+                ) => crate::backend::links::file_link(root, full, &painted),
                 _ => painted,
             };
             head.push_str(&painted);
