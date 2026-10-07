@@ -1367,24 +1367,9 @@ fn background_reply(body: &[u8]) -> Option<Key> {
     Some(Key::Background { light: lum > 0.5 })
 }
 
-/// Standard base64, padded — for OSC 52 and the kitty graphics payload.
+/// Standard base64 — the tree's one spelling of it (`letibot_transcript::media`), for OSC 52.
 pub fn base64(bytes: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = chunk.len();
-        let v = (chunk[0] as u32) << 16
-            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
-            | *chunk.get(2).unwrap_or(&0) as u32;
-        for k in 0..4 {
-            if k <= n {
-                out.push(T[(v >> (18 - 6 * k) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
+    letibot_transcript::media::encode_base64(bytes)
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {

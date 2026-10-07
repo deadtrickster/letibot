@@ -119,6 +119,8 @@ pub struct RenderConfig {
     /// The terminal said its background is light (OSC 11): colour renders with
     /// [`Palette::Light`].
     pub light: bool,
+    /// Inline images (the kitty graphics protocol's Unicode placeholders) are on.
+    pub images: bool,
 }
 
 impl Default for RenderConfig {
@@ -130,8 +132,98 @@ impl Default for RenderConfig {
             base: None,
             links: None,
             light: false,
+            images: false,
         }
     }
+}
+
+/// **The kitty graphics protocol's row diacritics**: the combining mark after a placeholder
+/// that says which row of the image this cell is. The protocol's own table, from its start; an
+/// image here is capped at [`IMAGE_MAX_ROWS`] rows, so the first that many are all it uses. The
+/// first entry is also column 0's mark.
+const ROW_DIACRITICS: [char; 20] = [
+    '\u{0305}', '\u{030D}', '\u{030E}', '\u{0310}', '\u{0312}', '\u{033D}', '\u{033E}', '\u{033F}',
+    '\u{0346}', '\u{034A}', '\u{034B}', '\u{034C}', '\u{0350}', '\u{0351}', '\u{0352}', '\u{0357}',
+    '\u{035B}', '\u{0363}', '\u{0364}', '\u{0365}',
+];
+
+/// The placeholder the terminal replaces with a slice of the image.
+const PLACEHOLDER: char = '\u{10EEEE}';
+
+/// An image is at most this many cells wide and this many tall.
+pub const IMAGE_COLS: u32 = 40;
+pub const IMAGE_MAX_ROWS: u32 = ROW_DIACRITICS.len() as u32;
+
+/// **An image's id, from the row it belongs to** — so any renderer can draw a row's
+/// placeholders without being handed a table, and the head that uploads it computes the same
+/// number. Twenty-four bits, because the id rides in a 24-bit foreground colour; never zero.
+pub fn image_id(item_id: &str) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in item_id.bytes() {
+        h = (h ^ b as u32).wrapping_mul(0x0100_0193);
+    }
+    (h & 0x00ff_ffff).max(1)
+}
+
+/// The cells an image takes: [`IMAGE_COLS`] wide, as tall as its aspect says (a cell is about
+/// twice as tall as it is wide), capped — and narrowed to keep its shape when the cap bites.
+/// An image whose header gave no size gets a fixed box.
+pub fn image_cells(width: Option<u32>, height: Option<u32>) -> (u32, u32) {
+    let (Some(w), Some(h)) = (width.filter(|w| *w > 0), height.filter(|h| *h > 0)) else {
+        return (IMAGE_COLS, 12);
+    };
+    let rows = (IMAGE_COLS as u64 * h as u64).div_ceil(2 * w as u64) as u32;
+    if rows <= IMAGE_MAX_ROWS {
+        return (IMAGE_COLS, rows.max(1));
+    }
+    let cols = (2 * IMAGE_MAX_ROWS as u64 * w as u64).div_ceil(h as u64) as u32;
+    (cols.clamp(1, IMAGE_COLS), IMAGE_MAX_ROWS)
+}
+
+/// **The rows of text that ARE the image**, once it has been uploaded under `id` with a
+/// virtual placement of `cols`×`rows`: each row is the placeholder repeated, its first cell
+/// carrying the row's mark and column 0's (the rest of the row's columns follow from it), all
+/// in a foreground colour that spells the id. To every renderer, width count and diff here they
+/// are ordinary text — which is why this, and not a pixel placement, is how the head draws one.
+pub fn image_rows(id: u32, cols: u32, rows: u32) -> Vec<String> {
+    let colour = format!(
+        "\x1b[38;2;{};{};{}m",
+        (id >> 16) & 0xff,
+        (id >> 8) & 0xff,
+        id & 0xff
+    );
+    (0..rows.min(IMAGE_MAX_ROWS))
+        .map(|r| {
+            let mut row = colour.clone();
+            row.push(PLACEHOLDER);
+            row.push(ROW_DIACRITICS[r as usize]);
+            row.push(ROW_DIACRITICS[0]);
+            for _ in 1..cols {
+                row.push(PLACEHOLDER);
+            }
+            row.push_str("\x1b[39m");
+            row
+        })
+        .collect()
+}
+
+/// **The bytes that put a PNG in the terminal's memory under `id`** and give it a virtual
+/// placement for the placeholders to draw: the base64 sent in the protocol's 4096-byte chunks,
+/// every command quiet (`q=2`) so the terminal sends nothing back to be typed.
+pub fn image_upload(id: u32, png_base64: &str, cols: u32, rows: u32) -> Vec<u8> {
+    let mut out = String::new();
+    let chunks: Vec<&[u8]> = png_base64.as_bytes().chunks(4096).collect();
+    for (k, chunk) in chunks.iter().enumerate() {
+        let more = if k + 1 < chunks.len() { 1 } else { 0 };
+        let data = std::str::from_utf8(chunk).unwrap_or("");
+        if k == 0 {
+            out.push_str(&format!("\x1b_Ga=t,f=100,i={id},q=2,m={more};{data}\x1b\\"));
+        } else {
+            out.push_str(&format!("\x1b_Gm={more};{data}\x1b\\"));
+        }
+    }
+    out.push_str(&format!("\x1b_Ga=p,U=1,i={id},c={cols},r={rows},q=2\x1b\\"));
+    out.into_bytes()
 }
 
 /// `text` as a link to the file `target` names — absolute, or relative to `root` — when
@@ -1138,6 +1230,7 @@ mod tests {
             base: None,
             links: None,
             light: false,
+            images: false,
         }
     }
 
@@ -1342,6 +1435,7 @@ mod tests {
             base: None,
             links: None,
             light: false,
+            images: false,
         };
         // The first frame parses; the next fifty must not.
         let mut cache = BlockCache::new();
@@ -1378,6 +1472,7 @@ mod tests {
             base: None,
             links: None,
             light: false,
+            images: false,
         };
         let lines = render_block(&block, &cfg);
         let plain: Vec<String> = lines
@@ -1456,6 +1551,7 @@ mod tests {
             base: None,
             links: None,
             light: false,
+            images: false,
         };
         let lines = cache.lines(&md, &cfg, 40);
         assert!(md.stable_count() > 0, "some of it must be frozen");
@@ -2182,5 +2278,27 @@ mod link_tests {
         assert!(abs.contains("/tmp/x.md\x1b\\x"), "{abs:?}");
         assert_eq!(file_link("/w", "\"cargo test\"", "c"), "c");
         assert_eq!(file_link("/w", "(call_0)", "c"), "c");
+    }
+
+    #[test]
+    fn an_image_keeps_its_shape_inside_the_box() {
+        assert_eq!(image_cells(None, Some(10)), (IMAGE_COLS, 12));
+        assert_eq!(image_cells(Some(400), Some(100)), (40, 5));
+        // Tall: the rows cap, and the width narrows to keep the shape.
+        assert_eq!(image_cells(Some(100), Some(1000)), (4, IMAGE_MAX_ROWS));
+        // Every row is exactly as wide as the placement.
+        for r in image_rows(7, 40, 3) {
+            assert_eq!(letibot_ui::width::width(&r), 40, "{r:?}");
+        }
+        // Long payloads go in the protocol's 4096-byte chunks.
+        let up = String::from_utf8(image_upload(9, &"A".repeat(9000), 40, 5)).unwrap();
+        assert_eq!(
+            up.matches("\x1b_G").count(),
+            4,
+            "three chunks and the placement"
+        );
+        assert!(up.contains("m=1;") && up.contains("\x1b_Gm=0;"));
+        assert_ne!(image_id("a"), image_id("b"));
+        assert!(image_id("") > 0 && image_id("x") <= 0xff_ffff);
     }
 }

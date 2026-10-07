@@ -912,4 +912,7 @@ fn outside_the_frame(term: &Terminal, app: &mut App) {
     if let Some(text) = app.take_clipboard() {
         term.copy(&text);
     }
+    for upload in app.take_image_uploads() {
+        term.write_raw(&upload);
+    }
 }

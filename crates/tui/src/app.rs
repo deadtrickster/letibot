@@ -2638,6 +2638,12 @@ pub struct App {
     attention: Option<Attention>,
     /// Text the operator asked to put on the clipboard, for the head to write (OSC 52).
     clipboard_out: Option<String>,
+    /// Images already in the terminal's memory, by id (see `render::image_id`), and how many
+    /// rows of `items` have been looked at for new ones.
+    images_sent: std::collections::HashSet<u32>,
+    images_scanned: usize,
+    /// Upload bytes for the head to write before the next frame (kitty graphics).
+    image_uploads: Vec<Vec<u8>>,
     /// **A command of the operator's own is waiting for an answer**: the request, and what has
     /// been typed for it so far.
     ///
@@ -4204,6 +4210,9 @@ impl App {
             light_background: None,
             attention: None,
             clipboard_out: None,
+            images_sent: std::collections::HashSet::new(),
+            images_scanned: 0,
+            image_uploads: Vec::new(),
             prompt: None,
             prompt_buf: String::new(),
             key_ask: None,
@@ -4911,6 +4920,37 @@ impl App {
             }
             None => self.say("nothing to copy: no output is open and the model has not replied"),
         }
+    }
+
+    /// **Every PNG a row carries that the terminal does not have yet, queued for upload** — each
+    /// once, under the id its row draws with. Only the rows added since the last look are
+    /// walked; a list that shrank (a switch, a resync) is walked again from the top.
+    fn queue_image_uploads(&mut self) {
+        if self.images_scanned > self.items.len() {
+            self.images_scanned = 0;
+        }
+        for it in &self.items[self.images_scanned..] {
+            if let Some(TranscriptItem::ToolResult { media: Some(m), .. }) = it.item.as_ref()
+                && m.mime == "image/png"
+            {
+                let id = crate::render::image_id(&it.item_id);
+                if self.images_sent.insert(id) {
+                    let (cols, rows) = crate::render::image_cells(m.width, m.height);
+                    self.image_uploads.push(crate::render::image_upload(
+                        id,
+                        m.wire_base64(),
+                        cols,
+                        rows,
+                    ));
+                }
+            }
+        }
+        self.images_scanned = self.items.len();
+    }
+
+    /// Image uploads for the head to write to the terminal (kitty graphics).
+    pub fn take_image_uploads(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.image_uploads)
     }
 
     /// Text the operator asked to copy, for the head to write to the clipboard.
@@ -14186,6 +14226,10 @@ impl App {
             .then(|| self.wiring.workspace.clone())
             .filter(|w| !w.is_empty());
         self.cfg.light = self.features.background && self.light_background == Some(true);
+        self.cfg.images = self.features.images;
+        if self.features.images {
+            self.queue_image_uploads();
+        }
         // The TERMINAL's width, kept beside the frame's. `cfg.width` is the inner
         // one — the gutter already taken off — so anything that re-renders from a
         // stored size has to start from this one or the frame narrows by two
@@ -24494,8 +24538,23 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             call_id,
             edit: row_edit,
             origin,
-            ..
+            media,
         } => {
+            // **The picture itself, where the terminal can draw one** (kitty graphics, Unicode
+            // placeholders): rows of text the terminal fills with the image the head uploaded
+            // under this row's id. PNG only — the protocol takes it as it is — and every other
+            // format keeps the line the payload already says. Built here and appended at each
+            // way out of this arm, the one-line form's included.
+            let picture: Vec<String> = match media {
+                Some(m) if cfg.images && m.mime == "image/png" => {
+                    let (cols, rows) = crate::render::image_cells(m.width, m.height);
+                    crate::render::image_rows(crate::render::image_id(&it.item_id), cols, rows)
+                        .into_iter()
+                        .map(|r| format!("  {r}"))
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
             // The row's own excerpt, when it has one — every row the runtime
             // builds now carries the same bounded pair the event does, so a
             // row read out of a store draws its diff without this head having
@@ -24752,6 +24811,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                 if let Some(d) = decision {
                     out.extend(decision_lines(d, tools, w, p));
                 }
+                out.extend(picture);
                 return (RowClass::Activity, step_in(out, ind));
             }
 
@@ -24994,6 +25054,7 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     out.push(p.paint(Role::Faint, "  … the rest of the reason · /t unfolds it"));
                 }
             }
+            out.extend(picture);
             (
                 RowClass::Activity,
                 step_in(out.into_iter().map(|l| trim_to(&l, w)).collect(), ind),
@@ -53319,6 +53380,78 @@ mod tests {
             color: false,
             ..Default::default()
         }
+    }
+
+    /// **A PNG a tool returned is drawn inline where the terminal can, and uploaded once.** The
+    /// rows are placeholders in the image's id colour — ordinary text to the width count and
+    /// the diff — and the upload is the protocol's transmit plus a virtual placement of the
+    /// same size the rows draw.
+    #[test]
+    fn a_png_result_is_drawn_inline_and_uploaded_once() {
+        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+        png.extend_from_slice(&200u32.to_be_bytes());
+        png.extend_from_slice(&100u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        let media = letibot_transcript::media::Media::of("shot.png", &png).expect("a png");
+        let row = |a: &mut App| {
+            a.apply(ServerFrame::Event(env(
+                1,
+                testing::appended("r.img", "tool_result"),
+            )));
+            a.record_item(
+                "r.img",
+                TranscriptItem::ToolResult {
+                    call_id: "c0".into(),
+                    name: "read".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: "image/png 200×100".into(),
+                    edit: None,
+                    origin: None,
+                    media: Some(media.clone()),
+                },
+            );
+        };
+
+        let mut off = app();
+        row(&mut off);
+        let screen = off.screen(100, 40).join("\n");
+        assert!(
+            !screen.contains('\u{10EEEE}'),
+            "no feature, no placeholders"
+        );
+        assert!(off.take_image_uploads().is_empty());
+
+        let mut a = app();
+        a.set_features(crate::features::Features::ALL);
+        row(&mut a);
+        let screen = a.screen(100, 40);
+        let id = crate::render::image_id("r.img");
+        let (cols, rows) = crate::render::image_cells(Some(200), Some(100));
+        assert_eq!((cols, rows), (40, 10), "40 wide, half as tall in cells");
+        let drawn: Vec<&String> = screen.iter().filter(|l| l.contains('\u{10EEEE}')).collect();
+        assert_eq!(drawn.len(), rows as usize, "{screen:#?}");
+        assert!(drawn[0].contains(&format!(
+            "38;2;{};{};{}m",
+            (id >> 16) & 255,
+            (id >> 8) & 255,
+            id & 255
+        )));
+        let ups = a.take_image_uploads();
+        assert_eq!(ups.len(), 1);
+        let up = String::from_utf8_lossy(&ups[0]);
+        assert!(
+            up.starts_with(&format!("\x1b_Ga=t,f=100,i={id},q=2,m=0;")),
+            "{up}"
+        );
+        assert!(
+            up.ends_with(&format!("\x1b_Ga=p,U=1,i={id},c=40,r=10,q=2\x1b\\")),
+            "{up}"
+        );
+        a.screen(100, 40);
+        assert!(
+            a.take_image_uploads().is_empty(),
+            "uploaded once, not every frame"
+        );
     }
 
     /// **A light background, once the terminal says so, renders the light palette** — and only
