@@ -339,13 +339,17 @@ impl Drop for Dir {
 }
 
 fn tempdir() -> Dir {
+    // A counter as well as the clock: macOS's clock resolves microseconds, and two tests
+    // in this process sharing a directory share a corpus (as decisions_tool.rs did).
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let p = std::env::temp_dir().join(format!(
-        "letibot-transcript-{}-{}",
+        "letibot-transcript-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&p).expect("making the scratch dir");
     Dir(p)

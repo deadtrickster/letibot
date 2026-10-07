@@ -7539,6 +7539,12 @@ impl App {
     /// after the first press — that is the entire mechanism by which anyone
     /// discovers a double-tap exists.
     pub fn key(&mut self, k: Key) -> Option<Action> {
+        // **The session's prompts, before a recall starts** — see `refresh_prompt_history`.
+        // Up may yet be taken by a card or a pane further down; refreshing the list then
+        // changes nothing a reader sees, and the editor ignores it mid-recall.
+        if matches!(k, Key::Up) {
+            self.refresh_prompt_history();
+        }
         // **Any key is an acknowledgement of whatever the notice said**: the deadline
         // moves to now, so this tick's `screen()` — which runs below the key handling —
         // takes the sentence down before anything is drawn. The arrows and the paging
@@ -11062,6 +11068,47 @@ impl App {
     /// **Held between frames**, because this is the render path's as well as Tab's:
     /// see [`App::shell_candidates_memo`] for the measurement that made it one walk
     /// per row change rather than one per frame.
+    /// **The composer's Up history is the session's, not this head's.**
+    ///
+    /// The operator: *"i worked - sent 30 prompts. then restart, send 2. and arrow up sees
+    /// only these two"*. The editor's history lived in the head process, so a restarted
+    /// head — or a second head on the same session — recalled only what it had typed
+    /// itself. The session's own record has every prompt: the operator's `User` rows, in
+    /// order, which is what the `!` candidates already walk. Refreshed at the start of a
+    /// recall, so it is the session on screen now; lines this head typed that the session
+    /// does not hold (yet) stay at the end, newest last.
+    fn refresh_prompt_history(&mut self) {
+        let mut merged: Vec<String> = Vec::new();
+        for r in &self.items {
+            let Some(TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts,
+                ..
+            }) = r.item.as_ref()
+            else {
+                continue;
+            };
+            let text = parts
+                .iter()
+                .filter_map(|p| match p {
+                    UserPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let text = text.trim();
+            if !text.is_empty() && merged.last().map(String::as_str) != Some(text) {
+                merged.push(text.to_string());
+            }
+        }
+        for own in self.editor.history().to_vec() {
+            if !merged.contains(&own) {
+                merged.push(own);
+            }
+        }
+        self.editor.set_history(merged);
+    }
+
     fn shell_candidates(&mut self) -> &[String] {
         if self.shell_candidates_memo.is_none() {
             self.shell_walks += 1;
@@ -38677,6 +38724,71 @@ mod tests {
         assert!(screen.contains("before"), "{screen}");
         assert!(screen.contains("moved"), "{screen}");
         assert!(screen.contains("after"), "{screen}");
+    }
+
+    /// **Up recalls the session's prompts, not only this head's.** The operator: *"i worked -
+    /// sent 30 prompts. then restart, send 2. and arrow up sees only these two"*. A fresh
+    /// head attached to a session with earlier prompts recalls them, newest first, after
+    /// the ones it typed itself; another speaker's rows (a harness notice) are not prompts.
+    #[test]
+    fn up_recalls_the_sessions_earlier_prompts_after_a_restart() {
+        let mut a = app();
+        let user = |text: &str, speaker: letibot_transcript::Speaker| TranscriptItem::User {
+            parts: vec![UserPart::Text { text: text.into() }],
+            speaker,
+        };
+        let rows = [
+            (
+                "u.0",
+                user(
+                    "first prompt of yesterday",
+                    letibot_transcript::Speaker::Operator,
+                ),
+            ),
+            (
+                "u.1",
+                user("a harness notice", letibot_transcript::Speaker::Agent),
+            ),
+            (
+                "u.2",
+                user(
+                    "! ./build/stroppy help",
+                    letibot_transcript::Speaker::Operator,
+                ),
+            ),
+            (
+                "u.3",
+                user(
+                    "last prompt before restart",
+                    letibot_transcript::Speaker::Operator,
+                ),
+            ),
+        ];
+        for (i, (id, item)) in rows.into_iter().enumerate() {
+            let n = i as u64 * 2;
+            a.apply(ServerFrame::Event(env(
+                n + 1,
+                testing::appended(id, "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                n + 2,
+                SessionEvent::TranscriptContent {
+                    item_id: id.into(),
+                    item: Box::new(item),
+                },
+            )));
+        }
+        // Nothing typed in this head yet: Up walks the session's own prompts.
+        a.key(Key::Up);
+        assert_eq!(a.input(), "last prompt before restart");
+        a.key(Key::Up);
+        assert_eq!(a.input(), "! ./build/stroppy help");
+        a.key(Key::Up);
+        assert_eq!(
+            a.input(),
+            "first prompt of yesterday",
+            "the notice is not a prompt"
+        );
     }
 
     /// **An open result window reaches its last line, comes back at once, and fits.**
