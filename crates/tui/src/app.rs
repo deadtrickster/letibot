@@ -10816,17 +10816,43 @@ impl App {
     /// **Move the open payload window** by `by` wrapped lines, clamped to the last full
     /// page the draw recorded (`payload_max`) — so Down stops where the output ends and the
     /// first Up after it moves at once, instead of unwinding steps past the end.
+    ///
+    /// **And what the window cannot take, the conversation does** — the operator: *"i want
+    /// them to connect. so say i scrolled to the bottom of the ctrl-v view port it should
+    /// keep scrolling the main convo"*. A window at its last line passes the rest of a
+    /// Down to the transcript, and one at its first line passes the rest of an Up, the way
+    /// a scroll box nested in a page hands over at its edge. Home and End are jumps inside
+    /// the window and pass nothing on.
     fn page_payload(&mut self, up: bool, by: usize) {
         let max = self.payload_max.get();
         let from = self.payload_page.min(max);
-        self.payload_page = if up {
+        let to = if up {
             from.saturating_sub(by)
         } else {
             from.saturating_add(by).min(max)
         };
-        // **The history buffer is a cache of the rendered rows**, and a page offset changes
-        // what one of those rows renders to — so `redraw` alone re-draws the *old* lines.
-        self.invalidate_history();
+        // `max` is only known once the window has been drawn; before that nothing chains,
+        // because "at the end" is not yet a fact.
+        let rest = by.saturating_sub(from.abs_diff(to));
+        let chain = !(by == usize::MAX || rest == 0 || (!up && max == usize::MAX));
+        // **The handover first, while the rows are still measured.** Invalidating the history
+        // drops the line spans the transcript scroll finds its row by, so a scroll made
+        // after it landed nowhere — found by the test: the window was at its head, Up was
+        // passed on, and the conversation did not move.
+        if chain {
+            if up {
+                self.scroll_up(rest);
+            } else {
+                self.hold(rest as isize);
+            }
+        }
+        if to != from {
+            self.payload_page = to;
+            // **The history buffer is a cache of the rendered rows**, and a page offset
+            // changes what one of those rows renders to — so `redraw` alone re-draws the
+            // *old* lines.
+            self.invalidate_history();
+        }
         self.redraw = true;
     }
 
@@ -38726,6 +38752,93 @@ mod tests {
         assert!(screen.contains("after"), "{screen}");
     }
 
+    /// **The window and the conversation scroll as one** — the operator: *"say i scrolled to
+    /// the bottom of the ctrl-v view port it should keep scrolling the main convo"*. At the
+    /// window's first line an Up scrolls the conversation up to the rows above it; at its
+    /// last line a Down scrolls the conversation down, back to following.
+    #[test]
+    fn an_open_window_hands_scrolling_on_to_the_conversation_at_its_edges() {
+        let mut a = app();
+        let mut seq = 0u64;
+        let mut push = |a: &mut App, id: &str, kind: &str, item: TranscriptItem| {
+            seq += 2;
+            a.apply(ServerFrame::Event(env(
+                seq - 1,
+                testing::appended(id, kind),
+            )));
+            a.apply(ServerFrame::Event(env(
+                seq,
+                SessionEvent::TranscriptContent {
+                    item_id: id.into(),
+                    item: Box::new(item),
+                },
+            )));
+        };
+        for i in 0..40 {
+            push(
+                &mut a,
+                &format!("u.{i}"),
+                "user",
+                TranscriptItem::User {
+                    parts: vec![UserPart::Text {
+                        text: format!("earlier row {i}"),
+                    }],
+                    speaker: letibot_transcript::Speaker::Operator,
+                },
+            );
+        }
+        let payload: String = (0..300).map(|n| format!("output line {n}\n")).collect();
+        push(
+            &mut a,
+            "r.0",
+            "tool_result",
+            TranscriptItem::ToolResult {
+                call_id: "c0".into(),
+                name: "bash".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload,
+                edit: None,
+                origin: None,
+                media: None,
+            },
+        );
+        a.screen(80, 24);
+        a.key(Key::CtrlV);
+        a.screen(80, 24);
+        let has = |a: &mut App, needle: &str| a.screen(80, 24).iter().any(|l| l.contains(needle));
+        assert!(has(&mut a, "output line 0"), "the window opens at its head");
+        assert!(
+            !has(&mut a, "earlier row 30"),
+            "the fixture starts with row 30 out of view"
+        );
+        // At the window's first line, Up moves the conversation: the rows above come into view.
+        for _ in 0..3 {
+            a.key(Key::Up);
+            a.screen(80, 24);
+        }
+        assert_eq!(a.payload_page, 0, "the window stays at its head");
+        assert!(
+            has(&mut a, "earlier row 30"),
+            "Up at the window's top did not scroll the conversation"
+        );
+        assert!(
+            !a.following(),
+            "the conversation is parked above the bottom now"
+        );
+        // At the window's last line, Down moves the conversation back down to following.
+        a.key(Key::End);
+        a.screen(80, 24);
+        for _ in 0..10 {
+            a.key(Key::Down);
+            a.screen(80, 24);
+        }
+        assert!(has(&mut a, "output line 299"), "the window is at its end");
+        assert!(
+            a.following(),
+            "Down past the window's end did not reach the conversation's bottom"
+        );
+    }
+
     /// **Up recalls the session's prompts, not only this head's.** The operator: *"i worked -
     /// sent 30 prompts. then restart, send 2. and arrow up sees only these two"*. A fresh
     /// head attached to a session with earlier prompts recalls them, newest first, after
@@ -38938,10 +39051,12 @@ mod tests {
         );
 
         let at_refold = a.anchor.clone();
-        for _ in 0..5 {
-            a.key(Key::Down);
-            a.screen(80, 24);
-        }
+        // **One press, inside the window.** Five used to be pressed here; a Down past the
+        // window's last line now carries on into the conversation (the operator: *"say i
+        // scrolled to the bottom of the ctrl-v view port it should keep scrolling the main
+        // convo"*), so pressing past a 30-line payload would move the transcript by design.
+        a.key(Key::Down);
+        a.screen(80, 24);
         // **The reader's PLACE, not a line count** (R36). The old assertion was
         // `a.scroll == at_refold`, and it passes only while a count is the whole truth:
         // paging the payload changes that row's height, so `total` moves and the count
