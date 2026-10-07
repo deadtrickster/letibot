@@ -3,11 +3,18 @@
 //! the terminal (`crate::backend`).
 
 pub mod cards;
+pub mod composer;
+pub mod header;
+pub mod hint_bar;
+pub mod loading;
 pub mod paint;
 pub mod panes;
+pub mod screen;
 pub mod transcript;
+pub mod turn_status;
 
 pub(crate) use cards::decision::*;
+pub(crate) use loading::*;
 pub(crate) use paint::*;
 pub(crate) use panes::help::*;
 pub(crate) use panes::notes::*;

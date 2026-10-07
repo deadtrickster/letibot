@@ -2,6 +2,7 @@ use super::*;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::protocol::Caps;
 use letibot_sessionlog::testing;
+use letibot_ui::{progress, width};
 
 fn app() -> App {
     App::new(RenderConfig {
