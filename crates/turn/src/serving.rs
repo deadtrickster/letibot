@@ -269,6 +269,67 @@ pub fn matches(served: &str, want: &str) -> bool {
     norm(served).contains(&norm(want))
 }
 
+/// **What one `/props` answer says about the model a server is serving** — the
+/// three facts a session switch needs, from ONE probe.
+///
+/// A switch used to ask twice (the weights via [`served_model`], the window via
+/// [`served_ctx`]); deriving the DIALECT as well would have made it three, and
+/// each probe is a full connect-read round trip against a server that may not be
+/// there. One GET, one struct: `model_path` names the GGUF (the vocabulary's one
+/// source), `chat_template` is the Jinja the server says it renders with (the
+/// dialect's one source), `media_marker` is the per-process image placeholder.
+///
+/// Every field is `Option`: a server can answer `/props` and still omit a field
+/// (an OpenAI-compatible proxy, an older llama.cpp without `chat_template`), and
+/// **each absence is its own fact** — the caller refuses by naming the missing
+/// thing rather than falling back to a default that would be a guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServedProps {
+    /// The GGUF the server loaded, as it reports it — `…/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf`.
+    pub model_path: Option<String>,
+    /// The chat template the server reports, verbatim.
+    ///
+    /// **Measured against this fleet's own unit, 2026-10-07:** `/props` carries
+    /// the GGUF's `tokenizer.chat_template` with the final newline stripped —
+    /// 10647 bytes where the file (and the dialect crates' embedded copy) has
+    /// 10648, identical through every other byte. A comparison against a shipped
+    /// template therefore trims trailing whitespace on both sides; anything else
+    /// is a different template and must not be called a match.
+    pub chat_template: Option<String>,
+    /// The per-process media marker, when the server has `mtmd`.
+    pub media_marker: Option<String>,
+}
+
+/// Ask one endpoint's `/props` for [`ServedProps`], or name why it could not.
+///
+/// The error is a sentence with the address in it — "nothing answers at
+/// HOST:PORT" names the unit to look at, which is what an operator with three
+/// mutually-exclusive units needs. The connect timeout is the client's 10 s, so
+/// a dead port costs seconds rather than the read timeout's three minutes.
+pub fn served_props(endpoint: &Endpoint) -> Result<ServedProps, String> {
+    let body = http::get(endpoint, "/props")
+        .map_err(|e| format!("{} did not answer /props ({e})", endpoint.authority()))?
+        .read_to_string()
+        .map_err(|e| format!("{} answered /props but the body could not be read ({e})", endpoint.authority()))?;
+    Ok(ServedProps {
+        model_path: field(&body, "\"model_path\"").or_else(|| field(&body, "\"model\"")),
+        chat_template: field(&body, "\"chat_template\""),
+        media_marker: field(&body, "\"media_marker\""),
+    })
+}
+
+/// **Does this served chat template match this dialect's shipped one?**
+///
+/// The comparison is on the bytes, with trailing whitespace trimmed on both
+/// sides — the one divergence measured between a live `/props` answer and the
+/// GGUF's own `tokenizer.chat_template` (see [`ServedProps::chat_template`] for
+/// the numbers). Anything beyond that trim is a different template: a server
+/// running a modified or overridden Jinja must not be called a match, because
+/// the renderer this tree would drive it with writes the SHIPPED bytes.
+pub fn template_matches(spec: &letibot_dialect::DialectSpec, served: &str) -> bool {
+    spec.template.trim_end() == served.trim_end()
+}
+
 fn field(body: &str, key: &str) -> Option<String> {
     let at = body.find(key)? + key.len();
     let rest = body.get(at..)?;

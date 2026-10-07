@@ -26,6 +26,8 @@
 //! not prompt-ready, and saying that here is cheaper than changing a contract two
 //! other strands are built on.
 
+use std::sync::Arc;
+
 use letibot_dialect::{DialectSpec, Parser, RenderSpan, StablePrefix};
 use letibot_transcript::TranscriptItem;
 use letibot_turn::PromptRenderer;
@@ -84,11 +86,11 @@ impl Dialect {
                     .unwrap_or(letibot_dialect_glm::ReasoningEffort::Max);
                 Wiring {
                     dialect: self,
-                    renderer: Box::new(GlmAdapter {
+                    renderer: Arc::new(GlmAdapter {
                         renderer: letibot_dialect_glm::GlmRenderer::new().with_effort(effort),
                         spec: letibot_dialect_glm::glm_spec(),
                     }),
-                    parser: Box::new(letibot_dialect_glm::GlmParser),
+                    parser: Arc::new(letibot_dialect_glm::GlmParser),
                 }
             }
             Dialect::Qwen => {
@@ -97,11 +99,11 @@ impl Dialect {
                     .unwrap_or_default();
                 Wiring {
                     dialect: self,
-                    renderer: Box::new(QwenAdapter {
+                    renderer: Arc::new(QwenAdapter {
                         renderer: letibot_dialect_qwen::QwenRenderer::new().with_effort(effort),
                         spec: letibot_dialect_qwen::qwen_spec(),
                     }),
-                    parser: Box::new(letibot_dialect_qwen::QwenParser),
+                    parser: Arc::new(letibot_dialect_qwen::QwenParser),
                 }
             }
         }
@@ -111,8 +113,12 @@ impl Dialect {
 /// A renderer and a parser, owned.
 pub struct Wiring {
     pub dialect: Dialect,
-    pub renderer: Box<dyn PromptRenderer>,
-    pub parser: Box<dyn Parser>,
+    /// `Arc`, not `Box`: an engine CLONES these out, and after the switch to a
+    /// declared local model one session's engine can be built from another
+    /// dialect's wiring than its daemon opened with. A `Box` would force the
+    /// clone to move out of the shared `Arc<Wiring>`, which it cannot.
+    pub renderer: Arc<dyn PromptRenderer>,
+    pub parser: Arc<dyn Parser>,
 }
 
 impl Wiring {

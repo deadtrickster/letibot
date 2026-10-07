@@ -345,7 +345,7 @@ fn judge(
     rows: &[Row],
     vectors: &[Vec<TokenId>],
     prefix_at_open: &[TokenId],
-    harness: &Harness<'_>,
+    harness: &Harness,
     failures: &[String],
 ) -> Vec<String> {
     let mut out = Vec::new();

@@ -1126,7 +1126,7 @@ impl SteeringSource for HubSteering {
 }
 
 /// One session: the engine, the transcript, the tools, the log and the store.
-pub struct Harness<'a> {
+pub struct Harness {
     cfg: Config,
     /// **When the prompt this turn is serving arrived, carried across its rounds.**
     ///
@@ -1149,7 +1149,7 @@ pub struct Harness<'a> {
     /// Where the mode came from, for the settings row: the project store or
     /// the daemon's flag/default. Decided at open and not kept by `Config`.
     mode_source: String,
-    engine: TurnEngine<'a>,
+    engine: TurnEngine,
     session: Session,
     runtime: ToolRuntime,
     hub: Arc<Hub>,
@@ -1447,11 +1447,11 @@ pub struct ReseatReport {
 /// For a caller that needs to turn a prompt into tokens and nothing else — the
 /// prefix repair does exactly that. Built the same way `open` builds its engine,
 /// so what it renders is what a session would.
-pub fn engine_for<'a>(parts: &'a Parts, cfg: &Config) -> Result<TurnEngine<'a>, HarnessError> {
+pub fn engine_for(parts: &Parts, cfg: &Config) -> Result<TurnEngine, HarnessError> {
     TurnEngine::new(
-        &parts.vocab,
-        parts.wiring.renderer.as_ref(),
-        parts.wiring.parser.as_ref(),
+        parts.vocab.clone(),
+        parts.wiring.renderer.clone(),
+        parts.wiring.parser.clone(),
         cfg.endpoint.clone(),
         letibot_backend::BackendCaps::OWN_SERVER,
         cfg.model.clone(),
@@ -1560,13 +1560,13 @@ fn transcript_exists(store: &Store, transcript_id: &str) -> bool {
         .is_ok()
 }
 
-impl<'a> Harness<'a> {
+impl Harness {
     /// Open a session: resolve the dialect against the vocabulary, seat the tools,
     /// render the stable prefix, and record all of it.
     ///
     /// Every failure this can raise is one that is otherwise silent at runtime,
     /// which is why they are all raised **here** rather than on the first turn.
-    pub fn open(parts: &'a Parts, cfg: Config, hub: Arc<Hub>) -> Result<Self, HarnessError> {
+    pub fn open(parts: &Parts, cfg: Config, hub: Arc<Hub>) -> Result<Self, HarnessError> {
         Self::open_with(parts, cfg, hub, None, None)
     }
 
@@ -2883,9 +2883,9 @@ impl<'a> Harness<'a> {
             });
 
         let mut engine = TurnEngine::new(
-            &parts.vocab,
-            parts.wiring.renderer.as_ref(),
-            parts.wiring.parser.as_ref(),
+            parts.vocab.clone(),
+            parts.wiring.renderer.clone(),
+            parts.wiring.parser.clone(),
             cfg.endpoint.clone(),
             // A llama.cpp server we run: token ids in, per-stage cache accounting,
             // a wall-clock meter, and a structural prefix guarantee — so §18.1-I1's
@@ -7501,7 +7501,7 @@ impl<'a> Harness<'a> {
     /// reason the row pairing is a free function.
     fn run_summary_turn(
         hub: &Arc<Hub>,
-        engine: &mut TurnEngine<'_>,
+        engine: &mut TurnEngine,
         session: &mut Session,
         sink: &mut CapturingSink,
         answerer: &letibot_turn::compaction::Answerer<'_>,
@@ -7986,7 +7986,7 @@ fn recorded_job_lines(row: &JobRecord) -> Vec<String> {
     lines
 }
 
-impl<'a> Harness<'a> {
+impl Harness {
     /// **The window for a handle this daemon never ran**, or the refusal when the store has
     /// never heard of it either.
     ///
@@ -8932,7 +8932,7 @@ fn stop_children_first(
 /// It ends when the hub is closed — the same liveness test `jobwatch::watch_task` uses for the
 /// thread it parks per child — and **nothing here is on a clock**: a child asked something an hour
 /// later answers it.
-fn serve_child(sub: &mut Harness<'_>, hub: &Hub, sub_id: &str) {
+fn serve_child(sub: &mut Harness, hub: &Hub, sub_id: &str) {
     use letibot_sessionlog::hub::OwnWork;
     loop {
         let kind = match hub.take_own_work() {

@@ -44,5 +44,10 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-lib=dylib=llama");
+    // The shim calls `ggml_backend_dev_by_type` to name the CPU device for a
+    // vocabulary load (see csrc/shim.c): that symbol lives in libggml, which
+    // libllama itself imports at runtime. Naming it here keeps the shim's one
+    // dependency explicit instead of relying on the link order picking it up.
+    println!("cargo:rustc-link-lib=dylib=ggml");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
 }

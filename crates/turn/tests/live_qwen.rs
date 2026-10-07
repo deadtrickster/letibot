@@ -103,8 +103,8 @@ fn qwen_is_served() -> bool {
     })
 }
 
-fn vocab() -> &'static Vocab {
-    static VOCAB: OnceLock<Vocab> = OnceLock::new();
+fn vocab() -> std::sync::Arc<Vocab> {
+    static VOCAB: OnceLock<std::sync::Arc<Vocab>> = OnceLock::new();
     VOCAB.get_or_init(|| {
         let path = std::env::var("LETIBOT_VOCAB_GGUF").unwrap_or_else(|_| {
             "/home/dead/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
@@ -116,14 +116,14 @@ fn vocab() -> &'static Vocab {
             "no vocabulary GGUF at {path}. Set LETIBOT_VOCAB_GGUF; for a split model \
              pass the first shard."
         );
-        Vocab::load(&p).expect("the vocabulary must load")
-    })
+        std::sync::Arc::new(Vocab::load(&p).expect("the vocabulary must load"))
+    }).clone()
 }
 
 /// A fresh session with a nonce in its system prompt, so no earlier run's cache
 /// entry can make a cold turn look warm. §18.2's "two conversations cannot test
 /// residency" applies to prefixes too.
-fn fresh(engine: &TurnEngine<'_>, tag: &str) -> Session {
+fn fresh(engine: &TurnEngine, tag: &str) -> Session {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -144,11 +144,11 @@ fn user(text: &str) -> TranscriptItem {
     }
 }
 
-fn engine<'a>(renderer: &'a ChatMlRenderer, parser: &'a ChatMlParser) -> TurnEngine<'a> {
+fn engine() -> TurnEngine {
     TurnEngine::new(
         vocab(),
-        renderer,
-        parser,
+        std::sync::Arc::new(ChatMlRenderer::default()),
+        std::sync::Arc::new(ChatMlParser),
         endpoint(),
         // A llama.cpp server we run: token ids in, per-stage cache accounting,
         // wall-clock meter, structural prefix guarantee.
@@ -166,8 +166,7 @@ fn a_turn_goes_render_tokenize_ledger_submit_stream_parse_commit() {
         return;
     }
     let _lock = serial();
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
-    let mut engine = engine(&renderer, &parser);
+    let mut engine = engine();
     let mut session = fresh(&engine, "pipeline");
     let mut sink = RecordingSink::new();
 
@@ -253,8 +252,7 @@ fn the_committed_ids_are_the_models_ids_not_a_retokenized_reconstruction() {
         return;
     }
     let _lock = serial();
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
-    let mut engine = engine(&renderer, &parser);
+    let mut engine = engine();
     let mut session = fresh(&engine, "ids");
     let mut sink = RecordingSink::new();
     session
@@ -287,7 +285,7 @@ fn the_committed_ids_are_the_models_ids_not_a_retokenized_reconstruction() {
         })
         .collect();
     // What the ledger holds, decoded back through the real vocabulary.
-    let decoded = letibot_turn::engine::decode_tokens(vocab(), engine.control(), committed);
+    let decoded = letibot_turn::engine::decode_tokens(&vocab(), engine.control(), committed);
 
     // # Why this compares against the rows and not against the decoded ledger
     //
@@ -340,8 +338,7 @@ fn the_generation_inclusive_prefix_invariant_is_checked_after_every_turn() {
         return;
     }
     let _lock = serial();
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
-    let mut engine = engine(&renderer, &parser);
+    let mut engine = engine();
     let mut session = fresh(&engine, "prefix");
     let mut sink = RecordingSink::new();
 

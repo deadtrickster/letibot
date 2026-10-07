@@ -568,6 +568,18 @@ pub struct ModelProfile {
     /// at two sizes. Measured on this fleet the day it was written -- the same 27B
     /// GGUF at `n_ctx` 262144 on `127.0.0.1:8080` and 57344 on `192.168.1.78:8082`.
     pub window: Option<u64>,
+    /// **The dialect, when the operator asserts it by hand** — `dialect = "glm"` or
+    /// `"qwen"`, the same kind of decision on the record `same_vocab` is.
+    ///
+    /// A switch derives the dialect from the chat template the target's `/props`
+    /// reports, which is the one source that cannot drift from what the server
+    /// actually renders. This key is the escape for the cases where that source is
+    /// not available honestly: a server too old to report a template, or one whose
+    /// template matches nothing this tree drives. It is read here and interpreted
+    /// by `harnessd::dialect::Dialect::parse`, which owns the names; an unknown
+    /// value is refused at the switch rather than silently ignored, because a
+    /// dialect nobody applied is the silent-corruption shape again.
+    pub dialect: Option<String>,
 }
 
 /// Every key a `[model.*]` block may set beside `effort`, and how to read it.
@@ -649,6 +661,15 @@ pub fn model_profile(family: &str, alias: &str, file: Option<&Path>) -> ModelPro
                             .unknown
                             .push(format!("window = {v} (not a positive token count)")),
                     }
+                    continue;
+                }
+                // Read, not filed under `unknown`: this crate cannot say whether the
+                // value names a dialect it knows, but dropping the VALUE would leave
+                // only the bare word `dialect` in `unknown`, and the switch could
+                // never honour an assertion it cannot read. An unparseable value is
+                // refused where it is used, which is where the allowed names live.
+                "dialect" => {
+                    out.dialect = Some(v.clone());
                     continue;
                 }
                 _ => {}
@@ -850,6 +871,33 @@ mod tests {
         assert_eq!(
             m.profile.sampling.get("temperature").unwrap().as_f64(),
             Some(0.7)
+        );
+    }
+
+    /// **`dialect = ` is read with its VALUE, not filed as a bare unknown key.**
+    ///
+    /// The first cut of the switch's escape hatch put `dialect` in the same bucket
+    /// as a typo: `model_profile` pushed only the KEY name into `unknown`, so the
+    /// value an operator wrote was dropped on the floor and the assertion could
+    /// never be honoured. This is the regression that would have shipped silently —
+    /// the file accepts the line, nothing reads it, the switch keeps refusing.
+    #[test]
+    fn a_fleet_block_may_assert_its_dialect_and_the_value_survives() {
+        let f = tmp_providers(
+            "dialect_key",
+            "[model.\"local.glm\"]\nurl = \"http://127.0.0.1:8080\"\ndialect = \"glm\"\n",
+        );
+        let fleet = local_models(Some(&f));
+        assert_eq!(fleet.len(), 1, "{fleet:?}");
+        assert_eq!(
+            fleet[0].profile.dialect.as_deref(),
+            Some("glm"),
+            "the asserted value, readable by the switch"
+        );
+        assert!(
+            !fleet[0].profile.unknown.iter().any(|u| u == "dialect"),
+            "a read key is not an unknown one: {:?}",
+            fleet[0].profile.unknown
         );
     }
 
