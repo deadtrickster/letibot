@@ -835,6 +835,7 @@ pub fn base64(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[test]
     fn an_unchanged_frame_writes_nothing_at_all() {
         // The flicker, as an assertion. The loop wakes ten times a second whether
         // or not anything arrived; over one measured 28-second session, 221 of 269
@@ -1065,7 +1066,6 @@ mod tests {
         assert!(bytes.contains("\x1b[2;1H"), "{bytes:?}");
     }
 
-    #[test]
     #[test]
     fn base64_is_the_standard_padded_alphabet() {
         assert_eq!(base64(b""), "");
