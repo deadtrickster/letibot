@@ -194,8 +194,12 @@ pub fn image_cells(width: Option<u32>, height: Option<u32>, box_cols: u32) -> (u
 /// in a foreground colour that spells the id. To every renderer, width count and diff here they
 /// are ordinary text — which is why this, and not a pixel placement, is how the head draws one.
 pub fn image_rows(id: u32, cols: u32, rows: u32) -> Vec<String> {
+    // The image id in the foreground and **the placement id in the underline colour** — the
+    // protocol's way for a placeholder to say which placement it means. Without it a terminal
+    // holding two placements of one image picks one itself: the operator's second screenshot was
+    // a 40×12 picture drawn by an earlier head's placement in the corner of an 80×24 box.
     let colour = format!(
-        "\x1b[38;2;{};{};{}m",
+        "\x1b[38;2;{};{};{}m\x1b[58;5;{PLACEMENT}m",
         (id >> 16) & 0xff,
         (id >> 8) & 0xff,
         id & 0xff
@@ -209,7 +213,7 @@ pub fn image_rows(id: u32, cols: u32, rows: u32) -> Vec<String> {
             for _ in 1..cols {
                 row.push(PLACEHOLDER);
             }
-            row.push_str("\x1b[39m");
+            row.push_str("\x1b[39m\x1b[59m");
             row
         })
         .collect()
@@ -233,10 +237,18 @@ pub fn image_upload(id: u32, png_base64: &str) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// The one placement id this head uses for every image, which its placeholders name.
+const PLACEMENT: u32 = 1;
+
 /// **The virtual placement the placeholders draw**: `cols`×`rows` cells of image `id`, under
-/// placement id 1 so that sending it again at a new size replaces it rather than adding one.
+/// placement [`PLACEMENT`]. Every placement the image already has is deleted first (`d=i`,
+/// which keeps the image's data) — one left by an earlier head, or by this one at another size,
+/// would otherwise sit beside the new one.
 pub fn image_place(id: u32, cols: u32, rows: u32) -> Vec<u8> {
-    format!("\x1b_Ga=p,U=1,i={id},p=1,c={cols},r={rows},q=2\x1b\\").into_bytes()
+    format!(
+        "\x1b_Ga=d,d=i,i={id},q=2\x1b\\\x1b_Ga=p,U=1,i={id},p={PLACEMENT},c={cols},r={rows},q=2\x1b\\"
+    )
+    .into_bytes()
 }
 
 /// **The images a reply's markdown names** — `![alt](target)` — as `(alt, target)`, in order,
@@ -289,20 +301,27 @@ pub fn reply_image(item_id: &str, target: &str) -> Option<(u32, Option<u32>, Opt
 }
 
 /// **Where a reply's picture goes**: after the first rendered line, at or past `from`, that
-/// shows its reference — the target itself when the reference is drawn literally (a code
-/// block), or else its alt text, which is what the markdown renderer leaves of an image. `None`
-/// when neither is on any line, and the caller puts it at the end.
+/// shows its reference — the markdown itself when it is drawn literally (a code block), else
+/// the bare target, else its alt text, which is what the markdown renderer leaves of an image.
+/// In that order: the operator's reply named the path in a sentence before the `![…]` line, and
+/// a search for the path alone hung the picture under the sentence. `None` when none of the
+/// three is on any line, and the caller puts it at the end.
 pub fn picture_anchor(lines: &[String], from: usize, alt: &str, target: &str) -> Option<usize> {
     let plain = |l: &String| {
         let mut t = String::with_capacity(l.len());
         letibot_ui::width::for_each_cell(l, |c| t.push_str(c.text));
         t
     };
-    lines
-        .iter()
-        .enumerate()
-        .skip(from)
-        .find(|(_, l)| plain(l).contains(target))
+    let reference = format!("]({target}");
+    let on = |needle: &str| {
+        lines
+            .iter()
+            .enumerate()
+            .skip(from)
+            .find(|(_, l)| plain(l).contains(needle))
+    };
+    on(&reference)
+        .or_else(|| on(target))
         .or_else(|| {
             (!alt.is_empty())
                 .then(|| {
@@ -2405,8 +2424,11 @@ mod link_tests {
         assert!(up.contains("m=1;") && up.contains("\x1b_Gm=0;"));
         assert_eq!(
             String::from_utf8(image_place(9, 40, 5)).unwrap(),
-            "\x1b_Ga=p,U=1,i=9,p=1,c=40,r=5,q=2\x1b\\"
+            "\x1b_Ga=d,d=i,i=9,q=2\x1b\\\x1b_Ga=p,U=1,i=9,p=1,c=40,r=5,q=2\x1b\\",
+            "the image's old placements go first, then the one the rows name"
         );
+        // The rows name the placement, not only the image.
+        assert!(image_rows(9, 4, 1)[0].contains("\x1b[58;5;1m"));
         assert_ne!(image_id("a"), image_id("b"));
         assert!(image_id("") > 0 && image_id("x") <= 0xff_ffff);
     }
@@ -2421,6 +2443,15 @@ mod link_tests {
         // Rendered markdown keeps only the alt text.
         assert_eq!(picture_anchor(&lines, 2, "sun again", "/nope.png"), Some(4));
         assert_eq!(picture_anchor(&lines, 0, "", "/nope.png"), None);
+        // The path named in a sentence first: the picture goes under the markdown, not there.
+        let named_twice: Vec<String> = ["Wrote /x/sun.png for you.", "![sun](/x/sun.png)", "end"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            picture_anchor(&named_twice, 0, "sun", "/x/sun.png"),
+            Some(2)
+        );
         // Inside a frame: after the frame closes.
         let framed: Vec<String> = ["┌─", "│ ![a](/p.png)", "│ more code", "└─", "after"]
             .iter()
