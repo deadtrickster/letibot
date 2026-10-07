@@ -22759,6 +22759,9 @@ fn call_card(
             &dcfg,
             view,
         );
+        if header_names_the_file(&card.target, &path) && !body.is_empty() {
+            body.remove(0);
+        }
         if e.truncated {
             body.push(cfg.palette().paint(
                 Role::Faint,
@@ -23471,6 +23474,17 @@ fn ellipsise_left(s: &str, max: usize) -> String {
 /// 60 columns: `**/*.{md,json,toml,yaml,yml} 40` has a slash in it and cutting
 /// its left gave `…json,toml,yaml,yml} 40`, which has lost the fact that it is a
 /// glob at all. Cutting its right gives `**/*.{md,json,tom…`, which has not.
+/// **Does the row's header already name the file its diff is of?** Then the diff's own name
+/// line (`sidediff::render_edit_view`'s first row) says it a second time — the operator, on
+/// `▸ Wrote …/pr-body-align.md · ok` with the same path on the line under it: *"why two
+/// times?"*. That line exists for the card whose header could NOT name the file (a call id in
+/// its place — *"sometimes your Edited card doesnt have file name"*, 2026-10-05), and it stays
+/// for that one. A relative target the excerpt's absolute path ends in is the same file.
+fn header_names_the_file(target: &str, path: &str) -> bool {
+    let t = target.trim();
+    !t.is_empty() && (t == path || path.ends_with(&format!("/{t}")))
+}
+
 fn shorten_subject(s: &str, max: usize) -> String {
     if visible_width(s) <= max {
         return s.to_string();
@@ -24633,6 +24647,9 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
                     &dcfg,
                     view,
                 );
+                if header_names_the_file(&subject, &path) && !rows.is_empty() {
+                    rows.remove(0);
+                }
                 if e.truncated {
                     rows.push(p.paint(
                         Role::Faint,
@@ -53071,6 +53088,38 @@ mod tests {
             color: false,
             ..Default::default()
         }
+    }
+
+    /// **The file is named once.** The operator, on `▸ Wrote …/pr-body-align.md · ok` with the
+    /// same path on the line under it: *"why two times?"*. A header that names the file drops
+    /// the diff's own name line; a header that could not name it (a call id in its place) keeps
+    /// it, which is what that line was added for.
+    #[test]
+    fn an_edit_card_names_its_file_once() {
+        let count = |rows: &[String]| rows.iter().filter(|l| l.contains("a.rs")).count();
+        let named = call_card(
+            &edit_row(Some(edit_excerpt())),
+            &plain_cfg(120),
+            0,
+            Fold::Open,
+            true,
+        );
+        assert_eq!(count(&named), 1, "{}", named.join("\n"));
+
+        let mut unnamed_row = edit_row(Some(edit_excerpt()));
+        unnamed_row.target = String::new();
+        let unnamed = call_card(&unnamed_row, &plain_cfg(120), 0, Fold::Open, true);
+        assert_eq!(
+            count(&unnamed),
+            1,
+            "a header with no file keeps the diff's name line:\n{}",
+            unnamed.join("\n")
+        );
+
+        assert!(header_names_the_file("a.rs", "a.rs"));
+        assert!(header_names_the_file("src/a.rs", "/w/src/a.rs"));
+        assert!(!header_names_the_file("a.rs", "/w/ba.rs"));
+        assert!(!header_names_the_file("", "a.rs"));
     }
 
     #[test]
