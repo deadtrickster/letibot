@@ -108,6 +108,13 @@ fi
 # libgomp and libsqlite3 are the same argument. So this names what is missing and
 # how to get it — a line a person can paste.
 HOST_LIBS="libstdc++.so.6 libgomp.so.1 libsqlite3.so.0"
+# **And a CLOUD-ONLY build needs one of them.** libstdc++ and libgomp are llama.cpp's —
+# the C++ runtime and OpenMP that libllama and libggml link — and a build without the
+# `local` feature links no llama at all. What is left is SQLite, which harnessd links for
+# the store. MEASURED 2026-10-07 on the macOS cloud build (otool -L: libSystem, libiconv,
+# libsqlite3 and nothing else) and checked against the sources: every tree-sitter grammar
+# compiles C, and the `cpp(true)` in their build scripts is a commented-out template.
+HOST_LIBS_CLOUD="libsqlite3.so.0"
 
 say() { printf '%s\n' "$*"; }
 # Everything that is not the binary path goes to stderr, so the functions below can
@@ -163,13 +170,24 @@ host_has_lib() {
     return 1
 }
 
-# **Refuse before anything is downloaded or copied.**
+# **Refuse before anything is downloaded or copied — and refuse for what THIS run installs.**
 #
 # This is the sentence install.sh already had one level down — "a daemon whose
 # `libllama.so.0` is missing dies at exec with `cannot open shared object file`" —
 # applied to the libraries that are NOT in the archive. The value is turning an
 # exit-127 mystery into a line a person can paste.
+#
+# `$1` is what is about to be installed, because the three paths need different things:
+#
+#   prebuilt  the release asset: glibc binaries carrying llama, so a glibc loader and all
+#             of HOST_LIBS. Checked before the download.
+#   local     a source build linking the operator's llama.cpp: HOST_LIBS, and no glibc
+#             check — the binaries are built HERE, against whatever libc this is.
+#   cloud     a source build with no llama.cpp: HOST_LIBS_CLOUD only. It asked for
+#             libgomp on a box that would never load it, and refused a cloud-only
+#             install over a library only a local model needs.
 require_host_runtime() {
+    plan="$1"
     # **macOS needs nothing from this list.** Everything the binaries and the four
     # libraries link outside the archive is part of the OS — libc++, libsqlite3, libiconv,
     # libSystem, and the Accelerate/Metal/Foundation frameworks (`otool -L`, measured on
@@ -184,30 +202,86 @@ require_host_runtime() {
         fi
         return 0
     fi
-    if ! have_glibc; then
+    if [ "$plan" = prebuilt ] && ! have_glibc; then
         die "this machine has no glibc dynamic loader, and the published binaries are
   built for glibc — they cannot run here whatever is installed. (A musl system
   such as Alpine is the usual case.) Build from source instead:
       LETIBOT_FROM_SOURCE=1 sh install.sh
-  which needs git, Rust, a C compiler and a built llama.cpp checkout.
-  Nothing has been downloaded or copied."
+  which needs git, Rust and a C compiler — and a built llama.cpp checkout only for
+  local models (LETIBOT_LLAMA_DIR/LETIBOT_LLAMA_LIB); without one it is a cloud-only
+  build. Nothing has been downloaded or copied."
     fi
+    case "$plan" in
+        cloud) want=$HOST_LIBS_CLOUD ;;
+        *) want=$HOST_LIBS ;;
+    esac
     missing=""
-    for lib in $HOST_LIBS; do
+    for lib in $want; do
         host_has_lib "$lib" || missing="$missing $lib"
     done
     [ -n "$missing" ] || return 0
+    # The packages for exactly what is missing, so a line can be pasted as it stands.
+    deb="" rpm=""
+    for lib in $missing; do
+        case "$lib" in
+            libstdc++.so.6) deb="$deb libstdc++6" rpm="$rpm libstdc++" ;;
+            libgomp.so.1) deb="$deb libgomp1" rpm="$rpm libgomp" ;;
+            libsqlite3.so.0) deb="$deb libsqlite3-0" rpm="$rpm sqlite-libs" ;;
+        esac
+    done
+    # Why they are not in the archive, said about the libraries actually missing: the
+    # libstdc++ argument is about libstdc++, and a cloud-only refusal is about SQLite.
+    why="They come from the system on purpose, like libc itself."
+    case "$missing" in
+        *libstdc*) why="They are not bundled on purpose: a libstdc++ has to match the host's libc, and
+  one older than the host's fails worse and more mysteriously than a missing one." ;;
+    esac
+    cloud_hint=""
+    if [ "$plan" != cloud ] && [ -n "$(printf '%s' "$missing" | grep -E 'libstdc|libgomp')" ]; then
+        cloud_hint="
+
+  libstdc++ and libgomp are llama.cpp's, which only a LOCAL model needs. For cloud
+  providers alone, a source build needs neither (it needs Rust and a C compiler):
+      LETIBOT_FROM_SOURCE=1 sh install.sh"
+    fi
     die "this machine is missing libraries the binaries need at run time:$missing
 
   The install would otherwise succeed, and then harnessd would die at exec with
   'cannot open shared object file' — naming none of them. Install them:
 
-    Debian/Ubuntu   apt-get install libstdc++6 libgomp1 libsqlite3-0
-    Fedora/RHEL     dnf install libstdc++ libgomp sqlite-libs
+    Debian/Ubuntu   apt-get install$deb
+    Fedora/RHEL     dnf install$rpm
 
-  They are not bundled on purpose: a libstdc++ has to match the host's libc, and
-  one older than the host's fails worse and more mysteriously than a missing one.
+  $why$cloud_hint
   Nothing has been downloaded or copied."
+}
+
+# The release asset's target triple for this machine, or non-zero when none is published.
+asset_triple() {
+    case "$(uname -s)/$(uname -m)" in
+        Linux/x86_64)                 triple=x86_64-unknown-linux-gnu ;;
+        Linux/aarch64 | Linux/arm64)  triple=aarch64-unknown-linux-gnu ;;
+        # Apple silicon. An Intel Mac has no asset and builds from source.
+        Darwin/arm64)                 triple=aarch64-apple-darwin ;;
+        *) return 1 ;;
+    esac
+    printf '%s' "$triple"
+}
+
+# **What this run will install**, decided the way `main` decides it, before anything is
+# fetched: a checkout or LETIBOT_FROM_SOURCE builds from source, and so does a platform
+# with no asset; anything else is the prebuilt asset. A source build is `local` when a
+# llama.cpp is named and `cloud` when not (see `build_from_source`).
+install_plan() {
+    if local_checkout >/dev/null || [ -n "${LETIBOT_FROM_SOURCE:-}" ] || ! asset_triple >/dev/null; then
+        if [ -n "${LETIBOT_LLAMA_DIR:-}" ] && [ -n "${LETIBOT_LLAMA_LIB:-}" ]; then
+            printf 'local'
+        else
+            printf 'cloud'
+        fi
+    else
+        printf 'prebuilt'
+    fi
 }
 
 # A checkout to build from, or nothing: the directory holding this script, if it
@@ -239,13 +313,7 @@ cloud_only_libraries() {
 # published asset falls through to the source build.
 try_prebuilt() {
     tmp="$1"
-    case "$(uname -s)/$(uname -m)" in
-        Linux/x86_64)                 triple=x86_64-unknown-linux-gnu ;;
-        Linux/aarch64 | Linux/arm64)  triple=aarch64-unknown-linux-gnu ;;
-        # Apple silicon. An Intel Mac has no asset and builds from source.
-        Darwin/arm64)                 triple=aarch64-apple-darwin ;;
-        *) return 1 ;;
-    esac
+    triple=$(asset_triple) || return 1
     name="letibot-$triple.tar.gz"
     if [ -n "$VERSION" ]; then
         url="https://github.com/$REPO/releases/download/$VERSION/$name"
@@ -324,7 +392,7 @@ main() {
     # **Before the banner, before the download, before a single file is copied.**
     # A box that cannot run the binaries should learn that in the first second,
     # not after 16 MB and six files it will have to remove.
-    require_host_runtime
+    require_host_runtime "$(install_plan)"
 
     say "letibot installs into: $INSTALL_DIR"
     say "  $BINARIES"
