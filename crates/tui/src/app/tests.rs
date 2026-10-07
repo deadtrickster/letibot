@@ -11141,7 +11141,7 @@ const HEAD_COMMAND_ALIASES: &[&str] = &["?", "h", "q", "r", "s", "t", "v", "i"];
 #[test]
 fn every_verb_the_dispatcher_acts_on_is_offered_by_tab() {
     // The dispatcher's own source, so this cannot drift from the code it is about.
-    const SRC: &str = include_str!("mod.rs");
+    const SRC: &str = include_str!("commands.rs");
     let start = SRC
         .find("fn command(&mut self, cmd: &str) -> Option<Action> {")
         .expect("the dispatcher");
