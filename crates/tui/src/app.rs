@@ -2394,6 +2394,10 @@ pub struct App {
     /// has to tell them apart — a model line drawn as a history line is a line that
     /// looks like the operator typed it and did not.
     shell_model: Option<(String, Vec<String>, usize)>,
+    /// **The file names a Tab found for the word being typed**, and the line they were
+    /// found for. Shown in the completion row while the line is unchanged — the shell's
+    /// own "here are the choices" — and dropped the moment it is edited.
+    path_matches: Option<(String, Vec<String>)>,
     /// **The `!` candidates, computed from the rows and held until they move.**
     ///
     /// The list is the same for every frame that draws the live `!` row, and building
@@ -3126,6 +3130,12 @@ pub struct App {
     /// head of the payload, because that is what the reader is scrolling through, and it
     /// is clamped against the payload's own length at draw time.
     payload_page: usize,
+    /// **The furthest `payload_page` that still shows a full window**, written by the draw
+    /// — the only place that knows the payload's wrapped length — and read by the keys to
+    /// clamp. Without it Down kept adding past the end while the screen stood still, and
+    /// Up then had to unwind every invisible step before anything moved: the operator's
+    /// *"couldnt scroll bottom anymore - only esc worked"*. `usize::MAX` until drawn.
+    payload_max: std::cell::Cell<usize>,
     /// The key that asked, so the arrows page **only the row whose view is open**.
     ///
     /// Without it, Up/Down inside an open payload would move the transcript, or every
@@ -4123,6 +4133,7 @@ impl App {
             shell_suggestions: std::collections::HashMap::new(),
             shell_ask_seq: 0,
             shell_model: None,
+            path_matches: None,
             shell_candidates_memo: None,
             shell_walks: 0,
             queued: Vec::new(),
@@ -4236,6 +4247,7 @@ impl App {
             pane_len: 0,
             pane_room: 0,
             payload_page: 0,
+            payload_max: std::cell::Cell::new(usize::MAX),
             payload_sel: None,
             spent_micros: 0,
             spent_seen: false,
@@ -7880,6 +7892,7 @@ impl App {
                 } else if let Some(id) = self.newest_openable() {
                     self.payload_sel = Some(id);
                     self.payload_page = 0;
+                    self.payload_max.set(usize::MAX);
                 }
                 // **Not `refold`.** That is the fold's own: it resets the scroll and
                 // announces the fold state, and neither happened here.
@@ -8012,6 +8025,20 @@ impl App {
             // saved for some reason". The output view takes them; any other
             // screen on top swallows them, because a view that is not on the
             // screen does not move.
+            // **An open payload window takes the page keys and the wheel**, as it takes the
+            // arrows below: the reader opened one result to read it, and these moved the
+            // transcript underneath it instead — which, at the bottom already, looked like
+            // nothing happening at all.
+            Key::PageUp | Key::PageDown | Key::WheelUp | Key::WheelDown
+                if self.payload_sel.is_some() =>
+            {
+                let by = match k {
+                    Key::WheelUp | Key::WheelDown => 3,
+                    _ => self.screen_rows.max(1) / 2 + 1,
+                };
+                self.page_payload(matches!(k, Key::PageUp | Key::WheelUp), by);
+                return None;
+            }
             Key::PageUp | Key::PageDown | Key::WheelUp | Key::WheelDown => {
                 // **A page is a screen, not ten lines.** `PageUp` moved by a constant ten,
                 // which on a 40-row terminal is a quarter of the page the key is named for
@@ -8358,24 +8385,20 @@ impl App {
                     return None;
                 }
                 Key::Up | Key::PageUp => {
-                    self.payload_page = self.payload_page.saturating_sub(BY);
-                    // **The history buffer is a cache of the rendered rows**, and a page
-                    // offset changes what one of those rows renders to — so `redraw`
-                    // alone re-draws the *old* lines. Found by the test: the page moved
-                    // to 10 and the screen still showed line 0. `refold` invalidates for
-                    // the same reason.
-                    self.invalidate_history();
-                    self.redraw = true;
+                    self.page_payload(true, BY);
                     return None;
                 }
                 Key::Down | Key::PageDown => {
-                    // Not clamped here: the drawn length is a function of the fold, the
-                    // width and the payload, and the key handler knows none of them. The
-                    // draw clamps against what it actually has, which is the only place
-                    // that knows.
-                    self.payload_page = self.payload_page.saturating_add(BY);
-                    self.invalidate_history();
-                    self.redraw = true;
+                    self.page_payload(false, BY);
+                    return None;
+                }
+                // The ends, which a long build log is read from as often as its head.
+                Key::Home => {
+                    self.page_payload(true, usize::MAX);
+                    return None;
+                }
+                Key::End => {
+                    self.page_payload(false, usize::MAX);
                     return None;
                 }
                 _ => {}
@@ -10784,12 +10807,52 @@ impl App {
     /// a completion matches fresh rather than clobbering what was typed, and a
     /// prefix nothing matches leaves the composer exactly as it was and says so.
     /// Nothing is ever submitted — a candidate only fills the composer.
+    /// **Move the open payload window** by `by` wrapped lines, clamped to the last full
+    /// page the draw recorded (`payload_max`) — so Down stops where the output ends and the
+    /// first Up after it moves at once, instead of unwinding steps past the end.
+    fn page_payload(&mut self, up: bool, by: usize) {
+        let max = self.payload_max.get();
+        let from = self.payload_page.min(max);
+        self.payload_page = if up {
+            from.saturating_sub(by)
+        } else {
+            from.saturating_add(by).min(max)
+        };
+        // **The history buffer is a cache of the rendered rows**, and a page offset changes
+        // what one of those rows renders to — so `redraw` alone re-draws the *old* lines.
+        self.invalidate_history();
+        self.redraw = true;
+    }
+
     fn complete_shell(&mut self) {
         let text = self.editor.text().to_string();
         // The one recogniser: a `!` line is what the sessionlog crate says it is,
         // and a bang with no command after it is not one — so `!` alone does
         // nothing, the same refusal the send makes.
         if letibot_sessionlog::operator_shell_command(&text).is_none() {
+            return;
+        }
+        // **A file name first, the way a shell completes one** — the operator, after
+        // `! ./stroppy/build/stroppy` had to be typed out whole: *"when i do ! <command> i
+        // dont get path name or context suggestion"*. The history and the model complete
+        // whole LINES; a path is a word, and the filesystem is the one completer that is
+        // free, local and never wrong about what exists. Only with the cursor at the end,
+        // and only when it finds something — otherwise the line cycles below as before.
+        if self.editor.cursor() == text.len()
+            && let Some(done) = complete_path_word(&text, &self.wiring.workspace)
+        {
+            match done {
+                PathCompletion::Line(line) => {
+                    self.path_matches = None;
+                    self.set_composer(&line);
+                }
+                PathCompletion::Choices { line, names } => {
+                    if line != text {
+                        self.set_composer(&line);
+                    }
+                    self.path_matches = Some((line, names));
+                }
+            }
             return;
         }
         // **The model's cycle, if it is live.** It is checked first because it is the
@@ -11163,6 +11226,21 @@ impl App {
         // at the end, made here instead, and it is the same rule the `/` row keeps.
         let mut parts: Vec<String> = Vec::new();
         let mut used = 2usize; // the row's own leading indent
+        // **The file names a Tab found**, while the line is still the one they were found
+        // for: what a shell lists on a second Tab, shown at once because the row is here.
+        if let Some((line, names)) = &self.path_matches
+            && *line == text
+        {
+            for n in names {
+                if used >= w {
+                    break;
+                }
+                used += visible_width(n) + SEPARATOR_COLS;
+                parts.push(n.clone());
+            }
+            let cfg = &self.cfg;
+            return Some(dim(cfg, &trim_to(&format!("  {}", parts.join("  ·  ")), w)));
+        }
         // The history's candidates, plain: a command this session ran is a fact.
         for line in self
             .shell_candidates()
@@ -14869,6 +14947,8 @@ impl App {
                                 .map(|id| (id, self.payload_page))
                         },
                         payload_newest: newest_payload.as_deref(),
+                        payload_max: Some(&self.payload_max),
+                        window_rows: self.screen_rows.saturating_sub(WINDOW_CHROME),
                     },
                 ),
             };
@@ -15582,6 +15662,8 @@ impl App {
                 diff_split,
                 payload_sel,
                 payload_page,
+                payload_max,
+                screen_rows,
                 bound_prompts,
                 unconfirmed,
                 echo_open,
@@ -15831,6 +15913,8 @@ impl App {
                                         .map(|id| (id, *payload_page))
                                 },
                                 payload_newest: newest_payload.as_deref(),
+                                payload_max: Some(payload_max),
+                                window_rows: screen_rows.saturating_sub(WINDOW_CHROME),
                             },
                         ),
                     };
@@ -17932,6 +18016,8 @@ impl App {
                 vis: Visibility::lifted(),
                 diff_split: self.diff_split,
                 payload_view: None,
+                payload_max: None,
+                window_rows: usize::MAX,
                 payload_newest: None,
             };
             let (class, rows) = item_lines(it, &ctx);
@@ -23557,6 +23643,11 @@ enum RowClass {
 /// A struct rather than seven positional parameters because two of the seven are
 /// round-scoped and one is row-scoped, and a caller passing them in the wrong
 /// order is exactly the defect this file has just finished fixing.
+/// Rows an open payload window leaves for everything else on the screen: the header, the
+/// row's own heading, the composer and its rows. Generous rather than exact — a window a
+/// line short of the screen is read whole; one a line too tall has lost its first line.
+const WINDOW_CHROME: usize = 10;
+
 struct ItemCtx<'a> {
     cfg: &'a RenderConfig,
     think: Fold,
@@ -23616,6 +23707,13 @@ struct ItemCtx<'a> {
     /// silently closed, and it was: the first version did exactly that and the test
     /// caught it (the seam said `ctrl-t pages` while `ctrl-t` had been pressed).
     payload_view: Option<(&'a str, usize)>,
+    /// Where the draw records the open window's furthest full page (see `App::payload_max`).
+    payload_max: Option<&'a std::cell::Cell<usize>>,
+    /// **The most rows an open payload window may take**: the screen's, less the chrome.
+    /// The window's budget is a fixed forty rows, and on a shorter terminal its top was
+    /// above the screen — the first twenty lines of a result opened to be read, unreachable
+    /// while the window held the keys. `usize::MAX` where there is no screen to fit.
+    window_rows: usize,
     /// **The one row `ctrl-t` can act on**, or `None` when no result is long enough
     /// to have a rest to read.
     ///
@@ -23795,6 +23893,8 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
         drawn_live,
         elapsed_ms,
         payload_view,
+        payload_max,
+        window_rows,
         payload_newest,
         bound,
         echo_mark,
@@ -24485,14 +24585,21 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // to unfold every result in the conversation — which is what made `ctrl-t` a
             // wall. See [`ItemCtx::payload_newest`].
             let shown_rows = if window {
-                cfg.budget.body_lines.max(2)
+                cfg.budget.body_lines.min(window_rows).max(4)
             } else if tools.is_open() || (bad && why.is_none()) {
                 cfg.budget.body_lines
             } else {
                 2
             };
+            // **The last page is a full one.** It clamped to `total - 1`, so the end of a
+            // long output was one line under a seam; the furthest useful offset is the one
+            // whose window ends on the last line (a window with the `↑` seam above it).
+            let max_page = total.saturating_sub(shown_rows.saturating_sub(2).max(1));
+            if window && let Some(cell) = payload_max {
+                cell.set(max_page);
+            }
             let page = match payload_view {
-                Some((_, p)) if window => p.min(total.saturating_sub(1)),
+                Some((_, p)) if window => p.min(max_page),
                 _ => 0,
             };
             // One row is spent on the seam when there is more payload, on either side.
@@ -25071,6 +25178,98 @@ fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
             .collect()
         }
     }
+}
+
+/// What a Tab on a `!` line's last word found in the filesystem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathCompletion {
+    /// One match: the whole line with the word completed — `/` after a directory, a space
+    /// after a file, so the next word can be typed at once.
+    Line(String),
+    /// Several: the line with the word extended to what they share (maybe unchanged), and
+    /// the names to show.
+    Choices { line: String, names: Vec<String> },
+}
+
+/// **Complete the last word of a `!` line as a path**, relative to `workspace` — where an
+/// operator's `!` command runs — with `~/` as the home directory.
+///
+/// The word in command position (the first after `!`) is a program, and is completed only
+/// when it is spelled as a path (`./build/x`, `/usr/bin/x`, `~/bin/x`); every later word is
+/// an argument and is completed as a file. A word with quotes or `$` in it is left alone —
+/// what it names is the shell's to work out. `None` when nothing matches, so a Tab falls
+/// through to the line completions.
+fn complete_path_word(text: &str, workspace: &str) -> Option<PathCompletion> {
+    let cmd = text.strip_prefix('!')?;
+    let start = text.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(1);
+    let word = &text[start..];
+    if word.contains(['\'', '"', '$', '`']) {
+        return None;
+    }
+    let first = cmd.trim_start().find(char::is_whitespace).is_none();
+    let pathish = word.starts_with(['.', '/', '~']) || word.contains('/');
+    if first && !pathish {
+        return None;
+    }
+    // Split at the last `/`: what is listed, and the prefix the names must start with.
+    let (dir_part, base) = match word.rfind('/') {
+        Some(i) => (&word[..=i], &word[i + 1..]),
+        None => ("", word),
+    };
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dir = if let Some(rest) = dir_part.strip_prefix("~/") {
+        std::path::Path::new(&home).join(rest)
+    } else if dir_part == "~" {
+        std::path::PathBuf::from(&home)
+    } else if dir_part.starts_with('/') {
+        std::path::PathBuf::from(dir_part)
+    } else {
+        std::path::Path::new(workspace).join(dir_part)
+    };
+    let mut names: Vec<(String, bool)> = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_string();
+            // Hidden names only when asked for, as a shell does.
+            if !name.starts_with(base) || (name.starts_with('.') && !base.starts_with('.')) {
+                return None;
+            }
+            let is_dir = e.path().is_dir();
+            Some((name, is_dir))
+        })
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    names.sort();
+    let escape = |n: &str| n.replace(' ', "\\ ");
+    if let [(name, is_dir)] = names.as_slice() {
+        let tail = if *is_dir { "/" } else { " " };
+        return Some(PathCompletion::Line(format!(
+            "{}{dir_part}{}{tail}",
+            &text[..start],
+            escape(name)
+        )));
+    }
+    // The longest prefix every match shares, in whole characters.
+    let mut common: String = names[0].0.clone();
+    for (n, _) in &names[1..] {
+        let keep = common
+            .char_indices()
+            .zip(n.chars())
+            .take_while(|((_, a), b)| a == b)
+            .last()
+            .map(|((i, c), _)| i + c.len_utf8())
+            .unwrap_or(0);
+        common.truncate(keep);
+    }
+    let line = format!("{}{dir_part}{}", &text[..start], escape(&common));
+    let shown = names
+        .into_iter()
+        .map(|(n, d)| if d { format!("{n}/") } else { n })
+        .collect();
+    Some(PathCompletion::Choices { line, names: shown })
 }
 
 #[cfg(test)]
@@ -25864,6 +26063,94 @@ mod tests {
             "the queued row is painting the whole screen: {} lines",
             drawn.len()
         );
+    }
+
+    fn path_fixture() -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "lb-paths-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("stroppy/build")).unwrap();
+        std::fs::write(d.join("stroppy/build/stroppy"), "").unwrap();
+        std::fs::write(d.join("README.md"), "").unwrap();
+        std::fs::write(d.join("README.old"), "").unwrap();
+        std::fs::write(d.join(".hidden"), "").unwrap();
+        std::fs::write(d.join("my file.txt"), "").unwrap();
+        d
+    }
+
+    /// **A `!` line's word completes as a file name**, the way a shell's does — the
+    /// operator's `! ./stroppy/build/stroppy`, typed out whole because nothing offered it.
+    #[test]
+    fn a_bang_lines_word_completes_against_the_workspace() {
+        let d = path_fixture();
+        let ws = d.to_str().unwrap();
+        let line = |t: &str| complete_path_word(t, ws);
+        // A path in command position: one directory, then the next, then the file.
+        assert_eq!(
+            line("! ./st"),
+            Some(PathCompletion::Line("! ./stroppy/".into()))
+        );
+        assert_eq!(
+            line("! ./stroppy/build/st"),
+            Some(PathCompletion::Line("! ./stroppy/build/stroppy ".into()))
+        );
+        // An argument completes as a file; two matches extend to what they share.
+        match line("! cat REA") {
+            Some(PathCompletion::Choices { line, names }) => {
+                assert_eq!(line, "! cat README.");
+                assert_eq!(names, vec!["README.md".to_string(), "README.old".into()]);
+            }
+            other => panic!("{other:?}"),
+        }
+        // A space in a name is escaped, as a shell would need it.
+        assert_eq!(
+            line("! cat my"),
+            Some(PathCompletion::Line("! cat my\\ file.txt ".into()))
+        );
+        // Hidden names only when asked for.
+        assert_eq!(
+            line("! cat .hi"),
+            Some(PathCompletion::Line("! cat .hidden ".into()))
+        );
+        assert!(
+            matches!(line("! ls "), Some(PathCompletion::Choices { names, .. }) if !names.iter().any(|n| n.starts_with('.')))
+        );
+        // The command word, spelled as a word, is the history's to complete, not a file's.
+        assert_eq!(line("! REA"), None);
+        // Nothing matches, a quote or a `$` in the word: left to the line completions.
+        assert_eq!(line("! cat zzz"), None);
+        assert_eq!(line("! cat \"REA"), None);
+        assert_eq!(line("! cat $HO"), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The same, through the keys: Tab completes the composer, and the choices are drawn
+    /// in the completion row while the line is unchanged.
+    #[test]
+    fn tab_on_a_bang_line_completes_the_path_and_shows_the_choices() {
+        let d = path_fixture();
+        let mut a = app();
+        a.wiring.workspace = d.to_str().unwrap().into();
+        typed(&mut a, "! cat ./stro");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! cat ./stroppy/");
+        a.key(Key::Tab);
+        assert_eq!(a.input(), "! cat ./stroppy/build/");
+        let mut b = app();
+        b.wiring.workspace = d.to_str().unwrap().into();
+        typed(&mut b, "! cat REA");
+        b.key(Key::Tab);
+        assert_eq!(b.input(), "! cat README.");
+        let screen = b.screen(100, 20).join("\n");
+        assert!(
+            screen.contains("README.md") && screen.contains("README.old"),
+            "{screen}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// **The window title is the session's name and the folder**, follows a rename, falls
@@ -37622,6 +37909,8 @@ mod tests {
             vis: Visibility::lifted(),
             diff_split: true,
             payload_view: None,
+            payload_max: None,
+            window_rows: usize::MAX,
             payload_newest: None,
         };
         item_lines(&it, &ctx).1
@@ -38388,6 +38677,91 @@ mod tests {
         assert!(screen.contains("before"), "{screen}");
         assert!(screen.contains("moved"), "{screen}");
         assert!(screen.contains("after"), "{screen}");
+    }
+
+    /// **An open result window reaches its last line, comes back at once, and fits.**
+    ///
+    /// The operator: *"i hit ctrl-v to read full command output and couldnt scroll bottom
+    /// anymore - only esc worked"*. Three faults, measured on a 300-line output at 80x24:
+    /// Down was unclamped, so the offset ran to 400 while the screen stood still and Up
+    /// then had to unwind it; the last page clamped to one line; and the window was the
+    /// budget's forty rows, so on a 24-row screen its first lines were above the top.
+    #[test]
+    fn an_open_result_window_reaches_its_end_comes_back_at_once_and_fits() {
+        let mut a = app();
+        let payload: String = (0..300).map(|n| format!("output line {n}\n")).collect();
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("s.0", "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.0".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "c0".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload,
+                    edit: None,
+                    origin: None,
+                    media: None,
+                }),
+            },
+        )));
+        a.screen(80, 24);
+        a.key(Key::CtrlV);
+        let shown = |a: &mut App| {
+            a.screen(80, 24)
+                .into_iter()
+                .filter(|l| l.contains("output line"))
+                .collect::<Vec<_>>()
+        };
+        // It fits: the first line of the output is on the screen when it opens.
+        let open = shown(&mut a);
+        assert!(
+            open.first().is_some_and(|l| l.ends_with("output line 0")),
+            "{open:?}"
+        );
+        // Down past the end stops on a FULL last page that ends on the last line.
+        for _ in 0..40 {
+            a.key(Key::Down);
+        }
+        let end = shown(&mut a);
+        assert!(
+            end.last().is_some_and(|l| l.ends_with("output line 299")),
+            "{end:?}"
+        );
+        assert!(end.len() > 5, "the last page is one line: {end:?}");
+        // And the first Up moves.
+        a.key(Key::Up);
+        let back = shown(&mut a);
+        assert_ne!(
+            back.last(),
+            end.last(),
+            "Up did not move after paging past the end"
+        );
+        // End and Home jump; the wheel and PageDown page the window, not the transcript.
+        a.key(Key::Home);
+        assert!(
+            shown(&mut a)
+                .first()
+                .is_some_and(|l| l.ends_with("output line 0"))
+        );
+        a.key(Key::End);
+        assert!(
+            shown(&mut a)
+                .last()
+                .is_some_and(|l| l.ends_with("output line 299"))
+        );
+        a.key(Key::Home);
+        a.key(Key::WheelDown);
+        assert!(
+            shown(&mut a)
+                .first()
+                .is_some_and(|l| l.ends_with("output line 3")),
+            "the wheel did not page the window"
+        );
     }
 
     /// **Folding tools must not cost the ability to scroll.**
