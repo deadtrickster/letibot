@@ -2150,6 +2150,15 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         );
         let out = h.output(&id, 0, 4096).unwrap();
         let text = String::from_utf8(out.bytes).unwrap();
+        // **Restored before anything can fail**, because the variables are the whole
+        // process's: every other test that starts a shell without clearing its environment
+        // inherited `SHELLOPTS=xtrace` from here — MEASURED 2026-10-07 on macOS, where
+        // `/bin/sh` is bash and honours it, as four pty tests capturing `+ echo done` before
+        // `done`. (Linux's `/bin/sh` is dash, which ignores it, so it never showed there.)
+        unsafe {
+            std::env::remove_var("BASH_ENV");
+            std::env::remove_var("SHELLOPTS");
+        }
         assert!(text.starts_with("be=\npath=/"), "{text}");
         std::fs::remove_dir_all(&root).ok();
     }

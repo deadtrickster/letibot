@@ -998,19 +998,6 @@ fn payload(r: &letibot_tools::ToolResult) -> String {
 /// `cgroup.procs` file the reaper reads — so the membership check and the kill are
 /// looking at one fact and not two.
 fn cgroup_members(scope: &letibot_tools::exec::ScopeId) -> Vec<u32> {
-    fn walk(dir: &Path, out: &mut Vec<u32>) {
-        if let Ok(s) = std::fs::read_to_string(dir.join("cgroup.procs")) {
-            out.extend(s.lines().filter_map(|l| l.trim().parse::<u32>().ok()));
-        }
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            for e in rd.flatten() {
-                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    walk(&e.path(), out);
-                }
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(&scope.path, &mut out);
-    out
+    // The tree's own reading: on macOS `cgroup.procs` holds group ids, not members.
+    letibot_tools::exec::live_members(scope)
 }

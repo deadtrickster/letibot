@@ -113,7 +113,7 @@ pub use pty::Pty;
 pub use scope::ProcessGroups;
 pub use scope::{
     Cgroup2, HOST_KILL, Migration, NoScopes, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree,
-    host_tree,
+    host_tree, live_members,
 };
 pub use shell::{ShellConfig, ShellError, ShellSession, Turn};
 pub use term::{TermConfig, TermError, TermSession, TermSink};

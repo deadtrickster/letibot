@@ -776,24 +776,10 @@ fn tree_members(
     host: &letibot_tools::exec::HostProcesses,
     scope: &letibot_tools::exec::ScopeId,
 ) -> usize {
-    // Read through the same file the reaper reads, so the presence check and the
-    // kill are looking at one fact and not two.
-    let mut n = 0;
-    fn walk(dir: &std::path::Path, n: &mut usize) {
-        if let Ok(s) = std::fs::read_to_string(dir.join("cgroup.procs")) {
-            *n += s.lines().filter(|l| !l.trim().is_empty()).count();
-        }
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            for e in rd.flatten() {
-                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    walk(&e.path(), n);
-                }
-            }
-        }
-    }
+    // The tree's own reading of membership — the file the reaper reads on Linux, the
+    // live members of the recorded groups on macOS. See `scope::live_members`.
     let _ = host;
-    walk(&scope.path, &mut n);
-    n
+    letibot_tools::exec::live_members(scope).len()
 }
 
 /// The job id out of a `bash` result body.

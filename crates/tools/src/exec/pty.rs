@@ -480,6 +480,11 @@ mod tests {
         std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(script)
+            // The shell-behaviour variables a parallel test plants process-wide (see
+            // `host`'s BASH_ENV test) are not this test's subject; macOS's `/bin/sh` is
+            // bash and would trace every line into the capture.
+            .env_remove("SHELLOPTS")
+            .env_remove("BASH_ENV")
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr)
@@ -508,6 +513,7 @@ mod tests {
     fn a_stdio_copy_the_parent_keeps_alive_hides_the_childs_exit() {
         let p = Pty::open().expect("a pty on this box");
         let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.env_remove("SHELLOPTS").env_remove("BASH_ENV");
         cmd.arg("-c")
             .arg("echo done")
             .stdin(Stdio::null())
@@ -575,6 +581,8 @@ mod tests {
         let mut child = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg("test -t 1 && echo yes || echo no")
+            .env_remove("SHELLOPTS")
+            .env_remove("BASH_ENV")
             .stdin(Stdio::null())
             .stdout(p.stdio().unwrap())
             .stderr(p.stdio().unwrap())
@@ -611,6 +619,8 @@ mod tests {
         let piped = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(script)
+            .env_remove("SHELLOPTS")
+            .env_remove("BASH_ENV")
             .stdin(Stdio::null())
             .output()
             .expect("sh starts");
@@ -695,6 +705,8 @@ mod tests {
     fn run_three(pty: &Pty, script: &str, controlling: bool) -> std::process::Child {
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c").arg(script);
+        // As in `run_on`: not this test's subject, and bash would trace into the capture.
+        cmd.env_remove("SHELLOPTS").env_remove("BASH_ENV");
         cmd.stdin(pty.stdio().unwrap())
             .stdout(pty.stdio().unwrap())
             .stderr(pty.stdio().unwrap());

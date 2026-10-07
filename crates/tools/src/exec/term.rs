@@ -758,6 +758,7 @@ mod tests {
         // The control: the same pair, the same shell, no `setsid`, no `TIOCSCTTY`.
         let p = Pty::open().expect("a pty");
         let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.env_remove("SHELLOPTS").env_remove("BASH_ENV");
         cmd.arg("-c").arg(ASK);
         let (a, b, c) = (p.stdio().unwrap(), p.stdio().unwrap(), p.stdio().unwrap());
         cmd.stdin(a).stdout(b).stderr(c);

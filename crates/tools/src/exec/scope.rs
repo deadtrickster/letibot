@@ -879,6 +879,26 @@ pub fn host_tree() -> Result<Box<dyn ScopeTree>, ExecError> {
     return Ok(Box::new(Cgroup2::probe()?));
 }
 
+/// **The live processes in a scope and every scope under it**, asked the way this host's
+/// tree asks it — with no tree instance needed, because both answers are a function of
+/// the scope's directory. On Linux that is `cgroup.procs`, which the kernel keeps to the
+/// live members. On macOS `cgroup.procs` holds the recorded **group ids**, which stay
+/// until the reaper removes the directory — so a reader of the file sees a group a kill
+/// has already emptied, and only this, which asks which of those groups still has a
+/// member, is the membership.
+pub fn live_members(scope: &ScopeId) -> Vec<u32> {
+    #[cfg(target_os = "macos")]
+    return pg_members(&scope.path);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut out = Vec::new();
+        members_at(&scope.path, &mut out);
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
 /// Whether a scope directory, or anything under it, holds a live process — the
 /// macOS reading of the same question, from the recorded process groups.
 #[cfg(target_os = "macos")]

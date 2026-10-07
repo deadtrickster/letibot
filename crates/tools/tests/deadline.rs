@@ -107,24 +107,9 @@ fn members(host: &HostProcesses, job: &letibot_tools::exec::JobId) -> Vec<u32> {
         // read. That is an answer, and not an error to report as one.
         return Vec::new();
     };
-    let mut out = Vec::new();
-    walk(&view.scope.path, &mut out);
-    out
-}
-
-/// The pids in a cgroup and every cgroup under it, read through the same `cgroup.procs`
-/// file the reaper reads — so the membership check and the kill look at one fact.
-fn walk(dir: &std::path::Path, out: &mut Vec<u32>) {
-    if let Ok(s) = std::fs::read_to_string(dir.join("cgroup.procs")) {
-        out.extend(s.lines().filter_map(|l| l.trim().parse::<u32>().ok()));
-    }
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                walk(&e.path(), out);
-            }
-        }
-    }
+    // Live members, as the tree reads them — on macOS `cgroup.procs` holds group ids
+    // that outlive their last member until the reaper removes the directory.
+    letibot_tools::exec::live_members(&view.scope)
 }
 
 /// A host with a real cgroup tree, or `None` with the reason said out loud.
