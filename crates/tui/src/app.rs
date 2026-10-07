@@ -14185,6 +14185,7 @@ impl App {
             .links
             .then(|| self.wiring.workspace.clone())
             .filter(|w| !w.is_empty());
+        self.cfg.light = self.features.background && self.light_background == Some(true);
         // The TERMINAL's width, kept beside the frame's. `cfg.width` is the inner
         // one — the gutter already taken off — so anything that re-renders from a
         // stored size has to start from this one or the frame narrows by two
@@ -53318,6 +53319,23 @@ mod tests {
             color: false,
             ..Default::default()
         }
+    }
+
+    /// **A light background, once the terminal says so, renders the light palette** — and only
+    /// where the feature is on: an answer the head did not ask for changes nothing.
+    #[test]
+    fn a_light_background_reply_switches_the_palette() {
+        let mut a = app();
+        a.cfg.color = true;
+        a.key(Key::Background { light: true });
+        a.screen(80, 24);
+        assert_eq!(a.cfg.palette(), letibot_ui::style::Palette::Colour);
+        a.set_features(crate::features::Features::ALL);
+        a.screen(80, 24);
+        assert_eq!(a.cfg.palette(), letibot_ui::style::Palette::Light);
+        a.key(Key::Background { light: false });
+        a.screen(80, 24);
+        assert_eq!(a.cfg.palette(), letibot_ui::style::Palette::Colour);
     }
 
     /// **`/copy` takes the open window's output, else the last reply** — and says so when the

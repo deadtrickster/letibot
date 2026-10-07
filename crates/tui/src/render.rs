@@ -116,6 +116,9 @@ pub struct RenderConfig {
     /// workspace. `None` is a terminal that does not speak them, and every pipe, replay and
     /// test: the output is then byte-for-byte what it always was.
     pub links: Option<String>,
+    /// The terminal said its background is light (OSC 11): colour renders with
+    /// [`Palette::Light`].
+    pub light: bool,
 }
 
 impl Default for RenderConfig {
@@ -126,6 +129,7 @@ impl Default for RenderConfig {
             budget: Budget::default(),
             base: None,
             links: None,
+            light: false,
         }
     }
 }
@@ -275,7 +279,9 @@ impl RenderConfig {
     /// `--replay`, pipe-to-a-file and CI case, and it has to produce
     /// byte-identical output on every machine.
     pub fn palette(&self) -> Palette {
-        if self.color {
+        if self.color && self.light {
+            Palette::Light
+        } else if self.color {
             Palette::Colour
         } else {
             Palette::None
@@ -1131,6 +1137,7 @@ mod tests {
             budget: Budget::default(),
             base: None,
             links: None,
+            light: false,
         }
     }
 
@@ -1334,6 +1341,7 @@ mod tests {
             budget: Budget::default(),
             base: None,
             links: None,
+            light: false,
         };
         // The first frame parses; the next fifty must not.
         let mut cache = BlockCache::new();
@@ -1369,6 +1377,7 @@ mod tests {
             budget: Budget::default(),
             base: None,
             links: None,
+            light: false,
         };
         let lines = render_block(&block, &cfg);
         let plain: Vec<String> = lines
@@ -1446,6 +1455,7 @@ mod tests {
             budget: Budget::default(),
             base: None,
             links: None,
+            light: false,
         };
         let lines = cache.lines(&md, &cfg, 40);
         assert!(md.stable_count() > 0, "some of it must be frozen");
