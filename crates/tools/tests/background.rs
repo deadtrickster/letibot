@@ -450,9 +450,11 @@ fn pkill_lists_and_kills_by_pid_only() {
         .register(Box::new(letibot_tools::builtins::pkill::Pkill))
         .unwrap();
     let marker = format!("letibot-bg-pkill-{}", std::process::id());
+    // `; :` keeps the shell (and the marker on its command line): macOS's `sh` is bash,
+    // which would otherwise `exec` the last command in place.
     let mut go = Command::new("sh")
         .arg("-c")
-        .arg("sleep 30")
+        .arg("sleep 30; :")
         .arg("letibot-sh")
         .arg(&marker)
         .stdin(Stdio::null())

@@ -55,7 +55,10 @@ That puts **eight files** in `~/.local/bin` (set `LETIBOT_INSTALL_DIR` to change
 libraries the daemon links — `libllama.so.0`, `libggml.so.0`, `libggml-cpu.so.0` and
 `libggml-base.so.0`. The libraries sit **beside the binaries** because that is what `$ORIGIN`
 resolves, so an install needs no `LD_LIBRARY_PATH` and no llama.cpp checkout of its own. Published
-for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`; other platforms take the source path.
+for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin` (Apple
+silicon); other platforms take the source path. On a Mac the libraries are the same four as
+`.0.dylib` files beside the binaries (`@loader_path` is dyld's `$ORIGIN`), and see
+[On macOS](#on-macos) for what differs there.
 
 ### What you do NOT get, so the next step is not a surprise
 
@@ -107,6 +110,42 @@ and that is not optional. Point it at one with `LETIBOT_LLAMA_DIR` (holding `inc
 `LETIBOT_LLAMA_LIB` (holding `libllama.so.0`).
 
 `LETIBOT_VERSION` picks a tag (e.g. `v0.1.1`); `LETIBOT_FROM_SOURCE` forces the source path.
+
+## On macOS
+
+The same tree builds and runs natively on macOS (Apple silicon, measured on macOS 26). What a Mac
+answers differently, and where it is weaker than Linux, is written down rather than smoothed over:
+
+- **Process lifetime is process groups, not cgroups.** Each command leads its own group, and
+  ending a scope is `killpg`, with the same presence → kill → absence record. A program that
+  deliberately leaves its group (`setsid`, a double-forking daemon) escapes the scope, which a
+  cgroup does not allow. `crates/tools/src/exec/scope.rs` (`ProcessGroups`) has the rest.
+- **There is no namespace boundary**, so the confined seats (`runner`, `coder` — the default)
+  refuse to start and say so. Seat `leticode` for an unconfined session on the host, or put the
+  session in a firecode VM with `--vm` once firecode's macOS build is installed.
+- **"Is this run waiting for input?" cannot be read** (Linux reads it from `wchan`); an
+  operator's `!` run says once that it could not tell.
+- **The runtime dir** is the per-user temp dir (`getconf DARWIN_USER_TEMP_DIR`), since there is
+  no `$XDG_RUNTIME_DIR` or `/run/user`.
+- **The launcher needs `python3`**, which on macOS comes with the Command Line Tools
+  (`xcode-select --install`).
+
+Building from source needs llama.cpp built with `@loader_path` rather than `$ORIGIN`:
+
+```sh
+cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH=@loader_path
+cmake --build llama.cpp/build -j "$(sysctl -n hw.ncpu)"
+LETIBOT_LLAMA_DIR=$PWD/llama.cpp LETIBOT_LLAMA_LIB=$PWD/llama.cpp/build/bin cargo build --release
+```
+
+**The vocabulary is still required under a cloud provider**, and it must match the dialect: every
+control token the dialect's template uses (`<|im_start|>`, `<think>`, `<tool_call>`, …) has to be a
+single entry in it, and the daemon checks that at start and refuses by name. The GGUF of the model
+the dialect is written for passes — on the Linux box that is the Qwen 3.8 one, of which only the
+vocabulary is read. None of the small `ggml-vocab-*` files llama.cpp ships passes (measured
+2026-10-07: `qwen2`, `qwen35` and `deepseek-llm` all lack those tokens), so a Mac with no model
+files needs that GGUF copied over (a vocab-only conversion of it is enough).
 
 ## Build and run
 

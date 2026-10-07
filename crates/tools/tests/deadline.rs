@@ -217,7 +217,7 @@ fn a_run_nobody_is_waiting_on_is_still_ended_by_its_deadline() {
     // than a claim about one.
     let fired = firing(&host, &id).expect("the deadline left no record of having fired");
     assert!(
-        fired.reaping.mechanism == "cgroup.kill",
+        fired.reaping.mechanism == letibot_tools::exec::HOST_KILL,
         "the deadline must end the run by its cgroup, which is the mechanism that does not \
          care what uid the process is: {}",
         fired.reaping.summary()
@@ -253,7 +253,13 @@ fn a_root_process_the_daemon_may_not_signal_is_ended_by_the_same_deadline() {
     // holds and writes to. That is what `su` blocks on for a password it will never be given —
     // and since the terminal is `su`'s *controlling* terminal as well, it may be `/dev/tty` it
     // opens rather than fd 0. The same block either way, and the same deadline ends it.
-    let id = spawn(&host, "/usr/bin/su -c true", true);
+    // BSD `su` (macOS) takes the login before `-c`; util-linux's takes either order.
+    let su = if cfg!(target_os = "macos") {
+        "/usr/bin/su root -c true"
+    } else {
+        "/usr/bin/su -c true"
+    };
+    let id = spawn(&host, su, true);
 
     // **Presence, and the right presence.** The wrapper joins its cgroup first and `su`
     // `exec`s into it a moment later, so a check that ran on the first non-empty read would

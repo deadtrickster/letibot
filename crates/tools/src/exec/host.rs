@@ -45,7 +45,7 @@ use super::jobs::{DEADLINE_KILL, Due, Job, JobId, JobState, Lifetime, OutputSlic
 use super::monitor::Monitors;
 use super::scope::{
     Cgroup2, EXIT_NOT_SCOPED, Migration, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree,
-    cmdline_of, join_script,
+    join_script,
 };
 use letibot_transcript::Backgrounding;
 
@@ -723,7 +723,7 @@ impl HostProcesses {
     /// the leak T24 exists to stop**, so the substrate refuses to exist rather
     /// than exist without it.
     pub fn new(root: impl Into<PathBuf>) -> Result<HostProcesses, ExecError> {
-        Ok(Self::with_tree(root, Box::new(Cgroup2::probe()?)))
+        Ok(Self::with_tree(root, super::scope::host_tree()?))
     }
 
     /// The confined constructor: a real cgroup tree **and** a measured boundary.
@@ -735,7 +735,7 @@ impl HostProcesses {
         root: impl Into<PathBuf>,
         confine: Box<dyn Confinement>,
     ) -> Result<HostProcesses, ExecError> {
-        Ok(Self::with_tree(root, Box::new(Cgroup2::probe()?)).with_confinement(confine))
+        Ok(Self::with_tree(root, super::scope::host_tree()?).with_confinement(confine))
     }
 
     pub fn with_tree(root: impl Into<PathBuf>, tree: Box<dyn ScopeTree>) -> HostProcesses {
@@ -881,13 +881,8 @@ impl HostProcesses {
     }
 
     fn protect_with(&self, pid: u32, why: String, outlives: bool) {
-        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline"))
-            .map(|b| cmdline_of(&b))
-            .unwrap_or_default();
+        // The same two reads `Reaped::observe` makes, on either kernel.
+        let Reaped { comm, cmdline, .. } = Reaped::observe(pid);
         if comm.is_empty() && cmdline.is_empty() {
             return;
         }
@@ -1200,6 +1195,14 @@ impl ProcessHost for HostProcesses {
         } else {
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         }
+        // **On macOS the scope IS the process group** (`scope::ProcessGroups`), so a run
+        // without a pty — the pty branch's `setsid` already made it a leader — must lead a
+        // group of its own, or the `$$` the wrapper records names a group it is not in.
+        #[cfg(target_os = "macos")]
+        if pty.is_none() {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
         // **Env hygiene is layer 1 (R10 / `docs/boundary-and-adjudication.md` §5).**
         // The environment is cleared before anything is set, so `PATH` is the
         // pinned one captured at construction and a bare name resolves through
@@ -1326,6 +1329,10 @@ impl ProcessHost for HostProcesses {
         // [`super::pty::Pty::into_master`]. Both streams are the one pty, so there is one
         // master to read and the second drain has nothing to do; the capture is one ring
         // either way, which is what makes the merge no loss.
+        // macOS: hold a slave across the exit so the tail is not discarded — see
+        // [`super::pty::Pty::tail_guard`]. Released by the waiter below.
+        #[cfg(target_os = "macos")]
+        let tail_guard = pty.as_ref().and_then(|p| p.tail_guard().ok());
         let master = pty.map(|p| p.into_master());
         let a = drain(out, Arc::clone(&job));
         let b = match master {
@@ -1341,12 +1348,23 @@ impl ProcessHost for HostProcesses {
                 // capture by the time the state stops saying `Running`. A state
                 // that settles first would let a caller read the output of a
                 // finished job and get half of it.
+                //
+                // **macOS reaps first**, because the guard holds a slave and the master would
+                // not end while it does: reap, let the guard go once the drain has emptied
+                // the buffer, and only then join — the state still settles after the drain.
+                #[cfg(target_os = "macos")]
+                let status = child.wait();
+                #[cfg(target_os = "macos")]
+                if let Some(g) = tail_guard {
+                    g.release();
+                }
                 if let Some(h) = a {
                     let _ = h.join();
                 }
                 if let Some(h) = b {
                     let _ = h.join();
                 }
+                #[cfg(not(target_os = "macos"))]
                 let status = child.wait();
                 // A job already marked `Killed` keeps that: SIGKILL from a cgroup
                 // reap arrives here as a signal, and reporting it as a signal would
@@ -1840,6 +1858,12 @@ fn signal_of(status: &std::process::ExitStatus) -> i32 {
 /// Field 4 is `ppid`, and it is read by splitting on the **last** `)` rather than
 /// on whitespace: field 2 is the executable name in parentheses and may contain
 /// spaces, which is the parse everybody gets wrong once.
+#[cfg(target_os = "macos")]
+pub(crate) fn parent_of(pid: u32) -> Option<u32> {
+    super::darwin::info(pid).map(|i| i.ppid)
+}
+
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn parent_of(pid: u32) -> Option<u32> {
     let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let rest = &s[s.rfind(')')? + 1..];
@@ -1854,6 +1878,7 @@ pub(crate) fn parent_of(pid: u32) -> Option<u32> {
 /// needs `/proc/<pid>/fd`, which the kernel refuses for another user. A monitor
 /// wants the first, and folding it into the second would have made a port watch
 /// report "not listening" about somebody else's server.
+#[cfg(not(target_os = "macos"))]
 fn listen_inodes(port: u16) -> Vec<String> {
     let mut inodes = Vec::new();
     for f in ["/proc/net/tcp", "/proc/net/tcp6"] {
@@ -1886,8 +1911,57 @@ fn listen_inodes(port: u16) -> Vec<String> {
 /// What [`super::monitor::Watch::Port`] asks each tick. Reads the kernel's own
 /// socket table and never a process name, so there is no string here that could
 /// match the shell asking.
+#[cfg(not(target_os = "macos"))]
 pub fn port_is_listening(port: u16) -> bool {
     !listen_inodes(port).is_empty()
+}
+
+/// macOS: there is no `/proc/net/tcp`. `netstat -anv -p tcp` is the kernel's socket
+/// table for every user, without root, and its `-v` columns carry `process:pid`.
+#[cfg(target_os = "macos")]
+pub fn port_is_listening(port: u16) -> bool {
+    !netstat_listeners(port).is_empty()
+}
+
+/// The `LISTEN` rows on `port`, as the pid each names (`None` where the column
+/// could not be read).
+#[cfg(target_os = "macos")]
+fn netstat_listeners(port: u16) -> Vec<Option<u32>> {
+    let Ok(out) = std::process::Command::new("/usr/sbin/netstat")
+        .args(["-anv", "-p", "tcp"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    parse_netstat_listeners(&String::from_utf8_lossy(&out.stdout), port)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_netstat_listeners(text: &str, port: u16) -> Vec<Option<u32>> {
+    let mut found = Vec::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 6 || !cols[0].starts_with("tcp") {
+            continue;
+        }
+        let Some(state) = cols.iter().position(|c| *c == "LISTEN") else {
+            continue;
+        };
+        // `127.0.0.1.8080`, `*.8080`, `::1.8080`: the port is after the LAST dot.
+        let Some((_, p)) = cols[3].rsplit_once('.') else {
+            continue;
+        };
+        if p.parse::<u16>().ok() != Some(port) {
+            continue;
+        }
+        let pid = cols[state + 1..]
+            .iter()
+            .find_map(|c| c.rsplit_once(':').and_then(|(_, n)| n.parse::<u32>().ok()));
+        found.push(pid);
+    }
+    found
 }
 
 /// The pid holding a listening TCP socket on `port`, by inode.
@@ -1897,6 +1971,12 @@ pub fn port_is_listening(port: u16) -> bool {
 /// contains a link to `socket:[<inode>]`. Reading another user's `fd` directory is
 /// refused by the kernel, so `None` genuinely means *not resolvable from here* and
 /// never *nothing is listening*.
+#[cfg(target_os = "macos")]
+pub fn listener_pid(port: u16) -> Option<u32> {
+    netstat_listeners(port).into_iter().flatten().next()
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn listener_pid(port: u16) -> Option<u32> {
     let inodes = listen_inodes(port);
     if inodes.is_empty() {
@@ -1935,6 +2015,17 @@ pub fn peek(tree: &dyn ScopeTree, scope: &ScopeId) -> Vec<Reaped> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_netstat_listen_row_names_its_port_and_pid() {
+        let t = "Proto Recv-Q Send-Q  Local Address  Foreign Address  (state) rxbytes txbytes rhiwat shiwat process:pid state\n\
+tcp6 0 0 2003:c8:a714:850.50213 2600:1901:0:9e23.443 ESTABLISHED 1 2 3 4 claude:3068 00102\n\
+tcp46 0 0 *.18765 *.* LISTEN 0 0 131072 131072 Python:34982 00000\n\
+tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
+        assert_eq!(super::parse_netstat_listeners(t, 18765), vec![Some(34982)]);
+        assert_eq!(super::parse_netstat_listeners(t, 8080), vec![Some(77)]);
+        assert!(super::parse_netstat_listeners(t, 443).is_empty());
+    }
+
     use super::*;
 
     #[test]
@@ -2017,8 +2108,8 @@ mod tests {
         // that is a fact about the MACHINE rather than about the environment this test
         // plants. Skipped rather than failed, loudly, per `apparatus`.
         let Some(_) = letibot_tokencore::apparatus::present(
-            "a cgroup v2 tree",
-            letibot_tools::Cgroup2::probe().is_ok(),
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
         ) else {
             return;
         };
@@ -2103,8 +2194,8 @@ mod tests {
         // reason: a container with no delegatable cgroup v2 subtree is a fact about the
         // machine and not a failure of this claim.
         let Some(_) = letibot_tokencore::apparatus::present(
-            "a cgroup v2 tree",
-            letibot_tools::Cgroup2::probe().is_ok(),
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
         ) else {
             return;
         };

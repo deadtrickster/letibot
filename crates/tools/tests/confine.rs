@@ -77,7 +77,13 @@ fn a_session_that_asks_for_a_boundary_and_has_none_refuses_and_never_runs_unconf
 
     let err = refused.expect_err("a helper that is not there cannot confine");
     let m = format!("{err}");
-    assert!(m.contains("/nonexistent/bwrap"), "{m}");
+    // On Linux the refusal names the helper it could not find; on macOS no helper is looked
+    // for, because there are no namespaces for one to enter, and it says that instead.
+    if cfg!(target_os = "macos") {
+        assert!(m.contains("macOS has no namespace boundary"), "{m}");
+    } else {
+        assert!(m.contains("/nonexistent/bwrap"), "{m}");
+    }
     assert!(m.contains("was NOT run"), "{m}");
     assert!(
         m.contains("Running it unconfined is not an available outcome"),

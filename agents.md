@@ -100,8 +100,8 @@ Use `letibot_tokencore::apparatus`:
 ```rust
 let Some(_) = letibot_tokencore::apparatus::present_gguf() else { return };
 let Some(_) = letibot_tokencore::apparatus::present(
-    "a cgroup v2 tree",
-    letibot_tools::Cgroup2::probe().is_ok(),
+    "a process-lifetime tree (cgroup v2; process groups on macOS)",
+    letibot_tools::host_tree().is_ok(),
 ) else { return };
 ```
 

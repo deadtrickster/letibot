@@ -74,6 +74,16 @@ VERSION="${LETIBOT_VERSION:-}"
 # that) so the script and the binaries come from ONE ref.
 BINARIES="harnessd letibot-tui letibot-askpass letibot"
 LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
+# **The same four on macOS, in Mach-O's spelling.** MEASURED 2026-10-07 with `otool -L` on
+# a CPU-only llama.cpp build: libllama needs libggml, libggml-base and libggml-cpu, all
+# `@rpath/` with an `@loader_path` rpath, which is `$ORIGIN` in dyld's words. A Metal or
+# BLAS build adds libggml-metal and libggml-blas; the release builds CPU-only for the
+# same reason Linux's does — the daemon tokenises and runs no model.
+LIBRARIES_DARWIN="libllama.0.dylib libggml.0.dylib libggml-cpu.0.dylib libggml-base.0.dylib"
+HOST_OS=$(uname -s)
+if [ "$HOST_OS" = Darwin ]; then
+    LIBRARIES=$LIBRARIES_DARWIN
+fi
 
 # **THE LIBRARIES THE BINARIES NEED *FROM THE HOST*, and why this list is three.**
 #
@@ -160,6 +170,20 @@ host_has_lib() {
 # applied to the libraries that are NOT in the archive. The value is turning an
 # exit-127 mystery into a line a person can paste.
 require_host_runtime() {
+    # **macOS needs nothing from this list.** Everything the binaries and the four
+    # libraries link outside the archive is part of the OS — libc++, libsqlite3, libiconv,
+    # libSystem, and the Accelerate/Metal/Foundation frameworks (`otool -L`, measured on
+    # the same build as LIBRARIES_DARWIN) — so there is no glibc to find and no package
+    # to name. What a Mac can lack is the Command Line Tools, and only the launcher feels
+    # it: it writes its daemon record with python3, which on macOS arrives with them.
+    if [ "$HOST_OS" = Darwin ]; then
+        if ! xcode-select -p >/dev/null 2>&1; then
+            warn "note: the Command Line Tools are not installed, and the \`letibot\` launcher
+  uses python3, which on macOS comes with them. Install them with:
+    xcode-select --install"
+        fi
+        return 0
+    fi
     if ! have_glibc; then
         die "this machine has no glibc dynamic loader, and the published binaries are
   built for glibc — they cannot run here whatever is installed. (A musl system
@@ -210,6 +234,8 @@ try_prebuilt() {
     case "$(uname -s)/$(uname -m)" in
         Linux/x86_64)                 triple=x86_64-unknown-linux-gnu ;;
         Linux/aarch64 | Linux/arm64)  triple=aarch64-unknown-linux-gnu ;;
+        # Apple silicon. An Intel Mac has no asset and builds from source.
+        Darwin/arm64)                 triple=aarch64-apple-darwin ;;
         *) return 1 ;;
     esac
     name="letibot-$triple.tar.gz"
@@ -245,18 +271,20 @@ build_from_source() {
     # **The prerequisite nobody expects, checked here so it is not a cargo error.**
     llama_dir="${LETIBOT_LLAMA_DIR:-}"
     llama_lib="${LETIBOT_LLAMA_LIB:-}"
+    # The first of LIBRARIES is libllama in this platform's spelling.
+    libllama=${LIBRARIES%% *}
     if [ -z "$llama_dir" ] || [ -z "$llama_lib" ]; then
         die "harnessd links llama.cpp, so a source build needs a built llama.cpp.
   Set both, pointing at YOUR checkout and its built libraries:
     LETIBOT_LLAMA_DIR=/path/to/llama.cpp          (holding include/llama.h)
-    LETIBOT_LLAMA_LIB=/path/to/llama.cpp/build/bin (holding libllama.so.0)
+    LETIBOT_LLAMA_LIB=/path/to/llama.cpp/build/bin (holding $libllama)
   Or use the prebuilt release, which carries the libraries it needs:
     unset LETIBOT_FROM_SOURCE and re-run without a checkout in \$0's directory."
     fi
     [ -f "$llama_dir/include/llama.h" ] ||
         die "no include/llama.h under LETIBOT_LLAMA_DIR=$llama_dir"
-    [ -f "$llama_lib/libllama.so.0" ] ||
-        die "no libllama.so.0 under LETIBOT_LLAMA_LIB=$llama_lib"
+    [ -f "$llama_lib/$libllama" ] ||
+        die "no $libllama under LETIBOT_LLAMA_LIB=$llama_lib"
 
     warn "Building letibot from $src — this takes a few minutes..."
     cargo build --release --manifest-path "$src/Cargo.toml" \
@@ -388,6 +416,24 @@ main() {
         cp -L "$src_so" "$INSTALL_DIR/$so" || die "cannot write $INSTALL_DIR/$so"
         chmod 644 "$INSTALL_DIR/$so"
     done
+    # **A Mac's own llama.cpp is usually a Metal build**, and its libllama then also names
+    # libggml-metal and libggml-blas. The release asset is CPU-only and has none, but a
+    # source install links whatever LETIBOT_LLAMA_LIB holds — so on macOS every further
+    # `@rpath/` library the installed ones name is copied too, from the same place, and a
+    # name that is nowhere is refused here rather than at the daemon's first exec.
+    if [ "$HOST_OS" = Darwin ]; then
+        for so in $LIBRARIES; do
+            for dep in $(otool -L "$INSTALL_DIR/$so" | sed -n 's|^[[:space:]]*@rpath/\([^ ]*\) .*|\1|p'); do
+                [ -f "$INSTALL_DIR/$dep" ] && continue
+                src_so="$from/$dep"
+                [ -f "$src_so" ] || src_so="${libs_from:-$from}/$dep"
+                [ -f "$src_so" ] || die "cannot find $dep, which $so links: harnessd will not start without it"
+                cp -L "$src_so" "$INSTALL_DIR/$dep" || die "cannot write $INSTALL_DIR/$dep"
+                chmod 644 "$INSTALL_DIR/$dep"
+                say "  + $dep  (linked by this llama.cpp build)"
+            done
+        done
+    fi
 
     # **Say the version rather than assuming.** A binary that cannot run is a
     # failure this script would otherwise report as success — and this is also the

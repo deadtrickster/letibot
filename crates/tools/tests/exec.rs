@@ -137,10 +137,8 @@ fn t21_2_a_waiter_on_the_model_server_is_refused_as_a_deadlock_the_harness_can_s
         "this is the model server serving this session — it does not exit while your \
          turn is running",
     );
-    let comm = std::fs::read_to_string(format!("/proc/{}/comm", std::process::id()))
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    // `Reaped::observe` is `/proc/<pid>/comm` on Linux and libproc on macOS.
+    let comm = letibot_tools::Reaped::observe(std::process::id()).comm;
 
     let cmd = format!("until pgrep -f {comm}; do sleep 2; done; echo up");
     let r = h.call("bash", &serde_json::json!({ "command": cmd }).to_string());
@@ -300,7 +298,12 @@ fn a_scope_that_ends_records_what_it_killed_and_the_processes_are_actually_gone(
         "the record must be usable — pids alone identify nothing: {}",
         r.summary()
     );
-    assert_eq!(r.mechanism, "cgroup.kill", "{}", r.summary());
+    assert_eq!(
+        r.mechanism,
+        letibot_tools::exec::HOST_KILL,
+        "{}",
+        r.summary()
+    );
     assert!(r.survivors.is_empty(), "survivors: {:?}", r.survivors);
     assert!(
         r.removed,
@@ -362,14 +365,26 @@ fn the_reap_log_reaches_the_model_through_job_list() {
 
     let started = h.call(
         "bash",
-        &serde_json::json!({"command": "sleep 60", "background": true}).to_string(),
+        // `; :` keeps the shell beside `sleep` on every `sh` — macOS's is bash, which would
+        // otherwise `exec` it, and the record would be one process caught mid-exec.
+        &serde_json::json!({"command": "sleep 60; :", "background": true}).to_string(),
     );
     let id = job_id(&started.payload);
+    // Kill once `sleep` exists, not before: a kill that lands while the shell is still
+    // forking records one process, and the count below is about the record, not the race.
+    let host = h.processes.clone().unwrap();
+    let job = letibot_tools::JobId(id.clone());
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while host.job_pids(&job).len() < 2 && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let killed = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
     assert_eq!(killed.outcome, ToolOutcome::Ok, "{}", killed.render());
     assert!(killed.payload.contains("sleep 60"), "{}", killed.payload);
     assert!(
-        killed.payload.contains("mechanism: cgroup.kill"),
+        killed
+            .payload
+            .contains(&format!("mechanism: {}", letibot_tools::exec::HOST_KILL)),
         "{}",
         killed.payload
     );
@@ -1086,7 +1101,17 @@ fn the_operators_own_ls_colours_because_its_output_is_a_terminal() {
     let ask = |id: &str| letibot_transcript::ToolCall {
         id: id.into(),
         name: "bash".into(),
-        arguments: serde_json::json!({ "command": "ls --color=auto" }).to_string(),
+        // GNU `ls` colours on `--color=auto`; BSD `ls` (macOS) ignores it and takes `-G`.
+        arguments: serde_json::json!({
+            "command": if cfg!(target_os = "macos") {
+                // …and colours only on a terminal it knows, so it is given a `TERM`; it is
+                // still the terminal, not the variable, that turns the colour on.
+                "TERM=xterm-256color ls -G"
+            } else {
+                "ls --color=auto"
+            }
+        })
+        .to_string(),
     };
     let theirs = h.rt.invoke_operator("", &ask("bang-ls"), &mut h.sink);
     assert!(

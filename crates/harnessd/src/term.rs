@@ -113,7 +113,7 @@
 //! there is no row for it; the head draws the fact while it is true, which is what
 //! [`TermSession::live`] decides and what this module answers with.
 //!
-//! **A box with no cgroups degrades and says so**: [`Cgroup2::probe`] failing gives
+//! **A box with no cgroups degrades and says so**: [`letibot_tools::host_tree`] failing gives
 //! [`NoScopes`], `open` fails, the pane runs with no scope, and the ending falls back to
 //! `SIGHUP` to the pane's process group — which reaches the program and not what it
 //! daemonised away. That is [`letibot_tools::exec::term::TermSession::close`]'s own documented
@@ -145,7 +145,7 @@ use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::protocol::ServerFrame;
 use letibot_sessionlog::{Registry, TerminalDriver};
 use letibot_tools::exec::{
-    Cgroup2, NoScopes, ScopeId, ScopeKind, ScopeTree, TermConfig, TermError, TermSession, TermSink,
+    NoScopes, ScopeId, ScopeKind, ScopeTree, TermConfig, TermError, TermSession, TermSink,
 };
 
 /// **What the operator is told when they end the pane deliberately.**
@@ -230,8 +230,8 @@ impl Pane {
 impl Terminals {
     /// **A driver for this daemon.** `registry` is weak — see the field.
     pub fn new(registry: Weak<Registry>) -> Terminals {
-        let tree: Arc<dyn ScopeTree> = match Cgroup2::probe() {
-            Ok(c) => Arc::new(c),
+        let tree: Arc<dyn ScopeTree> = match letibot_tools::host_tree() {
+            Ok(c) => Arc::from(c),
             Err(e) => Arc::new(NoScopes::new(format!(
                 "a pane has no cgroup to live in, so it will be ended by a signal to its own \
                  process group and not by the tree: {e}"

@@ -38,8 +38,8 @@ fn the_way_out_byte_reaches_the_reader_and_is_not_a_key() {
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
         )
     };
     assert_eq!(rc, 0, "a pty pair, so the byte has a terminal to come from");

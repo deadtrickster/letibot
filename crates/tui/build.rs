@@ -86,6 +86,12 @@ fn main() {
     // this binary is in, expanded by ld.so, so a tarball holding `letibot-tui`
     // beside `libllama.so.0` and `libggml*.so.0` starts on a machine with no
     // llama.cpp at all.
-    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+    // dyld has no `$ORIGIN`; `@loader_path` is the same idea in its spelling.
+    let origin = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        "@loader_path"
+    } else {
+        "$ORIGIN"
+    };
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{origin}");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
 }
