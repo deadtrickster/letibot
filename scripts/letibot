@@ -147,6 +147,36 @@ ENDPOINT="${LETIBOT_ENDPOINT:-127.0.0.1:8080}"
 
 die() { echo "letibot: $*" >&2; exit 1; }
 
+# **THE COMMAND THE PERSON ACTUALLY TYPED**, for every sentence that hands one back.
+#
+# `leticode` execs this script, so `$0` here is `letibot` on that path — and a fix line
+# built from it told the operator to run a different command: not their seat
+# (`LETIBOT_ROLE=leticode`, which the wrapper exports) and not their model flag, so
+# `leticode --glm` answered *"Fix:  letibot --stop && letibot"*, which starts a
+# **coder** daemon on the **default** model. MEASURED 2026-10-07, and it is the whole
+# of why that pair of words could not be reached. The wrapper names itself in
+# `LETIBOT_INVOKED_AS`; a bare `letibot` names nothing and `$0` is already right.
+ME="${LETIBOT_INVOKED_AS:-$(basename "$0")}"
+
+# **`--glm`/`--flash`/`--dense` are CONSUMED by the flag loop and never reach
+# `EXTRA_ARGS`.** No other check in this script can see that a model was asked for —
+# which is how a warning about swallowed flags came to say nothing about the one flag
+# that picks the model, and how `leticode --glm` against a daemon bound to another
+# model attached in SILENCE whenever the port happened to serve what that daemon was
+# bound to. Recorded the moment it is parsed; empty means the model was left alone.
+MODEL_FLAG=""
+
+# **What would apply this run's model choice**, in the person's own words: their verb,
+# their flag. One function because three sentences hand a command back and three
+# copies would be three answers to *what do I run next*.
+restart_advice() {
+  if [ -n "$MODEL_FLAG" ]; then
+    printf '%s --stop && %s %s' "$ME" "$ME" "$MODEL_FLAG"
+  else
+    printf '%s --stop && %s' "$ME" "$ME"
+  fi
+}
+
 # HELP BEFORE ANYTHING. No network, no daemon probe, no vocabulary: a question
 # about the command must not cost a model turn to answer.
 #
@@ -495,14 +525,17 @@ while [ $# -gt 0 ]; do
     --glm)
       DIALECT=glm; MODEL=glm-5.3-flash
       VOCAB="$HOME/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf"
+      MODEL_FLAG="--glm"
       shift ;;
     --flash)
       DIALECT=qwen; MODEL=qwen-3.8-flash-next
       VOCAB="$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
+      MODEL_FLAG="--flash"
       shift ;;
     --dense)
       DIALECT=qwen; MODEL=qwen-3.8-27b
       VOCAB="$HOME/models/Qwen3.8-27B-UD-Q6_K_XL.gguf"
+      MODEL_FLAG="--dense"
       shift ;;
     *) break ;;
   esac
@@ -807,6 +840,9 @@ warn_swallowed_flags() {
   # cannot change it, and the honest thing is to say so, not to look only at the
   # args a person typed after the verb.
   local want_role="$ROLE" want_bash have_role have_bash mism=0
+  # The model this run asked for: an explicit `--model` wins over the flag that
+  # picked a family, and the daemon's record carries the same word for both.
+  local want_model="${MODEL_OVERRIDE:-$MODEL}"
   want_bash="$([ -n "$BASH_ON" ] && echo true || echo false)"
   have_role="$(record_field role 2>/dev/null || true)"
   have_bash="$(record_field bash 2>/dev/null || true)"
@@ -819,16 +855,44 @@ warn_swallowed_flags() {
       echo "letibot: you asked for $([ "$want_bash" = true ] && echo "a shell" || echo "no shell"), but this folder's daemon was started with $([ "$have_bash" = true ] && echo "one" || echo "none")."
       mism=1
     fi
+    # **And the MODEL flag, which no other check in this script can see.** The
+    # port check above fires only when the port serves a model the daemon is not
+    # bound to — so a daemon bound to `qwen-3.8-27b` while 8081 serves that same
+    # model, plus a `--glm`, passed every gate and attached in silence to the
+    # wrong model. That is the same silent shape the seat check exists for.
+    if [ -n "$MODEL_FLAG" ]; then
+      local dpid have_model
+      # **The process's own command line first, the record second**, for the reason
+      # `daemon_models` reads `/proc` at all: a record written before the field existed
+      # has no `model`, and MEASURED 2026-10-07 on this box, the daemon holding the
+      # operator's own workspace is exactly such a record — `--status` printed
+      # `vocab unknown`, so a check that only read the record stayed SILENT about the
+      # model flag on the one daemon it had to speak about.
+      dpid="$(daemon_pid 2>/dev/null || true)"
+      have_model=""
+      [ -n "$dpid" ] && have_model="$(tr '\0' '\n' < "/proc/$dpid/cmdline" 2>/dev/null \
+        | awk '/^--model$/{getline; print; exit}')"
+      [ -n "$have_model" ] || have_model="$(record_field model 2>/dev/null || true)"
+      if [ -n "$have_model" ] && [ "$have_model" != "$want_model" ]; then
+        echo "letibot: you asked for \`$want_model\` ($MODEL_FLAG), but this folder's daemon is already running as \`$have_model\` (pid ${dpid:-?})."
+        mism=1
+      fi
+    fi
+    # **One advice line for both mismatches, and it comes AFTER the model check.**
+    # The first version put this block before it, so a MODEL mismatch set `mism` and
+    # then nothing printed it: a warning with no way out. MEASURED 2026-10-07 by
+    # running `leticode --flash` against this folder's glm daemon and reading the
+    # output — one line, and it ended there.
     if [ "$mism" = 1 ]; then
-      echo "         The seat is fixed when harnessd STARTS; attaching to a running one cannot change it."
-      echo "         For the seat you asked for:  letibot --stop && (the command you just ran)"
-      echo "         Sessions are on disk, so nothing is lost -- '--continue' reopens this one under the new seat."
+      echo "         The seat and the model are fixed when harnessd STARTS; attaching to a running one cannot change either."
+      echo "         For what you asked for:  $(restart_advice)"
+      echo "         Sessions are on disk, so nothing is lost -- '--continue' reopens this one."
     fi
     if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
       echo "letibot: this folder's daemon is ALREADY RUNNING (pid $(daemon_pid 2>/dev/null || echo "?")) and these flags did NOT take effect:"
       printf '         %s\n' "${EXTRA_ARGS[*]}"
       echo "         They are read when harnessd STARTS and are fixed for the life of the daemon."
-      echo "         To apply them:  letibot --stop && letibot ${EXTRA_ARGS[*]}"
+      echo "         To apply them:  $(restart_advice) ${EXTRA_ARGS[*]}"
       echo "         Sessions are on disk, so nothing is lost -- 'letibot --continue' reopens this one."
     fi
   } >&2
@@ -1204,7 +1268,7 @@ if live; then
     echo "         --glm/--flash/--dense choose a model only when the daemon STARTS. They" >&2
     echo "         cannot rebind one that is already running, and neither can autodetection." >&2
     echo "" >&2
-    echo "         Fix:  letibot --stop && letibot" >&2
+    echo "         Fix:  $(restart_advice)" >&2
     echo "         Sessions are on disk, so nothing is lost -- 'letibot --continue' reopens this one." >&2
     exit 1
   fi
