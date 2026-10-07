@@ -137,7 +137,7 @@ impl JobState {
     }
 }
 
-/// **A way to write to a running command's stdin** — the handle the daemon keeps for
+/// **A way to write to a running command's input** — the handle the daemon keeps for
 /// the operator's own run, and the one place a person's answer can go.
 ///
 /// # Why only the operator's run has one
@@ -146,13 +146,29 @@ impl JobState {
 /// `bash` call that reads stdin must get **EOF** rather than block for a person who is
 /// not there. The operator's own `!` line is the one run where a person *is* there —
 /// they typed the line and they are watching the bytes — so it is the one run whose
-/// stdin is a pipe somebody holds. [`super::host::SpawnRequest::tty`] is the flag, and
+/// input somebody holds. [`super::host::SpawnRequest::tty`] is the flag, and
 /// this is the fourth consequence of it.
 ///
 /// The defect this closes, in the operator's own words: *"we need this interactivity
 /// working"* — after `! sudo apt install mc`, which streamed its progress and then
 /// **aborted at `Continue? [Y/n]`**, because `/dev/null` on stdin is an EOF and EOF is
 /// not a `Y`.
+///
+/// # **It is the run's terminal, and it used to be a pipe beside it**
+///
+/// The first version of this wrote to a pipe on the run's fd 0. The operator's answer to
+/// the two lines bash printed about job control was *"nah, i think that bash should feel
+/// comfortable actually"*, so the run now has the pty on all three descriptors
+/// ([`super::pty`]'s header carries the whole argument) and **this is a second handle on
+/// that pty's master**: what the daemon writes goes into the same terminal the command is
+/// reading, which is what every other implementation of this does. The pipe was the
+/// anomaly — it is exactly what left bash without a controlling terminal on its own
+/// stdin.
+///
+/// [`Input::Pipe`] survives for the one case that is not a choice: a box where
+/// [`super::pty::Pty::open`] fails. The run then keeps today's pipe, which keeps it
+/// **answerable** — the capability this type exists for — at the cost of the colour and
+/// the terminal it never had on that box anyway.
 ///
 /// # `Default` is `none`, and `none` is a fact rather than an error
 ///
@@ -161,51 +177,112 @@ impl JobState {
 /// it does not care about. [`Stdin::send_line`] says what the absence means.
 #[derive(Clone, Default)]
 pub struct Stdin {
-    /// `Some` only for a run spawned with a pipe on fd 0. The inner `Option` is the
-    /// close: a write end that has been closed is not a write end that was never there,
-    /// and the two sentences a caller reads for them differ.
-    inner: Option<Arc<Mutex<Option<std::process::ChildStdin>>>>,
+    /// `Some` only for a run whose input the daemon holds. The inner `Option` is the
+    /// close: an input that has been closed is not one that was never there, and the two
+    /// sentences a caller reads for them differ.
+    inner: Option<Arc<Mutex<Open>>>,
+}
+
+/// What the daemon is holding, and when it last wrote to it.
+///
+/// The clock is here rather than in the reader because **this is the only writer**: *"the
+/// run is blocked reading its terminal"* is only half of what a card claims, and the other
+/// half is that nobody has answered it lately. [`Stdin::since_last_input`] is that half.
+struct Open {
+    input: Option<Input>,
+    last_sent: Option<std::time::Instant>,
+}
+
+/// **The two ways a run's input can be reachable**, and they are different devices.
+enum Input {
+    /// The write end of a pipe on the run's fd 0 — the fallback when the pty could not be
+    /// opened. [`super::ask::InputEnd::Pipe`] is how a reader names it.
+    Pipe(std::process::ChildStdin),
+    /// **A second handle on the run's own terminal**, with the name of its slave end.
+    ///
+    /// The name travels with the handle because the reader has to tell *this* terminal
+    /// from every other tty on the box, and only the slave's own name does that — see
+    /// [`super::pty::Pty::slave_path`].
+    Terminal {
+        master: std::fs::File,
+        slave_path: String,
+    },
 }
 
 impl Stdin {
-    /// **No stdin to write to** — `/dev/null`, which is every job but the operator's own.
+    /// **No input to write to** — `/dev/null`, which is every job but the operator's own.
     pub fn none() -> Stdin {
         Stdin { inner: None }
     }
 
     /// The write end of a pipe handed to a command, as `host::spawn` takes it out of the
-    /// child it just started.
+    /// child it just started. The pty-less fallback; see the type's own note.
     pub fn pipe(w: std::process::ChildStdin) -> Stdin {
         Stdin {
-            inner: Some(Arc::new(Mutex::new(Some(w)))),
+            inner: Some(Arc::new(Mutex::new(Open {
+                input: Some(Input::Pipe(w)),
+                last_sent: None,
+            }))),
+        }
+    }
+
+    /// **The run's own terminal**, as `host::spawn` takes a second handle on the pty
+    /// master it just handed to the child on all three descriptors.
+    pub fn terminal(master: std::fs::File, slave_path: String) -> Stdin {
+        Stdin {
+            inner: Some(Arc::new(Mutex::new(Open {
+                input: Some(Input::Terminal { master, slave_path }),
+                last_sent: None,
+            }))),
         }
     }
 
     /// Whether a command is out there that could be answered at all. `false` for a run
-    /// whose stdin is `/dev/null` **and** for one whose pipe has already been closed.
+    /// whose stdin is `/dev/null` **and** for one whose input has already been closed.
     pub fn is_open(&self) -> bool {
         self.inner
             .as_ref()
-            .is_some_and(|w| w.lock().map(|g| g.is_some()).unwrap_or(false))
+            .is_some_and(|w| w.lock().map(|g| g.input.is_some()).unwrap_or(false))
     }
 
-    /// **Which pipe this is**, for a reader that has to tell it apart from every other pipe
-    /// on the box.
+    /// **Which device this is**, for a reader that has to tell it apart from every other
+    /// descriptor on the box.
     ///
     /// `super::ask` is the reader: *"the program is blocked reading the answer we hold"* is
     /// only a fact if the descriptor the program is blocked on is **this** one, and the
-    /// inode is how the kernel lets the two be compared. A `grep` blocked on `ls`'s pipe in
-    /// `! ls | grep foo` is a pipe read too, and without this number a slow `ls` would raise
-    /// a card claiming the run was waiting for a line.
+    /// identity is how the kernel lets the two be compared — an inode for a pipe, the
+    /// slave's own name for a terminal. A `grep` blocked on `ls`'s pipe in `! ls | grep
+    /// foo` is a read too, and without this a slow `ls` would raise a card claiming the run
+    /// was waiting for a line.
     ///
-    /// `None` when there is no write end (a `/dev/null` run, or a closed one) and when the
-    /// descriptor is not a pipe at all — see [`super::ask::pipe_inode`] for why the type is
-    /// checked and not only the number.
-    pub fn pipe_inode(&self) -> Option<u64> {
-        use std::os::fd::AsRawFd;
+    /// `None` when there is no input at all (a `/dev/null` run, or a closed one).
+    pub fn input_end(&self) -> Option<super::ask::InputEnd> {
         let inner = self.inner.as_ref()?;
         let guard = inner.lock().unwrap_or_else(|e| e.into_inner());
-        super::ask::pipe_inode(guard.as_ref()?.as_raw_fd())
+        match guard.input.as_ref()? {
+            Input::Pipe(w) => {
+                use std::os::fd::AsRawFd;
+                super::ask::pipe_inode(w.as_raw_fd()).map(super::ask::InputEnd::Pipe)
+            }
+            Input::Terminal { slave_path, .. } => {
+                Some(super::ask::InputEnd::Terminal(slave_path.clone()))
+            }
+        }
+    }
+
+    /// **How long since the daemon last wrote a line to this run** — `None` when it never
+    /// has.
+    ///
+    /// The reader is the prompt card, and this is the half of its claim that is about the
+    /// person rather than about the process: with the terminal on fd 0, a program that has
+    /// just been answered is blocked reading its terminal *again* within microseconds, and
+    /// a card raised on that would be the daemon telling somebody about a question they
+    /// answered a moment ago. `None` is *never written to*, which is the quietest case
+    /// there is and not a missing measurement.
+    pub fn since_last_input(&self) -> Option<Duration> {
+        let inner = self.inner.as_ref()?;
+        let guard = inner.lock().unwrap_or_else(|e| e.into_inner());
+        guard.last_sent.map(|t| t.elapsed())
     }
 
     /// **Send one line, with the newline that makes it a line.**
@@ -214,20 +291,20 @@ impl Stdin {
     /// question this exists for — `Continue? [Y/n]` — takes Enter as its default answer,
     /// so an empty line is a real answer and not a mistake to be refused.
     ///
-    /// # The write blocks, and the bound is the pipe's own
+    /// # The write blocks, and the bound is the device's own
     ///
-    /// This is a blocking write on a pipe, which is what `ChildStdin` gives and what a
-    /// non-blocking version would have to replace with a thread per answer. The pipe's
-    /// buffer is 64 KiB on Linux and a line is a line, so the write blocks only if the
-    /// program has stopped reading **and** several thousand lines have already been sent
-    /// into it unread. Named rather than discovered: the alternative is a `O_NONBLOCK`
-    /// dance that would turn a full pipe into a silently dropped answer, and a dropped
-    /// answer is the failure this whole mechanism exists to end.
+    /// This is a blocking write, which is what both handles give and what a non-blocking
+    /// version would have to replace with a thread per answer. A pipe's buffer is 64 KiB on
+    /// Linux and a line is a line; a pty's input queue is smaller, and a program that has
+    /// stopped reading **and** has several thousand unread lines in front of it is what
+    /// blocks either of them. Named rather than discovered: the alternative is an
+    /// `O_NONBLOCK` dance that would turn a full device into a silently dropped answer, and
+    /// a dropped answer is the failure this whole mechanism exists to end.
     ///
     /// # Why the failure is a `String` and not an `io::Error`
     ///
     /// The reader is a person: every one of these becomes a sentence on a screen, and the
-    /// three cases (no pipe, closed pipe, the far end gone) need three different ones.
+    /// three cases (no input, closed input, the far end gone) need three different ones.
     pub fn send_line(&self, line: &str) -> Result<(), String> {
         let Some(inner) = self.inner.as_ref() else {
             return Err(
@@ -237,21 +314,31 @@ impl Stdin {
             );
         };
         let mut guard = inner.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(w) = guard.as_mut() else {
-            return Err("this command's stdin is already closed".to_string());
+        let Some(input) = guard.input.as_mut() else {
+            return Err("this command's input is already closed".to_string());
         };
         // One `write_all` for the line and its newline, so a reader sees them together:
         // a program that reads a line at a time must not be able to see a line whose
-        // terminator has not arrived.
+        // terminator has not arrived. On a terminal this is also what releases it: the
+        // line discipline is in canonical mode, so nothing reaches the program until the
+        // newline does.
         let mut bytes = Vec::with_capacity(line.len() + 1);
         bytes.extend_from_slice(line.as_bytes());
         bytes.push(b'\n');
-        match w.write_all(&bytes).and_then(|_| w.flush()) {
-            Ok(()) => Ok(()),
+        let written = match input {
+            Input::Pipe(w) => w.write_all(&bytes).and_then(|_| w.flush()),
+            Input::Terminal { master, .. } => master.write_all(&bytes).and_then(|_| master.flush()),
+        };
+        match written {
+            Ok(()) => {
+                // **The beat starts here.** See [`Stdin::since_last_input`] for what reads it.
+                guard.last_sent = Some(std::time::Instant::now());
+                Ok(())
+            }
             Err(e) => {
-                // The far end is gone. Forget the handle rather than leaving a write end
-                // that can only fail again with the same sentence.
-                *guard = None;
+                // The far end is gone. Forget the handle rather than leaving one that can
+                // only fail again with the same sentence.
+                guard.input = None;
                 Err(format!("the command is no longer reading its stdin: {e}"))
             }
         }

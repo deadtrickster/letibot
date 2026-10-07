@@ -265,6 +265,33 @@ impl Pty {
         Ok(Stdio::from(self.slave.try_clone()?))
     }
 
+    /// **The slave's own descriptor**, for [`controlling_terminal`].
+    ///
+    /// The field is private because nothing outside should be doing I/O on this end — it is
+    /// a `File` the child has three copies of and this process must keep exactly none after
+    /// `spawn`. What a caller needs is the *number*, to hand to the `pre_exec` that acquires
+    /// the terminal.
+    pub fn slave_fd(&self) -> std::os::fd::RawFd {
+        self.slave.as_raw_fd()
+    }
+
+    /// **A second handle on the master, for writing to the run** — what `!send` and the
+    /// secret card's answer travel down.
+    ///
+    /// A `dup` rather than one `File` behind a mutex, and the reason is the drain: the
+    /// other handle is blocked in `read` on the master for the whole life of the run, so a
+    /// shared one would put every answer behind a read that is not going to return. This is
+    /// [`super::term`]'s own argument for its keystroke handle, and the two paths have the
+    /// same shape now.
+    ///
+    /// It is a **master** and not a slave, which is what makes it safe to hold for the whole
+    /// run: the master reports the child's exit when the last *slave* closes, and an extra
+    /// master is nobody else's descriptor. An extra slave here would be the defect
+    /// [`Pty::into_master`] exists to prevent.
+    pub fn input(&self) -> io::Result<File> {
+        self.master.try_clone()
+    }
+
     /// **The name of the device this pty's slave is** — `/dev/pts/N` on this box.
     ///
     /// The reader is [`super::ask`], and the question it answers is not rhetorical: with
