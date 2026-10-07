@@ -1238,8 +1238,8 @@ pub enum Action {
     },
     /// **The operator's answer to a command of their own that asked them something.**
     ///
-    /// The card is raised by the daemon when the run is **blocked reading the stdin pipe the
-    /// daemon holds** — a reading of the process and not of its words, see
+    /// The card is raised by the daemon when the run is **blocked reading the device the
+    /// daemon holds for it** — a reading of the process and not of its words, see
     /// `letibot_tools::exec::ask` — and this is the line the person typed into it.
     ///
     /// **Not `Action::Secret` and not a path to one.** A password has its own card, its own

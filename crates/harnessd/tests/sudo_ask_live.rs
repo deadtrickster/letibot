@@ -44,9 +44,10 @@
 //! harnessd hangs without printing anything to me"* — and each of the three tests below is one
 //! of the facts that made that run silent:
 //!
-//! 4. `a_real_root_process_waiting_on_the_pipe_is_the_operators_own_shape` — the same case with
-//!    a **real root process** in the tree (`/usr/bin/su`, setuid, reading the pipe) rather than
-//!    a stand-in of this uid. The detection must not depend on the stand-in being faithful.
+//! 4. `a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape` — the same case
+//!    with a **real root process** in the tree (`/usr/bin/su`, setuid, reading the terminal)
+//!    rather than a stand-in of this uid. The detection must not depend on the stand-in being
+//!    faithful.
 //! 5. `the_operators_own_sudo_line_says_something_while_it_is_stuck` — `! sudo apt install mc`,
 //!    character for character, through the daemon's own shim and `SUDO_ASKPASS`, with the
 //!    password card answered by a head.
@@ -80,15 +81,16 @@ unsafe extern "C" {
 /// **The run's own process, when this test binary is re-executed as it.**
 ///
 /// Same device as `sudo_ask.rs`'s: the `!` line names this test with `--exact`, so what the
-/// daemon's exec host spawns is this function, with the daemon's pipe on fd 0 and the run's
-/// cgroup around it. It makes itself unreadable to the daemon and then waits on that pipe.
+/// daemon's exec host spawns is this function, with the daemon's **terminal** on fd 0 and the
+/// run's cgroup around it. It makes itself unreadable to the daemon and then waits on that
+/// terminal.
 #[test]
 fn the_process_the_daemon_may_not_read() {
     if std::env::var("LETIBOT_SUDO_ASK_CHILD").as_deref() != Ok("1") {
         return;
     }
     let rc = unsafe { prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) };
-    println!("child: PR_SET_DUMPABLE 0 -> {rc}; waiting on the daemon's pipe");
+    println!("child: PR_SET_DUMPABLE 0 -> {rc}; waiting on the daemon's terminal");
     let mut line = String::new();
     let n = std::io::stdin().read_line(&mut line).unwrap_or(0);
     println!("child: read {n} byte(s): {:?}", line.trim_end());
@@ -229,8 +231,8 @@ fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
     );
 
     // ---- **The daemon's stderr while the run is still stuck.** This is the capture the
-    // operator asked for: the run is at this moment waiting on the pipe the daemon holds, with
-    // nothing having answered it, and the file they read says nothing about it. Read here,
+    // operator asked for: the run is at this moment waiting on the device the daemon holds for
+    // it, with nothing having answered it, and the file they read says nothing about it. Read here,
     // before `!send`, so what is printed is the state and not the aftermath.
     let during = std::fs::read_to_string(&log).unwrap_or_default();
     eprintln!("---- {log:?} while the run is still waiting ----");
@@ -300,11 +302,21 @@ fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
 /// `ask`'s own module header names as the two ways `EACCES` happens.
 ///
 /// So this test uses neither a stand-in nor a fake: `/usr/bin/su` is setuid root on this box,
-/// and with no controlling terminal it reads the password **from stdin** — which is the pipe
-/// this daemon holds. That is `apt` at `Continue? [Y/n]` in every fact that matters: a root
-/// process, undumpable, blocked in a read on fd 0, with the operator's own shell above it in
-/// `wait4`. `! /usr/bin/su -c true` is `! sudo apt install mc` with the password step taken
-/// out, and the assertion is the same one: the daemon says it cannot tell.
+/// and it reads the password **from the terminal** — which is the run's own pty, the one this
+/// daemon holds the master of. That is `apt` at `Continue? [Y/n]` in every fact that matters: a
+/// root process, undumpable, blocked in a read on the device it was given, with the operator's
+/// own shell above it in `wait4`. `! /usr/bin/su -c true` is `! sudo apt install mc` with the
+/// password step taken out, and the assertion is the same one: the daemon says it cannot tell.
+///
+/// **And `su` is the trade in the wild, which is worth saying here rather than in the abstract.**
+/// It used to read fd 0 because there was no controlling terminal for it to open; with the pty
+/// as the run's controlling terminal it calls `setsid` and takes it — measured, 2026-10-07, the
+/// process appears as `Ss+` in the run's tree, a *session leader in the foreground process
+/// group*, which is the state that only exists on a controlling terminal. It reads the password
+/// from there instead of from fd 0, and **`!send` still reaches it**, because `!send` writes to
+/// the master of that same terminal. That is the whole of the trade `exec::pty`'s header states:
+/// a program reached **indirectly** that opens `/dev/tty` now *waits* instead of failing at
+/// once — and this test is the evidence that it is answerable rather than lost.
 ///
 /// # Why this is a second test and not the first one written differently
 ///
@@ -312,7 +324,7 @@ fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
 /// actually had, and it is the only version of the case that can be checked against the
 /// operator's own daemon, which is running as this uid against a root child.
 #[test]
-fn a_real_root_process_waiting_on_the_pipe_is_the_operators_own_shape() {
+fn a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
@@ -365,7 +377,7 @@ fn a_real_root_process_waiting_on_the_pipe_is_the_operators_own_shape() {
             stop(&mut daemon);
             panic!(
                 "the daemon never said it could not tell about a root process waiting on its \
-                 own pipe; the tree was:\n{}\nits stderr was:\n{said}",
+                 own terminal; the tree was:\n{}\nits stderr was:\n{said}",
                 run_tree().join("\n")
             )
         }
@@ -381,8 +393,8 @@ fn a_real_root_process_waiting_on_the_pipe_is_the_operators_own_shape() {
         "the sentence must name the way in: {sentence}"
     );
 
-    // ---- And the way in, on a real root process: the line goes down the pipe, `su` reads it
-    // as a password, refuses it, and the run ends. The point is not that the password is
+    // ---- And the way in, on a real root process: the line goes down the terminal, `su` reads
+    // it as a password, refuses it, and the run ends. The point is not that the password is
     // wrong — it is that a line the operator typed **reached the program that was waiting**,
     // which is the difference between a command that is stuck and one that is answerable.
     head.send_line("not-the-password").expect("the verb's line");
@@ -403,7 +415,7 @@ fn a_real_root_process_waiting_on_the_pipe_is_the_operators_own_shape() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
         ended,
-        "the run never ended after `!send`: the line did not reach the root process's stdin"
+        "the run never ended after `!send`: the line did not reach the root process's terminal"
     );
 }
 
@@ -489,7 +501,7 @@ fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
     );
 }
 
-/// **A run that is still WRITING while one of its processes is blocked on the pipe.**
+/// **A run that is still WRITING while one of its processes is blocked on the terminal.**
 ///
 /// # The operator's own report, and the one fact the daemon was not looking at
 ///
@@ -544,7 +556,7 @@ fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
     let (mut head, rx) = attach(&socket, session, &log, &mut daemon);
 
     // ---- The run. A writer every 100 ms, and beside it a process that is not this daemon's to
-    // look at, blocked on the pipe the daemon holds. `apt`'s shape while it works, with the
+    // look at, blocked on the terminal the daemon holds. `apt`'s shape while it works, with the
     // question one keystroke away — which is exactly the state the operator was in.
     let exe = std::env::current_exe().expect("this test binary's own path");
     let script = dir.join("streaming-run.sh");
@@ -554,7 +566,7 @@ fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
             "#!/bin/sh\n\
              # letibot test double for `apt install mc` while it streams: a writer that never\n\
              # lets the run be quiet for a beat, over a process of this run that cannot be\n\
-             # looked at and is waiting on the daemon's pipe.\n\
+             # looked at and is waiting on the daemon's terminal.\n\
              while true; do printf 'tick\\n'; sleep 0.1; done &\n\
              LETIBOT_SUDO_ASK_CHILD=1 {exe} --exact the_process_the_daemon_may_not_read \\\n\
                --nocapture\n",
@@ -591,7 +603,7 @@ fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
     let sentence = sentence.unwrap_or_else(|| {
         panic!(
             "a run that is still writing, with a process this daemon may not look at blocked \
-             on its own pipe, said NOTHING. That is the operator's second report word for word: \
+             on its own terminal, said NOTHING. That is the operator's second report word for word: \
              `harnessd hangs without printing anything to me`. The daemon's own words were:\n{said}"
         )
     });
@@ -662,8 +674,9 @@ fn the_deadline_ends_a_run_this_daemon_may_not_look_at() {
     let mut daemon = start_daemon(&dir, &log, &socket, &store, session);
     let (mut head, rx) = attach(&socket, session, &log, &mut daemon);
 
-    // ---- The run: `su` as root, reading the pipe the daemon holds, so it waits forever and
-    // cannot be signalled by this uid. The operator's `!` line, and the 120 s default it gets.
+    // ---- The run: `su` as root, reading the terminal the daemon holds, so it waits forever
+    // and cannot be signalled by this uid. The operator's `!` line, and the 120 s default it
+    // gets.
     let started = Instant::now();
     head.operator_shell(0, "! /usr/bin/su -c true")
         .expect("the line is submitted");

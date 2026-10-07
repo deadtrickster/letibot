@@ -614,7 +614,8 @@ impl HeadClient {
     /// [`letibot_sessionlog::send_line`], and the line arrives here with the verb stripped.
     ///
     /// This is the floor under the prompt card. The card is raised when the daemon can see
-    /// that the run is **blocked reading the stdin pipe it holds**, and that reading has
+    /// that the run is **blocked reading the terminal it holds** — and nothing has been typed
+    /// at it for a beat — and that reading has
     /// misses it names — a program blocked on another fd, one that asks and keeps drawing, a
     /// `/proc` a confined session's daemon may not read. None of those stops a person from
     /// answering, and this is how they do it.

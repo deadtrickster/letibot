@@ -877,18 +877,32 @@ fn ask_if_waiting(
         Some(d) => d >= QUIET,
         None => v.elapsed >= QUIET,
     };
-    // **The pipe is OURS**, and the comparison is what keeps a `grep` blocked on `ls`'s
-    // pipe in `! ls | grep foo` from looking like a program waiting for a line.
-    let pipe = host.job_handle(id).and_then(|j| j.stdin().pipe_inode());
+    // **The device is OURS**, and the comparison is what keeps a `grep` blocked on `ls`'s
+    // pipe in `! ls | grep foo` from looking like a program waiting for a line. The run's
+    // fd 0 is its own terminal — `pipe:[<inode>]` is the pty-less fallback — and
+    // [`Stdin::input_end`] is the name the kernel will give both sides.
+    let handle = host.job_handle(id);
+    let ours = handle.as_ref().and_then(|j| j.stdin().input_end());
     let pids = host.job_pids(id);
-    let verdict = crate::exec::ask::waiting_for_an_answer(&pids, pipe);
+    let verdict = crate::exec::ask::waiting_for_an_answer(&pids, ours.as_ref());
+    // **And nothing has been typed at it for a beat.** The second half of the claim, and it
+    // is new with the terminal: a program that has just been answered is blocked reading its
+    // terminal again within microseconds, so without this the card would be raised about a
+    // question the person answered a moment ago — every time they answered one. `None` is
+    // *never written to*, which is the quietest case there is.
+    const ANSWERED: Duration = Duration::from_millis(1500);
+    let just_answered = handle
+        .as_ref()
+        .and_then(|j| j.stdin().since_last_input())
+        .is_some_and(|d| d < ANSWERED);
     match verdict {
-        // **The signal was read, and it says yes** — and the card still needs the beat, which
-        // is what the beat is FOR: a card claims *some process of this run is blocked reading
-        // the answer we hold*, and a run that is still drawing is genuinely not blocked. A
-        // program between two lines of a slow build is not asking anything.
-        crate::exec::ask::Waiting::Yes if quiet => {}
-        // The signal was read and it says yes, but the run is still writing: not a card.
+        // **The signal was read, and it says yes** — and the card still needs both beats. The
+        // output beat is what the beat is FOR: a card claims *some process of this run is
+        // blocked reading the answer we hold*, and a run that is still drawing is genuinely
+        // not blocked. A program between two lines of a slow build is not asking anything.
+        crate::exec::ask::Waiting::Yes if quiet && !just_answered => {}
+        // The signal was read and it says yes, but the run is still writing or was just
+        // answered: not a card.
         crate::exec::ask::Waiting::Yes => return,
         // **The signal was read, and it says no** — every process of the run was looked at
         // and none is reading our pipe. Nothing to say.

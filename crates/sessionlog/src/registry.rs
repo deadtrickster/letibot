@@ -613,7 +613,7 @@ pub trait TerminalDriver: Send + Sync {
 /// # Why this is a trait on the registry and not a field somewhere
 ///
 /// The same reason [`TerminalDriver`] is: **the caller is the server's reader thread**, and
-/// the state it needs — the pipe the daemon holds for the operator's own run — lives in the
+/// the state it needs — the handle the daemon holds on the operator's own run's input — lives in the
 /// session's exec host, which the daemon worker owns. The worker is **blocked inside the very
 /// command that is asking**, so it cannot be asked; the server has to reach the state
 /// without it.
@@ -655,7 +655,8 @@ pub trait PromptDriver: Send + Sync {
     ///
     /// **Nothing here may block.** This is called on the connection's reader thread, so a
     /// driver that waited for the program to read would stop this head's acks and its
-    /// events. The write is one line into a pipe; `letibot_tools::exec::Stdin::send_line`
+    /// events. The write is one line into the run's own input — its terminal on the ordinary
+    /// path, a pipe on a box where no pty opens; `letibot_tools::exec::Stdin::send_line`
     /// carries what that costs and why it is bounded.
     fn send(
         &self,

@@ -93,10 +93,10 @@ pub struct SpawnRequest {
     ///
     /// | what | where | why |
     /// |---|---|---|
-    /// | a pty on stdout and stderr instead of pipes | the spawn below, and [`super::pty`] | a pipe is not a terminal, so `ls --color=auto` prints plain |
+    /// | a pty on **all three** of stdin, stdout and stderr instead of pipes and `/dev/null` | the spawn below, and [`super::pty`] | a pipe is not a terminal, so `ls --color=auto` prints plain — and the child's terminal has to be its *controlling* one, and its stdin, or bash has no job control |
     /// | their shell, interactive, instead of the host's | [`HostProcesses::with_console_shell`] | the alias that colours `ls` is shell state in a rc file, and no rc is read by `/bin/sh -c` |
     /// | their terminal's variables, and pagers that cannot page | [`super::console::env`], put on the request by `bash` | `TERM` and `LS_COLORS` describe the screen; `less` waits for a keystroke that cannot arrive |
-    /// | **a pipe on stdin the daemon holds, instead of `/dev/null`** | the spawn below, and [`super::jobs::Stdin`] | the fourth thing *a person is there* means: a program that asks a question can be **answered**, and `/dev/null` is an EOF that is not a `Y` |
+    /// | **the daemon holds a handle on the run's own input, instead of `/dev/null`** | the spawn below, and [`super::jobs::Stdin`] | the fourth thing *a person is there* means: a program that asks a question can be **answered**, and `/dev/null` is an EOF that is not a `Y` |
     ///
     /// It is one flag and not four because it is one fact — *a person typed this and
     /// is looking at a screen* — and four flags with the same value are four things
@@ -457,7 +457,8 @@ pub trait ProcessHost: Send + Sync {
 ///
 /// The loop's tick is a *bounded* condvar wait and the run's own processes are waited on by
 /// other threads, so the loop is not itself the thing that blocks — measured, 2026-10-06: a
-/// root `su` blocked on the daemon's pipe with its whole tree unreadable was killed by its
+/// root `su` blocked on the device the daemon held for it (a pipe then, its own terminal now)
+/// with its whole tree unreadable was killed by its
 /// deadline at 120.02 s, with the worker in `futex_do_wait` throughout. What is true, and
 /// is the whole of the defect, is that the check is **only** there: it is the only thing
 /// that would end the run, so anything that stops that thread reaching it removes the
@@ -1129,45 +1130,63 @@ impl ProcessHost for HostProcesses {
             cmd.arg(s);
         }
         cmd.arg(&req.command);
-        // **stdin, which is the pipe the daemon holds for the operator's own run and
-        // `/dev/null` for everything else.**
-        //
-        // The second half is the older rule and it is unchanged: a command that reads
-        // stdin must get EOF rather than wait for a person who is not there. The first
-        // half is what makes the operator's own run *answerable* — see
-        // [`super::jobs::Stdin`] for the defect (`! sudo apt install mc` aborting at
-        // `Continue? [Y/n]` because EOF is not a `Y`) and for what the handle is.
-        //
-        // **The cost, said rather than discovered: a `!` command that reads stdin now
-        // blocks instead of exiting at once.** `! cat` with no argument used to print
-        // nothing and return; it now waits for a line, and its deadline (120 s, the
-        // `bash` default) is what ends it if the operator never sends one. That is the
-        // price of the feature and not a defect in it: the operator asked for a run that
-        // can be *answered*, and a run that can be answered is a run that waits.
         cmd.current_dir(&cwd);
-        if req.tty {
-            cmd.stdin(Stdio::piped());
+        // **stdin, which the pty branch below replaces whenever there is a pty to give the
+        // run.** What is set here is therefore the *fallback*: the pipe that keeps the
+        // operator's own run answerable on a box where no pty can be opened, and `/dev/null`
+        // for everything else. [`super::pty`]'s header carries why the normal case is the
+        // run's own terminal instead, and [`super::jobs::Stdin`] what either one buys.
+        //
+        // The `/dev/null` half is the older rule and it is unchanged: a command that reads
+        // stdin must get EOF rather than wait for a person who is not there. The other half is
+        // what makes the operator's own run *answerable* — see [`super::jobs::Stdin`] for the
+        // defect (`! sudo apt install mc` aborting at `Continue? [Y/n]` because EOF is not a
+        // `Y`) and for what the handle is.
+        //
+        // **The cost, said rather than discovered: a `!` command that reads stdin waits.**
+        // `! cat` with no argument used to print nothing and return, because EOF is an EOF;
+        // it now waits for a line, and its deadline (120 s, the `bash` default) is what ends
+        // it if the operator never sends one. That is the price of the feature and not a
+        // defect in it: the operator asked for a run that can be *answered*, and a run that
+        // can be answered is a run that waits.
+        cmd.stdin(if req.tty {
+            Stdio::piped()
         } else {
-            cmd.stdin(Stdio::null());
-        }
+            Stdio::null()
+        });
         // **A terminal on the output side, for the operator's own run** — see
         // [`SpawnRequest::tty`] for who gets it and why, and [`super::pty`] for what it
-        // buys and what it costs. stdin is the pipe above either way: a command that
-        // reads it is answered by the operator when it is theirs, and gets EOF when it
-        // is a model's.
+        // buys and what it costs.
         //
         // A box where the pty cannot be opened falls back to pipes rather than refusing:
         // the terminal is what the operator's colour needs, not what the command needs,
         // and a run that would have answered correctly is not worth failing over a
-        // cosmetic. `None` here is that fallback, taken silently and only for this.
+        // cosmetic. `None` here is that fallback, taken silently and only for this — and
+        // it is also why [`super::jobs::Stdin`] still has a pipe in it.
         let mut pty: Option<super::pty::Pty> = None;
         if req.tty {
             match super::pty::Pty::open() {
-                // Both streams are the one pty, so one `Stdio` per stream and no pipe
-                // between them: the capture ring is fed by the master.
-                Ok(p) => match (p.stdio(), p.stdio()) {
-                    (Ok(out), Ok(err)) => {
-                        cmd.stdout(out).stderr(err);
+                // **One pty on all three descriptors**, so the capture ring is fed by the
+                // master and the command's input is the same terminal its output is on.
+                Ok(p) => match (p.stdio(), p.stdio(), p.stdio()) {
+                    (Ok(inp), Ok(out), Ok(err)) => {
+                        // **`ECHO` off, before anything runs.** The daemon is the writer on
+                        // this terminal — `!send`, and the prompt card's answer — and an
+                        // echoing terminal would put both into the run's output, which is a
+                        // transcript row and a model's prompt. `super::pty`'s header says
+                        // which reader wants which, and why the pane keeps its echo. (The
+                        // *secret* card is the `askpass` path and never reaches this
+                        // terminal; `harnessd`'s `prompt` module owns that half.)
+                        //
+                        // Not fatal if it fails, for the reason the whole pty is not: a
+                        // terminal that echoes is noisy and not broken.
+                        let _ = p.no_echo();
+                        // **And the terminal becomes the child's controlling terminal**, which
+                        // is what makes bash a job-control shell and silences the two lines it
+                        // printed on every row. `super::pty::controlling_terminal` is the one
+                        // copy of those two calls, shared with the pane.
+                        super::pty::controlling_terminal(&mut cmd, p.slave_fd());
+                        cmd.stdin(inp).stdout(out).stderr(err);
                         pty = Some(p);
                     }
                     _ => {
@@ -1229,7 +1248,7 @@ impl ProcessHost for HostProcesses {
         //
         // A `Command` keeps every `Stdio` it was given for as long as it lives, and this
         // one lives to the end of this function — so without this the parent still holds
-        // two slave descriptors while the drains below read the master, and a pty whose
+        // **three** slave descriptors while the drains below read the master, and a pty whose
         // slave is open anywhere does not report the child's exit. Measured, first cut,
         // 2026-09-25: the drain blocked, the waiter behind it never reaped, the finished
         // child stayed a zombie, **a zombie is not in `cgroup.procs`** — so the
@@ -1237,22 +1256,48 @@ impl ProcessHost for HostProcesses {
         // already run to completion, in two of the twenty-four exec tests. `Stdio::null`
         // here is a drop, not a redirection: nothing is spawned again with this `Command`.
         //
+        // **Three of them since the terminal landed, and the third is the one a reader will
+        // not expect.** `cmd.stdin(Stdio::null())` is not "give the child /dev/null" — the
+        // child has its own copy already and `/dev/null` here never reaches it — it is the
+        // drop of the `Stdio` holding the last slave the parent owns. The pipe case is
+        // unaffected: `Stdio::piped` is a marker, and the descriptor the parent keeps is
+        // `child.stdin`, which is taken below.
+        //
         // [`super::pty::Pty::into_master`] is the other half of the same rule, for this
         // process's own slave handle.
+        cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
 
-        // **The write end of the child's stdin, out of the `Command` and into the job.**
+        // **The run's input: a second handle on the master of its own terminal.**
         //
-        // Taken here for the same reason the two `Stdio::null`s above are set here: the
-        // `Command` is about to go out of scope, and a write end left in it would be a
-        // pipe the daemon holds no handle on. `None` on every run whose stdin is
-        // `/dev/null` — which is every run but the operator's own — and
-        // [`super::jobs::Stdin::none`] is how that absence travels rather than as an
-        // `Option` every reader would have to unwrap.
-        let stdin = match child.stdin.take() {
-            Some(w) => super::jobs::Stdin::pipe(w),
-            None => super::jobs::Stdin::none(),
+        // Taken here, with the three drops above, because all three are facts about the pty
+        // that stop being available once `into_master` consumes it. `None` on a run with no
+        // pty — a model's call, or the fallback — and [`super::jobs::Stdin`] says what the
+        // two handles are and why the terminal is the normal one.
+        //
+        // **The third way it is `None` is a `dup` that failed, and it is swallowed.** A run
+        // whose `Pty::input` could not be cloned keeps its terminal on all three descriptors
+        // and simply has no handle the daemon can write to — so it is not answerable, and the
+        // honest consequence is that [`super::jobs::Stdin::is_open`] is false for it: no card
+        // is raised and `!send` refuses with its own sentence rather than claiming a way in
+        // that does not exist. `dup` fails on `EMFILE`/`ENFILE`, at which point the spawn
+        // below is about to fail for the same reason anyway.
+        let input = pty
+            .as_ref()
+            .and_then(|p| p.input().ok().map(|m| (m, p.slave_path().to_string())));
+        // **`child.stdin` is the fallback's pipe and `None` whenever the pty was used**, and
+        // the order of these arms is the whole of the choice: a run with a terminal is
+        // answered through the terminal, and the pipe is only for the box that had none.
+        //
+        // A run with neither is a run nobody can answer — a model's `bash` call, and a
+        // `!` line on a box where no pty opened *and* whose pipe was never made. `None`
+        // travels as [`super::jobs::Stdin::none`] rather than as an `Option` every reader
+        // would have to unwrap.
+        let stdin = match (input, child.stdin.take()) {
+            (Some((master, slave_path)), _) => super::jobs::Stdin::terminal(master, slave_path),
+            (None, Some(w)) => super::jobs::Stdin::pipe(w),
+            (None, None) => super::jobs::Stdin::none(),
         };
 
         let job = Arc::new(Job::new(
@@ -2023,16 +2068,34 @@ mod tests {
     ///
     /// The defect: `! sudo apt install mc` streamed its progress and then aborted at
     /// `Continue? [Y/n]`, because fd 0 was `/dev/null` and an EOF is not a `Y`. The fix is
-    /// one line in `spawn` — a pipe on stdin when [`SpawnRequest::tty`] is set — and this is
-    /// the test that would have failed before it: the command **reads** its stdin, the
-    /// handle comes out of the job the spawn returned, a line goes in, and the command
-    /// finishes with that line in its output.
+    /// one line in `spawn` — a handle on the run's input when [`SpawnRequest::tty`] is set —
+    /// and this is the test that would have failed before it: the command **reads** its
+    /// stdin, the handle comes out of the job the spawn returned, a line goes in, and the
+    /// command finishes with that line in its output.
+    ///
+    /// **And since the terminal landed, that handle is the run's own pty master and not a
+    /// pipe beside it.** The shell is `bash -ic` — [`super::console::shell`]'s shape, which is
+    /// what the operator's own run gets — and the pty is on all three of its descriptors, so
+    /// what this measures is the production mechanism end to end rather than a pipe that is
+    /// about to be deleted. The assertion is **the exact capture** and not `contains`, because
+    /// two facts have to hold at once and one of them is an absence: `answered=Y\n` is the
+    /// program's own line, and the `Y` the daemon typed is **not** in front of it.
+    /// `Pty::no_echo` is what makes the second true — measured on this box, 2026-10-07, the
+    /// identical run without it captures `Y\nanswered=Y\n` — and an echoing terminal would put
+    /// every `!send` line into a transcript row and a model's prompt.
+    ///
+    /// **`--norc --noprofile` on the shell, for the reason [`super::shell`]'s tests give**:
+    /// the assertion below is on the *exact* capture and the operator's rc is a file that
+    /// prints things. Measured here, 2026-10-07: with the default console shell and `cwd` `/`,
+    /// this run captures `mkdir: Permission denied` twice before its own line. The rc has its
+    /// own test — `the_operators_own_ls_colours_because_its_output_is_a_terminal` — and it
+    /// keeps the default shell, because the alias it needs lives there.
     ///
     /// **The control is in the same test, and it is the half that keeps the older rule.**
     /// The identical command with `tty: false` has `/dev/null` for stdin, so its handle is
     /// [`super::super::jobs::Stdin::none`] and the send is refused with a sentence rather
-    /// than writing into a pipe nobody holds. Without that half, a `spawn` that gave
-    /// *every* job a pipe would pass — and a model's `bash` call that reads stdin would
+    /// than writing into a terminal nobody holds. Without that half, a `spawn` that gave
+    /// *every* job an input would pass — and a model's `bash` call that reads stdin would
     /// block for two minutes instead of getting EOF.
     #[test]
     fn the_operators_own_run_has_a_stdin_a_line_can_be_sent_to() {
@@ -2045,9 +2108,22 @@ mod tests {
         ) else {
             return;
         };
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "/bin/bash, the shell the operator's own run is handed to",
+            std::path::Path::new("/bin/bash").exists(),
+        ) else {
+            return;
+        };
         let root = std::env::temp_dir().join(format!("letibot-stdin-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let h = HostProcesses::new(&root).expect("this box has a cgroup v2 tree");
+        let h = HostProcesses::new(&root)
+            .expect("this box has a cgroup v2 tree")
+            .with_console_shell(vec![
+                "/bin/bash".to_string(),
+                "--norc".to_string(),
+                "--noprofile".to_string(),
+                "-ic".to_string(),
+            ]);
         // `read` is a builtin in every shell this host can be configured with, so the
         // assertion does not depend on anything outside the pinned PATH — the same rule
         // the test above keeps for `printf`.
@@ -2065,7 +2141,7 @@ mod tests {
             .unwrap()
         };
 
-        // ---- The operator's own run: a pipe, and the line reaches the command.
+        // ---- The operator's own run: its own terminal, and the line reaches the command.
         let id = spawn(true);
         // **And the host can NAME the run's processes**, which is the other half of the
         // detection: `ask` reads each one's `/proc/<pid>/fd/0` and its `wchan`, so a host
@@ -2093,9 +2169,10 @@ mod tests {
             "the command read the line and exited"
         );
         let text = h.output(&id, 0, 4096).unwrap().text();
-        assert!(
-            text.contains("answered=Y"),
-            "the answer must reach the command's own stdin: {text:?}"
+        assert_eq!(
+            text, "answered=Y\n",
+            "the answer must reach the command's own stdin and must NOT be echoed back into \
+             the run's output: {text:?}"
         );
 
         // ---- The control: a model's run is unchanged, and the send says so.
