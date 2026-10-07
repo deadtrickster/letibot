@@ -685,3 +685,9 @@ impl App {
         self.cursor
     }
 }
+
+/// **The one sentence a held view says** (R56), in the words the two heads agreed on, because an
+/// operator who learns it on one head reaches for it on the other. It takes the hint bar's row —
+/// the row that already talks about keys — and it names the key that undoes the hold, which is
+/// R29's rule for a disclosure: it carries the act that ends it.
+pub const HOLD_MARKER: &str = "⏸ the view is held — ctrl-p follows again";

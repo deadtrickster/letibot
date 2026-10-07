@@ -2261,3 +2261,185 @@ pub(crate) fn decision_rows(d: &OpenDecision) -> usize {
         d.options.len()
     }
 }
+
+/// A key, decoded from the terminal.
+///
+/// Everything down to [`Key::Eof`] is one of `letibot_ui::editor::Key`'s and is
+/// forwarded to the composer verbatim; the five below it are the head's own and
+/// never reach it. Two enums rather than one because the composer is a library
+/// that knows nothing about folds, and the head is a program that must not own a
+/// keymap for word motion.
+///
+/// No longer `Copy`: [`Key::Paste`] carries the paste, because the whole point of
+/// bracketed paste is that three thousand characters are **one** key and not
+/// three thousand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Key {
+    Char(char),
+    /// The terminal window gained focus (`?1004`, see `crate::features`).
+    FocusIn,
+    /// The terminal window lost focus.
+    FocusOut,
+    /// The terminal's answer about its background colour (OSC 11).
+    Background {
+        light: bool,
+    },
+    /// A bracketed paste, arriving whole.
+    Paste(String),
+    Enter,
+    /// Alt+Enter: a newline that does not submit.
+    SoftEnter,
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Up,
+    Down,
+    WordLeft,
+    WordRight,
+    Home,
+    End,
+    KillToEnd,
+    KillToStart,
+    KillWordBack,
+    Yank,
+    Undo,
+    Redo,
+    Esc,
+    CtrlC,
+    Eof,
+    /// Fold or unfold the model's reasoning.
+    CtrlR,
+    /// **Open the rest of the newest long tool result**, or close that window.
+    ///
+    /// One row, and not the conversation: the whole-conversation unfold is the verb
+    /// `/t`. See the `CtrlV` arm in `App::key` for the ruling. **R56 moved this off
+    /// `ctrl-t`**, which is now the todos pane; `v` for *view* is the mnemonic it never
+    /// had, and `0x16` had no arm at all before this — see `term.rs`.
+    CtrlV,
+    /// Show or hide the raw, unparsed text of tool calls.
+    CtrlX,
+    /// Repaint from scratch.
+    CtrlL,
+    /// Open or close the session picker.
+    CtrlS,
+    /// Open or close the todos pane: the session's plan and the repo's queue.
+    ///
+    /// **R56 moved this off `ctrl-p`** (which is now the hold) and onto leticl's own key,
+    /// so one operator learns one chord for one pane — see [`Self::CtrlP`].
+    CtrlT,
+    /// **Hold the view** (R56): while held, the head writes nothing at all, so a mouse
+    /// selection survives a streaming turn. The reader is the only party who can know a
+    /// selection exists — the terminal does not forward a Shift-drag — so the reader, not
+    /// the head, decides when to stop painting. See [`App::toggle_hold`] for the contract.
+    CtrlP,
+    /// Open or close the subagent tree: the subagents this session spawned.
+    CtrlG,
+    /// Move the running command to the background (Ctrl+O, like Claude Code's
+    /// Ctrl+B — B is the readline left-arrow here).
+    CtrlO,
+    /// Open or close the background-jobs pane: the jobs this session started.
+    CtrlQ,
+    /// **Retire every note this head is holding** (R22).
+    ///
+    /// R10 gave the reader the power to retire a note and spelled it `/notes dismiss all` —
+    /// *the right power in the wrong hand*: the thing you do to clear your own screen is a
+    /// **reflex, not a sentence**, and every other reflex on this screen is already a chord.
+    /// The operator, being told how to hide a note: *"typing `/notes dismiss all` is not
+    /// humane."*
+    ///
+    /// **ALL of them, and it is one decision made in `head-parity-2026-09-21.md` §R22 with the
+    /// other head rather than here** — a reflex that does different things on two screens is
+    /// worse than the verb it replaces. The argument for all over newest is in that section
+    /// and in the answer beside the proposal; the short form is that `/notes dismiss N` is
+    /// where a *deliberate* single retire belongs (it numbers the notes, so the operator can
+    /// see which is which), and that over-clearing is one verb to undo while under-clearing
+    /// cannot be undone by a chord at all.
+    ///
+    /// **What it keeps from R10, because the reason has not changed:** retired is not deleted.
+    /// The note stays in `notes`, `/notes` prints it in full, `/status` counts it, and
+    /// `/notes restore` brings it back. A head that can silently drop a warning is a head whose
+    /// warnings cannot be trusted to be complete.
+    CtrlN,
+    PageUp,
+    PageDown,
+    /// Mouse wheel up, decoded from the SGR mouse protocol. Scrolls the
+    /// transcript back; drags and motion are decoded and dropped, because the
+    /// terminal's own Shift+drag is what selects.
+    WheelUp,
+    WheelDown,
+    /// Tab: complete the `/command` being typed.
+    Tab,
+    /// A left-button press, 0-based screen coordinates. An open picker takes
+    /// it: the row under the pointer becomes the selected row, and Enter still
+    /// does the switching — select and confirm stay two acts.
+    Click {
+        x: u16,
+        y: u16,
+    },
+}
+
+impl Key {
+    /// The composer's key, when this is one of its.
+    pub(crate) fn composer(&self) -> Option<letibot_ui::editor::Key> {
+        use letibot_ui::editor::Key as E;
+        Some(match self {
+            Key::Char(c) => E::Char(*c),
+            Key::Paste(s) => E::Paste(s.clone()),
+            Key::Enter => E::Enter,
+            Key::SoftEnter => E::SoftEnter,
+            Key::Backspace => E::Backspace,
+            Key::Delete => E::Delete,
+            Key::Left => E::Left,
+            Key::Right => E::Right,
+            Key::Up => E::Up,
+            Key::Down => E::Down,
+            Key::WordLeft => E::WordLeft,
+            Key::WordRight => E::WordRight,
+            Key::Home => E::Home,
+            Key::End => E::End,
+            Key::KillToEnd => E::KillToEnd,
+            Key::KillToStart => E::KillToStart,
+            Key::KillWordBack => E::KillWordBack,
+            Key::Yank => E::Yank,
+            Key::Undo => E::Undo,
+            Key::Redo => E::Redo,
+            Key::Esc => E::Esc,
+            Key::CtrlC => E::CtrlC,
+            Key::Eof => E::Eof,
+            Key::CtrlR
+            | Key::CtrlT
+            | Key::CtrlV
+            | Key::CtrlX
+            | Key::CtrlL
+            | Key::CtrlS
+            | Key::CtrlP
+            | Key::CtrlG
+            | Key::CtrlO
+            | Key::CtrlQ
+            | Key::CtrlN
+            | Key::PageUp
+            | Key::PageDown
+            | Key::WheelUp
+            | Key::WheelDown
+            | Key::Tab
+            | Key::Click { .. }
+            | Key::FocusIn
+            | Key::FocusOut
+            | Key::Background { .. } => {
+                return None;
+            }
+        })
+    }
+
+    /// **The switch this key is the chord of, read from [`Show::chord`]** — the reverse lookup the
+    /// key dispatch uses, so a chord is advertised and acts from ONE entry rather than from a pair
+    /// of hand-written arms that each spelled their key twice. A key no switch has a chord for, and
+    /// a switch whose chord no longer matches, both come out of here as `None`, which is what makes
+    /// the drift impossible instead of merely unlikely.
+    pub(crate) fn show(&self) -> Option<Show> {
+        Show::ALL
+            .into_iter()
+            .find(|s| s.chord().is_some_and(|(_, k)| &k == self))
+    }
+}

@@ -2832,3 +2832,144 @@ impl App {
         }
     }
 }
+
+/// **One pending echo against one landing row**: what of the echo is still owed.
+///
+/// `None` when the row says nothing about this echo — no whole line of it is a whole
+/// piece of the echo. `Some("")` when the echo is fully accounted for. `Some(rest)`
+/// when a run of its lines landed and the rest has not.
+///
+/// `claimed` and `cursor` are the row's lines, spent across the whole queue in one
+/// call: each line of the row answers at most one piece, and only in the order the
+/// queue holds them, which is the order the daemon appended them in. See
+/// [`App::retire_pending`] for why the unit is a line and why the two guards —
+/// whole-line equality and no going backwards — are what make it safe.
+pub(crate) fn strip_landed(
+    entry: &str,
+    lines: &[&str],
+    claimed: &mut [bool],
+    cursor: &mut usize,
+) -> Option<String> {
+    let pieces: Vec<&str> = entry.split('\n').collect();
+    let mut kept: Vec<&str> = Vec::with_capacity(pieces.len());
+    let mut hit = false;
+    for piece in &pieces {
+        // **A blank line is not a claim.** It carries no words, so it can say
+        // nothing about whether a prompt landed — and two prompts that differ only
+        // in blank lines would otherwise retire each other.
+        if piece.is_empty() {
+            kept.push(piece);
+            continue;
+        }
+        match (*cursor..lines.len()).find(|k| !claimed[*k] && lines[*k] == *piece) {
+            Some(k) => {
+                claimed[k] = true;
+                *cursor = k + 1;
+                hit = true;
+            }
+            None => kept.push(piece),
+        }
+    }
+    // **What is left is the WORDS still owed, not the blank scaffolding around them.**
+    // The blank pieces are kept in the walk above (a blank line matches nothing, so it can
+    // never be *claimed* and must not be dropped mid-compare), but they are not content:
+    // an entry whose only remaining pieces are blank has had every word of it accounted
+    // for, and joining them back would hand the caller a string that is truthy and empty
+    // — so the echo would stay on the screen for the rest of the session showing nothing.
+    // Found by replaying the operator's own rows through this rule
+    // (`docs/evidence/queued-echoes-2026-09-23.py`), where the entry's tail was a blank.
+    let rest = kept
+        .iter()
+        .filter(|p| !p.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    hit.then_some(rest)
+}
+
+/// **The queue as the tail must DRAW it** — R51 item 15, and it is `strip_landed`'s
+/// read-only twin.
+///
+/// # The defect
+///
+/// A body-less `user` row is drawn from the echo this head bound to it ([`App::bound_prompts`]),
+/// and the tail draws the rest of the queue. The two were kept apart by comparing WHOLE
+/// STRINGS — the tail skipped a pending entry whose text was exactly one a row was drawing —
+/// and **an entry that GREW after it was bound defeats that**: bound as `"A"`, it becomes
+/// `"A\nB\nC"` as the operator keeps typing (the coalescing item 14 requires), so the text no
+/// longer matches and the tail draws **the whole entry again** — `A` on the screen twice, once
+/// in the row's own place and once in the queue below it.
+///
+/// # The rule
+///
+/// **The unit of drawing is the entry; the unit of claiming is the piece.** Each whole line a
+/// bound row is drawing is spent once against the queue (the walk is [`strip_landed`]'s, so a
+/// claim here and a claim by a landing row cannot disagree about what a claim IS), and what is
+/// left of an entry is joined back and returned as ONE block.
+///
+/// Returns, per entry the tail still owes something for: **the index into `pending`, the
+/// remainder to draw, and the ORIGINAL text whose drawing claimed it** (`None` when nothing did).
+///
+/// # Why the third field, which is not about drawing at all
+///
+/// The `unconfirmed` mark is a sentence about the prompt this head sent — *the snapshot replaced
+/// the transcript, so I can no longer tell `still coming` from `replaced`* — and it is looked up
+/// **by text**. The row above looks it up under the text IT is drawing (the bound one), so a tail
+/// that looked it up under the ENTRY's text would answer differently for the same prompt the moment
+/// the entry grew: `unconfirmed` on one row and `queued` on the next, which is two statements about
+/// one fact. **The claiming text is returned so the remainder can carry the mark its own row
+/// carries** — the row in the transcript's own place is the senior drawing, and the tail's
+/// remainder is its tail.
+pub(crate) fn unclaimed_prompts(
+    pending: &[String],
+    bound: &[(String, Vec<String>)],
+) -> Vec<(usize, String, Option<String>)> {
+    if pending.is_empty() {
+        return Vec::new();
+    }
+    // One pass over the queue, in the order the daemon will append the rows — the same rule
+    // `retire_pending` keeps, and for the same reason: an entry may not claim a line that an
+    // earlier entry already claimed.
+    //
+    // Flattened into one line list with a flag per bound drawing, so the walk below can report
+    // which drawing spent a line as well as that it did.
+    let mut lines: Vec<&str> = Vec::new();
+    for (_, text_lines) in bound {
+        for l in text_lines {
+            lines.push(l.as_str());
+        }
+    }
+    // `owner[k]` is which bound drawing contributed line `k`.
+    let mut owner: Vec<usize> = Vec::with_capacity(lines.len());
+    for (b, (_, text_lines)) in bound.iter().enumerate() {
+        for _ in text_lines {
+            owner.push(b);
+        }
+    }
+    let mut claimed = vec![false; lines.len()];
+    let mut cursor = 0usize;
+    let mut out: Vec<(usize, String, Option<String>)> = Vec::new();
+    for (i, q) in pending.iter().enumerate() {
+        // Recorded before the walk, because `strip_landed` moves the cursor past what it spent and
+        // the first line this entry claimed is what says which row is drawing it.
+        let before = cursor;
+        let rest = strip_landed(q, &lines, &mut claimed, &mut cursor);
+        // **The drawing that claimed the FIRST line of this entry.** Cursor order is queue order,
+        // so the earliest claim is the one the entry's head belongs to; a later one is drawing a
+        // line further down the same prompt.
+        let by = (before..cursor)
+            .find(|k| claimed[*k])
+            .map(|k| owner[k])
+            .and_then(|b| bound.get(b))
+            .map(|(text, _)| text.clone());
+        match rest {
+            // Nothing of this entry is on screen in the row that bound it. Draw it whole.
+            None => out.push((i, q.clone(), None)),
+            // Every piece of it is. Nothing left to draw.
+            Some(rest) if rest.is_empty() => {}
+            // Some of it is drawn above; the rest is what the tail owes.
+            Some(rest) => out.push((i, rest, by)),
+        }
+    }
+    out
+}

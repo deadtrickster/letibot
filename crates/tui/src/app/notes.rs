@@ -418,3 +418,23 @@ pub(crate) fn fnv1a(s: &str) -> u64 {
     }
     h
 }
+
+/// **How long a status notice stays on the screen** — in wall-clock milliseconds.
+///
+/// **1600 is the number that was already in effect, measured rather than chosen.** The
+/// old countdown was 60 *frames*, and on the live head that was 1.6 s of wall time (about
+/// 38 loop passes a second on an idle screen). So this changes the **unit** and not the
+/// behaviour: the same sentence stays for the same second and a half, on a busy screen as
+/// on a quiet one.
+///
+/// **Why the unit matters.** A TTL counted in frames is a timer that stops when the
+/// frames stop — which is exactly when a notice is left standing longest. It was six
+/// seconds on a head woken ten times a second, instant under `--replay`, and — because
+/// the old body was guarded on a positive count — *permanent* for a notice whose count
+/// had already reached zero. That is the shape R13 already fixed once for the elapsed
+/// time of a running call: the clock belongs to the wall, not to the render loop.
+///
+/// leticl's `+notice-ttl-ms+` is the same 1600, reached the same way from the same 60
+/// frames; see its `chrome.lisp` for the measurement. The two heads must not drift here,
+/// because the operator reads the same sentence for the same length of time on both.
+pub const NOTICE_MS: u64 = 1_600;

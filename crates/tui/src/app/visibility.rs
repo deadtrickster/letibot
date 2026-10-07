@@ -842,3 +842,34 @@ pub(crate) fn names(words: &[String]) -> String {
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
+
+/// How much of a foldable thing is on the screen.
+///
+/// Two states and a key that flips them, rather than a per-item toggle: the
+/// pointer here is a wheel, not a cursor — it scrolls and selects nothing — so a
+/// per-item affordance would still need a cursor mode, and a cursor mode is a
+/// second keymap for a head whose whole input surface is one line. The
+/// **discoverability** is bought instead by the fold's own header
+/// naming its key — `▸ thinking · 18 lines · ctrl-r` — which is on the screen at
+/// the moment the operator wants it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fold {
+    /// A title and a count. The default for reasoning, because the reasoning is
+    /// working-out and the answer is the answer.
+    Folded,
+    /// Everything, bounded only by the render budget.
+    Open,
+}
+
+impl Fold {
+    pub(crate) fn flip(self) -> Fold {
+        match self {
+            Fold::Folded => Fold::Open,
+            Fold::Open => Fold::Folded,
+        }
+    }
+
+    pub(crate) fn is_open(self) -> bool {
+        self == Fold::Open
+    }
+}

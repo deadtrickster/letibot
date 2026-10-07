@@ -234,3 +234,8 @@ impl App {
         )
     }
 }
+
+/// The columns the live row puts between two candidates — `  ·  `, as [`App::completions_line`]
+/// joins them. A constant because the fit arithmetic in `shell_completions_line` has to count
+/// what the join will actually spend, and a number written twice is a number that drifts.
+pub(crate) const SEPARATOR_COLS: usize = 5;
