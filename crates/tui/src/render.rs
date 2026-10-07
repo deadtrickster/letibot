@@ -226,6 +226,53 @@ pub fn image_upload(id: u32, png_base64: &str, cols: u32, rows: u32) -> Vec<u8> 
     out.into_bytes()
 }
 
+/// **The images a reply's markdown names** — `![alt](target)` — in order, local targets only:
+/// a URL is a picture this head would have to fetch, and it does not reach the network.
+pub fn markdown_images(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("![") {
+        rest = &rest[at + 2..];
+        let Some(close) = rest.find("](") else { break };
+        // The alt text is one line; a `![` whose `](` is paragraphs away is not an image.
+        if rest[..close].contains('\n') {
+            continue;
+        }
+        rest = &rest[close + 2..];
+        let Some(end) = rest.find(')') else { break };
+        // `(path "title")`: the title is not part of the path.
+        let target = rest[..end].split(" \"").next().unwrap_or("").trim();
+        let target = target.trim_start_matches('<').trim_end_matches('>');
+        if !target.is_empty() && !target.contains("://") && !target.contains('\n') {
+            out.push(target.to_string());
+        }
+        rest = &rest[end + 1..];
+    }
+    out
+}
+
+/// **The pictures a reply's markdown named that the head has uploaded**: `(item, target)` →
+/// `(id, cols, rows)`. Filled by the head's upload pass, which reads the file; read by the
+/// renderer, which must not touch the disk while it draws a frame — so a reference the pass
+/// has not reached yet simply draws nothing until it has.
+static REPLY_IMAGES: std::sync::Mutex<
+    std::collections::BTreeMap<(String, String), (u32, u32, u32)>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+pub fn remember_reply_image(item_id: &str, target: &str, placed: (u32, u32, u32)) {
+    if let Ok(mut m) = REPLY_IMAGES.lock() {
+        m.insert((item_id.to_string(), target.to_string()), placed);
+    }
+}
+
+pub fn reply_image(item_id: &str, target: &str) -> Option<(u32, u32, u32)> {
+    REPLY_IMAGES
+        .lock()
+        .ok()?
+        .get(&(item_id.to_string(), target.to_string()))
+        .copied()
+}
+
 /// `text` as a link to the file `target` names — absolute, or relative to `root` — when
 /// `target` is one path and nothing else. Anything else (a quoted command, a pattern with a
 /// path after it, a call id) comes back as it was.

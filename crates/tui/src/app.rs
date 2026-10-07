@@ -4929,23 +4929,68 @@ impl App {
         if self.images_scanned > self.items.len() {
             self.images_scanned = 0;
         }
+        let mut scanned = self.images_scanned;
         for it in &self.items[self.images_scanned..] {
-            if let Some(TranscriptItem::ToolResult { media: Some(m), .. }) = it.item.as_ref()
-                && m.mime == "image/png"
-            {
-                let id = crate::render::image_id(&it.item_id);
-                if self.images_sent.insert(id) {
-                    let (cols, rows) = crate::render::image_cells(m.width, m.height);
-                    self.image_uploads.push(crate::render::image_upload(
-                        id,
-                        m.wire_base64(),
-                        cols,
-                        rows,
-                    ));
+            // **A row whose content has not arrived stops the walk**, and is looked at again
+            // next frame: `TranscriptAppended` and its content are separate events, and a mark
+            // moved past an empty row would never come back for the picture in it.
+            let Some(item) = it.item.as_ref() else { break };
+            scanned += 1;
+            match item {
+                TranscriptItem::ToolResult { media: Some(m), .. } if m.mime == "image/png" => {
+                    let id = crate::render::image_id(&it.item_id);
+                    if self.images_sent.insert(id) {
+                        let (cols, rows) = crate::render::image_cells(m.width, m.height);
+                        self.image_uploads.push(crate::render::image_upload(
+                            id,
+                            m.wire_base64(),
+                            cols,
+                            rows,
+                        ));
+                    }
                 }
+                TranscriptItem::Assistant { text, .. } if text.contains("![") => {
+                    for target in crate::render::markdown_images(text) {
+                        let Some(m) = self.read_local_png(&target) else {
+                            continue;
+                        };
+                        let id = crate::render::image_id(&format!("{}#{target}", it.item_id));
+                        let (cols, rows) = crate::render::image_cells(m.width, m.height);
+                        if self.images_sent.insert(id) {
+                            self.image_uploads.push(crate::render::image_upload(
+                                id,
+                                m.wire_base64(),
+                                cols,
+                                rows,
+                            ));
+                        }
+                        crate::render::remember_reply_image(&it.item_id, &target, (id, cols, rows));
+                    }
+                }
+                _ => {}
             }
         }
-        self.images_scanned = self.items.len();
+        self.images_scanned = scanned;
+    }
+
+    /// **A PNG a reply named, read by the head** — absolute, `~/`, or relative to the
+    /// session's workspace; at most 16 MiB; and only if its bytes say PNG, whatever the name
+    /// says. `None` for anything else, which leaves the alt text as the row's only word.
+    fn read_local_png(&self, target: &str) -> Option<letibot_transcript::media::Media> {
+        let path = if let Some(rest) = target.strip_prefix("~/") {
+            std::path::PathBuf::from(std::env::var_os("HOME")?).join(rest)
+        } else if target.starts_with('/') {
+            std::path::PathBuf::from(target)
+        } else {
+            std::path::Path::new(&self.wiring.workspace).join(target)
+        };
+        let meta = std::fs::metadata(&path).ok()?;
+        if !meta.is_file() || meta.len() > 16 * 1024 * 1024 {
+            return None;
+        }
+        let bytes = std::fs::read(&path).ok()?;
+        letibot_transcript::media::Media::of(&path.to_string_lossy(), &bytes)
+            .filter(|m| m.mime == "image/png")
     }
 
     /// Image uploads for the head to write to the terminal (kitty graphics).
@@ -24450,6 +24495,18 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             let prose = cache.lines(&md, cfg, cfg.budget.body_lines);
             let spoke = !prose.iter().all(|l| l.trim().is_empty());
             let mut out = prose;
+            // **The pictures the reply's markdown named**, under it, where the terminal can
+            // draw them — the operator's first test of inline images was a model that wrote a
+            // PNG and said `![sunset](/Users/dead/sunset.png)`, and the head drew the alt text.
+            // Only what the upload pass has already read and sent; see `render::reply_image`.
+            if cfg.images {
+                for target in crate::render::markdown_images(text) {
+                    if let Some((id, cols, rows)) = crate::render::reply_image(&it.item_id, &target)
+                    {
+                        out.extend(crate::render::image_rows(id, cols, rows));
+                    }
+                }
+            }
             let mut acted = false;
             let p = cfg.palette();
             // **A model's answer is the conversation; the calls it made are the working**
@@ -53451,6 +53508,63 @@ mod tests {
         assert!(
             a.take_image_uploads().is_empty(),
             "uploaded once, not every frame"
+        );
+    }
+
+    /// **A PNG the reply's markdown names is drawn under the reply** — the operator's own first
+    /// try: a model wrote `/Users/dead/sunset.png` and said `![sunset](…)`, and the head drew
+    /// the alt text. And a row whose content arrives a frame after it was appended still gets
+    /// its picture: the upload pass waits for it rather than walking past.
+    #[test]
+    fn a_png_the_reply_names_is_drawn_under_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "lb-mdimg-{}-{}",
+            std::process::id(),
+            letibot_sessionlog::event::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+        png.extend_from_slice(&400u32.to_be_bytes());
+        png.extend_from_slice(&100u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        let file = dir.join("sunset.png");
+        std::fs::write(&file, &png).unwrap();
+
+        let mut a = app();
+        a.set_features(crate::features::Features::ALL);
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("a.img", "assistant"),
+        )));
+        a.screen(100, 40);
+        assert!(
+            a.take_image_uploads().is_empty(),
+            "no content yet, nothing to send"
+        );
+        a.record_item(
+            "a.img",
+            TranscriptItem::Assistant {
+                text: format!("Done.\n\n![sunset over mountains]({})\n", file.display()),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        );
+        a.screen(100, 40);
+        let ups = a.take_image_uploads();
+        assert_eq!(
+            ups.len(),
+            1,
+            "the content arrived after the row: still uploaded"
+        );
+        let screen = a.screen(100, 40);
+        let rows = screen.iter().filter(|l| l.contains('\u{10EEEE}')).count();
+        assert_eq!(rows, 5, "400×100 is 40×5 cells:\n{screen:#?}");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // A URL is not fetched, and a missing file is not an image.
+        assert_eq!(
+            crate::render::markdown_images("![a](https://x/y.png) ![b](nope.png \"t\")"),
+            vec!["nope.png".to_string()]
         );
     }
 
