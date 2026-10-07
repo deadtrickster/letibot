@@ -247,108 +247,28 @@ impl App {
         let completion_slot = self.completion_slot();
         let completions = self.completions_line(w);
 
-        // How many rows the composer wants, and then what actually fits. The
-        // ladder deletes the most expendable row first and stops as soon as the
-        // whole thing fits with a line of transcript left over. The old code
-        // drained the chrome from the *front*, which for a box would have eaten
-        // the top border and left the bottom one — a container with one side is
-        // worse than none. The turn's own status is now one of those rows — it used to be inlaid
-        // in the bottom border and cost nothing, and R51 item 1 moved it out because an edge
-        // truncates a sentence (see `let status` above).
-        let mut rows = self.editor.height(self.composer_cols(), h);
-        let mut hint = true;
-        let mut show_notice = notice.is_some();
-        let mut show_stuck = stuck.is_some();
-        // **The pane's line is news too, and it is given up LAST of the news.** See `let pane`
-        // for what it is: a program is running off-screen, which is a fact a reader can act on
-        // and cannot get from anything else on the screen. The composer's own rows are given up
-        // before it (`rows -= 1` below), because a line a person is not typing into is worth
-        // less than the knowledge that a program they started is still alive.
-        let mut show_pane = pane.is_some();
-        // **The row is RESERVED, not conditional.** The operator: *"keep the line reserved for
-        // `Responding...` always free, or we have these ugly jumps"* — and the jump is the whole
-        // reason. The row exists only while a turn does, so the moment one starts or ends, every
-        // row of the transcript above it moves by one: the thing a reader is reading while a turn
-        // begins is exactly the thing that gets shoved. A reserved line costs one row of screen on
-        // an idle session and buys a frame that does not move.
-        //
-        // So it is always counted in the height and always drawn, empty when there is nothing to
-        // say. The two rows below stay conditional, because each of them is *news* — a notice
-        // being read, a disclosure — and a reserved line for news is the furniture this head keeps
-        // deleting. This one is not news: the turn's own row is where the reader's eye is, every
-        // turn. (The third of them, the completion row, is a slot as well now — not because it is
-        // always there but because its height must not follow its content; see
-        // `let completion_slot` above.)
-        let mut show_status = true;
-        let mut boxed = true;
-        // **The content viewport, and R20's one rule about it.** The loop used to shrink the
-        // whole card (`dec_rows -= 1`), which trims from the END — and the END of a card is
-        // the ladder, the deadline and the hint. So the last rows the operator needed were
-        // the first rows given up, and what stayed was the wall. Only this number moves now;
-        // `dec_pinned` is added in full and never enters the ladder of sacrifices.
-        let mut content_rows = dec.len();
-        loop {
-            // A windowed content costs one row for the seam that says so, and it is not
-            // drawn at all when there is no room for any of it.
-            let seam = usize::from(content_rows > 0 && dec.len() > content_rows);
-            let n = content_rows
-                + seam
-                + dec_pinned.len()
-                + usize::from(show_stuck)
-                + usize::from(show_pane)
-                + usize::from(show_status)
-                + usize::from(show_notice)
-                // **Counted by the SLOT, not by the text in it.** This is the whole fix: the
-                // row's height is a fact about the composer's line, so the transcript's
-                // budget does not change when the candidate list does.
-                + usize::from(completion_slot)
-                + link.len()
-                // **Counted in full and never sacrificed.** R30's sentence is the one
-                // thing on this screen the operator must not have to go looking for: it
-                // is drawn only while a stop is in flight, and a fit loop that dropped it
-                // on a short terminal would make the head wait in silence — which is the
-                // freeze the requirement names. `link.len()` is counted the same way and
-                // for the same reason.
-                + stopping.len()
-                // Unboxed costs one row **only when there is an alarm to show**:
-                // the counters move off the border and back onto a line of their
-                // own, and a counter that has moved is not what a narrow screen
-                // gives up. A clean head owes that row to the transcript.
-                + if boxed { 2 } else { usize::from(self.alarmed()) }
-                + rows
-                + usize::from(hint);
-            if n < h {
-                break;
-            }
-            if hint {
-                hint = false;
-            } else if show_notice {
-                show_notice = false;
-            } else if rows > 1 {
-                rows -= 1;
-            } else if show_stuck {
-                show_stuck = false;
-            } else if show_pane {
-                // **The pane's line goes before the turn's row and after the stuck
-                // disclosure.** On a terminal this short something has to go, and the pane's
-                // line is the one fact here that a reader can still get another way — the
-                // program is still there, and `!term` finds it whether or not this head said
-                // so. The stuck disclosure is about silence and the status row is about the
-                // work; both are about the thing the reader is looking at.
-                show_pane = false;
-            } else if show_status {
-                // **The turn's row goes before the box does**, and after the stuck disclosure:
-                // on a terminal this short something has to go, and what a reader loses least by
-                // losing is the aside about silence rather than the line saying work is happening.
-                show_status = false;
-            } else if boxed {
-                boxed = false;
-            } else if content_rows > 0 {
-                content_rows -= 1;
-            } else {
-                break;
-            }
-        }
+        let Fit {
+            rows,
+            hint,
+            show_notice,
+            show_stuck,
+            show_pane,
+            show_status,
+            boxed,
+            content_rows,
+        } = fit_ladder(&FitInput {
+            h,
+            composer: self.editor.height(self.composer_cols(), h),
+            card: dec.len(),
+            pinned: dec_pinned.len(),
+            notice: notice.is_some(),
+            stuck: stuck.is_some(),
+            pane: pane.is_some(),
+            completion_slot,
+            link: link.len(),
+            stopping: stopping.len(),
+            alarmed: self.alarmed(),
+        });
 
         let (input_rows, caret_row, caret_col) = self.composer_rows(w, rows, boxed);
         let mut chrome: Vec<String> = Vec::new();
@@ -414,31 +334,7 @@ impl App {
             // row has just been given to the turn (item 1) while this edge already carries the
             // session's other running things. One edge for *what this session has in flight* is
             // one place to look, and it is the same kind of fact as the subagent count beside it.
-            let mut facts: Vec<String> = Vec::new();
-            // **The number is the rows the pane draws, and not a second rule about them.**
-            // This counted `state == "running"`, which is narrower than the predicate the
-            // pane's own active group is built from ([`SubagentState::is_finished`]): a child
-            // in `opening` was drawn as a live row and left out of the number, so the footer
-            // and the pane could disagree about the same list. Both now read the one
-            // lifecycle predicate — alive from the spawn until the completion, which is what
-            // the operator asked for in their own words: *"an agent is alive from spawn until
-            // it has finished"*.
-            let running = self.subagents.iter().filter(|s| !s.is_finished()).count();
-            if running > 0 {
-                facts.push(format!(
-                    "{running} subagent{} running",
-                    if running == 1 { "" } else { "s" }
-                ));
-            }
-            if let Some(jobs) = self.jobs_line() {
-                facts.push(jobs);
-            }
-            let top = if facts.is_empty() {
-                String::new()
-            } else {
-                self.cfg.palette().paint(Role::Pending, &facts.join(" · "))
-            };
-            chrome.push(self.box_edge(w, '╭', '╮', "", &top));
+            chrome.push(self.box_top(w));
         }
         let caret_at = chrome.len() + caret_row;
         chrome.extend(input_rows);
@@ -447,26 +343,7 @@ impl App {
             // /status's, and were never worth a resident sentence of bright yellow. **The turn's
             // own status is no longer here** (R51 item 1): it is a row above the box, because a
             // legend on an edge truncates and a status is allowed to grow a sentence.
-            let mut right: Vec<String> = Vec::new();
-            if self.alarmed() {
-                right.push(self.cfg.palette().paint(Role::Attention, "⚠"));
-            }
-            // **The viewport's state, where the reader's eye already crosses** (R36). It is
-            // drawn **only when it is holding**, because following is the ordinary state and
-            // owes the reader nothing — a marker that is always on is furniture. What it
-            // buys is the reader who would otherwise scroll to find out whether they are
-            // pinned, which is the affordance failing rather than working.
-            if let Some(state) = self.scroll_state() {
-                right.push(self.cfg.palette().paint(Role::Pending, state));
-            }
-            // **And the rung, when it is the one that hides things** (R37). Same rule as
-            // `holding`: drawn only when it is news, because a marker that is always on is
-            // furniture. What it buys is the reader who switched and then forgot — the rows
-            // that are missing are named by the mode rather than by a placeholder on each.
-            if let Some(rung) = self.rung_state() {
-                right.push(self.cfg.palette().paint(Role::Attention, &rung));
-            }
-            chrome.push(self.box_edge(w, '╰', '╯', "", &right.join(" · ")));
+            chrome.push(self.box_bottom(w));
         } else if self.alarmed() {
             chrome.push(self.status_line(w));
         }
@@ -512,113 +389,7 @@ impl App {
         let room = h
             .saturating_sub(chrome.len() + usize::from(header.is_some()))
             .max(1);
-        let mut out = if self.pane_open() {
-            // **The pane takes the conversation's rectangle and gives it back.**
-            //
-            // First in the chain, and that is a decision rather than an ordering: while a pane
-            // is DRAWN it owns the keyboard (see `App::pane_keys`), so a card, a picker or a
-            // pane drawn *under* it would be a screen the operator could see and not answer.
-            // **A detached pane is not drawn and owns nothing** — the conversation has the
-            // rectangle back, the composer has its keys, and the one line above the composer
-            // says the program is still running (see `let pane`).
-            // The chrome below still draws — the composer keeps its rows and the header keeps
-            // its line, which is the whole requirement — and a card that arrives while a pane
-            // is up waits until the operator leaves with `ctrl-\`.
-            //
-            // **`pane_rows` returns exactly `room`**, so nothing above the pane moves by a line
-            // and nothing below it loses a row. See `TermPane`.
-            let palette = self.cfg.palette();
-            let (rows, moved) = {
-                let p = self.term.as_mut().expect("just checked");
-                let rows = p.rows(w, room, palette);
-                let moved = (p.sent != (w, room)).then(|| {
-                    p.sent = (w, room);
-                    (w, room)
-                });
-                (rows, moved)
-            };
-            // **The program is told the rectangle it is drawn in**, and this is the only place
-            // that is known: `room` is `h` minus the chrome and the header, and neither is the
-            // daemon's to compute. A change detector rather than a frame per tick, because a
-            // resize frame per redraw would be a frame per keystroke.
-            if let Some((cols, rows_n)) = moved {
-                self.queued.push(Action::TermResize { cols, rows: rows_n });
-            }
-            rows
-        } else if let Some((echo, lines)) = self.slash_out.clone() {
-            let p = self.cfg.palette();
-            // **Not sanitised, and the regression is why.** The rows in `slash_out` are
-            // **this head's own composed lines**: `/notes` draws them through
-            // `note_lines_unfolded`, which paints each one with `sgr::RED`, and `/gate`'
-            // and `/job`'s are laid out here by the same kind of code. Running the §3.1
-            // guard over them stripped the head's own colour — the operator's screen
-            // showed ` [31m! gate — a refusal [0m`, an escape's body left as text, and the
-            // wrapping broke because those five columns are not what the terminal
-            // measures.
-            //
-            // §3.1's subject is content this head did **not** write. Whatever a listing
-            // is showing, the strings in this `Vec` went through a renderer that
-            // sanitised its own foreign inputs already — a note's detail, a job's
-            // command, a gate's summary — so there is nothing left here to guard.
-            let mut rows = vec![p.paint(Role::Strong, &echo), String::new()];
-            rows.extend(lines.iter().flat_map(|l| wrap(l, w)));
-            rows.push(String::new());
-            rows.push(p.paint(Role::Faint, "    esc closes · up/down scrolls"));
-            self.pane_window(rows, room)
-        } else if self.help {
-            let help = help_lines(&self.cfg, w);
-            self.pane_window(help, room)
-        } else if self.stats {
-            let rows = self.status_lines(w);
-            self.pane_window(rows, room)
-        } else if self.picker {
-            let mut rows = self.picker_lines(w);
-            rows.truncate(room);
-            self.picker_rows_drawn = rows.len();
-            rows
-        } else if self.todos_pane {
-            // **Where the pane's own first row goes on the screen**, which is what a click's `y`
-            // has to be measured against: the session header sits above it when the frame is tall
-            // enough for one, and it is not a row of this pane.
-            self.todos_pane_top = usize::from(header.is_some());
-            // One `stat` before the draw: the file is edited while this pane is
-            // open, which is the case the open-time read could not see.
-            self.refresh_repo_todos();
-            let rows = self.todos_lines(w);
-            self.pane_window(rows, room)
-        } else if self.config_pane {
-            let rows = self.config_lines(w);
-            self.pane_window(rows, room)
-        } else if self.sub_out.is_some() {
-            let mut rows = self.sub_out_lines(room);
-            rows.truncate(room);
-            rows
-        } else if self.job_out.is_some() {
-            let mut rows = self.job_out_lines(room);
-            rows.truncate(room);
-            rows
-        } else if self.queue_open.is_some() {
-            // **The overlay, through `pane_window`** so it scrolls like the panes: an entry's
-            // evidence is the gate's own captured output, which is up to four kilobytes of
-            // text, and a detail view that could not be scrolled would be a view that showed
-            // the first screenful of a failure and nothing else.
-            let rows = self.queue_out_lines(w);
-            self.pane_window(rows, room)
-        } else if self.queue_pane {
-            // **Where the pane's own first row goes on the screen**, which is what a click's `y`
-            // is measured against — the same record the todos pane keeps, for the same reason.
-            self.queue_pane_top = usize::from(header.is_some());
-            let rows = self.queue_lines(w);
-            self.pane_window(rows, room)
-        } else if self.subagents_pane {
-            let rows = self.subagents_lines(w);
-            self.pane_window(rows, room)
-        } else if self.jobs_pane {
-            let rows = self.jobs_lines(w);
-            self.pane_window(rows, room)
-        } else {
-            self.body_window(room)
-        };
+        let mut out = self.main_area(w, room, header.is_some());
         while out.len() < room {
             out.push(String::new());
         }
@@ -691,3 +462,172 @@ impl App {
 /// the row that already talks about keys — and it names the key that undoes the hold, which is
 /// R29's rule for a disclosure: it carries the act that ends it.
 pub const HOLD_MARKER: &str = "⏸ the view is held — ctrl-p follows again";
+
+impl App {
+    /// **The composer box's top edge**, carrying what this session has running: its live
+    /// subagents and its background jobs.
+    pub(crate) fn box_top(&self, w: usize) -> String {
+        let mut facts: Vec<String> = Vec::new();
+        // **The number is the rows the pane draws, and not a second rule about them.**
+        // This counted `state == "running"`, which is narrower than the predicate the
+        // pane's own active group is built from ([`SubagentState::is_finished`]): a child
+        // in `opening` was drawn as a live row and left out of the number, so the footer
+        // and the pane could disagree about the same list. Both now read the one
+        // lifecycle predicate — alive from the spawn until the completion, which is what
+        // the operator asked for in their own words: *"an agent is alive from spawn until
+        // it has finished"*.
+        let running = self.subagents.iter().filter(|s| !s.is_finished()).count();
+        if running > 0 {
+            facts.push(format!(
+                "{running} subagent{} running",
+                if running == 1 { "" } else { "s" }
+            ));
+        }
+        if let Some(jobs) = self.jobs_line() {
+            facts.push(jobs);
+        }
+        let top = if facts.is_empty() {
+            String::new()
+        } else {
+            self.cfg.palette().paint(Role::Pending, &facts.join(" · "))
+        };
+        self.box_edge(w, '╭', '╮', "", &top)
+    }
+
+    /// **The composer box's bottom edge**, carrying the alarm, where the reader is in the
+    /// conversation, and the visibility rung.
+    pub(crate) fn box_bottom(&self, w: usize) -> String {
+        let mut right: Vec<String> = Vec::new();
+        if self.alarmed() {
+            right.push(self.cfg.palette().paint(Role::Attention, "⚠"));
+        }
+        // **The viewport's state, where the reader's eye already crosses** (R36). It is
+        // drawn **only when it is holding**, because following is the ordinary state and
+        // owes the reader nothing — a marker that is always on is furniture. What it
+        // buys is the reader who would otherwise scroll to find out whether they are
+        // pinned, which is the affordance failing rather than working.
+        if let Some(state) = self.scroll_state() {
+            right.push(self.cfg.palette().paint(Role::Pending, state));
+        }
+        // **And the rung, when it is the one that hides things** (R37). Same rule as
+        // `holding`: drawn only when it is news, because a marker that is always on is
+        // furniture. What it buys is the reader who switched and then forgot — the rows
+        // that are missing are named by the mode rather than by a placeholder on each.
+        if let Some(rung) = self.rung_state() {
+            right.push(self.cfg.palette().paint(Role::Attention, &rung));
+        }
+        self.box_edge(w, '╰', '╯', "", &right.join(" · "))
+    }
+
+    /// **What fills the screen above the cards**: the terminal pane, an open output or pane,
+    /// the help, the picker — or, when none of them is open, the conversation.
+    pub(crate) fn main_area(&mut self, w: usize, room: usize, has_header: bool) -> Vec<String> {
+        if self.pane_open() {
+            // **The pane takes the conversation's rectangle and gives it back.**
+            //
+            // First in the chain, and that is a decision rather than an ordering: while a pane
+            // is DRAWN it owns the keyboard (see `App::pane_keys`), so a card, a picker or a
+            // pane drawn *under* it would be a screen the operator could see and not answer.
+            // **A detached pane is not drawn and owns nothing** — the conversation has the
+            // rectangle back, the composer has its keys, and the one line above the composer
+            // says the program is still running (see `let pane`).
+            // The chrome below still draws — the composer keeps its rows and the header keeps
+            // its line, which is the whole requirement — and a card that arrives while a pane
+            // is up waits until the operator leaves with `ctrl-\`.
+            //
+            // **`pane_rows` returns exactly `room`**, so nothing above the pane moves by a line
+            // and nothing below it loses a row. See `TermPane`.
+            let palette = self.cfg.palette();
+            let (rows, moved) = {
+                let p = self.term.as_mut().expect("just checked");
+                let rows = p.rows(w, room, palette);
+                let moved = (p.sent != (w, room)).then(|| {
+                    p.sent = (w, room);
+                    (w, room)
+                });
+                (rows, moved)
+            };
+            // **The program is told the rectangle it is drawn in**, and this is the only place
+            // that is known: `room` is `h` minus the chrome and the header, and neither is the
+            // daemon's to compute. A change detector rather than a frame per tick, because a
+            // resize frame per redraw would be a frame per keystroke.
+            if let Some((cols, rows_n)) = moved {
+                self.queued.push(Action::TermResize { cols, rows: rows_n });
+            }
+            rows
+        } else if let Some((echo, lines)) = self.slash_out.clone() {
+            let p = self.cfg.palette();
+            // **Not sanitised, and the regression is why.** The rows in `slash_out` are
+            // **this head's own composed lines**: `/notes` draws them through
+            // `note_lines_unfolded`, which paints each one with `sgr::RED`, and `/gate`'
+            // and `/job`'s are laid out here by the same kind of code. Running the §3.1
+            // guard over them stripped the head's own colour — the operator's screen
+            // showed ` [31m! gate — a refusal [0m`, an escape's body left as text, and the
+            // wrapping broke because those five columns are not what the terminal
+            // measures.
+            //
+            // §3.1's subject is content this head did **not** write. Whatever a listing
+            // is showing, the strings in this `Vec` went through a renderer that
+            // sanitised its own foreign inputs already — a note's detail, a job's
+            // command, a gate's summary — so there is nothing left here to guard.
+            let mut rows = vec![p.paint(Role::Strong, &echo), String::new()];
+            rows.extend(lines.iter().flat_map(|l| wrap(l, w)));
+            rows.push(String::new());
+            rows.push(p.paint(Role::Faint, "    esc closes · up/down scrolls"));
+            self.pane_window(rows, room)
+        } else if self.help {
+            let help = help_lines(&self.cfg, w);
+            self.pane_window(help, room)
+        } else if self.stats {
+            let rows = self.status_lines(w);
+            self.pane_window(rows, room)
+        } else if self.picker {
+            let mut rows = self.picker_lines(w);
+            rows.truncate(room);
+            self.picker_rows_drawn = rows.len();
+            rows
+        } else if self.todos_pane {
+            // **Where the pane's own first row goes on the screen**, which is what a click's `y`
+            // has to be measured against: the session header sits above it when the frame is tall
+            // enough for one, and it is not a row of this pane.
+            self.todos_pane_top = usize::from(has_header);
+            // One `stat` before the draw: the file is edited while this pane is
+            // open, which is the case the open-time read could not see.
+            self.refresh_repo_todos();
+            let rows = self.todos_lines(w);
+            self.pane_window(rows, room)
+        } else if self.config_pane {
+            let rows = self.config_lines(w);
+            self.pane_window(rows, room)
+        } else if self.sub_out.is_some() {
+            let mut rows = self.sub_out_lines(room);
+            rows.truncate(room);
+            rows
+        } else if self.job_out.is_some() {
+            let mut rows = self.job_out_lines(room);
+            rows.truncate(room);
+            rows
+        } else if self.queue_open.is_some() {
+            // **The overlay, through `pane_window`** so it scrolls like the panes: an entry's
+            // evidence is the gate's own captured output, which is up to four kilobytes of
+            // text, and a detail view that could not be scrolled would be a view that showed
+            // the first screenful of a failure and nothing else.
+            let rows = self.queue_out_lines(w);
+            self.pane_window(rows, room)
+        } else if self.queue_pane {
+            // **Where the pane's own first row goes on the screen**, which is what a click's `y`
+            // is measured against — the same record the todos pane keeps, for the same reason.
+            self.queue_pane_top = usize::from(has_header);
+            let rows = self.queue_lines(w);
+            self.pane_window(rows, room)
+        } else if self.subagents_pane {
+            let rows = self.subagents_lines(w);
+            self.pane_window(rows, room)
+        } else if self.jobs_pane {
+            let rows = self.jobs_lines(w);
+            self.pane_window(rows, room)
+        } else {
+            self.body_window(room)
+        }
+    }
+}

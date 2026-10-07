@@ -4,6 +4,7 @@
 
 pub mod cards;
 pub mod composer;
+pub mod fit;
 pub mod header;
 pub mod hint_bar;
 pub mod loading;
@@ -18,6 +19,7 @@ pub mod turn_status;
 
 pub(crate) use cards::decision::*;
 pub(crate) use composer::*;
+pub(crate) use fit::*;
 pub(crate) use loading::*;
 pub(crate) use paint::*;
 pub(crate) use panes::help::*;
