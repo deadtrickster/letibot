@@ -318,3 +318,32 @@ pub(crate) fn header_model(value: &str) -> String {
         None => value.to_string(),
     }
 }
+
+impl App {
+    /// **What the terminal's window title says**: the session's name and the folder, so a
+    /// tab is told apart by the conversation in it rather than reading `leticode` like
+    /// every other tab. The name is the header's (`session_label`: its title, or a short id
+    /// before it has one); before a session is attached there is nothing to name but the
+    /// program. The terminal strips control characters before writing it.
+    pub fn window_title(&self) -> String {
+        if self.session_id.is_empty() {
+            return "letibot".to_string();
+        }
+        let label = self.session_label(&self.session_id);
+        let titled = self
+            .sessions
+            .iter()
+            .any(|s| s.session_id == self.session_id && !s.title.is_empty());
+        let folder = std::path::Path::new(&self.wiring.workspace)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // A name leads; a short id does not — before the first message (which titles the
+        // session) the folder is the more useful word to find a tab by.
+        match (titled, folder.is_empty()) {
+            (_, true) => label,
+            (true, false) => format!("{label} · {folder}"),
+            (false, false) => format!("{folder} · {label}"),
+        }
+    }
+}

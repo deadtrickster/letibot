@@ -10,6 +10,7 @@ pub mod loading;
 pub mod paint;
 pub mod panes;
 pub mod screen;
+pub mod status;
 pub mod transcript;
 pub mod turn_status;
 
