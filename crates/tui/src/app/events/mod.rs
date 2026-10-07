@@ -31,7 +31,7 @@ impl App {
     /// Apply one frame. Never sends anything; see the module note on acking.
     pub fn apply(&mut self, frame: ServerFrame) -> Disposition {
         match frame {
-            frame @ (ServerFrame::Hello { .. }) => self.on_hello(frame),
+            frame @ ServerFrame::Hello { .. } => self.on_hello(frame),
             frame @ (ServerFrame::Sessions { .. }
             | ServerFrame::Jobs { .. }
             | ServerFrame::MergeQueue { .. }
@@ -46,7 +46,7 @@ impl App {
             | ServerFrame::Accepted { .. }
             | ServerFrame::Rejected { .. }
             | ServerFrame::Bye { .. }) => self.on_replies(frame),
-            frame @ (ServerFrame::Event { .. }) => self.on_event_frame(frame),
+            frame @ ServerFrame::Event { .. } => self.on_event_frame(frame),
             frame @ (ServerFrame::TermAttached { .. }
             | ServerFrame::TermStatus { .. }
             | ServerFrame::TermOutput { .. }
@@ -505,10 +505,10 @@ impl App {
             | SessionEvent::HeadAttached { .. }
             | SessionEvent::HeadDetached { .. }
             | SessionEvent::ScreenRequested { .. }
-            | SessionEvent::CommandIssued { .. }) => self.on_session_event(e, ts),
+            | SessionEvent::CommandIssued { .. }) => self.on_session_event(e),
             e @ (SessionEvent::TodosUpdated { .. }
             | SessionEvent::MergeEntryAdded { .. }
-            | SessionEvent::MergeEntryMoved { .. }) => self.on_todo_event(e, ts),
+            | SessionEvent::MergeEntryMoved { .. }) => self.on_todo_event(e),
             e @ (SessionEvent::Subagent { .. }
             | SessionEvent::JobSettled { .. }
             | SessionEvent::JobOutput { .. }) => self.on_child_event(e, ts),
@@ -536,7 +536,7 @@ impl App {
             | SessionEvent::DenialRaised { .. }) => self.on_ask_event(e, ts),
             e @ (SessionEvent::TranscriptAppended { .. }
             | SessionEvent::TranscriptContent { .. }) => self.on_transcript_event(e, ts),
-            e @ (SessionEvent::Warning { .. }) => self.on_warning(e, ts),
+            e @ SessionEvent::Warning { .. } => self.on_warning(e, ts),
         }
     }
 

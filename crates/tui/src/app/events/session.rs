@@ -7,7 +7,7 @@ use letibot_sessionlog::event::SessionEvent;
 impl App {
     /// **The session and its heads**: a rename, attach/detach, a requested screen, an issued command. One family of
     /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
-    pub(crate) fn on_session_event(&mut self, e: SessionEvent, ts: u64) -> Disposition {
+    pub(crate) fn on_session_event(&mut self, e: SessionEvent) -> Disposition {
         match e {
             // The name of the session this head is *in*. Folded into the row this
             // head already holds rather than triggering a `ListSessions` round trip:

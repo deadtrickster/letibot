@@ -18,7 +18,6 @@ pub mod transcript;
 pub mod turn_status;
 
 pub(crate) use cards::decision::*;
-pub(crate) use composer::*;
 pub(crate) use fit::*;
 pub(crate) use loading::*;
 pub(crate) use paint::*;

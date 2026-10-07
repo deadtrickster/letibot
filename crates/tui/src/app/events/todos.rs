@@ -6,7 +6,7 @@ use letibot_sessionlog::event::SessionEvent;
 impl App {
     /// **The plan**: the todo list, and merge-queue entries added or moved. One family of
     /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
-    pub(crate) fn on_todo_event(&mut self, e: SessionEvent, ts: u64) -> Disposition {
+    pub(crate) fn on_todo_event(&mut self, e: SessionEvent) -> Disposition {
         match e {
             // The model revised its plan. The whole list, not a delta — keep the
             // latest and let the pane show it. Said only when the pane is open:
