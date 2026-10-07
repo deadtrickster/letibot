@@ -9104,13 +9104,30 @@ impl App {
         // The rule is *the pane owns the key*, not *the composer is dead*: a pane that
         // names no meaning for Enter takes it anyway, and one that names a meaning for the
         // typed line keeps it.
+        //
+        // **Nor is the ctrl-v window**, which was here and should not have been. It is not
+        // an overlay over the composer; it is a row of the conversation opened wide, with
+        // the composer live underneath and no Enter of its own to lose. Holding Enter for
+        // it meant the operator could not send until they closed it: *"untill i hit ctrl-v
+        // again - i couldnt sent my new prompt"*. A typed line now goes, and the window
+        // closes with it — the reader has moved on to the next turn, and the arrows go
+        // back to the conversation and the composer's history. An empty Enter still does
+        // nothing, as it does with no window open.
+        if matches!(k, Key::Enter) && self.payload_sel.is_some() {
+            if self.editor.text().trim().is_empty() {
+                return None;
+            }
+            self.payload_sel = None;
+            self.payload_page = 0;
+            self.invalidate_history();
+            self.redraw = true;
+        }
         if matches!(k, Key::Enter)
             && (self.help
                 || self.stats
                 || self.jobs_pane
                 || self.subagents_pane
-                || self.slash_out.is_some()
-                || self.payload_sel.is_some())
+                || self.slash_out.is_some())
         {
             return None;
         }
@@ -53576,6 +53593,50 @@ mod tests {
             matches!(b.key(Key::Enter), Some(Action::Prompt(t)) if t == "\\"),
             "with no pane open, Enter sends the line"
         );
+    }
+
+    /// **The ctrl-v window does not hold the composer's Enter.** The operator: *"untill i
+    /// hit ctrl-v again - i couldnt sent my new prompt"*. With a window open and a line
+    /// typed, Enter sends it and closes the window; with nothing typed it does nothing.
+    #[test]
+    fn enter_sends_a_typed_line_past_an_open_ctrl_v_window() {
+        let mut a = app();
+        let payload: String = (0..60).map(|n| format!("output line {n}\n")).collect();
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("r.0", "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::TranscriptContent {
+                item_id: "r.0".into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: "c0".into(),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload,
+                    edit: None,
+                    origin: None,
+                    media: None,
+                }),
+            },
+        )));
+        a.screen(80, 24);
+        a.key(Key::CtrlV);
+        a.screen(80, 24);
+        assert!(a.payload_sel.is_some(), "the window is open");
+        assert!(
+            a.key(Key::Enter).is_none(),
+            "an empty Enter with the window open does nothing"
+        );
+        assert!(a.payload_sel.is_some(), "and leaves the window open");
+        a.set_composer("next prompt");
+        let act = a.key(Key::Enter);
+        assert!(
+            matches!(&act, Some(Action::Prompt(t)) if t == "next prompt"),
+            "Enter with the window open did not send the line: {act:?}"
+        );
+        assert_eq!(a.payload_sel, None, "sending closes the window");
     }
 
     /// **Every code the tree says belongs on the edge has a register in this head.**
