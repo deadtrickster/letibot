@@ -1279,6 +1279,14 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
     Char(char),
+    /// The terminal window gained focus (`?1004`, see `crate::features`).
+    FocusIn,
+    /// The terminal window lost focus.
+    FocusOut,
+    /// The terminal's answer about its background colour (OSC 11).
+    Background {
+        light: bool,
+    },
     /// A bracketed paste, arriving whole.
     Paste(String),
     Enter,
@@ -1374,6 +1382,15 @@ pub enum Key {
     },
 }
 
+/// See [`App::take_notification`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct Attention {
+    busy: bool,
+    asks: Vec<String>,
+    secret: Option<String>,
+    answered: Vec<String>,
+}
+
 impl Key {
     /// The composer's key, when this is one of its.
     fn composer(&self) -> Option<letibot_ui::editor::Key> {
@@ -1418,7 +1435,10 @@ impl Key {
             | Key::WheelUp
             | Key::WheelDown
             | Key::Tab
-            | Key::Click { .. } => {
+            | Key::Click { .. }
+            | Key::FocusIn
+            | Key::FocusOut
+            | Key::Background { .. } => {
                 return None;
             }
         })
@@ -2604,6 +2624,20 @@ pub struct App {
     /// arrives the card can no longer say what it was — and a refused key would be
     /// noted as sudo's refused password.
     key_secrets: Vec<String>,
+    /// **What the terminal speaks beyond cells** (`crate::features`), told by the head after
+    /// it entered the terminal. Default — nothing — for a test, a replay and a pipe.
+    features: crate::features::Features,
+    /// Whether the terminal window has focus, from `?1004` reports. `None` until the first
+    /// report, and read as focused: a notification goes only to somebody known to be away.
+    focused: Option<bool>,
+    /// The terminal's answer to OSC 11: is its background light. `None` until it answers.
+    light_background: Option<bool>,
+    /// What needed the person last tick — see [`App::take_notification`]. `None` until the
+    /// first look, which is a baseline and never a notification: attaching to a session with
+    /// a card already open is not news.
+    attention: Option<Attention>,
+    /// Text the operator asked to put on the clipboard, for the head to write (OSC 52).
+    clipboard_out: Option<String>,
     /// **A command of the operator's own is waiting for an answer**: the request, and what has
     /// been typed for it so far.
     ///
@@ -4161,6 +4195,11 @@ impl App {
             secret: None,
             secret_buf: String::new(),
             key_secrets: Vec::new(),
+            features: crate::features::Features::default(),
+            focused: None,
+            light_background: None,
+            attention: None,
+            clipboard_out: None,
             prompt: None,
             prompt_buf: String::new(),
             key_ask: None,
@@ -4739,6 +4778,104 @@ impl App {
             (true, false) => format!("{label} · {folder}"),
             (false, false) => format!("{folder} · {label}"),
         }
+    }
+
+    /// **Tell the head's state what the terminal speaks** (see `crate::features`).
+    pub fn set_features(&mut self, f: crate::features::Features) {
+        if self.features != f {
+            self.features = f;
+            self.invalidate_history();
+            self.redraw = true;
+        }
+    }
+
+    /// **The tab's progress bar** (OSC 9;4): what it should show this tick. Somebody waiting on
+    /// the person outranks the model working — a tab that wants you must not look like one
+    /// that is merely busy.
+    pub fn progress(&self) -> crate::term::Progress {
+        use crate::term::Progress;
+        if !self.open.is_empty() || self.secret.is_some() {
+            return Progress::Waiting;
+        }
+        if self.turn_busy() {
+            return Progress::Busy;
+        }
+        match self.turn.as_ref().and_then(|t| t.state.as_ref()) {
+            Some(TurnState::Failed { .. }) => Progress::Failed,
+            _ => Progress::Idle,
+        }
+    }
+
+    /// What needs the person right now, as counts and ids — compared tick to tick by
+    /// [`App::take_notification`], so a notification is an EDGE and never a level.
+    fn attention_now(&self) -> Attention {
+        Attention {
+            busy: self.turn_busy(),
+            asks: self.open.iter().map(|d| d.req_id.clone()).collect(),
+            secret: self.secret.as_ref().map(|s| s.req_id.clone()),
+            answered: self
+                .subagents
+                .iter()
+                .filter(|s| matches!(s.state.as_str(), "done" | "failed"))
+                .map(|s| s.session_id.clone())
+                .collect(),
+        }
+    }
+
+    /// **A desktop notification, when something just started needing the person and they are
+    /// not looking.** The operator's ask that started this: a session sat for minutes on a
+    /// wait nobody was watching. Four edges, in the order they matter: a permission card
+    /// arrived, a key or password card arrived, a subagent answered, the turn ended.
+    ///
+    /// The snapshot moves every call, focused or not — so coming back to the window and
+    /// leaving again does not replay what was already on the screen.
+    pub fn take_notification(&mut self) -> Option<String> {
+        let now = self.attention_now();
+        let before = self.attention.replace(now.clone())?;
+        if !self.features.notify || self.focused != Some(false) {
+            return None;
+        }
+        let who = self.window_title();
+        if let Some(d) = self
+            .open
+            .iter()
+            .rev()
+            .find(|d| !before.asks.contains(&d.req_id))
+        {
+            return Some(format!("{who}: permission needed — {}", d.summary));
+        }
+        if let Some(s) = &self.secret
+            && before.secret.as_ref() != Some(&s.req_id)
+        {
+            let first = s.prompt.lines().next().unwrap_or("").trim();
+            return Some(format!("{who}: {first}"));
+        }
+        if let Some(id) = now
+            .answered
+            .iter()
+            .find(|id| !before.answered.contains(*id))
+        {
+            return Some(format!("{who}: subagent {} finished", short_id(id)));
+        }
+        if before.busy && !now.busy && now.asks.is_empty() && now.secret.is_none() {
+            let how = match self.turn.as_ref().and_then(|t| t.state.as_ref()) {
+                Some(TurnState::Failed { .. }) => "the turn failed",
+                Some(TurnState::Interrupted { .. }) => "the turn was interrupted",
+                _ => "done",
+            };
+            return Some(format!("{who}: {how}"));
+        }
+        None
+    }
+
+    /// Text the operator asked to copy, for the head to write to the clipboard.
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard_out.take()
+    }
+
+    /// Whether the terminal reported a light background (OSC 11).
+    pub fn light_background(&self) -> Option<bool> {
+        self.light_background
     }
 
     fn session_label(&self, id: &str) -> String {
@@ -7539,6 +7676,24 @@ impl App {
     /// after the first press — that is the entire mechanism by which anyone
     /// discovers a double-tap exists.
     pub fn key(&mut self, k: Key) -> Option<Action> {
+        // **The terminal talking about itself**, not the person: focus and the background
+        // colour. Recorded and nothing else — they must not dismiss a notice, end a recall or
+        // reach a pane the way a keystroke does.
+        match k {
+            Key::FocusIn | Key::FocusOut => {
+                self.focused = Some(matches!(k, Key::FocusIn));
+                return None;
+            }
+            Key::Background { light } => {
+                if self.light_background != Some(light) {
+                    self.light_background = Some(light);
+                    self.invalidate_history();
+                    self.redraw = true;
+                }
+                return None;
+            }
+            _ => {}
+        }
         // **The session's prompts, before a recall starts** — see `refresh_prompt_history`.
         // Up may yet be taken by a card or a pane further down; refreshing the list then
         // changes nothing a reader sees, and the editor ignores it mid-recall.
@@ -53088,6 +53243,66 @@ mod tests {
             color: false,
             ..Default::default()
         }
+    }
+
+    /// **The tab says what the session is doing, and a person who is away is told when it
+    /// needs them.** Progress follows the state: busy while the turn works, waiting (the paused
+    /// colour) while a card is open, idle after. A notification is an edge — the card arriving,
+    /// the turn ending — and only for a window known to be unfocused.
+    #[test]
+    fn progress_follows_the_turn_and_notifications_go_to_an_absent_reader() {
+        use crate::term::Progress;
+        let mut a = app();
+        a.set_features(crate::features::Features::ALL);
+        assert_eq!(a.take_notification(), None, "the first look is a baseline");
+        assert_eq!(a.progress(), Progress::Idle);
+
+        a.key(Key::FocusOut);
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        assert_eq!(a.progress(), Progress::Busy);
+        assert_eq!(a.take_notification(), None, "starting work needs nobody");
+
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::requested("r1", "run cargo test"),
+        )));
+        assert_eq!(a.progress(), Progress::Waiting, "a card outranks busy");
+        let n = a
+            .take_notification()
+            .expect("a card for somebody who is away");
+        assert!(
+            n.contains("permission needed") && n.contains("run cargo test"),
+            "{n}"
+        );
+        assert_eq!(a.take_notification(), None, "said once, not every tick");
+
+        a.apply(ServerFrame::Event(env(3, testing::answered("r1", "allow"))));
+        a.apply(ServerFrame::Event(env(4, testing::turn_finished("t1"))));
+        assert_eq!(a.progress(), Progress::Idle, "{:?}", a.progress());
+        let n = a
+            .take_notification()
+            .expect("the turn ended while they were away");
+        assert!(n.ends_with(": done"), "{n}");
+
+        // Looking at the window: the same edges say nothing.
+        a.key(Key::FocusIn);
+        a.apply(ServerFrame::Event(env(5, testing::turn_started("t2"))));
+        a.apply(ServerFrame::Event(env(
+            6,
+            testing::requested("r2", "write a file"),
+        )));
+        assert_eq!(
+            a.take_notification(),
+            None,
+            "a focused reader is not notified"
+        );
+
+        // And a terminal without the feature never is.
+        let mut b = app();
+        b.take_notification();
+        b.key(Key::FocusOut);
+        b.apply(ServerFrame::Event(env(1, testing::requested("r1", "x"))));
+        assert_eq!(b.take_notification(), None);
     }
 
     /// **The file is named once.** The operator, on `▸ Wrote …/pr-body-align.md · ok` with the

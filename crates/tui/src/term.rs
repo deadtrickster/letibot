@@ -110,6 +110,41 @@ pub struct Terminal {
     /// frame must erase everything before it paints.
     last_size: std::cell::Cell<(usize, usize)>,
     full: std::cell::Cell<bool>,
+    /// **What this terminal speaks beyond cells** — see [`crate::features`]. Decided once at
+    /// [`Terminal::enter`], and every mode it turns on there is turned off by [`restore`].
+    features: crate::features::Features,
+    /// The progress state last written (OSC 9;4), so a tick that does not change it writes
+    /// nothing.
+    progress: std::cell::Cell<Progress>,
+}
+
+/// **The tab's progress bar** (OSC 9;4), as the head means it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Progress {
+    /// Nothing to show: the bar is removed.
+    #[default]
+    Idle,
+    /// The model is working — generating, or waiting on a call it made. No percentage exists,
+    /// so the bar is the terminal's indeterminate one.
+    Busy,
+    /// Something is waiting on the PERSON: a permission, a key, a password. Drawn in the
+    /// terminal's paused (warning) colour, so a tab that wants you looks different from a tab
+    /// that is working.
+    Waiting,
+    /// The last turn ended in an error.
+    Failed,
+}
+
+impl Progress {
+    /// The OSC 9;4 state and value for this.
+    fn osc(self) -> &'static [u8] {
+        match self {
+            Progress::Idle => b"\x1b]9;4;0\x07",
+            Progress::Busy => b"\x1b]9;4;3\x07",
+            Progress::Waiting => b"\x1b]9;4;4;100\x07",
+            Progress::Failed => b"\x1b]9;4;2;100\x07",
+        }
+    }
 }
 
 /// How much is read at once. Large enough that a paste is one or two reads
@@ -213,13 +248,30 @@ impl Terminal {
         // the title it had. A terminal without the stack ignores the sequence.
         let _ = out
             .write_all(b"\x1b[22;0t\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[2 q");
+        // **The terminal's extras, each only where it is spoken** (see `crate::features`).
+        //
+        // `CSI > 1 u` pushes the kitty keyboard's "disambiguate" flag: Esc stops being the
+        // first byte of every arrow key, and Shift+Enter becomes a key at all. `?1004h` asks for
+        // focus reports, which is what lets a notification go only to a person who is not
+        // looking. `OSC 11 ; ?` asks the background colour once; the answer arrives as input
+        // and the decoder turns it into a key.
+        let features = crate::features::Features::detect();
+        if features.keys {
+            let _ = out.write_all(b"\x1b[>1u");
+        }
+        if features.notify {
+            let _ = out.write_all(b"\x1b[?1004h");
+        }
+        if features.background {
+            let _ = out.write_all(b"\x1b]11;?\x1b\\");
+        }
         let _ = out.flush();
 
         // Restore before anything is printed, or the panic message is a staircase.
         let saved = original;
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            restore(fd, &saved);
+            restore(fd, &saved, features);
             prev(info);
         }));
 
@@ -242,7 +294,63 @@ impl Terminal {
             last_raw: std::cell::RefCell::new(Vec::new()),
             last_size: std::cell::Cell::new((0, 0)),
             full: std::cell::Cell::new(true),
+            features,
+            progress: std::cell::Cell::new(Progress::Idle),
         })
+    }
+
+    /// What this terminal was found to speak. See [`crate::features`].
+    pub fn features(&self) -> crate::features::Features {
+        self.features
+    }
+
+    /// **The tab's progress bar**, written only when it changed and only where it is spoken.
+    /// A terminal that does not know OSC 9;4 may read OSC 9 as a NOTIFICATION (iTerm2 does), so
+    /// this writes nothing at all unless [`crate::features::Features::progress`] is on.
+    pub fn set_progress(&self, p: Progress) {
+        if !self.features.progress || self.progress.get() == p {
+            return;
+        }
+        let mut out = std::io::stdout();
+        let _ = out.write_all(p.osc());
+        let _ = out.flush();
+        self.progress.set(p);
+    }
+
+    /// **A desktop notification** (OSC 9), where spoken. The text is stripped of control
+    /// characters — it carries a session's words, and an escape in it would be one the
+    /// terminal executes — and of `;`, which some terminals read as OSC 9's own separator.
+    pub fn notify(&self, text: &str) {
+        if !self.features.notify {
+            return;
+        }
+        let clean: String = window_title_text(text).replace(';', ",");
+        if clean.is_empty() {
+            return;
+        }
+        let mut out = std::io::stdout();
+        let _ = write!(out, "\x1b]9;{clean}\x07");
+        let _ = out.flush();
+    }
+
+    /// **Put text on the system clipboard** (OSC 52), where spoken. Base64 of the bytes as
+    /// they are: the clipboard is the operator's, and what they asked to copy is what lands.
+    pub fn copy(&self, text: &str) -> bool {
+        if !self.features.clipboard {
+            return false;
+        }
+        let mut out = std::io::stdout();
+        let _ = write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()));
+        let _ = out.flush();
+        true
+    }
+
+    /// **Write bytes that are not part of the frame** — an inline image's upload — outside the
+    /// diffing encoder, which only knows rows of text.
+    pub fn write_raw(&self, bytes: &[u8]) {
+        let mut out = std::io::stdout();
+        let _ = out.write_all(bytes);
+        let _ = out.flush();
     }
 
     /// Columns and rows, or a sane default when `TIOCGWINSZ` says nothing.
@@ -314,7 +422,15 @@ impl Terminal {
     /// `_ => i += 1` fallthrough and vanishes — so it can never arrive as a [`Key`] and can only
     /// be found here, on the raw stream, before anything is forwarded. See `App::pane_keys`.
     pub fn raw_keys(&self) -> Vec<u8> {
-        self.last_raw.borrow().clone()
+        // **Under the kitty keyboard the raw stream is in a spelling the pane's program never
+        // asked for** — Ctrl-C arrives as `CSI 99;5u`, and the pane's own way out, `ctrl-\`,
+        // as `CSI 92;5u`. So it is put back into the legacy bytes first: the program reads
+        // what a terminal without the protocol would have sent it.
+        if self.features.keys {
+            legacy_bytes(&self.last_raw.borrow())
+        } else {
+            self.last_raw.borrow().clone()
+        }
     }
 
     /// Paint the **difference** between this frame and the one on the glass.
@@ -525,7 +641,7 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         if self.entered {
-            restore(self.fd, &self.original);
+            restore(self.fd, &self.original, self.features);
         }
         // After the restore, so the line lands on a terminal that is out of raw
         // mode and off the alternate screen — a report printed before it scrolls
@@ -666,6 +782,8 @@ impl Terminal {
             last_raw: std::cell::RefCell::new(Vec::new()),
             last_size: std::cell::Cell::new((80, 24)),
             full: std::cell::Cell::new(true),
+            features: crate::features::Features::default(),
+            progress: std::cell::Cell::new(Progress::Idle),
         }
     }
 }
@@ -682,9 +800,20 @@ pub fn window_title_text(title: &str) -> String {
         .to_string()
 }
 
-fn restore(fd: i32, original: &libc::termios) {
+fn restore(fd: i32, original: &libc::termios, features: crate::features::Features) {
     unsafe { libc::tcsetattr(fd, libc::TCSANOW, original) };
     let mut out = std::io::stdout();
+    // The extras first, each only where `enter` turned it on: the kitty keyboard popped,
+    // focus reports off, the progress bar removed.
+    if features.keys {
+        let _ = out.write_all(b"\x1b[<u");
+    }
+    if features.notify {
+        let _ = out.write_all(b"\x1b[?1004l");
+    }
+    if features.progress {
+        let _ = out.write_all(Progress::Idle.osc());
+    }
     // Every mode `enter` turned on, off again, in the reverse order: end any open
     // synchronised update, mouse tracking off, bracketed paste off, the cursor
     // shape back to whatever the operator's terminal had, then show it and leave
@@ -975,6 +1104,21 @@ fn escape(b: &[u8], force: bool) -> Step {
         // one Alt+Esc would eat the interrupt.
         0x1b => Step::Emit(Some(Key::Esc), 1),
         b'[' => csi(b, force),
+        // **A string the terminal sent back**: OSC (`ESC ]`) for the background colour asked
+        // at `enter`, APC (`ESC _`) for a kitty graphics reply. Consumed whole up to its
+        // terminator — BEL or ST — and never typed: a reply is not a keystroke.
+        b']' | b'_' => match string_end(&b[2..]) {
+            Some((body, used)) => Step::Emit(
+                if b[1] == b']' {
+                    background_reply(&b[2..2 + body])
+                } else {
+                    None
+                },
+                2 + used,
+            ),
+            None if force => Step::Emit(Some(Key::Esc), 1),
+            None => Step::Incomplete,
+        },
         // SS3: the application-cursor-mode arrows, which is what a terminal sends
         // after `smkx`.
         b'O' => {
@@ -1039,6 +1183,14 @@ fn csi(b: &[u8], force: bool) -> Step {
     // the word motion every editor binds it to.
     let ctrl = params.split(|c| *c == b';').nth(1) == Some(&b"5"[..]);
     let k = match fin {
+        // **The kitty keyboard** (`CSI code ; mods u`), put back into the legacy bytes it
+        // stands for and decoded as those — so every binding this file already has means the
+        // same key under the protocol, and the only new facts are the two the protocol exists
+        // for: Shift+Enter is a key, and Esc is never half of something else.
+        b'u' => kitty_key(params),
+        // Focus reports (`?1004`): the window gained or lost focus.
+        b'I' if params.is_empty() => Some(Key::FocusIn),
+        b'O' if params.is_empty() => Some(Key::FocusOut),
         b'A' => Some(Key::Up),
         b'B' => Some(Key::Down),
         b'C' => Some(if ctrl { Key::WordRight } else { Key::Right }),
@@ -1092,6 +1244,147 @@ fn csi(b: &[u8], force: bool) -> Step {
         _ => None,
     };
     Step::Emit(k, n)
+}
+
+/// `CSI code ; mods u` → the key it means. See the arm in [`csi`].
+fn kitty_key(params: &[u8]) -> Option<Key> {
+    let (code, mods) = kitty_fields(params)?;
+    let shift = mods & 1 != 0;
+    if code == 13 && shift {
+        return Some(Key::SoftEnter);
+    }
+    if code == 27 && mods == 0 {
+        return Some(Key::Esc);
+    }
+    let legacy = kitty_legacy(code, mods)?;
+    let (keys, _) = decode_prefix(&legacy, true);
+    keys.into_iter().next()
+}
+
+/// The code point and the modifier bits (shift 1, alt 2, ctrl 4) of a `CSI … u`. The wire
+/// carries `1 + bits`, and a missing modifier field is none.
+fn kitty_fields(params: &[u8]) -> Option<(u32, u8)> {
+    let text = std::str::from_utf8(params).ok()?;
+    let mut fields = text.split(';');
+    // `code:shifted:base` — only the first is this key.
+    let code: u32 = fields.next()?.split(':').next()?.parse().ok()?;
+    let mods: u8 = match fields.next() {
+        Some(m) => m.split(':').next()?.parse::<u8>().ok()?.saturating_sub(1),
+        None => 0,
+    };
+    Some((code, mods))
+}
+
+/// What a terminal without the protocol sends for this key, or `None` for a key it has no
+/// spelling for (the keypad's private-use codes).
+fn kitty_legacy(code: u32, mods: u8) -> Option<Vec<u8>> {
+    let (alt, ctrl) = (mods & 2 != 0, mods & 4 != 0);
+    let mut out = Vec::new();
+    if alt {
+        out.push(0x1b);
+    }
+    match code {
+        13 => out.push(b'\r'),
+        9 => out.push(b'\t'),
+        27 => out.push(0x1b),
+        127 => out.push(0x7f),
+        8 => out.push(0x08),
+        c => {
+            let ch = char::from_u32(c)?;
+            if ctrl && ch.is_ascii() && (ch == ' ' || ('@'..='~').contains(&ch)) {
+                out.push((ch.to_ascii_uppercase() as u8) & 0x1f);
+            } else if (0xe000..=0xf8ff).contains(&c) {
+                return None;
+            } else {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+    }
+    Some(out)
+}
+
+/// **The raw stream with every `CSI … u` rewritten to its legacy bytes**, for a pane whose
+/// program never asked for the protocol. Everything else passes through untouched.
+pub fn legacy_bytes(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i..].starts_with(b"\x1b[") {
+            let mut j = i + 2;
+            while j < raw.len() && (0x30..=0x3f).contains(&raw[j]) {
+                j += 1;
+            }
+            if j < raw.len() && raw[j] == b'u' {
+                let params = &raw[i + 2..j];
+                let legacy = kitty_fields(params).and_then(|(code, mods)| {
+                    if code == 13 && mods & 1 != 0 {
+                        Some(vec![b'\r'])
+                    } else {
+                        kitty_legacy(code, mods)
+                    }
+                });
+                if let Some(bytes) = legacy {
+                    out.extend_from_slice(&bytes);
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(raw[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Where an OSC/APC string ends: its body's length and the bytes used including the
+/// terminator (BEL, or ST = `ESC \`). `None` while it has not finished arriving.
+fn string_end(b: &[u8]) -> Option<(usize, usize)> {
+    for (i, &c) in b.iter().enumerate() {
+        if c == 0x07 {
+            return Some((i, i + 1));
+        }
+        if c == 0x1b && b.get(i + 1) == Some(&b'\\') {
+            return Some((i, i + 2));
+        }
+    }
+    None
+}
+
+/// `11;rgb:RRRR/GGGG/BBBB` → whether the background is light. Any other OSC is dropped.
+fn background_reply(body: &[u8]) -> Option<Key> {
+    let text = std::str::from_utf8(body).ok()?;
+    let rgb = text.strip_prefix("11;")?.strip_prefix("rgb:")?;
+    let mut chans = rgb.split('/').map(|h| {
+        // 1–4 hex digits, scaled to 0..=1.
+        let v = u32::from_str_radix(h, 16).ok()?;
+        let max = (1u32 << (4 * h.len() as u32)) - 1;
+        Some(v as f64 / max as f64)
+    });
+    let (r, g, b) = (chans.next()??, chans.next()??, chans.next()??);
+    // Relative luminance, the sRGB weights; past half is a light background.
+    let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    Some(Key::Background { light: lum > 0.5 })
+}
+
+/// Standard base64, padded — for OSC 52 and the kitty graphics payload.
+pub fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.len();
+        let v = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | *chunk.get(2).unwrap_or(&0) as u32;
+        for k in 0..4 {
+            if k <= n {
+                out.push(T[(v >> (18 - 6 * k) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1512,5 +1805,71 @@ mod tests {
         // raw scan for it is exact and not a guess about where a sequence ends.
         assert!(0x1c < 0x20);
         assert!(!(0x40..=0x7e).contains(&0x1c));
+    }
+
+    /// **The kitty keyboard means the keys this decoder already knew**, plus the two it exists
+    /// for. Every binding is reached through the legacy spelling, so Ctrl-C is still `CtrlC`
+    /// and Alt+b is still a word left; Shift+Enter is the soft newline Alt+Enter was the only
+    /// way to type; Esc is Esc.
+    #[test]
+    fn kitty_keys_decode_to_the_keys_this_head_already_binds() {
+        let one = |b: &[u8]| {
+            let (k, used) = decode_prefix(b, false);
+            assert_eq!(used, b.len(), "{b:?} not consumed whole");
+            k
+        };
+        assert_eq!(one(b"\x1b[13;2u"), vec![Key::SoftEnter]);
+        assert_eq!(one(b"\x1b[27u"), vec![Key::Esc]);
+        assert_eq!(one(b"\x1b[99;5u"), vec![Key::CtrlC]);
+        assert_eq!(one(b"\x1b[118;5u"), vec![Key::CtrlV]);
+        assert_eq!(one(b"\x1b[98;3u"), vec![Key::WordLeft]);
+        // A plain key the protocol chose to report anyway.
+        assert_eq!(one(b"\x1b[97u"), vec![Key::Char('a')]);
+        // The keypad's private-use codes have no legacy spelling, and are not typed.
+        assert_eq!(one(b"\x1b[57399u"), Vec::<Key>::new());
+        // An arrow is still the legacy CSI under flag 1.
+        assert_eq!(one(b"\x1b[A"), vec![Key::Up]);
+    }
+
+    #[test]
+    fn focus_reports_and_the_background_reply_are_keys_not_text() {
+        let (k, _) = decode_prefix(b"\x1b[I\x1b[O", false);
+        assert_eq!(k, vec![Key::FocusIn, Key::FocusOut]);
+        // Ghostty answers OSC 11 with four hex digits a channel, terminated by ST or BEL.
+        let (k, used) = decode_prefix(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\x", false);
+        assert_eq!(k, vec![Key::Background { light: true }, Key::Char('x')]);
+        assert_eq!(used, 26, "the reply and the key after it, all consumed");
+        let (k, _) = decode_prefix(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07", false);
+        assert_eq!(k, vec![Key::Background { light: false }]);
+        // Half a reply is held, not typed.
+        let (k, used) = decode_prefix(b"\x1b]11;rgb:ff", false);
+        assert!(k.is_empty() && used == 0, "{k:?} {used}");
+        // A kitty graphics reply (APC) is swallowed whole.
+        let (k, _) = decode_prefix(b"\x1b_Gi=1;OK\x1b\\", false);
+        assert!(k.is_empty(), "{k:?}");
+    }
+
+    /// **The pane's program reads legacy bytes**, whatever spelling the operator's terminal
+    /// used — and the way out, `ctrl-\`, is still the byte the pane scans for.
+    #[test]
+    fn the_pane_gets_legacy_bytes_under_the_kitty_keyboard() {
+        assert_eq!(legacy_bytes(b"ls\x1b[99;5u"), b"ls\x03".to_vec());
+        assert_eq!(legacy_bytes(b"\x1b[92;5u"), vec![0x1c]);
+        assert_eq!(legacy_bytes(b"\x1b[27u"), vec![0x1b]);
+        assert_eq!(legacy_bytes(b"\x1b[13;2u"), b"\r".to_vec());
+        // Everything that is not a `CSI … u` passes untouched.
+        assert_eq!(
+            legacy_bytes(b"\x1b[A\x1b[1;5C"),
+            b"\x1b[A\x1b[1;5C".to_vec()
+        );
+    }
+
+    #[test]
+    fn base64_is_the_standard_padded_alphabet() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64("ключ".as_bytes()), "0LrQu9GO0Yc=");
     }
 }
