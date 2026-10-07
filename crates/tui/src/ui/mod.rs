@@ -3,5 +3,10 @@
 //! the terminal (`crate::backend`).
 
 pub mod cards;
+pub mod panes;
 
 pub(crate) use cards::decision::*;
+pub(crate) use panes::help::*;
+pub(crate) use panes::notes::*;
+pub(crate) use panes::subagents::*;
+pub(crate) use panes::todos::*;
