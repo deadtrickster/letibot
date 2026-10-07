@@ -1326,6 +1326,41 @@ esac
 # in the byte vocabulary (`letibot_tokencore::Vocab::bytes`) — so it is passed only when
 # it names a file that is there (a box with the model keeps using it, and its sessions
 # keep their ids) or when LETIBOT_VOCAB asked for it by name.
+if [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ] \
+  && ! curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1; then
+  # **Nothing to answer, and a person at the keyboard: ask, rather than die.** The
+  # operator: *"id prefer leticode to ask me of course"*. The choice becomes `--provider`;
+  # the KEY is not asked here — the daemon asks for it on the first turn, on the masked
+  # card sudo's password uses, and saves it (0600) with this provider as the default, so
+  # this question is asked once per box. Without a terminal there is nobody to ask, and
+  # the refusal stands as it was.
+  if [ -t 0 ] && [ -t 1 ]; then
+    printf '%s\n' "letibot: nothing is serving a local model on $ENDPOINT, and no cloud provider is set up." \
+      "  Use a cloud provider? Its key is asked for on the first turn and saved." \
+      "    1) deepseek    2) glm    3) grok        (enter quits)" >&2
+    printf '  > ' >&2
+    _choice=""
+    read -r _choice || _choice=""
+    case "$_choice" in
+      1 | deepseek) PROVIDER_NAME=deepseek ;;
+      2 | glm) PROVIDER_NAME=glm ;;
+      3 | grok) PROVIDER_NAME=grok ;;
+      *) die "no provider chosen, and nothing serving on $ENDPOINT — nothing was started." ;;
+    esac
+    PROVIDER_SET=1
+    EXTRA_ARGS+=(--provider "$PROVIDER_NAME")
+    # The local alias is a LOCAL binding; handed to a provider it is a 400 naming models
+    # the provider has (the reason MODEL_ARGS is empty for `--provider` above).
+    [ -n "$MODEL_OVERRIDE" ] || MODEL_ARGS=()
+  else
+    die "nothing serving on $ENDPOINT
+  Start a model server first — letibot is a harness, and a turn needs one:
+    llama-server -m MODEL.gguf --port 8080
+  or a cloud provider instead:  --provider deepseek|glm|grok
+  Point this launcher elsewhere with LETIBOT_ENDPOINT=host:port."
+  fi
+fi
+
 VOCAB_ARGS=(--vocab "$VOCAB")
 if [ -n "$PROVIDER_SET" ] || [ -n "$(default_provider provider)" ]; then
   if [ -z "${LETIBOT_VOCAB:-}" ] && [ ! -f "$VOCAB" ]; then
@@ -1333,14 +1368,6 @@ if [ -n "$PROVIDER_SET" ] || [ -n "$(default_provider provider)" ]; then
   fi
 fi
 
-if [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ]; then
-curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1 \
-  || die "nothing serving on $ENDPOINT
-  Start a model server first — letibot is a harness, and a turn needs one:
-    llama-server -m MODEL.gguf --port 8080
-  or a cloud provider instead:  --provider deepseek|glm|grok
-  Point this launcher elsewhere with LETIBOT_ENDPOINT=host:port."
-fi
 
 # THE RUNNING DAEMON'S MODEL MUST BE THE MODEL ON THE PORT.
 #

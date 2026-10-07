@@ -1285,8 +1285,17 @@ pub struct Harness<'a> {
     /// its children with — which is the defect, measured, that this exists for.
     subagents: Arc<dyn letibot_tools::builtins::task::TaskRunner>,
     /// The cloud provider the turns go to, when the session has one. `None` is
-    /// the local server through the engine's own `/completion` path.
+    /// the local server through the engine's own `/completion` path — **unless**
+    /// [`Harness::key_wanted`] is set, which is a provider with no key yet.
     provider: Option<Box<dyn letibot_backend::MessagesBackend>>,
+    /// **A provider chosen and not yet usable, because no key for it resolves.**
+    ///
+    /// It used to be a refusal at open: the daemon bound its socket and died before a
+    /// head could attach, so the person who could fix it never saw the sentence. Now the
+    /// session opens and the first turn asks for the key on the masked secret card —
+    /// the sudo password's machinery, so the key never enters an event — saves it to
+    /// providers.toml (0600), and builds the provider. See [`Harness::obtain_key`].
+    key_wanted: Option<crate::config::ProviderConfig>,
     /// **The local server's own context window**, kept from before the first
     /// switch to a provider so `/models local` can put it back.
     ///
@@ -3371,9 +3380,20 @@ impl<'a> Harness<'a> {
         // session exists, and `Sessions` clones that config for every session it
         // opens — so a real daemon behaves exactly as before and a `Config` built
         // in a test carries only what the test put in it.
+        // **A key that does not resolve is asked for, not refused** — see `key_wanted`.
+        // Any other failure (an unknown preset, an unreadable providers.toml) still
+        // refuses here: those are not something a pasted key fixes.
+        let mut key_wanted = None;
         let provider: Option<Box<dyn letibot_backend::MessagesBackend>> = match &cfg.provider {
             None => None,
-            Some(pc) => Some(build_provider(pc, &cfg.sampling).map_err(HarnessError::Setup)?),
+            Some(pc) => match build_provider(pc, &cfg.sampling) {
+                Ok(p) => Some(p),
+                Err(_) if key_is_missing(pc) => {
+                    key_wanted = Some(pc.clone());
+                    None
+                }
+                Err(e) => return Err(HarnessError::Setup(e)),
+            },
         };
         // **The ledger-to-provider ratio survives a restart, because it is already
         // in the store.**
@@ -3480,6 +3500,7 @@ impl<'a> Harness<'a> {
             // field: an interrupt has to be able to stop this session's children.
             subagents: subagent_runner,
             provider,
+            key_wanted,
             // Filled on the first switch away from local, never at open: a session
             // that started on a provider has no local window to go back to, and
             // `None` here says exactly that.
@@ -4765,6 +4786,114 @@ impl<'a> Harness<'a> {
                 want.authority()
             ),
         }
+    }
+
+    /// **Ask the operator for the key [`Harness::key_wanted`] names, and make it the
+    /// session's provider.**
+    ///
+    /// The masked card is the sudo password's: [`letibot_sessionlog::hub::Hub::request_secret`]
+    /// raises `SecretRequested` to every head and the answer comes back on a channel, never
+    /// in an event — so the key reaches providers.toml and nowhere else. The worker blocks
+    /// while it waits, which is safe for the same reason it is for sudo: the answer is
+    /// handled on the answering head's own reader thread.
+    ///
+    /// Refuses at once, rather than after a wait, when no head that answers decisions is
+    /// attached (a one-shot `--prompt`, say): the sentence then names the variable and the
+    /// file instead. A key that providers.toml could not hold is asked for again, saying
+    /// why, up to three times. `why` is the reason for asking again — a 401's own words.
+    fn obtain_key(&mut self, why: Option<String>) -> Result<(), HarnessError> {
+        let Some(pc) = self.key_wanted.clone() else {
+            return Ok(());
+        };
+        let preset = letibot_provider::Preset::parse(&pc.name).map_err(HarnessError::Setup)?;
+        let file = letibot_provider::keys::config_file();
+        if self.hub.deciding_heads().is_empty() {
+            return Err(HarnessError::Setup(format!(
+                "no key for `{name}`, and no head is attached to ask for one. Set ${env}, or put \
+                 `key = \"…\"` under [{name}] in {file}",
+                name = pc.name,
+                env = preset.key_env,
+                file = file.display(),
+            )));
+        }
+        let mut reason = why;
+        for _ in 0..3 {
+            // The prompt is persisted with the request (the secret never is), so it says
+            // where the key goes and nothing it should not.
+            let prompt = format!(
+                "{name} needs an API key. It is saved to {file} (mode 0600, under [{name}]) \
+                 and this session's turns go to {name}.{again}",
+                name = pc.name,
+                file = file.display(),
+                again = reason
+                    .as_deref()
+                    .map(|r| format!(" Asking again: {r}"))
+                    .unwrap_or_default(),
+            );
+            let deadline = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| (d + KEY_PATIENCE).as_millis() as u64)
+                .unwrap_or(0);
+            // An empty `command` is what tells a head this is not sudo's card.
+            let (req_id, rx) = self.hub.request_secret(&prompt, "", deadline);
+            let given = match rx.recv_timeout(KEY_PATIENCE) {
+                Ok(s) => s,
+                Err(_) => {
+                    self.hub
+                        .abandon_secret(&req_id, "nobody, before the deadline");
+                    None
+                }
+            };
+            let Some(key) = given.map(|k| k.trim().to_string()) else {
+                return Err(HarnessError::Setup(format!(
+                    "no key was given for `{name}`, so this turn did not run and nothing was \
+                     sent. Send the message again to be asked again, or set ${env}, or put \
+                     `key = \"…\"` under [{name}] in {file}",
+                    name = pc.name,
+                    env = preset.key_env,
+                    file = file.display(),
+                )));
+            };
+            if let Some(bad) = unsavable_key(&key) {
+                reason = Some(format!("that key was not saved — {bad}."));
+                continue;
+            }
+            letibot_provider::keys::store_key(Some(&file), &pc.name, &key).map_err(|e| {
+                HarnessError::Setup(format!("saving the key to {}: {e}", file.display()))
+            })?;
+            // **The first key on a box also chooses the default**, so the next `letibot`
+            // starts here without a flag. Only when there is none: an existing choice is the
+            // operator's and is not this card's to move.
+            let mut made_default = false;
+            if let Ok(None) = letibot_provider::keys::default_choice(Some(&file)) {
+                made_default =
+                    letibot_provider::keys::set_default(Some(&file), &pc.name, pc.model.as_deref())
+                        .is_ok();
+            }
+            self.key_wanted = None;
+            self.set_provider(Some(pc.clone()))?;
+            self.hub.publish(SessionEvent::Warning {
+                code: "provider_key_saved".into(),
+                detail: format!(
+                    "the key for {name} is saved in {file}{default}; this session's turns go to \
+                     {name}",
+                    name = pc.name,
+                    file = file.display(),
+                    default = if made_default {
+                        format!(", and [default] provider = \"{}\" is set", pc.name)
+                    } else {
+                        String::new()
+                    },
+                ),
+                compaction: None,
+            });
+            return Ok(());
+        }
+        Err(HarnessError::Setup(format!(
+            "no usable key for `{}` after three tries: {}",
+            pc.name,
+            reason.unwrap_or_default()
+        )))
     }
 
     /// **Switch what answers this session's turns**, underneath the conversation.
@@ -6734,6 +6863,15 @@ impl<'a> Harness<'a> {
     }
 
     fn run_rounds(&mut self) -> Result<Reply, HarnessError> {
+        // **The key first, before anything is drained or sent.** A provider with no key
+        // is asked for one here; a refusal returns before the turn takes the operator's
+        // message, so nothing they typed is spent on a turn that could not run.
+        if self.key_wanted.is_some() {
+            self.obtain_key(None)?;
+        }
+        // How many times this turn has asked again after a refused key. Bounded, so a
+        // provider that refuses every key does not hold the worker in a loop of cards.
+        let mut key_asks = 0usize;
         let mut metrics = Vec::new();
         let mut tool_calls = 0usize;
         let mut truncated = false;
@@ -6908,6 +7046,26 @@ impl<'a> Harness<'a> {
                     attempt = 0;
                     break attempted;
                 };
+                // **A refused key is asked for again**, on the same card, and the round is
+                // taken again — nothing was recorded, so the retry sends the same bytes.
+                // Only a key this session can replace: one from `$PROVIDER_API_KEY` or
+                // `--api-key` wins over the file, so a typed one would be saved and ignored.
+                if let letibot_turn::HttpError::Status {
+                    code: code @ (401 | 403),
+                    body,
+                } = &e
+                    && self.provider.is_some()
+                    && key_asks < 2
+                    && let Some(pc) = self.cfg.provider.clone()
+                    && key_is_replaceable(&pc)
+                {
+                    key_asks += 1;
+                    let why = format!("{} refused the key ({code}): {body}", pc.name);
+                    self.provider = None;
+                    self.key_wanted = Some(pc);
+                    self.obtain_key(Some(why))?;
+                    continue;
+                }
                 let Some(wait) = http_retry_after(&e, attempt, self.cfg.http_retries) else {
                     break Err(TurnFailure::Http(e));
                 };
@@ -11043,6 +11201,52 @@ mod vocab_differs_tests {
         assert!(vocab_differs("", q));
     }
 }
+
+/// **Does `pc`'s key fail to resolve** — the one failure a pasted key fixes?
+fn key_is_missing(pc: &crate::config::ProviderConfig) -> bool {
+    let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
+        return false;
+    };
+    matches!(
+        letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), None),
+        Err(letibot_provider::keys::KeyError::Missing { .. })
+    )
+}
+
+/// **Would a key saved to providers.toml be the one used?** Not when the command line
+/// (`--api-key`) or the environment (`$DEEPSEEK_API_KEY`…) supplies it: both come first in
+/// the resolution order, so asking would save a key that is then ignored.
+fn key_is_replaceable(pc: &crate::config::ProviderConfig) -> bool {
+    if pc.api_key.is_some() {
+        return false;
+    }
+    let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
+        return false;
+    };
+    match letibot_provider::keys::resolve(preset, None, None) {
+        Ok(c) => !c.from.starts_with('$'),
+        Err(_) => true,
+    }
+}
+
+/// **Why a pasted key cannot be saved**, or `None` when it can. providers.toml is parsed by
+/// hand (`keys::parse_file`): a `#` anywhere starts a comment and quotes are stripped, not
+/// escaped — so such a key would be saved and read back as something else.
+fn unsavable_key(k: &str) -> Option<&'static str> {
+    if k.is_empty() {
+        Some("it was empty")
+    } else if k.contains('#') || k.contains('"') {
+        Some("it contains `#` or `\"`, which providers.toml cannot hold")
+    } else if k.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        Some("it contains a space or a control character — likely a paste of more than the key")
+    } else {
+        None
+    }
+}
+
+/// How long the key card waits for an answer — longer than sudo's 120 s, because this one
+/// may send somebody to a provider's website to make a key.
+const KEY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Why a session on the byte vocabulary cannot be pointed at a local model.
 const NO_VOCAB_FOR_LOCAL: &str = "this daemon has no model vocabulary — it was started for a cloud provider, whose \

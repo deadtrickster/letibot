@@ -151,15 +151,15 @@ If the turns go to a cloud provider, nothing about llama.cpp is needed — not t
 
 ```sh
 sh install.sh            # from a checkout, with no LETIBOT_LLAMA_* set: a cloud-only build
-cat >> ~/.config/letibot/providers.toml <<'TOML'
-[deepseek]
-key = "sk-…"
-
-[default]
-provider = "deepseek"
-TOML
-letibot
+letibot                  # nothing local and no provider yet: it asks which one
 ```
+
+**The key is asked for, not configured.** With no key on the box, the first message opens a
+masked card (the one sudo's password uses, so the key never enters the session log) and the
+key is saved to `~/.config/letibot/providers.toml`, mode 0600, with that provider as the
+default — so the next `letibot` just starts. A key the provider refuses (401/403) is asked for
+again on the same card. `$DEEPSEEK_API_KEY` (and the others) or a hand-written
+`[deepseek] key = "…"` still work and are never asked about.
 
 The daemon still keeps its hash-chained ledger in tokens, because that is what makes a session
 resumable and tamper-evident; with no GGUF those tokens are the **byte vocabulary** (ids 0–255 are

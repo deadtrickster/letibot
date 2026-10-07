@@ -2595,6 +2595,11 @@ pub struct App {
     /// dot per character while this is `Some`.
     secret: Option<SecretAsk>,
     secret_buf: String,
+    /// **Which open secret requests are key asks**, kept until they settle. The card is
+    /// closed by the answer (Esc clears it at once), so by the time `SecretSettled`
+    /// arrives the card can no longer say what it was — and a refused key would be
+    /// noted as sudo's refused password.
+    key_secrets: Vec<String>,
     /// **A command of the operator's own is waiting for an answer**: the request, and what has
     /// been typed for it so far.
     ///
@@ -4144,6 +4149,7 @@ impl App {
             open: Vec::new(),
             secret: None,
             secret_buf: String::new(),
+            key_secrets: Vec::new(),
             prompt: None,
             prompt_buf: String::new(),
             key_ask: None,
@@ -7080,6 +7086,9 @@ impl App {
                 command,
                 deadline,
             } => {
+                if command.is_empty() {
+                    self.key_secrets.push(req_id.clone());
+                }
                 self.secret = Some(SecretAsk {
                     req_id,
                     prompt,
@@ -7091,9 +7100,30 @@ impl App {
                 Disposition::Rendered
             }
             SessionEvent::SecretSettled { req_id, given, by } => {
+                // A key card is a secret request with no command (`Harness::obtain_key`),
+                // remembered by id because the card itself may already be gone.
+                let was_key = match self.key_secrets.iter().position(|r| *r == req_id) {
+                    Some(i) => {
+                        self.key_secrets.remove(i);
+                        true
+                    }
+                    None => false,
+                };
                 if self.secret.as_ref().is_some_and(|s| s.req_id == req_id) {
                     self.secret = None;
                     self.secret_buf.clear();
+                }
+                if was_key {
+                    // Given: the daemon says where it was saved (`provider_key_saved`), so
+                    // one line rather than two. Not given: the refusal is the operator's.
+                    if !given {
+                        self.note(Note::Warned(Warned {
+                            code: "provider_key_refused".into(),
+                            detail: format!("no key given ({by})"),
+                            ts,
+                        }));
+                    }
+                    return Disposition::Rendered;
                 }
                 self.note(Note::Warned(Warned {
                     code: "sudo".into(),
@@ -18832,10 +18862,21 @@ impl App {
         // ask is ugly as hell"*. The worst of it was the old first line, which read
         // `sudo wants a password — [sudo] password for dead:` — the same fact twice, in
         // the same weight, trailing off a colon.
+        // **Two askers share this card**: sudo, through `letibot-askpass`, and the daemon
+        // asking for a provider's API key (`Harness::obtain_key`), which sends no command.
+        // The headline says which; the masking, the keys and the countdown are the same.
+        let key = ask.command.is_empty();
         out.push(colour(
             &self.cfg,
             sgr::YELLOW,
-            &trim_to("? sudo wants a password", w),
+            &trim_to(
+                if key {
+                    "? an API key is needed"
+                } else {
+                    "? sudo wants a password"
+                },
+                w,
+            ),
         ));
         // **sudo's own words**, which name the account — faint and indented, because the
         // headline has already said what this is.
@@ -18845,9 +18886,11 @@ impl App {
         // The command keeps its own rows — it is the one thing here worth the rows, and
         // the thing being authorised — and it is faint, because it is a fact about the
         // ask rather than the ask itself. `run:` names it, where the old `for:` named
-        // nothing.
-        for l in wrap(&format!("run: {}", ask.command), w.saturating_sub(2)) {
-            out.push(dim(&self.cfg, &format!("  {l}")));
+        // nothing. A key ask has no command, so no row.
+        if !key {
+            for l in wrap(&format!("run: {}", ask.command), w.saturating_sub(2)) {
+                out.push(dim(&self.cfg, &format!("  {l}")));
+            }
         }
         // **Short enough to survive a narrow terminal whole, keys first.** The old
         // sentence ran past a hundred columns and `trim_to` cuts from the end — which is
@@ -41509,6 +41552,80 @@ mod tests {
     /// a colon — the command sat in the body register under a `for:` that named nothing,
     /// and the hint ran past a hundred columns so `trim_to` cut it from the end, which is
     /// exactly where the countdown lives.
+    /// **The daemon's key ask is the same card, worded for a key.** It arrives as a secret
+    /// request with no command (`Harness::obtain_key`), so the headline says a key is needed,
+    /// there is no `run:` row naming a command that does not exist, the field is masked like
+    /// a password, and a refusal is noted as the operator's — not as sudo's red line.
+    #[test]
+    fn the_key_ask_is_the_secret_card_worded_for_a_key() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::SecretRequested {
+                req_id: "secret-s-1".into(),
+                prompt:
+                    "deepseek needs an API key. It is saved to /h/.config/letibot/providers.toml"
+                        .into(),
+                command: String::new(),
+                deadline: 1_000_000,
+            },
+        )));
+        let card = a.screen(100, 20).join("\n");
+        assert!(card.contains("? an API key is needed"), "{card}");
+        assert!(card.contains("deepseek needs an API key"), "{card}");
+        assert!(
+            !card.contains("sudo"),
+            "a key ask must not read as sudo's: {card}"
+        );
+        assert!(
+            !card.contains("run:"),
+            "there is no command to name: {card}"
+        );
+        for c in "sk-abc".chars() {
+            assert!(a.key(Key::Char(c)).is_none());
+        }
+        let typing = a.screen(100, 20).join("\n");
+        assert!(
+            !typing.contains("sk-abc"),
+            "the key is on the screen:\n{typing}"
+        );
+        assert_eq!(
+            a.key(Key::Enter),
+            Some(Action::Secret {
+                req_id: "secret-s-1".into(),
+                secret: Some("sk-abc".into()),
+            })
+        );
+        // A second ask, refused: noted as the operator's refusal of a key.
+        a.apply(ServerFrame::Event(env(
+            2,
+            SessionEvent::SecretRequested {
+                req_id: "secret-s-2".into(),
+                prompt: "deepseek needs an API key.".into(),
+                command: String::new(),
+                deadline: 1_000_000,
+            },
+        )));
+        assert_eq!(
+            a.key(Key::Esc),
+            Some(Action::Secret {
+                req_id: "secret-s-2".into(),
+                secret: None,
+            })
+        );
+        a.apply(ServerFrame::Event(env(
+            3,
+            SessionEvent::SecretSettled {
+                req_id: "secret-s-2".into(),
+                given: false,
+                by: "dead".into(),
+            },
+        )));
+        let after = a.screen(100, 20).join("\n");
+        assert!(after.contains("no key given"), "{after}");
+        assert!(!after.contains("no password given"), "{after}");
+    }
+
     #[test]
     fn the_password_card_is_a_card_and_says_it_once() {
         let mut a = app();

@@ -198,6 +198,12 @@ pub const TABLE: &[(&str, Class)] = &[
     // the handling — and when the retries are exhausted the turn fails under
     // `turn_failed`, which is a failure.
     ("model_endpoint_retry", Class::Routine),
+    // The operator typed a provider key on the masked card and it was saved — the ask
+    // working, said once so the file it went to is on the record.
+    ("provider_key_saved", Class::Routine),
+    // The key card was closed with no key: the operator's own answer, and the turn says
+    // what happens instead.
+    ("provider_key_refused", Class::Refused),
     // **A provider that has not started answering, said while it is still silent.**
     // Routine, and the distinction matters: nothing failed. The request is open, the
     // round is still running, and a degraded provider that takes 12 s to its first byte
@@ -608,6 +614,10 @@ mod the_register_census {
         // `!term` with no pane, which is `job_output_refused`'s shape too: the act is well
         // formed, the thing it names is not there, and the fix is the reader's next line.
         "nothing_to_send_to",
+        // **The key card closed with no key** — the reader's own answer to the daemon's
+        // question, and the turn's sentence says what to do (send again, or set the
+        // variable). The same shape as `slash_refused`: the act was theirs, not a fault.
+        "provider_key_refused",
         "reseat_refused",
         "slash_refused",
     ];
@@ -619,8 +629,16 @@ mod the_register_census {
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_30_routine_8_refused_and_48_failures() {
+    fn the_table_is_31_routine_9_refused_and_48_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
+        // **88, not the 86 the last census was taken at.** Two arrivals, one per verdict of the
+        // key card (`Harness::obtain_key`, the daemon asking for a provider's API key on the
+        // masked secret card): `provider_key_saved` is Routine — the ask worked, and the line
+        // says which file the key went to — and `provider_key_refused` is Refused, the
+        // reader's own answer, named in READER_INPUT. Neither moves the red register.
+        //
+        // The census before that, 86, kept its own list for the same reason:
+        //
         // **86, not the 85 the last census was taken at.** One arrival, and it is the
         // daemon's own half of the stop: `daemon_stopping_runs` is the sentence said when a
         // stop arrived while a command of the operator's was in flight, so the command was
@@ -699,9 +717,9 @@ mod the_register_census {
         //     and not a routine note: it is a check that did not happen, and the sentence's job is
         //     *look at this*, because the alternative is a command that says nothing and never
         //     ends.
-        assert_eq!(TABLE.len(), 86, "the table's size");
-        assert_eq!(count(Class::Routine), 30);
-        assert_eq!(count(Class::Refused), 8, "the eight in READER_INPUT");
+        assert_eq!(TABLE.len(), 88, "the table's size");
+        assert_eq!(count(Class::Routine), 31);
+        assert_eq!(count(Class::Refused), 9, "the nine in READER_INPUT");
         assert_eq!(count(Class::Failure), 48);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
         // register is 48 of 85 and the middle is 8**, which is why the third register is a
