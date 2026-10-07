@@ -288,6 +288,8 @@ already up, then attaches the TUI head to it.
   letibot --stop --force      interrupt all in-flight turns, then stop
   letibot --status            is it up, and on what
 
+  letibot                     the leticode seat: opencode's tools and bash, on this host
+                              (LETIBOT_ROLE=coder for the namespace-confined seat, Linux)
   letibot --read-only         no write tools at all (orchestrator seat)
   letibot --ask               the old behaviour: every write asks, every time
   letibot --writes            approve a class once, for the session (default)
@@ -374,7 +376,13 @@ done
 # refusal that cannot be lifted from where it is met -- the exact failure
 # docs/boundary-and-adjudication.md 4b makes a requirement -- and it made the
 # price of writing a file a flag nobody should have to know.
-ROLE="${LETIBOT_ROLE:-coder}"
+#
+# **And the seat is `leticode`** — opencode's tool union, run on this host, with bash —
+# because that is the one the operator runs, on Linux and on a Mac alike (2026-10-07:
+# *"in fact even on linux i use only leticode"*). It was `coder`, the namespace-confined
+# seat, which on a Mac cannot start at all (no bubblewrap there) and on Linux was the
+# default nobody chose. `coder` is still one variable away: LETIBOT_ROLE=coder.
+ROLE="${LETIBOT_ROLE:-leticode}"
 # `head` posts the decision to the attached TUI and waits for your answer.
 # `console` reads the daemon's own stdin, which a detached daemon does not have,
 # so every write would refuse with "nobody answered".
@@ -1313,6 +1321,18 @@ esac
 # providers.toml — answers over the network, and a box that has only a key (a laptop, a Mac
 # with no llama-server) died here on the very remedy the message below suggests. MEASURED
 # 2026-10-07 on macOS: `letibot --provider deepseek` with nothing on 8080 refused to start.
+# **The vocabulary goes with the same question.** A local model needs the GGUF it serves,
+# so `--vocab` is always passed then. A provider needs none — the daemon keeps its ledger
+# in the byte vocabulary (`letibot_tokencore::Vocab::bytes`) — so it is passed only when
+# it names a file that is there (a box with the model keeps using it, and its sessions
+# keep their ids) or when LETIBOT_VOCAB asked for it by name.
+VOCAB_ARGS=(--vocab "$VOCAB")
+if [ -n "$PROVIDER_SET" ] || [ -n "$(default_provider provider)" ]; then
+  if [ -z "${LETIBOT_VOCAB:-}" ] && [ ! -f "$VOCAB" ]; then
+    VOCAB_ARGS=()
+  fi
+fi
+
 if [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ]; then
 curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1 \
   || die "nothing serving on $ENDPOINT
@@ -1379,7 +1399,7 @@ if [ $# -gt 0 ]; then
   ONESHOT_SOCK="$RUNDIR/oneshot-$$.sock"
   exec "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --endpoint "$ENDPOINT" \
        --socket "$ONESHOT_SOCK" \
-       --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" \
+       ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" \
        --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} \
        ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
        ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
@@ -1420,7 +1440,7 @@ if ! live; then
   # what makes the resume -- and its hash-chain check -- happen at startup, where a
   # failure is a line in this terminal rather than a surprise inside a prompt.
   detach "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --endpoint "$ENDPOINT" \
-      --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
+      ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
       --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
       ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
       ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \

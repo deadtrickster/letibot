@@ -1,0 +1,25 @@
+[package]
+name = "letibot-llama"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+description = "The GGUF vocabulary backend: llama.cpp's tokenizer behind letibot-tokencore's Vocab."
+
+# **The one crate in the tree that links llama.cpp.** It used to be `letibot-tokencore`,
+# which also holds the store and the ledger, so every crate that touched a todo list or a
+# session row linked libllama and every install needed llama.cpp. Now the tokenizer is a
+# backend (`letibot_tokencore::VocabBackend`), this crate is the GGUF one, and only a
+# build that runs a LOCAL model needs it — harnessd's `local` feature.
+[dependencies]
+letibot-tokencore.workspace = true
+
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+letibot-dialect.workspace = true
+letibot-transcript.workspace = true
+serde_json.workspace = true

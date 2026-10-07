@@ -225,6 +225,14 @@ local_checkout() {
     fi
 }
 
+# A source build with no llama.cpp named is cloud-only (see `build_from_source`) and links
+# no llama library, so there is none to copy.
+cloud_only_libraries() {
+    if [ -z "${LETIBOT_LLAMA_DIR:-}" ] || [ -z "${LETIBOT_LLAMA_LIB:-}" ]; then
+        LIBRARIES=""
+    fi
+}
+
 # The prebuilt release asset for this platform, extracted, or nothing.
 #
 # Returning non-zero is a normal outcome, not an error: a platform with no
@@ -268,18 +276,34 @@ build_from_source() {
     if ! need cc && ! need gcc && ! need clang; then
         die "no C compiler found (cc, gcc or clang): the tokenizer shim and the tree-sitter grammars are compiled at build time"
     fi
-    # **The prerequisite nobody expects, checked here so it is not a cargo error.**
     llama_dir="${LETIBOT_LLAMA_DIR:-}"
     llama_lib="${LETIBOT_LLAMA_LIB:-}"
     # The first of LIBRARIES is libllama in this platform's spelling.
     libllama=${LIBRARIES%% *}
+    # **No llama.cpp named: a CLOUD-ONLY build, not a refusal.** llama.cpp is only the
+    # tokenizer a LOCAL model needs; a daemon whose turns go to a provider keeps its
+    # ledger in the byte vocabulary and links no llama at all (harnessd's `local` feature,
+    # off here). So a box with Rust and a provider key installs and runs — the case this
+    # used to refuse with a page about building llama.cpp.
     if [ -z "$llama_dir" ] || [ -z "$llama_lib" ]; then
-        die "harnessd links llama.cpp, so a source build needs a built llama.cpp.
-  Set both, pointing at YOUR checkout and its built libraries:
-    LETIBOT_LLAMA_DIR=/path/to/llama.cpp          (holding include/llama.h)
-    LETIBOT_LLAMA_LIB=/path/to/llama.cpp/build/bin (holding $libllama)
-  Or use the prebuilt release, which carries the libraries it needs:
-    unset LETIBOT_FROM_SOURCE and re-run without a checkout in \$0's directory."
+        warn "No llama.cpp named (LETIBOT_LLAMA_DIR/LETIBOT_LLAMA_LIB), so this is a CLOUD-ONLY
+  build: turns go to a provider (--provider deepseek|glm|grok, or [default] in
+  ~/.config/letibot/providers.toml) and no model runs on this machine. For local models,
+  re-run with both variables pointing at a built llama.cpp."
+        warn "Building letibot (cloud-only) from $src — this takes a few minutes..."
+        cargo build --release --manifest-path "$src/Cargo.toml" --no-default-features \
+            -p letibot-harnessd --bin harnessd --bin letibot-askpass >&2
+        cargo build --release --manifest-path "$src/Cargo.toml" \
+            -p letibot-tui --bin letibot-tui >&2
+        out="$src/target/release"
+        for want in harnessd letibot-tui letibot-askpass; do
+            [ -x "$out/$want" ] || die "the build produced no $out/$want"
+        done
+        # Nothing to carry: no binary of this build links a llama library. (`main` empties
+        # LIBRARIES on the same condition — this runs in a command substitution, so an
+        # assignment here would not reach it.)
+        printf '%s' "$out"
+        return 0
     fi
     [ -f "$llama_dir/include/llama.h" ] ||
         die "no include/llama.h under LETIBOT_LLAMA_DIR=$llama_dir"
@@ -334,6 +358,7 @@ main() {
     if src=$(local_checkout); then
         from=$(build_from_source "$src")
         libs_from="${LETIBOT_LLAMA_LIB:-}"
+        cloud_only_libraries
         launcher_from="$src/scripts"
     else
         if [ -z "${LETIBOT_FROM_SOURCE:-}" ]; then
@@ -366,6 +391,7 @@ main() {
             fi
             from=$(build_from_source "$tmp/letibot")
             libs_from="${LETIBOT_LLAMA_LIB:-}"
+            cloud_only_libraries
             launcher_from="$tmp/letibot/scripts"
         fi
     fi
@@ -511,13 +537,28 @@ main() {
     # error. The operator measured the same gap from the other side on
     # `debian:stable-slim`: the install lands, and the first thing that stops you is
     # a model rather than a package.
-    say "What you have now: a daemon, a head, and the libraries they link. They do"
-    say "not include a MODEL — nothing will answer a turn until one is reachable."
-    say ""
-    say "Point them at one with a llama.cpp llama-server on 127.0.0.1:8080:"
-    say "  llama-server -m MODEL.gguf --port 8080"
-    say "or use a cloud provider instead (--provider deepseek|glm|grok)."
-    say ""
+    if [ -z "$LIBRARIES" ]; then
+        # The cloud-only build: the next step is a key, not a model server.
+        say "What you have now: a daemon and a head for CLOUD models. Give it a key in"
+        say "~/.config/letibot/providers.toml and make that provider the default:"
+        say ""
+        say "  [deepseek]"
+        say "  key = \"sk-…\""
+        say ""
+        say "  [default]"
+        say "  provider = \"deepseek\""
+        say ""
+        say "(or [glm] / [grok]; \$DEEPSEEK_API_KEY works too, with --provider deepseek)."
+        say ""
+    else
+        say "What you have now: a daemon, a head, and the libraries they link. They do"
+        say "not include a MODEL — nothing will answer a turn until one is reachable."
+        say ""
+        say "Point them at one with a llama.cpp llama-server on 127.0.0.1:8080:"
+        say "  llama-server -m MODEL.gguf --port 8080"
+        say "or use a cloud provider instead (--provider deepseek|glm|grok)."
+        say ""
+    fi
     if [ "$have_launcher" = 1 ]; then
         say "Then run:  letibot"
     else

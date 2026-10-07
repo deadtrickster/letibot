@@ -188,14 +188,43 @@ const FILLING_STRIDE: usize = 64;
 
 impl Parts {
     pub fn load(cfg: &Config) -> Result<Parts, HarnessError> {
-        if !cfg.vocab_gguf.is_file() {
-            return Err(HarnessError::Setup(format!(
-                "no vocabulary GGUF at {}. For a split model, pass the first shard.",
-                cfg.vocab_gguf.display()
-            )));
-        }
-        let vocab = Vocab::load(&cfg.vocab_gguf)
-            .map_err(|e| HarnessError::Setup(format!("loading the vocabulary: {e}")))?;
+        let wiring = cfg.dialect.wiring(cfg.effort.as_deref());
+        // **Which vocabulary, decided by what the turns need.** A GGUF named on the command
+        // line is read by llama.cpp — the only vocabulary a local llama-server can take ids
+        // from. None named and a provider answering: the byte vocabulary, because there
+        // the ids never leave this machine (see `letibot_tokencore::vocab`). None named and
+        // no provider: a refusal naming both ways out, rather than a guessed path.
+        let vocab = match &cfg.vocab_gguf {
+            Some(path) => {
+                if !path.is_file() {
+                    return Err(HarnessError::Setup(format!(
+                        "no vocabulary GGUF at {}. For a split model, pass the first shard.",
+                        path.display()
+                    )));
+                }
+                load_gguf(path)
+                    .map_err(|e| HarnessError::Setup(format!("loading the vocabulary: {e}")))?
+            }
+            None if cfg.provider.is_some() => {
+                let spec = wiring.spec();
+                Vocab::bytes(
+                    spec.control_tokens
+                        .as_slice()
+                        .iter()
+                        .map(|t| t.literal.as_ref())
+                        .chain(spec.stop_tokens.iter().map(|t| t.literal.as_ref())),
+                    spec.stop_tokens.iter().map(|t| t.literal.as_ref()),
+                )
+            }
+            None => {
+                return Err(HarnessError::Setup(
+                    "no vocabulary: a local model needs the GGUF it serves (--vocab PATH, the \
+                     first shard of a split model), and a cloud provider needs none \
+                     (--provider deepseek|glm|grok, or [default] in providers.toml)"
+                        .into(),
+                ));
+            }
+        };
         let skills =
             std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::load_default());
         let lsp = std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default());
@@ -206,7 +235,7 @@ impl Parts {
         ));
         Ok(Parts {
             vocab: std::sync::Arc::new(vocab),
-            wiring: std::sync::Arc::new(cfg.dialect.wiring(cfg.effort.as_deref())),
+            wiring: std::sync::Arc::new(wiring),
             mode_store: std::sync::Arc::new(
                 std::sync::RwLock::new(crate::modes::ModeStore::open()),
             ),
@@ -2943,11 +2972,24 @@ impl<'a> Harness<'a> {
                 // them with a different dialect would put two templates' bytes in
                 // one prompt, and nothing downstream can see it: the chain still
                 // verifies, because every row was hashed by whoever wrote it.
-                let stored_sha = s
+                let stored_meta = s
                     .stable_prefix_meta(&loaded.stable_prefix_id)
-                    .map_err(|e| HarnessError::Store(e.to_string()))?
-                    .map(|m| m.dialect_sha)
+                    .map_err(|e| HarnessError::Store(e.to_string()))?;
+                let stored_sha = stored_meta
+                    .as_ref()
+                    .map(|m| m.dialect_sha.clone())
                     .unwrap_or_default();
+                // **And the vocabulary that cut the stored ids.** A resume replays them as
+                // numbers, so ids from the byte vocabulary under a GGUF — or the reverse, or
+                // under another dialect's byte table — are valid numbers that mean other
+                // text. Same remedy as a dialect change, from the same record. Two GGUFs are
+                // compared nowhere here, as before: a local model's file is the operator's
+                // binding, refused at the switch rather than guessed at by path.
+                let stored_vocab = stored_meta
+                    .as_ref()
+                    .map(|m| m.vocab_source.clone())
+                    .unwrap_or_default();
+                let vocab_moved = vocab_differs(&stored_vocab, parts.vocab.source());
                 // **A rendering that cannot be reused is not a conversation that
                 // cannot be continued.**
                 //
@@ -2973,7 +3015,7 @@ impl<'a> Harness<'a> {
                 // tokens and its chain, exactly as a compaction leaves what it
                 // stopped carrying. Nothing stored is edited, so the append-only
                 // triggers stay honest.
-                if stored_sha != dialect_sha {
+                if stored_sha != dialect_sha || vocab_moved {
                     let store = s;
                     let items: Vec<letibot_transcript::TranscriptItem> =
                         loaded.items.iter().map(|(i, _, _)| i.clone()).collect();
@@ -2989,7 +3031,7 @@ impl<'a> Harness<'a> {
                         tools_json: prefix.tools_json.clone(),
                         tokens: probe.ledger.prefix_tokens().to_vec(),
                         h_init: probe.ledger.h_init(),
-                        vocab_source: cfg.vocab_gguf.display().to_string(),
+                        vocab_source: parts.vocab.source().to_string(),
                     };
                     drop(probe);
                     let new_prefix_id = store
@@ -3049,16 +3091,27 @@ impl<'a> Harness<'a> {
                     }
 
                     let before: usize = loaded.items.iter().map(|(_, _, t)| t.len()).sum();
+                    let recorded_under = if vocab_moved {
+                        format!(
+                            "the vocabulary `{}` and this daemon tokenizes with `{}`",
+                            stored_vocab,
+                            parts.vocab.source()
+                        )
+                    } else {
+                        format!(
+                            "dialect template {} and this daemon renders {}",
+                            &stored_sha[..16.min(stored_sha.len())],
+                            &dialect_sha[..16]
+                        )
+                    };
                     notes.push(format!(
-                        "this conversation was recorded under dialect template {} and this \
-                         daemon renders {}. Its {} item(s) were RE-RENDERED for this one — \
+                        "this conversation was recorded under {recorded_under}. Its {} item(s) \
+                         were RE-RENDERED for this one — \
                          the stored tokens are a cache of the other rendering, the items \
                          themselves are the record, and nothing was detokenized to do it. \
                          {} token(s) became {}, which is one cold prefill, once, on the next \
                          turn. The old transcript {} keeps its tokens and its chain; this is \
                          a fork, and nothing stored was rewritten.",
-                        &stored_sha[..16],
-                        &dialect_sha[..16],
                         items.len(),
                         before,
                         rebuilt.ledger.len(),
@@ -3218,7 +3271,7 @@ impl<'a> Harness<'a> {
                         tools_json: prefix.tools_json.clone(),
                         tokens: session.ledger.prefix_tokens().to_vec(),
                         h_init: session.ledger.h_init(),
-                        vocab_source: cfg.vocab_gguf.display().to_string(),
+                        vocab_source: parts.vocab.source().to_string(),
                     };
                     prefix_id = s
                         .put_stable_prefix(&rec)
@@ -4613,7 +4666,7 @@ impl<'a> Harness<'a> {
     ) -> Result<String, HarnessError> {
         let want = parse_local_url(&m.url)
             .map_err(|e| HarnessError::Setup(format!("[model.\"{}\"] {e}", m.name)))?;
-        if let Some(why) = local_model_vocab_refusal(&want, m, &self.cfg.vocab_gguf) {
+        if let Some(why) = local_model_vocab_refusal(&want, m, self.cfg.vocab_gguf.as_deref()) {
             return Err(HarnessError::Setup(why));
         }
 
@@ -4742,6 +4795,11 @@ impl<'a> Harness<'a> {
         // for a provider whose key turned out to be missing would be a change made by a
         // refusal.
         match choice {
+            // The daemon's own server takes token ids, and a byte-vocabulary session has
+            // none it could read: refused before anything changes, as the promise above says.
+            None if self.engine.vocab().is_bytes() => {
+                Err(HarnessError::Setup(NO_VOCAB_FOR_LOCAL.to_string()))
+            }
             None => {
                 self.provider = None;
                 self.cfg.ledger_scale = None;
@@ -5812,7 +5870,7 @@ impl<'a> Harness<'a> {
             tools_json: next.tools_json.clone(),
             tokens: measured.ledger.prefix_tokens().to_vec(),
             h_init: measured.ledger.h_init(),
-            vocab_source: self.cfg.vocab_gguf.display().to_string(),
+            vocab_source: self.engine.vocab().source().to_string(),
         };
         drop(measured);
         let id = self
@@ -10419,7 +10477,9 @@ impl HarnessTaskRunner {
             Some(m) => {
                 let want_at =
                     parse_local_url(&m.url).map_err(|e| format!("[model.\"{}\"] {e}", m.name))?;
-                if let Some(why) = local_model_vocab_refusal(&want_at, m, &self.base.vocab_gguf) {
+                if let Some(why) =
+                    local_model_vocab_refusal(&want_at, m, self.base.vocab_gguf.as_deref())
+                {
                     return Err(why);
                 }
                 let w = match sub_window {
@@ -10866,8 +10926,13 @@ fn steer_for_turn(
 fn local_model_vocab_refusal(
     want: &Endpoint,
     m: &letibot_provider::keys::LocalModel,
-    vocab: &std::path::Path,
+    vocab: Option<&std::path::Path>,
 ) -> Option<String> {
+    // A daemon on the byte vocabulary has no ids a llama-server could read — no
+    // assertion of `same_vocab` makes them the served model's.
+    let Some(vocab) = vocab else {
+        return Some(NO_VOCAB_FOR_LOCAL.to_string());
+    };
     // `same_vocab` is not sampling, so the reader files it under `unknown` — which is
     // where a key it does not interpret belongs. Read here, where it means something.
     let asserted = m
@@ -10946,6 +11011,58 @@ fn parse_local_url(url: &str) -> Result<Endpoint, String> {
 /// The GGUF's own file name, which is what two servers holding one model agree on
 /// even when the directories differ. A split GGUF's `-00001-of-00006` suffix is kept:
 /// two servers that disagree about the shard count are not serving the same file.
+/// **Do stored ids mean something else under this vocabulary?** Yes when one side is the
+/// byte vocabulary and the other is not, or both are byte tables of different literals.
+/// Two GGUFs: not decided here (see the resume that calls this). An empty stored source is
+/// a row from before the column was filled, and is taken to be a GGUF — which every such
+/// row is.
+fn vocab_differs(stored: &str, current: &str) -> bool {
+    let bytes = |s: &str| s.starts_with(letibot_tokencore::BYTES_SOURCE);
+    match (bytes(stored), bytes(current)) {
+        (false, false) => false,
+        (true, true) => stored != current,
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod vocab_differs_tests {
+    use super::vocab_differs;
+
+    #[test]
+    fn only_a_move_into_or_out_of_bytes_or_between_byte_tables_differs() {
+        let (q, g) = ("bytes:aaaaaaaaaaaa", "bytes:bbbbbbbbbbbb");
+        assert!(!vocab_differs(q, q));
+        assert!(vocab_differs(q, g), "two byte tables mean different ids");
+        assert!(vocab_differs(q, "/m/Qwen.gguf"));
+        assert!(vocab_differs("/m/Qwen.gguf", q));
+        // Two GGUFs are the operator's binding, refused at the switch, not here.
+        assert!(!vocab_differs("/m/Qwen.gguf", "/other/Qwen.gguf"));
+        // A row from before the column was filled is a GGUF row.
+        assert!(!vocab_differs("", "/m/Qwen.gguf"));
+        assert!(vocab_differs("", q));
+    }
+}
+
+/// Why a session on the byte vocabulary cannot be pointed at a local model.
+const NO_VOCAB_FOR_LOCAL: &str = "this daemon has no model vocabulary — it was started for a cloud provider, whose \
+     turns need none — and a local llama-server reads token ids computed here. Start a \
+     daemon with --vocab <the served model's GGUF> to run on a local model.";
+
+/// Read a GGUF's vocabulary — llama.cpp's job, so only in a build with the `local`
+/// feature. Without it the answer is a sentence saying so, and a cloud provider still works.
+#[cfg(feature = "local")]
+fn load_gguf(path: &std::path::Path) -> Result<Vocab, letibot_tokencore::VocabError> {
+    letibot_llama::load(path)
+}
+
+#[cfg(not(feature = "local"))]
+fn load_gguf(path: &std::path::Path) -> Result<Vocab, letibot_tokencore::VocabError> {
+    Err(letibot_tokencore::VocabError::NoLlama {
+        path: path.display().to_string(),
+    })
+}
+
 fn vocab_basename(p: &std::path::Path) -> String {
     p.file_name()
         .map(|s| s.to_string_lossy().to_string())

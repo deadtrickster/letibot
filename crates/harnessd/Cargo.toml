@@ -7,12 +7,21 @@ license.workspace = true
 repository.workspace = true
 build = "build.rs"
 
+[features]
+default = ["local"]
+# A local model: llama.cpp's tokenizer, so token ids can be sent to a llama-server.
+local = ["dep:letibot-llama"]
+
 [dependencies]
 letibot-transcript.workspace = true
 letibot-dialect.workspace = true
 letibot-dialect-glm.workspace = true
 letibot-dialect-qwen.workspace = true
 letibot-tokencore.workspace = true
+# The GGUF vocabulary, for a daemon that runs a LOCAL model. Behind `local` (on by
+# default) because it is the one dependency that needs llama.cpp to build; without it the
+# daemon serves cloud providers only, and the build needs nothing but Rust.
+letibot-llama = { workspace = true, optional = true }
 letibot-backend.workspace = true
 letibot-turn.workspace = true
 letibot-tools.workspace = true
@@ -49,6 +58,7 @@ name = "letibot-m1"
 path = "src/bin/letibot-m1.rs"
 
 [dev-dependencies]
+letibot-llama.workspace = true
 letibot-tools = { workspace = true, features = ["testing"] }
 
 [[bin]]

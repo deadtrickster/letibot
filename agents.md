@@ -23,7 +23,8 @@ Workspace crates, roughly bottom-up:
 | crate | is |
 |---|---|
 | transcript | the item model (user/assistant/tool rows) |
-| tokencore | tokenisers, llama.cpp FFI |
+| tokencore | the vocabulary (a backend trait, plus the byte vocabulary), ledger, token region, store — pure Rust |
+| llama | the GGUF vocabulary backend: llama.cpp FFI, the C shim; the only crate linking llama.cpp, behind harnessd's `local` feature |
 | dialect, dialect-glm, dialect-qwen | prompt templates per model family (jinja in `template/`) |
 | http, provider | model endpoints |
 | websearch, webfetch | tool backends; webfetch is the curl-subprocess reader-mode fetcher |

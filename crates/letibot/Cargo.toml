@@ -15,6 +15,11 @@ repository.workspace = true
 name = "letibot"
 path = "src/main.rs"
 
+[features]
+default = ["local"]
+# Forwarded to harnessd: see its `local` feature.
+local = ["letibot-harnessd/local"]
+
 [dependencies]
 # The askpass role's whole surface: attach to the daemon and carry one question.
 letibot-sessionlog.workspace = true
@@ -23,7 +28,7 @@ letibot-sessionlog.workspace = true
 letibot-dialect-glm.workspace = true
 letibot-dialect-qwen.workspace = true
 # The `m1` role: `m1::run` is that binary's body, moved into this crate's lib.
-letibot-harnessd.workspace = true
+letibot-harnessd = { workspace = true, default-features = false }
 # The `Head` role: `head::run` is that binary's body, moved into this crate's lib.
 letibot-tui.workspace = true
 # The launcher role: a workspace hashes to a socket, and the key must match the

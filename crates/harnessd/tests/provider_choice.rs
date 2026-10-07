@@ -42,7 +42,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = g.into();
+        cfg.vocab_gguf = Some(g.into());
     }
     cfg
 }

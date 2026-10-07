@@ -6,8 +6,8 @@
 //! `RenderSpan::Text` and `RenderSpan::Control` reach the tokenizer by two
 //! functions that cannot produce each other's output:
 //!
-//! * [`Vocab::tokenize_text`] calls `llama_tokenize` with `parse_special =
-//!   false`. A user message containing the literal `<|im_start|>` becomes the
+//! * [`Vocab::tokenize_text`] asks the backend with `parse_special = false`
+//!   (`llama_tokenize`'s own flag, on the GGUF backend). A user message containing the literal `<|im_start|>` becomes the
 //!   six ordinary tokens `[27, 91, 316, 4747, 91, 29]`, measured. It cannot
 //!   become the control id 248045 however it is spelled, because the flag that
 //!   would let it is off on this path and there is no argument to turn it on.
@@ -29,16 +29,35 @@
 //! diff, which compares our rendered string against the server's -- the server's
 //! string has no invisible prefix to compare against.
 
-use std::ffi::{CStr, CString, c_char};
-use std::path::Path;
-use std::sync::Once;
+//!
+//! # Two backends, one type
+//!
+//! [`Vocab`] is the type every caller holds; what answers it is a [`VocabBackend`]:
+//!
+//! * **a GGUF**, through llama.cpp — `letibot_llama::load`. The only backend whose ids a
+//!   llama-server can read, so the only one a local model can run on.
+//! * **bytes** — [`Vocab::bytes`], pure Rust, no file. Ids 0–255 are the bytes of the
+//!   text; the dialect's control and stop literals get reserved ids from 256 up, marked
+//!   CONTROL. It exists for a session whose turns go to a **cloud provider**: there the
+//!   ids never leave this machine — they are the ledger's record, its hash chain and
+//!   the compaction arithmetic's units, and the provider's own `usage` already rescales
+//!   the counts (`Config::ledger_scale`) — so a model's tokenizer buys nothing and costs
+//!   a GGUF on every box.
+//!
+//! Both keep the split above: a byte backend's `tokenize_text` can only produce ids
+//! below 256, and only [`Vocab::resolve_control`] can name a reserved one.
 
-use crate::ffi;
+use crate::ledger::hex;
 
 /// A token id. `u32` rather than the FFI's `i32`, to match the type
 /// `Dialect::parse` traffics in and because a negative token id is not a value
 /// this crate ever wants to be able to represent.
 pub type TokenId = u32;
+
+/// `llama_token_attr` bits a control literal must carry one of (see
+/// [`Vocab::resolve_control`]). The byte backend marks its reserved ids CONTROL.
+pub const ATTR_CONTROL: u32 = 1 << 3;
+pub const ATTR_USER_DEFINED: u32 = 1 << 4;
 
 #[derive(Debug)]
 pub enum VocabError {
@@ -46,13 +65,15 @@ pub enum VocabError {
     Load { path: String },
     /// Text longer than `llama_tokenize` can be told about.
     TextTooLong { bytes: usize },
-    /// libllama returned a negative id, or one past the end of the vocab.
+    /// The backend returned a negative id, or one past the end of the vocab.
     BadTokenId { id: i32 },
     /// A path that is not valid to hand to C.
     BadPath,
-    /// `llama_detokenize` produced bytes that are not UTF-8. Only reachable on a
+    /// Detokenizing produced bytes that are not UTF-8. Only reachable on a
     /// token sequence cut in the middle of a multi-byte character.
     NotUtf8,
+    /// A GGUF was asked for and this build has no llama.cpp to read it with.
+    NoLlama { path: String },
 }
 
 impl std::fmt::Display for VocabError {
@@ -70,91 +91,124 @@ impl std::fmt::Display for VocabError {
             VocabError::BadTokenId { id } => write!(f, "token id {id} is out of range"),
             VocabError::BadPath => write!(f, "model path is not representable as a C string"),
             VocabError::NotUtf8 => write!(f, "detokenized bytes are not valid UTF-8"),
+            VocabError::NoLlama { path } => write!(
+                f,
+                "{path} is a GGUF, and this build has no llama.cpp to read it with (it was \
+                 built without the `local` feature). A cloud provider needs no GGUF; a local \
+                 model needs a build with `local`"
+            ),
         }
     }
 }
 
 impl std::error::Error for VocabError {}
 
-static LLAMA_INIT: Once = Once::new();
+/// **What answers a [`Vocab`].** The primitives only; the rules built on them —
+/// one id per control literal, no specials from text, bytes-then-decode — live in
+/// [`Vocab`] once, whichever backend is underneath.
+pub trait VocabBackend: Send + Sync {
+    fn n_tokens(&self) -> u32;
+    fn bos(&self) -> Option<TokenId>;
+    fn eos(&self) -> Option<TokenId>;
+    fn gguf_would_add_bos(&self) -> bool;
+    fn gguf_would_add_eos(&self) -> bool;
+    /// `add_special` is always false; `parse_special` is the one switch, and
+    /// [`Vocab`] sets it to true only inside `resolve_control`.
+    fn tokenize(&self, text: &str, parse_special: bool) -> Result<Vec<TokenId>, VocabError>;
+    fn token_text(&self, id: TokenId) -> Result<&str, VocabError>;
+    fn token_attr(&self, id: TokenId) -> Result<u32, VocabError>;
+    fn is_eog(&self, id: TokenId) -> bool;
+    fn piece_bytes(&self, id: TokenId, render_special: bool) -> Result<Vec<u8>, VocabError>;
+}
 
 /// A loaded vocabulary and nothing else.
-///
-/// Owns a `llama_model *` that was loaded with `vocab_only = true`, so it holds
-/// a few megabytes of token table and no weights. Dropping it frees the model.
 pub struct Vocab {
-    model: *mut ffi::LlamaModel,
-    vocab: *const ffi::LlamaVocab,
-    n_tokens: u32,
+    backend: Box<dyn VocabBackend>,
     source: String,
 }
 
-// llama.h, above the tokenization block: "The API is thread-safe." Nothing in
-// this type mutates the model after construction.
-unsafe impl Send for Vocab {}
-unsafe impl Sync for Vocab {}
-
 impl Vocab {
-    /// Load the vocabulary out of a GGUF.
-    ///
-    /// For a split model, pass the *first* shard. `vocab_only` returns before
-    /// the loader reaches any tensor, so the remaining shards are never opened
-    /// and need not exist.
-    pub fn load(path: &Path) -> Result<Self, VocabError> {
-        LLAMA_INIT.call_once(|| unsafe { ffi::letibot_llama_init(1) });
-
-        let c_path =
-            CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| VocabError::BadPath)?;
-
-        let model = unsafe { ffi::letibot_vocab_load(c_path.as_ptr()) };
-        if model.is_null() {
-            return Err(VocabError::Load {
-                path: path.display().to_string(),
-            });
+    /// A vocabulary answered by `backend`. `source` is what the store records as the
+    /// vocabulary a ledger's ids came out of — a GGUF's path, or [`BYTES_SOURCE`] — and
+    /// what a resume compares (see [`Vocab::is_bytes`]).
+    pub fn from_backend(backend: Box<dyn VocabBackend>, source: impl Into<String>) -> Vocab {
+        Vocab {
+            backend,
+            source: source.into(),
         }
-        let vocab = unsafe { ffi::llama_model_get_vocab(model) };
-        let n = unsafe { ffi::llama_vocab_n_tokens(vocab) };
-        Ok(Vocab {
-            model,
-            vocab,
-            n_tokens: n.max(0) as u32,
-            source: path.display().to_string(),
-        })
+    }
+
+    /// **The byte vocabulary**, for a session whose model is a cloud provider. See the
+    /// module docs. `literals` are every control and stop literal the dialect will ask
+    /// [`Vocab::resolve_control`] for; each gets one reserved id, in the order given,
+    /// duplicates once. `eog` are the literals that end generation.
+    pub fn bytes<'a>(
+        literals: impl IntoIterator<Item = &'a str>,
+        eog: impl IntoIterator<Item = &'a str>,
+    ) -> Vocab {
+        let mut specials: Vec<String> = Vec::new();
+        for l in literals {
+            if !l.is_empty() && !specials.iter().any(|s| s == l) {
+                specials.push(l.to_string());
+            }
+        }
+        let eog: Vec<TokenId> = eog
+            .into_iter()
+            .filter_map(|l| specials.iter().position(|s| s == l))
+            .map(|i| 256 + i as TokenId)
+            .collect();
+        // The identity is the table, not just the word: two dialects reserve different
+        // literals at different ids, so a ledger written under one does not mean the
+        // same thing under the other. The hash makes that a string a resume can compare.
+        let mut h = <sha2::Sha256 as sha2::Digest>::new();
+        for s in &specials {
+            sha2::Digest::update(&mut h, s.as_bytes());
+            sha2::Digest::update(&mut h, [0u8]);
+        }
+        let digest: [u8; 32] = sha2::Digest::finalize(h).into();
+        let source = format!("{BYTES_SOURCE}:{}", &hex(&digest)[..12]);
+        let ascii = (0u8..128).map(char::from).collect();
+        Vocab::from_backend(
+            Box::new(Bytes {
+                specials,
+                eog,
+                ascii,
+            }),
+            source,
+        )
+    }
+
+    /// Whether this is the byte vocabulary — whose ids a llama-server cannot read, so a
+    /// session on it must not be pointed at a local model.
+    pub fn is_bytes(&self) -> bool {
+        self.source.starts_with(BYTES_SOURCE)
     }
 
     pub fn n_tokens(&self) -> u32 {
-        self.n_tokens
+        self.backend.n_tokens()
     }
 
-    /// The path this vocabulary came from. Recorded in the store so a ledger can
-    /// be blamed on a specific GGUF.
+    /// The path this vocabulary came from, or `bytes:<table hash>`. Recorded in the
+    /// store so a ledger can be blamed on a specific vocabulary.
     pub fn source(&self) -> &str {
         &self.source
     }
 
     pub fn bos(&self) -> Option<TokenId> {
-        self.opt_id(unsafe { ffi::llama_vocab_bos(self.vocab) })
+        self.backend.bos()
     }
 
     pub fn eos(&self) -> Option<TokenId> {
-        self.opt_id(unsafe { ffi::llama_vocab_eos(self.vocab) })
+        self.backend.eos()
     }
 
     /// What the GGUF *would* do if we let it. We never do; see the module docs.
     pub fn gguf_would_add_bos(&self) -> bool {
-        unsafe { ffi::llama_vocab_get_add_bos(self.vocab) }
+        self.backend.gguf_would_add_bos()
     }
 
     pub fn gguf_would_add_eos(&self) -> bool {
-        unsafe { ffi::llama_vocab_get_add_eos(self.vocab) }
-    }
-
-    fn opt_id(&self, raw: i32) -> Option<TokenId> {
-        if raw < 0 || raw as u32 >= self.n_tokens {
-            None
-        } else {
-            Some(raw as TokenId)
-        }
+        self.backend.gguf_would_add_eos()
     }
 
     /// Tokenize a `RenderSpan::Text` payload.
@@ -162,7 +216,7 @@ impl Vocab {
     /// `parse_special = false`, `add_special = false`. Nothing in `text` can
     /// become a control token.
     pub fn tokenize_text(&self, text: &str) -> Result<Vec<TokenId>, VocabError> {
-        self.tokenize_raw(text, false)
+        self.backend.tokenize(text, false)
     }
 
     /// Tokenize allowing special-token parsing.
@@ -173,84 +227,21 @@ impl Vocab {
     /// rendered prompt in one go, and that is the injection this crate exists
     /// to make impossible.
     fn tokenize_with_specials(&self, text: &str) -> Result<Vec<TokenId>, VocabError> {
-        self.tokenize_raw(text, true)
-    }
-
-    fn tokenize_raw(&self, text: &str, parse_special: bool) -> Result<Vec<TokenId>, VocabError> {
-        if text.is_empty() {
-            return Ok(Vec::new());
-        }
-        let len =
-            i32::try_from(text.len()).map_err(|_| VocabError::TextTooLong { bytes: text.len() })?;
-
-        // Every token decodes to at least one byte, so byte length is an upper
-        // bound. The negative-return retry below is kept anyway: it is the
-        // contract llama_tokenize documents and it costs nothing.
-        let mut out: Vec<ffi::LlamaToken> = vec![0; text.len()];
-        let mut n = unsafe {
-            ffi::llama_tokenize(
-                self.vocab,
-                text.as_ptr() as *const c_char,
-                len,
-                out.as_mut_ptr(),
-                out.len() as i32,
-                false,
-                parse_special,
-            )
-        };
-        if n < 0 {
-            out.resize((-n) as usize, 0);
-            n = unsafe {
-                ffi::llama_tokenize(
-                    self.vocab,
-                    text.as_ptr() as *const c_char,
-                    len,
-                    out.as_mut_ptr(),
-                    out.len() as i32,
-                    false,
-                    parse_special,
-                )
-            };
-            if n < 0 {
-                return Err(VocabError::BadTokenId { id: n });
-            }
-        }
-        out.truncate(n as usize);
-        out.into_iter()
-            .map(|t| {
-                if t < 0 || t as u32 >= self.n_tokens {
-                    Err(VocabError::BadTokenId { id: t })
-                } else {
-                    Ok(t as TokenId)
-                }
-            })
-            .collect()
+        self.backend.tokenize(text, true)
     }
 
     /// The exact surface text of one vocabulary entry, unrendered.
     pub fn token_text(&self, id: TokenId) -> Result<&str, VocabError> {
-        if id >= self.n_tokens {
-            return Err(VocabError::BadTokenId { id: id as i32 });
-        }
-        let p = unsafe { ffi::llama_vocab_get_text(self.vocab, id as i32) };
-        if p.is_null() {
-            return Err(VocabError::BadTokenId { id: id as i32 });
-        }
-        unsafe { CStr::from_ptr(p) }
-            .to_str()
-            .map_err(|_| VocabError::NotUtf8)
+        self.backend.token_text(id)
     }
 
     /// `llama_token_attr` bits for one entry.
     pub fn token_attr(&self, id: TokenId) -> Result<u32, VocabError> {
-        if id >= self.n_tokens {
-            return Err(VocabError::BadTokenId { id: id as i32 });
-        }
-        Ok(unsafe { ffi::llama_vocab_get_attr(self.vocab, id as i32) })
+        self.backend.token_attr(id)
     }
 
     pub fn is_eog(&self, id: TokenId) -> bool {
-        id < self.n_tokens && unsafe { ffi::llama_vocab_is_eog(self.vocab, id as i32) }
+        self.backend.is_eog(id)
     }
 
     /// Render one token to its display piece.
@@ -267,38 +258,7 @@ impl Vocab {
     /// 2026-09-15, and turned every message containing a non-ASCII character into
     /// `<undecodable N token(s)>`.
     pub fn piece_bytes(&self, id: TokenId, render_special: bool) -> Result<Vec<u8>, VocabError> {
-        if id >= self.n_tokens {
-            return Err(VocabError::BadTokenId { id: id as i32 });
-        }
-        let mut buf = vec![0u8; 64];
-        let mut n = unsafe {
-            ffi::llama_token_to_piece(
-                self.vocab,
-                id as i32,
-                buf.as_mut_ptr() as *mut c_char,
-                buf.len() as i32,
-                0,
-                render_special,
-            )
-        };
-        if n < 0 {
-            buf.resize((-n) as usize, 0);
-            n = unsafe {
-                ffi::llama_token_to_piece(
-                    self.vocab,
-                    id as i32,
-                    buf.as_mut_ptr() as *mut c_char,
-                    buf.len() as i32,
-                    0,
-                    render_special,
-                )
-            };
-            if n < 0 {
-                return Err(VocabError::BadTokenId { id: id as i32 });
-            }
-        }
-        buf.truncate(n as usize);
-        Ok(buf)
+        self.backend.piece_bytes(id, render_special)
     }
 
     /// Tokens back to text, by concatenating [`Vocab::piece_bytes`].
@@ -390,7 +350,7 @@ impl Vocab {
                     return Err(ResolveCause::NotSingleToken { ids });
                 }
                 let attr = self.token_attr(*id).map_err(|_| ResolveCause::Absent)?;
-                if attr & (ffi::ATTR_CONTROL | ffi::ATTR_USER_DEFINED) == 0 {
+                if attr & (ATTR_CONTROL | ATTR_USER_DEFINED) == 0 {
                     return Err(ResolveCause::NotSpecial { id: *id, attr });
                 }
                 Ok(*id)
@@ -433,8 +393,183 @@ impl std::fmt::Display for ResolveCause {
     }
 }
 
-impl Drop for Vocab {
-    fn drop(&mut self) {
-        unsafe { ffi::llama_model_free(self.model) };
+/// The prefix of the byte vocabulary's [`Vocab::source`].
+pub const BYTES_SOURCE: &str = "bytes";
+
+/// **The byte backend.** Ids 0–255 are bytes; `256 + i` is `specials[i]`.
+struct Bytes {
+    specials: Vec<String>,
+    eog: Vec<TokenId>,
+    /// Bytes 0..=127 as one string, so `token_text` can lend each as a `&str`.
+    ascii: String,
+}
+
+impl Bytes {
+    fn special(&self, id: TokenId) -> Option<&str> {
+        id.checked_sub(256)
+            .and_then(|i| self.specials.get(i as usize))
+            .map(String::as_str)
+    }
+}
+
+impl VocabBackend for Bytes {
+    fn n_tokens(&self) -> u32 {
+        256 + self.specials.len() as u32
+    }
+    fn bos(&self) -> Option<TokenId> {
+        None
+    }
+    fn eos(&self) -> Option<TokenId> {
+        None
+    }
+    fn gguf_would_add_bos(&self) -> bool {
+        false
+    }
+    fn gguf_would_add_eos(&self) -> bool {
+        false
+    }
+    /// Text is its bytes. With `parse_special` — which only `resolve_control` sets —
+    /// a string that IS a reserved literal, whole, is that literal's one id; anything
+    /// else is still bytes, so `"<|im_start|>x"` is not a control token here either.
+    fn tokenize(&self, text: &str, parse_special: bool) -> Result<Vec<TokenId>, VocabError> {
+        if parse_special && let Some(i) = self.specials.iter().position(|s| s == text) {
+            return Ok(vec![256 + i as TokenId]);
+        }
+        Ok(text.bytes().map(TokenId::from).collect())
+    }
+    fn token_text(&self, id: TokenId) -> Result<&str, VocabError> {
+        if let Some(s) = self.special(id) {
+            return Ok(s);
+        }
+        // A lone byte has no `&str` of its own unless it is ASCII; `ascii` holds every
+        // ASCII character once, which is all `token_text` is asked about outside control
+        // resolution. A byte above 127 is half a character and has no text.
+        match id {
+            0..=127 => Ok(&self.ascii[id as usize..id as usize + 1]),
+            128..=255 => Err(VocabError::NotUtf8),
+            _ => Err(VocabError::BadTokenId { id: id as i32 }),
+        }
+    }
+    fn token_attr(&self, id: TokenId) -> Result<u32, VocabError> {
+        match id {
+            0..=255 => Ok(0),
+            _ if self.special(id).is_some() => Ok(ATTR_CONTROL),
+            _ => Err(VocabError::BadTokenId { id: id as i32 }),
+        }
+    }
+    fn is_eog(&self, id: TokenId) -> bool {
+        self.eog.contains(&id)
+    }
+    /// A reserved id renders as its literal only when specials are rendered — the same
+    /// contract `llama_token_to_piece` keeps for a control token.
+    fn piece_bytes(&self, id: TokenId, render_special: bool) -> Result<Vec<u8>, VocabError> {
+        match id {
+            0..=255 => Ok(vec![id as u8]),
+            _ => match self.special(id) {
+                Some(s) if render_special => Ok(s.as_bytes().to_vec()),
+                Some(_) => Ok(Vec::new()),
+                None => Err(VocabError::BadTokenId { id: id as i32 }),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod bytes_tests {
+    use super::*;
+    use crate::control::{VocabDecoder, resolve, resolve_stops, tokenize_spans};
+    use letibot_dialect::{
+        ControlRole, ControlToken, ControlTokens, RenderSpan, StopToken, TokenDecoder,
+    };
+
+    const TOKENS: &[ControlToken] = &[
+        ControlToken::borrowed(ControlRole::TurnStartUser, "<|im_start|>user"),
+        ControlToken::borrowed(ControlRole::TurnEnd, "<|im_end|>"),
+        ControlToken::borrowed(ControlRole::ThinkOpen, "<think>"),
+    ];
+    const STOPS: &[StopToken] = &[StopToken::borrowed(ControlRole::TurnEnd, "<|im_end|>")];
+
+    fn vocab() -> Vocab {
+        Vocab::bytes(
+            TOKENS
+                .iter()
+                .map(|t| t.literal.as_ref())
+                .chain(STOPS.iter().map(|t| t.literal.as_ref())),
+            STOPS.iter().map(|t| t.literal.as_ref()),
+        )
+    }
+
+    /// The split the module exists for, on the byte backend: text that spells a control
+    /// literal exactly is still its bytes, and only `resolve_control` yields the id.
+    #[test]
+    fn text_cannot_become_a_control_token_however_it_is_spelled() {
+        let v = vocab();
+        for text in ["<|im_end|>", "<think>", "a<|im_end|>b", "<|im_start|>user"] {
+            let ids = v.tokenize_text(text).unwrap();
+            assert_eq!(ids.len(), text.len(), "{text:?} is its bytes");
+            assert!(
+                ids.iter().all(|id| *id < 256),
+                "{text:?} produced a reserved id"
+            );
+        }
+        let end = v.resolve_control("<|im_end|>").unwrap();
+        assert!(end >= 256);
+        assert_eq!(v.token_attr(end).unwrap(), ATTR_CONTROL);
+        assert_eq!(v.token_text(end).unwrap(), "<|im_end|>");
+    }
+
+    /// A whole dialect's table resolves — the check that refused every bundled GGUF on a
+    /// Mac with no model — and a literal the table never named is refused by name, so a
+    /// dialect that grew a token is still a startup error and not a silent byte run.
+    #[test]
+    fn every_reserved_literal_resolves_and_an_unknown_one_does_not() {
+        let v = vocab();
+        let map = resolve(&v, &ControlTokens::borrowed(TOKENS)).expect("the table resolves");
+        assert_eq!(map.len(), 3);
+        let stops = resolve_stops(&v, STOPS).expect("the stops resolve");
+        assert!(v.is_eog(stops[0]));
+        assert!(matches!(
+            v.resolve_control("<tool_call>"),
+            Err(ResolveCause::NotSingleToken { .. })
+        ));
+        assert_eq!(v.resolve_control(""), Err(ResolveCause::Empty));
+    }
+
+    /// Bytes first, decode once: a character split across two ids still round-trips, and
+    /// a control id renders as its literal only when specials are rendered.
+    #[test]
+    fn spans_round_trip_and_control_ids_render_only_when_asked() {
+        let v = vocab();
+        let map = resolve(&v, &ControlTokens::borrowed(TOKENS)).unwrap();
+        let spans = [
+            RenderSpan::Control(TOKENS[0].clone()),
+            RenderSpan::Text("\nпривет, мир — ✓\n".into()),
+            RenderSpan::Control(TOKENS[1].clone()),
+        ];
+        let ids = tokenize_spans(&v, &map, &spans).expect("tokenize");
+        assert_eq!(
+            v.detokenize(&ids, true).unwrap(),
+            "<|im_start|>user\nпривет, мир — ✓\n<|im_end|>"
+        );
+        assert_eq!(v.detokenize(&ids, false).unwrap(), "\nпривет, мир — ✓\n");
+        let dec = VocabDecoder::new(&v, &map);
+        assert_eq!(
+            dec.control_role(*ids.last().unwrap()),
+            Some(ControlRole::TurnEnd)
+        );
+    }
+
+    /// The identity is the table: the same literals give the same `source`, another
+    /// table gives another — which is what a resume compares to refuse replaying ids
+    /// written under one meaning against another.
+    #[test]
+    fn the_source_names_the_table() {
+        let a = vocab();
+        let b = vocab();
+        let c = Vocab::bytes(["<|im_end|>"], []);
+        assert!(a.is_bytes() && c.is_bytes());
+        assert_eq!(a.source(), b.source());
+        assert_ne!(a.source(), c.source());
+        assert!(a.source().starts_with("bytes:"));
     }
 }

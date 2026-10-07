@@ -32,6 +32,7 @@ turn = ["dep:letibot-turn"]
 tools = ["dep:letibot-tools"]
 
 [dev-dependencies]
+letibot-llama.workspace = true
 letibot-sessionlog = { path = ".", features = ["turn", "tools"] }
 letibot-tools = { workspace = true, features = ["testing"] }
 letibot-turn = { workspace = true, features = ["glm"] }

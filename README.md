@@ -120,9 +120,9 @@ answers differently, and where it is weaker than Linux, is written down rather t
   ending a scope is `killpg`, with the same presence → kill → absence record. A program that
   deliberately leaves its group (`setsid`, a double-forking daemon) escapes the scope, which a
   cgroup does not allow. `crates/tools/src/exec/scope.rs` (`ProcessGroups`) has the rest.
-- **There is no namespace boundary**, so the confined seats (`runner`, `coder` — the default)
-  refuse to start and say so. Seat `leticode` for an unconfined session on the host, or put the
-  session in a firecode VM with `--vm` once firecode's macOS build is installed.
+- **There is no namespace boundary**, so the confined seats (`runner`, `coder`) refuse to start
+  and say so. `leticode` — the launcher's default — runs on the host and is unaffected; for a
+  confined session put it in a firecode VM with `--vm` once firecode's macOS build is installed.
 - **"Is this run waiting for input?" cannot be read** (Linux reads it from `wchan`); an
   operator's `!` run says once that it could not tell.
 - **The runtime dir** is the per-user temp dir (`getconf DARWIN_USER_TEMP_DIR`), since there is
@@ -139,13 +139,35 @@ cmake --build llama.cpp/build -j "$(sysctl -n hw.ncpu)"
 LETIBOT_LLAMA_DIR=$PWD/llama.cpp LETIBOT_LLAMA_LIB=$PWD/llama.cpp/build/bin cargo build --release
 ```
 
-**The vocabulary is still required under a cloud provider**, and it must match the dialect: every
-control token the dialect's template uses (`<|im_start|>`, `<think>`, `<tool_call>`, …) has to be a
-single entry in it, and the daemon checks that at start and refuses by name. The GGUF of the model
-the dialect is written for passes — on the Linux box that is the Qwen 3.8 one, of which only the
-vocabulary is read. None of the small `ggml-vocab-*` files llama.cpp ships passes (measured
-2026-10-07: `qwen2`, `qwen35` and `deepseek-llm` all lack those tokens), so a Mac with no model
-files needs that GGUF copied over (a vocab-only conversion of it is enough).
+**A local model needs its vocabulary; a cloud provider does not.** For a local model `--vocab`
+names the GGUF it serves, and every control token the dialect uses (`<|im_start|>`, `<think>`,
+`<tool_call>`, …) must be one entry in it — checked at start, refused by name. None of the small
+`ggml-vocab-*` files llama.cpp ships passes for Qwen 3.x. Under a provider no GGUF is needed: see
+[Cloud only](#cloud-only).
+
+## Cloud only
+
+If the turns go to a cloud provider, nothing about llama.cpp is needed — not to build, not to run:
+
+```sh
+sh install.sh            # from a checkout, with no LETIBOT_LLAMA_* set: a cloud-only build
+cat >> ~/.config/letibot/providers.toml <<'TOML'
+[deepseek]
+key = "sk-…"
+
+[default]
+provider = "deepseek"
+TOML
+letibot
+```
+
+The daemon still keeps its hash-chained ledger in tokens, because that is what makes a session
+resumable and tamper-evident; with no GGUF those tokens are the **byte vocabulary** (ids 0–255 are
+bytes, the dialect's control literals get reserved ids above), which never leaves the machine. The
+context arithmetic is rescaled by the provider's own token counts after the first turn, as it
+already was. Such a session cannot be switched to a local model — its ids mean nothing to a
+llama-server — and says so. llama.cpp is linked only by `crates/llama` (`letibot-llama`), behind
+harnessd's `local` feature; `cargo build --no-default-features -p letibot-harnessd` leaves it out.
 
 ## Build and run
 

@@ -1037,6 +1037,7 @@ dependencies = [
  "letibot-dialect-glm",
  "letibot-dialect-qwen",
  "letibot-flowy",
+ "letibot-llama",
  "letibot-opencode",
  "letibot-provider",
  "letibot-sessionlog",
@@ -1055,6 +1056,17 @@ dependencies = [
 [[package]]
 name = "letibot-http"
 version = "0.3.0"
+
+[[package]]
+name = "letibot-llama"
+version = "0.3.0"
+dependencies = [
+ "cc",
+ "letibot-dialect",
+ "letibot-tokencore",
+ "letibot-transcript",
+ "serde_json",
+]
 
 [[package]]
 name = "letibot-opencode"
@@ -1082,6 +1094,7 @@ version = "0.3.0"
 dependencies = [
  "letibot-backend",
  "letibot-dialect",
+ "letibot-llama",
  "letibot-sessionlog",
  "letibot-tokencore",
  "letibot-tools",
@@ -1095,7 +1108,6 @@ dependencies = [
 name = "letibot-tokencore"
 version = "0.3.0"
 dependencies = [
- "cc",
  "letibot-dialect",
  "letibot-transcript",
  "libc",
@@ -1151,6 +1163,7 @@ dependencies = [
  "letibot-dialect",
  "letibot-dialect-glm",
  "letibot-http",
+ "letibot-llama",
  "letibot-tokencore",
  "letibot-transcript",
  "letibot-turn",
