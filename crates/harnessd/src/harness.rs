@@ -8948,6 +8948,20 @@ impl TaskSlot {
         self.state.lock().expect("task slot").clone()
     }
 
+    /// **Settle a slot nobody has settled** — the spawning thread's last word, for a refusal
+    /// `run_to_completion` returned before its own guard existed. A slot already settled keeps
+    /// what it has: that answer, or that failure, came from the child's own path and is the
+    /// truer one.
+    fn settle_if_running(&self, status: letibot_tools::builtins::task::TaskStatus) {
+        let running = matches!(
+            *self.state.lock().expect("task slot"),
+            letibot_tools::builtins::task::TaskStatus::Running { .. }
+        );
+        if running {
+            self.settle(status);
+        }
+    }
+
     fn settle(&self, status: letibot_tools::builtins::task::TaskStatus) {
         // **`Done` under a kill is not an answer.** See the field: the text is what the
         // child had written when it was stopped, and reporting it as the child's word is
@@ -8964,6 +8978,15 @@ impl TaskSlot {
         };
         *self.state.lock().expect("task slot") = status;
         self.settled.notify_all();
+    }
+}
+
+/// **What a child's thread leaves behind when `run_to_completion` returns**: a refusal that came
+/// before the child's own [`AnswerOnce`] existed becomes the slot's answer, because nothing else
+/// will ever settle it. A slot already settled keeps what it has.
+fn finish_child_thread(slot: &TaskSlot, ran: Result<String, String>) {
+    if let Err(why) = ran {
+        slot.settle_if_running(letibot_tools::builtins::task::TaskStatus::Failed { why });
     }
 }
 
@@ -9507,6 +9530,20 @@ fn apply_spawn_parameters(
     sub_cfg.sampling = leticode.parameters_for(role).to_sampling();
 }
 
+/// **The model a child runs on when nobody named one: its parent's.** The parent's own
+/// provider configuration when it is on one — taken as it is, key and all, so a parent that
+/// was given its key by `--api-key` or the masked card does not leave a child that cannot find
+/// it again — and `local` when the parent is on this daemon's own server.
+fn inherited_spawn_model(
+    parent: &Option<crate::config::ProviderConfig>,
+    local_window: Option<Option<u64>>,
+) -> Result<SubagentModel, Vec<String>> {
+    match parent {
+        Some(pc) => provider_model(pc.clone()),
+        None => subagent_model("local", local_window),
+    }
+}
+
 /// See [`SubagentModel`]. `want` is `local`, a declared local model, or
 /// `PROVIDER[/MODEL]`.
 pub fn subagent_model(
@@ -9582,6 +9619,12 @@ pub fn subagent_model_in(
             )]);
         }
     };
+    provider_model(pc)
+}
+
+/// A child seated on a provider configuration already in hand: the label and window the
+/// catalogue gives it, and the configuration — key included — as it is.
+fn provider_model(pc: crate::config::ProviderConfig) -> Result<SubagentModel, Vec<String>> {
     let preset = letibot_provider::Preset::parse(&pc.name).map_err(|e| vec![e])?;
     let cat = letibot_provider::catalogue::Catalogue::load();
     let window = preset.window(pc.model.as_deref(), &cat);
@@ -9815,7 +9858,16 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 // the turn ends, because what follows — a host child serving its own queue until
                 // the hub closes — does not end until the daemon does. There is nothing for this
                 // thread to do with the answer; the slot already has it.
-                let _ = me.run_to_completion(&id, &prompt, &spec, &slot, &mut |n| slot2.note(n));
+                //
+                // **Except for a refusal that came before the guard existed.** The checks at the
+                // top of `run_to_completion` — the seat, the model door, the local vocabulary,
+                // the child's window — return before `AnswerOnce` is made, and their sentence
+                // used to be dropped right here: the slot stayed `Running` with no thread behind
+                // it, and `task_result` waited out its whole timeout to report a child "still
+                // working" that had never been created. The operator, on a stroppy session whose
+                // `where: firecode` child did exactly that: *"it hanged on task_result wtf"*.
+                let ran = me.run_to_completion(&id, &prompt, &spec, &slot, &mut |n| slot2.note(n));
+                finish_child_thread(&slot, ran);
                 // **And this is where the child's thread ends — the fact stopping needs.** See
                 // [`TaskSlot::exited`]: a child that answered is still alive (it parks and can be
                 // asked more), so `stop_all` cannot read "has an answer" as "is gone".
@@ -10590,18 +10642,27 @@ impl HarnessTaskRunner {
         // not a guess about the absent case — it is what `models_choice` and `/models local`
         // already mean by it, and the child's `provider: None` below is that same door.
         // **The call's own word for the model, then the project file's for this seat, then
-        // `local`.** The two leticode keys are read here and nowhere else: the call's `model:`
-        // beats `[roles.<seat>] model`, which beats the file's `subagent_model`, which beats
-        // `local` below. Read at the spawn rather than at daemon start because the seat is
+        // the parent's model.** The two leticode keys are read here and nowhere else: the
+        // call's `model:` beats `[roles.<seat>] model`, which beats the file's
+        // `subagent_model`, which beats the inheritance below. Read at the spawn rather than at daemon start because the seat is
         // only known now — and read at all because both keys were parsed, disclosed and
         // answered by nobody until this line, which is the defect the feature is written
         // against. The label the refusals below name is this one, so a child stopped for its
         // window says the model the PROJECT chose for it.
-        let want = spec
+        //
+        // **Then the PARENT's model, not `local`** — the operator, 2026-10-07, after a DeepSeek
+        // session on a Mac with no model server spawned a child with no `model:`: *"so if no
+        // local config, and no model - default to the same"*, and *"local - anyway must be
+        // configured"*. `local` as the silent default was a guess that this box serves one,
+        // and where it did not the child was refused before it opened. A parent on its own
+        // server still gives `local`, which is the same model; a parent on a provider gives
+        // that provider and model, through the same door a named one takes — so its window is
+        // the catalogue's, or the parent's own via `runs_on_the_parents_model`. `local` is now
+        // only ever a choice somebody wrote.
+        let named = spec
             .model
             .as_deref()
-            .or_else(|| self.base.leticode.spawn_model(seat.as_str()))
-            .unwrap_or("local");
+            .or_else(|| self.base.leticode.spawn_model(seat.as_str()));
         // **And measure the local window when nobody remembered one.** `retune_window` fills it
         // *on the way out to a first provider*, so a session that STARTED on one has never
         // measured its own server — this session had not. `served_ctx` is the same `/props`
@@ -10614,11 +10675,16 @@ impl HarnessTaskRunner {
                 None => Some(letibot_turn::serving::served_ctx(&self.base.endpoint)),
             }
         };
-        let (sub_model, sub_provider, sub_window, sub_local) =
-            match subagent_model(want, local_window) {
-                Ok(m) => (m.label, m.provider, Some(m.window), m.local),
-                Err(why) => return Err(why.join("; ")),
-            };
+        let chosen = match named {
+            Some(want) => subagent_model(want, local_window),
+            None => inherited_spawn_model(&self.base.provider, local_window),
+        };
+        let (sub_model, sub_provider, sub_window, sub_local) = match chosen {
+            Ok(m) => (m.label, m.provider, Some(m.window), m.local),
+            Err(why) => return Err(why.join("; ")),
+        };
+        // The name the refusals below use: what was asked for, or what was inherited.
+        let want: &str = named.unwrap_or(&sub_model);
         // **A declared local model: check the weights, then measure the wall.**
         //
         // The child tokenizes with the parent's vocabulary — one daemon, one GGUF — so
@@ -12667,6 +12733,84 @@ mod tests {
             &*failed.state.lock().expect("slot"),
             TaskStatus::Failed { why } if why.contains("went away")
         ));
+    }
+
+    /// **A child nobody gave a model runs on its parent's** — *"so if no local config, and no
+    /// model - default to the same"*. `local` only for a parent that is itself local.
+    #[test]
+    fn a_child_with_no_model_named_runs_on_its_parents_model() {
+        let on = |name: &str, model: Option<&str>| {
+            Some(crate::config::ProviderConfig {
+                name: name.into(),
+                model: model.map(str::to_string),
+                api_key: None,
+                thinking: false,
+            })
+        };
+        // The parent's configuration as it is — its key with it, which no file holds here.
+        let mut parent = on("deepseek", Some("deepseek-chat"));
+        parent.as_mut().unwrap().api_key = Some("sk-only-in-memory".into());
+        let m = inherited_spawn_model(&parent, Some(None))
+            .expect("the parent's own model needs no lookup");
+        let pc = m.provider.as_ref().expect("a provider child");
+        assert_eq!(pc.name, "deepseek");
+        assert_eq!(pc.model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(pc.api_key.as_deref(), Some("sk-only-in-memory"));
+        assert_eq!(m.label, "deepseek/deepseek-chat");
+        assert!(m.local.is_none(), "{}", m.label);
+
+        // A parent on its own server gives `local` — the same model, which is the point.
+        let l = inherited_spawn_model(&None, Some(Some(32768))).expect("local");
+        assert_eq!(l.label, "local");
+        assert_eq!(l.window, Some(32768));
+        assert!(l.provider.is_none());
+    }
+
+    /// **A child refused before it opened is a failure `task_result` can read, at once.**
+    ///
+    /// The operator, on a stroppy session whose `task` (`where: firecode`) came back "started"
+    /// and whose `task_result` then sat out its whole 240 s: *"it hanged on task_result wtf"*.
+    /// The refusal — whichever check at the top of `run_to_completion` it was — returned before
+    /// `AnswerOnce` existed, the thread dropped the sentence, and the slot read `Running` with
+    /// nothing behind it. No session row, no `opening` record, no thread: only the job row
+    /// saying `running`.
+    #[test]
+    fn a_child_refused_before_it_opened_settles_its_slot_with_the_reason() {
+        use letibot_tools::builtins::task::TaskStatus;
+        let refused = TaskSlot::new("s-parent");
+        finish_child_thread(
+            &refused,
+            Err("model `nope` is not one this daemon can run".into()),
+        );
+        match refused.status() {
+            TaskStatus::Failed { why } => assert!(why.contains("nope"), "{why}"),
+            other => panic!("a refused child still reads {other:?} — task_result would wait"),
+        }
+
+        // **A slot the child's own path settled keeps that**, answer or failure: the thread's
+        // fallback is for the case nothing spoke, not a second opinion.
+        let answered = TaskSlot::new("s-parent");
+        answered.settle(TaskStatus::Done {
+            answer: "the child's own answer".into(),
+        });
+        finish_child_thread(&answered, Err("a later error".into()));
+        assert!(
+            matches!(answered.status(), TaskStatus::Done { ref answer } if answer == "the child's own answer"),
+            "{:?}",
+            answered.status()
+        );
+
+        // And an Ok return changes nothing: `AnswerOnce` already said it.
+        let ok = TaskSlot::new("s-parent");
+        ok.settle(TaskStatus::Failed {
+            why: "the child's own failure".into(),
+        });
+        finish_child_thread(&ok, Ok(String::new()));
+        assert!(
+            matches!(ok.status(), TaskStatus::Failed { ref why } if why == "the child's own failure"),
+            "{:?}",
+            ok.status()
+        );
     }
 
     /// **A stop takes THIS session's children and nobody else's, and not the ones that are
