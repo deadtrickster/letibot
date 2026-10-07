@@ -93,10 +93,10 @@ pub struct SpawnRequest {
     ///
     /// | what | where | why |
     /// |---|---|---|
-    /// | a pty on stdout and stderr instead of pipes | the spawn below, and [`super::pty`] | a pipe is not a terminal, so `ls --color=auto` prints plain |
+    /// | a pty on **all three** of stdin, stdout and stderr instead of pipes and `/dev/null` | the spawn below, and [`super::pty`] | a pipe is not a terminal, so `ls --color=auto` prints plain — and the child's terminal has to be its *controlling* one, and its stdin, or bash has no job control |
     /// | their shell, interactive, instead of the host's | [`HostProcesses::with_console_shell`] | the alias that colours `ls` is shell state in a rc file, and no rc is read by `/bin/sh -c` |
     /// | their terminal's variables, and pagers that cannot page | [`super::console::env`], put on the request by `bash` | `TERM` and `LS_COLORS` describe the screen; `less` waits for a keystroke that cannot arrive |
-    /// | **a pipe on stdin the daemon holds, instead of `/dev/null`** | the spawn below, and [`super::jobs::Stdin`] | the fourth thing *a person is there* means: a program that asks a question can be **answered**, and `/dev/null` is an EOF that is not a `Y` |
+    /// | **the daemon holds a handle on the run's own input, instead of `/dev/null`** | the spawn below, and [`super::jobs::Stdin`] | the fourth thing *a person is there* means: a program that asks a question can be **answered**, and `/dev/null` is an EOF that is not a `Y` |
     ///
     /// It is one flag and not four because it is one fact — *a person typed this and
     /// is looking at a screen* — and four flags with the same value are four things
@@ -457,7 +457,8 @@ pub trait ProcessHost: Send + Sync {
 ///
 /// The loop's tick is a *bounded* condvar wait and the run's own processes are waited on by
 /// other threads, so the loop is not itself the thing that blocks — measured, 2026-10-06: a
-/// root `su` blocked on the daemon's pipe with its whole tree unreadable was killed by its
+/// root `su` blocked on the device the daemon held for it (a pipe then, its own terminal now)
+/// with its whole tree unreadable was killed by its
 /// deadline at 120.02 s, with the worker in `futex_do_wait` throughout. What is true, and
 /// is the whole of the defect, is that the check is **only** there: it is the only thing
 /// that would end the run, so anything that stops that thread reaching it removes the
@@ -1170,10 +1171,12 @@ impl ProcessHost for HostProcesses {
                 Ok(p) => match (p.stdio(), p.stdio(), p.stdio()) {
                     (Ok(inp), Ok(out), Ok(err)) => {
                         // **`ECHO` off, before anything runs.** The daemon is the writer on
-                        // this terminal — `!send`, and the secret card's answer — and an
+                        // this terminal — `!send`, and the prompt card's answer — and an
                         // echoing terminal would put both into the run's output, which is a
                         // transcript row and a model's prompt. `super::pty`'s header says
-                        // which reader wants which, and why the pane keeps its echo.
+                        // which reader wants which, and why the pane keeps its echo. (The
+                        // *secret* card is the `askpass` path and never reaches this
+                        // terminal; `harnessd`'s `prompt` module owns that half.)
                         //
                         // Not fatal if it fails, for the reason the whole pty is not: a
                         // terminal that echoes is noisy and not broken.

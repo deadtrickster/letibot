@@ -816,7 +816,7 @@ pub fn term_line(line: &str) -> Option<TermLine<'_>> {
 /// # What the verb is for
 ///
 /// **It is the manual floor under a heuristic.** The daemon raises a prompt card when a run
-/// of the operator's own is *blocked reading the stdin pipe the daemon holds* — a reading of
+/// of the operator's own is *blocked reading the terminal the daemon holds* — a reading of
 /// the process and not of its words (`letibot_tools::exec::ask`) — and that reading has
 /// misses it names: a program blocked on another fd, one that asks and keeps drawing, a
 /// `/proc` a confined session's daemon may not read. **None of those is a reason a person
@@ -1821,7 +1821,8 @@ pub enum ClientFrame {
     /// **The operator's answer to a command that asked them something.**
     ///
     /// The daemon raised `SessionEvent::PromptRequested` for a run of the operator's own
-    /// that is **blocked reading its stdin** (`letibot_tools::exec::ask` — the detection is
+    /// that is **blocked reading the device this daemon holds for it**
+    /// (`letibot_tools::exec::ask` — the detection is
     /// the process's state and not its words), the head drew a card, and this is the line
     /// the person typed.
     ///
@@ -1832,10 +1833,16 @@ pub enum ClientFrame {
     /// An answer that finds nothing waiting is a `prompt_late` warning and nothing is
     /// written.
     ///
-    /// **A line, not a keystroke.** The run's stdin is a pipe and not a terminal, so there
-    /// are no arrow keys to send: what a person types is a line and a newline is what makes
-    /// it one. An empty `line` is a bare Enter and is a real answer — `Continue? [Y/n]`
-    /// takes Enter as its default.
+    /// **A line, not a keystroke.** What a person types *here* is a line, and a newline is
+    /// what makes it one: an empty `line` is a bare Enter and is a real answer —
+    /// `Continue? [Y/n]` takes Enter as its default.
+    ///
+    /// **And the run's input is a terminal, so this is the row's half of the pane's own
+    /// mechanism rather than a device beside it.** [`ClientFrame::TermInput`] carries raw
+    /// `bytes` because a screen program wants `^C`, arrows and mouse reports; this frame
+    /// carries a `line` because what it answers is a question. Both end up as a `write` on the
+    /// run's pty master — `letibot_tools::exec::Stdin` — which is why there is one answer path
+    /// here and not two, and why `!send` and the card can be spoken of together.
     ///
     /// **Not a command**: it is never queued, never announced and never logged with its
     /// payload. See [`PROTOCOL_VERSION`]'s 33 section for why the queue cannot carry it.

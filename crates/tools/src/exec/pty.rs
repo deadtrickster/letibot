@@ -125,10 +125,19 @@
 //!
 //! * **`ECHO` is off here** ([`Pty::no_echo`]) and on in a pane. A pane has a person
 //!   typing at it, so the echo is what makes their keys visible. This path's input comes
-//!   from the daemon — `!send`, and the secret card's answer — and echoing it back would
-//!   put it in the run's output, which is a transcript row and a model's prompt. **The
-//!   card's answer is a password and is deliberately not logged with its payload**; an
-//!   echoing terminal would log it anyway.
+//!   from the daemon — `!send`, and the prompt card's answer — and echoing it back would
+//!   put it in the run's output, which is a transcript row and a model's prompt.
+//!
+//!   **A password answered this way is the case that makes it more than tidiness.** A
+//!   program that asks for one on its own terminal — `ssh`, `gpg`, a `sudo` reached without
+//!   the `-A` shim — is answered by a person typing `!send <password>`, and with the echo on
+//!   those bytes would be in the capture, which is a transcript row and a model's prompt.
+//!
+//!   **The secret card is a different path and this is not it.** A password for `sudo`
+//!   travels head → daemon → `letibot-askpass` → sudo's own stdin, and never touches this
+//!   terminal; `harnessd`'s `prompt` module says so in its own header and the two must not be
+//!   merged by a later edit. The echo is off here for the lines a **person** sends, and for
+//!   nothing else.
 //! * **A pane knows its rectangle and this path does not.** There is no head drawing the
 //!   row, so nothing calls `TIOCSWINSZ` and the pty keeps the default size. Named here
 //!   because it is the other difference a reader will notice: a program that lays out for
@@ -276,7 +285,8 @@ impl Pty {
     }
 
     /// **A second handle on the master, for writing to the run** — what `!send` and the
-    /// secret card's answer travel down.
+    /// prompt card's answer travel down. One mechanism, and [`super::jobs::Stdin`] is where it
+    /// is; the *secret* card is the `askpass` path and does not come through here.
     ///
     /// A `dup` rather than one `File` behind a mutex, and the reason is the drain: the
     /// other handle is blocked in `read` on the master for the whole life of the run, so a

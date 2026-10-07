@@ -32,21 +32,20 @@
 //! one direction and the screen's own `feed` in the other — so the two ends can be
 //! changed independently.
 //!
-//! # A controlling terminal, and why this path wants the one the row path declined
+//! # A controlling terminal, which this path has always taken and the row path now takes too
 //!
-//! [`super::pty`] records the decision that an operator's `!` run gets a pty that is **not**
-//! its controlling terminal: `setsid` plus `TIOCSCTTY` was rejected there because it makes
-//! `/dev/tty` *openable*, and a program reached **indirectly** — git's editor, `gpg`'s
-//! pinentry — would then wait for a keystroke that cannot arrive.
+//! The child is given a new session ([`libc::setsid`]) and this pty as its controlling
+//! terminal ([`libc::TIOCSCTTY`]) — which is what makes `/dev/tty` the right device for
+//! `nano` and `mc`, what makes job control work, and what silences bash's two lines about job
+//! control that a terminal without one produces on every row.
+//! `the_program_gets_this_pty_as_its_controlling_terminal` is the test, and it asserts the two
+//! devices are the *same one* rather than that a controlling terminal merely exists.
 //!
-//! **That hazard does not exist here.** In a pane, keystrokes arrive: the head forwards the
-//! operator's keys down this pty. So the child is given a new session ([`libc::setsid`])
-//! and this pty as its controlling terminal ([`libc::TIOCSCTTY`]) — which is also what
-//! makes `/dev/tty` the right device for `nano` and `mc`, what makes job control work, and
-//! what silences bash's two lines about job control that a capture's terminal produces on
-//! every row today. `the_program_gets_this_pty_as_its_controlling_terminal` is the test, and
-//! it asserts the two devices are the *same one* rather than that a controlling terminal
-//! merely exists.
+//! **This note used to say the row path declined the same thing, and that is no longer true.**
+//! `exec::pty`'s header carries the trade the row path now accepts and the two facts that make
+//! it survivable. What still separates the two paths is not the terminal but **who is at the
+//! other end of it**: in a pane the head forwards the operator's keys down this pty, and on the
+//! row the daemon writes `!send` lines and the prompt card's answer to the master.
 //!
 //! # The command line is the shell's to read
 //!

@@ -15,7 +15,8 @@
 //! Measured rather than assumed, 2026-10-06, on a live daemon: the loop's tick is a
 //! *bounded* condvar wait (`Job::wait_until`) and the run's own processes are waited on by
 //! **other** threads (the drain and the waiter), so the loop does not itself block in a
-//! syscall on the run's behalf. A root `su` blocked on the daemon's pipe, with its whole
+//! syscall on the run's behalf. A root `su` blocked on the device the daemon held for it —
+//! a pipe then, its own terminal since `agent/quiet-shell` — with its whole
 //! tree unreadable to the daemon, was killed by its deadline at 120.02 s, with the worker
 //! in `futex_do_wait` for the whole of it. So *a run stuck in a syscall* is not what wedges
 //! the check.
@@ -44,9 +45,9 @@ use letibot_tools::exec::{
 
 /// A foreground run of `command`, in this host's turn scope.
 ///
-/// `tty` is [`SpawnRequest::tty`], which is what decides whether the run gets **a pipe on
-/// stdin the daemon holds**. It matters here: `sudo apt install mc` is the operator's
-/// report and their run is the one with the pipe, so the test that reproduces it has to
+/// `tty` is [`SpawnRequest::tty`], which is what decides whether the run gets **its own
+/// terminal, held by the daemon**. It matters here: `sudo apt install mc` is the operator's
+/// report and their run is the one with the terminal, so the test that reproduces it has to
 /// have one too. With `/dev/null` on stdin, `su` gets EOF at once and exits — which is a
 /// different shape and not the one being measured.
 fn spawn(host: &HostProcesses, command: &str, tty: bool) -> letibot_tools::exec::JobId {
@@ -248,8 +249,10 @@ fn a_root_process_the_daemon_may_not_signal_is_ended_by_the_same_deadline() {
         eprintln!("deadline: no /usr/bin/su on this box — nothing to measure");
         return;
     }
-    // `tty: true` is the operator's own run: a pipe on stdin the daemon holds, which is
-    // what `su` blocks on for a password it will never be given.
+    // `tty: true` is the operator's own run: **its own terminal**, whose master the daemon
+    // holds and writes to. That is what `su` blocks on for a password it will never be given —
+    // and since the terminal is `su`'s *controlling* terminal as well, it may be `/dev/tty` it
+    // opens rather than fd 0. The same block either way, and the same deadline ends it.
     let id = spawn(&host, "/usr/bin/su -c true", true);
 
     // **Presence, and the right presence.** The wrapper joins its cgroup first and `su`
@@ -281,7 +284,7 @@ fn a_root_process_the_daemon_may_not_signal_is_ended_by_the_same_deadline() {
         JobState::Killed {
             by: DEADLINE_KILL.to_string()
         },
-        "a root process on the daemon's pipe must end by the deadline too: {}",
+        "a root process on the run's own device must end by the deadline too: {}",
         view.state.word()
     );
     assert!(

@@ -144,21 +144,22 @@
 //! exist yet — see the TODOs. This module is the mechanism: open, run, resize, close. A caller
 //! that opens two of them has two shells, which is correct and is not the policy.
 //!
-//! # The controlling terminal, which the row path declined and this path wants
+//! # The controlling terminal, which BOTH paths now take and for the same reason
 //!
-//! [`super::pty`] records the decision that an operator's `!` run gets a pty that is **not** its
-//! controlling terminal: `setsid` plus `TIOCSCTTY` was rejected there because it makes
-//! `/dev/tty` *openable*, and a program reached **indirectly** — git's editor, `gpg`'s
-//! pinentry — would then wait for a keystroke that cannot arrive, which is the hang the sibling
-//! `bang-term` branch closed.
+//! The child is given a **new session** ([`libc::setsid`]) and this pty as its **controlling
+//! terminal** ([`libc::TIOCSCTTY`]), which is what makes job control work — `Ctrl-Z`, `fg`,
+//! `bg`, and the shell's own `[1]+ Stopped` messages — and what silences bash's two lines
+//! about job control that a terminal without one produces on every row.
 //!
-//! **That hazard does not exist here, and the reason is the whole difference between the two
-//! paths.** In a pane, keystrokes arrive: the head forwards the operator's keys down this pty,
-//! and a program that opens `/dev/tty` finds a person at the other end. So the child is given a
-//! **new session** ([`libc::setsid`]) and the pty as its **controlling terminal**
-//! ([`libc::TIOCSCTTY`]), which is also what makes job control work — `Ctrl-Z`, `fg`, `bg`, and
-//! the shell's own `[1]+ Stopped` messages — and what silences bash's two lines about job
-//! control that a capture's terminal produces on every row today.
+//! **This note used to say the row path declined the same thing, and that is no longer true.**
+//! `exec::pty` declined it once because `/dev/tty` becoming openable makes a program reached
+//! **indirectly** — git's editor, `gpg`'s pinentry — wait for a keystroke instead of failing at
+//! once; the row path now accepts that trade for the same reason the pane always did, and
+//! `exec::pty`'s header is where the argument and the two facts that make it survivable live.
+//! **What still separates the two paths is who is at the other end of the pty** — in a pane the
+//! head forwards the operator's keys down it, and on the row the daemon writes `!send` lines and
+//! the prompt card's answer to the master — and that is now a difference about what can *reach*
+//! the program rather than about whether the terminal is there.
 //!
 //! # The two rules this feature must not break
 //!
@@ -1202,10 +1203,10 @@ mod tests {
         assert!(text(&t).contains("back"), "{:?}", text(&t));
     }
 
-    /// **The shell has a terminal, and a controlling one.** The first assertion is the pty;
-    /// the second is the half [`super::super::pty`] declined for the row path and this path
-    /// wants — a shell with a controlling terminal does not print the two lines about job
-    /// control that land on every `!` row today.
+    /// **The shell has a terminal, and a controlling one.** The first assertion is the pty; the
+    /// second is that the pty is the child's **controlling** terminal — which is what makes job
+    /// control work and what silences bash's two lines about it. `super::super::pty`'s header
+    /// carries the mechanism, and the row path takes the same one now rather than declining it.
     #[test]
     fn the_shell_has_a_terminal_and_a_controlling_one() {
         let dir = tmp("tty");
@@ -1221,10 +1222,15 @@ mod tests {
             "the shell is not reading a terminal: {:?}",
             text(&t)
         );
-        // `/dev/tty` is openable exactly when the pty is the child's controlling terminal.
+        // **`(exec 9</dev/tty)` and NOT `test -r /dev/tty`, which is the probe this test used to
+        // carry and which measures nothing.** Measured on this box, 2026-10-07, on a shell with a
+        // pty on fd 0 and **no** controlling terminal: `test -r /dev/tty` answers *yes* — it is a
+        // mode check on a device node and never an open — so the old assertion was green on a
+        // session that had no controlling terminal at all. The open is the question `nano` asks,
+        // and it is the one that fails without one.
         let t = s
             .run(
-                "test -r /dev/tty && echo has-controlling || echo none",
+                "if (exec 9</dev/tty) 2>/dev/null; then echo has-controlling; else echo none; fi",
                 LONG,
             )
             .expect("a turn");

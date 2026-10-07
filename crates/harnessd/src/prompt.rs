@@ -1,19 +1,20 @@
-//! **The daemon's half of answering the operator's own command** — who holds the pipe, and
-//! how a line gets into it.
+//! **The daemon's half of answering the operator's own command** — who holds the run's input,
+//! and how a line gets into it.
 //!
 //! # What this module is
 //!
 //! [`letibot_sessionlog::PromptDriver`] is the seam: a trait the *server* can call on the
 //! connection's thread, implemented here because this is the crate with the daemon in it.
 //! [`Prompts`] is the implementation, and it is small on purpose — the mechanism is
-//! [`letibot_tools::exec::Stdin`], which is the write end of the pipe the exec host took out
-//! of the child it spawned, and the detection is [`letibot_tools::exec::ask`], which reads
+//! [`letibot_tools::exec::Stdin`], which is the handle the exec host took on the run's own
+//! **input** — its terminal on the ordinary path, and a pipe only on a box where no pty opens —
+//! and the detection is [`letibot_tools::exec::ask`], which reads
 //! `/proc` and never the program's words. What is here is the three things that are *the
 //! daemon's*:
 //!
 //! | | |
 //! |---|---|
-//! | **the run** | the one operator command this session has in flight: its job, the command the person typed, and the pipe |
+//! | **the run** | the one operator command this session has in flight: its job, the command the person typed, and the input handle |
 //! | **the card** | the open `req_id` for that run, minted here and published as [`SessionEvent::PromptRequested`] |
 //! | **the write** | [`PromptDriver::send`], which is what a head's answer and a `!send` both become |
 //! | **the silence** | [`Prompts::unreadable`], for the run this daemon may not look at — see the report itself |
@@ -23,14 +24,14 @@
 //! **The session worker is blocked inside the very command that is asking.** `run_operator_shell`
 //! calls `invoke_operator`, which waits on the job — so by the time a card is up, the thread
 //! that owns the exec host is inside the wait and cannot be asked anything. The server has to
-//! reach the pipe without it, and this is the object it reaches: created by the harness at
-//! open (it is the half that has the pipe), handed to the registry
+//! reach the input without it, and this is the object it reaches: created by the harness at
+//! open (it is the half that has the handle), handed to the registry
 //! ([`Registry::set_prompt`](letibot_sessionlog::Registry::set_prompt)) keyed by the session,
 //! and driven from two threads at once.
 //!
 //! # One per SESSION, and the reason is not tidiness
 //!
-//! A pipe belongs to one session's run. Two sessions on one daemon each have their own, and a
+//! An input handle belongs to one session's run. Two sessions on one daemon each have their own, and a
 //! `!send` in one must never write into the other's command — so the registry looks the
 //! driver up by session id and [`Prompts::send`] checks the id it was given against its own.
 //! That check is not defensive: it is the assertion that the lookup was the right one.
@@ -42,7 +43,7 @@
 //!   ever raised; `ended` is what takes a card down, so nobody types an answer into a program
 //!   that has already exited.
 //! * [`Prompts::asking`] comes from the same thread, once per question, when
-//!   [`letibot_tools::exec::ask`] says the run is **blocked reading the pipe this daemon
+//!   [`letibot_tools::exec::ask`] says the run is **blocked reading the terminal this daemon
 //!   holds**.
 //! * [`Prompts::unreadable`] comes from the same thread too, once per run, when `ask` says the
 //!   opposite of a reading: **it could not look** — a process of the run belongs to another
@@ -64,7 +65,7 @@
 //!   and it is about the process. The last line the program wrote is carried here to be
 //!   **shown** and is never looked at.
 //! * **No blocking under the lock.** [`Prompts::send`] clones the handle out and writes with
-//!   the lock released: the write is a syscall on a pipe, and the run's own wait loop wants
+//!   the lock released: the write is a syscall on the run's input, and the run's own wait loop wants
 //!   this lock to report the next question.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,7 +85,8 @@ struct Run {
     /// programs and the question is the third one's — so the card names the one thing that
     /// is certain.
     command: String,
-    /// **The way in.** The write end of the run's stdin, cloned out of the job.
+    /// **The way in.** A handle on the run's input, cloned out of the job — its own terminal on
+    /// the ordinary path. See [`letibot_tools::exec::Stdin`].
     stdin: Stdin,
     /// The card that is up for this run, if any. `None` between the run starting and the
     /// first question, and again after one is answered.
@@ -112,7 +114,7 @@ pub struct Prompts {
 
 impl Prompts {
     /// **A driver for one session.** Called by the session's own harness at open — the half
-    /// that owns the exec host, and so the half that has the pipe.
+    /// that owns the exec host, and so the half that has the handle.
     pub fn new(session: &str, hub: Arc<Hub>) -> Arc<Prompts> {
         Arc::new(Prompts {
             session: session.to_string(),
@@ -134,7 +136,7 @@ impl Prompts {
     /// **A new run replaces the old one**, and a card left up for the old one is settled
     /// first. A session runs one operator command at a time, so reaching here with a run
     /// already held means the previous one's `Ended` did not arrive — a path this does not
-    /// know about, or a panic — and a stale pipe behind a live card is the worst state this
+    /// know about, or a panic — and a stale handle behind a live card is the worst state this
     /// object can be in: a line typed for `apt` written into whatever started next.
     pub fn opened(&self, job: &str, command: &str, stdin: Stdin) {
         let stale = {
@@ -291,7 +293,7 @@ impl Prompts {
         });
     }
 
-    /// **The run is over.** The card comes down, and the pipe is forgotten.
+    /// **The run is over.** The card comes down, and the handle is forgotten.
     ///
     /// `sent: false` with a sentence in `by` rather than an identity: nothing was sent and
     /// nobody is being named for it — the command ended, which is the ordinary ending of
@@ -308,7 +310,7 @@ impl Prompts {
                 // A report about a job that is not the run in flight: an old run's `Ended`
                 // arriving after a new one started, or a job this daemon never tracked. Doing
                 // nothing is right in both cases, and taking the run anyway would be this
-                // object clearing a live pipe on a stale message.
+                // object clearing a live handle on a stale message.
                 _ => None,
             }
         };
@@ -338,8 +340,8 @@ impl PromptDriver for Prompts {
                 self.session
             ));
         }
-        // **The lock is released before the write.** `send_line` is a blocking syscall on a
-        // pipe, and the run's own wait loop wants this lock to report the next question — so
+        // **The lock is released before the write.** `send_line` is a blocking syscall on the
+        // run's input, and the run's own wait loop wants this lock to report the next question — so
         // holding it across the write would let one unread line stall the very loop that
         // raises the card.
         let (stdin, settled) = {
@@ -635,14 +637,14 @@ mod tests {
         // The driver is for one session, and it says so rather than writing somewhere else.
         let wrong = p
             .send("p-2", None, "Y")
-            .expect_err("another session's send must not reach this pipe");
+            .expect_err("another session's send must not reach this run");
         assert!(wrong.contains("p-2"), "{wrong}");
     }
 
     /// **`opened` replaces a run, and settles the card the old one left up.**
     ///
     /// A session runs one operator command at a time, so reaching `opened` with a run already
-    /// held means the previous one's `Ended` never arrived. A stale pipe behind a live card
+    /// held means the previous one's `Ended` never arrived. A stale handle behind a live card
     /// is the worst state this object can be in: a line typed for `apt` written into whatever
     /// started next.
     #[test]

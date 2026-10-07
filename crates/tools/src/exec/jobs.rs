@@ -170,6 +170,29 @@ impl JobState {
 /// **answerable** — the capability this type exists for — at the cost of the colour and
 /// the terminal it never had on that box anyway.
 ///
+/// # What the held pipe was for, and that the terminal carries all of it
+///
+/// Four things went through the pipe this replaces. Each was checked against the terminal
+/// rather than assumed — the question being *can this device do what that one did*, and a `no`
+/// would have meant stopping here rather than half-migrating:
+///
+/// 1. **The run's output capture.** Untouched, and not by luck: it is fed by the *other* two
+///    descriptors, which were already this pty. The daemon's own writes do **not** enter it,
+///    because [`super::pty::Pty::no_echo`] is on — measured, and pinned by `host`'s
+///    `the_operators_own_run_has_a_stdin_a_line_can_be_sent_to`, which asserts the exact
+///    capture rather than a substring.
+/// 2. **The byte caps.** `host`'s `capture_bytes` and `bash`'s `clip_tail` both work on captured
+///    *text*, and the text is the same bytes either way.
+/// 3. **The `queued` echo.** Not this mechanism at all: it is the head's own echo of the
+///    operator's typed line (`letibot_turn::steering`), and it never touched the run's input.
+/// 4. **The `!send` addressing.** Unchanged in shape — a driver looks the run up by session id
+///    and writes to whatever handle that run has, so *which* device is behind it stays this
+///    type's business and nobody else's.
+///
+/// The one thing that genuinely differs is stated where it belongs rather than hidden here:
+/// with a terminal on fd 0, a `!` command that reads stdin **waits** where `/dev/null` used to
+/// hand it an EOF. `host`'s spawn note and [`super::pty`]'s header carry that trade.
+///
 /// # `Default` is `none`, and `none` is a fact rather than an error
 ///
 /// A job whose stdin is `/dev/null` has a `Stdin` too — the empty one — so a caller
