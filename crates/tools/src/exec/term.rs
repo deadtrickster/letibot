@@ -430,22 +430,14 @@ impl TermSession {
         );
         cmd.stdin(a).stdout(b).stderr(c);
 
-        // **`setsid` and `TIOCSCTTY`, and here rather than in `pty.rs` on purpose.** The row
-        // path declines both (see the module header); a pane wants both. Failure is not
-        // fatal: a program without a controlling terminal still runs on this pty, it just
-        // cannot open `/dev/tty` — which is a program that draws and does not answer, so the
-        // test that says it works is `the_program_gets_this_pty_as_its_controlling_terminal`.
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            cmd.pre_exec(|| {
-                if libc::setsid() < 0 {
-                    // Already a group leader, which a forked child is not — so this is a
-                    // failure we do not understand, and the program still runs.
-                }
-                let _ = libc::ioctl(0, libc::TIOCSCTTY, 0);
-                Ok(())
-            });
-        }
+        // **`setsid` and `TIOCSCTTY`, and the row path does the same two now.** It used to
+        // be this module's own difference from `pty.rs`; the operator's answer to the two
+        // lines bash printed on every row was *"nah, i think that bash should feel
+        // comfortable actually"*, so the row path took the same terminal and the mechanism
+        // moved to [`super::pty::controlling_terminal`] — one call, two callers, and no
+        // second copy to drift. What is still this path's own is the rectangle (below) and
+        // the echo (`super::pty`'s header says which reader wants which).
+        super::pty::controlling_terminal(&mut cmd, 0);
 
         let mut child = cmd
             .spawn()
