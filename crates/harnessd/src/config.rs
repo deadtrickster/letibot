@@ -3619,6 +3619,61 @@ system_extra = "One short tool call beats a long plan."
         assert!(line.contains("is not serving it"), "{line}");
     }
 
+    /// **The sentence, verbatim.** The deliverable of requirement 3 is a sentence on
+    /// the screen, so it is pinned here rather than described: a change to it is a
+    /// change to what the operator reads, and that is a thing to be deliberate about
+    /// rather than a thing to notice later.
+    #[test]
+    fn the_session_model_sentence_is_this_one() {
+        use crate::leticode_config::Level;
+        let user = ModelSource {
+            level: Level::User,
+            value: Some("glm-5.3-flash".into()),
+            file: Some(PathBuf::from("/home/dead/.config/letibot/leticode.toml")),
+            origin: String::new(),
+            note: None,
+        };
+        assert_eq!(
+            user.render("glm-5.3-flash"),
+            "main glm-5.3-flash — from the user level \
+             (/home/dead/.config/letibot/leticode.toml). The order is: the command line beats \
+             the project file, the project file beats the user file, the user file beats the \
+             built-in default. The built-in default is `[default]` in \
+             ~/.config/letibot/providers.toml (what `/models NAME` writes), else the local \
+             server this daemon was launched against."
+        );
+
+        // The built-in case says which built-in it is: `[default]` when that is what
+        // spoke, and the launch line when nothing did.
+        let default_block = ModelSource {
+            level: Level::Builtin,
+            value: Some("deepseek/deepseek-flash".into()),
+            file: Some(PathBuf::from("/home/dead/.config/letibot/providers.toml")),
+            origin: "[default] in /home/dead/.config/letibot/providers.toml".into(),
+            note: None,
+        };
+        let line = default_block.render("deepseek/deepseek-flash");
+        assert!(
+            line.starts_with(
+                "main deepseek/deepseek-flash — from the built-in level \
+                 (/home/dead/.config/letibot/providers.toml)."
+            ),
+            "{line}"
+        );
+
+        // A fault is appended after the precedence, so the rule is read before the
+        // exception to it.
+        let faulty = ModelSource {
+            note: Some("and `no-such-alias` is not one this daemon can reach.".into()),
+            ..user.clone()
+        };
+        let line = faulty.render("glm-5.3-flash");
+        assert!(
+            line.ends_with("and `no-such-alias` is not one this daemon can reach."),
+            "{line}"
+        );
+    }
+
     /// **No file at all is the built-in default, and says so.** The fresh config is
     /// exactly the daemon that read no `leticode.toml` at either level and was given
     /// no `--provider`: the fourth level, named, rather than a silence the operator
