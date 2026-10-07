@@ -223,6 +223,71 @@ impl ProviderConfig {
     }
 }
 
+/// **Where the model that answers came from**, as the startup disclosure says it.
+///
+/// Four levels, one word each — `flag`, `project`, `user`, `built-in` — plus the
+/// file when a file is where it came from and any fault found while working it
+/// out. The operator's own evening is the reason this is a value on the config
+/// rather than a sentence composed where the model is set: a disclosure that can
+/// only be produced by the code path that chose the model is a disclosure that
+/// goes missing exactly when the choice was surprising.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ModelSource {
+    /// The level that won. [`crate::leticode_config::Level::Builtin`] is the
+    /// default, which is the honest answer for a daemon nothing spoke for.
+    pub level: crate::leticode_config::Level,
+    /// The name that level wrote, when a level wrote one. `None` for the built-in
+    /// default, which is not a name somebody typed — it is the model the daemon
+    /// was launched on.
+    pub value: Option<String>,
+    /// The file, when a file is where it came from.
+    pub file: Option<PathBuf>,
+    /// What the level was, in a phrase: `--provider deepseek`, `[default] in
+    /// providers.toml`, `the local server this daemon was launched against`. The
+    /// short form of the same fact the level names, for the sentence.
+    pub origin: String,
+    /// **A fault found at startup**, when there is one: a value that names a
+    /// model this box cannot reach, or a file's alias that the command line's
+    /// binding outranks. `None` is the quiet case. Carried here so the banner says
+    /// it — the whole point is that it is read before the first turn rather than
+    /// discovered as a 400.
+    pub note: Option<String>,
+}
+
+impl ModelSource {
+    /// The level and where it was, as one clause: `the user level
+    /// (~/.config/letibot/leticode.toml)`.
+    pub fn describe(&self) -> String {
+        let level = self.level.describe();
+        match (&self.file, self.origin.is_empty()) {
+            (Some(p), _) => format!("{level} ({})", p.display()),
+            (None, true) => level.to_string(),
+            (None, false) => format!("{level} — {}", self.origin),
+        }
+    }
+
+    /// **The precedence, in the words a reader gets**, so the rule is on the
+    /// screen next to the value it decided rather than in a file beside it.
+    pub const ORDER: &'static str = "the command line beats the project file, the project file \
+         beats the user file, the user file beats the built-in default";
+
+    /// The whole sentence for the `session model` disclosure.
+    pub fn render(&self, model: &str) -> String {
+        let mut out = format!("main {model} — from {}. ", self.describe());
+        out.push_str(&format!(
+            "The order is: {}. The built-in default is `[default]` in \
+             ~/.config/letibot/providers.toml (what `/models NAME` writes), else the local \
+             server this daemon was launched against.",
+            Self::ORDER
+        ));
+        if let Some(note) = &self.note {
+            out.push(' ');
+            out.push_str(note);
+        }
+        out
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub dialect: Dialect,
@@ -334,18 +399,32 @@ pub struct Config {
     /// byte-identical case. See [`Prompts`].
     pub prompts: Prompts,
     /// The project's `leticode.toml`, discovered by walking up from the workspace
-    /// and loaded once at startup. `Default` (no models) when the file is absent
-    /// or was refused — which is also the byte-identical case: a daemon with no
-    /// project file runs on its own models and discloses nothing from the file.
-    /// See [`crate::leticode_config::LeticodeConfig`].
+    /// and loaded once at startup — **with the user file already merged under
+    /// it**, so this is the two file levels as the session reads them. `Default`
+    /// (no models) when neither file is there or both were refused — which is
+    /// also the byte-identical case: a daemon with no file runs on its own
+    /// models and discloses nothing from a file. See
+    /// [`crate::leticode_config::LeticodeConfig`].
     ///
     /// **Models are configuration; permissions are not.** This field carries model
     /// names and nothing else — no seat, no tool list, no access narrowing — so a
-    /// project file cannot widen a capability. The precedence that turns these into
-    /// the session's models is stated once, in
-    /// [`crate::leticode_config::precedence`]: command line beats the project file,
-    /// the project file beats `~/.config/letibot/`, and an unset key falls through.
+    /// file cannot widen a capability. The precedence that turns these into the
+    /// session's models is stated once, in
+    /// [`crate::leticode_config::precedence`]: command line beats the project
+    /// file, the project file beats the user file, the user file beats the
+    /// built-in default, and an unset key falls through.
     pub leticode: crate::leticode_config::LeticodeConfig,
+    /// **The user file alone**, `~/.config/letibot/leticode.toml`, as its own
+    /// value — because [`Config::leticode`] is the merge and a disclosure that
+    /// named only the merged value could not say which of the two files set a
+    /// key. This one is for the screen; the session reads the merge.
+    pub leticode_user: crate::leticode_config::LeticodeConfig,
+    /// **Where the model that answers came from.** The level, the file when a
+    /// file is where it came from, and any fault found while working it out —
+    /// because *"why is my session on deepseek"* was a whole evening, and an
+    /// answer that lives in a file the operator has to go and read is not an
+    /// answer. See [`ModelSource`].
+    pub model_source: ModelSource,
     /// `low` / `medium` / `high` / `xhigh`, interpreted per dialect. It is prefix
     /// bytes, so changing it mid-session re-prefills everything.
     pub effort: Option<String>,
@@ -1248,6 +1327,15 @@ impl Config {
             // `leticode.toml`. `Default` is the byte-identical case: a daemon with
             // no project file runs on its own models and discloses nothing from it.
             leticode: crate::leticode_config::LeticodeConfig::default(),
+            // And no user file either, until `run` reads the fixed path beside
+            // `providers.toml`. Same byte-identical case at the other level.
+            leticode_user: crate::leticode_config::LeticodeConfig::default(),
+            // Nothing has spoken for the model yet. `Builtin` is the honest
+            // starting value and the honest final one for a daemon launched with
+            // no flag and no file: the model is the one this daemon was started
+            // on, and the disclosure says exactly that rather than naming a file
+            // that did not speak.
+            model_source: ModelSource::default(),
             effort: None,
             // Deterministic by default: a harness whose own measurements move
             // between runs cannot tell a regression from a sample.
@@ -1854,21 +1942,48 @@ impl Config {
         // read as one that runs on the daemon's. Absent file, or a file that set
         // nothing, discloses nothing — the byte-identical case, and a banner that
         // named a file that set nothing would be a disclosure that is a guess.
+        //
+        // **Two levels, two lines**, because they are two files and the operator
+        // who wrote one of them needs to see which one spoke. The project line is
+        // the merge the session actually reads, so it names the keys in force.
         if let Some(path) = &self.leticode.path {
             let set = self.leticode.set_models();
             if !set.is_empty() {
                 out.push(Disclosure::on(
                     "project models",
                     format!(
-                        "{} sets {} — command line beats this file, the file beats \
-                         ~/.config/letibot/, and a key it does not set falls through \
-                         to the daemon's own default",
+                        "{} sets {} — command line beats this file, this file beats the user \
+                         file, the user file beats the built-in default, and a key it does not \
+                         set falls through",
                         path.display(),
                         set.join(", ")
                     ),
                 ));
             }
         }
+        if let Some(path) = &self.leticode_user.path {
+            let set = self.leticode_user.set_models();
+            if !set.is_empty() {
+                out.push(Disclosure::on(
+                    "user models",
+                    format!(
+                        "{} sets {} — the box-wide level, one file for every project; the \
+                         nearest project `leticode.toml` overrides it key by key",
+                        path.display(),
+                        set.join(", ")
+                    ),
+                ));
+            }
+        }
+        // **Which model answers, and which level said so.** The operator's
+        // question of the evening: *"why is my session on deepseek"*, with the
+        // answer in a file they had to go and find. Here it is on the screen, one
+        // line, and the precedence is the same line rather than a thing to look
+        // up.
+        out.push(Disclosure::on(
+            "session model",
+            self.model_source.render(&self.prompt_model_name()),
+        ));
         match &self.spill {
             SpillPolicy::Unset => out.push(Disclosure::off(
                 "spill",
@@ -3422,7 +3537,207 @@ system_extra = "One short tool call beats a long plan."
         assert!(line.contains("--max-tool-rounds"), "{line}");
     }
 
-    /// The settings row says `unlimited`, not `0`. An operator reading a table of
+    /// **The disclosure says which level won.** The operator's own evening — *"why is
+    /// my session on deepseek"* — was answered by a file they had to go and read, and
+    /// the fix is that the answer is on the screen: the model, the level by name, and
+    /// the file when a file is where it came from. A disclosure that named only the
+    /// model would be the same defect one line shorter.
+    #[test]
+    fn the_session_model_disclosure_names_the_level_that_won() {
+        use crate::config::ModelSource;
+        use crate::leticode_config::Level;
+        let mut c = Config::for_this_box("/tmp");
+
+        // No flag, no file: the built-in default, and it says so — the fourth of the
+        // four levels rather than a sentence about nothing.
+        c.model_source = ModelSource::default();
+        let line = c
+            .disclosures(&GateWiring::read_only())
+            .into_iter()
+            .find(|d| d.subject == "session model")
+            .expect("the model is always disclosed, and always with its level")
+            .to_string();
+        assert!(line.contains("built-in"), "{line}");
+        assert!(
+            line.contains("the command line beats the project file"),
+            "and the precedence is on the same line rather than in a file: {line}"
+        );
+
+        // Each of the four levels names itself, and a file level names the file.
+        for (level, path, wanted) in [
+            (Level::Flag, None, "the command line"),
+            (
+                Level::Project,
+                Some(PathBuf::from("/w/leticode.toml")),
+                "/w/leticode.toml",
+            ),
+            (
+                Level::User,
+                Some(PathBuf::from("/h/.config/letibot/leticode.toml")),
+                "/h/.config/letibot/leticode.toml",
+            ),
+            (Level::Builtin, None, "the built-in default"),
+        ] {
+            c.model_source = ModelSource {
+                level,
+                value: Some("glm-5.3-flash".into()),
+                file: path,
+                origin: "--provider deepseek".into(),
+                note: None,
+            };
+            let line = c
+                .disclosures(&GateWiring::read_only())
+                .into_iter()
+                .find(|d| d.subject == "session model")
+                .expect("session model")
+                .to_string();
+            assert!(
+                line.contains(wanted),
+                "{level:?} must name {wanted}: {line}"
+            );
+            assert!(
+                line.contains(level.as_str()),
+                "and its word is stable: {line}"
+            );
+        }
+
+        // A fault found at startup rides the same line, because the screen is where
+        // the operator asked for it.
+        c.model_source = ModelSource {
+            level: Level::User,
+            value: Some("glm-5.3-flash".into()),
+            file: Some(PathBuf::from("/h/.config/letibot/leticode.toml")),
+            origin: String::new(),
+            note: Some("`glm-5.3-flash` is a local alias, and the server is not serving it".into()),
+        };
+        let line = c
+            .disclosures(&GateWiring::read_only())
+            .into_iter()
+            .find(|d| d.subject == "session model")
+            .expect("session model")
+            .to_string();
+        assert!(line.contains("is not serving it"), "{line}");
+    }
+
+    /// **The sentence, verbatim.** The deliverable of requirement 3 is a sentence on
+    /// the screen, so it is pinned here rather than described: a change to it is a
+    /// change to what the operator reads, and that is a thing to be deliberate about
+    /// rather than a thing to notice later.
+    #[test]
+    fn the_session_model_sentence_is_this_one() {
+        use crate::leticode_config::Level;
+        let user = ModelSource {
+            level: Level::User,
+            value: Some("glm-5.3-flash".into()),
+            file: Some(PathBuf::from("/home/dead/.config/letibot/leticode.toml")),
+            origin: String::new(),
+            note: None,
+        };
+        assert_eq!(
+            user.render("glm-5.3-flash"),
+            "main glm-5.3-flash — from the user level \
+             (/home/dead/.config/letibot/leticode.toml). The order is: the command line beats \
+             the project file, the project file beats the user file, the user file beats the \
+             built-in default. The built-in default is `[default]` in \
+             ~/.config/letibot/providers.toml (what `/models NAME` writes), else the local \
+             server this daemon was launched against."
+        );
+
+        // The built-in case says which built-in it is: `[default]` when that is what
+        // spoke, and the launch line when nothing did.
+        let default_block = ModelSource {
+            level: Level::Builtin,
+            value: Some("deepseek/deepseek-flash".into()),
+            file: Some(PathBuf::from("/home/dead/.config/letibot/providers.toml")),
+            origin: "[default] in /home/dead/.config/letibot/providers.toml".into(),
+            note: None,
+        };
+        let line = default_block.render("deepseek/deepseek-flash");
+        assert!(
+            line.starts_with(
+                "main deepseek/deepseek-flash — from the built-in level \
+                 (/home/dead/.config/letibot/providers.toml)."
+            ),
+            "{line}"
+        );
+
+        // A fault is appended after the precedence, so the rule is read before the
+        // exception to it.
+        let faulty = ModelSource {
+            note: Some("and `no-such-alias` is not one this daemon can reach.".into()),
+            ..user.clone()
+        };
+        let line = faulty.render("glm-5.3-flash");
+        assert!(
+            line.ends_with("and `no-such-alias` is not one this daemon can reach."),
+            "{line}"
+        );
+    }
+
+    /// **No file at all is the built-in default, and says so.** The fresh config is
+    /// exactly the daemon that read no `leticode.toml` at either level and was given
+    /// no `--provider`: the fourth level, named, rather than a silence the operator
+    /// has to interpret.
+    #[test]
+    fn no_file_at_all_is_the_builtin_default_and_says_so() {
+        let c = Config::for_this_box("/tmp");
+        assert!(c.leticode.path.is_none(), "the premise: no file was read");
+        assert!(c.leticode_user.path.is_none());
+        let line = c
+            .disclosures(&GateWiring::read_only())
+            .into_iter()
+            .find(|d| d.subject == "session model")
+            .expect("session model")
+            .to_string();
+        assert!(
+            line.contains("the built-in default"),
+            "nothing spoke, and the screen says which level that is: {line}"
+        );
+        assert!(
+            line.contains(&c.prompt_model_name()),
+            "and it names the model, so the line is about this session: {line}"
+        );
+    }
+
+    /// **The user file is disclosed as its own level, and the project's over it.**
+    /// Two files, two lines, because the operator who wrote one of them needs to see
+    /// which one spoke — and the project line names the keys in force after the merge.
+    #[test]
+    fn the_user_file_is_disclosed_as_its_own_level() {
+        let mut c = Config::for_this_box("/tmp");
+        let subjects: Vec<String> = c
+            .disclosures(&GateWiring::read_only())
+            .into_iter()
+            .map(|d| d.subject)
+            .collect();
+        assert!(
+            !subjects.iter().any(|s| s == "user models"),
+            "a file that is not there discloses nothing: {subjects:?}"
+        );
+
+        c.leticode_user = crate::leticode_config::LeticodeConfig {
+            main_model: Some("glm-5.3-flash".into()),
+            path: Some(PathBuf::from("/h/.config/letibot/leticode.toml")),
+            level: crate::leticode_config::Level::User,
+            ..Default::default()
+        };
+        // The merge the session reads: the user level as the base, nothing over it.
+        c.leticode = c.leticode_user.clone();
+        let line = c
+            .disclosures(&GateWiring::read_only())
+            .into_iter()
+            .find(|d| d.subject == "user models")
+            .expect("the user file speaks, so it is named")
+            .to_string();
+        assert!(line.contains("/h/.config/letibot/leticode.toml"), "{line}");
+        assert!(line.contains("main glm-5.3-flash"), "{line}");
+        assert!(
+            line.contains("overrides it key by key"),
+            "and it says what can overrule it: {line}"
+        );
+    }
+
+    /// **The settings row says `unlimited`, not `0`.** An operator reading a table of
     /// numbers reads `0` as "zero rounds allowed", which is the opposite.
     #[test]
     fn an_unbounded_backstop_reads_as_unlimited_not_as_zero() {
