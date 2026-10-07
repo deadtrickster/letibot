@@ -102,7 +102,15 @@ fn scratch() -> PathBuf {
         .unwrap()
         .as_nanos();
     // Short: the socket lives under it, and macOS caps a socket path at 104 bytes.
-    let d = std::env::temp_dir().join(format!("lb-key-{}-{:x}", std::process::id(), n as u32));
+    // A counter too: two tests in this process can start in the same microsecond, which is
+    // all macOS's clock resolves.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!(
+        "lb-key-{}-{:x}-{seq}",
+        std::process::id(),
+        n as u32
+    ));
     std::fs::create_dir_all(d.join("ws")).unwrap();
     std::fs::create_dir_all(d.join(".config/letibot")).unwrap();
     d

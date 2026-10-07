@@ -676,6 +676,18 @@ impl Mode {
     /// read-only: clause 4 says a read inside the boundary never prompts, and a point
     /// that could make a read ask would be a point that could make the harness
     /// unusable by moving one dial.
+    /// **Does this point admit everything** — write, exec and network unasked, the
+    /// always-ask list included? True for both `allow-all` coordinates (a structural
+    /// boundary, or the operator's own box with their consent) and nothing else. The gate
+    /// asks this to let a command the grammar could not read go on to the mode, which
+    /// admits it anyway, instead of refusing it before the mode is consulted.
+    pub fn admits_everything(&self) -> bool {
+        self.write == Disposition::Admit
+            && self.exec == Disposition::Admit
+            && self.network == Disposition::Admit
+            && self.boundary != Boundary::Operator
+    }
+
     pub fn disposition(&self, access: Access) -> Disposition {
         match access {
             Access::Write => self.write,
