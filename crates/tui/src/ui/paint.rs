@@ -1,7 +1,7 @@
 //! **Small painting helpers** shared by the widgets: dim, warn, a git colour, a fold word.
 
 use crate::app::*;
-use crate::render::{RenderConfig, sgr};
+use crate::ui::render::{RenderConfig, sgr};
 use std::borrow::Cow;
 
 pub(crate) fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {

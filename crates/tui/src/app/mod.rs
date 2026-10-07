@@ -33,7 +33,7 @@ use letibot_sessionlog::view::{OpenDecision, SnapshotItem};
 use letibot_ui::card;
 use letibot_ui::editor::Editor;
 
-use crate::render::{RenderConfig, visible_width};
+use crate::ui::render::{RenderConfig, visible_width};
 use crate::ui::*;
 
 /// The head.

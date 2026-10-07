@@ -1,7 +1,7 @@
 //! **The model's working-out**, dimmed and folded.
 
 use crate::app::*;
-use crate::render::{Decor, RenderConfig, trim_to, visible_width};
+use crate::ui::render::{Decor, RenderConfig, trim_to, visible_width};
 use crate::ui::*;
 use letibot_ui::card;
 use letibot_ui::style::{Painter, Role};

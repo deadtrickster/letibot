@@ -1,7 +1,7 @@
 //! **The person's own rows**: their prompts, the session's banner, a queued line not yet sent.
 
 use crate::app::*;
-use crate::render::{RenderConfig, trim_to, visible_width, wrap};
+use crate::ui::render::{RenderConfig, trim_to, visible_width, wrap};
 use letibot_ui::style::Role;
 use letibot_ui::text::without_control_lines;
 

@@ -1,7 +1,7 @@
 //! **The config pane**: the head's own settings and the session's.
 
 use crate::app::*;
-use crate::render::{sgr, trim_to};
+use crate::ui::render::{sgr, trim_to};
 use crate::ui::*;
 
 impl App {

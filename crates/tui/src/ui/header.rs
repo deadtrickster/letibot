@@ -1,7 +1,7 @@
 //! **The header**: the session, the model, the context, the clock.
 
 use crate::app::*;
-use crate::render::{dur_human, trim_to, visible_width};
+use crate::ui::render::{dur_human, trim_to, visible_width};
 use crate::ui::*;
 use letibot_sessionlog::registry::SessionBrief;
 use letibot_ui::progress;

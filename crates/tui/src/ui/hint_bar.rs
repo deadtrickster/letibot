@@ -1,7 +1,7 @@
 //! **The hint bar**: the keys that do something right now.
 
 use crate::app::*;
-use crate::render::{trim_to, visible_width};
+use crate::ui::render::{trim_to, visible_width};
 use letibot_ui::style::Role;
 
 impl App {

@@ -1,7 +1,7 @@
 //! **The subagents pane**: the tree of children this session spawned, and a child's output.
 
 use crate::app::*;
-use crate::render::{sgr, trim_to};
+use crate::ui::render::{sgr, trim_to};
 use crate::ui::*;
 use letibot_sessionlog::event::{Envelope, SessionEvent};
 use letibot_sessionlog::registry::short_id;

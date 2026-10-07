@@ -2,7 +2,7 @@
 //! and the tree of sessions this head can switch between.
 
 use super::*;
-use crate::render::dur_human;
+use crate::ui::render::dur_human;
 use letibot_sessionlog::client::Unreadable;
 use letibot_sessionlog::registry::short_id;
 use letibot_sessionlog::view::Warned;

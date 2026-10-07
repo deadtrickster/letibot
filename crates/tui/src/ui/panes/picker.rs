@@ -1,7 +1,7 @@
 //! **The pickers**: sessions, and a setting's values.
 
 use crate::app::*;
-use crate::render::{sgr, trim_to, wrap};
+use crate::ui::render::{sgr, trim_to, wrap};
 use crate::ui::*;
 use letibot_sessionlog::registry::short_id;
 use letibot_ui::style::Role;

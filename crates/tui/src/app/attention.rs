@@ -173,13 +173,13 @@ impl App {
                     ));
                 }
                 TranscriptItem::Assistant { text, .. } if text.contains("![") => {
-                    for (_, target) in crate::render::markdown_images(text) {
+                    for (_, target) in crate::ui::render::markdown_images(text) {
                         let Some(m) = self.read_local_png(&target) else {
                             continue;
                         };
                         let id =
                             crate::backend::graphics::image_id(&format!("{}#{target}", it.item_id));
-                        crate::render::remember_reply_image(
+                        crate::ui::render::remember_reply_image(
                             &it.item_id,
                             &target,
                             (id, m.width, m.height),

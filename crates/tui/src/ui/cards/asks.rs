@@ -2,7 +2,7 @@
 //! answer, a prompt, a secret (masked).
 
 use crate::app::*;
-use crate::render::{sgr, trim_to, wrap};
+use crate::ui::render::{sgr, trim_to, wrap};
 use crate::ui::*;
 
 impl App {

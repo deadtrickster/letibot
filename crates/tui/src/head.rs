@@ -48,7 +48,7 @@ use letibot_sessionlog::{SessionBrief, testing};
 use crate::app::App;
 use crate::backend::terminal::Terminal;
 use crate::driver::Link;
-use crate::render::{Budget, RenderConfig};
+use crate::ui::render::{Budget, RenderConfig};
 
 struct Args {
     socket: std::path::PathBuf,

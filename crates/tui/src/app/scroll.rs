@@ -2,7 +2,7 @@
 //! following the bottom, and filling backwards when the reader scrolls past what was drawn.
 
 use super::*;
-use crate::render::{RenderConfig, visible_width};
+use crate::ui::render::{RenderConfig, visible_width};
 use letibot_sessionlog::view::{CallState, SnapshotItem, TurnState, Warned};
 use letibot_transcript::TranscriptItem;
 

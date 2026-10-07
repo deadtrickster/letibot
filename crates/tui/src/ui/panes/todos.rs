@@ -2,7 +2,7 @@
 //! reader that turns `TODO.md` into its rows.
 
 use crate::app::*;
-use crate::render::{RenderConfig, sgr, trim_to};
+use crate::ui::render::{RenderConfig, sgr, trim_to};
 use crate::ui::*;
 use letibot_ui::text::without_control_lines;
 

@@ -1,7 +1,7 @@
 //! **The todo card**: writing a todo, field by field.
 
 use crate::app::*;
-use crate::render::{sgr, trim_to};
+use crate::ui::render::{sgr, trim_to};
 use crate::ui::*;
 use letibot_ui::style::Role;
 use letibot_ui::text::without_control_lines;

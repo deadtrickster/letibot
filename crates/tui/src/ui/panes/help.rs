@@ -1,6 +1,6 @@
 //! **The help screen** (`/help`).
 
-use crate::render::{RenderConfig, sgr, wrap};
+use crate::ui::render::{RenderConfig, sgr, wrap};
 use crate::ui::*;
 
 pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {

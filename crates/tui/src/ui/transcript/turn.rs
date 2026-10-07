@@ -1,6 +1,6 @@
 //! **A turn's footer**: how it ended, its tokens and its timings.
 
-use crate::render::{RenderConfig, sgr, wrap};
+use crate::ui::render::{RenderConfig, sgr, wrap};
 use crate::ui::*;
 use letibot_sessionlog::view::TurnState;
 

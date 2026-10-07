@@ -1,7 +1,7 @@
 //! **The composer**: the box the person types in, and the completion lines over it.
 
 use crate::app::*;
-use crate::render::{trim_to, visible_width};
+use crate::ui::render::{trim_to, visible_width};
 use crate::ui::*;
 use letibot_ui::editor::Editor;
 use letibot_ui::style::Role;

@@ -2,8 +2,8 @@
 //! lines, under the visibility, folds and budgets the frame was asked for.
 
 use crate::app::*;
-use crate::markdown::IncrementalMarkdown;
-use crate::render::{BlockCache, RenderConfig, trim_to, visible_width, wrap};
+use crate::ui::markdown::IncrementalMarkdown;
+use crate::ui::render::{BlockCache, RenderConfig, trim_to, visible_width, wrap};
 use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::{TranscriptItem, UserPart};
@@ -432,14 +432,14 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
             if cfg.images {
                 let box_cols = crate::backend::graphics::image_box(cfg.width);
                 let mut from = 0;
-                for (alt, target) in crate::render::markdown_images(text) {
-                    let Some((id, pw, ph)) = crate::render::reply_image(&it.item_id, &target)
+                for (alt, target) in crate::ui::render::markdown_images(text) {
+                    let Some((id, pw, ph)) = crate::ui::render::reply_image(&it.item_id, &target)
                     else {
                         continue;
                     };
                     let (cols, rows) = crate::backend::graphics::image_cells(pw, ph, box_cols);
                     let picture = crate::backend::graphics::image_rows(id, cols, rows);
-                    let at = crate::render::picture_anchor(&out, from, &alt, &target)
+                    let at = crate::ui::render::picture_anchor(&out, from, &alt, &target)
                         .unwrap_or(out.len());
                     from = at + picture.len();
                     out.splice(at..at, picture);

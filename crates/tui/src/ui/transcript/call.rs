@@ -1,7 +1,7 @@
 //! **A tool call's card**: the verb and subject, how it ended, and its body.
 
 use crate::app::*;
-use crate::render::{RenderConfig, bytes_human, trim_to, visible_width, wrap};
+use crate::ui::render::{RenderConfig, bytes_human, trim_to, visible_width, wrap};
 use crate::ui::*;
 use letibot_sessionlog::view::CallState;
 use letibot_ui::style::Role;

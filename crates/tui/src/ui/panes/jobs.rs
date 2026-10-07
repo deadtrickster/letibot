@@ -1,7 +1,7 @@
 //! **The jobs pane**: the background jobs this session started, and a job's output.
 
 use crate::app::*;
-use crate::render::{bytes_human, sgr, trim_to};
+use crate::ui::render::{bytes_human, sgr, trim_to};
 use crate::ui::*;
 use letibot_ui::text::{without_control, without_control_lines};
 

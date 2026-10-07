@@ -2,7 +2,7 @@
 //! filling or being compacted.
 
 use crate::app::*;
-use crate::render::RenderConfig;
+use crate::ui::render::RenderConfig;
 use letibot_ui::style::Role;
 use letibot_ui::{progress, width};
 

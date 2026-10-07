@@ -2,7 +2,7 @@
 //! the card says about how it was decided once it has been.
 
 use crate::app::*;
-use crate::render::{sgr, wrap};
+use crate::ui::render::{sgr, wrap};
 use crate::ui::*;
 use letibot_sessionlog::view::{OpenDecision, SettledDecision};
 use letibot_ui::progress;

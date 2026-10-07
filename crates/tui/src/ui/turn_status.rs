@@ -1,7 +1,7 @@
 //! **The turn's status row**: what the model is doing, and a stuck turn said out loud.
 
 use crate::app::*;
-use crate::render::{dur_human, sgr, trim_to};
+use crate::ui::render::{dur_human, sgr, trim_to};
 use crate::ui::*;
 use letibot_ui::progress;
 use letibot_ui::style::Role;

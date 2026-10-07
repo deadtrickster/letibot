@@ -1,7 +1,7 @@
 //! **The status lines**: `/status`'s report, and the link's and a stop's one-line state.
 
 use crate::app::*;
-use crate::render::{dur_human, sgr, trim_to, wrap};
+use crate::ui::render::{dur_human, sgr, trim_to, wrap};
 use crate::ui::*;
 use letibot_ui::style::Role;
 

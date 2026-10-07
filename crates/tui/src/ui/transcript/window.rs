@@ -2,7 +2,7 @@
 //! anchor the reader holds or the bottom they follow.
 
 use crate::app::*;
-use crate::render::{RenderConfig, sgr, visible_width};
+use crate::ui::render::{RenderConfig, sgr, visible_width};
 use crate::ui::*;
 use letibot_sessionlog::view::{CallState, TurnState};
 use letibot_transcript::TranscriptItem;

@@ -1,7 +1,7 @@
 //! **The notes**: the disclosures this head has shown, folded and unfolded (`/notes`).
 
 use crate::app::*;
-use crate::render::{RenderConfig, sgr, wrap};
+use crate::ui::render::{RenderConfig, sgr, wrap};
 use crate::ui::*;
 use letibot_ui::text::without_control_lines;
 

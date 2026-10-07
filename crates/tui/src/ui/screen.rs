@@ -2,7 +2,7 @@
 //! the conversation, the cards and panes, the composer and the hint bar — and where the cursor goes.
 
 use crate::app::*;
-use crate::render::{sgr, trim_to, visible_width, wrap};
+use crate::ui::render::{sgr, trim_to, visible_width, wrap};
 use crate::ui::*;
 use letibot_ui::style::Role;
 

@@ -2,8 +2,8 @@
 //! recorded, and the bookkeeping of forks and echoed prompts.
 
 use super::*;
-use crate::markdown::IncrementalMarkdown;
-use crate::render::BlockCache;
+use crate::ui::markdown::IncrementalMarkdown;
+use crate::ui::render::BlockCache;
 use letibot_sessionlog::event::{DeltaTarget, SessionEvent, Usage};
 use letibot_sessionlog::protocol::ServerFrame;
 use letibot_sessionlog::view::{

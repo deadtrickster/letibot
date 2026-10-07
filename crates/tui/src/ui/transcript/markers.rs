@@ -2,7 +2,7 @@
 //! and the live work under them.
 
 use crate::app::*;
-use crate::render::{RenderConfig, visible_width};
+use crate::ui::render::{RenderConfig, visible_width};
 use crate::ui::*;
 use letibot_sessionlog::view::{CallState, SnapshotItem};
 use letibot_transcript::TranscriptItem;

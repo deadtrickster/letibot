@@ -1,5 +1,5 @@
 use super::*;
-use crate::render::{RenderConfig, sgr, visible_width, wrap};
+use crate::ui::render::{RenderConfig, sgr, visible_width, wrap};
 use letibot_sessionlog::client::Unreadable;
 use letibot_sessionlog::event::{DeltaTarget, SessionEvent, Usage};
 use letibot_sessionlog::hub::Hub;
@@ -27880,7 +27880,7 @@ fn a_png_the_reply_names_is_drawn_at_the_reference() {
 
     // A URL is not fetched, and a title is not part of the path.
     assert_eq!(
-        crate::render::markdown_images("![a](https://x/y.png) ![b](nope.png \"t\")"),
+        crate::ui::render::markdown_images("![a](https://x/y.png) ![b](nope.png \"t\")"),
         vec![("b".to_string(), "nope.png".to_string())]
     );
 }

@@ -26,7 +26,7 @@ use letibot_ui::style::{Painter, Palette, Role};
 
 use rano::syntax::Stream;
 
-use crate::markdown::{Align, Block, IncrementalMarkdown, InlineStyle, Run};
+use crate::ui::markdown::{Align, Block, IncrementalMarkdown, InlineStyle, Run};
 
 /// Columns, wrapping and truncation come from `letibot-ui`.
 ///
@@ -293,7 +293,7 @@ impl RenderConfig {
 /// Rust block. That is a frame's budget at fence sizes and it is why this is a
 /// `Stream` fed the *delta* rather than a fresh parse — the parse is incremental even
 /// though the walk is not. A fence long enough for the walk to matter would need the
-/// same window discipline `crate::markdown` uses for the conversation.
+/// same window discipline `crate::ui::markdown` uses for the conversation.
 struct CodePaint {
     /// `None` when the fence named no language, or one rano has no grammar for. The
     /// block is then drawn plain — a wrong colour is worse than none, because it invites
@@ -1017,7 +1017,7 @@ impl BlockCache {
 /// that, and an escape nobody renders is noise in a log.
 pub fn paint_runs(runs: &[Run], p: Painter) -> String {
     if !p.palette().is_colour() {
-        return crate::markdown::runs_text(runs);
+        return crate::ui::markdown::runs_text(runs);
     }
     // Not `sgr::RESET`. Every run closes back to whatever block it is inside — see
     // `RenderConfig::base`.
@@ -1088,7 +1088,7 @@ pub fn dur_human(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::markdown::lex;
+    use crate::ui::markdown::lex;
     use letibot_sessionlog::testing::MARKDOWN;
 
     fn cfg() -> RenderConfig {
@@ -1443,7 +1443,7 @@ mod tables {
     //! *"table rendering is broken"* — a GFM table had no block of its own, so it
     //! lexed as a paragraph, joined with spaces and wrapped as prose.
     use super::*;
-    use crate::markdown::lex;
+    use crate::ui::markdown::lex;
 
     /// The table from the session that reported this, verbatim.
     const BOARD: &str = "| branch | commits | status |\n\
@@ -1470,7 +1470,9 @@ mod tables {
     /// A cell's plain text. The model holds runs; a test asserting on a table's
     /// contents means the text in it.
     fn cells(v: &[Vec<Run>]) -> Vec<String> {
-        v.iter().map(|c| crate::markdown::runs_text(c)).collect()
+        v.iter()
+            .map(|c| crate::ui::markdown::runs_text(c))
+            .collect()
     }
 
     #[test]
@@ -1662,7 +1664,7 @@ mod tables {
 #[cfg(test)]
 mod inline_render {
     use super::*;
-    use crate::markdown::lex;
+    use crate::ui::markdown::lex;
 
     fn cfg(width: usize) -> RenderConfig {
         RenderConfig {
@@ -1775,7 +1777,7 @@ done
     /// three kilobytes later. So this is the assertion at the level the operator saw it.
     #[test]
     fn a_real_message_renders_without_its_markers() {
-        const REAL: &str = include_str!("../tests/fixtures/streamed-message.md");
+        const REAL: &str = include_str!("../../tests/fixtures/streamed-message.md");
         let out: String = lex(REAL)
             .iter()
             .flat_map(|b| render_block(b, &cfg(200)))
@@ -1824,7 +1826,7 @@ done
 #[cfg(test)]
 mod a_fence_is_coloured_only_if_it_names_a_language {
     use super::*;
-    use crate::markdown::lex;
+    use crate::ui::markdown::lex;
 
     fn cfg() -> RenderConfig {
         RenderConfig {
@@ -1916,7 +1918,7 @@ mod a_fence_is_coloured_only_if_it_names_a_language {
 #[cfg(test)]
 mod code_fences_are_coloured_by_rano {
     use super::*;
-    use crate::markdown::lex;
+    use crate::ui::markdown::lex;
 
     fn cfg() -> RenderConfig {
         RenderConfig {
