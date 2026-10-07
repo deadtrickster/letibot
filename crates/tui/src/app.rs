@@ -2640,7 +2640,10 @@ pub struct App {
     clipboard_out: Option<String>,
     /// Images already in the terminal's memory, by id (see `render::image_id`), and how many
     /// rows of `items` have been looked at for new ones.
-    images_sent: std::collections::HashSet<u32>,
+    images_sent: std::collections::HashMap<u32, (Option<u32>, Option<u32>)>,
+    /// The image box the placements were last sent for (`render::image_box` of the frame's
+    /// width). A frame at another width re-sends every placement at the new size.
+    images_box: u32,
     images_scanned: usize,
     /// Upload bytes for the head to write before the next frame (kitty graphics).
     image_uploads: Vec<Vec<u8>>,
@@ -4210,7 +4213,8 @@ impl App {
             light_background: None,
             attention: None,
             clipboard_out: None,
-            images_sent: std::collections::HashSet::new(),
+            images_sent: std::collections::HashMap::new(),
+            images_box: 0,
             images_scanned: 0,
             image_uploads: Vec::new(),
             prompt: None,
@@ -4926,10 +4930,23 @@ impl App {
     /// once, under the id its row draws with. Only the rows added since the last look are
     /// walked; a list that shrank (a switch, a resync) is walked again from the top.
     fn queue_image_uploads(&mut self) {
+        // **The size follows the window.** Every image already in the terminal is placed again
+        // at the box this frame's width gives — a placement command each, no image bytes — so
+        // the rows the renderers draw at this width match what the terminal will fill.
+        let box_cols = crate::render::image_box(self.cfg.width);
+        if box_cols != self.images_box {
+            self.images_box = box_cols;
+            for (id, (w, h)) in &self.images_sent {
+                let (cols, rows) = crate::render::image_cells(*w, *h, box_cols);
+                self.image_uploads
+                    .push(crate::render::image_place(*id, cols, rows));
+            }
+        }
         if self.images_scanned > self.items.len() {
             self.images_scanned = 0;
         }
         let mut scanned = self.images_scanned;
+        let mut found: Vec<(u32, Option<u32>, Option<u32>, String)> = Vec::new();
         for it in &self.items[self.images_scanned..] {
             // **A row whose content has not arrived stops the walk**, and is looked at again
             // next frame: `TranscriptAppended` and its content are separate events, and a mark
@@ -4938,39 +4955,40 @@ impl App {
             scanned += 1;
             match item {
                 TranscriptItem::ToolResult { media: Some(m), .. } if m.mime == "image/png" => {
-                    let id = crate::render::image_id(&it.item_id);
-                    if self.images_sent.insert(id) {
-                        let (cols, rows) = crate::render::image_cells(m.width, m.height);
-                        self.image_uploads.push(crate::render::image_upload(
-                            id,
-                            m.wire_base64(),
-                            cols,
-                            rows,
-                        ));
-                    }
+                    found.push((
+                        crate::render::image_id(&it.item_id),
+                        m.width,
+                        m.height,
+                        m.wire_base64().to_string(),
+                    ));
                 }
                 TranscriptItem::Assistant { text, .. } if text.contains("![") => {
-                    for target in crate::render::markdown_images(text) {
+                    for (_, target) in crate::render::markdown_images(text) {
                         let Some(m) = self.read_local_png(&target) else {
                             continue;
                         };
                         let id = crate::render::image_id(&format!("{}#{target}", it.item_id));
-                        let (cols, rows) = crate::render::image_cells(m.width, m.height);
-                        if self.images_sent.insert(id) {
-                            self.image_uploads.push(crate::render::image_upload(
-                                id,
-                                m.wire_base64(),
-                                cols,
-                                rows,
-                            ));
-                        }
-                        crate::render::remember_reply_image(&it.item_id, &target, (id, cols, rows));
+                        crate::render::remember_reply_image(
+                            &it.item_id,
+                            &target,
+                            (id, m.width, m.height),
+                        );
+                        found.push((id, m.width, m.height, m.wire_base64().to_string()));
                     }
                 }
                 _ => {}
             }
         }
         self.images_scanned = scanned;
+        for (id, w, h, b64) in found {
+            if self.images_sent.insert(id, (w, h)).is_none() {
+                let (cols, rows) = crate::render::image_cells(w, h, box_cols);
+                self.image_uploads
+                    .push(crate::render::image_upload(id, &b64));
+                self.image_uploads
+                    .push(crate::render::image_place(id, cols, rows));
+            }
+        }
     }
 
     /// **A PNG a reply named, read by the head** — absolute, `~/`, or relative to the
@@ -24499,12 +24517,25 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // draw them — the operator's first test of inline images was a model that wrote a
             // PNG and said `![sunset](/Users/dead/sunset.png)`, and the head drew the alt text.
             // Only what the upload pass has already read and sent; see `render::reply_image`.
+            //
+            // **At the reference, not at the end** — the operator, looking at the first one: the
+            // `![…]` line was near the top and the picture below the reply's last paragraph.
+            // Each goes after the first line, past the previous picture, that shows its
+            // reference; one whose reference is on no line goes at the end.
             if cfg.images {
-                for target in crate::render::markdown_images(text) {
-                    if let Some((id, cols, rows)) = crate::render::reply_image(&it.item_id, &target)
-                    {
-                        out.extend(crate::render::image_rows(id, cols, rows));
-                    }
+                let box_cols = crate::render::image_box(cfg.width);
+                let mut from = 0;
+                for (alt, target) in crate::render::markdown_images(text) {
+                    let Some((id, pw, ph)) = crate::render::reply_image(&it.item_id, &target)
+                    else {
+                        continue;
+                    };
+                    let (cols, rows) = crate::render::image_cells(pw, ph, box_cols);
+                    let picture = crate::render::image_rows(id, cols, rows);
+                    let at = crate::render::picture_anchor(&out, from, &alt, &target)
+                        .unwrap_or(out.len());
+                    from = at + picture.len();
+                    out.splice(at..at, picture);
                 }
             }
             let mut acted = false;
@@ -24604,7 +24635,11 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             // way out of this arm, the one-line form's included.
             let picture: Vec<String> = match media {
                 Some(m) if cfg.images && m.mime == "image/png" => {
-                    let (cols, rows) = crate::render::image_cells(m.width, m.height);
+                    let (cols, rows) = crate::render::image_cells(
+                        m.width,
+                        m.height,
+                        crate::render::image_box(cfg.width),
+                    );
                     crate::render::image_rows(crate::render::image_id(&it.item_id), cols, rows)
                         .into_iter()
                         .map(|r| format!("  {r}"))
@@ -53439,17 +53474,27 @@ mod tests {
         }
     }
 
-    /// **A PNG a tool returned is drawn inline where the terminal can, and uploaded once.** The
-    /// rows are placeholders in the image's id colour — ordinary text to the width count and
-    /// the diff — and the upload is the protocol's transmit plus a virtual placement of the
+    fn png_header(w: u32, h: u32) -> Vec<u8> {
+        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+        png.extend_from_slice(&w.to_be_bytes());
+        png.extend_from_slice(&h.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        png
+    }
+
+    fn placeholders(screen: &[String]) -> usize {
+        screen.iter().filter(|l| l.contains('\u{10EEEE}')).count()
+    }
+
+    /// **A PNG a tool returned is drawn inline where the terminal can, and uploaded once** — at
+    /// the size this window's width gives, and placed again at a new size when that changes.
+    /// The rows are placeholders in the image's id colour — ordinary text to the width count
+    /// and the diff — and the upload is the protocol's transmit plus a virtual placement of the
     /// same size the rows draw.
     #[test]
     fn a_png_result_is_drawn_inline_and_uploaded_once() {
-        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
-        png.extend_from_slice(&200u32.to_be_bytes());
-        png.extend_from_slice(&100u32.to_be_bytes());
-        png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
-        let media = letibot_transcript::media::Media::of("shot.png", &png).expect("a png");
+        let media =
+            letibot_transcript::media::Media::of("shot.png", &png_header(200, 100)).expect("a png");
         let row = |a: &mut App| {
             a.apply(ServerFrame::Event(env(
                 1,
@@ -53471,9 +53516,9 @@ mod tests {
 
         let mut off = app();
         row(&mut off);
-        let screen = off.screen(100, 40).join("\n");
-        assert!(
-            !screen.contains('\u{10EEEE}'),
+        assert_eq!(
+            placeholders(&off.screen(100, 40)),
+            0,
             "no feature, no placeholders"
         );
         assert!(off.take_image_uploads().is_empty());
@@ -53481,54 +53526,65 @@ mod tests {
         let mut a = app();
         a.set_features(crate::features::Features::ALL);
         row(&mut a);
-        let screen = a.screen(100, 40);
+        let screen = a.screen(160, 40);
         let id = crate::render::image_id("r.img");
-        let (cols, rows) = crate::render::image_cells(Some(200), Some(100));
-        assert_eq!((cols, rows), (40, 10), "40 wide, half as tall in cells");
-        let drawn: Vec<&String> = screen.iter().filter(|l| l.contains('\u{10EEEE}')).collect();
-        assert_eq!(drawn.len(), rows as usize, "{screen:#?}");
-        assert!(drawn[0].contains(&format!(
+        let box_cols = crate::render::image_box(a.cfg.width);
+        let (cols, rows) = crate::render::image_cells(Some(200), Some(100), box_cols);
+        assert_eq!(cols, box_cols, "as wide as the box");
+        assert_eq!(rows, box_cols.div_ceil(4), "a 2:1 picture in 2:1 cells");
+        assert_eq!(placeholders(&screen), rows as usize, "{screen:#?}");
+        let drawn = screen.iter().find(|l| l.contains('\u{10EEEE}')).unwrap();
+        assert!(drawn.contains(&format!(
             "38;2;{};{};{}m",
             (id >> 16) & 255,
             (id >> 8) & 255,
             id & 255
         )));
         let ups = a.take_image_uploads();
-        assert_eq!(ups.len(), 1);
+        assert_eq!(ups.len(), 2, "the bytes, then the placement");
         let up = String::from_utf8_lossy(&ups[0]);
         assert!(
             up.starts_with(&format!("\x1b_Ga=t,f=100,i={id},q=2,m=0;")),
             "{up}"
         );
-        assert!(
-            up.ends_with(&format!("\x1b_Ga=p,U=1,i={id},c=40,r=10,q=2\x1b\\")),
-            "{up}"
-        );
-        a.screen(100, 40);
+        assert_eq!(ups[1], crate::render::image_place(id, cols, rows));
+        a.screen(160, 40);
         assert!(
             a.take_image_uploads().is_empty(),
             "uploaded once, not every frame"
         );
+
+        // **A resize places it again at the new size**, without sending the bytes again — and
+        // the rows drawn at the new width are the new placement's.
+        let narrow = a.screen(60, 40);
+        let box2 = crate::render::image_box(a.cfg.width);
+        assert_ne!(
+            box2, box_cols,
+            "the fixture has to change the box to show anything"
+        );
+        let (c2, r2) = crate::render::image_cells(Some(200), Some(100), box2);
+        assert_eq!(
+            a.take_image_uploads(),
+            vec![crate::render::image_place(id, c2, r2)]
+        );
+        assert_eq!(placeholders(&narrow), r2 as usize);
     }
 
-    /// **A PNG the reply's markdown names is drawn under the reply** — the operator's own first
+    /// **A PNG the reply's markdown names is drawn at the reference** — the operator's own first
     /// try: a model wrote `/Users/dead/sunset.png` and said `![sunset](…)`, and the head drew
-    /// the alt text. And a row whose content arrives a frame after it was appended still gets
-    /// its picture: the upload pass waits for it rather than walking past.
+    /// the alt text; then, drawn, it sat below the reply's last paragraph rather than under the
+    /// line that named it. And a row whose content arrives a frame after it was appended still
+    /// gets its picture: the upload pass waits for it rather than walking past.
     #[test]
-    fn a_png_the_reply_names_is_drawn_under_it() {
+    fn a_png_the_reply_names_is_drawn_at_the_reference() {
         let dir = std::env::temp_dir().join(format!(
             "lb-mdimg-{}-{}",
             std::process::id(),
             letibot_sessionlog::event::now_ms()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
-        png.extend_from_slice(&400u32.to_be_bytes());
-        png.extend_from_slice(&100u32.to_be_bytes());
-        png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
         let file = dir.join("sunset.png");
-        std::fs::write(&file, &png).unwrap();
+        std::fs::write(&file, png_header(400, 100)).unwrap();
 
         let mut a = app();
         a.set_features(crate::features::Features::ALL);
@@ -53544,27 +53600,50 @@ mod tests {
         a.record_item(
             "a.img",
             TranscriptItem::Assistant {
-                text: format!("Done.\n\n![sunset over mountains]({})\n", file.display()),
+                text: format!(
+                    "Done.\n\n```\n![sunset over mountains]({})\n```\n\nThe last paragraph.\n",
+                    file.display()
+                ),
                 tool_calls: Vec::new(),
                 truncated: false,
             },
         );
         a.screen(100, 40);
-        let ups = a.take_image_uploads();
         assert_eq!(
-            ups.len(),
-            1,
+            a.take_image_uploads().len(),
+            2,
             "the content arrived after the row: still uploaded"
         );
         let screen = a.screen(100, 40);
-        let rows = screen.iter().filter(|l| l.contains('\u{10EEEE}')).count();
-        assert_eq!(rows, 5, "400×100 is 40×5 cells:\n{screen:#?}");
+        let (_, rows) =
+            crate::render::image_cells(Some(400), Some(100), crate::render::image_box(a.cfg.width));
+        assert_eq!(placeholders(&screen), rows as usize, "{screen:#?}");
+        let first = screen
+            .iter()
+            .position(|l| l.contains('\u{10EEEE}'))
+            .unwrap();
+        let reference = screen
+            .iter()
+            .position(|l| l.contains("![sunset over mountains]"))
+            .expect("the reference is drawn");
+        assert!(
+            reference < first && screen[first - 1].contains('└'),
+            "under the frame its reference is in:\n{screen:#?}"
+        );
+        let last_para = screen
+            .iter()
+            .position(|l| l.contains("The last paragraph."))
+            .expect("the reply");
+        assert!(
+            first < last_para,
+            "under its reference, above what follows:\n{screen:#?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
 
-        // A URL is not fetched, and a missing file is not an image.
+        // A URL is not fetched, and a title is not part of the path.
         assert_eq!(
             crate::render::markdown_images("![a](https://x/y.png) ![b](nope.png \"t\")"),
-            vec!["nope.png".to_string()]
+            vec![("b".to_string(), "nope.png".to_string())]
         );
     }
 

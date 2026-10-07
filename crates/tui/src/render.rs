@@ -141,18 +141,26 @@ impl Default for RenderConfig {
 /// that says which row of the image this cell is. The protocol's own table, from its start; an
 /// image here is capped at [`IMAGE_MAX_ROWS`] rows, so the first that many are all it uses. The
 /// first entry is also column 0's mark.
-const ROW_DIACRITICS: [char; 20] = [
+const ROW_DIACRITICS: [char; 30] = [
     '\u{0305}', '\u{030D}', '\u{030E}', '\u{0310}', '\u{0312}', '\u{033D}', '\u{033E}', '\u{033F}',
     '\u{0346}', '\u{034A}', '\u{034B}', '\u{034C}', '\u{0350}', '\u{0351}', '\u{0352}', '\u{0357}',
-    '\u{035B}', '\u{0363}', '\u{0364}', '\u{0365}',
+    '\u{035B}', '\u{0363}', '\u{0364}', '\u{0365}', '\u{0366}', '\u{0367}', '\u{0368}', '\u{0369}',
+    '\u{036A}', '\u{036B}', '\u{036C}', '\u{036D}', '\u{036E}', '\u{036F}',
 ];
 
 /// The placeholder the terminal replaces with a slice of the image.
 const PLACEHOLDER: char = '\u{10EEEE}';
 
-/// An image is at most this many cells wide and this many tall.
-pub const IMAGE_COLS: u32 = 40;
+/// An image is at most this many cells tall.
 pub const IMAGE_MAX_ROWS: u32 = ROW_DIACRITICS.len() as u32;
+
+/// **How wide an image may be on a frame `width` columns wide**: half of it, never under 20
+/// and never over 80. The operator, on the first picture drawn: it was 40 columns on a window
+/// five times that. The uploader and every renderer ask this one function with the same width,
+/// so the rows a renderer draws always match the placement the terminal holds.
+pub fn image_box(width: usize) -> u32 {
+    ((width / 2) as u32).clamp(20, 80)
+}
 
 /// **An image's id, from the row it belongs to** — so any renderer can draw a row's
 /// placeholders without being handed a table, and the head that uploads it computes the same
@@ -165,19 +173,19 @@ pub fn image_id(item_id: &str) -> u32 {
     (h & 0x00ff_ffff).max(1)
 }
 
-/// The cells an image takes: [`IMAGE_COLS`] wide, as tall as its aspect says (a cell is about
-/// twice as tall as it is wide), capped — and narrowed to keep its shape when the cap bites.
-/// An image whose header gave no size gets a fixed box.
-pub fn image_cells(width: Option<u32>, height: Option<u32>) -> (u32, u32) {
+/// The cells an image takes inside a box `box_cols` wide: the box's width, as tall as its
+/// aspect says (a cell is about twice as tall as it is wide), capped — and narrowed to keep its
+/// shape when the cap bites. An image whose header gave no size gets a box of fixed shape.
+pub fn image_cells(width: Option<u32>, height: Option<u32>, box_cols: u32) -> (u32, u32) {
     let (Some(w), Some(h)) = (width.filter(|w| *w > 0), height.filter(|h| *h > 0)) else {
-        return (IMAGE_COLS, 12);
+        return (box_cols, (box_cols * 3 / 10).clamp(1, IMAGE_MAX_ROWS));
     };
-    let rows = (IMAGE_COLS as u64 * h as u64).div_ceil(2 * w as u64) as u32;
+    let rows = (box_cols as u64 * h as u64).div_ceil(2 * w as u64) as u32;
     if rows <= IMAGE_MAX_ROWS {
-        return (IMAGE_COLS, rows.max(1));
+        return (box_cols, rows.max(1));
     }
     let cols = (2 * IMAGE_MAX_ROWS as u64 * w as u64).div_ceil(h as u64) as u32;
-    (cols.clamp(1, IMAGE_COLS), IMAGE_MAX_ROWS)
+    (cols.clamp(1, box_cols), IMAGE_MAX_ROWS)
 }
 
 /// **The rows of text that ARE the image**, once it has been uploaded under `id` with a
@@ -207,10 +215,10 @@ pub fn image_rows(id: u32, cols: u32, rows: u32) -> Vec<String> {
         .collect()
 }
 
-/// **The bytes that put a PNG in the terminal's memory under `id`** and give it a virtual
-/// placement for the placeholders to draw: the base64 sent in the protocol's 4096-byte chunks,
-/// every command quiet (`q=2`) so the terminal sends nothing back to be typed.
-pub fn image_upload(id: u32, png_base64: &str, cols: u32, rows: u32) -> Vec<u8> {
+/// **The bytes that put a PNG in the terminal's memory under `id`**: the base64 sent in the
+/// protocol's 4096-byte chunks, quiet (`q=2`) so the terminal sends nothing back to be typed.
+/// Where it is drawn is [`image_place`]'s, which a resize repeats without re-sending this.
+pub fn image_upload(id: u32, png_base64: &str) -> Vec<u8> {
     let mut out = String::new();
     let chunks: Vec<&[u8]> = png_base64.as_bytes().chunks(4096).collect();
     for (k, chunk) in chunks.iter().enumerate() {
@@ -222,13 +230,19 @@ pub fn image_upload(id: u32, png_base64: &str, cols: u32, rows: u32) -> Vec<u8> 
             out.push_str(&format!("\x1b_Gm={more};{data}\x1b\\"));
         }
     }
-    out.push_str(&format!("\x1b_Ga=p,U=1,i={id},c={cols},r={rows},q=2\x1b\\"));
     out.into_bytes()
 }
 
-/// **The images a reply's markdown names** — `![alt](target)` — in order, local targets only:
-/// a URL is a picture this head would have to fetch, and it does not reach the network.
-pub fn markdown_images(text: &str) -> Vec<String> {
+/// **The virtual placement the placeholders draw**: `cols`×`rows` cells of image `id`, under
+/// placement id 1 so that sending it again at a new size replaces it rather than adding one.
+pub fn image_place(id: u32, cols: u32, rows: u32) -> Vec<u8> {
+    format!("\x1b_Ga=p,U=1,i={id},p=1,c={cols},r={rows},q=2\x1b\\").into_bytes()
+}
+
+/// **The images a reply's markdown names** — `![alt](target)` — as `(alt, target)`, in order,
+/// local targets only: a URL is a picture this head would have to fetch, and it does not reach
+/// the network.
+pub fn markdown_images(text: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut rest = text;
     while let Some(at) = rest.find("![") {
@@ -238,13 +252,14 @@ pub fn markdown_images(text: &str) -> Vec<String> {
         if rest[..close].contains('\n') {
             continue;
         }
+        let alt = rest[..close].trim().to_string();
         rest = &rest[close + 2..];
         let Some(end) = rest.find(')') else { break };
         // `(path "title")`: the title is not part of the path.
         let target = rest[..end].split(" \"").next().unwrap_or("").trim();
         let target = target.trim_start_matches('<').trim_end_matches('>');
         if !target.is_empty() && !target.contains("://") && !target.contains('\n') {
-            out.push(target.to_string());
+            out.push((alt, target.to_string()));
         }
         rest = &rest[end + 1..];
     }
@@ -252,25 +267,65 @@ pub fn markdown_images(text: &str) -> Vec<String> {
 }
 
 /// **The pictures a reply's markdown named that the head has uploaded**: `(item, target)` →
-/// `(id, cols, rows)`. Filled by the head's upload pass, which reads the file; read by the
-/// renderer, which must not touch the disk while it draws a frame — so a reference the pass
-/// has not reached yet simply draws nothing until it has.
-static REPLY_IMAGES: std::sync::Mutex<
-    std::collections::BTreeMap<(String, String), (u32, u32, u32)>,
-> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+/// `(id, pixel width, pixel height)`. Filled by the head's upload pass, which reads the file;
+/// read by the renderer, which must not touch the disk while it draws a frame — so a reference
+/// the pass has not reached yet simply draws nothing until it has.
+type ReplyImages = std::collections::BTreeMap<(String, String), (u32, Option<u32>, Option<u32>)>;
+static REPLY_IMAGES: std::sync::Mutex<ReplyImages> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-pub fn remember_reply_image(item_id: &str, target: &str, placed: (u32, u32, u32)) {
+pub fn remember_reply_image(item_id: &str, target: &str, image: (u32, Option<u32>, Option<u32>)) {
     if let Ok(mut m) = REPLY_IMAGES.lock() {
-        m.insert((item_id.to_string(), target.to_string()), placed);
+        m.insert((item_id.to_string(), target.to_string()), image);
     }
 }
 
-pub fn reply_image(item_id: &str, target: &str) -> Option<(u32, u32, u32)> {
+pub fn reply_image(item_id: &str, target: &str) -> Option<(u32, Option<u32>, Option<u32>)> {
     REPLY_IMAGES
         .lock()
         .ok()?
         .get(&(item_id.to_string(), target.to_string()))
         .copied()
+}
+
+/// **Where a reply's picture goes**: after the first rendered line, at or past `from`, that
+/// shows its reference — the target itself when the reference is drawn literally (a code
+/// block), or else its alt text, which is what the markdown renderer leaves of an image. `None`
+/// when neither is on any line, and the caller puts it at the end.
+pub fn picture_anchor(lines: &[String], from: usize, alt: &str, target: &str) -> Option<usize> {
+    let plain = |l: &String| {
+        let mut t = String::with_capacity(l.len());
+        letibot_ui::width::for_each_cell(l, |c| t.push_str(c.text));
+        t
+    };
+    lines
+        .iter()
+        .enumerate()
+        .skip(from)
+        .find(|(_, l)| plain(l).contains(target))
+        .or_else(|| {
+            (!alt.is_empty())
+                .then(|| {
+                    lines
+                        .iter()
+                        .enumerate()
+                        .skip(from)
+                        .find(|(_, l)| plain(l).contains(alt))
+                })
+                .flatten()
+        })
+        .map(|(i, _)| {
+            // **Out of the block it is in**: a reference drawn inside a code block's frame
+            // (`│` rows, closed by `└`) puts the picture under the frame, not inside it.
+            let mut at = i + 1;
+            while at < lines.len() && plain(&lines[at]).trim_start().starts_with('│') {
+                at += 1;
+            }
+            if at < lines.len() && plain(&lines[at]).trim_start().starts_with('└') {
+                at += 1;
+            }
+            at
+        })
 }
 
 /// `text` as a link to the file `target` names — absolute, or relative to `root` — when
@@ -2329,23 +2384,48 @@ mod link_tests {
 
     #[test]
     fn an_image_keeps_its_shape_inside_the_box() {
-        assert_eq!(image_cells(None, Some(10)), (IMAGE_COLS, 12));
-        assert_eq!(image_cells(Some(400), Some(100)), (40, 5));
+        assert_eq!(image_box(30), 20, "never under 20");
+        assert_eq!(image_box(120), 60, "half the frame");
+        assert_eq!(image_box(400), 80, "never over 80");
+        assert_eq!(image_cells(None, Some(10), 40), (40, 12));
+        assert_eq!(image_cells(Some(400), Some(100), 40), (40, 5));
+        assert_eq!(image_cells(Some(720), Some(420), 80), (80, 24));
         // Tall: the rows cap, and the width narrows to keep the shape.
-        assert_eq!(image_cells(Some(100), Some(1000)), (4, IMAGE_MAX_ROWS));
-        // Every row is exactly as wide as the placement.
-        for r in image_rows(7, 40, 3) {
+        assert_eq!(image_cells(Some(100), Some(1000), 40), (6, IMAGE_MAX_ROWS));
+        // Every row is exactly as wide as the placement, at every row the table reaches.
+        let rows = image_rows(7, 40, IMAGE_MAX_ROWS);
+        assert_eq!(rows.len(), IMAGE_MAX_ROWS as usize);
+        for r in rows {
             assert_eq!(letibot_ui::width::width(&r), 40, "{r:?}");
         }
-        // Long payloads go in the protocol's 4096-byte chunks.
-        let up = String::from_utf8(image_upload(9, &"A".repeat(9000), 40, 5)).unwrap();
-        assert_eq!(
-            up.matches("\x1b_G").count(),
-            4,
-            "three chunks and the placement"
-        );
+        // Long payloads go in the protocol's 4096-byte chunks; the placement is its own
+        // command, under a fixed placement id so a resize replaces it.
+        let up = String::from_utf8(image_upload(9, &"A".repeat(9000))).unwrap();
+        assert_eq!(up.matches("\x1b_G").count(), 3, "three chunks");
         assert!(up.contains("m=1;") && up.contains("\x1b_Gm=0;"));
+        assert_eq!(
+            String::from_utf8(image_place(9, 40, 5)).unwrap(),
+            "\x1b_Ga=p,U=1,i=9,p=1,c=40,r=5,q=2\x1b\\"
+        );
         assert_ne!(image_id("a"), image_id("b"));
         assert!(image_id("") > 0 && image_id("x") <= 0xff_ffff);
+    }
+
+    #[test]
+    fn a_picture_goes_after_the_line_that_names_it() {
+        let lines: Vec<String> = ["Done.", "│ ![sun](/x/sun.png)", "more", "sun again"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(picture_anchor(&lines, 0, "sun", "/x/sun.png"), Some(2));
+        // Rendered markdown keeps only the alt text.
+        assert_eq!(picture_anchor(&lines, 2, "sun again", "/nope.png"), Some(4));
+        assert_eq!(picture_anchor(&lines, 0, "", "/nope.png"), None);
+        // Inside a frame: after the frame closes.
+        let framed: Vec<String> = ["┌─", "│ ![a](/p.png)", "│ more code", "└─", "after"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(picture_anchor(&framed, 0, "a", "/p.png"), Some(4));
     }
 }
