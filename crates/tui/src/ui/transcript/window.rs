@@ -158,336 +158,31 @@ impl App {
                 self.invalidate_history_from(from);
             }
         }
-        let in_flight: std::collections::HashSet<&str> = if superseded {
+        let in_flight: std::collections::HashSet<String> = if superseded {
             std::collections::HashSet::new()
         } else {
             self.turn
                 .as_ref()
-                .map(|t| t.appended.iter().map(String::as_str).collect())
+                .map(|t| t.appended.iter().cloned().collect())
                 .unwrap_or_default()
         };
         // And the turn's rows — see the sibling set in `fill_backward_until`, and
         // [`TurnPane::turn_rows`] for the defect this distinction is.
-        let turn_rows: std::collections::HashSet<&str> = self
+        let turn_rows: std::collections::HashSet<String> = self
             .turn
             .as_ref()
-            .map(|t| t.turn_rows.iter().map(String::as_str).collect())
+            .map(|t| t.turn_rows.iter().cloned().collect())
             .unwrap_or_default();
-        // **The turn's in-flight work, read before the walk's disjoint borrow.** The
-        // destructure below deliberately leaves `turn` out (the pane later needs it whole),
-        // so this is the one place the walk can see it — and it must, because a call in
-        // flight is not a row and the counts have to carry it.
-        {
-            let App {
-                hist_lines,
-                hist_upto,
-                hist_marks,
-                note_upto,
-                items,
-                notes,
-                call_targets,
-                call_ms,
-                call_edits,
-                call_decisions,
-                hist_class,
-                hist_first_class,
-                hist_floor,
-                hist_renders,
-                diff_split,
-                payload_sel,
-                payload_page,
-                payload_max,
-                screen_rows,
-                bound_prompts,
-                unconfirmed,
-                echo_open,
-                spans,
-                visibility,
-                dismissed,
-                ..
-            } = self;
-            let diff_split = *diff_split;
-            let echo_open = *echo_open;
-            // **The run `ctrl-t` opens, computed once per frame** (R37 AMENDED): the same
-            // shape `newest_payload` has above, and for the same reason — the seam names the
-            // chord only on the run the chord acts on, and asking per row would be a scan of
-            // the transcript for every row drawn.
-            let newest_run = newest_unseen_run(items, *visibility, bound_prompts, live);
-            loop {
-                // **A note from before this window is stepped over, not drawn** (R19).
-                // It is a disclosure this head holds — `/notes` lists it and `/status`
-                // counts it — and it has no seam in this conversation to be drawn at,
-                // because this head was not there when it happened. Stepped over here,
-                // once, and never again: `note_upto` only goes forward, so the cost is
-                // paid at the head of the list and not per row.
-                while matches!(
-                    notes.get(*note_upto).map(|(place, _)| place),
-                    Some(Placed::Before)
-                ) {
-                    *note_upto += 1;
-                }
-                let note_next = notes.get(*note_upto).is_some_and(
-                    |(place, _)| matches!(place, Placed::Seam(at) if *at <= *hist_upto),
-                );
-                if note_next {
-                    // **A retired note contributes nothing — not its text, and not
-                    // the blank line above it.** R10: the note is a disclosure, and
-                    // the reader has read it. Skipping the blank as well is what
-                    // makes the wall go rather than becoming a column of gaps; the
-                    // note itself is still in `notes`, still counted on `/status`,
-                    // and still listed by `/notes`.
-                    if !dismissed.contains(&note_key(&notes[*note_upto].1)) {
-                        if !hist_lines.is_empty() {
-                            hist_lines.push(String::new());
-                        }
-                        hist_lines.extend(note_lines(&cfg, &notes[*note_upto].1));
-                        *hist_class = Some(RowClass::Other);
-                    }
-                    *note_upto += 1;
-                // `hist_upto` is "every row at or below this index is accounted for".
-                // A tail walk sets it to the row count, so this does nothing until a
-                // *new* row arrives at the end — which is the whole point: the rows
-                // above the floor are deliberately not walked.
-                //
-                // **In tail mode there are no marks.** They are indexed by absolute
-                // row, the walk pushes one per row it passes, and a tail walk does not
-                // pass the rows it skipped — so `invalidate_history_from` finds none
-                // and falls back to a full rebuild. Correct, just not incremental, and
-                // it is the honest trade for not lexing a 160 MB session to draw its
-                // last 40 rows.
-                } else if *hist_upto < items.len() && *hist_upto >= *hist_floor {
-                    // Where the walk stands before this row, so a later "from row
-                    // k on" can come back to exactly here. Recorded for every row,
-                    // including one that renders to nothing, because the mark is
-                    // indexed by row and a gap would misalign every mark after it.
-                    if hist_marks.len() == *hist_upto {
-                        hist_marks.push(HistMark {
-                            lines: hist_lines.len(),
-                            note_upto: *note_upto,
-                            class: *hist_class,
-                        });
-                    }
-                    // An assistant row carries the arguments for the calls it
-                    // proposed, and the tool-result rows that follow it want the
-                    // same label. Learning them here, in transcript order, is what
-                    // lets a head that attached *after* a turn still say which file
-                    // was read — the proposal event is long gone and the row is the
-                    // only place the arguments survive.
-                    //
-                    // **Replaced, not merged.** `call_0` is round-positional, so a
-                    // merge is how round 4's `call_0` came to be labelled with
-                    // round 1's path. An assistant row opens a new round and its
-                    // calls are the only ones the rows after it can be about; one
-                    // with no calls at all opens a round with no calls, and a
-                    // stray result then has to say so rather than borrow.
-                    let mut answered: std::collections::HashSet<String> =
-                        std::collections::HashSet::new();
-                    if let Some(TranscriptItem::Assistant { tool_calls, .. }) =
-                        items[*hist_upto].item.as_ref()
-                    {
-                        call_targets.clear();
-                        for c in tool_calls {
-                            call_targets.insert(
-                                c.id.clone(),
-                                letibot_sessionlog::display_target(&c.arguments),
-                            );
-                        }
-                        answered = round_results(items, *hist_upto);
-                    }
-                    *hist_renders += 1;
-                    // **The run this row belongs to, and whether it is the one that is open**
-                    // (R37 AMENDED). Three states, and only one of them is a row:
-                    //
-                    // * the row is inside the OPEN run — the rung is lifted for it, so it
-                    //   draws itself, and the marker for that run must not also be drawn;
-                    // * the row is the FIRST row of a closed run — the marker stands for the
-                    //   whole run and is drawn here, at the run's first row, in both walk
-                    //   directions (which is what makes the two walks agree without either
-                    //   of them having to remember anything);
-                    // * any other row of a closed run — nothing at all, which is R37 as
-                    //   filed, and the walk treats a row that renders to nothing as no row.
-                    // **The room the counts will need, reserved before the sentence wraps.**
-                    // See `reserved_for_run`: without this the join depends on where the
-                    // prose's last line happened to end, which is the operator's *"sometimes
-                    // you do it same line - sometimes dont."*
-                    let reserve = reserved_for_run(
-                        items,
-                        *visibility,
-                        bound_prompts,
-                        live,
-                        &cfg,
-                        *hist_upto,
-                        newest_run == Some(*hist_upto + 1),
-                    );
-                    let row_cfg = match reserve {
-                        Some(room) => RenderConfig {
-                            width: cfg.width.saturating_sub(room).max(20),
-                            ..cfg.clone()
-                        },
-                        None => cfg.clone(),
-                    };
-                    let open_run = run_open_at(
-                        items,
-                        *visibility,
-                        bound_prompts,
-                        live,
-                        payload_sel.as_deref(),
-                        *hist_upto,
-                    );
-                    let unseen = if open_run {
-                        None
-                    } else {
-                        unseen_run_at(items, *visibility, bound_prompts, live, *hist_upto)
-                    };
-                    // **No blank line in front of a marker.** It continues the sentence above
-                    // it rather than standing as a row of its own, so the separator's blank —
-                    // which exists to say *a new kind of thing starts here* — is the opposite
-                    // of what it means. See [`hidden_run_marker`].
-                    let joinable =
-                        unseen.is_some_and(|(start, _)| run_continues_prose(items, start));
-                    let tight = unseen.is_some() && joinable;
-                    let (class, rows) = match unseen {
-                        Some((start, end)) if start == *hist_upto => {
-                            // See the backward walk's note: the run holding the turn's
-                            // NEWEST row, which is the one the in-flight work continues.
-                            let live_here = newest_run == Some(start)
-                                && (start..end)
-                                    .any(|r| turn_rows.contains(items[r].item_id.as_str()));
-                            let marker = hidden_run_marker(
-                                items,
-                                start,
-                                end,
-                                *visibility,
-                                &cfg,
-                                newest_run == Some(start),
-                                MarkerFacts::of(live, newest_run),
-                                live_here,
-                            );
-                            // **Glued to the sentence it continues**, when there is one: the
-                            // last drawn row is [`RowClass::Speech`] — the class this file
-                            // already has for prose the reader can see — and the joined line
-                            // still fits the frame. Otherwise it stands alone, which is the
-                            // honest degradation: counts with no sentence are still the fact,
-                            // and a marker clipped to fit would lose them.
-                            // **Painted before it is measured or placed.** `visible_width`
-                            // skips escapes, so the width check below sees the counts and not
-                            // the register they are drawn in.
-                            let painted = marker.painted(&cfg);
-                            let joined = if joinable && *hist_class == Some(RowClass::Speech) {
-                                hist_lines
-                                    .iter()
-                                    .rposition(|l| !l.trim().is_empty())
-                                    .map(|at| format!("{} {painted}", hist_lines[at].trim_end()))
-                                    .filter(|l| visible_width(l) <= cfg.width)
-                            } else {
-                                None
-                            };
-                            match joined {
-                                Some(line) => {
-                                    let at = hist_lines
-                                        .iter()
-                                        .rposition(|l| !l.trim().is_empty())
-                                        .expect("the joined line came from one");
-                                    hist_lines[at] = line;
-                                    (RowClass::Other, Vec::new())
-                                }
-                                None => (RowClass::Activity, vec![painted]),
-                            }
-                        }
-                        Some(_) => (RowClass::Other, Vec::new()),
-                        None => item_lines(
-                            &items[*hist_upto],
-                            &ItemCtx {
-                                cfg: &row_cfg,
-                                think,
-                                tools: tool,
-                                raw,
-                                targets: call_targets,
-                                answered: &answered,
-                                subagents: &self.subagents,
-                                drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
-                                elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
-                                edit: call_edits.get(&items[*hist_upto].item_id),
-                                decision: call_decisions.get(&items[*hist_upto].item_id),
-                                bound: bound_prompts
-                                    .get(&items[*hist_upto].item_id)
-                                    .map(String::as_str),
-                                // **A bound row is being drawn, so its mark is never `queued`** —
-                                // see [`echo_mark`]. This was the same `_ => QUEUED` as its sibling
-                                // walk above, and it is the one that drew the operator's own line:
-                                // *"my message | your line | and only then unqueued."*
-                                echo_mark: bound_prompts
-                                    .get(&items[*hist_upto].item_id)
-                                    .map(String::as_str)
-                                    .map(|t| echo_mark(unconfirmed, t, true))
-                                    .unwrap_or(QUEUED),
-                                echo_open,
-                                // **An open run lifts the rung for its own rows**, which is
-                                // what "it opens" means: the reader sees the very rows the
-                                // rung was hiding, with their own headlines, payloads and
-                                // diffs, rather than a second rendering of them.
-                                vis: if open_run {
-                                    Visibility::lifted()
-                                } else {
-                                    *visibility
-                                },
-                                diff_split,
-                                // Rebuilt per row inside the walk, so it cannot be hoisted
-                                // out of this borrow — it reads two fields the walk is
-                                // holding. **Closed for an open run**: that run is being
-                                // read whole, and opening a payload window inside a row that
-                                // is only on screen because the run is open would be two
-                                // unfoldings of one thing.
-                                payload_view: if open_run {
-                                    None
-                                } else {
-                                    payload_sel
-                                        .as_deref()
-                                        .filter(|id| !id.is_empty())
-                                        .map(|id| (id, *payload_page))
-                                },
-                                payload_newest: newest_payload.as_deref(),
-                                payload_max: Some(payload_max),
-                                window_rows: screen_rows.saturating_sub(WINDOW_CHROME),
-                            },
-                        ),
-                    };
-                    // A row that rendered nothing gets no separator either. An
-                    // assistant row whose text is `"\n\n\n"` and whose every call
-                    // is drawn by its own result row is a real and common shape —
-                    // it is what a tool-calling round looks like — and paying two
-                    // blank lines for it puts a hole in the transcript.
-                    if !rows.iter().all(|l| l.trim().is_empty()) {
-                        // Air where the KIND changes, not between every pair of
-                        // rows. Two tool cards in a row are one block and read as
-                        // one; a blank between each of them was a third of the
-                        // vertical budget spent separating things a glyph in the
-                        // first column already separates.
-                        let pack =
-                            *hist_class == Some(RowClass::Activity) && class == RowClass::Activity;
-                        if !hist_lines.is_empty() && !pack && !tight {
-                            hist_lines.push(String::new());
-                        }
-                        if hist_first_class.is_none() {
-                            *hist_first_class = Some(class);
-                        }
-                        // **And where this row's lines begin** (R36). Recorded here rather
-                        // than derived later, because a separator's blank line belongs to no
-                        // row and only this walk knows it pushed one.
-                        spans.push(Span {
-                            row: *hist_upto,
-                            at: hist_lines.len(),
-                            lines: rows.len(),
-                        });
-                        hist_lines.extend(rows);
-                        *hist_class = Some(class);
-                    }
-                    *hist_upto += 1;
-                } else {
-                    break;
-                }
-            }
-        }
+        self.walk_history(
+            &cfg,
+            think,
+            tool,
+            raw,
+            &newest_payload,
+            live,
+            &in_flight,
+            &turn_rows,
+        );
 
         // **A marker with no row joins the sentence above it, and the joining happens HERE.**
         //
@@ -777,208 +472,21 @@ impl App {
         }
 
         if let Some(t) = turn {
-            let running = matches!(t.state, Some(TurnState::Running));
-            let think_elapsed = if t.think_started_ms == 0 {
-                None
-            } else {
-                Some(t.think_last_ms.saturating_sub(t.think_started_ms))
-            };
-            let now_ms = t.last_ms;
-            let TurnPane {
-                text,
-                reasoning,
-                text_cache,
-                reasoning_cache,
-                calls,
-                settled_calls,
-                raw_call,
-                writing_call,
-                state,
-                ..
-            } = t;
-            let ind = activity_indent(cfg.width);
-            // **What the model THOUGHT is the working, not the conversation** (R37). Hidden
-            // here as it is hidden in the transcript, so the rung does not depend on whether
-            // a row has been committed yet — a reader who switched mid-turn would otherwise
-            // watch the thinking appear when it settles.
-            // **The rung's own count of the work in flight** — R37 AMENDED, the operator's
-            // *"display looks frozen, while in fact it is just say cargo testing with yellow
-            // dot"*. Everything below this line is the working and this rung does not draw it,
-            // so without this the pane showed the narration and then nothing until a result
-            // row landed — which is a screen that says the head has stopped.
-            //
-            // Drawn where the work is: right after the prose that introduced it, which is where
-            // the counts belong and where the reader is looking.
-            // **And only when no RUN has already carried it** — see `walk_carried_live`, computed
-            // above from the same fact the fold uses, so the two cannot disagree.
-            if !superseded
-                && vis.hides_the_working()
-                && live.work() > 0
-                && !live_joins
-                && !walk_carried_live
-            {
-                let painted = Marker::new(
-                    live.calls,
-                    live.think_lines,
-                    // No events — see the sibling call above.
-                    0,
-                    true,
-                    marker_carries_live(live),
-                    marker_room(cfg.width),
-                )
-                .painted(&cfg);
-                if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
-                    eprintln!("MARKER pane draws: {painted}");
-                }
-                // **Not indented, and that is the operator's own report** — *"plus current thinking
-                // lines while counting are indented by 1 or 2 cells"*. This marker and the walk's are
-                // the same kind of row and now the same row; the walk's is flush with the prose it
-                // continues (`hist_lines`), so this one is flush too. The reasoning block below is
-                // indented because it is the model's *text*, set in under its rail; a count of rows
-                // is punctuation on the sentence, not a quotation under it.
-                segs.push(Seg::Owned(vec![painted]));
-                // **And the air every other block in this pane already carries.** The reasoning
-                // block ends with a blank, and so does the streaming answer — whose comment gives
-                // the reason: *"without it the last line of a running decode touches the top
-                // border of the composer."* The counts had none, so they sat on whatever came
-                // next: the `Responding` row when no text had arrived yet, and the model's own
-                // first line when it had.
-                //
-                // The operator, twice: *"«Responding…» status line appears and [XX Thinking lines]
-                // appeared then right above «Responding» without an empty line"*, and *"this also
-                // sometimes happened when you replied while the turn goes."* One blank fixes both,
-                // and it is the same blank the walk's marker already has — inside `hist_lines`,
-                // where the frame's own `gap` separates it from what follows. The pane's marker
-                // is the same fact with no gap under it, so it brings its own.
-                segs.push(Seg::Owned(vec![String::new()]));
-            }
-            if !superseded && !reasoning.is_empty() && !vis.hides_the_working() {
-                // Narrower by the rail and by the step it is set in. Getting this
-                // wrong makes the block one row taller than the space reserved for
-                // it, which moves everything below it by a line every frame — which
-                // is one of the things being called flicker.
-                let rcfg = reasoning_cfg(&cfg);
-                reasoning_cache.set_decor(reasoning_decor(&cfg));
-                segs.push(Seg::Owned(step_in(
-                    vec![thinking_header(
-                        &cfg,
-                        reasoning.raw(),
-                        think.is_open(),
-                        running,
-                        think_elapsed,
-                    )],
-                    ind,
-                )));
-                if think.is_open() {
-                    let (stable, tail) =
-                        reasoning_cache.split(reasoning, &rcfg, cfg.budget.reasoning_lines);
-                    segs.push(Seg::Borrowed(stable));
-                    segs.push(Seg::Owned(tail));
-                } else {
-                    // Folded, but a *running* turn still shows the last line, so
-                    // "it is thinking" and "it is stuck" do not look the same.
-                    let d = reasoning_decor(&cfg);
-                    segs.push(Seg::Owned(vec![
-                        d.apply(&last_line(reasoning.raw(), &rcfg)),
-                    ]));
-                }
-                segs.push(Seg::Owned(vec![String::new()]));
-            }
-            if !superseded {
-                // Only the calls the transcript has NOT taken over yet. The rest
-                // are already on the screen above as settled cards with their
-                // output under them, and drawing them here as well was the second
-                // half of the doubling: a turn eight calls deep showed eight live
-                // rows under eight settled ones, in the same order, saying less.
-                // **And a card for a call in flight is the working too.** Kept out for the
-                // same reason: this rung shows the conversation, and a spinner over a tool
-                // call is the head reporting its own machinery.
-                //
-                // **A live call has no marker, and that is the one window R37 AMENDED does
-                // not close.** A run of hidden *rows* collapses to one line; a call that has
-                // not returned is not a row yet, so while the first call of a round is still
-                // running there is nothing for a marker to count. It closes itself: the
-                // moment that call's result row lands, the run exists and the line appears
-                // above it. The rung's liveness obligation is elsewhere and unbroken — the
-                // footer says a turn is running and for how long (R13/§5.6).
-                let live_calls = calls.get(*settled_calls..).unwrap_or(&[]);
-                // **Not a blanket rung question — the `edits` SWITCH is asked per call.**
-                //
-                // This read `if vis.hides_the_working() { &[] }`, which is right for the working
-                // and wrong for the one card the operator's own profile exists to keep: a call
-                // that CHANGED a file is still "live" while its body has not landed, so
-                // `read-edits` — *"all is hidden except edits"* — hid the diff it was chosen for.
-                // MEASURED while landing this: the acceptance test failed with exactly that
-                // screen, the narration and no diff.
-                //
-                // The rule is [`Visibility::keeps`]'s, one row up: an edit card is the switches',
-                // everything else is the rung's. A call whose state says it changed something and
-                // whose `edits` switch is showing is drawn whatever the rung hides; every other
-                // live call is the working and follows the ladder as before.
-                let live_calls: Vec<_> = live_calls
-                    .iter()
-                    .filter(|c| match &c.state {
-                        CallState::Finished { edit: Some(_), .. } => vis.shows(Show::Edits),
-                        _ => !vis.hides_the_working(),
-                    })
-                    .collect();
-                if !live_calls.is_empty() {
-                    let mut owned: Vec<String> = Vec::new();
-                    for c in live_calls.iter().copied() {
-                        // **A running call is timed against the clock that was running
-                        // when it started** (R13). `now_ms` here is `t.last_ms` — the
-                        // log's clock — and that number **stops** when the daemon stops
-                        // saying things, which is exactly what a silent `cargo build`
-                        // does: the row read `0ms` for the whole build while the spinner
-                        // in the border below it turned, because the two were reading
-                        // different clocks two hundred lines apart. A call whose start
-                        // was recorded with this head's clock is measured against this
-                        // head's clock instead; one that was not — a `--replay`, whose
-                        // frames are applied before any clock is set — keeps the log's
-                        // own span, which is the only honest measurement there.
-                        let card_now = if c.started_at > 0 {
-                            self.now_ms
-                        } else {
-                            now_ms
-                        };
-                        owned.extend(step_in(
-                            call_card(c, &cfg, card_now, tool, self.diff_split),
-                            ind,
-                        ));
-                    }
-                    owned.push(String::new());
-                    segs.push(Seg::Owned(owned));
-                }
-                if !text.is_empty() {
-                    let (stable, tail) = text_cache.split(text, &cfg, cfg.budget.body_lines);
-                    segs.push(Seg::Borrowed(stable));
-                    segs.push(Seg::Owned(tail));
-                    // The same air the reasoning block and the call cards already
-                    // carry. Without it the last line of a running decode touches
-                    // the top border of the composer, and the blank appears only
-                    // when the turn ends and the pane stands down, so the screen
-                    // grows by a line at the moment the reader finally has time to
-                    // look. Padding while running is also the shape the transcript
-                    // row takes over, so nothing reflows at the handoff.
-                    segs.push(Seg::Owned(vec![String::new()]));
-                }
-                // The call the model is writing right now. The markup itself is
-                // never here: what is on the screen is that a call is being
-                // written, which is the fact the raw text was accidentally
-                // conveying and the only part of it a reader wanted.
-                if *writing_call {
-                    segs.push(Seg::Owned(step_in(
-                        vec![writing_call_line(&cfg, now_ms)],
-                        ind,
-                    )));
-                }
-                if raw && !raw_call.is_empty() {
-                    segs.push(Seg::Owned(raw_call_lines(&cfg, raw_call)));
-                }
-            }
-            if let Some(s) = state {
-                segs.push(Seg::Owned(turn_footer(&cfg, s)));
-            }
+            push_turn_pane(
+                &mut segs,
+                t,
+                &cfg,
+                think,
+                tool,
+                raw,
+                now_ms,
+                self.diff_split,
+                live,
+                vis,
+                superseded,
+                live_joins,
+                walk_carried_live,
+            );
         }
 
         // **THE UN-TAKEN WORDS WAIT BELOW THE PANE**, and the leading blank is what keeps them
@@ -1287,4 +795,330 @@ pub(crate) fn take_window(segs: &[Seg<'_>], start: usize, end: usize) -> Vec<Str
         }
     }
     out
+}
+
+impl App {
+    /// **The turn's in-flight work, read before the walk's disjoint borrow.** The
+    /// destructure below deliberately leaves `turn` out (the pane later needs it whole),
+    /// so this is the one place the walk can see it — and it must, because a call in
+    /// flight is not a row and the counts have to carry it.
+    pub(crate) fn walk_history(
+        &mut self,
+        cfg: &RenderConfig,
+        think: Fold,
+        tool: Fold,
+        raw: bool,
+        newest_payload: &Option<String>,
+        live: LiveWork,
+        in_flight: &std::collections::HashSet<String>,
+        turn_rows: &std::collections::HashSet<String>,
+    ) {
+        let App {
+            hist_lines,
+            hist_upto,
+            hist_marks,
+            note_upto,
+            items,
+            notes,
+            call_targets,
+            call_ms,
+            call_edits,
+            call_decisions,
+            hist_class,
+            hist_first_class,
+            hist_floor,
+            hist_renders,
+            diff_split,
+            payload_sel,
+            payload_page,
+            payload_max,
+            screen_rows,
+            bound_prompts,
+            unconfirmed,
+            echo_open,
+            spans,
+            visibility,
+            dismissed,
+            ..
+        } = self;
+        let diff_split = *diff_split;
+        let echo_open = *echo_open;
+        // **The run `ctrl-t` opens, computed once per frame** (R37 AMENDED): the same
+        // shape `newest_payload` has above, and for the same reason — the seam names the
+        // chord only on the run the chord acts on, and asking per row would be a scan of
+        // the transcript for every row drawn.
+        let newest_run = newest_unseen_run(items, *visibility, bound_prompts, live);
+        loop {
+            // **A note from before this window is stepped over, not drawn** (R19).
+            // It is a disclosure this head holds — `/notes` lists it and `/status`
+            // counts it — and it has no seam in this conversation to be drawn at,
+            // because this head was not there when it happened. Stepped over here,
+            // once, and never again: `note_upto` only goes forward, so the cost is
+            // paid at the head of the list and not per row.
+            while matches!(
+                notes.get(*note_upto).map(|(place, _)| place),
+                Some(Placed::Before)
+            ) {
+                *note_upto += 1;
+            }
+            let note_next = notes
+                .get(*note_upto)
+                .is_some_and(|(place, _)| matches!(place, Placed::Seam(at) if *at <= *hist_upto));
+            if note_next {
+                // **A retired note contributes nothing — not its text, and not
+                // the blank line above it.** R10: the note is a disclosure, and
+                // the reader has read it. Skipping the blank as well is what
+                // makes the wall go rather than becoming a column of gaps; the
+                // note itself is still in `notes`, still counted on `/status`,
+                // and still listed by `/notes`.
+                if !dismissed.contains(&note_key(&notes[*note_upto].1)) {
+                    if !hist_lines.is_empty() {
+                        hist_lines.push(String::new());
+                    }
+                    hist_lines.extend(note_lines(&cfg, &notes[*note_upto].1));
+                    *hist_class = Some(RowClass::Other);
+                }
+                *note_upto += 1;
+            // `hist_upto` is "every row at or below this index is accounted for".
+            // A tail walk sets it to the row count, so this does nothing until a
+            // *new* row arrives at the end — which is the whole point: the rows
+            // above the floor are deliberately not walked.
+            //
+            // **In tail mode there are no marks.** They are indexed by absolute
+            // row, the walk pushes one per row it passes, and a tail walk does not
+            // pass the rows it skipped — so `invalidate_history_from` finds none
+            // and falls back to a full rebuild. Correct, just not incremental, and
+            // it is the honest trade for not lexing a 160 MB session to draw its
+            // last 40 rows.
+            } else if *hist_upto < items.len() && *hist_upto >= *hist_floor {
+                // Where the walk stands before this row, so a later "from row
+                // k on" can come back to exactly here. Recorded for every row,
+                // including one that renders to nothing, because the mark is
+                // indexed by row and a gap would misalign every mark after it.
+                if hist_marks.len() == *hist_upto {
+                    hist_marks.push(HistMark {
+                        lines: hist_lines.len(),
+                        note_upto: *note_upto,
+                        class: *hist_class,
+                    });
+                }
+                // An assistant row carries the arguments for the calls it
+                // proposed, and the tool-result rows that follow it want the
+                // same label. Learning them here, in transcript order, is what
+                // lets a head that attached *after* a turn still say which file
+                // was read — the proposal event is long gone and the row is the
+                // only place the arguments survive.
+                //
+                // **Replaced, not merged.** `call_0` is round-positional, so a
+                // merge is how round 4's `call_0` came to be labelled with
+                // round 1's path. An assistant row opens a new round and its
+                // calls are the only ones the rows after it can be about; one
+                // with no calls at all opens a round with no calls, and a
+                // stray result then has to say so rather than borrow.
+                let mut answered: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                if let Some(TranscriptItem::Assistant { tool_calls, .. }) =
+                    items[*hist_upto].item.as_ref()
+                {
+                    call_targets.clear();
+                    for c in tool_calls {
+                        call_targets.insert(
+                            c.id.clone(),
+                            letibot_sessionlog::display_target(&c.arguments),
+                        );
+                    }
+                    answered = round_results(items, *hist_upto);
+                }
+                *hist_renders += 1;
+                // **The run this row belongs to, and whether it is the one that is open**
+                // (R37 AMENDED). Three states, and only one of them is a row:
+                //
+                // * the row is inside the OPEN run — the rung is lifted for it, so it
+                //   draws itself, and the marker for that run must not also be drawn;
+                // * the row is the FIRST row of a closed run — the marker stands for the
+                //   whole run and is drawn here, at the run's first row, in both walk
+                //   directions (which is what makes the two walks agree without either
+                //   of them having to remember anything);
+                // * any other row of a closed run — nothing at all, which is R37 as
+                //   filed, and the walk treats a row that renders to nothing as no row.
+                // **The room the counts will need, reserved before the sentence wraps.**
+                // See `reserved_for_run`: without this the join depends on where the
+                // prose's last line happened to end, which is the operator's *"sometimes
+                // you do it same line - sometimes dont."*
+                let reserve = reserved_for_run(
+                    items,
+                    *visibility,
+                    bound_prompts,
+                    live,
+                    &cfg,
+                    *hist_upto,
+                    newest_run == Some(*hist_upto + 1),
+                );
+                let row_cfg = match reserve {
+                    Some(room) => RenderConfig {
+                        width: cfg.width.saturating_sub(room).max(20),
+                        ..cfg.clone()
+                    },
+                    None => cfg.clone(),
+                };
+                let open_run = run_open_at(
+                    items,
+                    *visibility,
+                    bound_prompts,
+                    live,
+                    payload_sel.as_deref(),
+                    *hist_upto,
+                );
+                let unseen = if open_run {
+                    None
+                } else {
+                    unseen_run_at(items, *visibility, bound_prompts, live, *hist_upto)
+                };
+                // **No blank line in front of a marker.** It continues the sentence above
+                // it rather than standing as a row of its own, so the separator's blank —
+                // which exists to say *a new kind of thing starts here* — is the opposite
+                // of what it means. See [`hidden_run_marker`].
+                let joinable = unseen.is_some_and(|(start, _)| run_continues_prose(items, start));
+                let tight = unseen.is_some() && joinable;
+                let (class, rows) = match unseen {
+                    Some((start, end)) if start == *hist_upto => {
+                        // See the backward walk's note: the run holding the turn's
+                        // NEWEST row, which is the one the in-flight work continues.
+                        let live_here = newest_run == Some(start)
+                            && (start..end).any(|r| turn_rows.contains(items[r].item_id.as_str()));
+                        let marker = hidden_run_marker(
+                            items,
+                            start,
+                            end,
+                            *visibility,
+                            &cfg,
+                            newest_run == Some(start),
+                            MarkerFacts::of(live, newest_run),
+                            live_here,
+                        );
+                        // **Glued to the sentence it continues**, when there is one: the
+                        // last drawn row is [`RowClass::Speech`] — the class this file
+                        // already has for prose the reader can see — and the joined line
+                        // still fits the frame. Otherwise it stands alone, which is the
+                        // honest degradation: counts with no sentence are still the fact,
+                        // and a marker clipped to fit would lose them.
+                        // **Painted before it is measured or placed.** `visible_width`
+                        // skips escapes, so the width check below sees the counts and not
+                        // the register they are drawn in.
+                        let painted = marker.painted(&cfg);
+                        let joined = if joinable && *hist_class == Some(RowClass::Speech) {
+                            hist_lines
+                                .iter()
+                                .rposition(|l| !l.trim().is_empty())
+                                .map(|at| format!("{} {painted}", hist_lines[at].trim_end()))
+                                .filter(|l| visible_width(l) <= cfg.width)
+                        } else {
+                            None
+                        };
+                        match joined {
+                            Some(line) => {
+                                let at = hist_lines
+                                    .iter()
+                                    .rposition(|l| !l.trim().is_empty())
+                                    .expect("the joined line came from one");
+                                hist_lines[at] = line;
+                                (RowClass::Other, Vec::new())
+                            }
+                            None => (RowClass::Activity, vec![painted]),
+                        }
+                    }
+                    Some(_) => (RowClass::Other, Vec::new()),
+                    None => item_lines(
+                        &items[*hist_upto],
+                        &ItemCtx {
+                            cfg: &row_cfg,
+                            think,
+                            tools: tool,
+                            raw,
+                            targets: call_targets,
+                            answered: &answered,
+                            subagents: &self.subagents,
+                            drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
+                            elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
+                            edit: call_edits.get(&items[*hist_upto].item_id),
+                            decision: call_decisions.get(&items[*hist_upto].item_id),
+                            bound: bound_prompts
+                                .get(&items[*hist_upto].item_id)
+                                .map(String::as_str),
+                            // **A bound row is being drawn, so its mark is never `queued`** —
+                            // see [`echo_mark`]. This was the same `_ => QUEUED` as its sibling
+                            // walk above, and it is the one that drew the operator's own line:
+                            // *"my message | your line | and only then unqueued."*
+                            echo_mark: bound_prompts
+                                .get(&items[*hist_upto].item_id)
+                                .map(String::as_str)
+                                .map(|t| echo_mark(unconfirmed, t, true))
+                                .unwrap_or(QUEUED),
+                            echo_open,
+                            // **An open run lifts the rung for its own rows**, which is
+                            // what "it opens" means: the reader sees the very rows the
+                            // rung was hiding, with their own headlines, payloads and
+                            // diffs, rather than a second rendering of them.
+                            vis: if open_run {
+                                Visibility::lifted()
+                            } else {
+                                *visibility
+                            },
+                            diff_split,
+                            // Rebuilt per row inside the walk, so it cannot be hoisted
+                            // out of this borrow — it reads two fields the walk is
+                            // holding. **Closed for an open run**: that run is being
+                            // read whole, and opening a payload window inside a row that
+                            // is only on screen because the run is open would be two
+                            // unfoldings of one thing.
+                            payload_view: if open_run {
+                                None
+                            } else {
+                                payload_sel
+                                    .as_deref()
+                                    .filter(|id| !id.is_empty())
+                                    .map(|id| (id, *payload_page))
+                            },
+                            payload_newest: newest_payload.as_deref(),
+                            payload_max: Some(payload_max),
+                            window_rows: screen_rows.saturating_sub(WINDOW_CHROME),
+                        },
+                    ),
+                };
+                // A row that rendered nothing gets no separator either. An
+                // assistant row whose text is `"\n\n\n"` and whose every call
+                // is drawn by its own result row is a real and common shape —
+                // it is what a tool-calling round looks like — and paying two
+                // blank lines for it puts a hole in the transcript.
+                if !rows.iter().all(|l| l.trim().is_empty()) {
+                    // Air where the KIND changes, not between every pair of
+                    // rows. Two tool cards in a row are one block and read as
+                    // one; a blank between each of them was a third of the
+                    // vertical budget spent separating things a glyph in the
+                    // first column already separates.
+                    let pack =
+                        *hist_class == Some(RowClass::Activity) && class == RowClass::Activity;
+                    if !hist_lines.is_empty() && !pack && !tight {
+                        hist_lines.push(String::new());
+                    }
+                    if hist_first_class.is_none() {
+                        *hist_first_class = Some(class);
+                    }
+                    // **And where this row's lines begin** (R36). Recorded here rather
+                    // than derived later, because a separator's blank line belongs to no
+                    // row and only this walk knows it pushed one.
+                    spans.push(Span {
+                        row: *hist_upto,
+                        at: hist_lines.len(),
+                        lines: rows.len(),
+                    });
+                    hist_lines.extend(rows);
+                    *hist_class = Some(class);
+                }
+                *hist_upto += 1;
+            } else {
+                break;
+            }
+        }
+    }
 }

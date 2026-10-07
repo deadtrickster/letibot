@@ -4,6 +4,7 @@ pub mod assistant;
 pub mod blocks;
 pub mod call;
 pub mod item;
+pub mod live;
 pub mod markers;
 pub mod reasoning;
 pub mod tool_result;
