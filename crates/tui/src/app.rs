@@ -3985,6 +3985,10 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
         "how much reaches the transcript: the card, or a rung by name",
     ),
     ("diff", "how a diff is drawn: unified or side by side"),
+    (
+        "copy",
+        "the open ctrl-v output, or the last reply, onto the clipboard",
+    ),
     ("notes", "what this head has shown — and how to retire one"),
     (
         "config",
@@ -4866,6 +4870,47 @@ impl App {
             return Some(format!("{who}: {how}"));
         }
         None
+    }
+
+    /// **`/copy`: the open ctrl-v window's output, or else the model's last reply, onto the
+    /// system clipboard** (OSC 52 — which works over ssh, where `pbcopy` on the far side would
+    /// fill the wrong machine's clipboard). A slash verb rather than a key, because the
+    /// composer is live under the window and every bare letter is typing.
+    fn copy_command(&mut self) {
+        if !self.features.clipboard {
+            self.say(
+                "this terminal is not known to take OSC 52, so nothing was copied — \
+                 LETIBOT_TERM_FEATURES=clipboard turns it on",
+            );
+            return;
+        }
+        let window = self.payload_sel.as_ref().and_then(|id| {
+            self.items
+                .iter()
+                .find(|r| &r.item_id == id)
+                .and_then(|r| match r.item.as_ref() {
+                    Some(TranscriptItem::ToolResult { payload, .. }) => {
+                        Some(("the open output", payload.clone()))
+                    }
+                    _ => None,
+                })
+        });
+        let found = window.or_else(|| {
+            self.items.iter().rev().find_map(|r| match r.item.as_ref() {
+                Some(TranscriptItem::Assistant { text, .. }) if !text.trim().is_empty() => {
+                    Some(("the last reply", text.clone()))
+                }
+                _ => None,
+            })
+        });
+        match found {
+            Some((what, text)) => {
+                let lines = text.lines().count();
+                self.clipboard_out = Some(text);
+                self.say(&format!("copied {what} — {lines} line(s)"));
+            }
+            None => self.say("nothing to copy: no output is open and the model has not replied"),
+        }
     }
 
     /// Text the operator asked to copy, for the head to write to the clipboard.
@@ -11637,6 +11682,10 @@ impl App {
             self.say("making a session…");
             return Some(Action::NewSession(title.trim().to_string()));
         }
+        if cmd == "copy" {
+            self.copy_command();
+            return None;
+        }
         if matches!(cmd, "sessions" | "s") {
             self.picker = true;
             self.redraw = true;
@@ -14088,6 +14137,16 @@ impl App {
             return frame.clone();
         }
         let mut out = self.compose_screen(term_w, h);
+        // **Every `http(s)://` on the frame is a link** (OSC 8) where the terminal speaks it —
+        // the reply, the tool output, a note: one pass over the finished frame rather than one
+        // per renderer, so no renderer can be the one that forgot.
+        if self.features.links {
+            for l in out.iter_mut() {
+                if l.contains("://") {
+                    *l = crate::render::link_urls(l);
+                }
+            }
+        }
         if self.hold {
             // **The marker takes the hint bar's row.** It is one row that always exists, so the
             // freeze costs no height and reflows nothing — and it is the row that already talks
@@ -14121,6 +14180,11 @@ impl App {
         let gutter = Self::gutter(term_w);
         let w = term_w - 2 * gutter;
         self.cfg.width = w;
+        self.cfg.links = self
+            .features
+            .links
+            .then(|| self.wiring.workspace.clone())
+            .filter(|w| !w.is_empty());
         // The TERMINAL's width, kept beside the frame's. `cfg.width` is the inner
         // one — the gutter already taken off — so anything that re-renders from a
         // stored size has to start from this one or the frame narrows by two
@@ -24635,7 +24699,18 @@ fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
             let mut head = provenance;
             head.push_str(&p.paint(outcome_role, mark));
             head.push_str(&p.paint(Role::Faint, &format!(" {verb} ")));
-            head.push_str(&p.paint(Role::Plain, &subject));
+            // **The file, as a link** (OSC 8) where the terminal speaks it: the full target
+            // the shortened subject stands for, so a click opens the file and not `…/app.rs`.
+            let painted = p.paint(Role::Plain, &subject);
+            let painted = match (&cfg.links, targets.get(call_id), card::Verb::of(name)) {
+                (
+                    Some(root),
+                    Some(full),
+                    card::Verb::Read | card::Verb::Edit | card::Verb::Write | card::Verb::List,
+                ) => crate::render::file_link(root, full, &painted),
+                _ => painted,
+            };
+            head.push_str(&painted);
             head.push_str(&p.paint(outcome_role, &format!(" · {word}")));
             head.push_str(&p.paint(Role::Faint, &took));
 
@@ -53243,6 +53318,51 @@ mod tests {
             color: false,
             ..Default::default()
         }
+    }
+
+    /// **`/copy` takes the open window's output, else the last reply** — and says so when the
+    /// terminal is not known to take OSC 52 rather than pretending.
+    #[test]
+    fn copy_takes_the_open_window_else_the_last_reply() {
+        let mut a = app();
+        a.apply(ServerFrame::Event(env(
+            1,
+            testing::appended("a.0", "assistant"),
+        )));
+        a.record_item(
+            "a.0",
+            TranscriptItem::Assistant {
+                text: "the answer".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        );
+        assert_eq!(a.command("copy"), None);
+        assert_eq!(a.take_clipboard(), None, "no OSC 52, nothing written");
+
+        a.set_features(crate::features::Features::ALL);
+        a.command("copy");
+        assert_eq!(a.take_clipboard().as_deref(), Some("the answer"));
+
+        a.apply(ServerFrame::Event(env(
+            2,
+            testing::appended("r.0", "tool_result"),
+        )));
+        a.record_item(
+            "r.0",
+            TranscriptItem::ToolResult {
+                call_id: "c0".into(),
+                name: "bash".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "line 1\nline 2\n".into(),
+                edit: None,
+                origin: None,
+                media: None,
+            },
+        );
+        a.payload_sel = Some("r.0".into());
+        a.command("copy");
+        assert_eq!(a.take_clipboard().as_deref(), Some("line 1\nline 2\n"));
     }
 
     /// **The tab says what the session is doing, and a person who is away is told when it
