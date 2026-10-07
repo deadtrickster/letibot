@@ -73,7 +73,7 @@ pub enum Pick {
 
 impl Pick {
     /// What the card is asking, as its title.
-    fn title(self) -> &'static str {
+    pub(crate) fn title(self) -> &'static str {
         match self {
             Pick::Mode => "the mode this session runs under",
             Pick::Model => "what answers this conversation",
@@ -85,7 +85,7 @@ impl Pick {
     /// The settings row the daemon publishes the choices on, or `None` for a setting this
     /// head owns. **The daemon's lists are read, never kept** — the mistake the `mode` row's
     /// own comment records.
-    fn row_key(self) -> Option<&'static str> {
+    pub(crate) fn row_key(self) -> Option<&'static str> {
         match self {
             Pick::Mode => Some("mode"),
             Pick::Model => Some("model"),
@@ -101,7 +101,7 @@ impl Pick {
     /// and the name cannot. The daemon's two settings have no sentences here because the head
     /// does not know what they mean — it renders the daemon's choices verbatim and says
     /// nothing more, which is the same rule as its hints.
-    fn values(self) -> &'static [(&'static str, &'static str)] {
+    pub(crate) fn values(self) -> &'static [(&'static str, &'static str)] {
         match self {
             // The daemon's own names arrive at runtime; see `SettingPick::daemon_lists`.
             Pick::Mode | Pick::Model => &[],
@@ -122,7 +122,7 @@ impl Pick {
     /// columns a two-fact version read *"It also become…"* with its useful half never reaching
     /// the screen. The second line is the verb for the OTHER thing, which the operator went
     /// looking for — one verb doing both is what sent them.
-    fn consequence(self) -> &'static [&'static str] {
+    pub(crate) fn consequence(self) -> &'static [&'static str] {
         match self {
             Pick::Mode => &[
                 "a mode change moves THIS session from its next call, and every later session \
@@ -163,7 +163,7 @@ impl Pick {
 /// an appearance at all. So there is no `marks: off`, and no `colour` value either: colour is
 /// a property of the terminal, which the head already knows about (`RenderConfig::color`),
 /// not a preference to be stored.
-const DIFF_VALUES: &[(&str, &str)] = &[
+pub(crate) const DIFF_VALUES: &[(&str, &str)] = &[
     (
         "unified",
         "one column: `-` lines removed, `+` lines added, in order — best on a narrow terminal",
@@ -544,16 +544,16 @@ pub enum Key {
 
 /// See [`App::take_notification`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct Attention {
-    busy: bool,
-    asks: Vec<String>,
-    secret: Option<String>,
-    answered: Vec<String>,
+pub(crate) struct Attention {
+    pub(crate) busy: bool,
+    pub(crate) asks: Vec<String>,
+    pub(crate) secret: Option<String>,
+    pub(crate) answered: Vec<String>,
 }
 
 impl Key {
     /// The composer's key, when this is one of its.
-    fn composer(&self) -> Option<letibot_ui::editor::Key> {
+    pub(crate) fn composer(&self) -> Option<letibot_ui::editor::Key> {
         use letibot_ui::editor::Key as E;
         Some(match self {
             Key::Char(c) => E::Char(*c),
@@ -609,7 +609,7 @@ impl Key {
     /// of hand-written arms that each spelled their key twice. A key no switch has a chord for, and
     /// a switch whose chord no longer matches, both come out of here as `None`, which is what makes
     /// the drift impossible instead of merely unlikely.
-    fn show(&self) -> Option<Show> {
+    pub(crate) fn show(&self) -> Option<Show> {
         Show::ALL
             .into_iter()
             .find(|s| s.chord().is_some_and(|(_, k)| &k == self))
@@ -635,14 +635,14 @@ pub enum Fold {
 }
 
 impl Fold {
-    fn flip(self) -> Fold {
+    pub(crate) fn flip(self) -> Fold {
         match self {
             Fold::Folded => Fold::Open,
             Fold::Open => Fold::Folded,
         }
     }
 
-    fn is_open(self) -> bool {
+    pub(crate) fn is_open(self) -> bool {
         self == Fold::Open
     }
 }
@@ -663,14 +663,14 @@ impl Fold {
 /// daemon's own session list can supply them ([`App::fold_subagents`]), which is what a
 /// late head and every switch rebuilds the tree from.
 #[derive(Debug, Clone)]
-struct SubagentState {
-    session_id: String,
+pub(crate) struct SubagentState {
+    pub(crate) session_id: String,
     /// `opening` | `running` | `done` | `failed`, **or empty**, which is a row rebuilt from the
     /// daemon's session list for a child this head never watched: that list says whether a turn
     /// is generating in the session and nothing about how a settled one ended, so an empty word
     /// draws as `[?] state unknown` rather than as a `done` nobody measured. See
     /// [`App::fold_subagents`].
-    state: String,
+    pub(crate) state: String,
     /// **A turn is generating in this child at this instant** — the daemon's session list's
     /// own word (`SessionStatus::running`: *"a turn is generating in this session at this
     /// instant"*), and a measurement of NOW rather than of a life.
@@ -686,24 +686,24 @@ struct SubagentState {
     /// measured exactly that on 2026-10-06 — the count reading `4, 2, 3, 1` over children
     /// that were alive throughout, one of them parked on its own background job with two
     /// commits already behind it.
-    generating: bool,
+    pub(crate) generating: bool,
     /// **The legacy field, and the pre-`task` fallback**: the subtask's first line on the
     /// opening states, and the child's answer's first line once it has finished. A new
     /// row reads [`SubagentState::task`]; this is here so a daemon older than that field
     /// still draws what it always did.
-    prompt: String,
-    role: String,
+    pub(crate) prompt: String,
+    pub(crate) role: String,
     /// **The subtask in full, from the event's `task`.** Empty against a daemon that
     /// predates the field, and the pane then falls back to `prompt`.
-    task: String,
+    pub(crate) task: String,
     /// **The model this child runs on**, from the event's `model` — `local`, or
     /// `PROVIDER/MODEL`. Empty when the child inherited its parent's model, which is the
     /// default: the pane then draws no model clause rather than claiming one.
-    model: String,
+    pub(crate) model: String,
     /// **The child's answer's first line**, `Some` only once it has finished — the
     /// subtitle, kept apart from the row so a completion cannot be mistaken for the
     /// question.
-    answer: Option<String>,
+    pub(crate) answer: Option<String>,
     /// **When this child was spawned, for the pane's order** — the *"most recent agents must be on
     /// top"* the operator asked for on 2026-10-05.
     ///
@@ -717,7 +717,7 @@ struct SubagentState {
     /// **`0` is *not known*** — a replay, or a brief from a daemon that did not stamp the row — and
     /// it sorts LAST, below every row somebody can date. That is the honest place for it: a row
     /// nobody can order belongs at the bottom, not at the top pretending to be new.
-    spawned_ms: u64,
+    pub(crate) spawned_ms: u64,
 }
 
 impl SubagentState {
@@ -741,7 +741,7 @@ impl SubagentState {
     /// has since ended while the list says a second turn is generating in it right now, and
     /// that child is alive — see [`SubagentState::generating`] and the merge in
     /// [`App::fold_subagents`], which is where the two facts are kept apart.
-    fn is_finished(&self) -> bool {
+    pub(crate) fn is_finished(&self) -> bool {
         !matches!(self.state.as_str(), "running" | "opening")
     }
 }
@@ -750,7 +750,7 @@ impl SubagentState {
 /// `▸` and the scroll all read. A pane whose cursor comes from one list and whose rows come
 /// from another is the defect leticl's `todos-stops` docstring names; see [`App::subagent_stops`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SubStop {
+pub(crate) enum SubStop {
     /// A child in [`App::subagents`], by index.
     Agent(usize),
     /// **The `finished` group row.** The finished children live under it, collapsed by
@@ -761,7 +761,7 @@ enum SubStop {
 /// **One row of the jobs pane** — the ONE enumeration the arrows, Enter, the drawn `▸` and the
 /// scroll all read, exactly as [`SubStop`] is for the subagents pane. See [`App::job_stops`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JobStop {
+pub(crate) enum JobStop {
     /// A job in [`App::jobs`], by index.
     Job(usize),
     /// **The `finished` group row.** The settled jobs live under it, collapsed by default;
@@ -773,7 +773,7 @@ enum JobStop {
 /// pane draws. A free function rather than a method on the wire type, which this crate does not
 /// own, and a `match` rather than a `Debug` format so a state added to the closed set fails to
 /// compile here rather than arriving as a word nobody recognises.
-fn merge_state_word(state: letibot_sessionlog::event::MergeState) -> &'static str {
+pub(crate) fn merge_state_word(state: letibot_sessionlog::event::MergeState) -> &'static str {
     use letibot_sessionlog::event::MergeState as S;
     match state {
         S::Waiting => "waiting",
@@ -786,7 +786,7 @@ fn merge_state_word(state: letibot_sessionlog::event::MergeState) -> &'static st
 }
 
 /// **An entry's rung, as the head spells it** — [`merge_state_word`]'s sibling, one field over.
-fn merge_priority_word(priority: letibot_sessionlog::event::MergePriority) -> &'static str {
+pub(crate) fn merge_priority_word(priority: letibot_sessionlog::event::MergePriority) -> &'static str {
     use letibot_sessionlog::event::MergePriority as P;
     match priority {
         P::Urgent => "urgent",
@@ -810,22 +810,22 @@ use letibot_ui::text::{without_control, without_control_lines};
 
 /// One row of the config pane.
 #[derive(Debug, Clone)]
-struct ConfigRow {
-    section: &'static str,
-    key: String,
-    value: String,
+pub(crate) struct ConfigRow {
+    pub(crate) section: &'static str,
+    pub(crate) key: String,
+    pub(crate) value: String,
     /// Where the value came from — a path, a flag, "default" — shown under the
     /// selected row. Empty when nobody tracks it.
-    source: String,
+    pub(crate) source: String,
     /// The values this row may take, as the DAEMON sent them. Empty for a row
     /// with no closed set, and for a daemon older than protocol 18 — the pane
     /// then says it cannot cycle rather than cycling a list it invented.
-    choices: Vec<String>,
-    edit: ConfigEdit,
+    pub(crate) choices: Vec<String>,
+    pub(crate) edit: ConfigEdit,
 }
 
 #[derive(Debug, Clone)]
-enum ConfigEdit {
+pub(crate) enum ConfigEdit {
     /// This head's own: Enter flips it and writes `head.toml`.
     Head(HeadSetting),
     /// The session's, changeable now by an existing verb; `(key, how)`.
@@ -835,7 +835,7 @@ enum ConfigEdit {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum HeadSetting {
+pub(crate) enum HeadSetting {
     Diff,
     /// **The rung of the ladder** (R37/R38), persisted like the rest. The pane's row is a
     /// *reader* of the setting rather than a second way to set it: Enter says which verb
@@ -855,24 +855,24 @@ enum HeadSetting {
 }
 
 #[derive(Debug, Clone)]
-struct SubOut {
-    session_id: String,
+pub(crate) struct SubOut {
+    pub(crate) session_id: String,
     /// One line per rendered row — **and which renderer produced them is [`SubOut::degraded`]'s
     /// business**: the session's own rows go through `item_lines`, the same one every row of the
     /// transcript uses, and the event-ring fallback goes through `subagent_out_lines`.
-    lines: Vec<String>,
+    pub(crate) lines: Vec<String>,
     /// **The daemon answered with the event ring rather than the session's rows.**
     ///
     /// `Peeked::snapshot` is `None` when the daemon predates the field, or when the peek did not ask
     /// for rows — so the fallback is necessary, and the operator's rule is that a fallback has to be
     /// *visible*: a degraded render and a plain one must not look alike, or a reader cannot tell
     /// whether they are looking at a session or at a list of its events.
-    degraded: bool,
+    pub(crate) degraded: bool,
     /// Lines hidden off the bottom. Zero is "following the tail"; the pane draw
     /// clamps it, because only the draw knows the visible height.
-    scroll: usize,
+    pub(crate) scroll: usize,
     /// Where the whole view was spilled, when it was written.
-    spill: Option<String>,
+    pub(crate) spill: Option<String>,
     /// Events that fell off the daemon's scrollback before this read — the same
     /// disclosure a `Hello` makes, because a peek is a replay.
     ///
@@ -880,7 +880,7 @@ struct SubOut {
     /// bounds exactly as the ring is by its cap, so a trimmed read must still say it was trimmed.
     /// A missing answer rendering as an empty one is `card::Outcome::Abstained`'s rule, one pane
     /// along.
-    dropped: u64,
+    pub(crate) dropped: u64,
 }
 
 /// The output view the jobs pane's Enter opens: one job's retained output, as the
@@ -891,11 +891,11 @@ struct SubOut {
 /// an event with the numbers attached rather than as the `Warning` prose `/job`
 /// replies with.
 #[derive(Debug, Clone)]
-struct JobOut {
-    job: String,
+pub(crate) struct JobOut {
+    pub(crate) job: String,
     /// The daemon's word for where the job is — `running`, `exited 0`, … Empty
     /// until the first answer arrives.
-    state: String,
+    pub(crate) state: String,
     /// **Whether anything was ever executed for this job** (A.2, §11.6).
     ///
     /// The daemon's answer, not the head's inference: an empty window is the shape of
@@ -906,7 +906,7 @@ struct JobOut {
     ///
     /// `false` until the answer arrives, which is the reading that renders what every
     /// daemon before this field produced.
-    never_ran: bool,
+    pub(crate) never_ran: bool,
     /// **Where this job's output actually went, when it did not come here** (R41) — the file the
     /// job's `redirect` named in the list, taken from the row Enter was pressed on.
     ///
@@ -914,33 +914,33 @@ struct JobOut {
     /// so an empty window here is the shape of *this pane cannot show it*, and `it wrote nothing at
     /// all` would be a lie about a job that wrote a build log. The operator: *"entering a job never
     /// shows me its output - whether it went to file or not"*.
-    redirect: Option<String>,
+    pub(crate) redirect: Option<String>,
     /// The offsets of the window actually loaded: `from..to` of `produced`.
-    from: u64,
-    to: u64,
-    produced: u64,
+    pub(crate) from: u64,
+    pub(crate) to: u64,
+    pub(crate) produced: u64,
     /// Bytes that fell off the front of the ring before this window. Disclosed
     /// because a window that starts mid-log is otherwise read as the job's start.
-    dropped: u64,
+    pub(crate) dropped: u64,
     /// The window, already split into lines by the daemon so two heads cannot
     /// disagree about where a line ends.
-    lines: Vec<String>,
+    pub(crate) lines: Vec<String>,
     /// Where the daemon says the next page starts, or `None` when the end is here.
-    next: Option<u64>,
+    pub(crate) next: Option<u64>,
     /// Offsets already loaded, newest last: `←` walks back the way `→` came. A
     /// stack rather than `from - page` arithmetic, because the page size is the
     /// daemon's choice and recomputing it here would be a second copy of it.
-    back: Vec<u64>,
+    pub(crate) back: Vec<u64>,
     /// Lines hidden off the bottom of the loaded window. Zero follows the tail;
     /// the draw clamps it, because only the draw knows the visible height.
-    scroll: usize,
+    pub(crate) scroll: usize,
     /// True from the request until its answer: the overlay says so rather than
     /// showing an empty window it cannot yet fill.
-    loading: bool,
+    pub(crate) loading: bool,
     /// The daemon's refusal, when the read could not be answered — a job that fell
     /// out of the host's table between the listing and Enter. Shown in place of the
     /// window so the pane does not sit at `reading…` forever.
-    error: Option<String>,
+    pub(crate) error: Option<String>,
 }
 
 /// **The daemon connection, as far as this head can tell.**
@@ -1136,20 +1136,20 @@ pub const NOTICE_MS: u64 = 1_600;
 
 /// line. See `crates/ui/DESIGN.md` §2.3.
 #[derive(Debug, Clone)]
-struct CallRow {
-    call_id: String,
-    name: String,
+pub(crate) struct CallRow {
+    pub(crate) call_id: String,
+    pub(crate) name: String,
     /// The §4.1 display target: the path, pattern or command line the call is
     /// about. Empty when the event carried none — a log recorded before the field
     /// existed, or a call first seen as `ToolStarted` — and the card then renders
     /// the verb alone rather than a guess.
-    target: String,
-    state: CallState,
+    pub(crate) target: String,
+    pub(crate) state: CallState,
     /// `Envelope::ts` of the proposal or the start, and of the finish. Zero means
     /// this call came out of a snapshot, which has no timestamps — and a duration
     /// invented from a clock the events were not measured against is worse than
     /// no duration, so that case renders as `card::Phase::Replayed`.
-    started_ms: u64,
+    pub(crate) started_ms: u64,
     /// **The head's own clock when this call started, or 0 when the head had no
     /// clock then** (R13).
     ///
@@ -1164,14 +1164,14 @@ struct CallRow {
     /// envelopes are applied in a loop, and `app.clock` is called only in the
     /// interactive loop after them), so a replayed call has no anchor and renders
     /// from the log's own span, which is the only honest measurement there.
-    started_at: u64,
-    ended_ms: u64,
+    pub(crate) started_at: u64,
+    pub(crate) ended_ms: u64,
     /// The most recent `ToolProgress { note }`.
-    note: Option<String>,
+    pub(crate) note: Option<String>,
     /// The settled decision this call was gated by, when there was one. Rendered on
     /// the card in the dim register — the approval is a fact about the call, not a
     /// stray note — and expanded to the brief the oracle saw and its reply.
-    decision: Option<SettledDecision>,
+    pub(crate) decision: Option<SettledDecision>,
 }
 
 /// **The way out of a pane: `Ctrl-\`.** See [`TermPane`] for why this byte and not `Esc`.
@@ -1241,16 +1241,16 @@ pub const WAY_OUT: u8 = 0x1c;
 /// screen or not), and it is confirmed first — see [`App::term_ask`]. The two acts are as
 /// different as they can be: one sends nothing and keeps everything, the other sends one frame
 /// and kills a process tree, and neither is reachable by the other's key.
-struct TermPane {
+pub(crate) struct TermPane {
     /// The program's screen, fed the daemon's bytes and asked for rows.
-    screen: letibot_vt::Screen,
+    pub(crate) screen: letibot_vt::Screen,
     /// The line the operator submitted, verb included — kept for the one sentence this head
     /// says when the pane ends, so *what ended* is not a mystery.
-    line: String,
+    pub(crate) line: String,
     /// **The rectangle last sent to the daemon.** A resize is a frame, and a frame per tick
     /// would be a frame per keystroke — this is what makes `TermResize` fire on a change and
     /// not on a redraw.
-    sent: (usize, usize),
+    pub(crate) sent: (usize, usize),
     /// **The operator has left and an ending is on its way.** Set when the head sends
     /// [`Action::TermClose`] — the confirmed `!term close` — and it stops the keys: between the
     /// frame and the daemon's `TermEnded` there is a kill in flight, and a byte written into a
@@ -1259,18 +1259,18 @@ struct TermPane {
     ///
     /// **Not the detach flag.** Leaving (`ctrl-\`) sends nothing and waits for nothing — see
     /// [`TermPane::detached`].
-    closing: bool,
+    pub(crate) closing: bool,
     /// **The operator left with `ctrl-\`, and the program is still running.**
     ///
     /// The rectangle is not drawn, the composer has its rows and its keys back — and the pane
     /// is **kept**: the bytes keep arriving into this screen, and the ending, whenever it comes,
     /// is filed as the row it would have been had the operator been looking. That is the whole
     /// of *detaching is not ending*, and it is why [`App::detach`] drops nothing.
-    detached: bool,
+    pub(crate) detached: bool,
 }
 
 impl TermPane {
-    fn new(line: &str, cols: usize, rows: usize) -> TermPane {
+    pub(crate) fn new(line: &str, cols: usize, rows: usize) -> TermPane {
         TermPane {
             screen: letibot_vt::Screen::new(rows, cols),
             line: line.to_string(),
@@ -1282,7 +1282,7 @@ impl TermPane {
 
     /// **The pane's rows for this frame** — exactly `room` of them, which is the property the
     /// composer's own row budget depends on. See the type's note.
-    fn rows(
+    pub(crate) fn rows(
         &mut self,
         cols: usize,
         room: usize,
@@ -1302,7 +1302,7 @@ impl TermPane {
     /// sentence last (and its rectangle is otherwise empty), and a full-screen program leaves
     /// a grid of mostly blanks whose last rows are where its status line is. Capped at
     /// [`PANE_LAST_LINES`], which is what makes an unfolded note safe to draw.
-    fn last_rows(&self) -> Vec<String> {
+    pub(crate) fn last_rows(&self) -> Vec<String> {
         let (rows, _) = self.screen.size();
         let mut said: Vec<String> = (0..rows)
             .map(|r| self.screen.line(r))
@@ -1317,14 +1317,14 @@ impl TermPane {
 }
 
 #[derive(Debug, Default)]
-struct TurnPane {
-    turn_id: String,
-    model: String,
-    text: IncrementalMarkdown,
-    reasoning: IncrementalMarkdown,
-    text_cache: BlockCache,
-    reasoning_cache: BlockCache,
-    calls: Vec<CallRow>,
+pub(crate) struct TurnPane {
+    pub(crate) turn_id: String,
+    pub(crate) model: String,
+    pub(crate) text: IncrementalMarkdown,
+    pub(crate) reasoning: IncrementalMarkdown,
+    pub(crate) text_cache: BlockCache,
+    pub(crate) reasoning_cache: BlockCache,
+    pub(crate) calls: Vec<CallRow>,
     /// The raw `<function=…>` markup of this turn's tool calls, as it arrives on
     /// `DeltaTarget::ToolCall`.
     ///
@@ -1332,14 +1332,14 @@ struct TurnPane {
     /// while it is being written and the settled card afterwards; this is what the
     /// raw chord reveals, and it is the reason the chord can tell the truth
     /// instead of re-deriving markup the head never saw.
-    raw_call: String,
+    pub(crate) raw_call: String,
     /// True between `<tool_call>` and the `ToolCallProposed` that settles it.
     ///
     /// A separate fact from `raw_call.is_empty()`: a turn that has written one call
     /// and is now writing prose has a non-empty `raw_call` and is not in a call.
-    writing_call: bool,
-    progress: Option<letibot_sessionlog::event::PromptProgress>,
-    state: Option<TurnState>,
+    pub(crate) writing_call: bool,
+    pub(crate) progress: Option<letibot_sessionlog::event::PromptProgress>,
+    pub(crate) state: Option<TurnState>,
     /// Transcript rows appended while this turn ran.
     ///
     /// The pane is the *live* view of a turn. Once the turn has ended and those
@@ -1347,7 +1347,7 @@ struct TurnPane {
     /// duplicate of it — so the pane stands down and only its summary line
     /// survives. Without this the answer is on the screen twice, once in the wrong
     /// order, which is what the first run of `--demo` showed.
-    appended: Vec<String>,
+    pub(crate) appended: Vec<String>,
     /// **Every row this TURN has produced, across all of its rounds** — and the difference from
     /// [`TurnPane::appended`] is the whole of a defect the operator caught twice.
     ///
@@ -1380,7 +1380,7 @@ struct TurnPane {
     /// prompt*: read as the latter it emptied this field, the run stopped reading as the turn's,
     /// and one run's work was drawn by two markers again (see the `TurnStarted` arm for the frame
     /// that made it reachable, and for the second `Responding` it manufactured).
-    turn_rows: Vec<String>,
+    pub(crate) turn_rows: Vec<String>,
     /// How many of `calls` the transcript has already taken over.
     ///
     /// A round's tool-result rows are appended **in call order**, after every call
@@ -1401,7 +1401,7 @@ struct TurnPane {
     /// the transcript has taken over is not executing, and a colour that kept asking the whole pane
     /// stayed yellow for the rest of the session on a call whose `ToolFinished` this head never
     /// received.
-    settled_calls: usize,
+    pub(crate) settled_calls: usize,
     /// **How much of `reasoning` has already landed as a row** — bytes of `reasoning.raw()`.
     ///
     /// The mark `settled_calls` is for calls, and it is here for the reason that one exists: work
@@ -1415,21 +1415,21 @@ struct TurnPane {
     /// inflation vanished with it. A count of work done fell, which is the same defect leticl
     /// measured on the calls side: *"2 (in yellow) tool calls dropping to 1 (in yellow) tool calls
     /// and then changing back to 2 (in white) tool calls."*
-    reasoned_upto: usize,
+    pub(crate) reasoned_upto: usize,
     /// The `ts` of `TurnStarted`, and of the last event seen for this turn. The
     /// difference is how long the turn has been going, taken from the log's own
     /// clock rather than from a wall clock in the head — a head that reads a
     /// recorded session must show the same elapsed time as the one that watched it.
-    started_ms: u64,
-    last_ms: u64,
+    pub(crate) started_ms: u64,
+    pub(crate) last_ms: u64,
     /// The `ts` of the first and last `Delta { target: Reasoning }`.
     ///
     /// `card::reasoning` renders `Thought for 4.2s`, and this is where the 4.2
     /// comes from — no engine change needed, only a head that keeps the two
     /// timestamps it was already being handed. Zero means the reasoning arrived
     /// in a snapshot and has no honest duration.
-    think_started_ms: u64,
-    think_last_ms: u64,
+    pub(crate) think_started_ms: u64,
+    pub(crate) think_last_ms: u64,
 }
 
 /// The head.
@@ -1450,13 +1450,13 @@ pub struct App {
     pub diff_split: bool,
     /// The config pane (`/config`): every setting this head and its session run
     /// under, the runtime-editable ones editable in place.
-    config_pane: bool,
-    config_sel: usize,
+    pub(crate) config_pane: bool,
+    pub(crate) config_sel: usize,
     /// Where the head's own choices are written. `None` is a head with no
     /// config directory, and the pane says so instead of pretending to save.
-    prefs_path: Option<std::path::PathBuf>,
+    pub(crate) prefs_path: Option<std::path::PathBuf>,
     /// The daemon's settings, as last listed. Empty until asked.
-    settings: Vec<letibot_sessionlog::protocol::SettingRow>,
+    pub(crate) settings: Vec<letibot_sessionlog::protocol::SettingRow>,
     /// **`!term` — the pane, when a screen program is running in it.**
     ///
     /// `None` is *no pane*, which is the head's ordinary state: the transcript is drawn in
@@ -1468,34 +1468,34 @@ pub struct App {
     /// live comes back as a `TermEnded` carrying the refusal's sentence, which is drawn where
     /// the pane's own ending is drawn; this head does not refuse it locally, because the
     /// authority on *is a pane open* is the daemon that owns the pty.
-    term: Option<TermPane>,
+    pub(crate) term: Option<TermPane>,
     /// **What this head believes about the session's pane** — the daemon's answer to
     /// `ClientFrame::TermStatus`, kept because a head that is **not drawing** the pane still has
     /// to say that something is running in it (and a `!term close` has to name what it is about
     /// to end). See [`PaneFact`], and [`App::pane_behind`] for how the two sources of that fact
     /// — this head's own pane and the daemon's answer — are joined.
-    term_fact: PaneFact,
+    pub(crate) term_fact: PaneFact,
     /// **The confirmation that ends a pane**, when one is up. See [`TermAsk`].
-    term_ask: Option<TermAsk>,
+    pub(crate) term_ask: Option<TermAsk>,
     /// **A `!term close` that is waiting for the status read.** The head cannot always answer
     /// *is there a pane to end* from what it holds — it has just attached, or it never opened
     /// one — so the line is **held** and the answer runs the same decision. See
     /// [`App::begin_close`].
-    close_pending: bool,
-    session_id: String,
-    head_id: String,
+    pub(crate) close_pending: bool,
+    pub(crate) session_id: String,
+    pub(crate) head_id: String,
     /// The head id the daemon just handed out, for the driver to give the client.
     ///
     /// A `Switch` seats this connection as a *different head* in the new session,
     /// and a client that kept the old id would ack into a session it had left —
     /// which the hub would silently ignore, so the mark would stop advancing and
     /// nothing would say why.
-    seated: Option<String>,
+    pub(crate) seated: Option<String>,
     /// What this session is talking to: `model · dialect · endpoint · workspace`.
     /// §4.4, arriving on `Hello`.
-    wiring: SessionWiring,
+    pub(crate) wiring: SessionWiring,
     /// Every session the daemon holds, as of the last `Hello` or `Sessions` frame.
-    sessions: Vec<SessionBrief>,
+    pub(crate) sessions: Vec<SessionBrief>,
     /// Subagents this session has spawned, folded from the durable `Subagent`
     /// events. Keyed by session id: a `running` row becomes its `done` row.
     ///
@@ -1506,7 +1506,7 @@ pub struct App {
     /// daemon's session list is the one measurement of NOW either half has. A list built from
     /// the events alone was empty for every head that did not watch the spawn — and, once the
     /// events were gone, empty for a head that had.
-    subagents: Vec<SubagentState>,
+    pub(crate) subagents: Vec<SubagentState>,
     /// Background jobs this session started, folded from the `Backgrounded`
     /// outcome on a tool finish and the durable `JobSettled` event. In the order
     /// they were backgrounded; a settlement folds into its row.
@@ -1519,20 +1519,20 @@ pub struct App {
     /// 2026-09-20: *"regarding jobs, subagents, etc, i expect them to be handled
     /// by harnessd not the heads"*. A `JobSettled` still folds onto a row for
     /// liveness; anything it does not recognise waits for the next answer.
-    jobs: Vec<letibot_sessionlog::protocol::JobEntry>,
+    pub(crate) jobs: Vec<letibot_sessionlog::protocol::JobEntry>,
     /// Which picker row the cursor is on. Arrows move it, Enter takes it; it starts
     /// on the session this head is already in, so an untouched list answers Enter
     /// with a no-op rather than a surprise.
-    picker_sel: usize,
+    pub(crate) picker_sel: usize,
     /// How many rows the picker block actually drew on the last screen: the
     /// two title lines plus the sessions that survived `truncate(room)`. A
     /// click is only trusted for a row this count proves was on screen — a
     /// click into the blank space below a truncated list must not select a
     /// session nobody can see.
-    picker_rows_drawn: usize,
+    pub(crate) picker_rows_drawn: usize,
     /// The terminal height the last screen was composed for, so a click can
     /// redo the header-row arithmetic the screen did without a repaint.
-    screen_rows: usize,
+    pub(crate) screen_rows: usize,
     /// A Tab-driven completion in progress: the prefix as typed, the candidate
     /// names it matched, and which one is current. Re-derived whenever the
     /// text no longer starts with the cached prefix; any other key leaves it
@@ -1541,7 +1541,7 @@ pub struct App {
     /// cycling, and which one is showing. **Owned `String`s** rather than `&'static
     /// str`, because half the list now comes from the daemon (R32) and a borrowed list
     /// could only ever hold this head's own table.
-    completion: Option<(String, Vec<String>, usize)>,
+    pub(crate) completion: Option<(String, Vec<String>, usize)>,
     /// **The model's half of the `!` completion, in flight and answered.**
     ///
     /// The history is the first answer and this is the fallback: when the history has
@@ -1562,22 +1562,22 @@ pub struct App {
     /// conversation that moved is a different question. The position in the key is the
     /// number of transcript rows at the ask, so a row landing is a new position and a
     /// stale answer.
-    shell_ask: std::collections::HashMap<String, (String, u64)>,
-    shell_suggestions: std::collections::HashMap<(String, u64), Vec<String>>,
+    pub(crate) shell_ask: std::collections::HashMap<String, (String, u64)>,
+    pub(crate) shell_suggestions: std::collections::HashMap<(String, u64), Vec<String>>,
     /// The number the next `SuggestShell`'s `client_request_id` takes, beside
     /// `head_run_seq` and for the same reason: the id has to be unique per head, and
     /// the head is the one that has to recognise it on the way back.
-    shell_ask_seq: u64,
+    pub(crate) shell_ask_seq: u64,
     /// **The model's cycle, when it is live**: the prefix it was started for, the
     /// lines it is cycling, and which one is showing. Separate from `completion`
     /// (the history's cycle) because the two have different provenance and the render
     /// has to tell them apart — a model line drawn as a history line is a line that
     /// looks like the operator typed it and did not.
-    shell_model: Option<(String, Vec<String>, usize)>,
+    pub(crate) shell_model: Option<(String, Vec<String>, usize)>,
     /// **The file names a Tab found for the word being typed**, and the line they were
     /// found for. Shown in the completion row while the line is unchanged — the shell's
     /// own "here are the choices" — and dropped the moment it is edited.
-    path_matches: Option<(String, Vec<String>)>,
+    pub(crate) path_matches: Option<(String, Vec<String>)>,
     /// **The `!` candidates, computed from the rows and held until they move.**
     ///
     /// The list is the same for every frame that draws the live `!` row, and building
@@ -1589,7 +1589,7 @@ pub struct App {
     /// `None` is *not built yet* and an empty `Some` is *there are none*, which is the
     /// distinction a cache needs: a session with no `!` line in it must not walk the
     /// view again on every frame to find that out.
-    shell_candidates_memo: Option<Vec<String>>,
+    pub(crate) shell_candidates_memo: Option<Vec<String>>,
     /// **How many times that walk has run**, ever — the encoder for the memo above, and
     /// for the same reason [`App::hist_renders`] exists: a wall time is not something a
     /// test can assert on and a count is.
@@ -1597,7 +1597,7 @@ pub struct App {
     /// Actions produced by a *frame* rather than by a key: the switch that follows
     /// a session being created. Drained by the driver, which is the only thing that
     /// can send.
-    queued: Vec<Action>,
+    pub(crate) queued: Vec<Action>,
     /// Prompts this head has sent that the transcript does not hold yet.
     ///
     /// A prompt sent while a turn runs is **queued as a follow-up user item**
@@ -1623,7 +1623,7 @@ pub struct App {
     /// faster to display than the prompt that caused it, and the echo below kept
     /// saying `queued` while the words it stood for were already in the
     /// conversation above it. See [`App::bound_prompts`].
-    pending_prompts: Vec<String>,
+    pub(crate) pending_prompts: Vec<String>,
     /// **The echo in the transcript's own place, before its body lands.**
     ///
     /// `item_id` → the echo text this head optimistically bound to an announced
@@ -1647,7 +1647,7 @@ pub struct App {
     ///
     /// A body that contradicts the binding ends it too, and then both correct: the
     /// row renders from its real content and the echo reappears at the tail.
-    bound_prompts: std::collections::HashMap<String, String>,
+    pub(crate) bound_prompts: std::collections::HashMap<String, String>,
     /// **The echoes that were in the air when the conversation was about to be
     /// replaced** (R16).
     ///
@@ -1673,25 +1673,25 @@ pub struct App {
     /// itself, so `command` marks it on the way out. The fork then says
     /// `compacted`/`reseated` **after** it has happened, and that is where the
     /// marked echoes go — see the `Warning` arm.
-    fork_pending: Vec<String>,
+    pub(crate) fork_pending: Vec<String>,
     /// Set when this head asked for a session and is waiting to be told its id.
-    want_new_session: bool,
+    pub(crate) want_new_session: bool,
     /// The last turn's `usage`, kept past the end of the turn so the header can
     /// say how much context this session is carrying while nothing is running.
-    usage: Option<Usage>,
+    pub(crate) usage: Option<Usage>,
     /// Whether `usage.cached_tokens` is a measurement or a placeholder. A usage
     /// seeded from the session's row after a restart knows the prompt size (the
     /// row carries it) but not the cache fraction (a prompt that was never sent
     /// has none), and the header shows the percentage only when it was measured —
     /// a `0%` nobody took is the same defect as a rate nobody measured.
-    usage_cache_measured: bool,
+    pub(crate) usage_cache_measured: bool,
     /// The last turn's `timings`, kept for the same reason and shown beside it:
     /// the decode rate and the wall time the turn footer used to carry. They
     /// moved because the footer repeated the header's context and cache numbers
     /// next to them, and one fact on one screen twice is one fact rendered as a
     /// question — see `turn_footer` for what the footer kept.
-    last_timings: Option<Timings>,
-    items: Vec<SnapshotItem>,
+    pub(crate) last_timings: Option<Timings>,
+    pub(crate) items: Vec<SnapshotItem>,
     /// The rendered transcript — every row, as the bytes that reach the terminal.
     ///
     /// # ONCE A ROW IS RENDERED, NOTHING ABOUT IT CHANGES ON ITS OWN
@@ -1717,8 +1717,8 @@ pub struct App {
     ///
     /// So the rule for a change to any row: **can the operator see it happen, and did they ask for
     /// it.** The counts and the rung are the whole of the yes.
-    hist_lines: Vec<String>,
-    hist_upto: usize,
+    pub(crate) hist_lines: Vec<String>,
+    pub(crate) hist_upto: usize,
     /// The first item index represented in `hist_lines`.
     ///
     /// `0` for a head that has walked the conversation from its beginning, which is
@@ -1732,7 +1732,7 @@ pub struct App {
     /// every row above them. The frame shows the end of the conversation, so the
     /// end is what gets rendered first. `tail_cut` is the markdown half of that
     /// (`crates/tui/src/markdown.rs`); this is the walk's.
-    hist_floor: usize,
+    pub(crate) hist_floor: usize,
     /// The `seq` at which the head last read the `model` settings row, and the `seq` of
     /// the `TurnStarted` that last named a model.
     ///
@@ -1740,21 +1740,21 @@ pub struct App {
     /// *answer*, so an attached head is not told about a mid-conversation provider
     /// switch, while a turn arrives unprompted and names what is answering. See the
     /// header's model selection for the whole argument.
-    model_from_settings_at: u64,
-    model_from_turn_at: u64,
+    pub(crate) model_from_settings_at: u64,
+    pub(crate) model_from_turn_at: u64,
     /// How much transcript this head will walk from the beginning before it renders the
     /// tail instead. [`SELF_WALK_LIMIT`] unless someone says otherwise.
     ///
     /// A field rather than a constant because the path it selects has to be testable:
     /// `usize::MAX` forces the full walk, so a test can render both ways and compare,
     /// and a machine with a different idea of "too big" can say so.
-    walk_limit: usize,
+    pub(crate) walk_limit: usize,
     /// The kind of the **first** row in `hist_lines`.
     ///
     /// `hist_class` is the last one, which is all a forward walk needs; a backward
     /// walk prepends, and the separator it owes the seam is decided by the two kinds
     /// that meet there. `None` for an empty history.
-    hist_first_class: Option<RowClass>,
+    pub(crate) hist_first_class: Option<RowClass>,
     /// Where the walk stood just before it rendered each item: `hist_marks[k]` is
     /// the state at the top of the iteration that drew `items[k]`, so there is one
     /// per rendered row and `hist_marks.len() == hist_upto`.
@@ -1765,48 +1765,48 @@ pub struct App {
     /// it — 135 full rebuilds of an 89-row session, measured on one replay — which
     /// is the §13.3 rule this head is built around, broken at the level above the
     /// lexer that was careful about it.
-    hist_marks: Vec<HistMark>,
-    hist_width: usize,
+    pub(crate) hist_marks: Vec<HistMark>,
+    pub(crate) hist_width: usize,
     /// The class of the last row the walk actually drew, so the next one knows
     /// whether a blank line belongs between them. The walk is incremental across
     /// frames, so this has to survive the frame that set it.
-    hist_class: Option<RowClass>,
-    turn: Option<TurnPane>,
-    open: Vec<OpenDecision>,
+    pub(crate) hist_class: Option<RowClass>,
+    pub(crate) turn: Option<TurnPane>,
+    pub(crate) open: Vec<OpenDecision>,
     /// `sudo` in the session wants a password: the request, and what has been
     /// typed for it so far. Kept OUT of the composer, so it is never in the
     /// composer's history, never completed, never shown: the composer draws a
     /// dot per character while this is `Some`.
-    secret: Option<SecretAsk>,
-    secret_buf: String,
+    pub(crate) secret: Option<SecretAsk>,
+    pub(crate) secret_buf: String,
     /// **Which open secret requests are key asks**, kept until they settle. The card is
     /// closed by the answer (Esc clears it at once), so by the time `SecretSettled`
     /// arrives the card can no longer say what it was — and a refused key would be
     /// noted as sudo's refused password.
-    key_secrets: Vec<String>,
+    pub(crate) key_secrets: Vec<String>,
     /// **What the terminal speaks beyond cells** (`crate::features`), told by the head after
     /// it entered the terminal. Default — nothing — for a test, a replay and a pipe.
-    features: crate::backend::features::Features,
+    pub(crate) features: crate::backend::features::Features,
     /// Whether the terminal window has focus, from `?1004` reports. `None` until the first
     /// report, and read as focused: a notification goes only to somebody known to be away.
-    focused: Option<bool>,
+    pub(crate) focused: Option<bool>,
     /// The terminal's answer to OSC 11: is its background light. `None` until it answers.
-    light_background: Option<bool>,
+    pub(crate) light_background: Option<bool>,
     /// What needed the person last tick — see [`App::take_notification`]. `None` until the
     /// first look, which is a baseline and never a notification: attaching to a session with
     /// a card already open is not news.
-    attention: Option<Attention>,
+    pub(crate) attention: Option<Attention>,
     /// Text the operator asked to put on the clipboard, for the head to write (OSC 52).
-    clipboard_out: Option<String>,
+    pub(crate) clipboard_out: Option<String>,
     /// Images already in the terminal's memory, by id (see `render::image_id`), and how many
     /// rows of `items` have been looked at for new ones.
-    images_sent: std::collections::HashMap<u32, (Option<u32>, Option<u32>)>,
+    pub(crate) images_sent: std::collections::HashMap<u32, (Option<u32>, Option<u32>)>,
     /// The image box the placements were last sent for (`render::image_box` of the frame's
     /// width). A frame at another width re-sends every placement at the new size.
-    images_box: u32,
-    images_scanned: usize,
+    pub(crate) images_box: u32,
+    pub(crate) images_scanned: usize,
     /// Upload bytes for the head to write before the next frame (kitty graphics).
-    image_uploads: Vec<Vec<u8>>,
+    pub(crate) image_uploads: Vec<Vec<u8>>,
     /// **A command of the operator's own is waiting for an answer**: the request, and what has
     /// been typed for it so far.
     ///
@@ -1820,21 +1820,21 @@ pub struct App {
     /// of what keeps the two channels apart: this card is drawn in the open because what it
     /// carries is a line for a program's stdin, and a secret must never travel here. See
     /// [`App::prompt_lines`].
-    prompt: Option<PromptAsk>,
-    prompt_buf: String,
+    pub(crate) prompt: Option<PromptAsk>,
+    pub(crate) prompt_buf: String,
     /// **A key the model picker asked for** — the operator's row: *"if i choose a model without
     /// key picker should ask for the key."* The greening told them WHICH rows need one; this is
     /// the row that collects it. Its own state and never the sudo path's: a provider key is
     /// stored, not spent, and borrowing `SecretAsk` would tie a head-side ask to a daemon
     /// `req_id` that does not exist.
-    key_ask: Option<KeyAsk>,
-    key_buf: String,
+    pub(crate) key_ask: Option<KeyAsk>,
+    pub(crate) key_buf: String,
     /// Screen requests this head has not answered yet. Answered by the DRIVER,
     /// after the frame is built, with the rows it actually drew.
-    screen_requests: Vec<String>,
+    pub(crate) screen_requests: Vec<String>,
     /// The terminal's full width at the last render, gutter included. See
     /// [`App::screen`].
-    term_cols: usize,
+    pub(crate) term_cols: usize,
     /// Which option of `open[0]` is highlighted.
     ///
     /// A permission prompt used to be answered by TYPING an option id or its first
@@ -1845,7 +1845,7 @@ pub struct App {
     /// Up/Down move this; Enter on an empty composer answers it. Typing still works,
     /// because a head driven by a script and the tests both use it, and because the
     /// first letter is faster than two arrow presses once you know the ladder.
-    sel: usize,
+    pub(crate) sel: usize,
     /// Things that happened *between* transcript rows and belong in the
     /// conversation: a guard that fired, a decision that settled.
     ///
@@ -1859,7 +1859,7 @@ pub struct App {
     /// **And a note the head did not file itself is [`Placed::Before`]** (R19): it came
     /// with a snapshot, so it happened before this window and is listed rather than
     /// drawn. See the type, and [`App::load`] for where the two kinds are sorted.
-    notes: Vec<(Placed, Note)>,
+    pub(crate) notes: Vec<(Placed, Note)>,
     /// **How far the open card's content is scrolled** (R20), counted in rows from the
     /// TOP of the content — the opposite of [`App::scroll`], which counts rows back from
     /// the bottom because a transcript is read from its tail. A card is read from its
@@ -1870,10 +1870,10 @@ pub struct App {
     /// at every site that replaces the open set, because there are several and one would
     /// have been forgotten — and a card that inherited the previous card's offset is a
     /// card whose first screenful was somewhere in the middle.
-    dec_scroll: usize,
+    pub(crate) dec_scroll: usize,
     /// The `req_id` [`App::dec_scroll`] belongs to, so the reset above can tell a new card
     /// from the same card drawn again.
-    dec_scroll_for: String,
+    pub(crate) dec_scroll_for: String,
     /// **What the card's content window actually was on the last frame**: how many lines
     /// the content has, and how many rows the viewport got, seam excluded.
     ///
@@ -1881,8 +1881,8 @@ pub struct App {
     /// all — the question is *is anything out of view*, and only the draw knows it, because
     /// the length of the content is a function of the width. Named for the panes'
     /// `pane_len`/`pane_room`, which are the same arrangement.
-    dec_content_len: usize,
-    dec_content_room: usize,
+    pub(crate) dec_content_len: usize,
+    pub(crate) dec_content_room: usize,
     /// **The notes this reader has retired**, by [`note_key`] — the identity a
     /// note keeps across a resync and a restart.
     ///
@@ -1902,10 +1902,10 @@ pub struct App {
     /// and findable*: it stays in `notes`, `/notes` lists it with its text, and
     /// `/status` counts it. That is the rule `/status`'s own `filtered` counter
     /// keeps — "I chose not to show this" must not look like "nothing happened".
-    dismissed: Vec<String>,
+    pub(crate) dismissed: Vec<String>,
     /// How many of those are already in `hist_lines`.
-    note_upto: usize,
-    heads: usize,
+    pub(crate) note_upto: usize,
+    pub(crate) heads: usize,
     /// Counters. Every one of these is on the status line, because a number a head
     /// keeps and does not show is a number nobody can act on.
     /// Transcript rows the history walk has rendered, ever — not rows in the
@@ -2007,7 +2007,7 @@ pub struct App {
     /// survived — they start at zero with it and die with it — so an acknowledgement written to
     /// disk would outlive the numbers it was an acknowledgement OF, and a restarted head would
     /// come up having already forgiven incidents it has not had.
-    acked: Counters,
+    pub(crate) acked: Counters,
     /// Scroll offset from the bottom, in lines. 0 is "following the stream".
     pub scroll: usize,
     /// The composer. `letibot_ui::editor::Editor` — multi-line, with history, a
@@ -2015,7 +2015,7 @@ pub struct App {
     /// It was a `String` and a character index, which is why there was no way to
     /// write a two-line prompt, recall the last one, or paste a stack trace
     /// without losing bytes.
-    editor: Editor,
+    pub(crate) editor: Editor,
     /// Folds. Reasoning starts folded; tool output starts folded.
     pub reasoning: Fold,
     pub tools: Fold,
@@ -2028,7 +2028,7 @@ pub struct App {
     /// — and they are two different obligations: the raw form must be reachable,
     /// and it must not be what anybody sees by accident.
     pub raw_calls: bool,
-    notice: Option<String>,
+    pub(crate) notice: Option<String>,
     /// **When the notice stops being news, on this head's own clock** — the same
     /// milliseconds [`App::clock`] is fed and the same ones a running call's elapsed
     /// time is measured against.
@@ -2044,13 +2044,13 @@ pub struct App {
     /// **A countdown of frames was the defect, not the number.** It made a notice's
     /// lifetime a fact about the render loop rather than about the reader: see
     /// [`NOTICE_MS`], which is also where the two symptoms and the fix are written down.
-    notice_until: Option<u64>,
-    help: bool,
+    pub(crate) notice_until: Option<u64>,
+    pub(crate) help: bool,
     /// The session picker, which is a screen like `help` rather than a mode with a
     /// cursor. Same argument as the folds: there is one input surface here and it
     /// is a line, so the affordance is *typing the number you can see* — which also
     /// means the picker needs no keymap of its own and works over a pipe.
-    picker: bool,
+    pub(crate) picker: bool,
     /// **The setting being chosen, or nothing.** One field for every setting card, because
     /// "one list on the screen at a time" was a rule four openers kept by hand — each one
     /// clearing the other three — and R38 added two more subjects to it: hand-kept
@@ -2061,7 +2061,7 @@ pub struct App {
     /// choices, the cursor, the click arithmetic and the drawing are shared, because the one
     /// thing this file has already been burned by is a second copy of a list that then
     /// drifts.
-    pick: Option<Pick>,
+    pub(crate) pick: Option<Pick>,
     /// **`allow-all`, held one keystroke short of sent.** The point admits the
     /// always-ask list — privilege escalation, a delete outside the project, a
     /// host never seen — and on this box those land on the operator's own
@@ -2074,7 +2074,7 @@ pub struct App {
     /// that decided when to ask would need to know whether the session is
     /// confined, and a head that guesses that wrong asks nothing at exactly the
     /// coordinate worth asking at.
-    mode_confirm: Option<String>,
+    pub(crate) mode_confirm: Option<String>,
     /// **The new-todo card: title and detail, the composer being the field** — leticl's
     /// `*todo-draft*`, and the shape `mode_confirm` already keeps one screen over.
     ///
@@ -2087,21 +2087,21 @@ pub struct App {
     /// prompt left under a card whose Enter adds an item is the shape that costs somebody a message:
     /// `key` returns before the composer sees anything while this is `Some`, and every key that is
     /// not `Tab`/`Enter`/`Esc` is the editor's.
-    todo_draft: Option<TodoDraft>,
+    pub(crate) todo_draft: Option<TodoDraft>,
     /// **`todo_template` as this head loaded it** — the starter-todo switch, leticl's own key,
     /// carried on `App` because the seed runs at the attach, long after `load_prefs`. Off by
     /// default; see `prefs::TodoTemplate` for the three shapes.
-    todo_template: crate::prefs::TodoTemplate,
+    pub(crate) todo_template: crate::prefs::TodoTemplate,
     /// **The projects that have had their starter todos** — hashed workspace paths, leticl's
     /// `todo_seed` table in the only store this head has (`head.toml`, beside `retired`). A record
     /// and not an *is the list empty* test: a starter row the operator deletes must not come back.
-    todo_seed: Vec<String>,
+    pub(crate) todo_seed: Vec<String>,
     /// **A seed is waiting for the board.** Set by the attach when the switch is on and this
     /// project has not been seeded; the next `TodosUpdated` — the answer to the `ListTodos` the
     /// attach queued — copies the template's items onto the operator's half. The board must be
     /// read first because this head keeps no second list: seeding against a stale `todos` would
     /// send a half that omits rows the daemon holds, and `SetOperatorTodos` replaces the half.
-    todo_seed_pending: bool,
+    pub(crate) todo_seed_pending: bool,
     /// **The quit card**, opened by the second Ctrl+C instead of leaving at
     /// once. Two answers, because `Ctrl+C Ctrl+C` had one meaning and an
     /// operator often wants the other: leave the head and let the daemon keep
@@ -2112,14 +2112,14 @@ pub struct App {
     /// It is a card and not an immediate act because the second answer is the
     /// irreversible one — the daemon's KV goes with it, and on this box a cold
     /// prefill of a long session is minutes.
-    quit_card: bool,
+    pub(crate) quit_card: bool,
     /// Which row of the quit card the cursor is on. Seeded to 0 — leave the
     /// head — so Enter on an untouched card does the smaller thing.
-    quit_sel: usize,
+    pub(crate) quit_sel: usize,
     /// Which mode row the cursor is on. Seeded to the mode the session is
     /// already under, so Enter on an untouched list is a no-op rather than a
     /// surprise — the same rule the session picker's cursor follows.
-    mode_sel: usize,
+    pub(crate) mode_sel: usize,
     /// **Whether the open picker has been positioned by what it actually lists** — R51's
     /// neighbour, and leticl's `*pick-unseeded*` (its `head.lisp`, which records the operator's
     /// report of this exact symptom: *"mode selectors has selection on the first not on the
@@ -2134,28 +2134,28 @@ pub struct App {
     ///
     /// Cleared by anything the READER does to the cursor, so an answer landing while they are
     /// arrowing cannot snap it back — a worse defect than the one it fixes.
-    pick_unseeded: bool,
+    pub(crate) pick_unseeded: bool,
     /// How many choice rows the mode card actually drew on the last screen —
     /// zero unless the whole card fit, because a click is only trusted for a
     /// list the frame proved was all on screen. A partially drawn card is
     /// exactly the case where trusting clicks picks a mode nobody saw.
-    mode_rows_drawn: usize,
+    pub(crate) mode_rows_drawn: usize,
     /// The screen row the card's first choice sat on, as the last frame
     /// composed it. A click redoes this frame's arithmetic without a repaint —
     /// the same trick the session picker's header arithmetic does, one card
     /// lower.
-    mode_first_row: usize,
+    pub(crate) mode_first_row: usize,
     /// The todos pane, a screen like the picker: the session's plan (what the
     /// model last wrote through `todo_write`) and the repo's own queue
     /// (`TODO.md`, read-only here — an agent's plan and the operator's queue are
     /// different lists, and the pane says which is which).
-    todos_pane: bool,
+    pub(crate) todos_pane: bool,
     /// The subagent tree pane, a screen like `todos`: the subagents this session
     /// spawned, their state and their prompt. `ctrl-g`.
-    subagents_pane: bool,
+    pub(crate) subagents_pane: bool,
     /// The background-jobs pane, a screen like the other two: the jobs this
     /// session started, running and settled. `ctrl-q`.
-    jobs_pane: bool,
+    pub(crate) jobs_pane: bool,
     /// **The merge-queue pane** — the operator's *"we need a gated merge to main"* made
     /// visible: every entry the daemon is serving toward main, what state it is in, how old it
     /// is, and why it is where it is. `/queue`.
@@ -2164,66 +2164,66 @@ pub struct App {
     /// the chords are over capacity at eighty columns and that *which* of them are visible is a
     /// decision — so a sixth pane takes the verb, which every pane already has and which a head
     /// driven over a pipe can reach.
-    queue_pane: bool,
+    pub(crate) queue_pane: bool,
     /// **The merge queue, as the daemon last answered `ListMergeQueue`** — the daemon's own
     /// rows, never this head's reconstruction, for the reason `jobs` is: the queue is the
     /// daemon's and a head that folded its own version out of the events would draw a stale one
     /// after any event it missed. The `MergeEntryAdded`/`MergeEntryMoved` events carry the
     /// changes; this is the snapshot they start from.
-    merge: Vec<letibot_sessionlog::event::MergeEntry>,
+    pub(crate) merge: Vec<letibot_sessionlog::event::MergeEntry>,
     /// **The reviewer's verdicts, beside the entries** — see `MergeReview` for why they travel
     /// apart rather than inside an entry: an entry can have no review at all, and *nobody asked*
     /// is a different fact from *asked and unanswered*.
-    merge_reviews: Vec<letibot_sessionlog::event::MergeReview>,
+    pub(crate) merge_reviews: Vec<letibot_sessionlog::event::MergeReview>,
     /// **Which entry row the cursor is on** — an index into `merge`, and the same enumeration
     /// the drawn `▸`, the arrows and Enter read, so they cannot disagree.
-    queue_sel: usize,
+    pub(crate) queue_sel: usize,
     /// **The pane row each entry was DRAWN on** — the record the arrows scroll by, never
     /// arithmetic over the list. See `jobs_stop_rows` for the defect this avoids.
-    queue_stop_rows: Vec<usize>,
+    pub(crate) queue_stop_rows: Vec<usize>,
     /// **The screen row the queue pane's own first body row goes to** — the session header,
     /// when the frame is tall enough to have one. Recorded rather than assumed because a
     /// click's `y` is in absolute screen coordinates; see [`App::queue_stop_at_row`].
-    queue_pane_top: usize,
+    pub(crate) queue_pane_top: usize,
     /// **The entry whose detail overlay is open, by id**, until Esc. By ID and not by index:
     /// a `MergeEntryMoved` event can move the queue under the overlay while it is up, and an
     /// index would then point at whichever entry slid into that slot.
     ///
     /// The overlay reads the entry and its review out of `merge`/`merge_reviews` at DRAW time,
     /// so a move while it is open shows the new state rather than the state at the keypress.
-    queue_open: Option<String>,
+    pub(crate) queue_open: Option<String>,
     /// Which job row the cursor is on. Arrows move it, Enter asks the daemon for
     /// that job's output — the pane counted the bytes and had no way to show them.
     ///
     /// **An index into [`App::job_stops`]**, not into [`App::jobs`], so the drawn cursor and
     /// Enter cannot disagree about which row is selected.
-    jobs_sel: usize,
+    pub(crate) jobs_sel: usize,
     /// **Whether the jobs pane's `finished` group is unfolded.** Collapsed by default — the
     /// operator's own ask: *"jobs panel - same as subagents - show list of running, group
     /// finished"*. Enter on the group row toggles it.
-    jobs_finished_open: bool,
+    pub(crate) jobs_finished_open: bool,
     /// **The pane row each job stop was DRAWN on**, which is what the arrows scroll by — the
     /// sibling of [`App::subagents_stop_rows`]. See [`App::jobs_row_of`].
-    jobs_stop_rows: Vec<usize>,
+    pub(crate) jobs_stop_rows: Vec<usize>,
     /// **Which row of the pane the cursor is on** — an index into [`App::subagent_stops`],
     /// not into [`App::subagents`]. Arrows move it, Enter switches into the child it names
     /// (or folds the `finished` group) — the same two acts the picker keeps separate.
-    subagents_sel: usize,
+    pub(crate) subagents_sel: usize,
     /// **Whether the `finished` group is unfolded.** Collapsed by default, because a session
     /// that has spawned twenty subagents has one or two still running and eighteen finished,
     /// and the eighteen pushed the one the operator opened the pane for off the bottom of the
     /// screen: *"i went to subagents panel and dont see it here"*. Enter on the group row
     /// toggles it.
-    subagents_finished_open: bool,
+    pub(crate) subagents_finished_open: bool,
     /// **The pane row each stop was DRAWN on** — the same record [`App::todos_stop_rows`]
     /// keeps for its own pane, and for the same reason: the arrows scroll the cursor into
     /// view by an `aref` of what the pane wrote, never by arithmetic over the lists it drew
     /// from. See [`App::subagents_row_of`].
-    subagents_stop_rows: Vec<usize>,
+    pub(crate) subagents_stop_rows: Vec<usize>,
     /// The output view `p` opens on a subagent row, until Esc closes it.
-    sub_out: Option<SubOut>,
+    pub(crate) sub_out: Option<SubOut>,
     /// The subagent whose output was asked for and not yet answered. Esc cancels.
-    sub_out_pending: Option<String>,
+    pub(crate) sub_out_pending: Option<String>,
     /// **The child this head climbed UP out of** — the session id it left when Esc sent it
     /// back to the parent, read once by [`App::fold_subagents`] so the cursor lands on the
     /// row that child owns instead of on row zero.
@@ -2232,17 +2232,17 @@ pub struct App {
     /// rebuilt from the daemon's list the moment the parent's `Hello` lands, and an index
     /// taken before that rebuild points at whatever the new list happens to have there.
     /// `None` the rest of the time, which is why it is taken rather than read.
-    up_from: Option<String>,
+    pub(crate) up_from: Option<String>,
     /// The job-output view the jobs pane's Enter opens, until Esc returns to the
     /// jobs list. The bytes the pane was counting, finally shown in the pane.
-    job_out: Option<JobOut>,
+    pub(crate) job_out: Option<JobOut>,
     /// The session's todo list, as the last `TodosUpdated` said it was. Seeded by
     /// the `Todos` reply when the pane first opens; carried forward by the events.
-    todos: Vec<letibot_sessionlog::event::TodoEntry>,
+    pub(crate) todos: Vec<letibot_sessionlog::event::TodoEntry>,
     /// The repo's `TODO.md` as a section map, read once per pane-open. The file
     /// can be longer than the pane and is the operator's to edit; the map is what
     /// a pane can honestly show.
-    repo_todos: Option<Vec<TodoRow>>,
+    pub(crate) repo_todos: Option<Vec<TodoRow>>,
     /// **What the file looked like when it was last read**: `(mtime, len)`.
     ///
     /// The pane re-read `TODO.md` only when it was opened, so a file edited while
@@ -2257,7 +2257,7 @@ pub struct App {
     /// the pane is drawn only while it is open. `(mtime, len)` rather than mtime
     /// alone because a second-granularity mtime can miss two writes in one
     /// second, and a length change catches most of those.
-    repo_todos_at: Option<(std::time::SystemTime, u64)>,
+    pub(crate) repo_todos_at: Option<(std::time::SystemTime, u64)>,
     /// Which row of the repo's queue the cursor is on, and whether its body is
     /// unfolded. The same two acts the jobs and subagent panes keep separate —
     /// arrows move, enter acts — because both of those got them today and a
@@ -2266,7 +2266,7 @@ pub struct App {
     /// the drawn mark and the Enter key cannot disagree about which row the cursor is on. leticl's
     /// `head-picker-sel`, and the reason the slot's type is untouched: a list changing under the
     /// cursor shifts the index, and what it lands on is still a row.
-    todos_sel: usize,
+    pub(crate) todos_sel: usize,
     /// **Where each stop was DRAWN, parallel to [`App::todos_stops`]** — the pane's third value in
     /// leticl's `todos-lines`, recorded as the rows go out and never recomputed.
     ///
@@ -2276,13 +2276,13 @@ pub struct App {
     /// it was scrolling to."* Two of the operator's reports came from exactly that, and it is also
     /// what makes a click possible at all: a click has a screen row and nothing else, and the only
     /// honest answer to *which stop is on this row* is the one the pane wrote down while drawing.
-    todos_stop_rows: Vec<usize>,
+    pub(crate) todos_stop_rows: Vec<usize>,
     /// **The screen row the pane's own first body row goes to** — the session header, when the
     /// frame is tall enough to have one. Recorded rather than assumed because a click's `y` is in
     /// absolute screen coordinates and the header above the pane is not part of it.
-    todos_pane_top: usize,
-    repo_sel: usize,
-    repo_open: bool,
+    pub(crate) todos_pane_top: usize,
+    pub(crate) repo_sel: usize,
+    pub(crate) repo_open: bool,
     /// **How far the open pane is scrolled**, in rows hidden above it.
     ///
     /// Every pane drew `rows.truncate(room)` and the scroll keys were swallowed
@@ -2305,13 +2305,13 @@ pub struct App {
     /// for them would be a keystroke to dismiss nothing. Anything longer is a
     /// listing, and a listing belongs on a screen you open and close. `(title,
     /// lines)`, `None` when the pane is shut.
-    slash_out: Option<(String, Vec<String>)>,
-    pane_scroll: usize,
+    pub(crate) slash_out: Option<(String, Vec<String>)>,
+    pub(crate) pane_scroll: usize,
     /// What the last draw of a pane measured: how many rows it had, and how many
     /// fitted. Kept so a cursor moved by a keypress can scroll itself into view —
     /// the key handler has no width or height of its own.
-    pane_len: usize,
-    pane_room: usize,
+    pub(crate) pane_len: usize,
+    pub(crate) pane_room: usize,
     /// Which pane row the repo's first queue row is drawn at.
     ///
     /// `repo_sel` counts the repo's own rows; `pane_scroll` counts the pane's,
@@ -2332,19 +2332,19 @@ pub struct App {
     /// This is the window into that string. It counts **wrapped display lines** from the
     /// head of the payload, because that is what the reader is scrolling through, and it
     /// is clamped against the payload's own length at draw time.
-    payload_page: usize,
+    pub(crate) payload_page: usize,
     /// **The furthest `payload_page` that still shows a full window**, written by the draw
     /// — the only place that knows the payload's wrapped length — and read by the keys to
     /// clamp. Without it Down kept adding past the end while the screen stood still, and
     /// Up then had to unwind every invisible step before anything moved: the operator's
     /// *"couldnt scroll bottom anymore - only esc worked"*. `usize::MAX` until drawn.
-    payload_max: std::cell::Cell<usize>,
+    pub(crate) payload_max: std::cell::Cell<usize>,
     /// The key that asked, so the arrows page **only the row whose view is open**.
     ///
     /// Without it, Up/Down inside an open payload would move the transcript, or every
     /// open row at once — and there can be several open rows on one screen. The panel
     /// says `▸ paging <subject>` so the reader can see which one the arrows are on.
-    payload_sel: Option<String>,
+    pub(crate) payload_sel: Option<String>,
     /// **What this conversation has cost, in micro-USD**, summed over the turns
     /// this head has seen finish.
     ///
@@ -2353,10 +2353,10 @@ pub struct App {
     /// are in it — a head that attached late says so rather than inventing the
     /// earlier ones, because the alternative is a total that is wrong in the
     /// direction that costs money.
-    spent_micros: u64,
+    pub(crate) spent_micros: u64,
     /// Whether any turn this head saw carried a cost at all. Distinguishes "free,
     /// so nothing to show" from "metered and nothing has finished yet".
-    spent_seen: bool,
+    pub(crate) spent_seen: bool,
     /// The head's own instrumentation, as a screen: `/status`.
     ///
     /// Every counter it shows was added because something was measured going
@@ -2371,26 +2371,26 @@ pub struct App {
     /// the attention role — and this screen keeps everything, with a line under
     /// each counter saying what it means. Reachable, which is the obligation, and
     /// not resident, which was never part of it.
-    stats: bool,
-    quit: bool,
+    pub(crate) stats: bool,
+    pub(crate) quit: bool,
     /// Set whenever a full repaint is wanted regardless of the diff.
-    redraw: bool,
+    pub(crate) redraw: bool,
     /// **The view is held** (R56). While it is, the head writes nothing at all, so a mouse
     /// selection survives a streaming turn. See [`App::toggle_hold`] for the contract.
     ///
     /// The events keep arriving and the head keeps folding them — only the drawing stops.
-    hold: bool,
+    pub(crate) hold: bool,
     /// **The frozen frame**, composed once when the hold began (with the marker on it, which
     /// is the one write the freeze owes) and returned byte for byte thereafter, so the
     /// terminal's own diff produces no bytes at all.
-    hold_frame: Option<Vec<String>>,
+    pub(crate) hold_frame: Option<Vec<String>>,
     /// The size `hold_frame` was composed for. A resize moves every row, so the freeze owes
     /// exactly one more frame there.
-    hold_size: (usize, usize),
+    pub(crate) hold_size: (usize, usize),
     /// `items.len()` when the hold began, so the release can say how much arrived while it
     /// was held — counted ONCE, at that moment, because a live count is an animation and an
     /// animation is writes.
-    hold_rows: usize,
+    pub(crate) hold_rows: usize,
     /// **Which conversations the picker has EXPANDED** — a parent's session id, whose sub-sessions
     /// are being shown under it.
     ///
@@ -2399,7 +2399,7 @@ pub struct App {
     /// care about*. Collapsed shows exactly what the picker showed before children were listed —
     /// so nothing is hidden that was not hidden, and nothing the daemon told us is thrown away.
     /// See [`App::session_rows`].
-    expanded: Vec<String>,
+    pub(crate) expanded: Vec<String>,
     /// Wall clock, fed in by the driver, and when this head last had anything from
     /// the daemon.
     ///
@@ -2408,8 +2408,8 @@ pub struct App {
     /// of how long it had been quiet — which is exactly the number that is missing
     /// when the daemon has stopped talking. Zero means nobody has told this head
     /// what time it is, and then it says nothing about stalls rather than guessing.
-    now_ms: u64,
-    last_event_at: u64,
+    pub(crate) now_ms: u64,
+    pub(crate) last_event_at: u64,
     /// **The workspace's branch, or `None`** — see `crate::gitfield`. Read by the driver's tick
     /// (a process, never a paint), drawn beside the workspace path, and `None` when the directory
     /// is not a repository this head can read: an absence, not a clean tree.
@@ -2421,16 +2421,16 @@ pub struct App {
     /// **The reading the pieces were rendered from** — the FACTS, not the text, so a format
     /// changed on `/config` re-renders from the cache rather than waiting out the reader's
     /// interval. leticl caches state and pieces for the same reason.
-    git_state: Option<crate::gitfield::GitState>,
+    pub(crate) git_state: Option<crate::gitfield::GitState>,
     /// **The git field's template, as loaded** — `None` is the shipped default
     /// (`gitfield::GIT_FORMAT_DEFAULT`); `Some(t)` is the operator's `git_format`. Held on the
     /// App because the field renders on the reader thread (`refresh_git`), long after
     /// `load_prefs`.
-    git_format: Option<String>,
+    pub(crate) git_format: Option<String>,
     /// **Which workspace that reading was of, and when.** A switch to another session carries
     /// another path, and a field left over from the previous tree would be drawn as this one's
     /// branch — the same class of lie as inventing one.
-    git_read: (String, u64),
+    pub(crate) git_read: (String, u64),
     /// **The live marker's join, as the pair that lets it be UNDONE.**
     ///
     /// The marker is glued to the end of the sentence that introduces the work — *"…the last
@@ -2447,7 +2447,7 @@ pub struct App {
     ///
     /// **Found by asserting that two renders of one state are the same frame** — see
     /// `two_renders_of_one_state_are_the_same_frame`, the property this field exists to keep.
-    live_join: Option<(String, String)>,
+    pub(crate) live_join: Option<(String, String)>,
     /// **Everything the marker draws about NOW, as ONE value** — and the same value is the
     /// cache key for the row it is painted into.
     ///
@@ -2463,14 +2463,14 @@ pub struct App {
     /// `think_lines` and `running` out of a [`MarkerFacts`] and has no other door to now, so a
     /// fact the marker draws is a fact this key holds. See [`MarkerFacts`] for the field that
     /// makes the run part of it.
-    marker_facts: MarkerFacts,
+    pub(crate) marker_facts: MarkerFacts,
     /// The model this session is talking to, kept past the end of a turn.
     ///
     /// It lives on `TurnPane` because that is where the event carries it, and the
     /// composer's own line has to say what it is talking to when nothing is
     /// running — which is most of the time a person is looking at it. Since §4.4 it
     /// is also on `Hello`, so a head with no turn yet has an answer too.
-    model: String,
+    pub(crate) model: String,
     /// §4.1's display target, by call id, **for the round the history walk is
     /// currently inside** — and for no other.
     ///
@@ -2495,7 +2495,7 @@ pub struct App {
     /// It is therefore **replaced wholesale** every time the walk reaches an
     /// `Assistant` row, in transcript order, and a `ToolResult` that finds no
     /// entry renders its correlation id rather than a neighbour's path.
-    call_targets: std::collections::HashMap<String, String>,
+    pub(crate) call_targets: std::collections::HashMap<String, String>,
     /// How long the call behind a settled `tool_result` row took, by **item id**.
     ///
     /// The one fact the live card had that the transcript row does not: a
@@ -2507,7 +2507,7 @@ pub struct App {
     /// not. Absent for a row this head did not watch run (a snapshot, a `--replay`
     /// of a log recorded elsewhere), and the card then shows no duration rather
     /// than a fabricated one, which is the same rule as `card::Phase::Replayed`.
-    call_ms: std::collections::HashMap<String, u64>,
+    pub(crate) call_ms: std::collections::HashMap<String, u64>,
     /// Both sides of the file a settled `edit`/`write` row changed, by **item
     /// id** — carried across the takeover exactly as `call_ms` is, and for the
     /// same reason: the transcript row has the tool's prose and not the pair.
@@ -2521,7 +2521,7 @@ pub struct App {
     /// the change (operator, 2026-09-17: *"past edits lose their diff panels"*).
     /// Absent for rows older than that — the view keeps one turn's calls — and
     /// the row then shows the tool's own text, which is the `Replayed` rule.
-    call_edits: std::collections::HashMap<String, letibot_sessionlog::event::ToolEdit>,
+    pub(crate) call_edits: std::collections::HashMap<String, letibot_sessionlog::event::ToolEdit>,
     /// The settled decision a `tool_result` row's call was gated by, by **item id**
     /// — carried across the takeover exactly as `call_ms` and `call_edits` are, and
     /// for the same reason: the transcript row has the tool's prose and not the
@@ -2534,9 +2534,9 @@ pub struct App {
     /// without this the approval — and what the oracle was shown and said back —
     /// leaves the screen with the card. Seeded from the snapshot too, for the
     /// decisions it carries.
-    call_decisions: std::collections::HashMap<String, letibot_sessionlog::view::SettledDecision>,
+    pub(crate) call_decisions: std::collections::HashMap<String, letibot_sessionlog::view::SettledDecision>,
     /// The total body length of the last frame, so `Up` can be clamped to it.
-    body_len: usize,
+    pub(crate) body_len: usize,
     /// **The protocol version the daemon last said it speaks**, from the `Hello`.
     ///
     /// `None` until a daemon has answered, which is a different statement from "it
@@ -2549,7 +2549,7 @@ pub struct App {
     /// The comparison itself is [`letibot_sessionlog::protocol_skew`], which is in
     /// `sessionlog` rather than here because the sentence belongs to the protocol and
     /// every head has to say the same one.
-    daemon_protocol: Option<u32>,
+    pub(crate) daemon_protocol: Option<u32>,
     /// **Which daemon this head is drawing the picture of.**
     ///
     /// Two facts, and both are about the connection rather than about the attach: the process at
@@ -2576,13 +2576,13 @@ pub struct App {
     /// `None` until a daemon has answered, which is a different statement from *pid unknown* —
     /// the kernel declines to name a peer on some platforms, and `Some(DaemonSeat { pid: None,
     /// .. })` is that case rather than this one.
-    daemon_seat: Option<DaemonSeat>,
+    pub(crate) daemon_seat: Option<DaemonSeat>,
     /// **The daemon connection, as far as this head can tell.** See [`Link`].
     ///
     /// Kept on the head rather than in the driver because it is a fact the *screen*
     /// shows: a head with no daemon draws the conversation it has, plus a line saying
     /// the connection is down and for how long.
-    link: Link,
+    pub(crate) link: Link,
     /// True between taking the screen and the daemon's `Hello` arriving.
     ///
     /// The `Hello` **carries the whole snapshot**, so `HeadClient::attach` is a round
@@ -2593,24 +2593,24 @@ pub struct App {
     /// told yet"*. So this suppresses the banner, and the body becomes the walking
     /// cat (see [`cat_frame`]), which is what says "working on it" without saying
     /// anything about the session.
-    attaching: bool,
+    pub(crate) attaching: bool,
     /// When the attach began, on the clock `App::clock` is given.
     ///
     /// The cat's frame comes from the **elapsed** time rather than from a counter,
     /// so `screen()` is a pure function of the clock — which is what lets the
     /// pre-attach wait be driven from anywhere (a loop, a test, a future
     /// background-thread handshake) without the renderer knowing which.
-    attach_started_ms: u64,
+    pub(crate) attach_started_ms: u64,
     /// Where the terminal's caret belongs, from the last frame.
-    cursor: Option<(usize, usize)>,
+    pub(crate) cursor: Option<(usize, usize)>,
     /// The daemon's reason for ending this head, kept past the screen. See
     /// [`App::farewell`].
-    bye: Option<String>,
+    pub(crate) bye: Option<String>,
     /// **The daemon's pid**, from `SO_PEERCRED` on this head's connection (R30). Set by
     /// the caller that owns the socket, kept so `/status` can answer the question the
     /// operator would otherwise take to `ps` — which is how the orphan this rule exists for
     /// was found, a day late.
-    daemon_pid: Option<i32>,
+    pub(crate) daemon_pid: Option<i32>,
     /// **What the reader's viewport is holding** (R36).
     ///
     /// `None` is the *following* state — the head of a transcript being read from its tail
@@ -2621,24 +2621,24 @@ pub struct App {
     /// invalidated by every arrival; a count from the top by anything above being
     /// rewritten; and both happen here, because a snapshot replaces the transcript whole
     /// and an elision changes a row's height. See [`App::hold`].
-    anchor: Option<Held>,
+    pub(crate) anchor: Option<Held>,
     /// **Where each rendered row's lines are**, ascending by `at`. Rebuilt as the history
     /// is walked and prepended to, cleared whenever that buffer is thrown away.
-    spans: Vec<Span>,
+    pub(crate) spans: Vec<Span>,
     /// **The body line at the top of the last frame's window**, and how many lines it had.
     ///
     /// The key handler runs between frames and has to answer *where is the reader looking*
     /// with what the last frame actually drew — the same rule `dec_content_room` follows
     /// for the decision card. A scroll that computed its own position from the model
     /// rather than from the glass would be a second opinion about the reader's screen.
-    view_top: usize,
-    view_room: usize,
+    pub(crate) view_top: usize,
+    pub(crate) view_room: usize,
     /// **Names this head's door calls so the daemon can tell them apart.**
     ///
     /// The `call_id` is `{head}-{n}` and the count is per head, which is what makes it
     /// unique within the session — the only property the daemon's pending set needs. A
     /// second head's `h3-1` is a different call, and the daemon's set is keyed on the string.
-    head_run_seq: u64,
+    pub(crate) head_run_seq: u64,
     /// **The echoes a snapshot could not resolve** (R16's third mark).
     ///
     /// `pending_prompts` asserts something about the DAEMON — *you owe me a row for
@@ -2651,20 +2651,20 @@ pub struct App {
     /// The set is the *marked* ones and it is keyed by the echo's text, which is what
     /// `pending_prompts` is keyed by. Retirement is an **intersection**, not a removal
     /// of the landing row's text — see [`App::retire_pending`].
-    unconfirmed: Vec<String>,
+    pub(crate) unconfirmed: Vec<String>,
     /// **Whether an echo is drawn in full or as its elided headline** (R33).
     ///
     /// Folded by default, and flipped by `/t` — the head's *unfold the long rows*
     /// verb. One key for one idea: a reader who wants the long things shown whole asks
     /// once and gets them all, rather than learning a third chord for a third kind of
     /// row.
-    echo_open: bool,
+    pub(crate) echo_open: bool,
     /// **A stop this head asked for and has not finished.** R30. `Some` from the moment
     /// the frame goes out until the daemon is gone or the deadline has passed — and while
     /// it is `Some` and unresolved, [`App::should_quit`] is false, which is the whole of
     /// the requirement: *the head does not exit until the daemon has actually gone, or
     /// until it can say that it has not.*
-    stopping: Option<Stopping>,
+    pub(crate) stopping: Option<Stopping>,
     /// **A bulk announcement the daemon has not filled yet.**
     ///
     /// Recorded **only when a snapshot is ingested** — never by a live
@@ -2674,13 +2674,13 @@ pub struct App {
     /// snapshot's rows are a **bulk** announcement — a fork, a reseat, a resume, an import
     /// — and a live append is not, so the shape of the evidence separates the two with no
     /// threshold. See [`Bulk`].
-    bulk: Option<Bulk>,
+    pub(crate) bulk: Option<Bulk>,
     /// **A fill the daemon named** ([`SessionEvent::Filling`](letibot_sessionlog::SessionEvent::Filling)):
     /// `what`, `unit`, `done`, `total`, or `None` when nothing is running. Cleared the
     /// moment `done >= total`, because the finish is a durable note, not a line that
     /// stays. See [`filling_line`] for why this is the daemon's count and not a count of
     /// the rows still lacking a body.
-    filling: Option<(String, String, u64, u64)>,
+    pub(crate) filling: Option<(String, String, u64, u64)>,
     /// **A fold's long wait** ([`SessionEvent::CompactionProgress`](letibot_sessionlog::SessionEvent::CompactionProgress)),
     /// in the compaction's own units.
     ///
@@ -2691,7 +2691,7 @@ pub struct App {
     /// session's context — the operator watched `69k` sit over a 240k conversation that
     /// had not changed (2026-09-20). Nothing here can be confused with the session's
     /// figures however alike they look, because nothing else writes this field.
-    compacting: Option<CompactionLine>,
+    pub(crate) compacting: Option<CompactionLine>,
 }
 
 /// **A pid as a sentence fragment, or the honest absence** — R30's rule, in one place because
@@ -2700,7 +2700,7 @@ pub struct App {
 /// `None` is *the kernel would not name the peer*, which is a different statement from a pid of
 /// zero; a head that printed a number it did not have would send the operator to `ps` for a
 /// process that is not there.
-fn pid_word(pid: Option<i32>) -> String {
+pub(crate) fn pid_word(pid: Option<i32>) -> String {
     match pid {
         Some(p) => format!("pid {p}"),
         None => "a pid the kernel did not name".to_string(),
@@ -2722,26 +2722,26 @@ fn pid_word(pid: Option<i32>) -> String {
 /// — a replaced daemon that happens to get the same pid and speaks the same protocol — is
 /// named here rather than papered over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DaemonSeat {
+pub(crate) struct DaemonSeat {
     /// The process at the other end of this socket, from `SO_PEERCRED`. `None` when the kernel
     /// would not say, which compares equal to another `None` — the one case this cannot tell
     /// apart, and the reason the protocol version is beside it.
-    pid: Option<i32>,
+    pub(crate) pid: Option<i32>,
     /// The version the daemon claims, from the `Hello` that seated this connection.
-    protocol: u32,
+    pub(crate) protocol: u32,
 }
 
 /// One compaction half, as the daemon reports it.
 #[derive(Debug, Clone)]
-struct CompactionLine {
-    half: u64,
-    halves: u64,
-    prompt_tokens: u64,
-    processed: u64,
-    written: u64,
+pub(crate) struct CompactionLine {
+    pub(crate) half: u64,
+    pub(crate) halves: u64,
+    pub(crate) prompt_tokens: u64,
+    pub(crate) processed: u64,
+    pub(crate) written: u64,
     /// What `written` counts — `tokens` or `chars`, the daemon's word, because the two
     /// transports do not report the same thing.
-    unit: String,
+    pub(crate) unit: String,
 }
 
 /// **A bulk announcement: the ids a snapshot carried with no body, and when it landed.**
@@ -2752,31 +2752,31 @@ struct CompactionLine {
 /// A live `TranscriptAppended` never creates one: it is the R2 window of an ordinary
 /// message, which is why *"some row lacks a body"* was the wrong trigger.
 #[derive(Debug, Clone)]
-struct Bulk {
+pub(crate) struct Bulk {
     /// The ids the snapshot announced with no body. A body landing removes its id; an
     /// empty set means the announcement is complete and the trigger clears itself.
-    ids: std::collections::HashSet<String>,
+    pub(crate) ids: std::collections::HashSet<String>,
     /// When the snapshot landed, on this head's clock — [`BODY_PATIENCE`]'s origin.
-    at_ms: u64,
+    pub(crate) at_ms: u64,
 }
 
 /// A run of body lines: history is **borrowed** from the head's own buffer, the
 /// live tail is owned and rebuilt. See [`App::screen`] for why this is not one
 /// `Vec<String>`.
-enum Seg<'a> {
+pub(crate) enum Seg<'a> {
     Borrowed(&'a [String]),
     Owned(Vec<String>),
 }
 
 impl Seg<'_> {
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match self {
             Seg::Borrowed(s) => s.len(),
             Seg::Owned(v) => v.len(),
         }
     }
 
-    fn get(&self, i: usize) -> &str {
+    pub(crate) fn get(&self, i: usize) -> &str {
         match self {
             Seg::Borrowed(s) => &s[i],
             Seg::Owned(v) => &v[i],
@@ -2791,7 +2791,7 @@ impl Seg<'_> {
 /// A plain `chars().count()` is what puts a painted string two columns left of centre,
 /// and the whole point of centring is that the eye finds it in the same place from
 /// frame to frame as the string changes length — which the walking cat does.
-fn centred_row(cfg: &RenderConfig, text: &str, w: usize) -> String {
+pub(crate) fn centred_row(cfg: &RenderConfig, text: &str, w: usize) -> String {
     let pad = cfg.palette().paint(Role::Faint, &text.to_string());
     let taken = width::width(&pad);
     if taken >= w {
@@ -2821,7 +2821,7 @@ fn centred_row(cfg: &RenderConfig, text: &str, w: usize) -> String {
 /// a carry's own body gap cannot be read off it; leticl measured the live case at 31 ms
 /// and chose 5 s for the same reason — the number is bounded by the mechanism, not copied
 /// from a clock that measures a different thing.)
-const BODY_PATIENCE: u64 = 5_000;
+pub(crate) const BODY_PATIENCE: u64 = 5_000;
 
 /// **The smallest fill the head draws a bar for**, in the operation's own units.
 ///
@@ -2840,7 +2840,7 @@ const BODY_PATIENCE: u64 = 5_000;
 /// the bar only** — the sentence below it is not gated, because a three-row batch does not
 /// deserve a cat but a three-row batch that never lands is exactly what the sentence is
 /// for.
-const MIN_FILLING: u64 = 256;
+pub(crate) const MIN_FILLING: u64 = 256;
 
 /// **One line for a fill the DAEMON named**: the cat, the bar, and the count.
 ///
@@ -2855,7 +2855,7 @@ const MIN_FILLING: u64 = 256;
 ///
 /// A free function for the same reason `filling_line` is: by the time the tail is
 /// assembled, `screen` has already borrowed `self` mutably.
-fn filling_line(
+pub(crate) fn filling_line(
     what: &str,
     unit: &str,
     done: u64,
@@ -2907,7 +2907,7 @@ fn filling_line(
 /// gone: there is no total to draw a fraction of, which is why that number is a count and
 /// not a percentage. A bar that invented a total would be an indicator that is not the
 /// fact.
-fn compacting_line(c: &CompactionLine, now_ms: u64, cfg: &RenderConfig) -> Vec<String> {
+pub(crate) fn compacting_line(c: &CompactionLine, now_ms: u64, cfg: &RenderConfig) -> Vec<String> {
     let p = cfg.palette();
     let where_ = format!("half {} of {}", c.half, c.halves);
     // Reading, and there is something to show progress against.
@@ -3005,7 +3005,7 @@ fn compacting_line(c: &CompactionLine, now_ms: u64, cfg: &RenderConfig) -> Vec<S
 /// ASCII only, deliberately: `CAT_SLOT` measures with `str::len` and the centring
 /// arithmetic is in columns, and those are the same number only while every glyph
 /// is one byte and one column.
-const CAT_FRAMES: [&str; 8] = [
+pub(crate) const CAT_FRAMES: [&str; 8] = [
     // A cat blinking, with its tail flicking behind it.
     "(=^.^=) ", "(=^-^=) ", "(=^o^=) ", "(=^-^=) ", "(=^.^=)~", "(=^-^=)~", "(=^o^=)~", "(=^-^=)~",
 ];
@@ -3017,7 +3017,7 @@ const CAT_FRAMES: [&str; 8] = [
 /// hatch exists rather than having to discover it. The wait loop in `letibot-tui`'s
 /// `main` is what makes the keys live — the first version of that screen did not read
 /// them at all, so the hint bar under it named a key that did nothing.
-const ATTACH_IMPATIENT: u64 = 2_000;
+pub(crate) const ATTACH_IMPATIENT: u64 = 2_000;
 
 /// The width of the **slot** the cat walks in: the widest frame.
 ///
@@ -3026,7 +3026,7 @@ const ATTACH_IMPATIENT: u64 = 2_000;
 /// kept as the guard rather than the fix. Measured rather than written down, so a
 /// frame added in a hurry widens the slot instead of silently overflowing the
 /// arithmetic that assumes it.
-const CAT_SLOT: usize = {
+pub(crate) const CAT_SLOT: usize = {
     let mut w = 0;
     let mut i = 0;
     while i < CAT_FRAMES.len() {
@@ -3040,12 +3040,12 @@ const CAT_SLOT: usize = {
 };
 
 /// The cat's frame at `elapsed_ms`.
-fn cat_frame(elapsed_ms: u64) -> &'static str {
+pub(crate) fn cat_frame(elapsed_ms: u64) -> &'static str {
     CAT_FRAMES[((elapsed_ms / 120) % CAT_FRAMES.len() as u64) as usize]
 }
 
 /// Lines `[start, end)` of the concatenation, and only those.
-fn take_window(segs: &[Seg<'_>], start: usize, end: usize) -> Vec<String> {
+pub(crate) fn take_window(segs: &[Seg<'_>], start: usize, end: usize) -> Vec<String> {
     let mut out = Vec::with_capacity(end.saturating_sub(start));
     let mut base = 0usize;
     for s in segs {
@@ -3072,16 +3072,16 @@ fn take_window(segs: &[Seg<'_>], start: usize, end: usize) -> Vec<String> {
 /// how deep it sits. Deriving the depth at the drawing site instead is exactly how the drawing and
 /// the keys become two enumerations again — the defect `todos_stops` exists to record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionRow {
+pub(crate) struct SessionRow {
     /// Index into `App::sessions`.
-    idx: usize,
+    pub(crate) idx: usize,
     /// 0 for a conversation; 1 for a sub-session under it; deeper for a tree.
-    depth: usize,
+    pub(crate) depth: usize,
 }
 
 /// **One row of the todos pane the cursor may land on** — see [`App::todos_stops`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum TodoStop {
+pub(crate) enum TodoStop {
     /// The `[+] add todo item` control, at the head of the list.
     Add,
     /// **One of the operator's own rows, BY ITS WORDS.** There is no id on the wire —
@@ -3116,7 +3116,7 @@ pub const HOLD_MARKER: &str = "⏸ the view is held — ctrl-p follows again";
 /// The columns the live row puts between two candidates — `  ·  `, as [`App::completions_line`]
 /// joins them. A constant because the fit arithmetic in `shell_completions_line` has to count
 /// what the join will actually spend, and a number written twice is a number that drifts.
-const SEPARATOR_COLS: usize = 5;
+pub(crate) const SEPARATOR_COLS: usize = 5;
 
 /// The commands the composer completes, in the order Tab offers them. Aliases
 /// (`s`, `q`, `h`, …) are deliberately absent: this list is what Tab offers
@@ -3129,11 +3129,11 @@ const SEPARATOR_COLS: usize = 5;
 /// to fold a copy of its own screen out of its own transcript — see
 /// [`fold_cells`]. Kept here beside the command that writes them so the pair
 /// cannot drift.
-const CELLS_OPEN: &str = "\u{27e6}screen ";
-const CELLS_MARK_END: &str = "\u{27e7}";
-const CELLS_CLOSE: &str = "\u{27e6}end screen\u{27e7}";
+pub(crate) const CELLS_OPEN: &str = "\u{27e6}screen ";
+pub(crate) const CELLS_MARK_END: &str = "\u{27e7}";
+pub(crate) const CELLS_CLOSE: &str = "\u{27e6}end screen\u{27e7}";
 
-const SLASH_COMMANDS: &[(&str, &str)] = &[
+pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("new", "TITLE — start a fresh session"),
     ("sessions", "the session picker"),
     ("switch", "ID — go to another session"),
@@ -3255,7 +3255,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
 /// So the verb decides the write, and the call site says which it is rather than a bool that
 /// could be passed by accident.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RetiredWrite {
+pub(crate) enum RetiredWrite {
     /// Add to the file's set. A dismissal is an assertion no other head's save may contradict.
     Union,
     /// Take this head's set as the whole truth. A restore is an assertion of removal.
@@ -3298,7 +3298,7 @@ enum RetiredWrite {
 /// head does not own. If a future row qualifies a name with something that is not whitespace-
 /// separated, it shows up here as *no choice named* — which renders as no `← now`, the honest
 /// answer, rather than as a mark on the wrong row.
-fn named_choice<'a>(value: &str, choices: &'a [String]) -> Option<&'a str> {
+pub(crate) fn named_choice<'a>(value: &str, choices: &'a [String]) -> Option<&'a str> {
     choices
         .iter()
         .filter(|c| {
@@ -3843,7 +3843,7 @@ impl App {
     /// that same edge from the outside, so ctrl-s inside a child answers *where am I* and *who is
     /// next to me* with one list — while ctrl-s in a conversation still answers *what does this
     /// daemon hold* under the collapse rule above. Two questions, one enumeration per question.
-    fn session_rows(&self) -> Vec<SessionRow> {
+    pub(crate) fn session_rows(&self) -> Vec<SessionRow> {
         // The chain from the current session up to its root, by id — so the way back to where you
         // are is always on the screen.
         let mut path: Vec<String> = vec![self.session_id.clone()];
@@ -3882,7 +3882,7 @@ impl App {
     /// next to the rows it is hiding is the one thing this list must not say, and the glyph came
     /// from the collapse list alone, so a family view drew `▸` over three visible rows. Same rule,
     /// same reader, which is the `todos_stops` lesson this file already carries.
-    fn family_open(&self, id: &str, depth: usize) -> bool {
+    pub(crate) fn family_open(&self, id: &str, depth: usize) -> bool {
         depth == 0 && self.parent_session().as_deref() == Some(id)
     }
 
@@ -3895,7 +3895,7 @@ impl App {
     /// level only**: a sibling's own children are still folded away until that sibling is
     /// expanded, which is what keeps the family view a family rather than the whole subtree behind
     /// it.
-    fn push_children(
+    pub(crate) fn push_children(
         &self,
         out: &mut Vec<SessionRow>,
         parent: &str,
@@ -3920,7 +3920,7 @@ impl App {
     ///
     /// The header counts *conversations*, and this is the half that keeps a head driving a child
     /// from reading `0/4`: it still says which conversation it is in.
-    fn session_root(&self) -> String {
+    pub(crate) fn session_root(&self) -> String {
         let mut cur = self.session_id.as_str();
         while let Some(s) = self.sessions.iter().find(|s| s.session_id == cur)
             && let Some(p) = s.parent_session_id.as_deref()
@@ -3985,7 +3985,7 @@ impl App {
 
     /// What needs the person right now, as counts and ids — compared tick to tick by
     /// [`App::take_notification`], so a notification is an EDGE and never a level.
-    fn attention_now(&self) -> Attention {
+    pub(crate) fn attention_now(&self) -> Attention {
         Attention {
             busy: self.turn_busy(),
             asks: self.open.iter().map(|d| d.req_id.clone()).collect(),
@@ -4049,7 +4049,7 @@ impl App {
     /// system clipboard** (OSC 52 — which works over ssh, where `pbcopy` on the far side would
     /// fill the wrong machine's clipboard). A slash verb rather than a key, because the
     /// composer is live under the window and every bare letter is typing.
-    fn copy_command(&mut self) {
+    pub(crate) fn copy_command(&mut self) {
         if !self.features.clipboard {
             self.say(
                 "this terminal is not known to take OSC 52, so nothing was copied — \
@@ -4089,7 +4089,7 @@ impl App {
     /// **Every PNG a row carries that the terminal does not have yet, queued for upload** — each
     /// once, under the id its row draws with. Only the rows added since the last look are
     /// walked; a list that shrank (a switch, a resync) is walked again from the top.
-    fn queue_image_uploads(&mut self) {
+    pub(crate) fn queue_image_uploads(&mut self) {
         // **The size follows the window.** Every image already in the terminal is placed again
         // at the box this frame's width gives — a placement command each, no image bytes — so
         // the rows the renderers draw at this width match what the terminal will fill.
@@ -4155,7 +4155,7 @@ impl App {
     /// **A PNG a reply named, read by the head** — absolute, `~/`, or relative to the
     /// session's workspace; at most 16 MiB; and only if its bytes say PNG, whatever the name
     /// says. `None` for anything else, which leaves the alt text as the row's only word.
-    fn read_local_png(&self, target: &str) -> Option<letibot_transcript::media::Media> {
+    pub(crate) fn read_local_png(&self, target: &str) -> Option<letibot_transcript::media::Media> {
         let path = if let Some(rest) = target.strip_prefix("~/") {
             std::path::PathBuf::from(std::env::var_os("HOME")?).join(rest)
         } else if target.starts_with('/') {
@@ -4187,7 +4187,7 @@ impl App {
         self.light_background
     }
 
-    fn session_label(&self, id: &str) -> String {
+    pub(crate) fn session_label(&self, id: &str) -> String {
         self.sessions
             .iter()
             .find(|s| s.session_id == id)
@@ -4379,7 +4379,7 @@ impl App {
     /// The sentence carries the seq the head asked from, so "where it picks up" is a
     /// number and not a promise. `None` when nothing was down, so the `Hello` a `Switch`
     /// produces says nothing.
-    fn link_up(&mut self) -> Option<String> {
+    pub(crate) fn link_up(&mut self) -> Option<String> {
         let Link::Reconnecting {
             since_ms, attempts, ..
         } = self.link.clone()
@@ -4437,7 +4437,7 @@ impl App {
     /// long, how many tries, and what the operator can do — because at that point the
     /// wait is not going to end on its own, and a person staring at a head that says
     /// `reconnecting` has no way to tell a quarter of a second from an afternoon.
-    fn link_line(&self, w: usize) -> Vec<String> {
+    pub(crate) fn link_line(&self, w: usize) -> Vec<String> {
         let Link::Reconnecting {
             since_ms,
             attempts,
@@ -4475,7 +4475,7 @@ impl App {
     /// dead screen*, and this is that sentence — with the elapsed time, the time left, and
     /// what the daemon has done so far, because "waiting" and "waiting and it has answered"
     /// are different facts and the second one means it worked.
-    fn stopping_line(&self, w: usize) -> Vec<String> {
+    pub(crate) fn stopping_line(&self, w: usize) -> Vec<String> {
         let Some(s) = self.stopping.as_ref() else {
             return Vec::new();
         };
@@ -5189,7 +5189,7 @@ impl App {
 
     /// Replace all state from a snapshot. This is the late-join path and the
     /// resync path; they are the same path, which is why resync is not special.
-    fn load(&mut self, s: Snapshot) {
+    pub(crate) fn load(&mut self, s: Snapshot) {
         // **The same conversation, or a different one**, read once and at the top: the
         // session id is assigned a few lines down, and three things here ask the
         // question — what is carried over, and (R19) which of this head's own notes keep
@@ -5629,7 +5629,7 @@ impl App {
         self.redraw = true;
     }
 
-    fn event(&mut self, e: SessionEvent, ts: u64) -> Disposition {
+    pub(crate) fn event(&mut self, e: SessionEvent, ts: u64) -> Disposition {
         if let Some(t) = self.turn.as_mut() {
             t.last_ms = ts.max(t.last_ms);
         }
@@ -6930,7 +6930,7 @@ impl App {
     ///
     /// Returns whether an overlay took the key, so the caller can fall through to the
     /// transcript when none did.
-    fn scroll_tail_overlay(&mut self, up: bool, by: usize) -> bool {
+    pub(crate) fn scroll_tail_overlay(&mut self, up: bool, by: usize) -> bool {
         // **A closure over the value, not a binding to the struct.** The two overlays
         // are different types (`SubOut`, `JobOut`) that happen to share a field name, so
         // an `if let … else if let …` binding one `&mut` for both arms does not compile —
@@ -8738,7 +8738,7 @@ impl App {
     /// words instead — which the typed path carries, and which a bare Enter must not
     /// turn into an empty answer (the daemon refuses that, and a refusal the head
     /// could have predicted is a keystroke thrown away).
-    fn answer_marked(&mut self) -> Option<Action> {
+    pub(crate) fn answer_marked(&mut self) -> Option<Action> {
         let d = self.open.first()?;
         let n = decision_rows(d);
         if n == 0 {
@@ -8878,7 +8878,7 @@ impl App {
     ///
     /// **Nothing here ends anything.** Every arm either raises [`App::term_ask`] or says why it
     /// cannot; the frame leaves when the card is answered with a yes, and never before.
-    fn begin_close(&mut self) -> Option<Action> {
+    pub(crate) fn begin_close(&mut self) -> Option<Action> {
         match (&self.term, &self.term_fact) {
             (Some(p), _) => {
                 let line = p.line.clone();
@@ -8909,7 +8909,7 @@ impl App {
 
     /// **Raise the confirmation card**, and it is the only place [`App::term_ask`] is set — so
     /// there is one place a pane can be ended from, and it is the one that asks.
-    fn ask_close(&mut self, line: &str) {
+    pub(crate) fn ask_close(&mut self, line: &str) {
         self.term_ask = Some(TermAsk {
             line: line.to_string(),
         });
@@ -8930,7 +8930,7 @@ impl App {
     /// pane* would be a disclosure about a moment that did not change anything. What the head
     /// draws instead is this — a fact about **now**, drawn while it is true and gone the moment
     /// it stops being true.
-    fn pane_behind(&self) -> Option<String> {
+    pub(crate) fn pane_behind(&self) -> Option<String> {
         // On the screen: the pane itself is the fact, and a sentence about it would be the same
         // fact twice.
         if self.pane_open() {
@@ -8999,7 +8999,7 @@ impl App {
 
     /// What a submitted line means: a command, an answer to an open decision, or
     /// a prompt.
-    fn submit(&mut self, text: String) -> Option<Action> {
+    pub(crate) fn submit(&mut self, text: String) -> Option<Action> {
         // **`!term` is checked before the bare `!`**, because `!term mc` is also a perfectly
         // good `!` line — `operator_shell_command` reads it as the command `term mc`, which is
         // a program nobody has. The verb has to be taken first, and the parse is the daemon's
@@ -9304,7 +9304,7 @@ impl App {
     /// vertical motion is *computed* at have to be the same number — a cursor
     /// that moves by a row the renderer did not draw lands somewhere the person
     /// was not looking.
-    fn composer_cols(&self) -> usize {
+    pub(crate) fn composer_cols(&self) -> usize {
         self.cfg.width.saturating_sub(4).max(8)
     }
 
@@ -9320,7 +9320,7 @@ impl App {
 
     /// A fold changes how many lines every cached block renders to, so the history
     /// buffer and every block cache are stale at once.
-    fn refold(&mut self) {
+    pub(crate) fn refold(&mut self) {
         self.invalidate_history();
         self.scroll = 0;
         self.redraw = true;
@@ -9337,7 +9337,7 @@ impl App {
     /// An ambiguous prefix is **refused with the count**, not resolved to the first
     /// match. Switching to the wrong session is not a keystroke you can take back —
     /// the prompt you type next lands there.
-    fn pick(&mut self, typed: &str) -> Option<Action> {
+    pub(crate) fn pick(&mut self, typed: &str) -> Option<Action> {
         if typed.is_empty() {
             self.picker = false;
             self.redraw = true;
@@ -9394,7 +9394,7 @@ impl App {
     /// Edits` reach the mode the daemon spells `automode-edits`. An exact
     /// match wins before prefixes are counted, so `automode` reaches
     /// `automode` even though `automode-edits` also starts with it.
-    fn pick_mode(&mut self, typed: &str) -> Option<Action> {
+    pub(crate) fn pick_mode(&mut self, typed: &str) -> Option<Action> {
         if typed.is_empty() {
             self.pick = None;
             self.redraw = true;
@@ -9443,7 +9443,7 @@ impl App {
     /// session picker answers Enter on its own row — a round trip to the
     /// daemon to be told what the screen already showed is not worth its
     /// flicker.
-    fn take_mode(&mut self, name: String) -> Option<Action> {
+    pub(crate) fn take_mode(&mut self, name: String) -> Option<Action> {
         self.pick = None;
         self.redraw = true;
         if name == self.mode_current() {
@@ -9456,7 +9456,7 @@ impl App {
     /// **The one place a mode leaves the head**, so the `allow-all` confirmation
     /// cannot be reached by one route and skipped by another. The picker, `/mode
     /// NAME` and the config pane's cycle all end here.
-    fn mode_action(&mut self, name: String) -> Option<Action> {
+    pub(crate) fn mode_action(&mut self, name: String) -> Option<Action> {
         // The literal, not `Mode::ALLOW_ALL.name`: the head does not link
         // `letibot-tools` and does not keep a mode list — every other name it
         // handles comes from the daemon's `SettingRow::choices`. This is the one
@@ -9486,7 +9486,7 @@ impl App {
     /// **The last line says whose the row will be**, because that is the whole difference the
     /// feature turns on and the place a reader will look for it: an item added here is the
     /// OPERATOR's, the model is shown it and reminded of it, and the model cannot remove it.
-    fn todo_card_lines(&self, w: usize) -> Vec<String> {
+    pub(crate) fn todo_card_lines(&self, w: usize) -> Vec<String> {
         let Some(draft) = &self.todo_draft else {
             return Vec::new();
         };
@@ -9541,7 +9541,7 @@ impl App {
         out.into_iter().map(|l| trim_to(&l, w)).collect()
     }
 
-    fn mode_confirm_line(&self) -> Option<String> {
+    pub(crate) fn mode_confirm_line(&self) -> Option<String> {
         self.mode_confirm.as_ref().map(|_| {
             "allow-all: privilege escalation, deletes outside the project and \
              first contact with a new host all stop asking. On this box that is \
@@ -9554,14 +9554,14 @@ impl App {
     /// The mode row of the daemon's last settings answer, and the two facts
     /// the picker and the config pane both read from it. `None` is a daemon
     /// that has not answered yet, or one older than protocol 18.
-    fn mode_row(&self) -> Option<&letibot_sessionlog::protocol::SettingRow> {
+    pub(crate) fn mode_row(&self) -> Option<&letibot_sessionlog::protocol::SettingRow> {
         self.settings.iter().find(|r| r.key == "mode")
     }
 
     /// The mode names, as the daemon spelled them. Empty when it sent none —
     /// the head keeps no list of its own to fall back on, because a second
     /// copy of a list is a copy that drifts.
-    fn mode_choices(&self) -> Vec<String> {
+    pub(crate) fn mode_choices(&self) -> Vec<String> {
         self.mode_row()
             .map(|r| r.choices.clone())
             .unwrap_or_default()
@@ -9572,7 +9572,7 @@ impl App {
     ///
     /// One function for the four, because the choice of row is the only thing that differs
     /// between a daemon's setting and the head's — see [`Pick::row_key`].
-    fn pick_row(&self) -> Option<&letibot_sessionlog::protocol::SettingRow> {
+    pub(crate) fn pick_row(&self) -> Option<&letibot_sessionlog::protocol::SettingRow> {
         let key = self.pick?.row_key()?;
         self.settings.iter().find(|r| r.key == key)
     }
@@ -9585,7 +9585,7 @@ impl App {
     /// because the head does not know what `automode-edits` means and inventing a gloss would
     /// be writing the other half's documentation. The head's own two settings carry the
     /// sentences from [`Pick::values`].
-    fn pick_values(&self) -> Vec<(String, String)> {
+    pub(crate) fn pick_values(&self) -> Vec<(String, String)> {
         let Some(subject) = self.pick else {
             return Vec::new();
         };
@@ -9641,7 +9641,7 @@ impl App {
     /// since `pick_values` now draws a row under exactly that name, a custom set is marked on the
     /// card like any other state rather than matching nothing. (It used to match no row at all,
     /// which read as the card having lost the setting; see that function.)
-    fn pick_current(&self) -> String {
+    pub(crate) fn pick_current(&self) -> String {
         match self.pick {
             Some(Pick::Verbosity) => self.visibility.as_str(),
             Some(Pick::Diff) => {
@@ -9664,7 +9664,7 @@ impl App {
     }
 
     /// **Commit the highlighted row.** The four subjects differ only here.
-    fn take_pick(&mut self, name: String) -> Option<Action> {
+    pub(crate) fn take_pick(&mut self, name: String) -> Option<Action> {
         match self.pick {
             // The daemon's two: a mode is a protocol command this head already has, a model
             // is a daemon verb.
@@ -9732,7 +9732,7 @@ impl App {
     /// the transcript when it changes. The word itself is read by [`Visibility::parse`] — the
     /// same function `head.toml` is read with — so a name this reads here is a name the file
     /// reads there.
-    fn set_verbosity(&mut self, typed: &str) -> Option<Action> {
+    pub(crate) fn set_verbosity(&mut self, typed: &str) -> Option<Action> {
         let t = typed.trim().to_ascii_lowercase();
         let next = if t == "v" || t == "next" {
             // **`/v` is the next profile**, in `Profile::ALL`'s order — which is the ladder's
@@ -9879,7 +9879,7 @@ impl App {
     /// **The one writer of the two folds** — so a switch moved by a chord, by `/t`, by the
     /// config pane or by a profile all land in the same field, and none of them can move the
     /// other's.
-    fn set_fold(&mut self, show: Show, fold: Fold) {
+    pub(crate) fn set_fold(&mut self, show: Show, fold: Fold) {
         match show {
             Show::Tools => {
                 self.tools = fold;
@@ -9897,7 +9897,7 @@ impl App {
     ///
     /// A local setting like the rung above, and one place for the same reason: the card's
     /// `Enter` and the typed word must not be able to disagree.
-    fn set_diff(&mut self, typed: &str) -> Option<Action> {
+    pub(crate) fn set_diff(&mut self, typed: &str) -> Option<Action> {
         // **`DiffPref::parse` and not a second list.** The preference file is SHARED with
         // the other head, which accepts `split` / `side-by-side` / `auto` and `unified` /
         // `single` on input and writes back exactly two words — so the spellings a value can
@@ -9951,7 +9951,7 @@ impl App {
     /// `writes`, which names no choice. Both things that read this — the picker's cursor and the
     /// card's `← now` — then failed together, which is the operator's report exactly: *"permission
     /// mode menu no longer highlights the current mode when opened"*.
-    fn mode_current(&self) -> String {
+    pub(crate) fn mode_current(&self) -> String {
         let Some(r) = self.mode_row() else {
             return String::new();
         };
@@ -9974,7 +9974,7 @@ impl App {
     /// the rung and the diff style all pick whichever of their values the current one names.
     /// They used to seed at four call sites with two spellings of the same rule, which is the
     /// shape this file keeps deleting.
-    fn seed_pick(&mut self) {
+    pub(crate) fn seed_pick(&mut self) {
         let values = self.pick_values();
         let now = self.pick_current();
         self.mode_sel = values.iter().position(|(n, _)| *n == now).unwrap_or(0);
@@ -10011,7 +10011,7 @@ impl App {
     /// and a head that invented a sentence about somebody else's verb would be writing the
     /// other half's documentation. They are drawn bare, which is also what tells a reader
     /// the two halves of the list apart without a label.
-    fn command_names(&self) -> Vec<(String, String)> {
+    pub(crate) fn command_names(&self) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = SLASH_COMMANDS
             .iter()
             .map(|(n, h)| ((*n).to_string(), (*h).to_string()))
@@ -10046,7 +10046,7 @@ impl App {
     }
 
     /// **The door's tools, as the daemon described them** — R31.
-    fn door_tools(&self) -> Vec<letibot_sessionlog::HeadRunTool> {
+    pub(crate) fn door_tools(&self) -> Vec<letibot_sessionlog::HeadRunTool> {
         self.settings
             .iter()
             .find(|r| r.key == letibot_sessionlog::HEAD_RUN_TOOLS_KEY)
@@ -10069,7 +10069,7 @@ impl App {
     ///   R31 keeps for a tool with several arguments. A line that *starts* with `{` is the
     ///   operator asking for the JSON form; there is no tool whose bare text begins that way
     ///   by accident and the ambiguity is resolved in favour of the form they can see.
-    fn head_run_call(
+    pub(crate) fn head_run_call(
         &self,
         tool: &letibot_sessionlog::HeadRunTool,
         line: &str,
@@ -10130,7 +10130,7 @@ impl App {
     /// of its own because it *cannot* have one — whether a preset resolves a key is a fact about
     /// this box's files and environment (`keys::resolve`), and the daemon is the half that reads
     /// them.
-    fn keyed_providers(&self) -> Vec<String> {
+    pub(crate) fn keyed_providers(&self) -> Vec<String> {
         self.settings
             .iter()
             .find(|r| r.key == letibot_sessionlog::protocol::MODEL_KEYS_KEY)
@@ -10152,7 +10152,7 @@ impl App {
     /// Falls back to `local` alone when the row is absent, which is a daemon older than
     /// the row. That is exactly what this head did before the row existed, so an old
     /// daemon greens what it always greened and nothing reads as newly broken.
-    fn keyless_choices(&self) -> Vec<String> {
+    pub(crate) fn keyless_choices(&self) -> Vec<String> {
         self.settings
             .iter()
             .find(|r| r.key == letibot_sessionlog::protocol::MODEL_KEYLESS_KEY)
@@ -10182,7 +10182,7 @@ impl App {
     /// not hold"*, about a LAN box with no key and no meter. The daemon publishes the
     /// list now, for the same reason it publishes the keyed one: it is the half that
     /// knows.
-    fn choice_ready(&self, name: &str) -> bool {
+    pub(crate) fn choice_ready(&self, name: &str) -> bool {
         let name = name.trim();
         // **Three ways a row can name its model, so three candidates.**
         //
@@ -10205,13 +10205,13 @@ impl App {
     /// older than the field and reads as *no greening* — never as *no keys* — so the ask is
     /// gated on the row being present rather than on the key list being empty, and an older
     /// daemon never finds its switches blocked behind a prompt.
-    fn keys_row_present(&self) -> bool {
+    pub(crate) fn keys_row_present(&self) -> bool {
         self.settings
             .iter()
             .any(|r| r.key == letibot_sessionlog::protocol::MODEL_KEYS_KEY)
     }
 
-    fn daemon_verbs(&self) -> Vec<String> {
+    pub(crate) fn daemon_verbs(&self) -> Vec<String> {
         self.settings
             .iter()
             .find(|r| r.key == letibot_sessionlog::protocol::DAEMON_VERBS_KEY)
@@ -10226,7 +10226,7 @@ impl App {
             .unwrap_or_default()
     }
 
-    fn complete_slash(&mut self) {
+    pub(crate) fn complete_slash(&mut self) {
         let text = self.editor.text().to_string();
         if !text.starts_with('/') || text.contains(char::is_whitespace) {
             return;
@@ -10304,7 +10304,7 @@ impl App {
     /// Down to the transcript, and one at its first line passes the rest of an Up, the way
     /// a scroll box nested in a page hands over at its edge. Home and End are jumps inside
     /// the window and pass nothing on.
-    fn page_payload(&mut self, up: bool, by: usize) {
+    pub(crate) fn page_payload(&mut self, up: bool, by: usize) {
         let max = self.payload_max.get();
         let from = self.payload_page.min(max);
         let to = if up {
@@ -10337,7 +10337,7 @@ impl App {
         self.redraw = true;
     }
 
-    fn complete_shell(&mut self) {
+    pub(crate) fn complete_shell(&mut self) {
         let text = self.editor.text().to_string();
         // The one recogniser: a `!` line is what the sessionlog crate says it is,
         // and a bang with no command after it is not one — so `!` alone does
@@ -10463,7 +10463,7 @@ impl App {
     /// **Nothing here submits.** The answer is a list of candidate lines for the
     /// composer, drawn as candidates with their provenance, and Enter is still the
     /// operator's.
-    fn shell_model_fallback(&mut self, text: &str) {
+    pub(crate) fn shell_model_fallback(&mut self, text: &str) {
         let position = self.items.len() as u64;
         let key = (text.to_string(), position);
         // Already answered for this prefix at this position: cycle the cached lines,
@@ -10515,7 +10515,7 @@ impl App {
     /// The next `SuggestShell`'s `client_request_id`, beside `next_head_run` and for
     /// the same reason: the id has to be unique per head, and the head is the one
     /// that has to recognise it when the answer comes back on the pump.
-    fn next_shell_ask_id(&mut self) -> String {
+    pub(crate) fn next_shell_ask_id(&mut self) -> String {
         self.shell_ask_seq += 1;
         format!("{}-s{}", self.head_id, self.shell_ask_seq)
     }
@@ -10532,7 +10532,7 @@ impl App {
     /// **A body landing counts as a move**, which is why [`App::record_item`] calls it
     /// too: a row announced with no body carries no tool calls yet, and a prompt built
     /// on it would be a prompt about a row that had not arrived.
-    fn the_rows_moved(&mut self) {
+    pub(crate) fn the_rows_moved(&mut self) {
         self.shell_candidates_memo = None;
         self.clear_shell_suggestions();
     }
@@ -10551,7 +10551,7 @@ impl App {
     /// going down** — that is deliberate, because the two are always stale together and
     /// a call site that remembered one of them would be a call site that forgot the
     /// other.
-    fn clear_shell_suggestions(&mut self) {
+    pub(crate) fn clear_shell_suggestions(&mut self) {
         if self.shell_ask.is_empty()
             && self.shell_suggestions.is_empty()
             && self.shell_model.is_none()
@@ -10584,7 +10584,7 @@ impl App {
     /// order, which is what the `!` candidates already walk. Refreshed at the start of a
     /// recall, so it is the session on screen now; lines this head typed that the session
     /// does not hold (yet) stay at the end, newest last.
-    fn refresh_prompt_history(&mut self) {
+    pub(crate) fn refresh_prompt_history(&mut self) {
         let mut merged: Vec<String> = Vec::new();
         for r in &self.items {
             let Some(TranscriptItem::User {
@@ -10616,7 +10616,7 @@ impl App {
         self.editor.set_history(merged);
     }
 
-    fn shell_candidates(&mut self) -> &[String] {
+    pub(crate) fn shell_candidates(&mut self) -> &[String] {
         if self.shell_candidates_memo.is_none() {
             self.shell_walks += 1;
             self.shell_candidates_memo = Some(self.walk_shell_candidates());
@@ -10632,7 +10632,7 @@ impl App {
     /// way `targets_before` walks them. A `bash` call whose arguments do not parse,
     /// or that carries no `command`, is skipped: a candidate that cannot be re-run
     /// is not a candidate.
-    fn walk_shell_candidates(&self) -> Vec<String> {
+    pub(crate) fn walk_shell_candidates(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for r in self.items.iter().rev() {
             let Some(item) = r.item.as_ref() else {
@@ -10685,7 +10685,7 @@ impl App {
     /// Home + kill-to-end + insert is the honest way there: the editor has no
     /// text setter, and the three public ops keep its undo and history exactly
     /// as true as any typed edit.
-    fn set_composer(&mut self, text: &str) {
+    pub(crate) fn set_composer(&mut self, text: &str) {
         self.editor.key(letibot_ui::editor::Key::Home, self.now_ms);
         self.editor
             .key(letibot_ui::editor::Key::KillToEnd, self.now_ms);
@@ -10706,7 +10706,7 @@ impl App {
     /// defect the reservation exists to stop. The shape changes only when the operator
     /// starts or abandons such a line; an ordinary line, and an empty composer, are not
     /// ones: `hello` completes nothing, so it pays nothing.
-    fn completion_slot(&self) -> bool {
+    pub(crate) fn completion_slot(&self) -> bool {
         let text = self.editor.text();
         text.starts_with('!') || (text.starts_with('/') && !text.contains(char::is_whitespace))
     }
@@ -10718,7 +10718,7 @@ impl App {
     /// row is a slot and its height does not follow its content (see [`App::completion_slot`]
     /// and the composer block in `compose_screen`) — and Tab will say what went wrong when
     /// it is asked.
-    fn completions_line(&mut self, w: usize) -> Option<String> {
+    pub(crate) fn completions_line(&mut self, w: usize) -> Option<String> {
         // **One gate, and it is the slot's.** The `/` arm below used to spell the shape
         // out itself, which is the second rule about one row the reservation cannot
         // afford: it would be free to disagree with the height.
@@ -10766,7 +10766,7 @@ impl App {
     /// (`! git status`), never the marked form (`~! git status`). And nothing
     /// here is submitted — the row is a typing aid, and Enter is still the
     /// operator's.
-    fn shell_completions_line(&mut self, w: usize) -> Option<String> {
+    pub(crate) fn shell_completions_line(&mut self, w: usize) -> Option<String> {
         let text = self.editor.text().to_string();
         if !text.starts_with('!') {
             return None;
@@ -10828,7 +10828,7 @@ impl App {
         Some(dim(cfg, &trim_to(&format!("  {}", parts.join("  ·  ")), w)))
     }
 
-    fn switch_to(&mut self, id: String) -> Option<Action> {
+    pub(crate) fn switch_to(&mut self, id: String) -> Option<Action> {
         if id == self.session_id {
             self.picker = false;
             self.redraw = true;
@@ -10856,7 +10856,7 @@ impl App {
         Some(Action::Switch(id))
     }
 
-    fn command(&mut self, cmd: &str) -> Option<Action> {
+    pub(crate) fn command(&mut self, cmd: &str) -> Option<Action> {
         // **The operator's own tool call** — R24 part two's door, R31's bare form, R34's
         // hyphen.
         //
@@ -11321,7 +11321,7 @@ impl App {
     /// Clone rather than a flag, because the list has to survive the echoes being
     /// retired normally in between — a prompt whose row lands before the fork needs
     /// no help from this, and one still waiting does.
-    fn mark_fork(&mut self) {
+    pub(crate) fn mark_fork(&mut self) {
         self.fork_pending = self.pending_prompts.clone();
     }
 
@@ -11337,7 +11337,7 @@ impl App {
     /// new transcript and its row is still coming; retiring it would take a sentence
     /// off the screen that has not landed, which is the defect `pending_prompts`
     /// exists for.
-    fn resolve_fork(&mut self) {
+    pub(crate) fn resolve_fork(&mut self) {
         for text in std::mem::take(&mut self.fork_pending) {
             self.retire_pending(&text);
         }
@@ -11396,7 +11396,7 @@ impl App {
     /// prompt still sitting in the hub's queue, and the operator would watch their
     /// own sentence vanish. See [`App::bound_prompts`] for the half that *is* drawn
     /// from an announcement.
-    fn retire_pending(&mut self, row: &str) {
+    pub(crate) fn retire_pending(&mut self, row: &str) {
         // **An echo that is not in the queue is not in the unconfirmed set either.**
         // An intersection, not a removal of the row's text.
         //
@@ -11460,7 +11460,7 @@ impl App {
     /// entries — behind a running turn the engine merges consecutive operator
     /// messages, so it is ordinarily *one* — and this runs once per announced row,
     /// so it is nothing next to the render it is feeding.
-    fn bind_echo(&mut self, item_id: &str) {
+    pub(crate) fn bind_echo(&mut self, item_id: &str) {
         if self.pending_prompts.is_empty() {
             return;
         }
@@ -11496,7 +11496,7 @@ impl App {
     /// after it was bound, and the whole entry is then drawn twice. What it needs is the
     /// pieces being drawn, so it can take exactly those out. See [`unclaimed_prompts`],
     /// which is the walk that spends them.
-    fn echoes_on_screen(&self) -> Vec<(String, Vec<String>)> {
+    pub(crate) fn echoes_on_screen(&self) -> Vec<(String, Vec<String>)> {
         self.items
             .iter()
             .filter(|it| it.item.is_none())
@@ -11513,7 +11513,7 @@ impl App {
     /// **The one writer of the notice, and it is the one that starts the clock.** Both
     /// halves in one `setf` is the point: a sentence nobody timed is a sentence nobody can
     /// get rid of, and there is now no way to set one without starting its clock.
-    fn say(&mut self, text: &str) {
+    pub(crate) fn say(&mut self, text: &str) {
         self.notice = Some(text.to_string());
         self.notice_until = Some(self.now_ms.saturating_add(NOTICE_MS));
     }
@@ -11529,7 +11529,7 @@ impl App {
     /// which reports silence from a model that should be emitting. A call that runs for two
     /// minutes emits nothing and is not stuck, and gating that line on `turn_busy` would make it
     /// cry wolf through every long command.
-    fn turn_generating(&self) -> bool {
+    pub(crate) fn turn_generating(&self) -> bool {
         matches!(
             self.turn.as_ref().and_then(|t| t.state.as_ref()),
             Some(TurnState::Running)
@@ -11562,7 +11562,7 @@ impl App {
     /// directions** — see the call sites: the esc-esc gate dead exactly while a command ran, two
     /// `queued` rows for one message, the promote message saying the wrong one of two silences,
     /// and a status row that vanished during every call.
-    fn turn_busy(&self) -> bool {
+    pub(crate) fn turn_busy(&self) -> bool {
         let Some(t) = self.turn.as_ref() else {
             return false;
         };
@@ -11578,7 +11578,7 @@ impl App {
     /// list: the daemon persists them, every head sees them, and this is the one place that says
     /// which half of that list the operator wrote. Sending is the whole list, so a divergence
     /// between a head's copy and the store is impossible to accumulate.
-    fn operator_todos(&self) -> Vec<letibot_sessionlog::event::TodoEntry> {
+    pub(crate) fn operator_todos(&self) -> Vec<letibot_sessionlog::event::TodoEntry> {
         self.todos
             .iter()
             .filter(|t| t.by == letibot_sessionlog::event::TodoBy::Operator)
@@ -11591,7 +11591,7 @@ impl App {
     /// **The composer is the field**, so it is emptied and handed to the card: a half-typed prompt
     /// left under a card whose Enter adds an item is the shape that costs somebody a message, which
     /// is the same reason `mode_confirm` takes the keyboard. leticl's `%todo-draft-open`.
-    fn open_todo_card(&mut self) {
+    pub(crate) fn open_todo_card(&mut self) {
         if self.session_id.is_empty() {
             self.say("not attached to a session yet");
             return;
@@ -11641,7 +11641,7 @@ impl App {
     /// half in their place — and `TodosUpdated` replaces the union wholesale when it lands, in
     /// the daemon's own order, which is why nothing here needs to guess at that order for longer
     /// than the boundary.
-    fn echo_operator_todos(&mut self, mine: Vec<letibot_sessionlog::event::TodoEntry>) {
+    pub(crate) fn echo_operator_todos(&mut self, mine: Vec<letibot_sessionlog::event::TodoEntry>) {
         self.todos
             .retain(|t| t.by != letibot_sessionlog::event::TodoBy::Operator);
         self.todos.extend(mine);
@@ -11657,7 +11657,7 @@ impl App {
     /// before the socket exists), and the record does not hold this workspace. **The record, not
     /// the list**: a starter row the operator deleted must not come back, which is what an *is
     /// the list empty* test would do on every restart.
-    fn todo_seed_due(&self) -> bool {
+    pub(crate) fn todo_seed_due(&self) -> bool {
         self.todo_template != crate::prefs::TodoTemplate::Off
             && !self.wiring.workspace.is_empty()
             && !self
@@ -11669,7 +11669,7 @@ impl App {
     /// `todo-template-path`, which its own docstring rules: *“one function because the setting
     /// has three shapes and two callers must not spell them differently.”* `None` when the
     /// switch is off or this head has no config directory to read a default from.
-    fn todo_template_file(&self) -> Option<std::path::PathBuf> {
+    pub(crate) fn todo_template_file(&self) -> Option<std::path::PathBuf> {
         match &self.todo_template {
             crate::prefs::TodoTemplate::Off => None,
             crate::prefs::TodoTemplate::Path(p) => Some(std::path::PathBuf::from(p)),
@@ -11711,7 +11711,7 @@ impl App {
     /// The rows go out through the same door `/todo TEXT` uses — `echo_operator_todos` for the
     /// optimistic view, `SetOperatorTodos` for the whole half — so a seed and a typed row cannot
     /// become different acts.
-    fn seed_todos(&mut self) {
+    pub(crate) fn seed_todos(&mut self) {
         if !self.todo_seed_due() {
             return;
         }
@@ -11778,7 +11778,7 @@ impl App {
     /// exists to avoid. The write is a UNION with whatever the file holds
     /// (`merge_todo_seed`) because two heads share one `head.toml` and a dropped record is a
     /// project that re-seeds.
-    fn mark_seeded(&mut self) {
+    pub(crate) fn mark_seeded(&mut self) {
         let key = todo_seed_key(&self.wiring.workspace);
         if !self.todo_seed.contains(&key) {
             self.todo_seed.push(key);
@@ -11793,7 +11793,7 @@ impl App {
         }
     }
 
-    fn todo_command(&mut self, rest: &str) -> Option<Action> {
+    pub(crate) fn todo_command(&mut self, rest: &str) -> Option<Action> {
         let rest = rest.trim();
         if self.session_id.is_empty() {
             self.say("not attached to a session yet");
@@ -11948,7 +11948,7 @@ impl App {
     /// Returns the bootstrap read when the pane is opening: the daemon's todo list
     /// rides no snapshot, so a head that attached after the model last wrote has to ask.
     /// Later changes arrive as `TodosUpdated` and need no asking.
-    fn toggle_todos(&mut self) -> Option<Action> {
+    pub(crate) fn toggle_todos(&mut self) -> Option<Action> {
         self.todos_pane = !self.todos_pane;
         // A pane opens at its top. Kept per-pane would be four fields that each go
         // stale; one field reset on every open is the same behaviour with nothing to
@@ -11981,7 +11981,7 @@ impl App {
     /// acts on one — the model may move its own row's status and the operator may not — and a cursor
     /// that stops where no key acts is a cursor the operator presses keys into and nothing happens.
     /// They are skipped the way the repo's headings are.
-    fn todos_stops(&self) -> Vec<TodoStop> {
+    pub(crate) fn todos_stops(&self) -> Vec<TodoStop> {
         let mut out = vec![TodoStop::Add];
         for t in self
             .todos
@@ -12007,7 +12007,7 @@ impl App {
     /// The clamp is the one thing here that is not a read: a list can change under the cursor — a
     /// `TodosUpdated` arriving, a row removed, another workspace — and a key pressed against a
     /// shorter list must land on a row rather than on an index that no longer exists.
-    fn todos_row_of(&self) -> usize {
+    pub(crate) fn todos_row_of(&self) -> usize {
         let at = self
             .todos_sel
             .min(self.todos_stop_rows.len().saturating_sub(1));
@@ -12024,7 +12024,7 @@ impl App {
     ///
     /// Guarded on the WINDOW: a row above the pane's top or below its last drawn row is not a row
     /// anybody is looking at, and a click into the blank space under a short list moves nothing.
-    fn todo_stop_at_row(&self, y: u16) -> Option<usize> {
+    pub(crate) fn todo_stop_at_row(&self, y: u16) -> Option<usize> {
         let y = usize::from(y).checked_sub(self.todos_pane_top)?;
         if y >= self.pane_room {
             return None;
@@ -12036,7 +12036,7 @@ impl App {
     /// **The repo cursor follows the stop cursor**, for the repo's own keys — the unfold and the
     /// body it shows read `repo_sel`, and a second cursor that did not follow would be the two
     /// enumerations this whole change removed.
-    fn sync_repo_from_stop(&mut self, stops: &[TodoStop]) {
+    pub(crate) fn sync_repo_from_stop(&mut self, stops: &[TodoStop]) {
         let at = self.todos_sel.min(stops.len().saturating_sub(1));
         if let Some(TodoStop::Repo(i)) = stops.get(at) {
             self.repo_sel = *i;
@@ -12086,7 +12086,7 @@ impl App {
     /// **And every answer re-folds.** A re-ask whose reply is not applied is worse than no
     /// re-ask, because it looks like one: the `Sessions` arm calls [`App::fold_subagents`]
     /// and the `Jobs` arm replaces the table, for exactly this reason.
-    fn refetch_session_facts(&mut self) {
+    pub(crate) fn refetch_session_facts(&mut self) {
         self.queued.push(Action::Settings);
         self.queued.push(Action::ListJobs);
         self.queued.push(Action::ListSessions);
@@ -12105,7 +12105,7 @@ impl App {
     /// refreshed"*. Two durable halves now feed it: the snapshot's own children, and the
     /// daemon's session list — so [`App::fold_subagents`] reads it here, where the rows are
     /// about to be looked at.
-    fn toggle_subagents(&mut self) {
+    pub(crate) fn toggle_subagents(&mut self) {
         self.subagents_pane = !self.subagents_pane;
         self.pane_scroll = 0;
         self.fold_subagents();
@@ -12128,7 +12128,7 @@ impl App {
     /// So the children still going come first, then one `finished (N)` row, then — only when it
     /// is unfolded — the finished children themselves. The active half is never empty for a live
     /// spawn, which is the whole point: the row the operator opened the pane to see is at the top.
-    fn subagent_stops(&self) -> Vec<SubStop> {
+    pub(crate) fn subagent_stops(&self) -> Vec<SubStop> {
         let mut out = Vec::with_capacity(self.subagents.len() + 1);
         for (i, s) in self.subagents.iter().enumerate() {
             if !s.is_finished() {
@@ -12153,7 +12153,7 @@ impl App {
     /// over the lists it drew from. The sibling of [`App::todos_row_of`], and the clamp is the
     /// same: the list can change under the cursor, and an arrow pressed against a shorter list
     /// must land on a row rather than on an index that no longer exists.
-    fn subagents_row_of(&self) -> usize {
+    pub(crate) fn subagents_row_of(&self) -> usize {
         let at = self
             .subagents_sel
             .min(self.subagents_stop_rows.len().saturating_sub(1));
@@ -12232,7 +12232,7 @@ impl App {
     /// already numbers), and a child this head watched spawn whose brief the list does not
     /// carry yet — the list is a snapshot of its own moment, the event is not — is
     /// appended after them rather than dropped.
-    fn fold_subagents(&mut self) {
+    pub(crate) fn fold_subagents(&mut self) {
         let known: Vec<SubagentState> = std::mem::take(&mut self.subagents);
         let mut rows: Vec<SubagentState> = Vec::with_capacity(known.len().max(4));
         for b in &self.sessions {
@@ -12365,7 +12365,7 @@ impl App {
     /// lessons this one needs: the rows the cursor walks and the rows the keys act on must be the
     /// same list, and a settled row the reader has stopped caring about must not push a running
     /// one off the bottom of the pane.
-    fn job_stops(&self) -> Vec<JobStop> {
+    pub(crate) fn job_stops(&self) -> Vec<JobStop> {
         let mut out = Vec::with_capacity(self.jobs.len() + 1);
         for (i, j) in self.jobs.iter().enumerate() {
             if j.running {
@@ -12388,7 +12388,7 @@ impl App {
     /// **The pane row the job stop at the cursor was DRAWN on**, read out of
     /// [`App::jobs_stop_rows`] — the record the pane wrote while drawing, never arithmetic over
     /// the table it drew from. The sibling of [`App::subagents_row_of`].
-    fn jobs_row_of(&self) -> usize {
+    pub(crate) fn jobs_row_of(&self) -> usize {
         let at = self
             .jobs_sel
             .min(self.jobs_stop_rows.len().saturating_sub(1));
@@ -12400,7 +12400,7 @@ impl App {
     /// the queue. The sibling of [`App::jobs_row_of`], and the clamp is the same: the queue can
     /// move under the cursor (a `MergeEntryAdded` arriving), and an arrow pressed against a
     /// shorter queue must land on a row rather than on an index that no longer exists.
-    fn queue_row_of(&self) -> usize {
+    pub(crate) fn queue_row_of(&self) -> usize {
         let at = self
             .queue_sel
             .min(self.queue_stop_rows.len().saturating_sub(1));
@@ -12412,7 +12412,7 @@ impl App {
     /// Read from the rows the last draw recorded, so a click and the drawing cannot disagree
     /// about where a row is; guarded on the window, so a click into the blank space under a
     /// short queue moves nothing.
-    fn queue_stop_at_row(&self, y: u16) -> Option<usize> {
+    pub(crate) fn queue_stop_at_row(&self, y: u16) -> Option<usize> {
         let y = usize::from(y).checked_sub(self.queue_pane_top)?;
         if y >= self.pane_room {
             return None;
@@ -12426,7 +12426,7 @@ impl App {
     /// `None` is *no review row at all* and `Some` with `decision: None` is *asked and not
     /// answered*: the pane draws them differently, because the first is a queue nobody has
     /// looked at and the second is a queue that is being looked at now.
-    fn review_of(&self, entry_id: &str) -> Option<&letibot_sessionlog::event::MergeReview> {
+    pub(crate) fn review_of(&self, entry_id: &str) -> Option<&letibot_sessionlog::event::MergeReview> {
         self.merge_reviews.iter().find(|r| r.entry_id == entry_id)
     }
 
@@ -12442,7 +12442,7 @@ impl App {
     ///
     /// Takes `&mut self` only to record where each row was drawn, which is what the arrows and
     /// a click scroll by.
-    fn queue_lines(&mut self, w: usize) -> Vec<String> {
+    pub(crate) fn queue_lines(&mut self, w: usize) -> Vec<String> {
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "merge queue")];
         out.push(String::new());
         if self.merge.is_empty() {
@@ -12527,7 +12527,7 @@ impl App {
     /// The entry is looked up by id every draw, and an id the queue no longer holds — a
     /// `recover` moved it, or a head switched and took a fresh snapshot — says so rather than
     /// drawing an empty overlay.
-    fn queue_out_lines(&self, w: usize) -> Vec<String> {
+    pub(crate) fn queue_out_lines(&self, w: usize) -> Vec<String> {
         let Some(id) = self.queue_open.as_deref() else {
             return Vec::new();
         };
@@ -12683,7 +12683,7 @@ impl App {
     /// the registry already states — `SessionBrief::parent_session_id`, which is `Some`
     /// exactly for a child. See [`App::fold_subagents`] for the same field used the other
     /// way round.
-    fn parent_session(&self) -> Option<String> {
+    pub(crate) fn parent_session(&self) -> Option<String> {
         self.sessions
             .iter()
             .find(|s| s.session_id == self.session_id)
@@ -12703,7 +12703,7 @@ impl App {
     /// So it asks the calls. The daemon honours a promote inside `bash`'s own wait loop,
     /// which exists only while a command is executing, so a running call is not a proxy
     /// for the thing being promoted — it IS it.
-    fn promote(&mut self) -> Option<Action> {
+    pub(crate) fn promote(&mut self) -> Option<Action> {
         if self.running_call().is_some() {
             self.say("moving the running command to the background");
             return Some(Action::Promote);
@@ -12724,7 +12724,7 @@ impl App {
     ///
     /// Ctrl+O's precondition, and deliberately not [`App::turn_busy`] either: this asks for a
     /// command the daemon is *executing*, which is a fact about ONE call and not about the turn.
-    fn running_call(&self) -> Option<&CallRow> {
+    pub(crate) fn running_call(&self) -> Option<&CallRow> {
         self.turn
             .as_ref()?
             .calls
@@ -12860,7 +12860,7 @@ impl App {
     /// `items` wholesale, a fold changed how many lines every cached block renders
     /// to, and a width change moved every wrap. Everything else means
     /// [`App::invalidate_history_from`].
-    fn invalidate_history(&mut self) {
+    pub(crate) fn invalidate_history(&mut self) {
         self.invalidate_history_from(0);
     }
 
@@ -12882,7 +12882,7 @@ impl App {
     /// with all four turn-state invalidations removed: 1,253,922 bytes against
     /// 1,256,038, and the same final screen to the byte. This is the cost of the
     /// *render*, and nothing about what reaches the terminal.
-    fn invalidate_history_from(&mut self, k: usize) {
+    pub(crate) fn invalidate_history_from(&mut self, k: usize) {
         if k == 0 {
             self.hist_lines.clear();
             self.hist_marks.clear();
@@ -12934,7 +12934,7 @@ impl App {
     /// that proposed no calls at all, because `call_0` is positional within a
     /// round and a merge is how round 4's `call_0` came to wear round 1's path.
     /// So the scan stops at the first such row rather than accumulating.
-    fn retarget_before(&mut self, k: usize) {
+    pub(crate) fn retarget_before(&mut self, k: usize) {
         self.call_targets = targets_before(&self.items, k);
     }
 
@@ -12956,7 +12956,7 @@ impl App {
     /// Keyed on `kind` rather than on the body, because [`round_results`] breaks on
     /// an *announced* assistant row whose content has not arrived yet, and two
     /// answers to "where does this round start" is one too many.
-    fn round_head(&self, idx: usize) -> usize {
+    pub(crate) fn round_head(&self, idx: usize) -> usize {
         // A user row is its own head — a conversation of user rows must not
         // rewind to zero on every one. Anything else belongs to the nearest
         // assistant row above it, PAST any user rows in between, for the same
@@ -12978,7 +12978,7 @@ impl App {
     /// A turn-state transition changes one input to the walk — `drawn_live`, which
     /// is true only for a row in `TurnPane::appended` — so it can change what those
     /// rows render to and nothing above the first of them.
-    fn turn_first_row(&self) -> Option<usize> {
+    pub(crate) fn turn_first_row(&self) -> Option<usize> {
         let t = self.turn.as_ref()?;
         if t.appended.is_empty() {
             return None;
@@ -12991,7 +12991,7 @@ impl App {
 
     /// The history is stale from the first row the live pane owns. A pane that
     /// owns no rows changes no history at all, and then this does nothing.
-    fn invalidate_turn_rows(&mut self) {
+    pub(crate) fn invalidate_turn_rows(&mut self) {
         if let Some(k) = self.turn_first_row() {
             let k = self.round_head(k);
             self.invalidate_history_from(k);
@@ -12999,7 +12999,7 @@ impl App {
     }
 
     /// File something that happened between rows, at the row it happened at.
-    fn note(&mut self, n: Note) {
+    pub(crate) fn note(&mut self, n: Note) {
         // **A warning is announced once, so it is noted once.**
         //
         // The same `Warning` can reach a head twice: `adopt` plants everything the
@@ -13040,7 +13040,7 @@ impl App {
     /// the same reason and the same rows — so the rule that protects a warning from a snapshot
     /// would silently swallow every repeat of a pane that dies at once, which is the defect
     /// this variant exists for.
-    fn file_note(&mut self, n: Note) {
+    pub(crate) fn file_note(&mut self, n: Note) {
         let at = self.items.len();
         self.notes.push((Placed::Seam(at), n));
         if self.notes.len() > 64 {
@@ -13061,7 +13061,7 @@ impl App {
     /// A retired note is not rendered, and nothing else about it changes: it stays
     /// in `notes`, [`App::notes_lines`] lists it with its text, and
     /// [`App::retired_notes`] counts it. See [`App::dismissed`].
-    fn is_retired(&self, n: &Note) -> bool {
+    pub(crate) fn is_retired(&self, n: &Note) -> bool {
         self.dismissed.contains(&note_key(n))
     }
 
@@ -13070,7 +13070,7 @@ impl App {
     /// The number `/status` shows. Deliberately *computed from the notes* rather
     /// than kept as a counter: a counter can disagree with the screen, and the one
     /// thing a count of what is hidden may not do is be wrong.
-    fn retired_notes(&self) -> usize {
+    pub(crate) fn retired_notes(&self) -> usize {
         self.notes
             .iter()
             .filter(|(_, n)| self.is_retired(n))
@@ -13085,7 +13085,7 @@ impl App {
     /// being on the screen — one the reader chose, one the window decided — and a reader
     /// who cannot tell *"I dismissed it"* from *"it happened before I attached"* will
     /// believe the wrong one.
-    fn notes_before(&self) -> usize {
+    pub(crate) fn notes_before(&self) -> usize {
         self.notes
             .iter()
             .filter(|(place, _)| matches!(place, Placed::Before))
@@ -13097,7 +13097,7 @@ impl App {
     /// Written through one function so the two callers (`/notes dismiss` and
     /// `/dismiss`) cannot disagree about the three things that have to happen
     /// together: the key list, the rendered history, and the file.
-    fn retire(&mut self, keys: Vec<String>) -> usize {
+    pub(crate) fn retire(&mut self, keys: Vec<String>) -> usize {
         let mut added = 0;
         for k in keys {
             if self.dismissed.contains(&k) {
@@ -13130,7 +13130,7 @@ impl App {
     /// R10. Three verbs in one, because they are one subject: nothing listed the
     /// notes, nothing retired one, and a reader who has just retired the wall needs
     /// a way back if they were wrong. `rest` is the text after the verb.
-    fn notes_command(&mut self, verb: &str, rest: &str) -> Option<Action> {
+    pub(crate) fn notes_command(&mut self, verb: &str, rest: &str) -> Option<Action> {
         // **The listing is the moment to find out what the file says.** `load_prefs` ran
         // once, at startup, and a head up for hours has a `dismissed` that only ever grew
         // from its own presses — so without this, `/notes` shows a note retired on disk as
@@ -13228,7 +13228,7 @@ impl App {
     /// fact this head holds and has chosen not to plant in the conversation, so the
     /// listing is where a reader finds it — marked, for the same reason a retired one is:
     /// two different reasons for an absence must not look like one.
-    fn notes_lines(&self) -> Vec<String> {
+    pub(crate) fn notes_lines(&self) -> Vec<String> {
         let n = self.notes.len();
         let retired = self.retired_notes();
         let before = self.notes_before();
@@ -13357,7 +13357,7 @@ impl App {
     ///   repaint behind the hold's back;
     /// * this function, which counts what arrived ONCE, at the release, because a live count while
     ///   held would be an animation and an animation is writes.
-    fn toggle_hold(&mut self) -> Option<Action> {
+    pub(crate) fn toggle_hold(&mut self) -> Option<Action> {
         if self.hold {
             self.hold = false;
             let arrived = self.items.len().saturating_sub(self.hold_rows);
@@ -13435,7 +13435,7 @@ impl App {
         out
     }
 
-    fn compose_screen(&mut self, term_w: usize, h: usize) -> Vec<String> {
+    pub(crate) fn compose_screen(&mut self, term_w: usize, h: usize) -> Vec<String> {
         // The gutter, applied to the *whole* frame rather than to the transcript.
         // The operator's report was "no margins for the main output — things are
         // hard left with literally zero space"; inseting only the body would have
@@ -14060,7 +14060,7 @@ impl App {
     /// The gutter this terminal can afford. It is the first thing given up on a
     /// very narrow screen, before any content is: four columns out of forty is a
     /// tenth of the line, and out of twenty it is a fifth.
-    fn gutter(w: usize) -> usize {
+    pub(crate) fn gutter(w: usize) -> usize {
         if w >= 40 { Self::GUTTER } else { 0 }
     }
 
@@ -14076,7 +14076,7 @@ impl App {
     /// happens to be at the bottom. Padding matters for more than looks:
     /// `term::paint` erases each row it rewrites with `\x1b[K`, and a row that
     /// stops early leaves the field's right wall hanging in space.
-    fn composer_rows(&self, w: usize, max_rows: usize, boxed: bool) -> (Vec<String>, usize, usize) {
+    pub(crate) fn composer_rows(&self, w: usize, max_rows: usize, boxed: bool) -> (Vec<String>, usize, usize) {
         let inner = self.composer_cols();
         let (lines, (crow, ccol)) = if self.secret.is_some() {
             // A dot per character, and the caret after the last one. The text
@@ -14137,7 +14137,7 @@ impl App {
     /// read once is the mistake the composer's top border already made once.
     /// The right legend yields room to the left one, yields itself by
     /// truncation next, and is dropped before the border is allowed to wrap.
-    fn box_edge(&self, w: usize, open: char, close: char, left: &str, right: &str) -> String {
+    pub(crate) fn box_edge(&self, w: usize, open: char, close: char, left: &str, right: &str) -> String {
         let w = w.max(4);
         let inner = w - 2;
         // A legend may arrive already painted — the alarm is in the attention
@@ -14171,7 +14171,7 @@ impl App {
     /// The composer owns the first half and changes it after the first Esc or
     /// Ctrl+C — that is how anyone finds out a double-tap exists. The head owns
     /// the second half, which is its own keys.
-    fn hint_bar(&self, w: usize) -> String {
+    pub(crate) fn hint_bar(&self, w: usize) -> String {
         let p = self.cfg.palette();
         // The editor's own half is about the composer's double-taps. While the
         // quit card is up there is no double-tap left to learn — the card IS
@@ -14288,7 +14288,7 @@ impl App {
     /// table, which is the only thing that made direction matter.
     ///
     /// Returns how many rows it rendered, for a test to count.
-    fn fill_backward(&mut self, want: usize) -> usize {
+    pub(crate) fn fill_backward(&mut self, want: usize) -> usize {
         self.fill_backward_until(want, None)
     }
 
@@ -14298,7 +14298,7 @@ impl App {
     /// questions: a reader moving by lines wants *a screen's worth*, and a viewport holding
     /// a row wants *that row*, however few lines it takes. `stop_row` of 0 is the lines-only
     /// walk.
-    fn fill_backward_until(&mut self, want: usize, stop_row: Option<usize>) -> usize {
+    pub(crate) fn fill_backward_until(&mut self, want: usize, stop_row: Option<usize>) -> usize {
         if self.hist_floor == 0 {
             return 0;
         }
@@ -14628,7 +14628,7 @@ impl App {
     /// How many transcript rows this head has rendered. `hist_upto` counts every row
     /// accounted for, and `hist_floor` says how many were deliberately skipped, so the
     /// difference is what was drawn.
-    fn rendered_rows(&self) -> usize {
+    pub(crate) fn rendered_rows(&self) -> usize {
         self.hist_upto.saturating_sub(self.hist_floor)
     }
 
@@ -14643,7 +14643,7 @@ impl App {
     ///
     /// One function, so the chord and the marker's seam cannot come to disagree about which
     /// of the two things the key is about to open.
-    fn newest_openable(&self) -> Option<String> {
+    pub(crate) fn newest_openable(&self) -> Option<String> {
         let live = self.live_work_now();
         if let Some(start) =
             newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, live)
@@ -14663,7 +14663,7 @@ impl App {
 
     /// The turn's in-flight work, as this head currently knows it — one function, so the
     /// walk, the chord and the pane cannot disagree about what is running.
-    fn live_work_now(&self) -> LiveWork {
+    pub(crate) fn live_work_now(&self) -> LiveWork {
         let superseded = !matches!(
             self.turn.as_ref().and_then(|t| t.state.as_ref()),
             Some(TurnState::Running) | None
@@ -14691,7 +14691,7 @@ impl App {
     /// long row's seam therefore names `/t` rather than the chord; see
     /// [`ItemCtx::payload_newest`]. Returning `None` means no result is long enough to
     /// have a rest, and then the chord opens nothing rather than claiming a window.
-    fn newest_payload_row(&self) -> Option<String> {
+    pub(crate) fn newest_payload_row(&self) -> Option<String> {
         self.items
             .iter()
             .rev()
@@ -14720,7 +14720,7 @@ impl App {
     /// on the tail path it is smaller than where the reader is going — so clamping against it
     /// is what made a press buy one frame's worth instead of a screen. The fill raises the
     /// real total, and `body_window` clamps against that after it has.
-    fn scroll_up(&mut self, by: usize) {
+    pub(crate) fn scroll_up(&mut self, by: usize) {
         if self.hist_floor > 0 {
             // A screen past where the reader is *going*, so the next press has rows to move
             // into and does not have to wait for a frame to catch up. `view_top` is the last
@@ -14737,7 +14737,7 @@ impl App {
     /// Either the anchored row's line, or the top of the last frame's window when nothing is
     /// anchored yet (the frame that *begins* a scroll). One function, so the two answers
     /// cannot disagree about where the reader is.
-    fn held_line(&self) -> usize {
+    pub(crate) fn held_line(&self) -> usize {
         self.anchor
             .as_ref()
             .and_then(|h| self.span_for(&h.item_id).map(|s| s.at + h.into))
@@ -14754,7 +14754,7 @@ impl App {
     /// **Reaching the bottom returns the reader to following**, because that is what
     /// following means and it is an act they took — the same act as `esc`. Arriving content
     /// never does it, which is the difference this requirement is about.
-    fn hold(&mut self, delta: isize) {
+    pub(crate) fn hold(&mut self, delta: isize) {
         // **The count is kept in step with the hold**, and it is a *derived* value: the
         // frame recomputes it from the anchor every time it draws, because only the frame
         // knows how many lines the body has. What this buys is that the two never disagree
@@ -14846,7 +14846,7 @@ impl App {
     /// leaving the anchor unresolvable and the view adrift. Found by the debug rather than
     /// by reasoning: the frame log showed `total` and `view_top` wandering on every payload
     /// page, which is a fill chasing its own tail.
-    fn fill_to_row(&mut self, row: usize) {
+    pub(crate) fn fill_to_row(&mut self, row: usize) {
         if self.hist_floor > row {
             self.fill_backward_until(
                 self.view_top.saturating_sub(1) + self.screen_rows + TAIL_SLACK,
@@ -14856,7 +14856,7 @@ impl App {
     }
 
     /// The span holding body line `line`, or the nearest one at or above it.
-    fn span_at_line(&self, line: usize) -> Option<Span> {
+    pub(crate) fn span_at_line(&self, line: usize) -> Option<Span> {
         self.spans
             .iter()
             .rev()
@@ -14866,7 +14866,7 @@ impl App {
     }
 
     /// Where one row's lines are, by id.
-    fn span_for(&self, item_id: &str) -> Option<Span> {
+    pub(crate) fn span_for(&self, item_id: &str) -> Option<Span> {
         self.spans
             .iter()
             .find(|s| self.items.get(s.row).map(|i| i.item_id.as_str()) == Some(item_id))
@@ -14890,7 +14890,7 @@ impl App {
     /// find it again, `/notes` lists it, and `/status` counts it. `Failure`, by R29 part
     /// two's own test — it is not the reader's act, and what is at risk is their orientation:
     /// the thing they were reading is not there.
-    fn repair_anchor(&mut self) {
+    pub(crate) fn repair_anchor(&mut self) {
         let Some(held) = self.anchor.clone() else {
             return;
         };
@@ -14999,7 +14999,7 @@ impl App {
     /// rung hides, the view anchors to the nearest surviving row and says so rather than
     /// jumping."* Nearest in row order, outward from where the reader was, and the sentence
     /// is the same shape `repair_anchor` writes for a row a replacement took away.
-    fn reanchor_off_hidden(&mut self) {
+    pub(crate) fn reanchor_off_hidden(&mut self) {
         let Some(held) = self.anchor.clone() else {
             return;
         };
@@ -15050,12 +15050,12 @@ impl App {
     /// `newest_unseen_run` is the walk's own answer to *which run is this work part of*, and the
     /// invalidation has to agree with it or the count would be rebuilt on one row while the marker
     /// was drawn on another.
-    fn newest_run_row(&self, live: &LiveWork) -> Option<usize> {
+    pub(crate) fn newest_run_row(&self, live: &LiveWork) -> Option<usize> {
         newest_unseen_run(&self.items, self.visibility, &self.bound_prompts, *live)
     }
 
     /// The visible `room` lines of the body, and nothing else built.
-    fn body_window(&mut self, room: usize) -> Vec<String> {
+    pub(crate) fn body_window(&mut self, room: usize) -> Vec<String> {
         let cfg = self.cfg.clone();
         let (think, tool) = (self.reasoning, self.tools);
         let raw = self.raw_calls;
@@ -16327,7 +16327,7 @@ impl App {
     /// order and the path is shortened from its left before anything is dropped —
     /// a path is recognisable from its end, and a token count is not recoverable
     /// from anywhere else on the screen.
-    fn header_line(&self, w: usize) -> String {
+    pub(crate) fn header_line(&self, w: usize) -> String {
         let p = self.cfg.palette();
         let name = self.session_label(&self.session_id);
 
@@ -16634,7 +16634,7 @@ impl App {
     /// **Render the cached state through the format in force** — the whole of what a format
     /// change needs to do, and the reason the state is cached: no process, no interval, the
     /// same facts re-said in the new template's words.
-    fn apply_git_format(&mut self) {
+    pub(crate) fn apply_git_format(&mut self) {
         let format = self
             .git_format
             .clone()
@@ -16730,7 +16730,7 @@ impl App {
     }
 
     /// The head's current choices, as the file holds them.
-    fn prefs(&self) -> crate::prefs::HeadPrefs {
+    pub(crate) fn prefs(&self) -> crate::prefs::HeadPrefs {
         crate::prefs::HeadPrefs {
             diff: if self.diff_split {
                 crate::prefs::DiffPref::Split
@@ -16755,7 +16755,7 @@ impl App {
     /// **`retired` is written according to `retired`, and it cannot be one rule.** A
     /// dismissal and a restore are *opposite* assertions about one key, so the write that
     /// expresses one cannot express the other — see [`RetiredWrite`].
-    fn save_prefs(&self, retired: RetiredWrite) -> String {
+    pub(crate) fn save_prefs(&self, retired: RetiredWrite) -> String {
         match &self.prefs_path {
             None => " (not saved: no $HOME or $XDG_CONFIG_HOME)".into(),
             Some(path) => {
@@ -16783,7 +16783,7 @@ impl App {
     /// Called where the operator is looking or acting — the listing and the chord — rather
     /// than on a timer: nothing here needs to notice a change nobody has asked about, and a
     /// stat-and-read on a keypress is free while a poll loop is a poll loop.
-    fn refresh_retired(&mut self) {
+    pub(crate) fn refresh_retired(&mut self) {
         let Some(path) = self.prefs_path.clone() else {
             return;
         };
@@ -16797,7 +16797,7 @@ impl App {
 
     /// The pane's rows, in order. Rebuilt on every draw and every key, so the
     /// cursor and the screen can never disagree about what row N is.
-    fn config_rows(&self) -> Vec<ConfigRow> {
+    pub(crate) fn config_rows(&self) -> Vec<ConfigRow> {
         let mut rows = Vec::new();
         let head = |key: &str, value: String, edit: ConfigEdit| ConfigRow {
             choices: Vec::new(),
@@ -16908,7 +16908,7 @@ impl App {
     }
 
     /// Enter on the selected row.
-    fn config_change(&mut self) -> Option<Action> {
+    pub(crate) fn config_change(&mut self) -> Option<Action> {
         let rows = self.config_rows();
         let Some(row) = rows.get(self.config_sel.min(rows.len().saturating_sub(1))) else {
             return None;
@@ -17020,7 +17020,7 @@ impl App {
         }
     }
 
-    fn config_lines(&self, w: usize) -> Vec<String> {
+    pub(crate) fn config_lines(&self, w: usize) -> Vec<String> {
         let rows = self.config_rows();
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "config")];
         out.push(String::new());
@@ -17086,7 +17086,7 @@ impl App {
     /// how tall the terminal is or how many rows the pane has, and a scroll
     /// clamped against a stale height scrolls past the end and shows a blank
     /// screen the operator has to page back from.
-    fn pane_window(&mut self, rows: Vec<String>, room: usize) -> Vec<String> {
+    pub(crate) fn pane_window(&mut self, rows: Vec<String>, room: usize) -> Vec<String> {
         self.pane_len = rows.len();
         self.pane_room = room;
         // The last screenful is the furthest anything scrolls: past that is
@@ -17101,7 +17101,7 @@ impl App {
     /// `row` is the cursor's index among the pane's rows. Called by the panes
     /// that have a cursor, after they move it: an arrow that walks the selection
     /// out of the window otherwise looks like a key that does nothing.
-    fn scroll_into_view(&mut self, row: usize) {
+    pub(crate) fn scroll_into_view(&mut self, row: usize) {
         if self.pane_room == 0 {
             return;
         }
@@ -17119,7 +17119,7 @@ impl App {
     /// so the pane's own "no TODO.md" line is the answer and stays current if one
     /// appears. That costs a failed `open` per draw in the case where there is
     /// nothing to show, which is the case nobody is watching.
-    fn refresh_repo_todos(&mut self) {
+    pub(crate) fn refresh_repo_todos(&mut self) {
         // **Resolved, like the read it guards** — the mtime watch and the parse must look at the
         // same file, or a nested layout re-reads on every draw (the watch misses, so `now` is
         // None, so the cache never holds).
@@ -17134,7 +17134,7 @@ impl App {
         self.repo_todos = Some(repo_todos_map(&self.wiring.workspace));
     }
 
-    fn todos_lines(&mut self, w: usize) -> Vec<String> {
+    pub(crate) fn todos_lines(&mut self, w: usize) -> Vec<String> {
         // **The rows the stops land on, taken as they go out.** Built local and assigned at the
         // end because the loops below hold `&self.todos` and `&self.repo_todos` while they record.
         let mut stop_rows: Vec<usize> = Vec::new();
@@ -17386,7 +17386,7 @@ impl App {
     /// **The pane records where each stop landed**, in [`App::subagents_stop_rows`], which is
     /// what the arrows scroll to: a list longer than the screen can be walked without the cursor
     /// leaving it. Takes `&mut self` for that record alone — the sibling of [`App::todos_lines`].
-    fn subagents_lines(&mut self, w: usize) -> Vec<String> {
+    pub(crate) fn subagents_lines(&mut self, w: usize) -> Vec<String> {
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "subagents")];
         out.push(String::new());
         if self.subagents.is_empty() {
@@ -17548,7 +17548,7 @@ impl App {
     ///   target lives: an assistant row carries the arguments its calls were proposed with, and a
     ///   child's snapshot carries that turn. Rows whose calls are not in it render their correlation
     ///   id instead of a file name, which is `card::Phase::Replayed`'s rule — absent, not invented.
-    fn sub_out_from_rows(&self, items: &[SnapshotItem]) -> Vec<String> {
+    pub(crate) fn sub_out_from_rows(&self, items: &[SnapshotItem]) -> Vec<String> {
         let cfg = self.cfg.clone();
         let mut targets: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
@@ -17614,7 +17614,7 @@ impl App {
 
     /// The output view: the session's own rows, as a terminal scrolls them — or, when the daemon
     /// answered with its event ring, the plain fallback sayings so on the screen.
-    fn sub_out_lines(&mut self, room: usize) -> Vec<String> {
+    pub(crate) fn sub_out_lines(&mut self, room: usize) -> Vec<String> {
         let Some(v) = self.sub_out.as_mut() else {
             return Vec::new();
         };
@@ -17676,7 +17676,7 @@ impl App {
     /// The `back` stack lives on the head because the **page size is the daemon's**:
     /// the head remembers the offsets it was given rather than recomputing a window
     /// it does not size — the same reason `next` arrives on the event.
-    fn job_out_page(&mut self, forward: bool) -> Option<Action> {
+    pub(crate) fn job_out_page(&mut self, forward: bool) -> Option<Action> {
         let v = self.job_out.as_mut()?;
         let offset = if forward {
             let at = v.from;
@@ -17698,7 +17698,7 @@ impl App {
     /// the daemon sent the **offsets** rather than a sentence. The tail shows by
     /// default; arrows walk back toward the beginning of the loaded window; the
     /// footer says how much further the reader can go.
-    fn job_out_lines(&mut self, room: usize) -> Vec<String> {
+    pub(crate) fn job_out_lines(&mut self, room: usize) -> Vec<String> {
         let Some(v) = self.job_out.as_mut() else {
             return Vec::new();
         };
@@ -17836,7 +17836,7 @@ impl App {
     ///
     /// A settled job's redirect is not counted: the row is about what is running now, and a
     /// finished job's output is readable wherever it went.
-    fn jobs_line(&self) -> Option<String> {
+    pub(crate) fn jobs_line(&self) -> Option<String> {
         let running = self.jobs.iter().filter(|j| j.running).count();
         if running == 0 {
             return None;
@@ -17863,7 +17863,7 @@ impl App {
     /// Enter and the drawn `▸` read — and each stop's line is recorded in
     /// [`App::jobs_stop_rows`], which is what the arrows scroll to. Takes `&mut self` for that
     /// record alone, the sibling of [`App::subagents_lines`].
-    fn jobs_lines(&mut self, w: usize) -> Vec<String> {
+    pub(crate) fn jobs_lines(&mut self, w: usize) -> Vec<String> {
         let mut out = vec![colour(&self.cfg, sgr::BOLD, "background jobs")];
         out.push(String::new());
         if self.jobs.is_empty() {
@@ -17984,7 +17984,7 @@ impl App {
         out.into_iter().map(|l| trim_to(&l, w)).collect()
     }
 
-    fn picker_lines(&self, w: usize) -> Vec<String> {
+    pub(crate) fn picker_lines(&self, w: usize) -> Vec<String> {
         let p = self.cfg.palette();
         let mut out = vec![
             colour(&self.cfg, sgr::BOLD, "sessions in this daemon"),
@@ -18182,7 +18182,7 @@ impl App {
     /// the whole reason the card exists — one of these two is cheap and the
     /// other is not, and a card that made them look alike would be a card that
     /// answered for the operator.
-    fn quit_choices(&self) -> [(&'static str, String); 2] {
+    pub(crate) fn quit_choices(&self) -> [(&'static str, String); 2] {
         let others = self.heads.saturating_sub(1);
         [
             (
@@ -18259,7 +18259,7 @@ impl App {
         ]
     }
 
-    fn quit_card_lines(&self, w: usize) -> Vec<String> {
+    pub(crate) fn quit_card_lines(&self, w: usize) -> Vec<String> {
         let p = self.cfg.palette();
         let mut out = vec![colour(
             &self.cfg,
@@ -18310,7 +18310,7 @@ impl App {
     /// the left, `← now` on the right of the current one, then the keys, then the consequence.
     /// The click arithmetic in [`App::screen`] counts on this: the title is one row and the
     /// first value is the next one.
-    fn setting_picker_lines(&self, w: usize) -> Vec<String> {
+    pub(crate) fn setting_picker_lines(&self, w: usize) -> Vec<String> {
         let Some(subject) = self.pick else {
             return Vec::new();
         };
@@ -18399,7 +18399,7 @@ impl App {
     /// The dots are not drawn here — the COMPOSER's box draws them (`composer_rows`), which is
     /// the same arrangement the sudo password card uses: the one text surface this head has is
     /// the thing being typed into, and the card above it is the question it is being typed for.
-    fn key_ask_lines(&self, w: usize) -> Vec<String> {
+    pub(crate) fn key_ask_lines(&self, w: usize) -> Vec<String> {
         let Some(ask) = &self.key_ask else {
             return Vec::new();
         };
@@ -18441,7 +18441,7 @@ impl App {
     ///   that text would look like the program's question;
     /// * **it spells both keys and says which is the default**, because a destructive
     ///   confirmation that leaves the reader to guess is a trap.
-    fn term_ask_lines(&self, ask: &TermAsk, w: usize) -> Vec<String> {
+    pub(crate) fn term_ask_lines(&self, ask: &TermAsk, w: usize) -> Vec<String> {
         let mut out = Vec::new();
         // The headline is the question, and it carries the `?` every other card in this file
         // carries. Yellow for the reason the gate card is: it exists to interrupt.
@@ -18492,7 +18492,7 @@ impl App {
     /// is raised when the daemon can see the run blocked on the pipe it holds, and that
     /// reading has misses it names. `!send` needs no reading at all, and a person who would
     /// rather type there than here should be told so on the card rather than in a document.
-    fn prompt_lines(&self, ask: &PromptAsk, w: usize) -> Vec<String> {
+    pub(crate) fn prompt_lines(&self, ask: &PromptAsk, w: usize) -> Vec<String> {
         let mut out = Vec::new();
         // The headline is the fact, and it carries the marker the decision card carries —
         // this is a card and not three lines of prose above the composer. Yellow, for the
@@ -18536,7 +18536,7 @@ impl App {
     }
 
     /// The password card: what is asking, for which command, and the two keys.
-    fn secret_lines(&self, ask: &SecretAsk, w: usize) -> Vec<String> {
+    pub(crate) fn secret_lines(&self, ask: &SecretAsk, w: usize) -> Vec<String> {
         // **The same countdown the gate card draws** (§1.6), which is the other half of
         // this commit's finding: the instrument was here all along and nothing had
         // pointed it at the gate. One function, so the two cards cannot disagree about
@@ -18619,7 +18619,7 @@ impl App {
     ///
     /// The order the card is read in does not change: content above, choices below, which is
     /// the bottom of the card and therefore the row nearest the composer.
-    fn decision_card(&self, d: &OpenDecision, w: usize) -> (Vec<String>, Vec<String>) {
+    pub(crate) fn decision_card(&self, d: &OpenDecision, w: usize) -> (Vec<String>, Vec<String>) {
         // (helper below the method, so the rendering reads top to bottom)
         // **The question, then the thing itself, then the evidence.**
         //
@@ -19029,7 +19029,7 @@ impl App {
     /// The whole card as one list, for the callers that want it whole: the fit loop in
     /// [`App::screen`] does not, because R20 splits it there, so this is the transcript's
     /// shape and the tests' entry point rather than the drawing path.
-    fn decision_lines(&self, d: &OpenDecision, w: usize) -> Vec<String> {
+    pub(crate) fn decision_lines(&self, d: &OpenDecision, w: usize) -> Vec<String> {
         let (mut content, choices) = self.decision_card(d, w);
         content.extend(choices);
         content
@@ -19054,7 +19054,7 @@ impl App {
     /// The scroll is clamped here rather than in the key handler, for the reason the panes
     /// clamp in `pane_window`: the drawn length is a function of the width and the fold, and
     /// the key handler knows neither.
-    fn card_window(&mut self, _w: usize, content: &[String], room: usize) -> (Vec<String>, usize) {
+    pub(crate) fn card_window(&mut self, _w: usize, content: &[String], room: usize) -> (Vec<String>, usize) {
         self.dec_content_len = content.len();
         if content.is_empty() || room == 0 {
             self.dec_content_room = 0;
@@ -19135,7 +19135,7 @@ impl App {
     /// The duration is measured against the same clock: head and daemon share
     /// the machine, which is the assumption the stuck line below already makes
     /// when it diffs `now_ms` against an event timestamp.
-    fn turn_status(&self, w: usize) -> String {
+    pub(crate) fn turn_status(&self, w: usize) -> String {
         // **Busy, not the state name** — `turn_busy`'s docstring has the measurement. This gate
         // read `TurnState::Running`, so during every tool call the row was not drawn AT ALL,
         // which is the worst of the three possible answers: not the wrong tense, but no line —
@@ -19232,7 +19232,7 @@ impl App {
     /// and a `cargo test` that runs silently for two minutes is a call, not a stall. Gated on
     /// `turn_busy` this line would fire through every long command, which is exactly the false
     /// alarm that trains a reader to ignore it.
-    fn stuck_line(&self, w: usize) -> Option<String> {
+    pub(crate) fn stuck_line(&self, w: usize) -> Option<String> {
         let t = self.turn.as_ref()?;
         if !self.turn_generating() {
             return None;
@@ -19268,14 +19268,14 @@ impl App {
 /// The doc that used to sit on `alarmed`'s six-term sum already says what each one is; this is the
 /// same six, named once so `exceeds` can be the single definition of *has anything moved*.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct Counters {
-    dropped: u64,
-    scrubbed: u64,
-    resyncs: u64,
-    unreadable: u64,
-    gaps: u64,
-    orphan_bodies: u64,
-    slow_first_byte: u64,
+pub(crate) struct Counters {
+    pub(crate) dropped: u64,
+    pub(crate) scrubbed: u64,
+    pub(crate) resyncs: u64,
+    pub(crate) unreadable: u64,
+    pub(crate) gaps: u64,
+    pub(crate) orphan_bodies: u64,
+    pub(crate) slow_first_byte: u64,
 }
 
 impl Counters {
@@ -19285,7 +19285,7 @@ impl Counters {
     /// resyncs*: the third one exceeds the second and the mark returns. A counter that somehow went
     /// BACKWARDS (a resync that cleared the state) is not news, and an alarm that fired on a
     /// decrease would be a mark nobody could ever clear.
-    fn exceeds(self, seen: Counters) -> bool {
+    pub(crate) fn exceeds(self, seen: Counters) -> bool {
         self.dropped > seen.dropped
             || self.scrubbed > seen.scrubbed
             || self.resyncs > seen.resyncs
@@ -19308,13 +19308,13 @@ impl App {
     /// **Up to the value that was READ, and not a switch.** A resync *after* the one that was
     /// acknowledged is a new fact about this head, so the mark comes back — which is what makes
     /// acknowledging safe rather than a way to turn the alarm off and forget it.
-    fn alarmed(&self) -> bool {
+    pub(crate) fn alarmed(&self) -> bool {
         self.counters().exceeds(self.acked)
     }
 
     /// **This head's six disclosure counters, as one value** — the shape the alarm and its
     /// acknowledgement both compare, so *"has anything moved"* has one definition.
-    fn counters(&self) -> Counters {
+    pub(crate) fn counters(&self) -> Counters {
         Counters {
             dropped: self.dropped,
             scrubbed: self.scrubbed,
@@ -19332,7 +19332,7 @@ impl App {
     /// the act of reading it is the acknowledgement. Nothing is reset — the screen keeps showing
     /// the raw values, `/status` still lists them, and a counter that moves again starts the
     /// conversation over.
-    fn acknowledge_counters(&mut self) {
+    pub(crate) fn acknowledge_counters(&mut self) {
         self.acked = self.counters();
     }
 
@@ -19343,7 +19343,7 @@ impl App {
     /// having: the tree says a code belongs on the triangle and this head has nowhere to put
     /// it, which the arm above then *says* rather than swallowing — a note that reaches
     /// neither the record nor a counter is a note nobody has.
-    fn count_edge_note(&mut self, code: &str) -> bool {
+    pub(crate) fn count_edge_note(&mut self, code: &str) -> bool {
         match code {
             "model_slow_first_byte" => {
                 self.slow_first_byte += 1;
@@ -19387,7 +19387,7 @@ impl App {
     /// on an 80-column terminal the old line lost `dropped`, `scrubbed` and
     /// `resync` to the ellipsis — the three numbers whose whole purpose is to be
     /// impossible to miss. Anything nonzero is promoted to the front.
-    fn status_line(&self, w: usize) -> String {
+    pub(crate) fn status_line(&self, w: usize) -> String {
         if !self.alarmed() {
             return String::new();
         }
@@ -19428,7 +19428,7 @@ impl App {
     /// unless you know that scrubbing is what a *late* head does to an
     /// interactive-only frame, at which point it is the answer to "why is this
     /// head quieter than the one next to it".
-    fn status_lines(&self, w: usize) -> Vec<String> {
+    pub(crate) fn status_lines(&self, w: usize) -> Vec<String> {
         let p = self.cfg.palette();
         let mut out = vec![p.paint(Role::Strong, "this head"), String::new()];
         // **The screen says what it just did** (R51 item 17). Opening it acknowledged the alarm,
@@ -19768,7 +19768,7 @@ impl App {
 /// declines, as this one does (it holds the words and says so), first-match stops being
 /// a convenience and becomes a different answer from the one that was typed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum OptionChoice {
+pub(crate) enum OptionChoice {
     /// Exactly one option answers to the line. This is the operator's answer, and the
     /// caller sends it.
     One {
@@ -19797,7 +19797,7 @@ enum OptionChoice {
 ///
 /// An empty `t` has no candidates: an empty line is the composer's, and every id starts
 /// with the empty string, which would make every card ambiguous.
-fn option_candidates(d: &OpenDecision, t: &str) -> Vec<usize> {
+pub(crate) fn option_candidates(d: &OpenDecision, t: &str) -> Vec<usize> {
     if t.is_empty() {
         return Vec::new();
     }
@@ -19816,7 +19816,7 @@ fn option_candidates(d: &OpenDecision, t: &str) -> Vec<usize> {
 /// The same shape `App::pick` and `App::pick_mode` give the same problem for their own
 /// lists ("{n} sessions match …; type the number on the left instead"): this file's answer
 /// to an ambiguous name, in the place the operator is already reading.
-fn ambiguous_option_line(word: &str, candidates: &[String]) -> String {
+pub(crate) fn ambiguous_option_line(word: &str, candidates: &[String]) -> String {
     /// Enough to name the difference, few enough to stay on one line. A card past this
     /// says how many there are, which is the fact that matters when the list is long.
     const SHOWN: usize = 6;
@@ -19837,7 +19837,7 @@ fn ambiguous_option_line(word: &str, candidates: &[String]) -> String {
     )
 }
 
-fn match_option(d: &OpenDecision, typed: &str) -> OptionChoice {
+pub(crate) fn match_option(d: &OpenDecision, typed: &str) -> OptionChoice {
     let line = typed.trim();
     let (word, rest) = match line.split_once(char::is_whitespace) {
         Some((w, r)) => (w, r.trim()),
@@ -19938,7 +19938,7 @@ fn match_option(d: &OpenDecision, typed: &str) -> OptionChoice {
 /// The operator asked for it on all three cards at once (2026-09-17): *"it
 /// shows numbered lists anyway so me pressing row number should constitute
 /// focus and enter"*.
-fn digit_row(k: &Key, n: usize) -> Option<usize> {
+pub(crate) fn digit_row(k: &Key, n: usize) -> Option<usize> {
     let Key::Char(c) = k else { return None };
     let d = c.to_digit(10)? as usize;
     (1..=n.min(9)).contains(&d).then(|| d - 1)
@@ -19957,7 +19957,7 @@ fn digit_row(k: &Key, n: usize) -> Option<usize> {
 /// One function rather than a condition at each of the four call sites, because those
 /// four have to agree about it: the bound the arrows wrap on, the bound the digits
 /// use, the row `answer_marked` takes, and the rows the card draws.
-fn decision_rows(d: &OpenDecision) -> usize {
+pub(crate) fn decision_rows(d: &OpenDecision) -> usize {
     if d.kind == "question" {
         d.choices.len()
     } else {
@@ -19965,7 +19965,7 @@ fn decision_rows(d: &OpenDecision) -> usize {
     }
 }
 
-fn open_call<'a>(calls: &'a mut [CallRow], call_id: &str) -> Option<&'a mut CallRow> {
+pub(crate) fn open_call<'a>(calls: &'a mut [CallRow], call_id: &str) -> Option<&'a mut CallRow> {
     calls
         .iter_mut()
         .rev()
@@ -20000,7 +20000,7 @@ fn open_call<'a>(calls: &'a mut [CallRow], call_id: &str) -> Option<&'a mut Call
 /// `None` here and a counted frame one layer down, and saying which is which is the
 /// part that matters: a wrong consequence is worse than an absent one, and neither is
 /// silence.
-fn timeout_clause(on: &letibot_sessionlog::event::OnTimeout) -> Option<&'static str> {
+pub(crate) fn timeout_clause(on: &letibot_sessionlog::event::OnTimeout) -> Option<&'static str> {
     use letibot_sessionlog::event::OnTimeout as O;
     match on {
         O::Deny => Some("if nobody answers, nothing runs"),
@@ -20018,7 +20018,7 @@ fn timeout_clause(on: &letibot_sessionlog::event::OnTimeout) -> Option<&'static 
 /// lay the two out separately takes the target back off. `None` when the sentence
 /// does not end in the target, which is the honest answer for a summary some other
 /// builder wrote: then the whole sentence is shown and nothing is lost.
-fn ask_without_target(summary: &str, target: &str) -> Option<String> {
+pub(crate) fn ask_without_target(summary: &str, target: &str) -> Option<String> {
     if target.is_empty() {
         return None;
     }
@@ -20032,7 +20032,7 @@ fn ask_without_target(summary: &str, target: &str) -> Option<String> {
 /// The pane's word for how a job came to be in the background — the three causes
 /// `Backgrounding` names, as a person reads them. The distinction is the one the
 /// outcome already draws: who wanted it there.
-fn how_word(how: &letibot_transcript::Backgrounding) -> String {
+pub(crate) fn how_word(how: &letibot_transcript::Backgrounding) -> String {
     match how {
         letibot_transcript::Backgrounding::Asked => "asked".into(),
         letibot_transcript::Backgrounding::Promoted => "promoted".into(),
@@ -20042,7 +20042,7 @@ fn how_word(how: &letibot_transcript::Backgrounding) -> String {
     }
 }
 
-fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
+pub(crate) fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
     if cfg.color {
         format!("{code}{s}{}", sgr::RESET)
     } else {
@@ -20060,7 +20060,7 @@ fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
 /// `1;35`, the same way `sgr::BOLD_ITALIC` composes exactly the pairs that recur — because
 /// two escapes reset once and read the same as the composed ones in every terminal this row
 /// has been drawn on.
-fn git_paint(cfg: &RenderConfig, role: crate::gitfield::GitRole, s: &str) -> String {
+pub(crate) fn git_paint(cfg: &RenderConfig, role: crate::gitfield::GitRole, s: &str) -> String {
     use crate::gitfield::GitRole as R;
     match role {
         R::BranchClean => colour(cfg, sgr::GREEN, s),
@@ -20102,7 +20102,7 @@ fn git_paint(cfg: &RenderConfig, role: crate::gitfield::GitRole, s: &str) -> Str
 /// a function whose job is to point at part of one. It is called per tool row drawn, and the
 /// `Owned` branch is only the over-long case (past `CAP`), where the truncation genuinely has to
 /// build something new.
-fn first_sentence(basis: &str) -> Cow<'_, str> {
+pub(crate) fn first_sentence(basis: &str) -> Cow<'_, str> {
     let line = basis.lines().next().unwrap_or("").trim();
     let end = line.find(". ").map(|i| i + 1).unwrap_or(line.len());
     let s = &line[..end];
@@ -20121,16 +20121,16 @@ fn first_sentence(basis: &str) -> Cow<'_, str> {
 /// lands. A body line that happens to look like one cannot exist: the envelope
 /// rewrites every `<<<` in a payload to `< < <` precisely so its own markers are
 /// unforgeable.
-fn is_envelope(line: &str) -> bool {
+pub(crate) fn is_envelope(line: &str) -> bool {
     let l = line.trim();
     l.starts_with("<<<") && l.ends_with(">>>") && l.len() > 6
 }
 
-fn dim(cfg: &RenderConfig, s: &str) -> String {
+pub(crate) fn dim(cfg: &RenderConfig, s: &str) -> String {
     colour(cfg, sgr::DIM, s)
 }
 
-fn warn_line(cfg: &RenderConfig, s: &str) -> String {
+pub(crate) fn warn_line(cfg: &RenderConfig, s: &str) -> String {
     colour(cfg, sgr::RED, s)
 }
 
@@ -20154,11 +20154,11 @@ fn warn_line(cfg: &RenderConfig, s: &str) -> String {
 /// The colour comes in rather than being decided here, because the decision is
 /// `letibot_sessionlog::warning`'s and this is only where it is painted. The three are named
 /// at the call site so the whole mapping is readable in one place.
-fn note_line(cfg: &RenderConfig, sgr_code: &str, s: &str) -> String {
+pub(crate) fn note_line(cfg: &RenderConfig, sgr_code: &str, s: &str) -> String {
     colour(cfg, sgr_code, s)
 }
 
-fn fold_word(f: Fold) -> &'static str {
+pub(crate) fn fold_word(f: Fold) -> &'static str {
     match f {
         Fold::Folded => "folded",
         Fold::Open => "open",
@@ -20186,7 +20186,7 @@ fn fold_word(f: Fold) -> &'static str {
 ///
 /// Reasoning is still left out — it is the model thinking, not its answer, and
 /// that is the same line `compaction::harvest` draws for the same reason.
-fn subagent_out_lines(events: &[Envelope]) -> Vec<String> {
+pub(crate) fn subagent_out_lines(events: &[Envelope]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut spills: Vec<String> = Vec::new();
     for env in events {
@@ -20243,18 +20243,18 @@ fn subagent_out_lines(events: &[Envelope]) -> Vec<String> {
 /// tool output is whatever the model read, and a world-readable file at a name
 /// anyone can predict is both a disclosure and the classic symlink target. The
 /// fallback is the shape the sudo shims use when there is no runtime dir.
-fn head_runtime_dir() -> std::path::PathBuf {
+pub(crate) fn head_runtime_dir() -> std::path::PathBuf {
     match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) => std::path::PathBuf::from(d).join("letibot"),
         None => std::env::temp_dir().join(format!("letibot-{}", unsafe { libc::getuid() })),
     }
 }
 
-fn spill_sub_out(session_id: &str, lines: &[String]) -> Option<String> {
+pub(crate) fn spill_sub_out(session_id: &str, lines: &[String]) -> Option<String> {
     spill_sub_out_under(&head_runtime_dir(), session_id, lines)
 }
 
-fn spill_sub_out_under(
+pub(crate) fn spill_sub_out_under(
     dir: &std::path::Path,
     session_id: &str,
     lines: &[String],
@@ -20287,7 +20287,7 @@ fn spill_sub_out_under(
 /// One place, because two call sites computing it and one of them forgetting the
 /// step makes the block a row taller than the space reserved for it, which moves
 /// everything below it every frame.
-fn reasoning_cfg(cfg: &RenderConfig) -> RenderConfig {
+pub(crate) fn reasoning_cfg(cfg: &RenderConfig) -> RenderConfig {
     let mut r = cfg.inside(Role::Reasoning);
     r.width = cfg
         .width
@@ -20296,7 +20296,7 @@ fn reasoning_cfg(cfg: &RenderConfig) -> RenderConfig {
     r
 }
 
-fn reasoning_decor(cfg: &RenderConfig) -> Decor {
+pub(crate) fn reasoning_decor(cfg: &RenderConfig) -> Decor {
     let p = cfg.palette();
     // The step the whole of the model's working is set in, carried on the same
     // prefix as the rail so it is applied once per line as the line enters the
@@ -20322,7 +20322,7 @@ fn reasoning_decor(cfg: &RenderConfig) -> Decor {
 /// and the marker says `43 thinking lines`, and a reader who opens the run sees the 43.
 /// A long unwrapped line is several display lines and counts as several — the same
 /// arithmetic, and the same reason, as `visible_width(...).div_ceil(w)`.
-fn reasoning_display_lines(text: &str, w: usize) -> usize {
+pub(crate) fn reasoning_display_lines(text: &str, w: usize) -> usize {
     let w = w.max(20);
     let text = without_control_lines(text);
     text.lines()
@@ -20338,7 +20338,7 @@ fn reasoning_display_lines(text: &str, w: usize) -> usize {
 /// A row with no body yet is **not** hidden: it is drawn from this head's own echo of what
 /// the operator typed, and that is the conversation. A row the head never got an item for
 /// cannot be judged, and the honest default for unjudgeable is *show it*.
-fn row_hidden(items: &[SnapshotItem], vis: Visibility, row: usize) -> bool {
+pub(crate) fn row_hidden(items: &[SnapshotItem], vis: Visibility, row: usize) -> bool {
     row_hidden_at(vis, items.get(row))
 }
 
@@ -20348,7 +20348,7 @@ fn row_hidden(items: &[SnapshotItem], vis: Visibility, row: usize) -> bool {
 /// `None` is a row with no body yet, and it is **not hidden**: it is drawn from this head's
 /// own echo of what the operator typed when it has one, and a row nobody can read is not the
 /// working this set is about.
-fn row_hidden_at(vis: Visibility, it: Option<&SnapshotItem>) -> bool {
+pub(crate) fn row_hidden_at(vis: Visibility, it: Option<&SnapshotItem>) -> bool {
     if !vis.hides_the_working() {
         return false;
     }
@@ -20375,9 +20375,9 @@ fn row_hidden_at(vis: Visibility, it: Option<&SnapshotItem>) -> bool {
 /// The same is true of the reasoning a turn has streamed and not yet committed: the deltas
 /// arrive, the row does not.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct LiveWork {
+pub(crate) struct LiveWork {
     /// Calls proposed or running with no settled result row yet — **the NUMBER the marker carries**.
-    calls: usize,
+    pub(crate) calls: usize,
     /// **Calls still EXECUTING — the number the YELLOW is on.** Two different facts, and conflating
     /// them is what stuck a counter yellow:
     ///
@@ -20403,13 +20403,13 @@ struct LiveWork {
     /// *this call has a row* — set when the row's BODY lands and from a snapshot's rows
     /// (`src/cards/hidden-run.lisp:173-177`, `src/cards/roles.lisp:374`, `src/session/seq-gap.lisp:319`,
     /// `src/cards/targets.lisp:433`).
-    running: usize,
+    pub(crate) running: usize,
     /// Display lines of reasoning streamed this turn and not yet a row.
-    think_lines: usize,
+    pub(crate) think_lines: usize,
 }
 
 impl LiveWork {
-    fn work(self) -> usize {
+    pub(crate) fn work(self) -> usize {
         self.calls + self.think_lines
     }
 }
@@ -20447,7 +20447,7 @@ impl LiveWork {
 /// put a second renderer in the walk's inner loop; `trim()` answers it for every text the
 /// two can disagree about, and it errs toward *visible*, which errs toward *one more marker*
 /// rather than toward an invisible run.
-fn row_drawn(
+pub(crate) fn row_drawn(
     items: &[SnapshotItem],
     vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
@@ -20461,7 +20461,7 @@ fn row_drawn(
 /// The same question for one row, or for **the live tail**: `None` there is the work in
 /// flight, which draws nothing as a row and is therefore invisible — the whole of why the
 /// counts must carry it.
-fn row_drawn_at(
+pub(crate) fn row_drawn_at(
     vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
     it: &SnapshotItem,
@@ -20490,7 +20490,7 @@ fn row_drawn_at(
 /// A stretch with **nothing hidden in it draws no marker** — a line saying `[]` over a few
 /// blank rows would be a sentence about nothing. That case arises from the fix itself: the
 /// old boundary could not produce an all-visible stretch, and the new one can.
-fn unseen_run_at(
+pub(crate) fn unseen_run_at(
     items: &[SnapshotItem],
     vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
@@ -20528,7 +20528,7 @@ fn unseen_run_at(
 /// `open` is `payload_sel`, which is the same field the payload window uses. One field for
 /// both because they are the same act — *show me the whole of this* — and because a reader
 /// can only be reading one thing at a time.
-fn run_open_at(
+pub(crate) fn run_open_at(
     items: &[SnapshotItem],
     vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
@@ -20571,7 +20571,7 @@ pub const LIVE_RUN: &str = "<live>";
 ///
 /// **The in-flight run is the newest run there is**: it is the work of this moment, after
 /// every row, so when it stands alone its marker is the one that names `ctrl-t`.
-fn newest_unseen_run(
+pub(crate) fn newest_unseen_run(
     items: &[SnapshotItem],
     vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
@@ -20606,7 +20606,7 @@ fn newest_unseen_run(
 /// to the end and [`unseen_run_at`] has already folded the tail into its counts. False when
 /// the last row is prose or there are none — and then the in-flight work is its own run, with
 /// no row to be drawn at, and the live pane draws its marker.
-fn live_tail_covered(
+pub(crate) fn live_tail_covered(
     items: &[SnapshotItem],
     vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
@@ -20633,7 +20633,7 @@ fn live_tail_covered(
 /// the reader can see. After anything else — their own message, a system row, the top of the
 /// transcript — the marker stands as a line of its own, and the separator gives it the air
 /// prose gets.
-fn run_continues_prose(items: &[SnapshotItem], start: usize) -> bool {
+pub(crate) fn run_continues_prose(items: &[SnapshotItem], start: usize) -> bool {
     start > 0
         && matches!(
             items[start - 1].item.as_ref(),
@@ -20654,7 +20654,7 @@ fn run_continues_prose(items: &[SnapshotItem], start: usize) -> bool {
 /// the same transcript now reads the same way whatever the reader has scrolled to.
 ///
 /// Returns the marker's own width, seam included, so the caller can take exactly that much.
-fn reserved_for_run(
+pub(crate) fn reserved_for_run(
     items: &[SnapshotItem],
     vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
@@ -20706,13 +20706,13 @@ fn reserved_for_run(
 ///
 /// The dot lives inside the seam string rather than being painted beside it, so the separator
 /// cannot come out in one register and its own key in another.
-fn marker_seam(newest: bool) -> &'static str {
+pub(crate) fn marker_seam(newest: bool) -> &'static str {
     marker_seam_rung(newest, 0)
 }
 
 /// **The seam at one rung** — the whole chord, the chord alone, nothing; and the verb instead of
 /// the chord on a run the chord does not act on. See [`SEAM_RUNGS`].
-fn marker_seam_rung(newest: bool, rung: usize) -> &'static str {
+pub(crate) fn marker_seam_rung(newest: bool, rung: usize) -> &'static str {
     if !MARKER_SEAM {
         return "";
     }
@@ -20742,7 +20742,7 @@ fn marker_seam_rung(newest: bool, rung: usize) -> &'static str {
 ///
 /// A row whose body has not arrived yet carries no `call_id` and claims nothing: the row is the
 /// answer once it can be read, which is also the moment the walk starts counting it as a row.
-fn round_answered<'a>(t: &TurnPane, items: &'a [SnapshotItem]) -> Vec<&'a str> {
+pub(crate) fn round_answered<'a>(t: &TurnPane, items: &'a [SnapshotItem]) -> Vec<&'a str> {
     t.appended
         .iter()
         .filter_map(|id| {
@@ -20767,7 +20767,7 @@ fn round_answered<'a>(t: &TurnPane, items: &'a [SnapshotItem]) -> Vec<&'a str> {
 /// **And it is the correct reading of *is the model working*** (R51's preamble): it asks the
 /// CALLS rather than the turn's state name, so a call running under a `finished` round counts.
 /// [`App::turn_busy`] asks the same question of the same facts; this is the rendering half.
-fn live_work(
+pub(crate) fn live_work(
     turn: Option<&TurnPane>,
     items: &[SnapshotItem],
     cfg: &RenderConfig,
@@ -20849,13 +20849,13 @@ fn live_work(
 /// is here because the rebuild needs it: the run the work has LEFT has to be rebuilt without
 /// the colour, as well as the run it moved to.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct MarkerFacts {
+pub(crate) struct MarkerFacts {
     /// The live turn's work, exactly as [`live_work`] reports it — the numbers the marker
     /// prints and the `running` that lights them.
-    live: LiveWork,
+    pub(crate) live: LiveWork,
     /// **The row of the run this work belongs to**, from `newest_unseen_run`, or `None` while
     /// the work has committed no row yet.
-    run: Option<usize>,
+    pub(crate) run: Option<usize>,
 }
 
 impl MarkerFacts {
@@ -20863,7 +20863,7 @@ impl MarkerFacts {
     /// invocation in `body_window` and the two walks that draw the marker — fills the value
     /// from the same pair (`live_work`'s answer and `newest_unseen_run`'s row) and cannot
     /// hand the renderer a value the key is not made of.
-    fn of(live: LiveWork, run: Option<usize>) -> MarkerFacts {
+    pub(crate) fn of(live: LiveWork, run: Option<usize>) -> MarkerFacts {
         MarkerFacts { live, run }
     }
 }
@@ -20881,7 +20881,7 @@ impl MarkerFacts {
 /// job is to be punctuation inside the model's sentence. Colouring the brackets too makes it a
 /// highlight rather than a signal.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Counts {
+pub(crate) struct Counts {
     /// **The number and its noun, kept APART** — the operator: *"yellow <count> not entire <Count>
     /// tool call."*
     ///
@@ -20891,15 +20891,15 @@ struct Counts {
     /// brackets and the thinking count with it).
     ///
     /// `None` when the clause is absent, which is how a zero clause is dropped.
-    calls: Option<(String, String)>,
+    pub(crate) calls: Option<(String, String)>,
     /// `2 thinking lines`. Never coloured; a thought is not work that is still happening.
-    think: Option<(String, String)>,
+    pub(crate) think: Option<(String, String)>,
     /// **`2 head events`** — the fallback that keeps `[]` off the screen. See [`COUNT_RUNGS`].
     ///
     /// leticl's own word for it (*"head event"*), and never coloured: these are not work that is
     /// happening, they are the rows the rung hid that neither of the other two numbers could
     /// describe.
-    events: Option<(String, String)>,
+    pub(crate) events: Option<(String, String)>,
 }
 
 /// **The widest room a marker may claim from the sentence it continues**, leading space included.
@@ -20911,12 +20911,12 @@ struct Counts {
 /// some point the line could be split so things jump even more. i dont like jumps."* A room that
 /// depends on the counts re-wraps the sentence above every time a count gains a digit, so the same
 /// transcript reads two ways depending on how many calls a turn happened to run.
-const MARKER_ROOM_MAX: usize = 56;
+pub(crate) const MARKER_ROOM_MAX: usize = 56;
 
 /// **The least room a marker may claim**, however narrow the frame. Below about twenty columns the
 /// two clauses stop being readable at all — `[100t, 246l]` and its separator are twelve — and a
 /// marker that cannot be read is a marker that did nothing. leticl's `+hidden-run-marker-floor+`.
-const MARKER_ROOM_FLOOR: usize = 22;
+pub(crate) const MARKER_ROOM_FLOOR: usize = 22;
 
 /// **How many columns of `cols` the marker may occupy**, its leading space included.
 ///
@@ -20929,7 +20929,7 @@ const MARKER_ROOM_FLOOR: usize = 22;
 /// 2)))`, kept in its own shape rather than collapsed. The first version here folded the `min`/`max`
 /// into one expression and got 56 at 80 columns instead of 40, which a test caught: three-deep
 /// min/max is not worth being clever about.
-fn marker_room(cols: usize) -> usize {
+pub(crate) fn marker_room(cols: usize) -> usize {
     cols.min(MARKER_ROOM_MAX)
         .min(MARKER_ROOM_FLOOR.max(cols / 2))
 }
@@ -20958,7 +20958,7 @@ fn marker_room(cols: usize) -> usize {
 /// format string — `~d tool call~:p` and then `~dt` — so the compressed form is genuinely tighter
 /// rather than one space shorter: `[11t, 246l]`, not `[11 t, 246 l]`. The space belongs to the
 /// rung for the same reason the seam's dot belongs to the seam.
-const COUNT_RUNGS: [(&str, &str, &str, &str, &str, &str); 4] = [
+pub(crate) const COUNT_RUNGS: [(&str, &str, &str, &str, &str, &str); 4] = [
     // (calls one, calls many, thinking one, thinking many, events one, events many)
     (
         " tool call",
@@ -21000,7 +21000,7 @@ const COUNT_RUNGS: [(&str, &str, &str, &str, &str, &str); 4] = [
 /// **The ladder keeps its seam slots even so** — see [`MARKER_LADDER`]. Turning this back on must not
 /// move a single line of prose, and the room is a function of the frame width rather than of what
 /// the marker says, so the slots are free.
-const MARKER_SEAM: bool = false;
+pub(crate) const MARKER_SEAM: bool = false;
 
 /// **The seam, most-spelled first** — the whole chord, the chord alone, nothing.
 ///
@@ -21013,7 +21013,7 @@ const MARKER_SEAM: bool = false;
 /// seam rung reads empty, so the first rung that fits is decided entirely by the count clauses. (That
 /// is a correction to leticl, which with its seam off tries one rung — `((0 . 2))` — and so never
 /// steps the counts down; the operator asked for the counts to compress either way.)
-const SEAM_RUNGS: [(&str, &str); 3] = [
+pub(crate) const SEAM_RUNGS: [(&str, &str); 3] = [
     (" · ctrl-v opens it", " · /verbosity"),
     (" · ctrl-v", " · /verbosity"),
     ("", ""),
@@ -21026,15 +21026,15 @@ const SEAM_RUNGS: [(&str, &str); 3] = [
 /// the head talking about its own keys. The seam still goes before the counts reach their last rung,
 /// which is why the pairs interleave rather than running as two sweeps. leticl's
 /// `+hidden-run-marker-ladder+`, verbatim.
-const MARKER_LADDER: [(usize, usize); 6] = [(0, 0), (1, 0), (2, 0), (3, 0), (3, 1), (3, 2)];
+pub(crate) const MARKER_LADDER: [(usize, usize); 6] = [(0, 0), (1, 0), (2, 0), (3, 0), (3, 1), (3, 2)];
 
 impl Counts {
-    fn of(calls: usize, think_lines: usize) -> Counts {
+    pub(crate) fn of(calls: usize, think_lines: usize) -> Counts {
         Counts::at_rung(calls, think_lines, 0, 0)
     }
 
     /// **The counts spelled at one rung of the ladder** — see [`COUNT_RUNGS`].
-    fn at_rung(calls: usize, think_lines: usize, events: usize, rung: usize) -> Counts {
+    pub(crate) fn at_rung(calls: usize, think_lines: usize, events: usize, rung: usize) -> Counts {
         let (c1, cn, t1, tn, e1, en) = COUNT_RUNGS[rung.min(COUNT_RUNGS.len() - 1)];
         // The number, then the suffix — which is where the space lives, and why the last rung has
         // none. See [`COUNT_RUNGS`].
@@ -21052,7 +21052,7 @@ impl Counts {
     /// **The clauses this marker draws, in order** — the two counts, or the fallback when neither
     /// of them can describe the run. See [`COUNT_RUNGS`]: leticl branches exactly here, drawing the
     /// events clause only when the other two are empty.
-    fn clauses(&self) -> Vec<&(String, String)> {
+    pub(crate) fn clauses(&self) -> Vec<&(String, String)> {
         if self.calls.is_none() && self.think.is_none() {
             self.events.iter().collect()
         } else {
@@ -21066,7 +21066,7 @@ impl Counts {
     /// **The counts as PLAIN text** — for measuring, and for a test that wants the words rather
     /// than the registers. Never for drawing: a caller that painted this would be painting the
     /// brackets and the thinking count along with the number.
-    fn plain(&self) -> String {
+    pub(crate) fn plain(&self) -> String {
         let words: Vec<String> = self
             .clauses()
             .into_iter()
@@ -21110,7 +21110,7 @@ impl Counts {
 /// the next round's `TurnStarted` the answer is honestly *no* — the same millisecond window R51 §3
 /// records for the tense, and closing it needs the daemon to publish *the prompt is over* as its own
 /// fact. Neither head has that.
-fn marker_carries_live(live: LiveWork) -> bool {
+pub(crate) fn marker_carries_live(live: LiveWork) -> bool {
     // **`running`, not `calls`** — this is the stuck yellow. See [`LiveWork::running`]: the count
     // of calls with no result row is the NUMBER the marker carries, and only a call that is still
     // executing lights it. A call that finished a frame ago keeps its number and loses the colour,
@@ -21152,14 +21152,14 @@ fn marker_carries_live(live: LiveWork) -> bool {
 /// around and splitting it at paint time would be a second definition of where the counts stop
 /// — and the counts are a string the head builds, so nothing may search them for a delimiter.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Marker {
+pub(crate) struct Marker {
     /// `[1 tool call, 2 thinking lines]` — the content, drawn plain except for the calls count.
-    counts: Counts,
+    pub(crate) counts: Counts,
     /// ` · ctrl-v opens it` — an affordance, drawn faint. Dot included.
-    seam: &'static str,
+    pub(crate) seam: &'static str,
     /// **Does this marker carry the work in flight** — [`marker_carries_live`], decided by the
     /// caller because only the caller knows which row it is drawing.
-    live: bool,
+    pub(crate) live: bool,
 }
 
 impl Marker {
@@ -21173,7 +21173,7 @@ impl Marker {
     /// The counts come first and the seam last — [`MARKER_LADDER`] records why — so a marker that
     /// has outgrown its room loses `opens it` before it loses `tool calls`, and a count that gains
     /// a digit costs a word rather than a line.
-    fn new(
+    pub(crate) fn new(
         calls: usize,
         think_lines: usize,
         events: usize,
@@ -21200,7 +21200,7 @@ impl Marker {
 
     /// **Painted** — the counts plain (the calls count PENDING when this marker carries the live
     /// work), the seam faint. See [`marker_painted`].
-    fn painted(&self, cfg: &RenderConfig) -> String {
+    pub(crate) fn painted(&self, cfg: &RenderConfig) -> String {
         marker_painted(cfg, &self.counts, self.seam, self.live)
     }
 }
@@ -21226,7 +21226,7 @@ impl Marker {
 /// Takes the two halves already composed rather than re-splitting a string: a `]` searched for
 /// at paint time is a second definition of where the counts stop, and one marker whose counts
 /// carried a `]` would find the wrong one.
-fn marker_painted(cfg: &RenderConfig, counts: &Counts, seam: &str, live: bool) -> String {
+pub(crate) fn marker_painted(cfg: &RenderConfig, counts: &Counts, seam: &str, live: bool) -> String {
     let p = cfg.palette();
     // **The NUMBER goes pending and its noun does not** — *"yellow <count> not entire <Count> tool
     // call"*, and leticl's `%counts-clause-segs` word for word: *"`2` in STYLE, ` tools` plain."*
@@ -21262,7 +21262,7 @@ fn marker_painted(cfg: &RenderConfig, counts: &Counts, seam: &str, live: bool) -
     format!("[{}]{}", body.join(", "), p.paint(Role::Faint, seam))
 }
 
-fn hidden_run_marker(
+pub(crate) fn hidden_run_marker(
     items: &[SnapshotItem],
     start: usize,
     end: usize,
@@ -21355,7 +21355,7 @@ fn hidden_run_marker(
 /// that opens to half a screen is a number that answers the wrong question. What
 /// the reader wants to know is how much of the terminal this is about to cost.
 /// See [`reasoning_display_lines`], which computes it for this header and for R37's marker.
-fn thinking_header(
+pub(crate) fn thinking_header(
     cfg: &RenderConfig,
     raw: &str,
     open: bool,
@@ -21386,7 +21386,7 @@ fn thinking_header(
 
 /// A `card::CardConfig` from this head's own config. One place, so the width, the
 /// palette and the fold cannot drift between the live pane and the transcript.
-fn card_cfg(cfg: &RenderConfig, fold: Fold) -> card::CardConfig {
+pub(crate) fn card_cfg(cfg: &RenderConfig, fold: Fold) -> card::CardConfig {
     card::CardConfig {
         width: cfg.width,
         palette: cfg.palette(),
@@ -21403,7 +21403,7 @@ fn card_cfg(cfg: &RenderConfig, fold: Fold) -> card::CardConfig {
 ///
 /// Falls back to the left half alone when both do not fit, because the left half
 /// is the one that says what is happening.
-fn split_row(left: &str, right: &str, w: usize) -> String {
+pub(crate) fn split_row(left: &str, right: &str, w: usize) -> String {
     let (lw, rw) = (visible_width(left), visible_width(right));
     if lw + rw + 2 <= w {
         format!("{left}{}{right}", " ".repeat(w - lw - rw))
@@ -21413,7 +21413,7 @@ fn split_row(left: &str, right: &str, w: usize) -> String {
 }
 
 /// The last non-empty line of a growing document, trimmed to fit.
-fn last_line(raw: &str, cfg: &RenderConfig) -> String {
+pub(crate) fn last_line(raw: &str, cfg: &RenderConfig) -> String {
     let l = raw
         .lines()
         .rev()
@@ -21433,7 +21433,7 @@ fn last_line(raw: &str, cfg: &RenderConfig) -> String {
 /// normal ending, it means the answer was cut off mid-sentence, and truncation
 /// is never folded into success — a display that lets it read like `eos` folds
 /// it at the last possible moment.
-fn turn_footer(cfg: &RenderConfig, state: &TurnState) -> Vec<String> {
+pub(crate) fn turn_footer(cfg: &RenderConfig, state: &TurnState) -> Vec<String> {
     match state {
         TurnState::Running => Vec::new(),
         TurnState::Finished { finish_reason, .. } => {
@@ -21530,7 +21530,7 @@ fn turn_footer(cfg: &RenderConfig, state: &TurnState) -> Vec<String> {
 /// A heading with no items at all is not "done": an empty section is a section
 /// nobody has filled in, and org does not mark it either. It carries no cookie
 /// and no box.
-fn repo_todos_map(workspace: &str) -> Vec<TodoRow> {
+pub(crate) fn repo_todos_map(workspace: &str) -> Vec<TodoRow> {
     // **The project directory, not the workspace** — the same resolution the git field uses
     // (`gitfield::project_dir`), so a nested layout (session in `Projects/x`, repo in
     // `Projects/x/x`) loads one tree's TODO.md in the pane and one tree's branch in the header,
@@ -21563,7 +21563,7 @@ fn repo_todos_map(workspace: &str) -> Vec<TodoRow> {
 /// come from the head's own copy, or a total maintained beside the list it counts — and the way to
 /// make that impossible is for the count and the rows to be two readings of ONE argument.
 /// `todos_lines` passes the same `self.todos` it is about to draw.
-fn todo_counts(todos: &[letibot_sessionlog::event::TodoEntry]) -> (usize, usize) {
+pub(crate) fn todo_counts(todos: &[letibot_sessionlog::event::TodoEntry]) -> (usize, usize) {
     let mut open = 0usize;
     let mut postponed = 0usize;
     for t in todos {
@@ -21579,7 +21579,7 @@ fn todo_counts(todos: &[letibot_sessionlog::event::TodoEntry]) -> (usize, usize)
 
 /// One item's state, in the marks org and `todo_write` share.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum TodoMark {
+pub(crate) enum TodoMark {
     Open,
     Doing,
     Done,
@@ -21596,7 +21596,7 @@ impl TodoMark {
     ///
     /// **Three marks and not four**: `[p]` is the session board's and is deliberately not read
     /// out of a file, because a file has no way to say *still owed, and not being asked for*.
-    fn of(line: &str) -> Option<(TodoMark, &str)> {
+    pub(crate) fn of(line: &str) -> Option<(TodoMark, &str)> {
         let t = line.trim_start();
         let rest = t.strip_prefix("- ").or_else(|| t.strip_prefix("* "))?;
         let (boxed, text) = rest.split_at_checked(3)?;
@@ -21609,7 +21609,7 @@ impl TodoMark {
         Some((mark, text.trim()))
     }
 
-    fn glyph(self) -> &'static str {
+    pub(crate) fn glyph(self) -> &'static str {
         match self {
             TodoMark::Open => "[ ]",
             TodoMark::Doing => "[~]",
@@ -21633,7 +21633,7 @@ impl TodoMark {
     /// de-emphasises whatever foreground the reader's theme chose, which is what the frame around
     /// a quotation already uses for the same purpose. A fourth colour would be a fourth thing to
     /// learn, on the one row whose whole meaning is *this one is not shouting*.
-    fn painted(self, cfg: &RenderConfig) -> String {
+    pub(crate) fn painted(self, cfg: &RenderConfig) -> String {
         match self {
             TodoMark::Open => self.glyph().to_string(),
             TodoMark::Doing => colour(cfg, sgr::YELLOW, self.glyph()),
@@ -21658,21 +21658,21 @@ impl TodoMark {
 /// BEFORE the mark, and the mark is the part the pane paints — a row that
 /// arrived pre-indented painted as `[x]     Phase 0` with the colour in the
 /// wrong place entirely. Split so the parse is testable without a palette.
-struct TodoRow {
+pub(crate) struct TodoRow {
     /// Columns before the mark. Carried rather than baked into the text because
     /// it belongs BEFORE the mark, and the mark is the part the pane paints — a
     /// pre-indented row painted as `[x]     Phase 0`, the colour in front of the
     /// whitespace rather than on the box.
-    indent: usize,
+    pub(crate) indent: usize,
     /// `None` only for a heading with no checkboxes under it, which org does not
     /// mark either.
-    mark: Option<TodoMark>,
-    text: String,
-    body: Vec<String>,
+    pub(crate) mark: Option<TodoMark>,
+    pub(crate) text: String,
+    pub(crate) body: Vec<String>,
     /// **A heading carries a mark too** — the roll-up of the rows beneath it —
     /// so the mark cannot be what tells the two apart, and the cursor landed on
     /// headings when it was. There is nothing to unfold on one.
-    item: bool,
+    pub(crate) item: bool,
 }
 
 /// One item as the file has it: its mark, its first line, and the continuation
@@ -21684,13 +21684,13 @@ struct TodoRow {
 /// that says what blocks it both gone. The operator, after the items were finally
 /// drawn at all: *"if a todo has some associated text? should i be able to expand
 /// it somehow?"*
-struct TodoItem {
-    mark: TodoMark,
-    head: String,
-    body: Vec<String>,
+pub(crate) struct TodoItem {
+    pub(crate) mark: TodoMark,
+    pub(crate) head: String,
+    pub(crate) body: Vec<String>,
 }
 
-fn render_todo_md(body: &str) -> Vec<TodoRow> {
+pub(crate) fn render_todo_md(body: &str) -> Vec<TodoRow> {
     let mut out: Vec<TodoRow> = Vec::new();
     let mut section: Option<String> = None;
     let mut items: Vec<TodoItem> = Vec::new();
@@ -21782,11 +21782,11 @@ fn render_todo_md(body: &str) -> Vec<TodoRow> {
 /// `**T1** git init` → `T1 git init`. The pane has one style for this text and
 /// markdown's emphasis markers are noise in it; the backticks go for the same
 /// reason. Nothing else is interpreted — this is a reader, not a renderer.
-fn strip_markup(text: &str) -> String {
+pub(crate) fn strip_markup(text: &str) -> String {
     text.replace("**", "").replace('`', "")
 }
 
-fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
+pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
     let rows = [
         (
             "enter",
@@ -21987,7 +21987,7 @@ fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
 /// model does not have to fork it. The cost is this function, and it is the right
 /// place for the cost to land — it is four lines and it is where the two
 /// vocabularies are reconciled *once*.
-fn display_outcome(o: &letibot_transcript::ToolOutcome) -> card::Outcome {
+pub(crate) fn display_outcome(o: &letibot_transcript::ToolOutcome) -> card::Outcome {
     use letibot_transcript::ToolOutcome as O;
     match o {
         O::Ok => card::Outcome::Ok,
@@ -22029,7 +22029,7 @@ fn display_outcome(o: &letibot_transcript::ToolOutcome) -> card::Outcome {
 /// **How a call ended, in one word** — and there is no longer a second spelling of this in the
 /// head. See [`card::Outcome::word`] for the two that agreed on nothing but the word `failed`, and
 /// for why the card is the side that moved.
-fn outcome_word(o: &letibot_transcript::ToolOutcome) -> &str {
+pub(crate) fn outcome_word(o: &letibot_transcript::ToolOutcome) -> &str {
     display_outcome(o).word()
 }
 
@@ -22050,7 +22050,7 @@ fn outcome_word(o: &letibot_transcript::ToolOutcome) -> &str {
 /// boring case is most of them. That is a decision about one row rather than about the mapping —
 /// leticl keeps it faint for the same reason — so it is applied here, on top, and never by
 /// rewriting the mapping.
-fn outcome_role(o: &letibot_transcript::ToolOutcome) -> Role {
+pub(crate) fn outcome_role(o: &letibot_transcript::ToolOutcome) -> Role {
     match o {
         letibot_transcript::ToolOutcome::Ok => Role::Faint,
         other => display_outcome(other).role(),
@@ -22082,7 +22082,7 @@ fn outcome_role(o: &letibot_transcript::ToolOutcome) -> Role {
 ///
 /// The spinner is driven off the log's own clock, like every other moving thing
 /// here, so a replayed session animates the same way the live one did.
-fn writing_call_line(cfg: &RenderConfig, now_ms: u64) -> String {
+pub(crate) fn writing_call_line(cfg: &RenderConfig, now_ms: u64) -> String {
     let p = cfg.palette();
     let spin = letibot_ui::progress::spinner(now_ms).to_string();
     trim_to(
@@ -22101,7 +22101,7 @@ fn writing_call_line(cfg: &RenderConfig, now_ms: u64) -> String {
 /// Rendered as a labelled block rather than inline, because the whole point is
 /// that this is *not* the assistant speaking. Faint and fenced: it is evidence,
 /// and evidence that looks like prose is how the defect started.
-fn raw_call_lines(cfg: &RenderConfig, raw: &str) -> Vec<String> {
+pub(crate) fn raw_call_lines(cfg: &RenderConfig, raw: &str) -> Vec<String> {
     let p = cfg.palette();
     let mut out = vec![p.paint(Role::Faint, "┌─ raw tool call · ctrl-x")];
     // **Sanitised at the draw, because this is the only place it is drawn** (§3.1).
@@ -22124,7 +22124,7 @@ fn raw_call_lines(cfg: &RenderConfig, raw: &str) -> Vec<String> {
     out
 }
 
-fn call_card(
+pub(crate) fn call_card(
     c: &CallRow,
     cfg: &RenderConfig,
     now_ms: u64,
@@ -22311,7 +22311,7 @@ fn call_card(
 /// `display_outcome`, which now builds one sentence out of both rather than picking a winner. Where
 /// the two simply disagreed about phrasing, the transcript's is kept: it is the one the operator has
 /// been reading on this row all along, and the card is the newer surface.
-fn outcome_why(o: &letibot_transcript::ToolOutcome) -> Option<String> {
+pub(crate) fn outcome_why(o: &letibot_transcript::ToolOutcome) -> Option<String> {
     display_outcome(o).reason().map(str::to_string)
 }
 
@@ -22348,7 +22348,7 @@ fn outcome_why(o: &letibot_transcript::ToolOutcome) -> Option<String> {
 /// What it keeps is the label — `session ·`, the same place and shape `queued ·` takes on an
 /// echo — because a row nobody can attribute is the defect, not the fix. Wrapped like any
 /// prose and sanitised like any other content this head did not author.
-fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
+pub(crate) fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
     let folded = fold_cells(text);
     let clean = without_control_lines(folded.as_deref().unwrap_or(text));
     let text: &str = &clean;
@@ -22388,7 +22388,7 @@ fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
 /// the defect this exists for. The operator found it by looking: a finished child's row held the
 /// entire brief this head had written for that child — *"a giant prompt"* — five wrapped rows of
 /// instructions where a settlement should be one line.
-fn session_text_cols(ts: u64, cfg: &RenderConfig) -> usize {
+pub(crate) fn session_text_cols(ts: u64, cfg: &RenderConfig) -> usize {
     let w = cfg.width.max(20);
     let stamp = clock_time(ts);
     w.saturating_sub(visible_width("session · ") + visible_width(&stamp) + 2)
@@ -22406,7 +22406,7 @@ fn session_text_cols(ts: u64, cfg: &RenderConfig) -> usize {
 /// **One function because a row and the pane it points at must not disagree.** The notice looks
 /// the task up *by handle*; a second spelling of this rule over there is exactly the drift that
 /// would have them say different things about one child.
-fn subagent_asked(s: &SubagentState) -> String {
+pub(crate) fn subagent_asked(s: &SubagentState) -> String {
     if s.task.is_empty() {
         s.prompt.clone()
     } else {
@@ -22447,7 +22447,7 @@ fn subagent_asked(s: &SubagentState) -> String {
 /// the promise here honest rather than a loss — what the operator cannot see is on the row they
 /// are looking at, not deleted from it. Opening it on demand is the half leticl has and this head
 /// does not; it is **not** in this change (see TODO.md, the notice-fold row).
-fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<String> {
+pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<String> {
     /// **The sentences that prove the rest of a row is advice TO THE MODEL rather than a fact
     /// about the thing reported.** One per opening, because a nag's advice is not a completion's
     /// — and named as phrases rather than by position, so a row whose shape changed under this
@@ -22528,7 +22528,7 @@ fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<String> {
     (!out.is_empty()).then(|| out.join("\n"))
 }
 
-fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
+pub(crate) fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
     let folded = fold_cells(text);
     // **The renderer sanitises its own input** (§3.1), so a caller cannot forget. The
     // operator's own keystrokes cannot carry a control byte — the decoder hands back
@@ -22579,7 +22579,7 @@ fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
 /// them. Nothing is hidden that the line does not name, and the model still has
 /// every row. `None` when there is no screen in the text, which is every other
 /// message.
-fn fold_cells(text: &str) -> Option<String> {
+pub(crate) fn fold_cells(text: &str) -> Option<String> {
     let at = text.find(CELLS_OPEN)?;
     let rest = &text[at..];
     let size = rest
@@ -22638,7 +22638,7 @@ fn fold_cells(text: &str) -> Option<String> {
 /// drawing the row itself, and `claimed_by.is_some()` for the tail, which is drawing a remainder of
 /// it. Free-standing rather than a method because the tail computes it inside the frame's borrow,
 /// where only the cloned `unconfirmed` is in hand.
-fn echo_mark(unconfirmed: &[String], text: &str, drawn: bool) -> &'static str {
+pub(crate) fn echo_mark(unconfirmed: &[String], text: &str, drawn: bool) -> &'static str {
     // The snapshot's doubt outranks everything: the head cannot tell *still coming* from
     // *replaced*, so it keeps saying so.
     if unconfirmed.iter().any(|u| u == text) {
@@ -22654,7 +22654,7 @@ fn echo_mark(unconfirmed: &[String], text: &str, drawn: bool) -> &'static str {
     QUEUED
 }
 
-fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: bool) -> Vec<String> {
+pub(crate) fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: bool) -> Vec<String> {
     // Folded here as well as in `user_block`, and it has to be the same text going
     // in: the pending row is removed when the transcript's user item MATCHES it, so
     // a head that queued an abbreviation and received the real thing would leave the
@@ -22757,7 +22757,7 @@ fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: bool) -> Vec<S
 /// queue holds them, which is the order the daemon appended them in. See
 /// [`App::retire_pending`] for why the unit is a line and why the two guards —
 /// whole-line equality and no going backwards — are what make it safe.
-fn strip_landed(
+pub(crate) fn strip_landed(
     entry: &str,
     lines: &[&str],
     claimed: &mut [bool],
@@ -22833,7 +22833,7 @@ fn strip_landed(
 /// one fact. **The claiming text is returned so the remainder can carry the mark its own row
 /// carries** — the row in the transcript's own place is the senior drawing, and the tail's
 /// remainder is its tail.
-fn unclaimed_prompts(
+pub(crate) fn unclaimed_prompts(
     pending: &[String],
     bound: &[(String, Vec<String>)],
 ) -> Vec<(usize, String, Option<String>)> {
@@ -22892,7 +22892,7 @@ fn unclaimed_prompts(
 /// Zero is *unknown*, not the epoch: a log recorded before `SnapshotItem::ts`
 /// existed replays with zeros, and rendering those as `01:00:00` would be a
 /// measurement that was never taken rendered as one that was.
-fn clock_time(ms: u64) -> String {
+pub(crate) fn clock_time(ms: u64) -> String {
     if ms == 0 {
         return String::new();
     }
@@ -22913,7 +22913,7 @@ fn clock_time(ms: u64) -> String {
 /// `…/worktrees/agent-a19da2/crates/tui`, not `~/Projects/letibot/.claud…`. A path
 /// is recognised by where it ends; truncating from the right of a deep tree leaves
 /// every session on this box looking identical.
-fn ellipsise_left(s: &str, max: usize) -> String {
+pub(crate) fn ellipsise_left(s: &str, max: usize) -> String {
     if visible_width(s) <= max || max < 2 {
         return s.to_string();
     }
@@ -22968,12 +22968,12 @@ fn ellipsise_left(s: &str, max: usize) -> String {
 /// times?"*. That line exists for the card whose header could NOT name the file (a call id in
 /// its place — *"sometimes your Edited card doesnt have file name"*, 2026-10-05), and it stays
 /// for that one. A relative target the excerpt's absolute path ends in is the same file.
-fn header_names_the_file(target: &str, path: &str) -> bool {
+pub(crate) fn header_names_the_file(target: &str, path: &str) -> bool {
     let t = target.trim();
     !t.is_empty() && (t == path || path.ends_with(&format!("/{t}")))
 }
 
-fn shorten_subject(s: &str, max: usize) -> String {
+pub(crate) fn shorten_subject(s: &str, max: usize) -> String {
     if visible_width(s) <= max {
         return s.to_string();
     }
@@ -22992,7 +22992,7 @@ fn shorten_subject(s: &str, max: usize) -> String {
 
 /// A path with `$HOME` written as `~`. Twelve columns of an eighty-column header
 /// spent on `/home/dead` is twelve columns not spent on the session's name.
-fn tilde(path: &str) -> String {
+pub(crate) fn tilde(path: &str) -> String {
     match std::env::var("HOME") {
         Ok(h) if !h.is_empty() && path.starts_with(&h) => format!("~{}", &path[h.len()..]),
         _ => path.to_string(),
@@ -23009,7 +23009,7 @@ fn tilde(path: &str) -> String {
 /// A row whose body has not arrived yet counts as unanswered — the head cannot
 /// read a call id out of an announcement. The proposal line stays until the body
 /// lands, and `record_item` rebuilds the history when it does.
-fn round_results(items: &[SnapshotItem], at: usize) -> std::collections::HashSet<String> {
+pub(crate) fn round_results(items: &[SnapshotItem], at: usize) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
     for it in items.iter().skip(at + 1) {
         match it.item.as_ref() {
@@ -23041,7 +23041,7 @@ fn round_results(items: &[SnapshotItem], at: usize) -> std::collections::HashSet
 /// transcript is well under a frame's budget and the incremental marks it buys are
 /// worth having. Above it the operator's own sessions live — 160 MB, thousands of turns
 /// — and there the only affordable thing is the end. See `App::fill_backward`.
-const SELF_WALK_LIMIT: usize = 2 * 1024 * 1024;
+pub(crate) const SELF_WALK_LIMIT: usize = 2 * 1024 * 1024;
 
 /// How many rows above the rendered window to keep, so a frame can be drawn while the
 /// reader is a little way up — the window, plus one screen.
@@ -23049,7 +23049,7 @@ const SELF_WALK_LIMIT: usize = 2 * 1024 * 1024;
 /// Not a scrollback budget: scrolling further back-fills more (see
 /// `App::fill_backward`). This is only what is kept ready for the frames that need no
 /// new work.
-const TAIL_SLACK: usize = 40;
+pub(crate) const TAIL_SLACK: usize = 40;
 
 /// Roughly how many bytes of text the transcript carries.
 ///
@@ -23061,7 +23061,7 @@ const TAIL_SLACK: usize = 40;
 /// memory. A row with no body yet counts as zero, which errs toward walking the
 /// conversation — the safe direction, since the other one only changes how the frame is
 /// produced and this one still produces it correctly.
-fn transcript_bytes(items: &[SnapshotItem]) -> usize {
+pub(crate) fn transcript_bytes(items: &[SnapshotItem]) -> usize {
     items
         .iter()
         .map(|it| it.item.as_ref().map(|i| i.bytes()).unwrap_or(0))
@@ -23074,7 +23074,7 @@ fn transcript_bytes(items: &[SnapshotItem]) -> usize {
 /// The forward walk builds this as it goes (replacing, not merging, at every assistant
 /// row); this derives it, which is what lets the **backward** walk render a row without
 /// having rendered everything above it first. Same rule, one implementation.
-fn targets_before(items: &[SnapshotItem], k: usize) -> std::collections::HashMap<String, String> {
+pub(crate) fn targets_before(items: &[SnapshotItem], k: usize) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
     for r in items[..k.min(items.len())].iter().rev() {
         if let Some(TranscriptItem::Assistant { tool_calls, .. }) = r.item.as_ref() {
@@ -23117,7 +23117,7 @@ fn targets_before(items: &[SnapshotItem], k: usize) -> std::collections::HashMap
 /// as three unrelated indents. Given up below sixty columns, where two columns
 /// out of every line is a bigger fraction than the hierarchy is worth — the same
 /// trade `App::gutter` makes at forty.
-fn activity_indent(w: usize) -> usize {
+pub(crate) fn activity_indent(w: usize) -> usize {
     if w >= 60 {
         card::REASONING_RAIL_WIDTH
     } else {
@@ -23135,7 +23135,7 @@ fn activity_indent(w: usize) -> usize {
 /// A prefix match rather than a parse of any tool's format. It matches what
 /// `read` emits and nothing that is not shaped exactly like it; a tool whose
 /// output happens to begin `12| ` gets three columns back and loses nothing.
-fn strip_gutter(l: &str) -> String {
+pub(crate) fn strip_gutter(l: &str) -> String {
     let t = l.trim_start();
     let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
     match t[digits..].strip_prefix("| ") {
@@ -23146,7 +23146,7 @@ fn strip_gutter(l: &str) -> String {
 
 /// Set `lines` one step in. Empty rows stay empty: trailing spaces on a blank
 /// line are invisible until something copies them.
-fn step_in(lines: Vec<String>, n: usize) -> Vec<String> {
+pub(crate) fn step_in(lines: Vec<String>, n: usize) -> Vec<String> {
     if n == 0 {
         return lines;
     }
@@ -23168,12 +23168,12 @@ fn step_in(lines: Vec<String>, n: usize) -> Vec<String> {
 /// gone, the nearest surviving row in row order is the one that took its place, and the
 /// head anchors there and **says so** rather than jumping somewhere arbitrary.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Held {
-    item_id: String,
-    ordinal: usize,
+pub(crate) struct Held {
+    pub(crate) item_id: String,
+    pub(crate) ordinal: usize,
     /// Lines into the row's own rendering. Bounded to the row's height when it is used, so
     /// a row that shrank under the anchor does not push the view past its own end.
-    into: usize,
+    pub(crate) into: usize,
 }
 
 /// What kind of row this is, for the one question the layout asks about its
@@ -23194,13 +23194,13 @@ struct Held {
 /// [`App::retarget_before`] finds by scanning back. Storing a map per row would
 /// be the cache growing with the session, which is the thing being fixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct HistMark {
+pub(crate) struct HistMark {
     /// `hist_lines.len()` before the row was drawn.
-    lines: usize,
+    pub(crate) lines: usize,
     /// `note_upto` before the row was drawn.
-    note_upto: usize,
+    pub(crate) note_upto: usize,
     /// `hist_class` before the row was drawn — the separator's whole input.
-    class: Option<RowClass>,
+    pub(crate) class: Option<RowClass>,
 }
 
 /// **Where one rendered row's lines are** — R36's anchor map.
@@ -23213,14 +23213,14 @@ struct HistMark {
 /// there is nothing to hold, and inventing a zero-height span would make *the row at this
 /// line* ambiguous between it and its neighbour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Span {
-    row: usize,
-    at: usize,
-    lines: usize,
+pub(crate) struct Span {
+    pub(crate) row: usize,
+    pub(crate) at: usize,
+    pub(crate) lines: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowClass {
+pub(crate) enum RowClass {
     /// Somebody said something: the operator's question, the model's answer.
     Speech,
     /// The model working: reasoning, and tool calls.
@@ -23238,47 +23238,47 @@ enum RowClass {
 /// Rows an open payload window leaves for everything else on the screen: the header, the
 /// row's own heading, the composer and its rows. Generous rather than exact — a window a
 /// line short of the screen is read whole; one a line too tall has lost its first line.
-const WINDOW_CHROME: usize = 10;
+pub(crate) const WINDOW_CHROME: usize = 10;
 
-struct ItemCtx<'a> {
-    cfg: &'a RenderConfig,
-    think: Fold,
-    tools: Fold,
-    raw: bool,
+pub(crate) struct ItemCtx<'a> {
+    pub(crate) cfg: &'a RenderConfig,
+    pub(crate) think: Fold,
+    pub(crate) tools: Fold,
+    pub(crate) raw: bool,
     /// Display targets for **this row's round**, keyed by call id.
-    targets: &'a std::collections::HashMap<String, String>,
+    pub(crate) targets: &'a std::collections::HashMap<String, String>,
     /// Call ids in this round that already have a settled result row below.
     /// Their card is that row; the assistant row does not draw them again.
-    answered: &'a std::collections::HashSet<String>,
+    pub(crate) answered: &'a std::collections::HashSet<String>,
     /// **The children this head has watched**, for the one fact a completion notice cannot say
     /// for itself: what a child was asked. Looked up by handle — see [`subagent_asked`], which
     /// the subagents pane and the notice share so the two cannot describe one child differently.
-    subagents: &'a [SubagentState],
+    pub(crate) subagents: &'a [SubagentState],
     /// This row belongs to the turn the live pane is still drawing, so the pane
     /// below owns whatever has not settled and this row draws none of it.
-    drawn_live: bool,
+    pub(crate) drawn_live: bool,
     /// How long this row's call took, when this head watched it run.
-    elapsed_ms: Option<u64>,
+    pub(crate) elapsed_ms: Option<u64>,
     /// Both sides of the file this row's call changed, when this head watched
     /// it run. See `App::call_edits`.
-    edit: Option<&'a letibot_sessionlog::event::ToolEdit>,
+    pub(crate) edit: Option<&'a letibot_sessionlog::event::ToolEdit>,
     /// The settled decision this row's call was gated by, when there was one.
     /// See `App::call_decisions`.
-    decision: Option<&'a letibot_sessionlog::view::SettledDecision>,
+    pub(crate) decision: Option<&'a letibot_sessionlog::view::SettledDecision>,
     /// The echo this head bound to this row, when the row is a `user` row whose body
     /// has not arrived. See `App::bound_prompts`: it is drawn **in the row's place**,
     /// which is what puts the prompt above the reply it caused instead of below it
     /// and tagged `queued`.
-    bound: Option<&'a str>,
+    pub(crate) bound: Option<&'a str>,
     /// **Which mark a bound echo carries** — `queued` or `unconfirmed` (R16).
     ///
     /// On the context rather than derived from `bound`, because whether a snapshot could
     /// resolve this echo is a fact about the *head's* history and not about the text: the
     /// same words are `queued` when a row is expected and `unconfirmed` when a snapshot
     /// has already replaced the transcript without carrying it. Only `App` knows which.
-    echo_mark: &'a str,
+    pub(crate) echo_mark: &'a str,
     /// **Whether an echo is drawn in full or as its elided headline** (R33).
-    echo_open: bool,
+    pub(crate) echo_open: bool,
     /// **Which set of switches this row is being drawn for** (R37).
     ///
     /// On the context rather than read from the app, because `item_lines` is a free function
@@ -23287,9 +23287,9 @@ struct ItemCtx<'a> {
     /// **A set and not a rung**, and that is this slice's one new drawing: `keeps` is the
     /// ladder's answer with the edit card's exception, and the renderer and the run finder ask
     /// it here rather than asking the ladder and patching its answer afterwards.
-    vis: Visibility,
+    pub(crate) vis: Visibility,
     /// The operator's diff-view choice (`/config`); the width decides the rest.
-    diff_split: bool,
+    pub(crate) diff_split: bool,
     /// How far into a row's payload the reader has paged, and which row that is.
     ///
     /// A pair because "the view is open" and "how far down it is" have to agree about
@@ -23298,14 +23298,14 @@ struct ItemCtx<'a> {
     /// `item_lines` holds; keying it on the call id is a mismatch that leaves the view
     /// silently closed, and it was: the first version did exactly that and the test
     /// caught it (the seam said `ctrl-t pages` while `ctrl-t` had been pressed).
-    payload_view: Option<(&'a str, usize)>,
+    pub(crate) payload_view: Option<(&'a str, usize)>,
     /// Where the draw records the open window's furthest full page (see `App::payload_max`).
-    payload_max: Option<&'a std::cell::Cell<usize>>,
+    pub(crate) payload_max: Option<&'a std::cell::Cell<usize>>,
     /// **The most rows an open payload window may take**: the screen's, less the chrome.
     /// The window's budget is a fixed forty rows, and on a shorter terminal its top was
     /// above the screen — the first twenty lines of a result opened to be read, unreachable
     /// while the window held the keys. `usize::MAX` where there is no screen to fit.
-    window_rows: usize,
+    pub(crate) window_rows: usize,
     /// **The one row `ctrl-t` can act on**, or `None` when no result is long enough
     /// to have a rest to read.
     ///
@@ -23315,7 +23315,7 @@ struct ItemCtx<'a> {
     /// which is the verb that does reach an older row's payload. R10's other half:
     /// the chord used to flip the whole conversation's fold AND seed this one row's
     /// window, so a seam that read per-row announced a wall.
-    payload_newest: Option<&'a str>,
+    pub(crate) payload_newest: Option<&'a str>,
 }
 
 /// The decision a settled call was gated by, in the dim register: the approval is
@@ -23323,7 +23323,7 @@ struct ItemCtx<'a> {
 /// and how; open it adds what the oracle was shown and what it said back. Shared
 /// by the one-line (inline) and the folded arms, because a gated call whose result
 /// fit on the header is no less gated for it.
-fn decision_lines(
+pub(crate) fn decision_lines(
     d: &letibot_sessionlog::view::SettledDecision,
     tools: Fold,
     w: usize,
@@ -23358,7 +23358,7 @@ fn decision_lines(
 /// which is what it said before this row replaced the read-only one. The header
 /// has one slot and wants the name: `glm-5.3-flash`, or the provider pair, which
 /// is worth its width because it is also how you can tell you are being billed.
-fn header_model(value: &str) -> String {
+pub(crate) fn header_model(value: &str) -> String {
     match value
         .strip_prefix("local (")
         .and_then(|v| v.strip_suffix(')'))
@@ -23380,7 +23380,7 @@ fn header_model(value: &str) -> String {
 /// when the word merely starts the same way. Four call sites had the bug and one
 /// of them was reported; the other three are `cells`, `new` and `rename`, which
 /// would have taken `/newton` as "make a session called ton".
-fn verb_arg<'a>(cmd: &'a str, verb: &str) -> Option<&'a str> {
+pub(crate) fn verb_arg<'a>(cmd: &'a str, verb: &str) -> Option<&'a str> {
     let rest = cmd.strip_prefix(verb)?;
     if rest.is_empty() {
         return Some("");
@@ -23398,7 +23398,7 @@ fn verb_arg<'a>(cmd: &'a str, verb: &str) -> Option<&'a str> {
 ///
 /// One function so the card and the settled row cannot label them differently.
 /// Returns wrapped, unpainted lines; each caller indents and paints its own way.
-fn decision_detail(d: &SettledDecision, w: usize) -> Vec<String> {
+pub(crate) fn decision_detail(d: &SettledDecision, w: usize) -> Vec<String> {
     let mut out = Vec::new();
     // **§3.1, and this is the last of the untrusted free text on a row.** Three
     // sentences here are somebody else's: the ask the daemon wrote, the DECIDER's
@@ -23471,7 +23471,7 @@ fn decision_detail(d: &SettledDecision, w: usize) -> Vec<String> {
     out
 }
 
-fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
+pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec<String>) {
     let ItemCtx {
         cfg,
         think,
@@ -24339,25 +24339,25 @@ pub fn line_width(s: &str) -> usize {
 /// row being typed from being a keystroke behind — leticl's `%todo-draft-focus`, and the reason
 /// [`TodoDraft::take`] exists: every key that LEAVES a field commits the composer into it first, so
 /// nothing typed is ever lost to a Tab.
-struct TodoDraft {
-    title: String,
-    detail: String,
+pub(crate) struct TodoDraft {
+    pub(crate) title: String,
+    pub(crate) detail: String,
     /// **The handle this row waits on, or empty for a row that waits on nothing.** A bare handle:
     /// the *condition* is what the row holds, and the card does not collect a kind because there is
     /// one kind — see `TodoCondition`.
-    when: String,
-    focus: TodoField,
+    pub(crate) when: String,
+    pub(crate) focus: TodoField,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TodoField {
+pub(crate) enum TodoField {
     Title,
     Detail,
     When,
 }
 
 impl TodoDraft {
-    fn new() -> TodoDraft {
+    pub(crate) fn new() -> TodoDraft {
         TodoDraft {
             title: String::new(),
             detail: String::new(),
@@ -24367,7 +24367,7 @@ impl TodoDraft {
     }
 
     /// **What one field holds**, with the composer's live text standing in for the focused one.
-    fn shown(&self, live: &str, which: TodoField) -> String {
+    pub(crate) fn shown(&self, live: &str, which: TodoField) -> String {
         if self.focus == which {
             return live.to_string();
         }
@@ -24380,7 +24380,7 @@ impl TodoDraft {
 
     /// **Commit the composer into the field it belongs to** — every key that leaves a field does
     /// this first, so a Tab cannot lose what was just typed.
-    fn take(&mut self, live: &str) {
+    pub(crate) fn take(&mut self, live: &str) {
         let into = match self.focus {
             TodoField::Title => &mut self.title,
             TodoField::Detail => &mut self.detail,
@@ -24390,7 +24390,7 @@ impl TodoDraft {
     }
 
     /// The field Tab goes to next, wrapping — a cycle, so there is no field a reader cannot reach.
-    fn next(&self) -> TodoField {
+    pub(crate) fn next(&self) -> TodoField {
         match self.focus {
             TodoField::Title => TodoField::Detail,
             TodoField::Detail => TodoField::When,
@@ -24410,18 +24410,18 @@ impl TodoDraft {
 /// greening*, never *no keys* — an older daemon — and asking on its absence would block every
 /// switch behind a prompt for a key the box may well hold.
 #[derive(Debug, Clone)]
-struct KeyAsk {
-    choice: String,
-    provider: String,
+pub(crate) struct KeyAsk {
+    pub(crate) choice: String,
+    pub(crate) provider: String,
 }
 
 /// An open password request, as the head shows it.
 #[derive(Debug, Clone)]
-struct SecretAsk {
-    req_id: String,
-    prompt: String,
-    command: String,
-    deadline: u64,
+pub(crate) struct SecretAsk {
+    pub(crate) req_id: String,
+    pub(crate) prompt: String,
+    pub(crate) command: String,
+    pub(crate) deadline: u64,
 }
 
 /// **A command of the operator's own is waiting for an answer**, as the head shows it.
@@ -24449,11 +24449,11 @@ struct SecretAsk {
 ///   before its first byte): the card then says the command is waiting rather than showing
 ///   an empty line as if that were the question.
 #[derive(Debug, Clone)]
-struct PromptAsk {
-    req_id: String,
-    job: String,
-    command: String,
-    question: Option<String>,
+pub(crate) struct PromptAsk {
+    pub(crate) req_id: String,
+    pub(crate) job: String,
+    pub(crate) command: String,
+    pub(crate) question: Option<String>,
 }
 
 /// **What this head believes about the session's pane** — the daemon's answer to
@@ -24479,7 +24479,7 @@ struct PromptAsk {
 /// pane there — and never derived from anything durable, because there is nothing durable about
 /// it: a detach is not an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum PaneFact {
+pub(crate) enum PaneFact {
     /// Nobody has asked yet: the read is in flight, or this head has not attached.
     Unasked,
     /// The daemon said this session has no live pane.
@@ -24518,11 +24518,11 @@ enum PaneFact {
 /// comes back when this is answered, cancelled or confirmed — and `esc` is the way out of the
 /// stack, one question at a time, because *anything that is not a yes* cancels.
 #[derive(Debug, Clone)]
-struct TermAsk {
+pub(crate) struct TermAsk {
     /// **What is about to end, as a line a person reads** — `!term nano notes.txt`, the spelling
     /// the operator typed at the composer when there is one, or `!term <command>` rebuilt from
     /// the daemon's own word when the pane is another head's.
-    line: String,
+    pub(crate) line: String,
 }
 
 /// **Where a note sits, or whether it sits in the conversation at all.**
@@ -24539,7 +24539,7 @@ struct TermAsk {
 /// apart by this type rather than by a sentinel position that would be a lie the walk
 /// would have to undo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Placed {
+pub(crate) enum Placed {
     /// At this many rows: the seam the walk puts it back into.
     Seam(usize),
     /// **Before this window.** Reachable — `/notes` lists it, `/status` counts it, and a
@@ -24549,7 +24549,7 @@ enum Placed {
 
 /// Something that happened between two transcript rows.
 #[derive(Debug, Clone)]
-enum Note {
+pub(crate) enum Note {
     /// §18's post-flight assertions and §8.5's guards land here, and a guard
     /// nobody notices is a guard nobody wrote.
     Warned(Warned),
@@ -24623,7 +24623,7 @@ enum Note {
 /// hash is FNV-1a, which is not a security boundary here — it distinguishes an
 /// incident from its neighbours, and two notes that collide on code, second and
 /// hash are the same sentence at the same instant.
-fn note_key(n: &Note) -> String {
+pub(crate) fn note_key(n: &Note) -> String {
     match n {
         Note::Warned(w) => format!("w|{}|{}|{:016x}", w.code, w.ts, fnv1a(&w.detail)),
         Note::NotRun(w) => format!("n|{}|{}|{:016x}", w.code, w.ts, fnv1a(&w.detail)),
@@ -24638,7 +24638,7 @@ fn note_key(n: &Note) -> String {
 /// shape: the record lives in `head.toml` as a comma list, so a key that contains a comma or
 /// whitespace (as a path can) would corrupt the list, and hashing is the same answer
 /// `note_key` gives for the same reason.
-fn todo_seed_key(ws: &str) -> String {
+pub(crate) fn todo_seed_key(ws: &str) -> String {
     format!("{:016x}", fnv1a(ws))
 }
 
@@ -24649,7 +24649,7 @@ fn todo_seed_key(ws: &str) -> String {
 /// that numbers it and the file that remembers it was retired. Asked in two places —
 /// [`App::note`], so a redelivery is not filed twice, and [`App::load`], so a note the
 /// snapshot carries is not planted a second time beside the head's own copy of it (R19).
-fn holds(notes: &[(Placed, Note)], n: &Note) -> bool {
+pub(crate) fn holds(notes: &[(Placed, Note)], n: &Note) -> bool {
     let k = note_key(n);
     notes.iter().any(|(_, o)| note_key(o) == k)
 }
@@ -24659,7 +24659,7 @@ fn holds(notes: &[(Placed, Note)], n: &Note) -> bool {
 /// Hand-rolled rather than taken from `std`'s hasher, which is **not** stable
 /// across releases — and a key that changes when the head is rebuilt would resurrect
 /// every note the operator had retired, which is the exact defect this exists for.
-fn fnv1a(s: &str) -> u64 {
+pub(crate) fn fnv1a(s: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in s.as_bytes() {
         h ^= *b as u64;
@@ -24680,10 +24680,10 @@ fn fnv1a(s: &str) -> u64 {
 /// The instrument is the one every other long thing in this head already uses —
 /// `keep = 8` for a card's diff rows, a seam row naming where the rest is — because
 /// a warning is not more important for being longer.
-const NOTE_LINES: usize = 3;
+pub(crate) const NOTE_LINES: usize = 3;
 
 /// One note, as the transcript draws it: at most [`NOTE_LINES`] lines and a seam.
-fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
+pub(crate) fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
     // **A pane's ending is the one note that is not folded**, and the reason is the tail: what
     // a program says as it dies is the *last* thing it printed, so a fold that kept the first
     // three lines would keep the least useful three. The length is bounded where it is
@@ -24709,12 +24709,12 @@ fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
 /// rectangle is not what a transcript row is for. What is past the cap is *not* kept anywhere —
 /// a pane's bytes are not recorded, see `harnessd`'s own TODO — so this is a disclosure
 /// decision and not a fold over a record.
-const PANE_LAST_LINES: usize = 4;
+pub(crate) const PANE_LAST_LINES: usize = 4;
 
 /// The whole note, with no fold — what `/notes` lists and what the transcript
 /// shows the head of. One renderer for both, so the listing cannot disagree with
 /// the screen about the text.
-fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
+pub(crate) fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
     // **§3.1: a note carries text from elsewhere.** A `Warning`'s detail is the
     // daemon's or a guard's sentence, a `Decided`'s summary and basis are the ask and
     // the decider's own words — and all of it lands in rows `paint_full` writes
@@ -24838,7 +24838,7 @@ fn note_lines_unfolded(cfg: &RenderConfig, n: &Note) -> Vec<String> {
 
 /// What a Tab on a `!` line's last word found in the filesystem.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum PathCompletion {
+pub(crate) enum PathCompletion {
     /// One match: the whole line with the word completed — `/` after a directory, a space
     /// after a file, so the next word can be typed at once.
     Line(String),
@@ -24855,7 +24855,7 @@ enum PathCompletion {
 /// an argument and is completed as a file. A word with quotes or `$` in it is left alone —
 /// what it names is the shell's to work out. `None` when nothing matches, so a Tab falls
 /// through to the line completions.
-fn complete_path_word(text: &str, workspace: &str) -> Option<PathCompletion> {
+pub(crate) fn complete_path_word(text: &str, workspace: &str) -> Option<PathCompletion> {
     let cmd = text.strip_prefix('!')?;
     let start = text.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(1);
     let word = &text[start..];
