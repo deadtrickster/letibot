@@ -61,6 +61,9 @@ pub struct Terminal {
     original: libc::termios,
     fd: i32,
     entered: bool,
+    /// The window title last written (see [`Terminal::set_title`]), so a frame that does
+    /// not change it writes nothing.
+    title: std::cell::RefCell<String>,
     /// The frame currently on the glass. [`Terminal::draw`] writes the difference
     /// against it and nothing else; see the note on flicker.
     shown: std::cell::RefCell<Vec<String>>,
@@ -204,7 +207,12 @@ impl Terminal {
         // mouse tracking with SGR encoding, so the wheel scrolls the transcript.
         // The app acts on the wheel only — clicks and drags are decoded and
         // dropped, and selecting text stays the terminal's own Shift+drag.
-        let _ = out.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[2 q");
+        //
+        // And the window title is SAVED (`CSI 22;0 t`, xterm's title stack), because the head
+        // sets its own — the session's name, see `set_title` — and gives the terminal back
+        // the title it had. A terminal without the stack ignores the sequence.
+        let _ = out
+            .write_all(b"\x1b[22;0t\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[2 q");
         let _ = out.flush();
 
         // Restore before anything is printed, or the panic message is a staircase.
@@ -219,6 +227,7 @@ impl Terminal {
             original,
             fd,
             entered: true,
+            title: std::cell::RefCell::new(String::new()),
             shown: std::cell::RefCell::new(Vec::new()),
             next: std::cell::RefCell::new(Vec::new()),
             cursor: std::cell::Cell::new(None),
@@ -327,6 +336,25 @@ impl Terminal {
     /// 2. **A frame equal to the last one writes zero bytes.** An idle head is
     ///    silent on its output, not merely cheap.
     ///
+    /// **The window title** — the session's name, so a tab says which conversation it is
+    /// rather than the name of the program (`leticode`), which every tab shares.
+    ///
+    /// Written as OSC 2 and only when it changed. Every control character is dropped
+    /// first: the text is a session title, which anyone with the socket can set, and an
+    /// escape inside it would be one the terminal executes (the tree's own hostile-title
+    /// tests carry `ESC ] 0 ; pwned`). Capped, because a title bar has no use for a
+    /// paragraph.
+    pub fn set_title(&self, title: &str) {
+        let clean: String = window_title_text(title);
+        if *self.title.borrow() == clean {
+            return;
+        }
+        let mut out = std::io::stdout();
+        let _ = write!(out, "\x1b]2;{clean}\x07");
+        let _ = out.flush();
+        *self.title.borrow_mut() = clean;
+    }
+
     /// A resize is a full repaint, once, because every row moved.
     pub fn draw(&self, lines: &[String]) {
         self.draw_with_cursor(lines, None)
@@ -625,6 +653,7 @@ impl Terminal {
             original: unsafe { std::mem::zeroed() },
             fd: -1,
             entered: false,
+            title: std::cell::RefCell::new(String::new()),
             shown: std::cell::RefCell::new(Vec::new()),
             next: std::cell::RefCell::new(Vec::new()),
             cursor: std::cell::Cell::new(None),
@@ -641,6 +670,18 @@ impl Terminal {
     }
 }
 
+/// A title's text with every control character removed and its length capped — what
+/// [`Terminal::set_title`] writes. Separate so it can be tested without a terminal.
+pub fn window_title_text(title: &str) -> String {
+    title
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(120)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 fn restore(fd: i32, original: &libc::termios) {
     unsafe { libc::tcsetattr(fd, libc::TCSANOW, original) };
     let mut out = std::io::stdout();
@@ -648,8 +689,10 @@ fn restore(fd: i32, original: &libc::termios) {
     // synchronised update, mouse tracking off, bracketed paste off, the cursor
     // shape back to whatever the operator's terminal had, then show it and leave
     // the alternate screen.
-    let _ =
-        out.write_all(b"\x1b[?2026l\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l");
+    // Last, the window title `enter` saved (`CSI 23;0 t`): the shell's own, back.
+    let _ = out.write_all(
+        b"\x1b[?2026l\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l\x1b[23;0t",
+    );
     let _ = out.flush();
 }
 

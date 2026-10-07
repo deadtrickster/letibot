@@ -348,6 +348,7 @@ fn replay(args: &Args, cfg: RenderConfig) {
                     term.invalidate();
                 }
                 let frame = app.screen(w, h);
+                term.set_title(&app.window_title());
                 term.draw_with_cursor(&frame, app.cursor());
                 for k in term.keys() {
                     if app.key(k).is_some() {
@@ -374,6 +375,7 @@ fn replay(args: &Args, cfg: RenderConfig) {
                     term.invalidate();
                 }
                 let frame = app.screen(w, h);
+                term.set_title(&app.window_title());
                 term.draw_with_cursor(&frame, app.cursor());
                 for k in term.keys() {
                     app.key(k);
@@ -630,6 +632,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
         app.begin_attach_at(now_ms());
         let (w, h) = t.size();
         let frame = app.screen(w, h);
+        t.set_title(&app.window_title());
         t.draw_with_cursor(&frame, app.cursor());
     }
 
@@ -678,6 +681,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
                         app.clock(now_ms());
                         let (w, h) = t.size();
                         let frame = app.screen(w, h);
+                        t.set_title(&app.window_title());
                         t.draw_with_cursor(&frame, app.cursor());
                         if Instant::now() >= deadline {
                             return Err(format!(
@@ -746,6 +750,9 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
                     term.invalidate();
                 }
                 link.tick(&mut app, size, &keys, &raw, &mut draw);
+                // The window title, after the tick: `draw` holds the terminal while `tick` holds
+                // the app, so it is read here — once a tick, written only when it changed.
+                term.set_title(&app.window_title());
                 // **Getting back is this loop's job, because the socket is this
                 // layer's.** The head knows *that* the link is down and how long it
                 // has been; only here is there a socket path to open and a `Link` to
