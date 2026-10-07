@@ -100,7 +100,7 @@ fn open_seat(f: &crate::config::FlowyConfig) -> Result<letibot_flowy::Seat, Stri
 /// key is not set here: it is resolved along the usual path (`$PROVIDER_API_KEY`,
 /// then `providers.toml`), and a project file that names a model but not a key is
 /// a model the operator has a key for, not a secret the project carries.
-fn apply_main_model(cfg: &mut Config, model: &str) {
+fn apply_main_model(cfg: &mut Config, model: &str, bound: Option<&str>) -> Option<String> {
     if let Some((provider, m)) = model.split_once('/') {
         cfg.provider = Some(crate::config::ProviderConfig {
             name: provider.to_string(),
@@ -109,9 +109,13 @@ fn apply_main_model(cfg: &mut Config, model: &str) {
             thinking: false,
         });
     } else {
+        // `bound` is unused at this commit: the file levels are not yet wired to
+        // `cli_binding`, and this keeps the pre-level behaviour exactly.
+        let _ = bound;
         cfg.model = model.to_string();
         cfg.provider = None;
     }
+    None
 }
 
 fn usage() -> String {
@@ -990,7 +994,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     // third is left where `cfg` already has it.
                     if !cli_main_model {
                         if let Some(m) = &project.main_model {
-                            apply_main_model(&mut cfg, m);
+                            // The `bound` argument is the alias `--model` set; this
+                            // intermediate state has no reader for it yet, and passing
+                            // `None` is the same behaviour as before the level landed.
+                            apply_main_model(&mut cfg, m, None);
                         }
                     }
                     // **The guard's model, and the adjudicator's — two words for the ONE oracle
@@ -1000,7 +1007,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     // model, and `[gatekeeper] model` from providers.toml is already in
                     // `cfg.oracle_model` above — so the project's word wins over the user's,
                     // and an unset key leaves the user's where it was.
-                    if let Some(m) = crate::leticode_config::precedence(
+                    if let Some((m, _)) = crate::leticode_config::precedence(
                         None,
                         project
                             .gatekeeper_model
@@ -1946,7 +1953,7 @@ mod tests {
     fn a_project_main_model_lands_on_the_right_config_field() {
         // A `provider/model` name sets the metered provider.
         let mut cfg = Config::for_this_box("/tmp");
-        apply_main_model(&mut cfg, "deepseek/deepseek-chat");
+        apply_main_model(&mut cfg, "deepseek/deepseek-chat", None);
         let pc = cfg
             .provider
             .expect("a provider/model name sets the provider");
@@ -1965,7 +1972,7 @@ mod tests {
             api_key: None,
             thinking: false,
         });
-        apply_main_model(&mut cfg, "qwen-3.8-flash-next");
+        apply_main_model(&mut cfg, "qwen-3.8-flash-next", None);
         assert_eq!(cfg.model, "qwen-3.8-flash-next");
         assert!(cfg.provider.is_none(), "a bare alias is a local session");
     }
