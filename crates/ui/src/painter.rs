@@ -279,7 +279,7 @@ mod tests {
         assert_eq!(p.background(16), "");
         assert_eq!(p.background(255), "");
         assert_eq!(p.reverse(), "\x1b[7m");
-        assert_eq!(p.reverse(), Palette::Colour.open(Role::UserBlock));
+        assert_eq!(p.reverse(), Palette::Colour.open(Role::Selected));
         let none = Painter::new(Palette::None);
         for slot in 0..16 {
             assert_eq!(none.background(slot), "", "slot {slot}");
