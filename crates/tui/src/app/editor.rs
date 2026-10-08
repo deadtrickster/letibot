@@ -456,10 +456,19 @@ impl App {
     /// `p` relative to the workspace when it is inside it, as it is otherwise. Both sides are
     /// canonicalised, because rano's path is and a workspace spelled through a symlink
     /// (`/tmp` on macOS) would otherwise never be a prefix of it.
+    ///
+    /// **No workspace is the directory this head runs in** — a `--replay` has no session to
+    /// name one, and the pane already opens a relative row against it, so a send names the
+    /// place the same way instead of as `/private/var/folders/…/notes.txt:11`.
     fn workspace_relative(&self, p: &Path) -> String {
         let ws = &self.wiring.workspace;
-        if !ws.is_empty() {
-            let root = std::fs::canonicalize(ws).unwrap_or_else(|_| PathBuf::from(ws));
+        let root = if ws.is_empty() {
+            std::env::current_dir().ok()
+        } else {
+            Some(PathBuf::from(ws))
+        };
+        if let Some(root) = root {
+            let root = std::fs::canonicalize(&root).unwrap_or(root);
             if let Ok(rest) = p.strip_prefix(&root) {
                 return rest.display().to_string();
             }

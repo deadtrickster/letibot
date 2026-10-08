@@ -23,6 +23,7 @@ settle
 spec "ctrl-] opens the newest change as a review"
 press C-]
 wait_for "Review notes.txt (unified)"
+expect "M-s: send your place"
 expect "-old 11"
 expect "+line 11"
 expect "Ln 11, Col 1"
@@ -43,7 +44,8 @@ expect "Ln 11, Col 1"
 spec "alt-s sends the place into the composer, and the composer has the keyboard"
 press M-s
 wait_for "notes.txt:11"
-expect_line "›" "notes.txt:11"
+# Relative, as the row named it: a replay has no session workspace, so the head's directory.
+expect_line "›" "› notes.txt:11"
 expect "ctrl-] back to the editor"
 
 spec "nothing was sent: the place waits in the composer for an instruction"
