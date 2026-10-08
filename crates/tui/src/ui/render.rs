@@ -307,6 +307,12 @@ struct CodePaint {
     /// and nothing else.
     text: String,
     pushed: usize,
+    /// **The info string this was built for**, verbatim. A streamed fence's first frame
+    /// usually carries only its backticks — the language arrives a delta later — and a
+    /// highlighter built then was built for no language and kept, so the block stayed plain
+    /// for the rest of its life while a one-shot render of the same text was coloured.
+    /// Found porting this cache to `rano::markdown`. See [`CodePaint::is_for`].
+    info: String,
 }
 
 // Hand-written for the same reason `markdown::IncrementalMarkdown`'s is: the parse state
@@ -330,7 +336,14 @@ impl CodePaint {
             painter,
             text: String::new(),
             pushed: 0,
+            info: lang.to_string(),
         }
+    }
+
+    /// Whether this highlighter was built for the fence's info string as it stands now. A
+    /// cache that holds one across frames asks this and rebuilds when the answer is no.
+    fn is_for(&self, lang: &str) -> bool {
+        self.info == lang
     }
 
     /// Hand over whatever is new.
@@ -364,6 +377,13 @@ impl CodePaint {
             .join("\n");
         if closed {
             src.push('\n');
+        }
+        // `src` grows at its end while the fence is open — but a text that is no longer an
+        // extension of what was fed (an edited or replaced block) starts the parse over
+        // rather than appending to a tree that describes something else.
+        if !src.starts_with(&self.text) {
+            self.stream = rano::syntax::Lang::from_token(&self.info).map(Stream::new);
+            self.pushed = 0;
         }
         if src.len() > self.pushed {
             // `src` only ever grows at its end while the fence is open, so this is
@@ -951,7 +971,11 @@ impl BlockCache {
         }
         let stable = md.stable();
         for (i, b) in stable.iter().enumerate().skip(self.rendered_blocks) {
-            let mut paint = self.codes.remove(&i);
+            // Only a highlighter built for the language the settled fence names.
+            let mut paint = self
+                .codes
+                .remove(&i)
+                .filter(|p| matches!(b, Block::Code { lang, .. } if p.is_for(lang)));
             let lines = render_bounded_with(b, cfg, limit, paint.as_mut());
             self.stable_lines
                 .extend(lines.into_iter().map(|l| self.decor.apply(&l)));
@@ -964,8 +988,10 @@ impl BlockCache {
         for (j, b) in md.tail().iter().enumerate() {
             let abs = stable.len() + j;
             let mut paint = self.codes.remove(&abs);
-            if paint.is_none()
-                && let Block::Code { lang, .. } = b
+            // **Rebuilt when the info string has grown** — the backticks arrive a delta before
+            // the language does. See `CodePaint::info`.
+            if let Block::Code { lang, .. } = b
+                && !paint.as_ref().is_some_and(|p| p.is_for(lang))
             {
                 paint = Some(CodePaint::new(lang, cfg.painter()));
             }
@@ -1101,6 +1127,32 @@ mod tests {
             light: false,
             images: false,
         }
+    }
+
+    /// **A fence streamed in is highlighted once its language arrives.** The first frame of a
+    /// streamed fence usually holds only its backticks; the cache built the highlighter then,
+    /// for no language, and kept it — so the block stayed plain while a one-shot render of
+    /// the same text was coloured. Found porting this cache to `rano::markdown`.
+    #[test]
+    fn a_fence_named_after_its_backticks_is_still_highlighted() {
+        let cfg = RenderConfig {
+            width: 60,
+            color: true,
+            ..RenderConfig::default()
+        };
+        let keyword = letibot_ui::style::Palette::Colour.open(Role::Keyword);
+        let mut md = crate::ui::markdown::IncrementalMarkdown::new();
+        let mut cache = BlockCache::new();
+        let mut last = Vec::new();
+        for delta in ["Here:\n\n```", "rust\nfn main() {}\n", "```\n\nDone.\n"] {
+            md.push(delta);
+            last = cache.lines(&md, &cfg, 40);
+        }
+        let streamed = last.join("\n");
+        assert!(
+            streamed.contains(keyword),
+            "the streamed fence is plain:\n{streamed}"
+        );
     }
 
     /// **A tab-indented fence expands its tabs, in every branch.**
