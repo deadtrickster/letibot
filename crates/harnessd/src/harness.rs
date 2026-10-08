@@ -2887,6 +2887,11 @@ impl Harness {
         // the access-class questions are answered by the schemas that were actually
         // seated a few lines above — not by which role was requested. Four instances
         // of one defect were paid for to learn that distinction.
+        let firecode = seated
+            .iter()
+            .any(|n| n == "task" || n == "task_start")
+            .then(letibot_tools::firecode::installed)
+            .flatten();
         let wiring = GateWiring {
             adjudicator: gate.describe(),
             backend_writable,
@@ -2914,6 +2919,10 @@ impl Harness {
             // counts come from the table rather than from a count this process
             // kept — which would read as zero on a store full of earlier runs.
             corpus: corpus_counts,
+            // **Asked once, here, and only where a subagent can be started** — FIRECODE-NOTES
+            // item 4: a VM placement's preconditions were found out at spawn, one refusal per
+            // attempt. The banner says them up front.
+            firecode,
         };
 
         let spiller = build_spiller(&cfg)?;

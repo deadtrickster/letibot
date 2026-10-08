@@ -1688,6 +1688,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // interrupted mid-flight. Dropping the handle detaches the thread; the process is exiting.
     merge_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     drop(merge_queue);
+    // **Every subagent's VM comes down with the daemon.** Their backends live on threads the
+    // process's exit does not unwind, so their `Drop` never ran and the VMs outlived it —
+    // two of the acceptance suite's own runs, 2026-10-08. firecode's `down` delivers the work.
+    letibot_tools::firecode::down_all();
 
     daemon.shutdown();
     // The seat after the daemon: the listener's next poll window sees the stop and

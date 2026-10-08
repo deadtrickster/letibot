@@ -2407,6 +2407,37 @@ impl Config {
                 ),
             )),
         }
+        // **What `task(where: firecode)` would get on this host**, said where a subagent can be
+        // started — FIRECODE-NOTES item 4: the placement's preconditions used to be found out
+        // at spawn, one refusal per attempt.
+        if wiring
+            .seated
+            .iter()
+            .any(|t| t == "task" || t == "task_start")
+        {
+            match &wiring.firecode {
+                Some(fc) => out.push(Disclosure::on(
+                    "firecode",
+                    format!(
+                        "a subagent can be placed in a VM: firecode at {}{}",
+                        fc.path.display(),
+                        if fc.inherit {
+                            ", and a VM's copy inherits its source's layers"
+                        } else {
+                            " — no layer inheritance (this firecode has no `layer inherit`): \
+                             a VM boots on base-image toolchains"
+                        }
+                    ),
+                )),
+                None => out.push(Disclosure::off(
+                    "firecode",
+                    "NOT FOUND",
+                    "no firecode on the daemon's PATH and no $FIRECODE_BIN, so \
+                     `task(where: firecode)` is refused at the call; subagents run in this \
+                     session's own boundary",
+                )),
+            }
+        }
         if self.placement == letibot_tools::builtins::task::Placement::Firecode {
             out.push(Disclosure::on(
                 "placement",
@@ -2550,6 +2581,9 @@ pub struct GateWiring {
     /// working, and nothing about a session that is dropping them looks different
     /// from one that is keeping them.
     pub corpus: Option<letibot_tokencore::store::CorpusCounts>,
+    /// The firecode a subagent would be placed in a VM with, asked once at start — `None`
+    /// when this host has none, so `task(where: firecode)` would be refused.
+    pub firecode: Option<letibot_tools::firecode::Installed>,
 }
 
 impl GateWiring {
@@ -2571,6 +2605,7 @@ impl GateWiring {
             intent_encoder: false,
             monitor_wake: false,
             corpus: None,
+            firecode: None,
         }
     }
 }
@@ -4035,6 +4070,47 @@ system_extra = "One short tool call beats a long plan."
         assert_ne!(
             detail(&woken, "monitor wake"),
             detail(&watching, "monitor wake")
+        );
+    }
+
+    /// **Whether a subagent can be placed in a VM is said at start, not found out at spawn** —
+    /// FIRECODE-NOTES item 4: *"Resolve the binary and probe capabilities at daemon start, and
+    /// publish them in the banner."* Only where a subagent can be started at all.
+    #[test]
+    fn the_banner_says_whether_a_subagent_can_be_placed_in_a_vm() {
+        let c = Config::for_this_box("/tmp");
+        let subjects = |w: &GateWiring| -> Vec<String> {
+            c.disclosures(w).into_iter().map(|d| d.subject).collect()
+        };
+        let detail = |w: &GateWiring, s: &str| -> String {
+            c.disclosures(w)
+                .into_iter()
+                .find(|d| d.subject == s)
+                .map(|d| d.detail)
+                .unwrap_or_default()
+        };
+        let base = GateWiring {
+            seated: vec!["task".into()],
+            ..GateWiring::read_only()
+        };
+        let found = GateWiring {
+            firecode: Some(letibot_tools::firecode::Installed {
+                path: "/opt/homebrew/bin/firecode".into(),
+                inherit: false,
+            }),
+            ..base.clone()
+        };
+        let line = detail(&found, "firecode");
+        assert!(line.contains("/opt/homebrew/bin/firecode"), "{line}");
+        assert!(line.contains("no layer inheritance"), "{line}");
+        let missing = detail(&base, "firecode");
+        assert!(missing.contains("refused"), "{missing}");
+        assert!(missing.contains("FIRECODE_BIN"), "{missing}");
+        // And no line at all where no subagent can be started.
+        assert!(
+            !subjects(&GateWiring::read_only())
+                .iter()
+                .any(|s| s == "firecode")
         );
     }
 
