@@ -71,30 +71,77 @@
 //! page. One flag, three consequences, and [`super::host::SpawnRequest::tty`] is
 //! where that is argued.
 //!
-//! **A terminal with no controlling terminal, and why it stays that way.** An
-//! interactive shell that has none prints two lines of its own about job control —
-//! `bash: cannot set terminal process group (…)` and `bash: no job control in this
-//! shell` — **before it reads any rc file**, so they land on the row of every
-//! operator command. Measured, through this host: `! echo hi` comes back as those two
+//! # A controlling terminal, which this path used to decline and now takes
+//!
+//! An interactive shell with no controlling terminal prints two lines of its own about
+//! job control — `bash: cannot set terminal process group (…)` and `bash: no job control
+//! in this shell` — **before it reads any rc file**, so they landed on the row of every
+//! operator command. Measured, through this host: `! echo hi` came back as those two
 //! lines and then `hi`.
 //!
-//! The fix is `setsid` plus `TIOCSCTTY`, which is what a pty handed to a shell
-//! normally is, and it was **rejected**: it makes `/dev/tty` *openable*, where it is
-//! `ENXIO` today. The programs that open it are the ones that want a person at the
-//! keyboard — [`super::terminal`]'s own class, refused by name when the command names
-//! them — and the ones reached **indirectly** (git's editor, `gpg`'s pinentry) would
-//! go from failing at once to waiting for a keystroke that cannot arrive, which is the
-//! defect the sibling `bang-term` branch closed rather than reopened. Two lines of
-//! bash's own diagnostics are the cheaper defect, and they are true.
+//! **This branch first tried to hide them and the operator refused the hiding**: *"nah, i
+//! think that bash should feel comfortable actually"*. A filter that drops two sentences
+//! leaves a shell that still has no job control — no `jobs`, no `^Z`/`fg`/`bg`, no signal
+//! behaviour like the operator's own terminal — and leaves `!send` writing to a pipe that
+//! is *not* the terminal, which is the anomaly the whole feature was compensating for.
+//! The two sentences are a **symptom**, and the cause is the missing terminal.
 //!
-//! **And it stays rejected, which is the half a later branch could have broken.**
-//! [`super::term`] *does* do both, and it is the right answer there for the one reason
-//! that does not apply here: **in a pane, keystrokes arrive.** A person is at the other
-//! end of that pty and the head forwards their keys down it, so `/dev/tty` being
-//! openable is the feature rather than the hazard. This module's pty is a *capture* —
-//! one transcript row, `/dev/null` on stdin — and a capture with a controlling terminal
-//! is a program that waits for ever. The two paths differ in exactly that, and neither
-//! should borrow the other's answer.
+//! So the child is given one: `setsid` plus `TIOCSCTTY` on the slave, and **the pty on all
+//! three of stdin, stdout and stderr** — the standard recipe, the one [`super::term`]'s
+//! pane already uses, the one `socat exec:'bash -li',pty,stderr,setsid,sigint,sane` is a
+//! shorthand for, and the one tmux, neovim's `:terminal` and Emacs' `term` each implement
+//! in their own idiom. **The held stdin pipe was this path's own anomaly**: it is exactly
+//! what left bash without a controlling terminal on its own stdin, and it is why `!send`
+//! and the prompt card had to invent a rule (*fd 0 is on OUR pipe*) that no other
+//! implementation needs. [`controlling_terminal`] is the mechanism and it is shared with
+//! the pane rather than copied.
+//!
+//! ## The trade, stated rather than discovered
+//!
+//! It makes `/dev/tty` **openable**, where it was `ENXIO`. The programs that open it are
+//! the ones that want a person at the keyboard — [`super::terminal`]'s own class, refused
+//! by name when the command names them — and the ones reached **indirectly**: git's
+//! editor, `gpg`'s pinentry, `ssh` asking for a password. Those went from **failing at
+//! once** to **waiting**, and that is the cost this branch accepted on the operator's own
+//! instruction rather than a hazard it failed to see.
+//!
+//! **The two facts that make it survivable, and both have to be said together with it:**
+//!
+//! 1. **The deadline is a thread of its own, and it kills the run's cgroup.** A run that
+//!    waits for a keystroke is ended by [`super::host`]'s deadline — not by the thread
+//!    inside the command, which cannot act while it is the one blocked. That was
+//!    `agent/hang-watch`, merged as `182773b`, and it is what turns *waits for ever* into
+//!    *waits until its deadline*.
+//! 2. **The daemon says when it cannot tell whether the run is waiting.** A run whose
+//!    processes this uid may not read is reported as exactly that —
+//!    [`super::ask::Waiting::Unreadable`], published as its own sentence — instead of
+//!    being rendered as *not asking*. So the indirect case is not silence: it is a
+//!    statement about the daemon's own reach, and `!send` is the way in under it.
+//!
+//! ## What is NOT the same as the pane, and why that is not a duplication
+//!
+//! The mechanism is one; **the reader differs**, and two settings follow from that rather
+//! than from a second implementation:
+//!
+//! * **`ECHO` is off here** ([`Pty::no_echo`]) and on in a pane. A pane has a person
+//!   typing at it, so the echo is what makes their keys visible. This path's input comes
+//!   from the daemon — `!send`, and the prompt card's answer — and echoing it back would
+//!   put it in the run's output, which is a transcript row and a model's prompt.
+//!
+//!   **A password answered this way is the case that makes it more than tidiness.** A
+//!   program that asks for one on its own terminal — `ssh`, `gpg`, a `sudo` reached without
+//!   the `-A` shim — is answered by a person typing `!send <password>`, and with the echo on
+//!   those bytes would be in the capture, which is a transcript row and a model's prompt.
+//!
+//!   **The secret card is a different path and this is not it.** A password for `sudo`
+//!   travels head → daemon → `letibot-askpass` → sudo's own stdin, and never touches this
+//!   terminal; `harnessd`'s `prompt` module says so in its own header and the two must not be
+//!   merged by a later edit. The echo is off here for the lines a **person** sends, and for
+//!   nothing else.
+//! * **A pane knows its rectangle and this path does not.** There is no head drawing the
+//!   row, so nothing calls `TIOCSWINSZ` and the pty keeps the default size. Named here
+//!   because it is the other difference a reader will notice: a program that lays out for
+//!   a screen lays out for a default rather than for a screen nobody measured.
 //!
 //! # Why `libc`, in a crate whose manifest said it had none
 //!
@@ -113,13 +160,21 @@ use std::process::Stdio;
 
 /// A pty pair: the master end this process reads, the slave end the command writes to.
 ///
-/// **One handle per end, and the slave handle is dropped after `spawn`.** A slave this
+/// **One handle per end, and every slave handle is dropped after `spawn`.** A slave this
 /// process still holds open is a slave that never closes, so a read on the master would
 /// never report the child's exit — the drain thread would block for ever and the waiter
-/// behind it would never reap the job. [`Pty::into_master`] is that drop, named.
+/// behind it would never reap the job. [`Pty::into_master`] is that drop for the pty's own
+/// handle; a caller that put the slave on all three descriptors has three more to drop,
+/// and `host`'s spawn does it with `Stdio::null` on each (see the note there).
 pub struct Pty {
     master: File,
     slave: File,
+    /// **The slave's own name** — `/dev/pts/N`, from `ptsname_r` at open.
+    ///
+    /// Kept because it is the only thing that can answer *is this process's fd 0 the
+    /// terminal we are holding?* — see [`Pty::slave_path`] and [`super::ask`]. The master's
+    /// name (`/dev/ptmx`) is the same for every pty on the box and answers nothing.
+    slave_path: String,
 }
 
 impl Pty {
@@ -180,6 +235,7 @@ impl Pty {
         let pty = Pty {
             master,
             slave: unsafe { File::from_raw_fd(slave_fd) },
+            slave_path: path.to_string_lossy().into_owned(),
         };
         pty.plain_newlines()?;
         Ok(pty)
@@ -207,14 +263,88 @@ impl Pty {
         Ok(())
     }
 
-    /// The slave end, for `Command::stdout` / `Command::stderr`.
+    /// The slave end, for a `Command`'s stdin, stdout or stderr — **one clone per call**,
+    /// because a `Stdio` takes ownership of the descriptor it is given.
     ///
-    /// **stdout and stderr, never stdin.** stdin is a terminal here would mean a
-    /// command that reads it waits for a person who is not there, where a pipe gave it
-    /// EOF — the change from *a command that answers* to *a command that hangs until
-    /// its deadline*, for a colour nobody asked for on fd 0.
+    /// **All three of them, on both paths that use this type.** stdout and stderr are the
+    /// colour; stdin is what makes the child's terminal its *controlling* terminal, and
+    /// [`controlling_terminal`] is the other half. See the module header for why this path
+    /// no longer keeps a pipe on fd 0.
     pub fn stdio(&self) -> io::Result<Stdio> {
         Ok(Stdio::from(self.slave.try_clone()?))
+    }
+
+    /// **The slave's own descriptor**, for [`controlling_terminal`].
+    ///
+    /// The field is private because nothing outside should be doing I/O on this end — it is
+    /// a `File` the child has three copies of and this process must keep exactly none after
+    /// `spawn`. What a caller needs is the *number*, to hand to the `pre_exec` that acquires
+    /// the terminal.
+    pub fn slave_fd(&self) -> std::os::fd::RawFd {
+        self.slave.as_raw_fd()
+    }
+
+    /// **A second handle on the master, for writing to the run** — what `!send` and the
+    /// prompt card's answer travel down. One mechanism, and [`super::jobs::Stdin`] is where it
+    /// is; the *secret* card is the `askpass` path and does not come through here.
+    ///
+    /// A `dup` rather than one `File` behind a mutex, and the reason is the drain: the
+    /// other handle is blocked in `read` on the master for the whole life of the run, so a
+    /// shared one would put every answer behind a read that is not going to return. This is
+    /// [`super::term`]'s own argument for its keystroke handle, and the two paths have the
+    /// same shape now.
+    ///
+    /// It is a **master** and not a slave, which is what makes it safe to hold for the whole
+    /// run: the master reports the child's exit when the last *slave* closes, and an extra
+    /// master is nobody else's descriptor. An extra slave here would be the defect
+    /// [`Pty::into_master`] exists to prevent.
+    pub fn input(&self) -> io::Result<File> {
+        self.master.try_clone()
+    }
+
+    /// **The name of the device this pty's slave is** — `/dev/pts/N` on this box.
+    ///
+    /// The reader is [`super::ask`], and the question it answers is not rhetorical: with
+    /// the terminal on fd 0, *"the run is blocked reading its terminal"* is only a fact if
+    /// the terminal is **this** one. A `grep` blocked on `ls`'s pipe in `! ls | grep foo`
+    /// has somebody else's descriptor on its fd 0, and without this comparison a slow `ls`
+    /// would raise a card claiming the run was waiting for a line.
+    ///
+    /// The master is no use here: it is `/dev/ptmx` for every pty on the box.
+    pub fn slave_path(&self) -> &str {
+        &self.slave_path
+    }
+
+    /// **`ECHO` off, and `ECHONL` with it** — the terminal stops repeating what is written
+    /// to it back into its own output.
+    ///
+    /// This is what keeps the daemon's own writes out of the run's output. They are the
+    /// operator's `!send` line and the secret card's answer, and the second is the one that
+    /// decides it: the card's answer is a password and is deliberately never logged with
+    /// its payload, so a terminal that echoed it would put it in the run's output — which is
+    /// a transcript row, and a model's next prompt. Measured on this box before the call
+    /// was written: a line written to a default pty's master comes back on the master as
+    /// the program's echo, `b'hello\r\n'` for `b'hello\n'`.
+    ///
+    /// **A pane does not do this and must not.** There a person is typing at the terminal
+    /// and the echo is what makes their keys visible; the difference is the reader, not the
+    /// mechanism. `ICANON` and `ISIG` stay as they are: the program still reads a line at a
+    /// time and `^C`/`^Z` still reach it, which is the job control this path just gained.
+    ///
+    /// **Off on the device, before anything runs**, for the reason
+    /// [`Pty::plain_newlines`] gives about `ONLCR`: an `stty` inside the command would be a
+    /// program that has to exist and has to run before the first byte the command writes.
+    pub fn no_echo(&self) -> io::Result<()> {
+        let fd = self.slave.as_raw_fd();
+        let mut t: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(fd, &mut t) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        t.c_lflag &= !(libc::ECHO | libc::ECHONL);
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &t) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     /// The master end, with this process's own slave handle closed.
@@ -231,7 +361,46 @@ impl std::fmt::Debug for Pty {
         f.debug_struct("Pty")
             .field("master", &self.master.as_raw_fd())
             .field("slave", &self.slave.as_raw_fd())
+            .field("slave_path", &self.slave_path)
             .finish()
+    }
+}
+
+/// **Make the child a session leader whose controlling terminal is the pty slave on `fd`.**
+///
+/// The two calls are the whole of it, and they are in this order for a reason: `setsid`
+/// makes the process a session leader with **no** controlling terminal, and `TIOCSCTTY`
+/// then takes one. Called the other way round it fails, because a process may not acquire a
+/// controlling terminal it already has.
+///
+/// **`fd` and not `0`**, although both callers pass a descriptor that ends up on stdin.
+/// `TIOCSCTTY` acquires the terminal for the *session*, not for the descriptor, so the fd
+/// it is given only has to refer to the device — and naming the pty's own descriptor rather
+/// than assuming which of the child's three it will be does not depend on the order in
+/// which std dup2s the stdio onto 0, 1 and 2. [`super::term`] passes `0` and is right to;
+/// this signature does not make a reader work out why.
+///
+/// # Failure is not fatal, and what it costs
+///
+/// `setsid` fails only if the caller is already a group leader, which a forked child is
+/// not; `TIOCSCTTY` fails if the terminal already belongs to another session, which a fresh
+/// pty's does not. Neither is expected, and **neither is a reason to lose the run**: a child
+/// without a controlling terminal still runs on this pty, it just cannot open `/dev/tty`,
+/// and bash prints its two lines about job control again. So the failure is swallowed here
+/// — and it is **not silent in effect**: the two sentences are the visible symptom, and they
+/// are exactly what comes back. Named because a swallowed failure is otherwise a mechanism
+/// that looks like it ran.
+pub fn controlling_terminal(cmd: &mut std::process::Command, fd: std::os::fd::RawFd) {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setsid() < 0 {
+                // Already a group leader, which a forked child is not — so this is a
+                // failure we do not understand, and the command still runs.
+            }
+            let _ = libc::ioctl(fd, libc::TIOCSCTTY, 0);
+            Ok(())
+        });
     }
 }
 
@@ -448,5 +617,163 @@ mod tests {
         // If the parent still held a slave this would block for ever; the test's own
         // completion is the assertion, and the text says the read ended at the exit.
         assert_eq!(read_to_close(master), "done\n");
+    }
+
+    /// Spawn `script` with **all three** descriptors on the pty, and with
+    /// [`controlling_terminal`] called or not — the two halves of one question.
+    fn run_three(pty: &Pty, script: &str, controlling: bool) -> std::process::Child {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg(script);
+        cmd.stdin(pty.stdio().unwrap())
+            .stdout(pty.stdio().unwrap())
+            .stderr(pty.stdio().unwrap());
+        if controlling {
+            controlling_terminal(&mut cmd, pty.slave.as_raw_fd());
+        }
+        cmd.spawn().expect("sh starts")
+    }
+
+    /// **The property this branch added: the child's terminal IS its controlling
+    /// terminal**, which is what makes bash a job-control shell and silences its two
+    /// lines about job control.
+    ///
+    /// Not *"a controlling terminal exists"* — which a test run from an operator's own
+    /// terminal would satisfy without any of this working — but *"`/dev/tty` and fd 0 are
+    /// the same device"*, asked from inside the child. The probe is [`super::term`]'s, for
+    /// the reason it records there: `tty < /dev/tty` prints the name it was *given*, and
+    /// what does answer is `ps -o tty= -p $$` (the controlling terminal, read out of
+    /// `/proc/<pid>/stat`) against `readlink /proc/self/fd/0` (the device actually on fd 0).
+    ///
+    /// The control is the same pty and the same shell **without** the two calls, and it is
+    /// in the same test so a green run cannot be a `readlink` that answered `same` for
+    /// another reason.
+    #[test]
+    fn the_childs_terminal_is_its_controlling_terminal() {
+        const ASK: &str = "exec 9</dev/tty 2>/dev/null || { echo no-ctty; exit 0; }; \
+                           a=$(ps -o tty= -p $$ 2>/dev/null); \
+                           b=$(readlink /proc/self/fd/0 2>/dev/null); \
+                           if [ \"$a\" != \"?\" ] && [ -n \"$a\" ] && [ \"/dev/$a\" = \"$b\" ]; \
+                           then echo same; else echo \"diff:a=$a:b=$b\"; fi";
+
+        let p = Pty::open().expect("a pty on this box");
+        let mut child = run_three(&p, ASK, true);
+        let master = p.into_master();
+        let seen = read_to_close(master);
+        let _ = child.wait();
+        assert_eq!(
+            seen, "same\n",
+            "the child must get THIS pty as its controlling terminal, and must be able to \
+             open /dev/tty on it"
+        );
+
+        // The control: the same pair, the same shell, no `setsid`, no `TIOCSCTTY`.
+        //
+        // **Its own error IS the control's answer.** The open fails with `ENXIO` — *No such
+        // device or address* — and `dash` aborts the script there rather than taking the
+        // `||` arm, so `no-ctty` is never reached and the assertion is on the error. That
+        // `ENXIO` is the fact the module header cites for what this change traded away, and
+        // pinning it is what stops the control quietly ceasing to fail.
+        let p = Pty::open().expect("a pty");
+        let mut child = run_three(&p, ASK, false);
+        let master = p.into_master();
+        let seen = read_to_close(master);
+        let _ = child.wait();
+        assert!(
+            !seen.contains("same"),
+            "without the two calls /dev/tty must NOT be openable, or this test measures \
+             nothing: {seen:?}"
+        );
+        assert!(
+            seen.contains("No such device or address"),
+            "the control's open must fail with ENXIO, which is what makes /dev/tty \
+             unopenable rather than merely unused: {seen:?}"
+        );
+    }
+
+    /// **`no_echo` is what keeps the daemon's own writes out of the run's output.**
+    ///
+    /// The program reads one line and prints it, so the whole of what the master returns is
+    /// the answer plus — where the terminal echoes — a second copy of what was typed. The
+    /// control is the same pty without the call, and it is in the same test because
+    /// *"nothing was echoed"* and *"nothing was written"* are the same observation
+    /// otherwise.
+    ///
+    /// This is the reason the call exists rather than a nicety: the daemon writes the secret
+    /// card's answer down this descriptor, and that answer is a password the tree deliberately
+    /// does not log.
+    #[test]
+    fn a_line_written_to_the_master_is_not_echoed_back_when_echo_is_off() {
+        const EAT: &str = "IFS= read -r x; printf '%s\\n' \"$x\"";
+
+        let p = Pty::open().expect("a pty on this box");
+        p.no_echo().expect("the slave takes a termios");
+        let mut child = run_three(&p, EAT, true);
+        let mut master = p.into_master();
+        {
+            use std::io::Write;
+            master
+                .write_all(b"hello\n")
+                .expect("the line reaches the pty");
+            master.flush().ok();
+        }
+        let seen = read_to_close(master);
+        let _ = child.wait();
+        assert_eq!(
+            seen, "hello\n",
+            "with ECHO off the master must carry the program's answer and NOT a copy of \
+             what was written to it"
+        );
+
+        // The control: the same write, the same program, echo left on.
+        let p = Pty::open().expect("a pty");
+        let mut child = run_three(&p, EAT, true);
+        let mut master = p.into_master();
+        {
+            use std::io::Write;
+            master
+                .write_all(b"hello\n")
+                .expect("the line reaches the pty");
+            master.flush().ok();
+        }
+        let seen = read_to_close(master);
+        let _ = child.wait();
+        assert_eq!(
+            seen, "hello\nhello\n",
+            "a default pty DOES echo, or `no_echo` would be asserting about nothing"
+        );
+    }
+
+    /// **The name on the child's fd 0 is the name of the device we hold the master of** —
+    /// which is the whole of the comparison [`super::ask`] makes.
+    ///
+    /// Two ptys would make the assertion mean nothing, so the control is a *second* pty
+    /// opened in the same test: its slave's name must differ from the first one's. That is
+    /// the property the reader depends on, asserted rather than assumed.
+    #[test]
+    fn the_slave_path_names_the_device_the_child_is_on() {
+        let p = Pty::open().expect("a pty on this box");
+        let other = Pty::open().expect("a second pty");
+        assert_ne!(
+            p.slave_path(),
+            other.slave_path(),
+            "two ptys must not share a name, or asking whose terminal this is answers nothing"
+        );
+        assert!(
+            p.slave_path().starts_with("/dev/pts/"),
+            "this box names pty slaves /dev/pts/N: {:?}",
+            p.slave_path()
+        );
+
+        let mut child = run_three(&p, "readlink /proc/self/fd/0", true);
+        // Read the name **before** the pty is consumed: `into_master` takes the handle.
+        let named = p.slave_path().to_string();
+        let master = p.into_master();
+        let seen = read_to_close(master);
+        let _ = child.wait();
+        assert_eq!(
+            seen.trim_end(),
+            named,
+            "the child's fd 0 must be the device this Pty opened"
+        );
     }
 }

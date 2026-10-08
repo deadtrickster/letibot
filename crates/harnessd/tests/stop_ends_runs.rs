@@ -8,8 +8,8 @@
 //! command's own deadline is what ends it. Two minutes at the `bash` default.
 //!
 //! MEASURED on a live daemon before this change, 2026-10-06, with the operator's own shape
-//! (`! /usr/bin/su -c true`: a root process blocked on the daemon's pipe, its whole tree
-//! `EACCES` for this uid):
+//! (`! /usr/bin/su -c true`: a root process blocked on the device the daemon holds for it,
+//! its whole tree `EACCES` for this uid):
 //!
 //! ```text
 //! Stop acked

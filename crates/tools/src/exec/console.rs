@@ -57,16 +57,20 @@
 //!   the aliases are the part the boundary hides. Said here because the
 //!   alternative is an operator wondering why `! ll` works in one session and not
 //!   in another.
-//! - **A terminal with no controlling terminal.** The run's terminal is a capture:
-//!   stdin is `/dev/null` and the pty is not the child's controlling terminal
-//!   ([`super::pty`] says why). An interactive bash in that position prints two
-//!   lines of its own about job control before it reads any rc file, so they land on
-//!   the row of every operator command — measured, through the host: `! echo hi`
-//!   comes back as those two lines and then `hi`. They are bash's and they are true.
-//!   Making the pty the child's controlling terminal silences them and was rejected
-//!   on [`super::pty`]'s own ruling: it makes `/dev/tty` openable, and a program that
-//!   wants a person at the keyboard — reached indirectly, as git's editor and `gpg`'s
-//!   pinentry are — would wait for a keystroke that cannot arrive.
+//! - **The run HAS a controlling terminal, and that is the trade this path accepts.** It did
+//!   not have one, and the two lines bash prints without it — `bash: cannot set terminal
+//!   process group (…)` and `bash: no job control in this shell` — landed on the row of every
+//!   operator command: measured, through the host, `! echo hi` came back as those two lines and
+//!   then `hi`. **They are gone because their cause is gone** — the run is a job-control shell
+//!   now, so `jobs`, `^Z`, `fg` and `bg` are real — which is what the operator asked for
+//!   (*"nah, i think that bash should feel comfortable actually"*) and is not a filter.
+//!
+//!   **The price, stated where the change lives and repeated here because this is the path it
+//!   is paid on.** `/dev/tty` is openable now, so a program reached **indirectly** — git's
+//!   editor, `gpg`'s pinentry, `ssh` asking for a password — **waits** where it used to fail at
+//!   once. [`super::pty`]'s header carries why that is survivable (the deadline is a thread of
+//!   its own that kills the run's cgroup, and the daemon says when it cannot tell) and it is the
+//!   same trade the pane makes.
 //! - **TODO: the console's shell is assumed to be bash.** `$SHELL` is where a
 //!   console would say otherwise, and reading it needs a decision about flags
 //!   (`-ic` is bash's and zsh's, not fish's) and about a daemon whose environment

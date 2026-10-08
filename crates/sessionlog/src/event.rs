@@ -1318,11 +1318,13 @@ pub enum SessionEvent {
     },
     /// **A run of the operator's own is waiting for an answer.**
     ///
-    /// The operator's `!` line is the one run whose stdin is a pipe this daemon holds
-    /// (`letibot_tools::exec::Stdin`), so *"the program is waiting for a line"* is a fact
+    /// The operator's `!` line is the one run whose input this daemon holds
+    /// (`letibot_tools::exec::Stdin`) — its own terminal, and a pipe only on a box where no pty
+    /// opens — so *"the program is waiting for a line"* is a fact
     /// about the process and not a guess about its words — `letibot_tools::exec::ask` reads
-    /// `/proc/<pid>/fd/0` against the write end's inode and `/proc/<pid>/task/*/wchan` for a
-    /// pipe read, and **that** is what raises this. The operator's own correction is why it
+    /// `/proc/<pid>/fd/0` against the device this daemon holds and
+    /// `/proc/<pid>/task/*/wchan` plus `/proc/<tid>/syscall` for a read on it, and **that** is
+    /// what raises this. The operator's own correction is why it
     /// is not a text match: *"i think `Continue?` is an overfit"* — question wording is
     /// per-program, per-locale and per-version, and a matcher for it fails silently on the
     /// next program.

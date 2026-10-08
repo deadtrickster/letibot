@@ -975,6 +975,96 @@ fn the_operators_own_run_gets_a_terminal_and_a_models_call_does_not() {
     );
 }
 
+/// **The operator's own run is a job-control shell, and bash's two lines about not having
+/// one are gone** — gone because their cause is gone and not because anything filtered them.
+///
+/// The operator's answer to the first cut of this was *"nah, i think that bash should feel
+/// comfortable actually"*: a filter that drops `bash: no job control in this shell` leaves a
+/// shell that still has none — no `jobs`, no `^Z`/`fg`/`bg`, no signal behaviour like their
+/// own console. So this asserts the **cause** and the **want**, and the two absent sentences
+/// are the consequence rather than the thing bought:
+///
+/// * `$-` contains `m` — bash's own answer that **monitor mode**, which is job control, is on.
+///   Measured on this box, 2026-10-07: `bash -ic` with this pty as its controlling terminal
+///   answers `MONITOR`; the same shell with the same pty **not** its controlling terminal
+///   answers `NO-MONITOR` and prints the two lines.
+/// * `/dev/tty` **opens** — so the terminal it opened is this pty, which is what makes the
+///   first true. It is the same question [`letibot_tools::exec::term`]'s pane test asks.
+///
+/// **`(exec 9</dev/tty)` and not `[ -r /dev/tty ]`**, and the difference is not style: measured
+/// in the same pair, `[ -r /dev/tty ]` answers *yes* **without a controlling terminal too**,
+/// because it is a mode check on a device node rather than an open. The obvious probe lies, and
+/// a test written on it would be green on a box where this whole change did nothing.
+///
+/// **The control is the model's entry in the same test.** Its run has no pty at all —
+/// `/dev/null` on fd 0 and pipes for output — so it must answer *not a terminal* on both
+/// descriptors, which is what keeps `MONITOR` above from being a fact about `bash` on this box
+/// rather than about this path. (`MONITOR` itself is only asserted on the operator's entry: the
+/// model's run is `/bin/sh`, a different shell, so *it does not say MONITOR* would prove
+/// nothing about the terminal.)
+#[test]
+fn the_operators_own_run_is_a_job_control_shell_and_its_two_bash_lines_are_gone() {
+    let mut h = runner!("operator job control");
+    // **An exact line and not `contains`**: `NO-MONITOR` contains `MONITOR`, so the obvious
+    // spelling of the assertion below would be green on the run this change did not fix.
+    fn said(body: &str, word: &str) -> bool {
+        body.lines().any(|l| l.trim() == word)
+    }
+    let question = concat!(
+        "case \"$-\" in *m*) echo MONITOR;; *) echo NO-MONITOR;; esac; ",
+        "if (exec 9</dev/tty) 2>/dev/null; then echo HAS-CTTY; else echo NO-CTTY; fi"
+    );
+    let call = letibot_transcript::ToolCall {
+        id: "bang-jobctl".into(),
+        name: "bash".into(),
+        arguments: serde_json::json!({ "command": question }).to_string(),
+    };
+
+    // ---- The operator's own run.
+    let theirs = h.rt.invoke_operator("", &call, &mut h.sink);
+    assert!(
+        matches!(theirs.outcome, ToolOutcome::Ok),
+        "the operator's own command must run: {}",
+        theirs.render()
+    );
+    let body = theirs.render();
+    assert!(
+        said(&body, "MONITOR"),
+        "job control must be ON for the operator's own run, or `jobs`, `^Z`, `fg` and `bg` are \
+         all still absent: {body}"
+    );
+    assert!(
+        said(&body, "HAS-CTTY"),
+        "the operator's run must have THIS pty as its controlling terminal — that is the cause \
+         `MONITOR` is the symptom of: {body}"
+    );
+    // The two sentences, which follow from the two facts above rather than being filtered out.
+    assert!(
+        !body.contains("job control in this shell"),
+        "bash's own `no job control` line reached the row: {body}"
+    );
+    assert!(
+        !body.contains("cannot set terminal process group"),
+        "bash's own `cannot set terminal process group` line reached the row: {body}"
+    );
+
+    // ---- The control: a model's call has no terminal at all.
+    let pty_probe = concat!(
+        "if [ -t 0 ]; then echo STDIN-TTY; else echo STDIN-NOT-TTY; fi; ",
+        "if [ -t 1 ]; then echo STDOUT-TTY; else echo STDOUT-NOT-TTY; fi"
+    );
+    let mine = h.call(
+        "bash",
+        &serde_json::json!({ "command": pty_probe }).to_string(),
+    );
+    let mine = mine.render();
+    assert!(
+        said(&mine, "STDIN-NOT-TTY") && said(&mine, "STDOUT-NOT-TTY"),
+        "a model's call must have no terminal on either descriptor, so `MONITOR` above is about \
+         the operator's path: {mine}"
+    );
+}
+
 /// **The operator's own case, against the program they reported it about.**
 ///
 /// `[ -t 1 ]` is the mechanism; this is the fact. The operator's report was *"i run
