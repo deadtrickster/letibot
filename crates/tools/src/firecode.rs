@@ -260,7 +260,13 @@ impl FirecodeBackend {
     /// commands. Every failure names the door: the copy, the boot, or the first
     /// command.
     pub fn up(spec: &FirecodeSpec) -> Result<FirecodeBackend, BackendError> {
-        let bin = firecode_bin();
+        // **Resolved to an absolute path, once, here**, so every job runs the client the
+        // placement found rather than looking `firecode` up again under the job's own
+        // environment — which the exec layer clears. That clearing is what the tmux
+        // acceptance spec `local/subagent-firecode.sh` caught on 2026-10-08: firecode
+        // derived HOME with `getent`, which macOS lacks, and every command in the VM came
+        // back `exit 127` (fixed in firecode). A missing CLI fails here, by name.
+        let bin = firecode_available().map_err(BackendError::Io)?;
         let project = spec.cache.join(&spec.name);
         if project.exists() {
             return Err(BackendError::Io(format!(
