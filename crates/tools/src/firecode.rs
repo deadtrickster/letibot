@@ -101,6 +101,100 @@ pub fn firecode_available() -> Result<PathBuf, String> {
         .ok_or_else(|| "there is no `firecode` on this host's PATH (nor $FIRECODE_BIN)".to_string())
 }
 
+/// **The firecode this host would place a subagent with**: where it is, and whether it can
+/// give a copy its source's layers. The daemon asks once at start and says it in the banner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    pub path: PathBuf,
+    pub inherit: bool,
+}
+
+/// [`firecode_available`] and [`probe`] together, or `None` when there is no firecode.
+pub fn installed() -> Option<Installed> {
+    let path = firecode_available().ok()?;
+    let inherit = probe(&path).inherit;
+    Some(Installed { path, inherit })
+}
+
+/// The VMs this process's live backends hold, as `(firecode, copy)`. A backend registers when
+/// its VM is up and leaves when it is brought down.
+static LIVE: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+
+/// **Bring down every VM a live backend in this process still holds** — the daemon's last act.
+/// A subagent's backend lives on a thread that `process::exit` does not unwind, so its `Drop`
+/// never runs and its VM outlived the daemon. firecode's own `down` delivers the work; the copy
+/// is left where it is (the work may be in it), and a backend that is dropped later finds its
+/// VM already down, which `down` takes.
+pub fn down_all() {
+    let live = std::mem::take(&mut *LIVE.lock().unwrap_or_else(|e| e.into_inner()));
+    for (bin, project) in live {
+        let _ = std::process::Command::new(&bin)
+            .arg("down")
+            .arg("--project")
+            .arg(&project)
+            .stdin(Stdio::null())
+            .output();
+    }
+}
+
+/// What the installed firecode can do, asked once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probe {
+    /// `layer inherit`: a copy boots with its source's layers.
+    pub inherit: bool,
+}
+
+/// **Ask `bin` what it can do.** The verbs are read off its own `layer` usage line, which
+/// names every subcommand it has — no version number to keep in step with.
+pub fn probe(bin: &Path) -> Probe {
+    let usage = std::process::Command::new(bin)
+        .args(["layer", "--help"])
+        .stdin(Stdio::null())
+        .output()
+        .map(|o| {
+            let mut t = String::from_utf8_lossy(&o.stdout).into_owned();
+            t.push_str(&String::from_utf8_lossy(&o.stderr));
+            t
+        })
+        .unwrap_or_default();
+    Probe {
+        inherit: usage.contains("inherit"),
+    }
+}
+
+fn runnable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+/// The undo for a placement that did not finish: the copy goes, and the VM with it once one
+/// was started. Disarmed by the one path that succeeds.
+struct Unwind<'a> {
+    bin: &'a Path,
+    project: &'a Path,
+    vm: bool,
+    armed: bool,
+}
+
+impl Drop for Unwind<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if self.vm {
+            let _ = std::process::Command::new(self.bin)
+                .arg("down")
+                .arg("--project")
+                .arg(self.project)
+                .stdin(Stdio::null())
+                .output();
+        }
+        let _ = std::fs::remove_dir_all(self.project);
+    }
+}
+
 /// The `Confinement` a firecode job runs under: the VM. `wrap` is the client
 /// invocation, and the shell is empty because `firecode in` takes the command
 /// string itself and runs it under `bash -lc` in the guest.
@@ -166,6 +260,9 @@ pub struct FirecodeBackend {
     landed: std::sync::Mutex<Option<PathBuf>>,
     /// The run id, from `firecode info --json`, for a listing.
     run: String,
+    /// Why the copy has none of its source's layers, when it has none — a `layer inherit`
+    /// this firecode does not have, or one that refused. Said in [`ExecBackend::describe`].
+    layers: Option<String>,
 }
 
 impl std::fmt::Debug for FirecodeBackend {
@@ -212,6 +309,11 @@ pub struct FirecodeSpec {
     pub writable: bool,
     /// `processes()` present (an exec downgrade removes it).
     pub exec: bool,
+    /// **The firecode CLI to run, when the caller names one.** `None` is [`firecode_available`]'s
+    /// answer (`$FIRECODE_BIN`, else `firecode` on PATH). A field and not the environment so a
+    /// caller — a test with a stub — can say which without racing every other reader of
+    /// `$FIRECODE_BIN` in the process.
+    pub bin: Option<PathBuf>,
 }
 
 impl FirecodeSpec {
@@ -244,6 +346,7 @@ impl FirecodeSpec {
             up_args: Vec::new(),
             writable: true,
             exec: true,
+            bin: None,
             copy_max: std::env::var("LETIBOT_FIRECODE_COPY_MAX")
                 .ok()
                 .and_then(|v| v.trim().parse().ok())
@@ -266,7 +369,16 @@ impl FirecodeBackend {
         // acceptance spec `local/subagent-firecode.sh` caught on 2026-10-08: firecode
         // derived HOME with `getent`, which macOS lacks, and every command in the VM came
         // back `exit 127` (fixed in firecode). A missing CLI fails here, by name.
-        let bin = firecode_available().map_err(BackendError::Io)?;
+        let bin = match &spec.bin {
+            Some(b) if runnable(b) => b.clone(),
+            Some(b) => {
+                return Err(BackendError::Io(format!(
+                    "{} is not a program this host can run",
+                    b.display()
+                )));
+            }
+            None => firecode_available().map_err(BackendError::Io)?,
+        };
         let project = spec.cache.join(&spec.name);
         if project.exists() {
             return Err(BackendError::Io(format!(
@@ -275,6 +387,16 @@ impl FirecodeBackend {
             )));
         }
         std::fs::create_dir_all(&spec.cache).map_err(|e| BackendError::Io(e.to_string()))?;
+        // **From here every failure takes the copy with it** — and the VM, once there is
+        // one. A failed spawn used to leave its copy under the cache (FIRECODE-NOTES: *"the
+        // very first attempt left 286 MB"*): the `?` on a spawn error returned past the
+        // `remove_dir_all` that only a refused status reached.
+        let mut unwind = Unwind {
+            bin: &bin,
+            project: &project,
+            vm: false,
+            armed: true,
+        };
         copy_tree(&spec.source, &project, &spec.exclude, spec.copy_max)?;
 
         // Layers are attached to a PATH, and the copy has a path of its own. The
@@ -282,6 +404,10 @@ impl FirecodeBackend {
         // — measured 2026-09-14: two models in copies of a repository whose guest
         // lacked llama.cpp and the sqlite dev symlink each spent ten minutes
         // stubbing them. A source with no layers is an answer, not a failure.
+        //
+        // **And a convenience, not a requirement** (FIRECODE-NOTES item 4): a firecode without
+        // the verb, or one that refuses it, still boots the copy on its base image, and the
+        // backend says so rather than refusing the placement.
         let inherit = std::process::Command::new(&bin)
             .arg("layer")
             .arg("inherit")
@@ -291,14 +417,15 @@ impl FirecodeBackend {
             .stdin(Stdio::null())
             .output()
             .map_err(|e| BackendError::Io(format!("running {}: {e}", bin.display())))?;
-        if !inherit.status.success() {
-            let _ = std::fs::remove_dir_all(&project);
-            return Err(BackendError::Io(format!(
-                "firecode layer inherit refused ({}): {}",
-                inherit.status,
-                String::from_utf8_lossy(&inherit.stderr).trim()
-            )));
-        }
+        let layers = (!inherit.status.success()).then(|| {
+            let said = String::from_utf8_lossy(&inherit.stderr);
+            let why = if said.contains("usage:") && !said.contains("inherit") {
+                "this firecode has no `layer inherit`".to_string()
+            } else {
+                format!("`layer inherit` refused: {}", said.trim())
+            };
+            format!("no layer inheritance ({why}); the guest builds on base-image toolchains")
+        });
 
         let up = std::process::Command::new(&bin)
             .arg("up")
@@ -309,13 +436,13 @@ impl FirecodeBackend {
             .output()
             .map_err(|e| BackendError::Io(format!("running {}: {e}", bin.display())))?;
         if !up.status.success() {
-            let _ = std::fs::remove_dir_all(&project);
             return Err(BackendError::Io(format!(
                 "firecode up refused ({}): {}",
                 up.status,
                 String::from_utf8_lossy(&up.stderr).trim()
             )));
         }
+        unwind.vm = true;
         let run = run_id(&bin, &project).unwrap_or_default();
 
         let processes = if spec.exec {
@@ -334,6 +461,11 @@ impl FirecodeBackend {
         } else {
             None
         };
+        unwind.armed = false;
+        drop(unwind);
+        LIVE.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((bin.clone(), project.clone()));
         let b = FirecodeBackend {
             bin,
             project,
@@ -342,6 +474,7 @@ impl FirecodeBackend {
             writable: spec.writable,
             landed: std::sync::Mutex::new(None),
             run,
+            layers,
         };
         // Prove the door works before handing the backend over: a VM that came
         // up and cannot take a command is a boot, not a backend.
@@ -409,6 +542,24 @@ impl FirecodeBackend {
     /// firecode's own record of the run, when its runs directory can be found:
     /// `<checkout>/runs/<run>/result` is written when the guest's tree was copied
     /// out — or when there was nothing to copy.
+    /// **firecode's record of this run's copy-out**, `runs/<run>/copy_out` beside the CLI:
+    /// `pending` while it runs, then `done <path>`, `none` (nothing changed) or `failed …`.
+    /// `None` when there is no record — a firecode older than the record, or no run id.
+    fn copy_out(&self) -> Option<String> {
+        let dir = self.run_dir()?;
+        std::fs::read_to_string(dir.join("copy_out"))
+            .ok()
+            .map(|t| t.trim().to_string())
+    }
+
+    fn run_dir(&self) -> Option<PathBuf> {
+        if self.run.is_empty() {
+            return None;
+        }
+        let real = std::fs::canonicalize(&self.bin).ok()?;
+        Some(real.parent()?.parent()?.join("runs").join(&self.run))
+    }
+
     fn run_finished(&self) -> bool {
         if self.run.is_empty() {
             return false;
@@ -436,6 +587,9 @@ impl FirecodeBackend {
     /// on is removed afterwards: the result directory beside it is the record,
     /// and a copy per child would otherwise accumulate under the cache.
     pub fn down(&self) {
+        LIVE.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(_, p)| *p != self.project);
         let before = siblings(&self.project);
         let _ = std::process::Command::new(&self.bin)
             .arg("down")
@@ -443,19 +597,49 @@ impl FirecodeBackend {
             .arg(&self.project)
             .stdin(Stdio::null())
             .output();
-        // The sibling appears a few seconds after `down` returns — or never, when
-        // the guest changed nothing. Wait for either the sibling or firecode's own
-        // record of the run, then remove the copy.
-        for _ in 0..20 {
-            let now = siblings(&self.project);
-            if let Some(new) = now.into_iter().find(|s| !before.contains(s)) {
-                *self.landed.lock().unwrap_or_else(|e| e.into_inner()) = Some(new);
-                break;
+        // **firecode's own record decides, for as long as it says the copy-out is running.**
+        // FIRECODE-NOTES item 1: the copy-out is asynchronous, and a fixed 10 s wait reported
+        // a run's work as missing while it was still being delivered — it appeared two minutes
+        // later. So while the record says `pending` this waits, up to COPY_OUT_CAP; `done
+        // <path>` is where the work is; `none` is a guest that changed nothing; `failed …`
+        // keeps the copy, which is then the only place the work is.
+        //
+        // A firecode with no record (older than it) is the old wait: the sibling appears a few
+        // seconds after `down` returns, or firecode's run record says the run finished.
+        let started = std::time::Instant::now();
+        let mut recorded = false;
+        loop {
+            match self.copy_out() {
+                Some(r) if r == "pending" => {
+                    recorded = true;
+                    if started.elapsed() >= COPY_OUT_CAP {
+                        break;
+                    }
+                }
+                Some(r) if r.starts_with("done ") => {
+                    *self.landed.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(PathBuf::from(r["done ".len()..].trim()));
+                    let _ = std::fs::remove_dir_all(&self.project);
+                    return;
+                }
+                Some(r) if r == "none" => {
+                    let _ = std::fs::remove_dir_all(&self.project);
+                    return;
+                }
+                Some(_failed) => return,
+                None if recorded => return,
+                None => {
+                    let now = siblings(&self.project);
+                    if let Some(new) = now.into_iter().find(|s| !before.contains(s)) {
+                        *self.landed.lock().unwrap_or_else(|e| e.into_inner()) = Some(new);
+                        break;
+                    }
+                    if self.run_finished() || started.elapsed() >= LEGACY_WAIT {
+                        break;
+                    }
+                }
             }
-            if self.run_finished() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(250));
         }
         if self.landed().is_some() || self.run_finished() {
             let _ = std::fs::remove_dir_all(&self.project);
@@ -694,9 +878,19 @@ impl ExecBackend for FirecodeBackend {
             } else {
                 ", NO exec (downgraded)"
             },
-        )
+        ) + &self
+            .layers
+            .as_deref()
+            .map(|l| format!(". {l}"))
+            .unwrap_or_default()
     }
 }
+
+/// How long `down` waits on a copy-out firecode says is still `pending`. Long, because the
+/// work is in it; bounded, because a teardown that never returns holds the daemon's worker.
+const COPY_OUT_CAP: std::time::Duration = std::time::Duration::from_secs(600);
+/// The wait for a firecode that keeps no copy-out record: the sibling, or the run's record.
+const LEGACY_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Inline writes up to this many bytes ride in the command; larger go through `cp`.
 const INLINE_WRITE_BYTES: usize = 48 * 1024;
@@ -913,6 +1107,173 @@ mod tests {
     fn file(p: &Path, bytes: usize) {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, vec![b'x'; bytes]).unwrap();
+    }
+
+    /// **A stub firecode**: `<root>/bin/firecode`, a shell script whose `case "$1"` arms are
+    /// `arms`, with `<root>/runs/` beside it the way the real checkout lays them out (the
+    /// backend finds a run's record there through the binary's own path). Returns the binary.
+    fn stub_firecode(root: &Path, arms: &str) -> PathBuf {
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::create_dir_all(root.join("runs")).unwrap();
+        let bin = root.join("bin").join("firecode");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nROOT='{}'\ncase \"$1\" in\n{arms}\nesac\n",
+                root.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    /// The arms every stub needs: `up` boots, `info` names run `r1`, `layer inherit` works.
+    const HAPPY: &str = "up) exit 0 ;;\n\
+                         info) echo '{\"run\":\"r1\"}' ;;\n\
+                         layer) [ \"$2\" = inherit ] && exit 0; echo 'usage: firecode layer [add <image>|ls|rm <image>|inherit <source-dir>]' >&2; exit 1 ;;";
+
+    fn spec_with(src: &Path, cache: &Path, bin: &Path) -> FirecodeSpec {
+        let mut spec = FirecodeSpec::new(src, "child");
+        spec.cache = cache.to_path_buf();
+        spec.exec = false;
+        spec.bin = Some(bin.to_path_buf());
+        spec
+    }
+
+    /// **A placement that fails leaves no copy behind** — FIRECODE-NOTES: *"A failed spawn leaks
+    /// its copy. The very first attempt left 286 MB in ~/.cache/letibot/firecode/; the error
+    /// path remove_dir_alls on a refused status but not on a spawn error."*
+    #[test]
+    fn a_firecode_that_cannot_be_run_leaves_no_copy_behind() {
+        let root = tmp("unrunnable");
+        let src = root.join("src");
+        file(&src.join("a.txt"), 10);
+        // A directory where the program should be: running it is a spawn error.
+        let bin = root.join("not-a-program");
+        std::fs::create_dir_all(&bin).unwrap();
+        let cache = root.join("cache");
+        let r = FirecodeBackend::up(&spec_with(&src, &cache, &bin));
+        assert!(r.is_err(), "a firecode that cannot run placed a VM");
+        assert!(
+            !cache.join("child").exists(),
+            "the copy outlived the failed placement: {:?}",
+            r.err()
+        );
+    }
+
+    /// **No `layer inherit` is a missing convenience, not a missing VM** — FIRECODE-NOTES item 4:
+    /// *"degrade where only a convenience is missing ("no layer inheritance; the guest builds on
+    /// base-image toolchains") and refuse only what is genuinely required."*
+    #[test]
+    fn a_firecode_without_layer_inherit_still_places_the_vm_and_says_so() {
+        let root = tmp("noinherit");
+        let src = root.join("src");
+        file(&src.join("a.txt"), 10);
+        let bin = stub_firecode(
+            &root.join("fc"),
+            "up) exit 0 ;;\n\
+             info) echo '{\"run\":\"r1\"}' ;;\n\
+             layer) echo 'usage: firecode layer [add <image>|ls|rm <image>] [--project DIR]' >&2; exit 1 ;;",
+        );
+        let b = FirecodeBackend::up(&spec_with(&src, &root.join("cache"), &bin))
+            .expect("the VM is placed without inherited layers");
+        assert!(
+            b.describe().contains("no layer inheritance"),
+            "the missing layers are not said: {}",
+            b.describe()
+        );
+    }
+
+    /// **`down` waits while firecode says the copy-out is still running, however long that is**
+    /// — FIRECODE-NOTES item 1: *"a child answered … wrote 'neither a result directory … nor
+    /// firecode's record appeared within 10 s' — and the directory appeared about two minutes
+    /// later."* The stub's copy-out takes 12 s; the old wait gave up at 10.
+    #[test]
+    fn down_waits_while_the_copy_out_is_pending() {
+        let root = tmp("pending");
+        let src = root.join("src");
+        file(&src.join("a.txt"), 10);
+        let fc = root.join("fc");
+        let delivered = root.join("delivered");
+        let arms = format!(
+            "{HAPPY}\n\
+             down) mkdir -p \"$ROOT/runs/r1\"; echo pending > \"$ROOT/runs/r1/copy_out\"; \
+             (sleep 12; mkdir -p '{d}'; echo 'done {d}' > \"$ROOT/runs/r1/copy_out.t\"; \
+             mv \"$ROOT/runs/r1/copy_out.t\" \"$ROOT/runs/r1/copy_out\") >/dev/null 2>&1 & exit 0 ;;",
+            d = delivered.display()
+        );
+        let bin = stub_firecode(&fc, &arms);
+        let b = FirecodeBackend::up(&spec_with(&src, &root.join("cache"), &bin)).unwrap();
+        b.down();
+        assert_eq!(
+            b.landed().as_deref(),
+            Some(delivered.as_path()),
+            "down gave up on a copy-out firecode said was still running"
+        );
+    }
+
+    /// **The record names where the work went**, so the backend does not have to guess from
+    /// the directory names beside the copy.
+    #[test]
+    fn down_takes_the_delivered_path_from_the_run_record() {
+        let root = tmp("record");
+        let src = root.join("src");
+        file(&src.join("a.txt"), 10);
+        let fc = root.join("fc");
+        let delivered = root.join("elsewhere").join("work");
+        let arms = format!(
+            "{HAPPY}\n\
+             down) mkdir -p \"$ROOT/runs/r1\" '{d}'; echo 'done {d}' > \"$ROOT/runs/r1/copy_out\"; exit 0 ;;",
+            d = delivered.display()
+        );
+        let bin = stub_firecode(&fc, &arms);
+        let b = FirecodeBackend::up(&spec_with(&src, &root.join("cache"), &bin)).unwrap();
+        b.down();
+        assert_eq!(b.landed().as_deref(), Some(delivered.as_path()));
+        assert!(
+            !root.join("cache").join("child").exists(),
+            "the copy is removed once the work landed"
+        );
+    }
+
+    /// **A daemon that stops brings its children's VMs down** — the backends of subagents run on
+    /// threads `process::exit` does not unwind, so their `Drop` never ran and the VMs outlived
+    /// the daemon (two of the acceptance suite's own runs, 2026-10-08). `down_all` is the
+    /// explicit half the daemon calls on its way out.
+    #[test]
+    fn down_all_brings_down_a_vm_whose_backend_is_still_alive() {
+        let root = tmp("downall");
+        let src = root.join("src");
+        file(&src.join("a.txt"), 10);
+        let marker = root.join("down-was-called");
+        let arms = format!(
+            "{HAPPY}\n\
+             down) touch '{m}'; mkdir -p \"$ROOT/runs/r1\"; echo none > \"$ROOT/runs/r1/copy_out\"; exit 0 ;;",
+            m = marker.display()
+        );
+        let bin = stub_firecode(&root.join("fc"), &arms);
+        let b = FirecodeBackend::up(&spec_with(&src, &root.join("cache"), &bin)).unwrap();
+        down_all();
+        assert!(
+            marker.exists(),
+            "the VM of a live backend was not brought down"
+        );
+        drop(b);
+    }
+
+    /// **What the installed firecode can do, asked once** — for the daemon's start-up banner.
+    #[test]
+    fn the_probe_says_whether_layer_inherit_is_there() {
+        let root = tmp("probe");
+        let with = stub_firecode(&root.join("with"), HAPPY);
+        let without = stub_firecode(
+            &root.join("without"),
+            "layer) echo 'usage: firecode layer [add <image>|ls|rm <image>] [--project DIR]' >&2; exit 1 ;;",
+        );
+        assert!(probe(&with).inherit, "{:?}", probe(&with));
+        assert!(!probe(&without).inherit, "{:?}", probe(&without));
     }
 
     /// The 2026-09-16 shape: the workspace is the folder ABOVE the checkout, so
