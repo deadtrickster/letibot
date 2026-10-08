@@ -41,6 +41,37 @@ pub enum Placement {
     Firecode,
 }
 
+/// **The `where` argument, refused when it cannot be honoured on this host.** A `firecode`
+/// placement on a box with no `firecode` used to spawn a child that died at its start —
+/// `placing this session in a firecode VM: io: running firecode: No such file or directory` —
+/// and the parent learned it only from `task_result`, a round later. Now the call is refused
+/// with nothing spawned and `host` named as the way to go on.
+fn placement_arg(args: &serde_json::Value) -> Result<Placement, Invocation> {
+    let placement = match args.get("where").and_then(|v| v.as_str()) {
+        None => return Ok(Placement::Host),
+        Some(w) => Placement::parse(w).map_err(|e| {
+            Invocation::failed(
+                "`where` was not understood",
+                format!("{e}. Nothing was spawned."),
+            )
+        })?,
+    };
+    if placement == Placement::Firecode
+        && let Err(why) = crate::firecode::firecode_available()
+    {
+        return Err(Invocation::failed(
+            "this host cannot place a subagent in a VM",
+            format!(
+                "{why}, so `where: firecode` cannot be honoured. Nothing was spawned. Leave \
+                 `where` out (or say `host`) to run the subagent inside your own boundary; \
+                 for a VM, the operator puts `firecode` on the daemon's PATH or names it in \
+                 $FIRECODE_BIN and restarts the daemon."
+            ),
+        ));
+    }
+    Ok(placement)
+}
+
 impl Placement {
     pub fn parse(s: &str) -> Result<Placement, String> {
         match s.trim().to_ascii_lowercase().as_str() {
@@ -516,17 +547,9 @@ impl Tool for TaskTool {
                 }
             },
         };
-        let placement = match args.get("where").and_then(|v| v.as_str()) {
-            None => Placement::Host,
-            Some(w) => match Placement::parse(w) {
-                Ok(p) => p,
-                Err(e) => {
-                    return Invocation::failed(
-                        "`where` was not understood",
-                        format!("{e}. Nothing was spawned."),
-                    );
-                }
-            },
+        let placement = match placement_arg(args) {
+            Ok(p) => p,
+            Err(refused) => return refused,
         };
         let spec = TaskSpec {
             role: role.to_string(),
@@ -710,17 +733,10 @@ impl Tool for TaskStartTool {
                 }
             },
         };
-        let placement = match args.get("where").and_then(|v| v.as_str()) {
-            None => Placement::Host,
-            Some(w) => match Placement::parse(w) {
-                Ok(p) => p,
-                Err(e) => {
-                    return Invocation::failed(
-                        "`where` was not understood",
-                        format!("{e}. Nothing was arranged and nothing was spawned."),
-                    );
-                }
-            },
+        // Checked before the worktree is arranged: a refusal here leaves nothing behind.
+        let placement = match placement_arg(args) {
+            Ok(p) => p,
+            Err(refused) => return refused,
         };
         let model = args
             .get("model")
@@ -1674,6 +1690,16 @@ mod tests {
         };
         // `task` hands back a handle; the spec it parsed is what the subagent was
         // started with, and `task_result` is where the answer comes from.
+        // A host that has firecode: `$FIRECODE_BIN` names a program that is there. (The
+        // refusal for a host that has none is the end of this test.)
+        let stub =
+            std::env::temp_dir().join(format!("letibot-firecode-stub-{}", std::process::id()));
+        std::fs::write(&stub, "#!/bin/sh\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        unsafe { std::env::set_var("FIRECODE_BIN", &stub) };
         let started = run(
             &mut rt,
             &mut sink,
@@ -1701,6 +1727,16 @@ mod tests {
         assert!(p.contains("not a downgrade"), "{p}");
         let p = run(&mut rt, &mut sink, r#"{"prompt": "x", "where": "moon"}"#);
         assert!(p.contains("not a placement"), "{p}");
+        // **A host with no firecode refuses the VM at the call**, with nothing spawned and
+        // `host` named — not a child that dies at its start. The operator's Mac, 2026-10-08.
+        unsafe { std::env::set_var("FIRECODE_BIN", "/nonexistent/firecode") };
+        let p = run(&mut rt, &mut sink, r#"{"prompt": "x", "where": "vm"}"#);
+        unsafe { std::env::remove_var("FIRECODE_BIN") };
+        let _ = std::fs::remove_file(&stub);
+        assert!(p.contains("cannot be honoured"), "{p}");
+        assert!(p.contains("Nothing was spawned"), "{p}");
+        assert!(p.contains("`host`"), "{p}");
+        assert!(!p.contains("started subagent `sub-2`"), "{p}");
     }
 
     /// **The slug is short, kebab, and deterministic in the prompt.**

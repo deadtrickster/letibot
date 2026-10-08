@@ -70,6 +70,37 @@ pub fn firecode_bin() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("firecode"))
 }
 
+/// **Whether this host can place a session in a firecode VM at all**: the CLI that
+/// [`firecode_bin`] names, found. `Err` says what was looked for and where.
+///
+/// Asked BEFORE a child is spawned, so `where: firecode` on a box without it is a refusal at
+/// the call the model can act on, not a child that dies at its start with `running firecode:
+/// No such file or directory`. MEASURED 2026-10-08 on the operator's Mac.
+pub fn firecode_available() -> Result<PathBuf, String> {
+    let bin = firecode_bin();
+    let runnable = |p: &std::path::Path| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    };
+    if bin.components().count() > 1 {
+        return if runnable(&bin) {
+            Ok(bin)
+        } else {
+            Err(format!(
+                "$FIRECODE_BIN names {}, which is not a program here",
+                bin.display()
+            ))
+        };
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .map(|d| d.join(&bin))
+        .find(|p| runnable(p))
+        .ok_or_else(|| "there is no `firecode` on this host's PATH (nor $FIRECODE_BIN)".to_string())
+}
+
 /// The `Confinement` a firecode job runs under: the VM. `wrap` is the client
 /// invocation, and the shell is empty because `firecode in` takes the command
 /// string itself and runs it under `bash -lc` in the guest.
