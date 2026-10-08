@@ -158,7 +158,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 3.0.5",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1069,7 +1069,6 @@ dependencies = [
 [[package]]
 name = "rano"
 version = "0.4.0"
-source = "git+https://github.com/deadtrickster/rano?tag=v0.4.0#2f0535bed3ba2630711fc83f823285feed865c82"
 dependencies = [
  "cc",
  "flate2",

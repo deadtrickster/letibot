@@ -100,3 +100,13 @@ letibot-tools = { path = "crates/tools" }
 letibot-code = { path = "crates/code" }
 letibot-harnessd = { path = "crates/harnessd", default-features = false }
 letibot-opencode = { path = "crates/opencode" }
+
+# **rano from the `rano-for-letibot` worktree while the widgets move, not from the tag.**
+# letibot's `crates/tui/src/ui/` painters are being replaced by `rano::agent` and
+# `rano::markdown`, and the rano half of that work is unreleased: the two have to be built
+# against one copy while it moves. A `[patch]` is only honoured in the workspace's own
+# manifest. The edges keep naming `v0.4.0` — the tag already in the git cache, so an
+# offline build can load the patched source — and a git edge carries no version
+# requirement, so the path satisfies it. This commit is reverted when rano is released.
+[patch."https://github.com/deadtrickster/rano"]
+rano = { path = "/Users/dead/Projects/rano/rano-for-letibot" }
