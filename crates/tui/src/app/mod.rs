@@ -441,6 +441,15 @@ pub struct App {
     /// [`App::prompt_lines`].
     pub(crate) prompt: Option<PromptAsk>,
     pub(crate) prompt_buf: String,
+    /// **The card is put away, and the request is not.** `esc` hides the prompt card because a
+    /// person would rather type the answer as a `!send` line or watch the stream a moment
+    /// longer — but the daemon keeps the request OPEN and the run keeps WAITING, which is
+    /// exactly the window the operator's measured `y` fell through: card put away, `y` typed at
+    /// the composer, and the line became a prompt that reached the MODEL while their own
+    /// command waited and died at its deadline (2026-10-09, `! sudo apt install mc`). So the
+    /// request's presence and the card's visibility are two facts and not one: this flag is the
+    /// second, and [`App::submit`] reads the first.
+    pub(crate) prompt_away: bool,
     /// **A key the model picker asked for** — the operator's row: *"if i choose a model without
     /// key picker should ask for the key."* The greening told them WHICH rows need one; this is
     /// the row that collects it. Its own state and never the sudo path's: a provider key is
@@ -1437,6 +1446,7 @@ impl App {
             image_uploads: Vec::new(),
             prompt: None,
             prompt_buf: String::new(),
+            prompt_away: false,
             key_ask: None,
             key_buf: String::new(),
             screen_requests: Vec::new(),

@@ -169,6 +169,7 @@ impl App {
                 job,
                 command,
                 question,
+                reading,
             } => {
                 // **A question from a RUNNING PROGRAM outranks the question about killing one.**
                 // The two cards are mutually exclusive by construction everywhere else (the
@@ -191,8 +192,14 @@ impl App {
                     job,
                     command,
                     question,
+                    reading,
                 });
                 self.prompt_buf.clear();
+                // **A card that arrives takes the screen**, including one re-offered after an
+                // answer on a run this daemon cannot read: the offer is the daemon's, and a
+                // head that kept its own *put away* across it would swallow the second
+                // question `apt` asks. See [`Prompts::send`] on the daemon's side.
+                self.prompt_away = false;
                 self.redraw = true;
                 Disposition::Rendered
             }
@@ -203,6 +210,7 @@ impl App {
                 if self.prompt.as_ref().is_some_and(|p| p.req_id == req_id) {
                     self.prompt = None;
                     self.prompt_buf.clear();
+                    self.prompt_away = false;
                 }
                 self.note(Note::Warned(Warned {
                     code: "prompt".into(),

@@ -129,7 +129,7 @@ impl App {
             // itself is never rendered, not even to compute a width.
             let n = self.secret_buf.chars().count();
             (vec!["•".repeat(n)], (0, n))
-        } else if self.prompt.is_some() {
+        } else if self.prompt.is_some() && !self.prompt_away {
             // **The prompt card's field is drawn IN THE OPEN** — the text as typed, the same
             // editor renderer the composer uses — and that difference from the password's
             // dots is the whole of what keeps the two channels apart. What this carries is a

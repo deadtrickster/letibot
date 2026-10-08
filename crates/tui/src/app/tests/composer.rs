@@ -23,6 +23,7 @@ fn a_bare_line_while_the_runs_request_is_open_is_not_spent_on_the_model() {
             job: "j1".into(),
             command: "sudo apt install mc".into(),
             question: Some("Continue? [Y/n]".into()),
+            reading: letibot_sessionlog::PromptReading::Blocked,
         },
     )));
     // **The card is put away, not answered** — esc's own act. The daemon keeps the request

@@ -72,6 +72,20 @@ impl App {
     /// reading has misses it names. `!send` needs no reading at all, and a person who would
     /// rather type there than here should be told so on the card rather than in a document.
     pub(crate) fn prompt_lines(&self, ask: &PromptAsk, w: usize) -> Vec<String> {
+        // **A card raised WITHOUT a reading says so, and does not borrow the asking one.**
+        //
+        // The operator's correction is the whole of this branch: *"sudo can get input from
+        // here so can others"*, measured 2026-10-09 on `! sudo apt install mc` — the password
+        // taken, `apt` at `Continue? [Y/n]` as root, the daemon unable to read
+        // `/proc/<pid>/fd/0` (`EACCES`), so no card, and the `y` they typed at the composer
+        // became a PROMPT and reached the MODEL while their own command waited and died at
+        // its deadline. A card that claimed *your command is asking* would be the guess the
+        // whole design refuses — one process of the run belongs to another uid, and a long
+        // quiet command that is asking nothing looks exactly the same from here. So the two
+        // facts get two cards, and [`PromptReading`] is what tells them apart.
+        if ask.reading == letibot_sessionlog::PromptReading::Unreadable {
+            return row_strings(&unreadable_prompt_lines(ask, w), self.cfg.palette());
+        }
         let card = asks::PromptAsk {
             command: ask.command.clone(),
             question: ask.question.clone(),
@@ -89,4 +103,66 @@ impl App {
         };
         row_strings(&card.lines(w), self.cfg.palette())
     }
+}
+
+/// **The prompt card's other half: a run of the operator's own that this daemon could not
+/// read**, drawn as rano lines so it crosses the same edge every other card does
+/// ([`row_strings`]).
+///
+/// # Why it is hand-built and not `rano::agent::asks::PromptAsk`
+///
+/// That card's whole text is a claim about a READING — its headline is *your command is
+/// asking* — and rano has no field to say otherwise. The alternative was a rano release and a
+/// second tag bump in one night, for one sentence; this is the sentence, in the same
+/// registers (a `Role::Pending` headline, `Role::Faint` for the rest) and the same width
+/// discipline, so the two cards are indistinguishable to a reader except in what they say —
+/// which is the point. If rano grows the field, this moves there and the hand-built copy
+/// goes.
+///
+/// # What it must say, and what it must not
+///
+/// * **It must not claim the program asked.** It cannot know: a process of the run belongs to
+///   another uid (the `sudo` case), and a long quiet command that is asking nothing is
+///   indistinguishable from here. So the headline states the two facts it DOES hold — the run
+///   is going, and this daemon could not look at it.
+/// * **It must say the line goes in either way**, because that is what makes it answerable:
+///   the card is an offer of the same write `!send` performs, not a claim about what is on the
+///   other end of it.
+/// * **It names `!send` and the job**, exactly as the reading-backed card's footer does — the
+///   verb that needs no signal is the floor under both.
+fn unreadable_prompt_lines(ask: &PromptAsk, w: usize) -> Vec<rano::render::Line> {
+    use rano::agent::text::{one, wrapped};
+    use rano::style::Role;
+    let mut out = wrapped(
+        "? your command is running, and this daemon could not read it",
+        w,
+        Role::Pending,
+    );
+    for l in wrapped(
+        &format!("  run: {}", ask.command.replace(['\n', '\r'], " ")),
+        w,
+        Role::Faint,
+    ) {
+        out.push(l);
+    }
+    // **The honest half.** One sentence for the fact that there is no reading, and one for
+    // what the person can do about it — which is the same thing they would have done with a
+    // card that had read the process.
+    for l in wrapped(
+        "  I cannot tell whether it is waiting for a line — part of it belongs to another user, \
+         so I may not look at what it is doing. A line you type here goes into its input either \
+         way.",
+        w,
+        Role::Faint,
+    ) {
+        out.push(l);
+    }
+    out.push(one(
+        format!(
+            "  enter sends it · esc puts the card away · `!send LINE` also works · {}",
+            ask.job
+        ),
+        Role::Faint,
+    ));
+    out
 }

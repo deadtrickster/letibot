@@ -49,10 +49,19 @@ pub(crate) struct SecretAsk {
 ///   `None` when it has written nothing at all, which is a real case (`! cat`, blocked
 ///   before its first byte): the card then says the command is waiting rather than showing
 ///   an empty line as if that were the question.
+/// * `reading` — **which of the two facts the card is raised on**: the daemon read the
+///   run blocked on the input it holds ([`PromptReading::Blocked`]), or it could not look
+///   at the run at all ([`PromptReading::Unreadable`], every `! sudo …` that reaches a
+///   program running as root). The operator's correction — *"sudo can get input from here
+///   so can others"* — is why the second one is a card at all: it used to be a sentence
+///   and no card, and a person who typed `y` at the composer had it reach the MODEL while
+///   their own command waited. The card's text says which of the two it is, and a card
+///   raised without a reading must not claim the program asked.
 #[derive(Debug, Clone)]
 pub(crate) struct PromptAsk {
     pub(crate) req_id: String,
     pub(crate) job: String,
     pub(crate) command: String,
     pub(crate) question: Option<String>,
+    pub(crate) reading: letibot_sessionlog::PromptReading,
 }

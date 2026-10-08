@@ -682,12 +682,10 @@ mod tests {
              daemon has, not a guess about the process"
         );
         assert!(
-            events(&hub)
-                .into_iter()
-                .any(|e| matches!(
-                    e,
-                    SessionEvent::Warning { code, .. } if code == "operator_run_unreadable"
-                )),
+            events(&hub).into_iter().any(|e| matches!(
+                e,
+                SessionEvent::Warning { code, .. } if code == "operator_run_unreadable"
+            )),
             "and the sentence stays: `!send` is the floor under the offer"
         );
     }

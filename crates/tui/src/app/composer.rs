@@ -289,6 +289,31 @@ impl App {
             self.redraw = true;
             return None;
         }
+        // **A bare line is not spent on the model while the operator's own command waits.**
+        //
+        // The measured case, 2026-10-09, and the defect this rule exists for: `! sudo apt
+        // install mc`, the password taken, `apt` at `Continue? [Y/n]` under root where
+        // `/proc` refuses — so no reading, and no card — and the person typed `y` here. The
+        // line became a prompt and reached the MODEL; the command they had typed waited
+        // unanswered until its deadline killed it. The daemon's request for their run is
+        // **open** in exactly that window and it is the fact this reads: the card up, or put
+        // away with `esc` — which does not end the run and does not close the request (see
+        // [`App::prompt_away`]).
+        //
+        // **Held, not swallowed**, and the sentence names both doors — the same shape the
+        // import and the detached head use below, and for the same reason: the words are the
+        // person's, and a refusal that ate them would lose the answer they were giving. The
+        // verbs are already past this point (`!`, `/`, a card's own answer), so `!send LINE`
+        // and every slash verb still work while it is held.
+        if self.prompt.is_some() {
+            self.set_composer(&text);
+            self.say(
+                "your own command is waiting on a line — `!send LINE` answers it, and this \
+                 message goes to the model when the run ends",
+            );
+            self.redraw = true;
+            return None;
+        }
         // Sending scrolls back to the tail: the answer is about to arrive at the
         // bottom, and staying parked in the scrollback while it does looks exactly
         // like nothing happening.
