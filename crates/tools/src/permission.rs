@@ -345,6 +345,7 @@ pub fn evaluate_bash(command: &str, rulesets: &[&Ruleset]) -> Action {
         match evaluate("bash", seg, rulesets).action {
             Action::Deny => return Action::Deny,
             Action::Allow => {}
+            Action::Ask if moves_only(seg) => {}
             Action::Ask => all_allowed = false,
         }
     }
@@ -352,6 +353,52 @@ pub fn evaluate_bash(command: &str, rulesets: &[&Ruleset]) -> Action {
         Action::Allow
     } else {
         Action::Ask
+    }
+}
+
+/// **A segment that only moves the shell**: `cd`, `pushd` or `popd`. It changes nothing a rule
+/// guards — every command after it is judged on its own — so it needs no rule of its own,
+/// and a rule that DENIES it still wins (`evaluate_bash` checks for one first).
+///
+/// Without this, `cd peerdb && grep … | head` asked forever: `cd` had no rule, and *Always
+/// allow* wrote one for `head`, which was already allowed. Measured 2026-10-08 — the
+/// operator answered *Always allow `head*`* over and over and it "never takes".
+fn moves_only(seg: &str) -> bool {
+    matches!(seg.split_whitespace().next(), Some("cd" | "pushd" | "popd"))
+}
+
+/// **The one rule *Always allow* should write for this command, or `None` when no single rule
+/// would make the matcher allow it.**
+///
+/// Every segment is tested against the rules as they stand; the ones still asked are what a
+/// new rule has to cover. One distinct pattern among them is the answer. Two or more (`foo |
+/// bar`, neither known) cannot be covered by one rule, and none means the rules are not what
+/// is asking — either way the option would be a button whose effect the gate declines to
+/// honour, so it is not offered. A denied segment is `None` too: an allow written for the
+/// rest would change nothing.
+///
+/// It used to be the LAST stage's program, whatever the rules said, so `cd x && grep … |
+/// head` offered `head*` — already allowed — and asked again the next time.
+pub fn the_rule_that_admits(command: &str, rulesets: &[&Ruleset]) -> Option<String> {
+    let segments = bash_segments(command)?;
+    let mut missing: Vec<String> = Vec::new();
+    for seg in &segments {
+        match evaluate("bash", seg, rulesets).action {
+            Action::Allow => {}
+            Action::Deny => return None,
+            Action::Ask if moves_only(seg) => {}
+            Action::Ask => {
+                let p = always_pattern_for_command(seg);
+                if !missing.contains(&p) {
+                    missing.push(p);
+                }
+            }
+        }
+    }
+    if missing.len() == 1 {
+        missing.pop()
+    } else {
+        None
     }
 }
 
@@ -570,6 +617,69 @@ mod tests {
         assert_eq!(
             evaluate("read", "x", &[&ruleset, &approved]).action,
             Action::Deny
+        );
+    }
+
+    /// The operator's shipped read-only group, the part these commands touch.
+    fn read_only() -> Ruleset {
+        config_to_ruleset(&json(
+            r#"{"bash": {"grep*": "allow", "head*": "allow", "echo*": "allow",
+                         "sed*": "allow", "ls*": "allow", "rm*": "deny"}}"#,
+        ))
+        .unwrap()
+    }
+
+    /// **A `cd` in front of allowed commands asks nothing.** The operator's own commands from
+    /// 2026-10-08, asked every time although every program in them was allowed: `cd` had no rule.
+    #[test]
+    fn a_cd_in_front_of_allowed_commands_needs_no_rule() {
+        let rs = read_only();
+        for cmd in [
+            "cd peerdb && grep -rn \"CREATE MIRROR\\|CreateMirror\" --include='*.rs' nexus | head -10; \
+             echo \"== nexus server role ==\"; sed -n '1,40p' nexus/server/src/main.rs 2>/dev/null \
+             || ls nexus/server/src | head",
+            "cd peerdb && sed -n '116,205p' docker-compose.yml",
+            "pushd x && ls && popd",
+        ] {
+            assert_eq!(evaluate_bash(cmd, &[&rs]), Action::Allow, "{cmd}");
+        }
+        // What follows the cd is still judged: an unknown program still asks, a denied one
+        // still denies, and a rule that denies the cd itself wins.
+        assert_eq!(evaluate_bash("cd x && make", &[&rs]), Action::Ask);
+        assert_eq!(evaluate_bash("cd x && rm -rf y", &[&rs]), Action::Deny);
+        let no_cd = vec![Rule::new("bash", "cd /etc*", Action::Deny)];
+        assert_eq!(evaluate_bash("cd /etc && ls", &[&rs, &no_cd]), Action::Deny);
+    }
+
+    /// ***Always allow* writes the rule the command is missing**, not its last program — and
+    /// offers nothing when no one rule would make the matcher allow it.
+    #[test]
+    fn always_allow_names_the_segment_still_asked() {
+        let rs = read_only();
+        // `make` is the only stage not covered: that is the rule, not `head*`.
+        assert_eq!(
+            the_rule_that_admits("cd x && make -j8 2>&1 | head -20", &[&rs]).as_deref(),
+            Some("make*")
+        );
+        // Written, it admits: the next call does not ask.
+        let written = vec![Rule::new("bash", "make*", Action::Allow)];
+        assert_eq!(
+            evaluate_bash("cd x && make -j8 2>&1 | head -20", &[&rs, &written]),
+            Action::Allow
+        );
+        // Two unknown programs: no single rule covers them, so nothing is offered.
+        assert_eq!(the_rule_that_admits("foo | bar", &[&rs]), None);
+        // The same unknown program twice is one rule.
+        assert_eq!(
+            the_rule_that_admits("jq . a | jq .b", &[&rs]).as_deref(),
+            Some("jq*")
+        );
+        // A denied segment: an allow for the rest would change nothing.
+        assert_eq!(the_rule_that_admits("make && rm x", &[&rs]), None);
+        // A heredoc is never split, so no rule can answer it.
+        assert_eq!(
+            the_rule_that_admits("python3 - <<'PY'\nprint(1)\nPY", &[&rs]),
+            None
         );
     }
 

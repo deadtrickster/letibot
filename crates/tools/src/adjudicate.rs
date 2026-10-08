@@ -2457,7 +2457,7 @@ impl AdjudicatedGate {
                 // Derived once. It is the answer to "what would *Always allow*
                 // write", and both the label and the decision to offer it at all
                 // come from that one answer.
-                let derived = derived_pattern(call, baseline);
+                let derived = derived_pattern(call, baseline, &self.permission);
                 let derived = derived.as_deref();
                 if matches!(baseline.tier, Tier::AlwaysAsk { .. }) {
                     always_ask_options()
@@ -3482,7 +3482,7 @@ impl Gate for AdjudicatedGate {
                             // knowing what it says.
                             let pattern = match typed_pattern {
                                 Some(p) => Some(p),
-                                None => derived_pattern(call, &baseline),
+                                None => derived_pattern(call, &baseline, &self.permission),
                             };
                             if let Some(pattern) = pattern {
                                 let rule = crate::permission::Rule::new(
@@ -3851,7 +3851,17 @@ fn permission_pattern(args: &Value) -> String {
 /// command, and the durable half had the naive answer: measured on the
 /// operator's screen, `cd … && python3 - <<'PY'` offered `python3` for the
 /// session and `cd*` for ever.
-fn derived_pattern(call: &GateCall<'_>, baseline: &crate::intent::Baseline) -> Option<String> {
+///
+/// **And it is the rule the command is actually missing.** With rules on file, every segment is
+/// tested against them and the one still asked is what gets written (see
+/// [`crate::permission::the_rule_that_admits`]); the last stage alone offered `head*` over
+/// `cd x && grep … | head`, which was already allowed, so the answer saved nothing and the
+/// next call asked again.
+fn derived_pattern(
+    call: &GateCall<'_>,
+    baseline: &crate::intent::Baseline,
+    rules: &crate::permission::Ruleset,
+) -> Option<String> {
     let Some(cmd) = call.args.get("command").and_then(|v| v.as_str()) else {
         return Some(permission_pattern(call.args));
     };
@@ -3860,6 +3870,9 @@ fn derived_pattern(call: &GateCall<'_>, baseline: &crate::intent::Baseline) -> O
     }
     if !crate::permission::a_durable_rule_can_apply(cmd) {
         return None;
+    }
+    if !rules.is_empty() {
+        return crate::permission::the_rule_that_admits(cmd, &[rules]);
     }
     // The parse when there is one, the raw string when there is not: a command
     // layer A could not resolve still gets an offer, and it gets the same one it
