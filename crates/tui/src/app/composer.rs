@@ -18,7 +18,7 @@ impl App {
         // command out of it.
         if let Some(why) = letibot_sessionlog::operator_line_refusal(&text) {
             self.set_composer(&text);
-            self.say(why);
+            self.say(&why);
             self.redraw = true;
             return None;
         }

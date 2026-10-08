@@ -78,8 +78,8 @@ pub use log::{LogBounds, SessionLog};
 pub use protocol::{
     Ack, Caps, ClientFrame, HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT, HEAD_RUN_KIND_URL,
     HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, HeadRunTool, NOTE_STOPPING, PROTOCOL_VERSION, ServerFrame,
-    TermLine, head_run_tool, head_run_verb, operator_shell_command, protocol_skew, send_line,
-    term_command, term_line,
+    TermLine, head_run_tool, head_run_verb, operator_line_refusal, operator_shell_command,
+    protocol_skew, send_line, term_command, term_line,
 };
 pub use question::{AnswerDefect, QuestionAnswer};
 pub use registry::{
