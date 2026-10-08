@@ -100,3 +100,17 @@ letibot-tools = { path = "crates/tools" }
 letibot-code = { path = "crates/code" }
 letibot-harnessd = { path = "crates/harnessd", default-features = false }
 letibot-opencode = { path = "crates/opencode" }
+
+# **rano from the operator's checkout (0.3.0), not from the tag.** The three `rano` edges
+# (`crates/ui`, `crates/tui`, `crates/code`) name a git tag so a clone elsewhere still
+# resolves, and this patch points all of them at the local tree — the same absolute-path
+# convention those manifests explain. It is here because a `[patch]` is only honoured in
+# the workspace's own manifest, and because the head's rendering is moving into rano
+# (`docs/ratatui-survey.md` §6) and the two have to be built against one copy while it does.
+#
+# The edges still say `v0.2.1`, and that is deliberate rather than stale: cargo has to be
+# able to load the *patched* source too, and `v0.2.1` is the tag already in the git cache —
+# `v0.3.0` cannot be fetched by a build that is not allowed the network. A git edge carries
+# no version requirement, so the path's 0.3.0 satisfies it; `Cargo.lock` records the path.
+[patch."https://github.com/deadtrickster/rano"]
+rano = { path = "/Users/dead/Projects/rano/rano" }

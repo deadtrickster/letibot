@@ -1753,8 +1753,7 @@ checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 
 [[package]]
 name = "rano"
-version = "0.2.1"
-source = "git+https://github.com/deadtrickster/rano?tag=v0.2.1#21c11ea5404ec774328a2743c2be1f7f0a7a0c46"
+version = "0.3.0"
 dependencies = [
  "cc",
  "crossterm",
