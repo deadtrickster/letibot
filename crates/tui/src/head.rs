@@ -741,12 +741,34 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
         Some(term) => {
             let mut draw = |lines: &[String], cursor| term.draw_with_cursor(lines, cursor);
             while !app.should_quit() {
-                let keys = read_keys(&term);
-                // **The same read, as bytes.** The pane is a terminal and its program reads the
-                // bytes the operator's terminal sent, not this head's decoding of them — and
-                // `ctrl-\`, the pane's one way out, is a byte `key_of` maps to nothing, so this head
-                // never sees it as a `Key`. See `Terminal::raw_input`.
-                let raw = term.raw_input();
+                // **The read, as rano's events, and routed.** The editor pane takes its share —
+                // every key while it has the keyboard, every mouse report inside it — and what
+                // comes back is this head's keys, exactly as `read_keys` would have made them.
+                //
+                // **The wait is the editor's when the editor needs it sooner.** `events` waits
+                // ~100 ms for a key, which is the head's pace and too slow for a file streaming
+                // into rano or a prefix card coming due; so with a pane open the loop polls for
+                // rano's `next_wakeup` first and reads only when something is there.
+                let (events, raw) = match app.editor_wait() {
+                    Some(wait) if wait < crate::app::READ_PACE && !term.poll(wait) => {
+                        (Vec::new(), Vec::new())
+                    }
+                    // **The same read, as bytes.** The pane is a terminal and its program reads
+                    // the bytes the operator's terminal sent, not this head's decoding of them —
+                    // and `ctrl-\`, the pane's one way out, is a byte `key_of` maps to nothing,
+                    // so this head never sees it as a `Key`. See `Terminal::raw_input`.
+                    _ => {
+                        let events = term.events();
+                        (events, term.raw_input())
+                    }
+                };
+                let (keys, rano_took) = app.route(events);
+                // **Bytes rano read are not a `!term` pane's.** `ctrl-\` is rano's replace, and
+                // a byte the editor consumed must not be kept as a way out for a pane that opens
+                // later (see `Link::tick`).
+                let raw = if rano_took { Vec::new() } else { raw };
+                // rano's work between events, before the frame — rano's rule for a host.
+                app.editor_tick(Instant::now());
                 let size = term.size();
                 if app.take_redraw() {
                     term.invalidate();
