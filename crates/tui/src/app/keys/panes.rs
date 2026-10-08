@@ -136,12 +136,14 @@ impl App {
                     } else {
                         self.config_sel - 1
                     };
+                    self.config_follow();
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }
                 Key::Down => {
                     let n = self.config_rows().len().max(1);
                     self.config_sel = (self.config_sel + 1) % n;
+                    self.config_follow();
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }

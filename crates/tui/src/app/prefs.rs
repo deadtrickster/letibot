@@ -199,6 +199,47 @@ impl App {
 
     /// The pane's rows, in order. Rebuilt on every draw and every key, so the
     /// cursor and the screen can never disagree about what row N is.
+    /// **The pane line the config cursor is on**, in the layout `rano::agent::config` draws:
+    /// the title and a blank, then each section's header (a blank before every one but the
+    /// first) and one line per row. The selected row's `from …` line comes AFTER it, so it
+    /// shifts nothing above. `the_config_cursor_line_is_the_line_rano_marks` holds this to the
+    /// widget's real output, so the two cannot drift.
+    pub(crate) fn config_sel_line(&self) -> usize {
+        let rows = self.config_rows();
+        let sel = self.config_sel.min(rows.len().saturating_sub(1));
+        let mut line = 2;
+        let mut section = "";
+        for (i, r) in rows.iter().enumerate() {
+            if r.section != section {
+                if !section.is_empty() {
+                    line += 1;
+                }
+                line += 1;
+                section = r.section;
+            }
+            if i == sel {
+                return line;
+            }
+            line += 1;
+        }
+        line
+    }
+
+    /// **The view follows the config cursor** — the pane's rows outgrow a short terminal, and
+    /// an arrow that walked the cursor off the bottom looked like a key that did nothing until
+    /// it had gone round every row: *"the selector eventually goes out of view and doesnt
+    /// wrap … until i reenter config pane"* (2026-10-08). Its `from …` line is kept in view
+    /// too, and the first row shows the pane from its title.
+    pub(crate) fn config_follow(&mut self) {
+        if self.config_sel == 0 {
+            self.pane_scroll = 0;
+            return;
+        }
+        let line = self.config_sel_line();
+        self.scroll_into_view(line + 1);
+        self.scroll_into_view(line);
+    }
+
     pub(crate) fn config_rows(&self) -> Vec<ConfigRow> {
         let mut rows = Vec::new();
         let head = |key: &str, value: String, edit: ConfigEdit| ConfigRow {

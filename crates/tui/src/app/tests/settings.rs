@@ -832,3 +832,72 @@ fn the_help_screen_names_both_settings_and_what_a_bare_one_does() {
         "the help screen names `/diff` without saying what it takes:\n{screen}"
     );
 }
+
+/// A config pane with `n` daemon rows under the head's own, so it outgrows a short terminal.
+fn a_long_config(n: usize) -> App {
+    let mut a = App::new(plain_cfg(100));
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    assert_eq!(a.command("config"), Some(Action::Settings));
+    a.apply(ServerFrame::Settings {
+        rows: (0..n)
+            .map(|i| letibot_sessionlog::protocol::SettingRow {
+                key: format!("setting.{i:02}"),
+                value: format!("value {i}"),
+                source: "a flag".into(),
+                editable: String::new(),
+                choices: Vec::new(),
+                tools: Vec::new(),
+            })
+            .collect(),
+    });
+    a
+}
+
+/// **`config_sel_line` is the line rano marks**, for every row — the layout is mirrored, and
+/// this is what keeps the mirror honest.
+#[test]
+fn the_config_cursor_line_is_the_line_rano_marks() {
+    let mut a = a_long_config(20);
+    for sel in 0..a.config_rows().len() {
+        a.config_sel = sel;
+        let lines = a.config_lines(100);
+        let at = a.config_sel_line();
+        assert!(
+            lines[at].trim_start().starts_with('▸'),
+            "row {sel}: line {at} is {:?}",
+            lines[at]
+        );
+    }
+}
+
+/// **Down keeps the cursor on the screen, all the way round, and comes back to the top.**
+/// The operator, 2026-10-08: *"if i keep pressing down the selector eventually goes out of
+/// view and doesnt wrap … until i reenter config pane"*.
+#[test]
+fn down_keeps_the_config_cursor_in_view_and_wraps_to_the_first_row() {
+    let mut a = a_long_config(30);
+    let n = a.config_rows().len();
+    a.screen(100, 16);
+    for press in 1..=n {
+        a.key(Key::Down);
+        let screen = a.screen(100, 16).join("\n");
+        assert!(
+            screen.contains('▸'),
+            "press {press}: the cursor is off the screen:\n{screen}"
+        );
+    }
+    assert_eq!(a.config_sel, 0, "n presses go round once");
+    let screen = a.screen(100, 16).join("\n");
+    assert!(
+        screen.contains("config"),
+        "back at the top, the pane's title shows:\n{screen}"
+    );
+    // And Up from the first row goes to the last, still on screen.
+    a.key(Key::Up);
+    assert_eq!(a.config_sel, n - 1);
+    assert!(a.screen(100, 16).join("\n").contains('▸'));
+}
