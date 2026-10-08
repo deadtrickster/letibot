@@ -187,6 +187,23 @@ const DEFAULT_TERM: &str = "xterm-256color";
 /// program that exits because it cannot find either is the flash this strand is about.
 const PANE_HOME: &str = "HOME";
 
+/// **The operator's ssh agent, for the same reason and by the same argument as [`PANE_HOME`].**
+///
+/// A pane is the operator's program on the operator's own box, so a `!term ssh host` is meant
+/// to reach the agent they are already using — and without this it cannot: the pane's
+/// environment is CLEARED and then stated (see this module's header), so `SSH_AUTH_SOCK` is
+/// absent, `ssh` finds no agent, and a key with a passphrase asks for one in a program whose
+/// only answer is `!send`.
+///
+/// **It is not put on [`super::console::INHERITED`], and that is the boundary's business, not
+/// tidiness.** A *confined* run must not be handed the operator's agent socket: the agent
+/// signs **outside** the boundary and only signatures cross it, which is why
+/// [`super::confine`] binds its own socket and refuses an unauthorised `ssh`
+/// ([`AgentSocket`](super::confine::AgentSocket)). Stating the variable on this table — the
+/// pane's — leaves that path exactly as it was, and the row path can adopt it deliberately if
+/// it is ever wanted there.
+const PANE_AGENT: &str = "SSH_AUTH_SOCK";
+
 /// How many bytes one read from the master may carry. The same order as
 /// [`super::shell`]'s, and not a cap on anything: a read that fills it is one call to
 /// [`TermSink::output`] and the next read follows immediately.
@@ -285,8 +302,9 @@ impl Default for TermConfig {
 /// terminal is for.
 ///
 /// The two tables it reads are [`super::console::INHERITED`] (the row path's own) and
-/// [`super::confine::KEEP_ENV`] (a confined command's keep-list), plus [`PANE_HOME`] — which
-/// is named here rather than on the console's table for the reason its own doc gives. **No
+/// [`super::confine::KEEP_ENV`] (a confined command's keep-list), plus [`PANE_HOME`] and
+/// [`PANE_AGENT`] — named here rather than on the console's table, for the reasons their own
+/// docs give. **No
 /// third table**, because the question *what environment does a program get* already has two
 /// answers in this tree and a third would be the defect. `TERM` is on both, so the tables are
 /// walked in order with the first pair for a name winning, and an empty value is no value at
@@ -299,7 +317,7 @@ pub fn env_from(source: &[(String, String)]) -> Vec<(String, String)> {
     for name in super::console::INHERITED
         .iter()
         .chain(super::confine::KEEP_ENV)
-        .chain([PANE_HOME].iter())
+        .chain([PANE_HOME, PANE_AGENT].iter())
     {
         // `TERM` is on both tables; the first one to name it is the console's own.
         if pairs.iter().any(|(k, _)| k == name) {
@@ -985,6 +1003,40 @@ mod tests {
         assert_eq!(args[3], Cgroup2::procs_path(&scope).display().to_string());
         assert_eq!(args[4], "/dev/null");
         assert_eq!(&args[5..], &["/bin/sh", "-c", "mc"]);
+    }
+
+    /// **`!term ssh` reaches the operator's own agent, and a pane invents nothing.**
+    ///
+    /// The pane's environment is cleared and then stated, so without [`PANE_AGENT`] an `ssh`
+    /// inside a pane finds no agent at all — a passphrase-protected key then asks for one in a
+    /// program whose only answer is `!send`. Both halves are asserted: the variable is
+    /// forwarded when the console has it, and **it is not invented when it does not** (the
+    /// rule [`super::super::console::value`] keeps for every name on this table).
+    #[test]
+    fn a_pane_gets_the_operators_agent_and_never_one_it_does_not_have() {
+        let with_agent: Vec<(String, String)> = vec![
+            ("TERM".into(), "xterm-256color".into()),
+            ("SSH_AUTH_SOCK".into(), "/run/user/1000/keyring/ssh".into()),
+        ];
+        let pairs = env_from(&with_agent);
+        assert!(
+            pairs
+                .iter()
+                .any(|(k, v)| k == "SSH_AUTH_SOCK" && v == "/run/user/1000/keyring/ssh"),
+            "the agent socket the operator is using must reach the pane: {pairs:?}"
+        );
+        let without: Vec<(String, String)> = vec![("TERM".into(), "xterm-256color".into())];
+        let pairs = env_from(&without);
+        assert!(
+            !pairs.iter().any(|(k, _)| k == "SSH_AUTH_SOCK"),
+            "a console with no agent must not be given one: {pairs:?}"
+        );
+        // An empty value is not a value, which is the rule every name here keeps.
+        let empty: Vec<(String, String)> = vec![("SSH_AUTH_SOCK".into(), String::new())];
+        assert!(
+            !env_from(&empty).iter().any(|(k, _)| k == "SSH_AUTH_SOCK"),
+            "`SSH_AUTH_SOCK=` says nothing, and stating it would tell ssh something false"
+        );
     }
 
     /// **A pane's environment is the console's own variables plus the keep-list a program
