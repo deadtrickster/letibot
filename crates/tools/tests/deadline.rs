@@ -112,6 +112,21 @@ fn members(host: &HostProcesses, job: &letibot_tools::exec::JobId) -> Vec<u32> {
     letibot_tools::exec::live_members(&view.scope)
 }
 
+/// **What is left of the run once the reap has had its moment**: [`members`] read until it
+/// is empty or two seconds have passed, and the last reading returned — ONE reading, so an
+/// assertion and its message cannot disagree. The kill is recorded when it is sent and the
+/// reap follows it; read twice, an assertion saw a process its message no longer did
+/// (*"the cgroup still holds []"*, CI's macOS job, 2026-10-08).
+fn left_after_reap(host: &HostProcesses, job: &letibot_tools::exec::JobId) -> Vec<u32> {
+    let until = std::time::Instant::now() + Duration::from_secs(2);
+    let mut left = members(host, job);
+    while !left.is_empty() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+        left = members(host, job);
+    }
+    left
+}
+
 /// A host with a real cgroup tree, or `None` with the reason said out loud.
 fn host() -> Option<HostProcesses> {
     match HostProcesses::new(std::env::temp_dir()) {
@@ -181,11 +196,12 @@ fn a_run_nobody_is_waiting_on_is_still_ended_by_its_deadline() {
         view.state.word()
     );
 
-    // **And the world agrees with the record.** Measured on `/proc`, not on the state.
+    // **And the world agrees with the record.** Measured on `/proc`, not on the state, once
+    // the reap has had its moment (see `left_after_reap`).
+    let left = left_after_reap(&host, &id);
     assert!(
-        members(&host, &id).is_empty(),
-        "the cgroup still holds {:?} after the deadline",
-        members(&host, &id)
+        left.is_empty(),
+        "the cgroup still holds {left:?} two seconds after the deadline"
     );
     for p in &pids {
         assert!(
@@ -278,10 +294,10 @@ fn a_root_process_the_daemon_may_not_signal_is_ended_by_the_same_deadline() {
         "a root process on the run's own device must end by the deadline too: {}",
         view.state.word()
     );
+    let left = left_after_reap(&host, &id);
     assert!(
-        members(&host, &id).is_empty(),
-        "the cgroup still holds {:?} — `cgroup.kill` did not reach the root process",
-        members(&host, &id)
+        left.is_empty(),
+        "the cgroup still holds {left:?} — `cgroup.kill` did not reach the root process"
     );
 }
 
@@ -320,11 +336,8 @@ fn a_run_ended_by_the_daemon_stopping_says_so() {
         },
         "the row has to name what ended it, not the signal that was its shape"
     );
-    assert!(
-        members(&host, &id).is_empty(),
-        "and the cgroup has to be empty: {:?}",
-        members(&host, &id)
-    );
+    let left = left_after_reap(&host, &id);
+    assert!(left.is_empty(), "and the cgroup has to be empty: {left:?}");
     // Nothing running: the second call is the honest zero rather than a second kill.
     assert!(
         host.end_running("the daemon stopping").is_empty(),
