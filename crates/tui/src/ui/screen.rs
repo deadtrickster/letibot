@@ -560,6 +560,10 @@ impl App {
                 self.queued.push(Action::TermResize { cols, rows: rows_n });
             }
             rows
+        } else if self.diff_popup.is_some() {
+            // **A change opened by a click, read in its whole file** — over the conversation,
+            // under a `!term` pane (which owns the keys first). See `app::diff_popup`.
+            self.diff_popup_rows(w, room)
         } else if self.edit_pane.is_some() {
             // **The editor pane takes the rectangle next**, under a `!term` pane and over
             // everything else the conversation's rectangle can hold: it was opened on purpose,

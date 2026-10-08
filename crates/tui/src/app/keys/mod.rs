@@ -100,10 +100,16 @@ impl App {
         if let ControlFlow::Break(r) = self.key_key_ask(&k) {
             return r;
         }
+        // **An open diff popup owns the keyboard**, below the cards and asks above (a question
+        // that arrives while the operator reads stays answerable) and above everything else.
+        if let ControlFlow::Break(r) = self.key_diff_popup(&k) {
+            return r;
+        }
         if let ControlFlow::Break(r) = self.key_chords(&k) {
             return r;
         }
-        // **A click on an edit or write row opens rano on its change.** The whole row — its
+        // **A click on an edit or write row opens its change in the diff popup** — the whole
+        // file with the change inline, no editor chrome; `ctrl-]` from there is the editor. The whole row — its
         // header and the diff under it — is the target, because the row is one call about one
         // file and a reader aims at the diff as often as at the name. Measured against the last
         // frame's map (`file_rows`), which holds only rows the conversation drew this frame; a
@@ -111,7 +117,7 @@ impl App {
         if let Key::Click { y, .. } = k
             && let Some(f) = self.file_at_row(y)
         {
-            self.open_in_editor(&f);
+            self.open_diff_popup(&f);
             return None;
         }
 

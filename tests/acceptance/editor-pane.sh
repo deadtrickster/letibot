@@ -59,16 +59,23 @@ wait_gone "rano 0."
 expect "Edited notes.txt"
 expect "please fix line eleven"
 
-spec "a click on the edit row opens it again"
+spec "a click on the edit row opens the change in a popup: the whole file, no editor chrome"
 click "Edited notes.txt"
-wait_for "Review notes.txt"
+wait_for "notes.txt · the change at line 11"
+expect "esc closes"
+expect "old 11"
+expect_not "rano 0."
+expect_not "C-q Exit"
+
+spec "esc closes the popup onto the conversation"
+press Escape
+wait_gone "the change at line 11"
+expect "please fix line eleven"
 
 spec "a click on a row that is no file opens nothing"
-press C-q
-wait_gone "Review notes.txt"
 click "Line eleven is fixed."
 settle
-expect_not "Review notes.txt"
+expect_not "the change at line 11"
 expect_not "rano 0."
 
 done_spec

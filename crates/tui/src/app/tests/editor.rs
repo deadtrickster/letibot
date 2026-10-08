@@ -174,33 +174,108 @@ fn the_rows_of_an_edit_are_mapped_to_its_file_and_its_first_changed_line() {
     assert!(ys.windows(2).all(|w| w[1] == w[0] + 1), "{ys:?}");
 }
 
-/// **A click on an edit row opens rano on its change**, as a review: the file, the cursor on
-/// line 11, the change drawn over the text — and the keyboard is the pane's.
+/// **A click on an edit row opens the change in a popup, not the editor** — the operator,
+/// 2026-10-08: *"I dont need the full rano chrome when I look on the full edit, but i do need
+/// the context - so full file with diff and cursor placement at the beginning of the first diff.
+/// preferably in a popup and of course Esc must just close it"*.
 #[test]
-fn a_click_on_an_edit_row_opens_its_file_on_the_change() {
+fn a_click_on_an_edit_row_opens_the_change_in_a_popup_not_the_editor() {
     let ws = workspace("click");
     let mut a = edited(&ws);
     a.screen(100, 40);
     let (y, _) = a.file_rows[0].clone();
     assert_eq!(a.key(Key::Click { x: 10, y: y as u16 }), None);
-    assert!(a.editor_focused(), "the pane has the keyboard");
+    assert!(a.diff_popup.is_some(), "a click opens the popup");
+    assert!(a.edit_pane.is_none(), "and not rano's editor");
+    let screen = a.screen(100, 40).join("\n");
+    // The whole file, the change inline: the unchanged lines around it, and the change itself.
+    assert!(
+        screen.contains("line 1 ")
+            || screen.contains("line 1\n")
+            || screen.contains("line 1 │")
+            || screen.contains(" line 1"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("old 11"),
+        "the removed line is shown: {screen}"
+    );
+    assert!(
+        screen.contains("line 11"),
+        "the added line is shown: {screen}"
+    );
+    // No editor chrome: no title bar, no function bar, no status line.
+    assert!(!screen.contains("rano 0."), "{screen}");
+    assert!(!screen.contains("C-q Exit"), "{screen}");
+    assert!(!screen.contains("Review notes.txt"), "{screen}");
+    // The popup names the file and its own keys.
+    assert!(screen.contains("notes.txt"), "{screen}");
+    assert!(screen.contains("esc closes"), "{screen}");
+}
+
+/// **The whole file is there, and it opens on the first change**: on a screen too short for
+/// the file, the change is in view at once, and the file's first and last lines are a key away.
+#[test]
+fn the_popup_holds_the_whole_file_and_opens_on_the_first_change() {
+    let ws = workspace("whole");
+    let mut a = edited(&ws);
+    a.screen(100, 14);
+    let (y, _) = a.file_rows[0].clone();
+    a.key(Key::Click { x: 10, y: y as u16 });
+    let first = a.screen(100, 14).join("\n");
+    assert!(
+        first.contains("old 11"),
+        "the first change is in view: {first}"
+    );
+    assert!(
+        !first.contains("line 30"),
+        "a short screen cannot hold the whole file: {first}"
+    );
+    a.key(Key::End);
+    let end = a.screen(100, 14).join("\n");
+    assert!(
+        end.contains("line 30"),
+        "the end of the file is a key away: {end}"
+    );
+    a.key(Key::Home);
+    let home = a.screen(100, 14).join("\n");
+    assert!(home.contains("line 1"), "and so is its start: {home}");
+}
+
+/// **Esc closes the popup, and only the popup.**
+#[test]
+fn esc_closes_the_diff_popup_onto_the_conversation() {
+    let ws = workspace("popesc");
+    let mut a = edited(&ws);
+    let before = a.screen(100, 40);
+    let (y, _) = a.file_rows[0].clone();
+    a.key(Key::Click { x: 10, y: y as u16 });
+    assert!(a.diff_popup.is_some());
+    assert_eq!(a.key(Key::Esc), None);
+    assert!(a.diff_popup.is_none(), "esc closed the popup");
+    assert_eq!(
+        a.screen(100, 40),
+        before,
+        "and the conversation is as it was"
+    );
+}
+
+/// **From the popup, `ctrl-]` is the editor** — on the same change, for when reading turns into
+/// changing.
+#[test]
+fn ctrl_bracket_in_the_popup_opens_the_editor_on_the_change() {
+    let ws = workspace("popedit");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    let (y, _) = a.file_rows[0].clone();
+    a.key(Key::Click { x: 10, y: y as u16 });
+    a.key(Key::CtrlBracket);
+    assert!(a.diff_popup.is_none(), "the popup gives way to the editor");
+    assert!(a.editor_focused(), "the editor has the keyboard");
     settle(&mut a);
     let (path, line) = place(&a);
     assert!(is_the_file(&path), "{path:?}");
     assert_eq!(line, 11);
-    let p = a.edit_pane.as_ref().unwrap();
-    assert!(
-        p.ed.diff_view
-            .as_ref()
-            .is_some_and(|v| v.header().contains("Review")),
-        "the change is drawn as a review"
-    );
-    let screen = a.screen(100, 40).join("\n");
-    assert!(screen.contains("Review"), "{screen}");
-    assert!(
-        screen.contains("old 11"),
-        "the change is on the screen: {screen}"
-    );
 }
 
 /// **A click anywhere else does what it did before** — nothing, on a row of the conversation.
@@ -538,4 +613,57 @@ fn the_acceptance_fixture_is_this_session() {
         "{} is stale: run `LETIBOT_BLESS=1 cargo test -p letibot-tui the_acceptance_fixture`",
         path.display()
     );
+}
+
+/// **A file changed since the edit falls back to the edit itself, and says so** — a whole-file
+/// view of a file somebody has edited since would be a diff of their change, not this one.
+#[test]
+fn a_file_changed_since_the_edit_shows_the_edit_alone_and_says_why() {
+    let ws = workspace("popstale");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    // Somebody edited line 11 again after the conversation's edit.
+    let text: String = (1..=30)
+        .map(|i| {
+            if i == 11 {
+                "line eleven, again\n".to_string()
+            } else {
+                format!("line {i}\n")
+            }
+        })
+        .collect();
+    std::fs::write(ws.0.join(FILE), text).unwrap();
+    let (y, _) = a.file_rows[0].clone();
+    a.key(Key::Click { x: 10, y: y as u16 });
+    let screen = a.screen(100, 40).join("\n");
+    assert!(
+        screen.contains("the file has changed since this edit"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("old 11"),
+        "the edit's own change is shown: {screen}"
+    );
+    assert!(
+        !screen.contains("line 30"),
+        "and not a whole file that is no longer its: {screen}"
+    );
+}
+
+/// The whole file before the edit is the file now with the edit's `after` put back to `before`.
+#[test]
+fn the_file_before_the_edit_is_the_file_with_the_edit_undone() {
+    let now: String = (1..=5).map(|i| format!("line {i}\n")).collect();
+    let c = rano::review::Change {
+        before: "line 2\nold 3\nline 4".into(),
+        after: "line 2\nline 3\nline 4".into(),
+        before_start: 2,
+        after_start: 2,
+    };
+    assert_eq!(
+        crate::app::diff_popup::whole_file_before(&now, &c).as_deref(),
+        Some("line 1\nline 2\nold 3\nline 4\nline 5\n")
+    );
+    let other = now.replace("line 3", "line three");
+    assert_eq!(crate::app::diff_popup::whole_file_before(&other, &c), None);
 }

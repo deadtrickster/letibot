@@ -864,6 +864,9 @@ pub struct App {
     /// taken before that rebuild points at whatever the new list happens to have there.
     /// `None` the rest of the time, which is why it is taken rather than read.
     pub(crate) up_from: Option<String>,
+    /// **The change a click opened, as a popup over the conversation** — see
+    /// `ui::diff_popup`. `None` when nothing is open.
+    pub(crate) diff_popup: Option<crate::app::diff_popup::DiffPopup>,
     /// The job-output view the jobs pane's Enter opens, until Esc returns to the
     /// jobs list. The bytes the pane was counting, finally shown in the pane.
     pub(crate) job_out: Option<JobOut>,
@@ -1518,6 +1521,7 @@ impl App {
             sub_out: None,
             sub_out_pending: None,
             up_from: None,
+            diff_popup: None,
             job_out: None,
             todos: Vec::new(),
             repo_todos: None,
@@ -1760,6 +1764,7 @@ mod asks;
 mod attention;
 mod commands;
 mod composer;
+pub(crate) mod diff_popup;
 mod editor;
 mod events;
 mod keys;
