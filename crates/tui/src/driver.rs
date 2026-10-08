@@ -105,6 +105,26 @@ pub struct Link {
 /// `None` on any failure at all, and the farewell says *pid unknown* rather than filling
 /// in a zero: a head that printed a number it did not have would send the operator to `ps`
 /// for a process that is not there.
+///
+/// macOS has no `SO_PEERCRED`; `LOCAL_PEERPID` at `SOL_LOCAL` is the same question.
+#[cfg(target_os = "macos")]
+fn peer_pid(s: &UnixStream) -> Option<i32> {
+    use std::os::unix::io::AsRawFd;
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            s.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            &mut pid as *mut _ as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    (rc == 0 && pid > 0).then_some(pid)
+}
+
+#[cfg(not(target_os = "macos"))]
 fn peer_pid(s: &UnixStream) -> Option<i32> {
     use std::os::unix::io::AsRawFd;
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
@@ -157,6 +177,45 @@ enum Parentage {
 /// launched: a head that inherited its daemon through an `exec` (which is how `~/bin/letibot`
 /// produces one) is a parent without ever having called `spawn`, so *"did I start it"* is not
 /// the question — *"is it mine"* is, and the kernel answers it.
+///
+/// **macOS cannot describe a zombie**: `proc_pidinfo` fails `ESRCH` for one exactly as for a
+/// pid that is gone (MEASURED 2026-10-07; another user's live process fails `EPERM`). So a
+/// pid it cannot describe is handed to the targeted `waitpid` as if ours — which reaps it if
+/// it is an exited child of this head and answers `ECHILD` for anything else, and `ECHILD`
+/// already falls through to [`process_gone_by_proc`].
+#[cfg(target_os = "macos")]
+fn parentage(pid: i32) -> Parentage {
+    match bsdinfo(pid) {
+        Ok((ppid, _)) if ppid == std::process::id() => Parentage::Ours,
+        Ok(_) => Parentage::NotOurs,
+        Err(libc::ESRCH) => Parentage::Ours,
+        Err(_) => Parentage::NotOurs,
+    }
+}
+
+/// `PROC_PIDTBSDINFO` — macOS's `/proc/<pid>/stat` — as `(ppid, status)`, or the errno:
+/// `ESRCH` for a pid that is gone **or a zombie**, `EPERM` for another user's process.
+#[cfg(target_os = "macos")]
+fn bsdinfo(pid: i32) -> Result<(u32, u32), i32> {
+    let mut bi: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut bi as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if got == size {
+        Ok((bi.pbi_ppid, bi.pbi_status))
+    } else {
+        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 fn parentage(pid: i32) -> Parentage {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(stat) => match stat_ppid(&stat) {
@@ -176,6 +235,7 @@ fn parentage(pid: i32) -> Parentage {
 /// whitespace from the left reads the wrong field for exactly the processes somebody would
 /// bother to name that way. Everything after the last `)` is whitespace-separated fields
 /// from field 3 on, which is what both this and [`stat_state`] rely on.
+#[cfg(any(not(target_os = "macos"), test))]
 fn stat_ppid(stat: &str) -> Option<i32> {
     let after = &stat[stat.rfind(')')? + 1..];
     let mut fields = after.split_whitespace();
@@ -185,6 +245,7 @@ fn stat_ppid(stat: &str) -> Option<i32> {
 
 /// The state char out of one `/proc/<pid>/stat` line — `R` running, `S` sleeping, **`Z` a
 /// zombie**, `X` dead.
+#[cfg(any(not(target_os = "macos"), test))]
 fn stat_state(stat: &str) -> Option<char> {
     let after = &stat[stat.rfind(')')? + 1..];
     after.split_whitespace().next()?.chars().next()
@@ -244,6 +305,24 @@ fn reap_own_child(pid: i32) -> Option<bool> {
 /// has exited and is waiting to be reaped, so it is not a daemon that can still be running.
 /// Without the parent's `waitpid` this is the only test available, and with it this is what
 /// answers when the kernel declines to.
+///
+/// macOS: there is no `/proc`, and `PROC_PIDTBSDINFO` is the question asked of the kernel
+/// instead. A pid it describes is running — it never describes a zombie — and its error is
+/// the rest of the answer: `ESRCH` is gone *or a zombie*, both of which are gone for a daemon,
+/// and `EPERM` is somebody else's process that is still there. (Treating every failed lookup
+/// as gone, which a `/proc` read that is never there does, would report a live daemon as
+/// stopped the moment it was asked about.)
+#[cfg(target_os = "macos")]
+fn process_gone_by_proc(pid: i32) -> Option<bool> {
+    match bsdinfo(pid) {
+        Ok(_) => Some(false),
+        Err(libc::ESRCH) => Some(true),
+        Err(libc::EPERM) => Some(false),
+        Err(_) => None,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 fn process_gone_by_proc(pid: i32) -> Option<bool> {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(stat) => match stat_state(&stat) {
@@ -1039,9 +1118,9 @@ mod tests {
     #[test]
     fn an_unreaped_child_that_has_exited_is_gone() {
         use std::process::Command;
-        let mut child = Command::new("/bin/true")
+        let mut child = Command::new("true") // on PATH: `/bin/true` on Linux, `/usr/bin/true` on macOS
             .spawn()
-            .expect("`/bin/true` starts");
+            .expect("`true` starts");
         let pid = child.id() as i32;
         // It is ours, and the kernel says so — which is what decides which test runs.
         assert_eq!(
@@ -1056,11 +1135,21 @@ mod tests {
         // **It is a zombie, and `/proc` says so** — the observation the old test read as
         // `alive`. Asserted directly, so this test fails loudly rather than silently turning
         // into a test of something else if the timing below ever changes.
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-        assert_eq!(
-            stat_state(&stat),
-            Some('Z'),
-            "the child exited but is not a zombie — this test is not testing what it says: {stat:?}"
+        #[cfg(not(target_os = "macos"))]
+        {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            assert_eq!(
+                stat_state(&stat),
+                Some('Z'),
+                "the child exited but is not a zombie — this test is not testing what it says: {stat:?}"
+            );
+        }
+        // macOS will not describe a zombie, so the same fact is read as "the kernel still
+        // has the pid (`kill 0` succeeds) and libproc says `ESRCH`".
+        #[cfg(target_os = "macos")]
+        assert!(
+            unsafe { libc::kill(pid, 0) } == 0 && bsdinfo(pid) == Err(libc::ESRCH),
+            "the child exited but is not a zombie — this test is not testing what it says"
         );
         // **And the answer is GONE**, which the old `fs::metadata` could not give: the
         // directory is there for a zombie.
@@ -1115,6 +1204,9 @@ mod tests {
         // A pid that cannot exist. `i32::MAX` is above every `pid_max` on Linux, so this asks
         // the question about a process that was never there — which is what the operator's
         // `letibot --stop` saw a moment after the head exited.
+        // (On macOS an undescribable pid is offered to `waitpid` first, which answers `ECHILD`
+        // for this one — see `parentage` — so only the answer, not the route, is shared.)
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(parentage(i32::MAX), Parentage::NotOurs);
         assert_eq!(process_gone(i32::MAX), Some(true), "an absent pid is gone");
     }

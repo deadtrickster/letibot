@@ -138,6 +138,11 @@ impl Role {
 pub enum Palette {
     /// 256-colour terminal.
     Colour,
+    /// **The same, on a terminal that said its background is light** (OSC 11). Every role but
+    /// two is a theme slot or an attribute and needs no change; the two that name an absolute
+    /// colour — the diff's backgrounds — swap the cube's darkest green and red, which are dark
+    /// bands under dark text on a light theme, for its palest.
+    Light,
     /// No sequences at all. Not a "monochrome theme": the output is plain text,
     /// which is what a replay diff and a CI log need.
     None,
@@ -208,6 +213,8 @@ impl Palette {
             // green and red through [`Role::foreground`]. The exception is
             // carried by name in `no_role_paints_outside…`: two roles, chosen
             // once, and nothing else may follow them out.
+            Role::Added if self == Palette::Light => "\x1b[48;5;194m",
+            Role::Removed if self == Palette::Light => "\x1b[48;5;224m",
             Role::Added => "\x1b[48;5;22m",
             Role::Removed => "\x1b[48;5;52m",
             Role::Emphasis => "\x1b[1;4m",
@@ -248,7 +255,7 @@ impl Palette {
     }
 
     pub fn is_colour(self) -> bool {
-        self == Palette::Colour
+        matches!(self, Palette::Colour | Palette::Light)
     }
 
     /// **A program's own background slot**, `0`–`15`, as a sequence — empty for
@@ -661,5 +668,28 @@ mod tests {
         let fixed = p.rebase_resets(&foreign);
         assert!(fixed.ends_with(&p.close()), "{fixed:?}");
         assert!(!fixed.ends_with("\x1b[0m"), "{fixed:?}");
+    }
+
+    /// **A light theme changes the two absolute colours and nothing else.** Every other role is
+    /// a theme slot or an attribute, which the terminal already adapts.
+    #[test]
+    fn the_light_palette_differs_only_in_the_diff_backgrounds() {
+        for r in [
+            Role::Plain,
+            Role::Faint,
+            Role::Heading,
+            Role::UserBlock,
+            Role::Success,
+            Role::Failure,
+            Role::Attention,
+            Role::Reasoning,
+            Role::Code,
+            Role::Keyword,
+        ] {
+            assert_eq!(Palette::Light.open(r), Palette::Colour.open(r), "{r:?}");
+        }
+        assert_eq!(Palette::Light.open(Role::Added), "\x1b[48;5;194m");
+        assert_eq!(Palette::Light.open(Role::Removed), "\x1b[48;5;224m");
+        assert!(Palette::Light.is_colour());
     }
 }

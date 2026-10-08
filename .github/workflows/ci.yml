@@ -523,3 +523,73 @@ jobs:
           # The installer's own final check, run again here so a change to it that
           # stopped verifying would be visible.
           ( cd "$RUNNER_TEMP/bin" && env -u LD_LIBRARY_PATH ./harnessd --version )
+
+  # **macOS, on Apple silicon: the port's own gate.** Everything Linux-only in the tree has
+  # a macOS answer now — process groups for the cgroup tree, libproc for `/proc`, `lsof`
+  # for `ss`, an unlinked temp file for the memfd — and each was measured on a Mac before
+  # it was written down. This job is what keeps them measured. It is a separate job rather
+  # than a matrix leg because the Linux job carries Linux-only gates (cgroups, glibc, the
+  # host-runtime check) that would each need a skip here.
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build llama.cpp (CPU, @loader_path rpath)
+        run: |
+          set -eu
+          git clone --depth 1 --branch "$LLAMA_REF" \
+            https://github.com/deadtrickster/llama.cpp llama.cpp
+          cmake -S llama.cpp -B llama.cpp/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_METAL=OFF \
+            -DGGML_BLAS=OFF \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_TOOLS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_BUILD_APP=OFF \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_INSTALL_RPATH=@loader_path
+          cmake --build llama.cpp/build --config Release -j "$(sysctl -n hw.ncpu)"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-apple-darwin
+      # The launcher runs under `/usr/bin/env bash`, which on a stock Mac is 3.2: an empty
+      # array is "unbound" there under `set -u`, which killed the first macOS start.
+      - name: The launcher parses under the Mac's own bash 3.2
+        run: |
+          set -eu
+          /bin/bash --version | head -1
+          /bin/bash -n scripts/letibot
+          /bin/bash -n scripts/leticode
+      - name: Test
+        run: cargo test --workspace --no-fail-fast -- --nocapture
+      - name: Release build
+        run: cargo build --release --bin harnessd --bin letibot-tui --bin letibot-askpass
+      - name: Package, and the package must run on its own
+        run: |
+          set -eu
+          sh scripts/make-dist.sh aarch64-apple-darwin dist
+          d=$(mktemp -d)
+          tar -xzf dist/letibot-aarch64-apple-darwin.tar.gz -C "$d"
+          n=$(ls -1 "$d" | wc -l | tr -d ' ')
+          test "$n" -eq 8 || { echo "::error::archive holds $n entries, expected 8"; ls -la "$d"; exit 1; }
+          ( cd "$d" && env -u DYLD_LIBRARY_PATH ./harnessd --version )
+          ( cd "$d" && env -u DYLD_LIBRARY_PATH ./letibot-tui --version )
+          # Every llama library must come from beside the binary, not from the build tree
+          # an rpath also names.
+          loaded=$(cd "$d" && DYLD_PRINT_LIBRARIES=1 ./harnessd --version 2>&1 | grep -E 'llama|ggml' || true)
+          echo "$loaded"
+          if printf '%s\n' "$loaded" | grep -q "$LETIBOT_LLAMA_LIB"; then
+            echo "::error::the packaged harnessd loaded a library from the build tree"
+            exit 1
+          fi
+      - name: Installer
+        run: |
+          set -eu
+          LETIBOT_INSTALL_DIR="$RUNNER_TEMP/bin" sh install.sh
+          ( cd "$RUNNER_TEMP/bin" && env -u DYLD_LIBRARY_PATH ./harnessd --version )
+          "$RUNNER_TEMP/bin/letibot" --help | head -1

@@ -30,7 +30,9 @@ fn main() {
         header.display()
     );
     assert!(
-        lib.join("libllama.so").exists() || lib.join("libllama.a").exists(),
+        ["libllama.so", "libllama.dylib", "libllama.a"]
+            .iter()
+            .any(|f| lib.join(f).exists()),
         "libllama not found in {}. Set LETIBOT_LLAMA_LIB to the build tree's lib dir.",
         lib.display()
     );

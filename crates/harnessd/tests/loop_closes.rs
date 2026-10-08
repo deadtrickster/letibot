@@ -111,7 +111,7 @@ fn config() -> Option<Config> {
         cfg.endpoint = Endpoint::new(h, p.parse().expect("port"));
     }
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = g.into();
+        cfg.vocab_gguf = Some(g.into());
     }
     // **The dialect follows the model, and that is what makes the escape hatch
     // work.** `serving::expect`'s panic tells an operator whose box serves another
@@ -152,7 +152,7 @@ fn config() -> Option<Config> {
         );
         cfg.model = alias.into();
         cfg.dialect = dialect;
-        cfg.vocab_gguf = gguf.into();
+        cfg.vocab_gguf = Some(gguf.into());
     }
     // **NO SERVER, NO TEST — and the guard lives in `serving` so its wording cannot
     // drift from the other live files.** MEASURED with the endpoint on a dead port: these

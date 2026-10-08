@@ -570,7 +570,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 // The binding, not the choice of who answers — see `cli_main_model`.
                 cli_binding = Some(m);
             }
-            "--vocab" => cfg.vocab_gguf = PathBuf::from(next()?),
+            "--vocab" => cfg.vocab_gguf = Some(PathBuf::from(next()?)),
             "--effort" => cfg.effort = Some(next()?),
             // **The four flags that make anything reachable, and all four are
             // opt-in.** Nothing here changes what an invocation without them gets.
@@ -866,8 +866,6 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             ),
         });
     }
-
-    let parts = Parts::load(&cfg).map_err(|e| e.to_string())?;
 
     // One registry, seeded with the session named on the command line. A head can
     // make more over the socket; this one is the daemon's own, and it is opened
@@ -1420,6 +1418,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         };
     }
 
+    // **Loaded here, after every source of the provider has spoken** — the flag,
+    // `main_model` in leticode.toml, `[default]` in providers.toml — because which
+    // vocabulary a daemon needs depends on who answers: a cloud provider with no
+    // `--vocab` is the byte vocabulary, and that is only knowable once the provider is.
+    let parts = Parts::load(&cfg).map_err(|e| e.to_string())?;
+
     // Captured before `cfg` and `parts` are handed to the worker: the HTTP head
     // needs the same vocabulary and dialect and none of the session state.
     let cfg_http = cfg.http.clone();
@@ -1823,7 +1827,7 @@ fn run_query(
                     tools_json: prefix.tools_json.clone(),
                     tokens: opened.ledger.prefix_tokens().to_vec(),
                     h_init: opened.ledger.h_init(),
-                    vocab_source: cfg.vocab_gguf.display().to_string(),
+                    vocab_source: parts.vocab.source().to_string(),
                 };
                 // Content-addressed: the id is the hash of the system text and the
                 // schemas, so this is the same row and the write fills it in.

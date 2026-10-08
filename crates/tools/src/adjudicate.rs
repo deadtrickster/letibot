@@ -3010,7 +3010,24 @@ impl Gate for AdjudicatedGate {
         //     `NotRun` first: an action nobody could read is not an action anybody can
         //     decide about, and there is no branch here that could turn "unresolved"
         //     into "proceed".
-        if let BaselineVerdict::NotRun { why } = &baseline.verdict {
+        //
+        //     **Except at a point that admits everything.** The operator (2026-10-07), after
+        //     `python3 - f <<'PY' 2>/dev/null | head -80` was refused — valid bash that
+        //     tree-sitter-bash recovers from at the `|`: *"im very tired of substitutions -
+        //     at least for allow-all"*. `allow-all` admits the always-ask list itself; the
+        //     one thing it still refuses is a secret leaving the boundary (1b, below). So an
+        //     unreadable command there goes on to 1b and then to the mode — refused only if
+        //     the tier, read best-effort off the recovered tree, says disclosure — and the
+        //     admission says it ran unread, so the row is not mistaken for a read one.
+        let ran_unread = match &baseline.verdict {
+            BaselineVerdict::NotRun { why } if self.mode.admits_everything() => {
+                Some(why.lines().next().unwrap_or("").to_string())
+            }
+            _ => None,
+        };
+        if ran_unread.is_none()
+            && let BaselineVerdict::NotRun { why } = &baseline.verdict
+        {
             let d = AdjudicationDecision {
                 request_id: req.id.clone(),
                 outcome: DecisionOutcome::Unavailable,
@@ -3174,6 +3191,8 @@ impl Gate for AdjudicatedGate {
         //    excepted. The exception is what the operator's rule is FOR; what R21 removes
         //    is the case where the exception was firing over a call whose every computed
         //    intent the classifier had already read as a look.
+        // `ran_unread` does not widen this: an unreadable exec call is admitted exactly where a
+        // readable one would be, and where exec asks, it asks too — never more easily.
         if (access != Access::Exec || self.exec_follows_mode)
             && self.mode.admits_unasked(&req.tier, access)
         {
@@ -3182,9 +3201,16 @@ impl Gate for AdjudicatedGate {
                 "allow_once",
                 "gate:mode",
                 &format!(
-                    "the `{}` mode admits {} calls without asking; nothing was consulted",
+                    "the `{}` mode admits {} calls without asking; nothing was consulted{}",
                     self.mode.name,
-                    access.as_str()
+                    access.as_str(),
+                    ran_unread
+                        .as_deref()
+                        .map(|w| format!(
+                            ". **It ran unread** — the grammar could not read it ({w}), and \
+                             this point admits it anyway"
+                        ))
+                        .unwrap_or_default()
                 ),
             );
             self.breaker.admitted(&direction);
@@ -6794,6 +6820,57 @@ mod tests {
             "a narrow point must not admit it"
         );
         assert_eq!(asked.load(Ordering::Relaxed), 1, "a person was asked");
+    }
+
+    /// **A command the grammar could not read is admitted at `allow-all`, and says so.**
+    ///
+    /// The operator's case, verbatim from the session store (2026-10-07): a heredoc whose
+    /// opening line also redirects and pipes. Valid bash; tree-sitter-bash recovers from it
+    /// at the `|`, so layer A's verdict is `NotRun` — which refused it before any mode was
+    /// consulted, `allow-all` included. *"im very tired of substitutions - at least for
+    /// allow-all"*.
+    ///
+    /// At `allow-all` it now goes on to the mode, which admits it, and the decision says it
+    /// ran unread. At a point that does not admit everything the refusal is unchanged.
+    #[test]
+    fn an_unreadable_command_runs_at_allow_all_and_is_still_refused_elsewhere() {
+        use crate::mode::Mode;
+        let cmd = json!({"command": "cd /w; python3 - pg.html <<'PY' 2>/dev/null | head -80\nimport sys\nprint(open(sys.argv[1]).read()[:10])\nPY"});
+
+        let mut permissive = AdjudicatedGate::new(Box::new(NoAdjudicator))
+            .with_mode(Mode::ALLOW_ALL_HERE)
+            .with_exec_follows_mode(true)
+            .with_surroundings(pinned());
+        assert_eq!(
+            permissive.admit(&bash(&cmd)),
+            GateDecision::Admit,
+            "allow-all admits it; the adjudicator refuses everything, so only the point could"
+        );
+        let row = &permissive.log[0];
+        assert!(
+            row.decision.basis.contains("It ran unread"),
+            "the row must say it was not read: {}",
+            row.decision.basis
+        );
+
+        // Not at a point that admits less: layer A's refusal, before anybody is asked.
+        for mode in [Mode::WRITES_ALLOWED, Mode::ALWAYS_ASK] {
+            let mut narrow = AdjudicatedGate::new(Box::new(NoAdjudicator))
+                .with_mode(mode)
+                .with_exec_follows_mode(true)
+                .with_surroundings(pinned());
+            match narrow.admit(&bash(&cmd)) {
+                GateDecision::Refuse { outcome, .. } => assert!(
+                    matches!(outcome, ToolOutcome::NotRun { ref why } if why.contains("could not read the structure")),
+                    "{}: {outcome:?}",
+                    mode.name
+                ),
+                other => panic!(
+                    "{}: an unreadable command was not refused: {other:?}",
+                    mode.name
+                ),
+            }
+        }
     }
 
     /// **A standing grant never settles a command whose meaning was never resolved.**

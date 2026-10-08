@@ -117,9 +117,89 @@ if ! WORKSPACE="$(cd "$WORKSPACE" 2>/dev/null && pwd -P)" || [ -z "$WORKSPACE" ]
   echo "         or set LETIBOT_WORKSPACE." >&2
   exit 1
 fi
-RUNDIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/letibot"
+# **The host's facts, asked the way each kernel answers them.** Linux has `/proc`, `ss`,
+# `setsid(1)` and GNU `stat`/`date`; macOS has none of those and answers the same
+# questions through `ps`, `lsof`, BSD `stat`/`date` and perl's `POSIX::setsid`. Every
+# caller below goes through these, so the two spellings live in one place. On Linux each
+# helper is the exact command the script used before.
+HOST_OS="$(uname -s)"
+# The first twelve hex of the workspace's SHA-256 — `launcher.rs`'s key, on either box.
+sha12() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -c1-12
+}
+# Is this pid still there? Linux: its `/proc` directory. macOS: `ps` has a state for it,
+# and the state is not a zombie's.
+pid_alive() { # pid_alive PID
+  [ -n "$1" ] || return 1
+  if [ "$HOST_OS" = Darwin ]; then
+    case "$(ps -o stat= -p "$1" 2>/dev/null)" in '' | Z*) return 1 ;; *) return 0 ;; esac
+  fi
+  [ -d "/proc/$1" ]
+}
+# A pid's argument vector, one argument per line. macOS has no `cmdline` file; `ps` gives
+# the arguments space-joined, which is enough for the flags this script looks for.
+pid_argv() { # pid_argv PID
+  if [ "$HOST_OS" = Darwin ]; then
+    ps -ww -o args= -p "$1" 2>/dev/null | tr ' ' '\n'
+    return 0
+  fi
+  tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null
+}
+# The pids listening on a unix socket, by its bound path — which both `ss` and `lsof`
+# still report after the file has been unlinked, the case `live` below is written for.
+# Each listing runs to completion before the match, for the SIGPIPE reason `live` gives.
+socket_pids() { # socket_pids PATH
+  local listing
+  if [ "$HOST_OS" = Darwin ]; then
+    listing="$(lsof -nP -U -a -F pn 2>/dev/null || true)"
+    printf '%s\n' "$listing" \
+      | awk -v s="$1" '/^p/ { p = substr($0, 2) } /^n/ && substr($0, 2) == s { print p }' \
+      | sort -u
+    return 0
+  fi
+  listing="$(ss -lxpH 2>/dev/null || true)"
+  printf '%s\n' "$listing" | grep -F "$1" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true
+}
+# When a process started and when a file was written, as epoch seconds; empty if unknown.
+pid_started() { # pid_started PID
+  if [ "$HOST_OS" = Darwin ]; then
+    local l
+    l="$(LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | sed 's/ *$//')"
+    [ -n "$l" ] && LC_ALL=C date -j -f '%a %b %e %T %Y' "$l" +%s 2>/dev/null
+    return 0
+  fi
+  stat -c %Y "/proc/$1" 2>/dev/null || true
+}
+file_mtime() { # file_mtime PATH
+  if [ "$HOST_OS" = Darwin ]; then stat -f %m "$1" 2>/dev/null || true; else stat -c %Y "$1" 2>/dev/null || true; fi
+}
+epoch_fmt() { # epoch_fmt SECONDS FORMAT
+  if [ "$HOST_OS" = Darwin ]; then date -r "$1" "$2"; else date -d "@$1" "$2"; fi
+}
+# Run a command as the leader of a new session, detached from this terminal. macOS has the
+# system call and not the command, and perl's POSIX module is on every Mac.
+detach() { # detach COMMAND [ARGS...]
+  if [ "$HOST_OS" = Darwin ]; then
+    /usr/bin/perl -MPOSIX -e 'POSIX::setsid(); exec { $ARGV[0] } @ARGV or die "detach: $ARGV[0]: $!\n"' -- "$@"
+  else
+    setsid "$@"
+  fi
+}
+
+# The runtime dir: `$XDG_RUNTIME_DIR/letibot`, else `/run/user/<uid>/letibot` on Linux and
+# the per-user temp dir on macOS — asked of `getconf`, not read from `$TMPDIR`, so a
+# daemon started without that variable lands where the head looks (`launcher.rs::rundir`).
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+  RUNDIR="$XDG_RUNTIME_DIR/letibot"
+elif [ "$HOST_OS" = Darwin ]; then
+  _tmp="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+  RUNDIR="${_tmp:-${TMPDIR:-/tmp/}}"
+  RUNDIR="${RUNDIR%/}/letibot"
+else
+  RUNDIR="/run/user/$(id -u)/letibot"
+fi
 mkdir -p "$RUNDIR"
-KEY="$(printf '%s' "$WORKSPACE" | sha256sum | cut -c1-12)"
+KEY="$(printf '%s' "$WORKSPACE" | sha12)"
 SOCKET="${LETIBOT_SOCKET:-$RUNDIR/$KEY.sock}"
 RECORD="$RUNDIR/$KEY.json"
 STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot/sessions.db}"
@@ -207,6 +287,8 @@ already up, then attaches the TUI head to it.
   letibot --stop --force      interrupt all in-flight turns, then stop
   letibot --status            is it up, and on what
 
+  letibot                     the leticode seat: opencode's tools and bash, on this host
+                              (LETIBOT_ROLE=coder for the namespace-confined seat, Linux)
   letibot --read-only         no write tools at all (orchestrator seat)
   letibot --ask               the old behaviour: every write asks, every time
   letibot --writes            approve a class once, for the session (default)
@@ -296,7 +378,13 @@ done
 # refusal that cannot be lifted from where it is met -- the exact failure
 # docs/boundary-and-adjudication.md 4b makes a requirement -- and it made the
 # price of writing a file a flag nobody should have to know.
-ROLE="${LETIBOT_ROLE:-coder}"
+#
+# **And the seat is `leticode`** — opencode's tool union, run on this host, with bash —
+# because that is the one the operator runs, on Linux and on a Mac alike (2026-10-07:
+# *"in fact even on linux i use only leticode"*). It was `coder`, the namespace-confined
+# seat, which on a Mac cannot start at all (no bubblewrap there) and on Linux was the
+# default nobody chose. `coder` is still one variable away: LETIBOT_ROLE=coder.
+ROLE="${LETIBOT_ROLE:-leticode}"
 # `head` posts the decision to the attached TUI and waits for your answer.
 # `console` reads the daemon's own stdin, which a detached daemon does not have,
 # so every write would refuse with "nobody answered".
@@ -547,6 +635,10 @@ fi
 # one-shot prompt: harnessd ran in the foreground with `--prompt --bash`, the
 # vocabulary loaded, and GLM answered a prompt that said "--bash". Measured
 # 2026-09-14, from the operator's own leticode --glm --bash.
+# **Every expansion of an array that may be empty is `${A[@]+"${A[@]}"}`.** Bash before 4.4
+# — which is `/usr/bin/env bash` on every stock Mac (3.2) — calls an empty array unbound
+# under `set -u`, so a plain `"${A[@]}"` killed the launch with no flags given. MEASURED
+# 2026-10-07: `EXTRA_ARGS[@]: unbound variable` on the first macOS start.
 EXTRA_ARGS=()
 MODEL_OVERRIDE=""
 PROVIDER_SET=""
@@ -887,6 +979,10 @@ PROBE=""
 # record rather than this folder's, and a fix applied to one caller and forgotten in the
 # other is exactly how this class of bug survives.
 socket_is_listening() { # socket_is_listening PATH
+  if [ "$HOST_OS" = Darwin ]; then
+    [ -n "$(socket_pids "$1")" ]
+    return
+  fi
   case "$(ss -lxpH 2>/dev/null || true)" in
     *"$1"*) return 0 ;;
     *) return 1 ;;
@@ -1033,7 +1129,7 @@ retarget() {
       [ "$n" -ge "$want" ] || die "there is no daemon $want — \`letibot --ls\` numbers them"
       ;;
   esac
-  KEY="$(printf '%s' "$WORKSPACE" | sha256sum | cut -c1-12)"
+  KEY="$(printf '%s' "$WORKSPACE" | sha12)"
   SOCKET="$RUNDIR/$KEY.sock"
   RECORD="$RUNDIR/$KEY.json"
 }
@@ -1048,11 +1144,11 @@ retarget() {
 wait_gone() { # wait_gone PID [TENTHS]
   local p="$1" n="${2:-10}" i=0
   while [ "$i" -lt "$n" ]; do
-    [ -d "/proc/$p" ] || return 0
+    pid_alive "$p" || return 0
     sleep 0.5
     i=$((i + 1))
   done
-  [ -d "/proc/$p" ] && return 1
+  pid_alive "$p" && return 1
   return 0
 }
 
@@ -1063,10 +1159,10 @@ daemon_pid() {
   # `|| true`: `head -1` SIGPIPEs the upstream under `pipefail`, and a failing command
   # substitution in an assignment aborts the script under `set -e` — from a helper
   # whose whole job is to be a fallback.
-  p="$(ss -lxpH 2>/dev/null | grep -F "$SOCKET" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)"
+  p="$(socket_pids "$SOCKET" | head -1 || true)"
   [ -n "$p" ] && { echo "$p"; return 0; }
   p="$(record_field pid)"
-  [ -n "$p" ] && [ -d "/proc/$p" ] && { echo "$p"; return 0; }
+  [ -n "$p" ] && pid_alive "$p" && { echo "$p"; return 0; }
   return 1
 }
 
@@ -1110,7 +1206,7 @@ warn_swallowed_flags() {
       # model flag on the one daemon it had to speak about.
       dpid="$(daemon_pid 2>/dev/null || true)"
       have_model=""
-      [ -n "$dpid" ] && have_model="$(tr '\0' '\n' < "/proc/$dpid/cmdline" 2>/dev/null \
+      [ -n "$dpid" ] && have_model="$(pid_argv "$dpid" \
         | awk '/^--model$/{getline; print; exit}')"
       [ -n "$have_model" ] || have_model="$(record_field model 2>/dev/null || true)"
       if [ -n "$have_model" ] && [ "$have_model" != "$want_model" ]; then
@@ -1205,8 +1301,8 @@ daemon_stale_line() {
   p="$(daemon_pid 2>/dev/null || true)"
   [ -n "$p" ] || return 0
   [ -x "$BIN/harnessd" ] || return 0
-  dt="$(stat -c %Y "/proc/$p" 2>/dev/null || true)"
-  bt="$(stat -c %Y "$BIN/harnessd" 2>/dev/null || true)"
+  dt="$(pid_started "$p")"
+  bt="$(file_mtime "$BIN/harnessd")"
   # A `stat` that could not answer, or a value that is not a number: say nothing.
   # Silence is the right answer for an unknown — this is a hint about a process, not
   # a gate, and a guess here would be a warning about a daemon that is fine.
@@ -1218,7 +1314,7 @@ daemon_stale_line() {
   # this line exists to name is a day count as often as it is minutes, so both ends
   # carry the day. The path is quoted as resolved, which is what `BIN` now holds.
   printf 'daemon %s started %s; %s was built %s — it is not running what is on disk\n' \
-    "$p" "$(date -d "@$dt" '+%m-%d %H:%M')" "$BIN/harnessd" "$(date -d "@$bt" '+%m-%d %H:%M')"
+    "$p" "$(epoch_fmt "$dt" '+%m-%d %H:%M')" "$BIN/harnessd" "$(epoch_fmt "$bt" '+%m-%d %H:%M')"
 }
 
 # Questions about the store need no socket, no model and no vocabulary. They are
@@ -1307,7 +1403,7 @@ SESSIONS_EOF
         [ -f "$r" ] || continue
         pid="$(json_num pid "$r")"
         ws="$(json_str workspace "$r")"
-        if [ -d "/proc/$pid" ] && tr '\0' '\n' < "/proc/$pid/cmdline" | head -1 | grep -q harnessd; then
+        if pid_alive "$pid" && pid_argv "$pid" | head -1 | grep -q harnessd; then
           # **Signal, then WAIT, then say it.** The exit status of `kill` says the
           # signal was delivered and nothing about whether the process took it —
           # which is the whole of the 2026-09-16 incident, one verb over.
@@ -1341,11 +1437,11 @@ SESSIONS_EOF
       line="$(daemon_line)"
       kill "$p" || true
       wait_gone "$p" || true
-      if [ -d "/proc/$p" ] && [ "$FORCE" = 1 ]; then
+      if pid_alive "$p" && [ "$FORCE" = 1 ]; then
         kill -9 "$p" 2>/dev/null || true
         wait_gone "$p" 4 || true
       fi
-      if [ -d "/proc/$p" ]; then
+      if pid_alive "$p"; then
         echo "NOT stopped: $line (pid $p) is ignoring SIGTERM after 5s." >&2
         echo "  letibot --stop --force    sends SIGKILL; the record is kept until it is gone" >&2
         exit 1
@@ -1461,17 +1557,68 @@ esac
 # message that is true where it was written and unusable everywhere else.
 #
 # What is true for everyone: a model server has to be running, it speaks the OpenAI
-# shape, and the address is whatever `$ENDPOINT` says -- which since the
-# providers.toml lookup is the home of THIS run's model, so the example port is
-# the endpoint's own rather than a literal. (install.sh still prints the generic
-# `--port 8080` line: it advises a bare box before any providers.toml exists.)
+# shape, and the address is whatever `$ENDPOINT` says -- which since the providers.toml
+# lookup is the home of THIS run's model, so the example port below is the endpoint's
+# own rather than a literal. (install.sh still prints the generic `--port 8080` line:
+# it advises a bare box before any providers.toml exists.)
+#
+# **Only when the turns go there.** A provider — `--provider`, or the `[default]` block in
+# providers.toml — answers over the network, and a box that has only a key (a laptop, a Mac
+# with no llama-server) died here on the very remedy the message below suggests. MEASURED
+# 2026-10-07 on macOS: `letibot --provider deepseek` with nothing on 8080 refused to start.
+# **The vocabulary goes with the same question.** A local model needs the GGUF it serves,
+# so `--vocab` is always passed then. A provider needs none — the daemon keeps its ledger
+# in the byte vocabulary (`letibot_tokencore::Vocab::bytes`) — so it is passed only when
+# it names a file that is there (a box with the model keeps using it, and its sessions
+# keep their ids) or when LETIBOT_VOCAB asked for it by name.
+#
+# **And the address is a LOOKUP now, so it can be ABSENT.** A model whose block is missing,
+# or whose block carries no url, has no home — refused here, once, by `endpoint_refusal`,
+# naming the flag that asked, the model it wanted and the file it read. Before the health
+# gate, because a gate needs an address to curl.
 [ -n "$ENDPOINT" ] || die "$(endpoint_refusal)"
-curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1 \
-  || die "nothing serving on $ENDPOINT
+if [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ] \
+  && ! curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1; then
+  # **Nothing to answer, and a person at the keyboard: ask, rather than die.** The
+  # operator: *"id prefer leticode to ask me of course"*. The choice becomes `--provider`;
+  # the KEY is not asked here — the daemon asks for it on the first turn, on the masked
+  # card sudo's password uses, and saves it (0600) with this provider as the default, so
+  # this question is asked once per box. Without a terminal there is nobody to ask, and
+  # the refusal stands as it was.
+  if [ -t 0 ] && [ -t 1 ]; then
+    printf '%s\n' "letibot: nothing is serving a local model on $ENDPOINT, and no cloud provider is set up." \
+      "  Use a cloud provider? Its key is asked for on the first turn and saved." \
+      "    1) deepseek    2) glm    3) grok        (enter quits)" >&2
+    printf '  > ' >&2
+    _choice=""
+    read -r _choice || _choice=""
+    case "$_choice" in
+      1 | deepseek) PROVIDER_NAME=deepseek ;;
+      2 | glm) PROVIDER_NAME=glm ;;
+      3 | grok) PROVIDER_NAME=grok ;;
+      *) die "no provider chosen, and nothing serving on $ENDPOINT — nothing was started." ;;
+    esac
+    PROVIDER_SET=1
+    EXTRA_ARGS+=(--provider "$PROVIDER_NAME")
+    # The local alias is a LOCAL binding; handed to a provider it is a 400 naming models
+    # the provider has (the reason MODEL_ARGS is empty for `--provider` above).
+    [ -n "$MODEL_OVERRIDE" ] || MODEL_ARGS=()
+  else
+    die "nothing serving on $ENDPOINT
   Start a model server first — letibot is a harness, and a turn needs one:
     llama-server -m MODEL.gguf --port ${ENDPOINT##*:}
   or a cloud provider instead:  --provider deepseek|glm|grok
   Point this launcher elsewhere with LETIBOT_ENDPOINT=host:port."
+  fi
+fi
+
+VOCAB_ARGS=(--vocab "$VOCAB")
+if [ -n "$PROVIDER_SET" ] || [ -n "$(default_provider provider)" ]; then
+  if [ -z "${LETIBOT_VOCAB:-}" ] && [ ! -f "$VOCAB" ]; then
+    VOCAB_ARGS=()
+  fi
+fi
+
 
 # THE RUNNING DAEMON'S MODEL MUST BE THE MODEL ON THE PORT.
 #
@@ -1496,10 +1643,10 @@ daemon_models() {
   # rebound out from under it still shows in `ps`, and killing or trusting the
   # wrong one is how a live session gets taken down to fix a dead one.
   local pids
-  pids="$(ss -lxpH 2>/dev/null | grep -F "$SOCKET" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)"
+  pids="$(socket_pids "$SOCKET")"
   local pid
   for pid in $pids; do
-    tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | awk '/^--model$/{getline; print; exit}'
+    pid_argv "$pid" | awk '/^--model$/{getline; print; exit}'
   done
 }
 
@@ -1528,12 +1675,12 @@ mkdir -p "$(dirname "$STORE")" "$(dirname "$LOG")"
 # exited before its prompt ran).
 if [ $# -gt 0 ]; then
   ONESHOT_SOCK="$RUNDIR/oneshot-$$.sock"
-  exec "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" "${MODEL_ARGS[@]}" --endpoint "$ENDPOINT" \
+  exec "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --endpoint "$ENDPOINT" \
        --socket "$ONESHOT_SOCK" \
-       --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" \
+       ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" \
        --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} \
        ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
-       "${EXEC_ARGS[@]}" "${EXTRA_ARGS[@]}" \
+       ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
        ${SESSION:+--session "$SESSION"} --prompt "$*"
 fi
 
@@ -1570,11 +1717,11 @@ if ! live; then
   # The daemon opens its first session eagerly, so passing `--session ID` here is
   # what makes the resume -- and its hash-chain check -- happen at startup, where a
   # failure is a line in this terminal rather than a surprise inside a prompt.
-  setsid "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" "${MODEL_ARGS[@]}" --endpoint "$ENDPOINT" \
-      --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
+  detach "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --endpoint "$ENDPOINT" \
+      ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
       --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
       ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
-      "${EXEC_ARGS[@]}" "${EXTRA_ARGS[@]}" \
+      ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
       ${SESSION:+--session "$SESSION"} ${NEW_TITLE:+--title "$NEW_TITLE"} \
       >>"$LOG" 2>&1 </dev/null &
   DPID=$!
@@ -1615,7 +1762,7 @@ stale="$(daemon_stale_line)"
 daemon_has_bash() {
   local p
   p="$(daemon_pid)" || return 1
-  tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -qx -- '--bash'
+  pid_argv "$p" | grep -qx -- '--bash'
 }
 
 if [ -n "$BASH_ON" ] && ! daemon_has_bash; then

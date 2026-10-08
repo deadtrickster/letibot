@@ -311,7 +311,7 @@ impl Look {
 /// The row stops at its last cell that is not a blank in the default pen
 /// ([`letibot_vt::Cell::is_blank`]) — so a row of nothing is the empty string and costs no bytes,
 /// which is what a head that erases each row's tail before drawing it wants
-/// (`letibot_tui::term::paint_full`).
+/// (`letibot_tui::backend::terminal::paint_full`).
 /// **A trailing blank that a program *painted* is not a blank and is kept**, which `trim_end`
 /// cannot see: a run that ends in a background or a reverse is the edge of a panel, and trimming
 /// it would leave `mc`'s blue rectangle short of its own border.

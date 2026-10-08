@@ -56,7 +56,7 @@ fn config(seat: Seat) -> Config {
     cfg.dialect = Dialect::Qwen;
     cfg.seat = seat;
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = g.into();
+        cfg.vocab_gguf = Some(g.into());
     }
     cfg
 }

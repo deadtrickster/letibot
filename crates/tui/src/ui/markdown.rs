@@ -2500,7 +2500,7 @@ mod nesting {
 #[cfg(test)]
 mod streaming_matches_one_parse {
     use super::*;
-    use crate::markdown::tests::{blocks, stream};
+    use crate::ui::markdown::tests::{blocks, stream};
 
     /// Feed a document a byte at a time and assert the model equals a single parse.
     ///
@@ -2665,7 +2665,7 @@ mod streaming_matches_one_parse {
 #[cfg(test)]
 mod inline_ranges_are_not_one_document {
     use super::*;
-    use crate::markdown::tests::stream;
+    use crate::ui::markdown::tests::stream;
 
     /// A real message, 3.4 KB with ten blocks, captured from the operator's screen when it
     /// rendered as eleven blocks of code.
@@ -2675,7 +2675,7 @@ mod inline_ranges_are_not_one_document {
     /// ``` in the opening paragraph and another one ten blocks later — and a paragraph
     /// with no syntax characters at all is the other half of it, because the pass that
     /// skips those is the one that made the pairing rare enough to ship.
-    const REAL: &str = include_str!("../tests/fixtures/streamed-message.md");
+    const REAL: &str = include_str!("../../tests/fixtures/streamed-message.md");
 
     /// **One parse over every inline range makes one document out of them.**
     ///
@@ -3065,7 +3065,7 @@ mod a_fence_ends_only_at_a_line_of_its_own {
     /// the same one-shot and streamed.
     #[test]
     fn the_box_art_message_parses_whole() {
-        const REAL: &str = include_str!("../tests/fixtures/box-art-message.md");
+        const REAL: &str = include_str!("../../tests/fixtures/box-art-message.md");
         let b = lex(REAL);
         // The art is one block with all six of its lines — found rather than indexed,
         // because the index is not what the test is about.
@@ -3119,7 +3119,7 @@ mod a_fence_ends_only_at_a_line_of_its_own {
             assert!(all.contains(word), "{word:?} is missing");
         }
         for chunk in [1, 7, 64, 4096] {
-            let a = crate::markdown::tests::stream(REAL, chunk)
+            let a = crate::ui::markdown::tests::stream(REAL, chunk)
                 .blocks()
                 .cloned()
                 .collect::<Vec<_>>();
@@ -3170,8 +3170,11 @@ mod tail_cut_is_exact {
     #[test]
     fn a_tail_cut_is_exact_below_its_first_block() {
         for min in [64usize, 128, 256, 512, 1024] {
-            exact_below_the_first(include_str!("../tests/fixtures/streamed-message.md"), min);
-            exact_below_the_first(include_str!("../tests/fixtures/box-art-message.md"), min);
+            exact_below_the_first(
+                include_str!("../../tests/fixtures/streamed-message.md"),
+                min,
+            );
+            exact_below_the_first(include_str!("../../tests/fixtures/box-art-message.md"), min);
         }
     }
 
@@ -3193,7 +3196,7 @@ mod tail_cut_is_exact {
     /// and the reason `fences_in` is consulted.
     #[test]
     fn a_cut_never_lands_inside_a_fence() {
-        let src = include_str!("../tests/fixtures/box-art-message.md");
+        let src = include_str!("../../tests/fixtures/box-art-message.md");
         let spans: Vec<(usize, usize)> = fences_in(src).iter().map(|f| (f.open, f.end)).collect();
         for min in [16usize, 48, 128, 512] {
             let Some(cut) = tail_cut(src, min) else {
@@ -3281,7 +3284,7 @@ mod tail_cut_is_exact {
     #[test]
     #[ignore]
     fn a_tail_is_far_cheaper_than_the_whole() {
-        let src = include_str!("../tests/fixtures/streamed-message.md");
+        let src = include_str!("../../tests/fixtures/streamed-message.md");
         let big = src.repeat(44); // ~150 KB
         let t = std::time::Instant::now();
         let whole = lex(&big);

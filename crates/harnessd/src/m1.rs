@@ -112,7 +112,7 @@ pub fn run(args: &[String]) -> i32 {
                     .unwrap_or_else(|e| die(&format!("--turns: {e}")))
             }
             "--model" => cfg.model = next(),
-            "--vocab" => cfg.vocab_gguf = PathBuf::from(next()),
+            "--vocab" => cfg.vocab_gguf = Some(PathBuf::from(next())),
             "--effort" => cfg.effort = Some(next()),
             "--store" => cfg.store = Some(PathBuf::from(next())),
             "--json" => json_out = Some(PathBuf::from(next())),

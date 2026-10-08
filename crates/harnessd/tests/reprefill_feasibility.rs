@@ -114,7 +114,7 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
     };
     let loaded = store.load_transcript(&transcript_id).expect("it loads");
 
-    let vocab = Vocab::load(&vocab_path).expect("the vocabulary loads");
+    let vocab = letibot_llama::load(&vocab_path).expect("the vocabulary loads");
     let control =
         resolve(&vocab, &wiring.spec().control_tokens).expect("the control tokens resolve");
 

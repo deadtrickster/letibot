@@ -38,9 +38,11 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Glm;
     cfg.model = "glm-5.3-flash".into();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| GLM_GGUF.into());
+    cfg.vocab_gguf = Some(
+        std::env::var("LETIBOT_VOCAB_GGUF")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| GLM_GGUF.into()),
+    );
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
     cfg

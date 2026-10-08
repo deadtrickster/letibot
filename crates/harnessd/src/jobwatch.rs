@@ -1235,8 +1235,8 @@ mod tests {
     #[test]
     fn a_backgrounded_result_through_the_sink_publishes_the_jobs_settlement() {
         let Some(_) = letibot_tokencore::apparatus::present(
-            "a cgroup v2 tree",
-            letibot_tools::Cgroup2::probe().is_ok(),
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
         ) else {
             return;
         };
@@ -1276,8 +1276,8 @@ mod tests {
     #[test]
     fn a_job_watched_twice_and_again_after_settlement_publishes_once() {
         let Some(_) = letibot_tokencore::apparatus::present(
-            "a cgroup v2 tree",
-            letibot_tools::Cgroup2::probe().is_ok(),
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
         ) else {
             return;
         };
@@ -1325,8 +1325,8 @@ mod tests {
     #[test]
     fn delivering_is_true_only_while_a_watcher_is_live_for_that_job() {
         let Some(_) = letibot_tokencore::apparatus::present(
-            "a cgroup v2 tree",
-            letibot_tools::Cgroup2::probe().is_ok(),
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
         ) else {
             return;
         };
@@ -1394,8 +1394,8 @@ mod tests {
     #[test]
     fn the_sink_arms_the_watcher_and_that_is_what_makes_a_wait_decline() {
         let Some(_) = letibot_tokencore::apparatus::present(
-            "a cgroup v2 tree",
-            letibot_tools::Cgroup2::probe().is_ok(),
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
         ) else {
             return;
         };
@@ -1450,8 +1450,8 @@ mod tests {
     #[test]
     fn a_settled_job_is_queued_for_the_model_with_the_command_the_event_omits() {
         let Some(_) = letibot_tokencore::apparatus::present(
-            "a cgroup v2 tree",
-            letibot_tools::Cgroup2::probe().is_ok(),
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
         ) else {
             return;
         };
@@ -1491,8 +1491,8 @@ mod tests {
     #[test]
     fn a_jobs_completion_wakes_the_worker_with_no_command_behind_it_and_after_one_that_is() {
         let Some(_) = letibot_tokencore::apparatus::present(
-            "a cgroup v2 tree",
-            letibot_tools::Cgroup2::probe().is_ok(),
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
         ) else {
             return;
         };
@@ -1575,8 +1575,8 @@ mod tests {
         // A host is still required: a session has one channel and it is built with both
         // waits. A subagent simply never reaches this one.
         let Some(_) = letibot_tokencore::apparatus::present(
-            "a cgroup v2 tree",
-            letibot_tools::Cgroup2::probe().is_ok(),
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
         ) else {
             return;
         };
@@ -1736,8 +1736,8 @@ mod tests {
     fn a_childs_job_completion_is_the_childs_and_never_the_parents() {
         use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
         let Some(_) = letibot_tokencore::apparatus::present(
-            "a cgroup v2 tree",
-            letibot_tools::Cgroup2::probe().is_ok(),
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
         ) else {
             return;
         };

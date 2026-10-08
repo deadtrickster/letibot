@@ -49,6 +49,12 @@ fn main() {
         std::env::var("LETIBOT_LLAMA_LIB").unwrap_or_else(|_| DEFAULT_LLAMA_LIB.to_string()),
     );
     println!("cargo:rustc-link-search=native={}", lib.display());
-    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+    // dyld has no `$ORIGIN`; `@loader_path` is the same idea in its spelling.
+    let origin = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        "@loader_path"
+    } else {
+        "$ORIGIN"
+    };
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{origin}");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
 }

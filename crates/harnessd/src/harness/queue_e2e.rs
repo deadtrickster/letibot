@@ -139,7 +139,7 @@ impl Fixture {
         let dir = TempDir::new(&format!("letibot-queue-e2e-{tag}"));
         let db = dir.path().join("sessions.db");
         let mut cfg = Config::for_this_box(dir.path());
-        cfg.vocab_gguf = gguf;
+        cfg.vocab_gguf = Some(gguf);
         // **The `--store`**, which is the whole of what makes a daemon able to enqueue at all.
         cfg.store = Some(db.clone());
         cfg.session_id = "s-parent".into();

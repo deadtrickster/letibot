@@ -116,7 +116,7 @@ fn vocab() -> &'static Vocab {
             "no vocabulary GGUF at {path}. Set LETIBOT_VOCAB_GGUF; for a split model \
              pass the first shard."
         );
-        Vocab::load(&p).expect("the vocabulary must load")
+        letibot_llama::load(&p).expect("the vocabulary must load")
     })
 }
 

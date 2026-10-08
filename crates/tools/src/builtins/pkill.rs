@@ -305,7 +305,7 @@ mod tests {
         let marker = format!("letibot-pkill-tool-{}", std::process::id());
         let mut child = Command::new("sh")
             .arg("-c")
-            .arg("sleep 30")
+            .arg("sleep 30; :")
             .arg("letibot-sh")
             .arg(&marker)
             .stdin(Stdio::null())

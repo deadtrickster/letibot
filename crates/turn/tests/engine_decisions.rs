@@ -46,7 +46,7 @@ fn vocab() -> &'static Vocab {
         // unconditionally there rather than being a hint.
         let p = letibot_tokencore::apparatus::gguf_path();
         assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
-        Vocab::load(&p).expect("the vocabulary must load")
+        letibot_llama::load(&p).expect("the vocabulary must load")
     })
 }
 

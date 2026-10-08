@@ -133,7 +133,7 @@ pub use edit::{ChangedSpan, FileEdit, FileText, Relax};
 pub use events::{NullToolSink, RecordingToolSink, ToolEvent, ToolEventSink, payload_digest};
 pub use exec::{
     Cgroup2, ExecError, HostProcesses, JobId, JobState, JobView, NoScopes, ProcessHost, Reaped,
-    Reaping, ScopeId, ScopeKind, ScopeTree, SpawnRequest, Waited, exec_budget,
+    Reaping, ScopeId, ScopeKind, ScopeTree, SpawnRequest, Waited, exec_budget, host_tree,
 };
 pub use files::{FileLedger, Seen};
 pub use intent::{

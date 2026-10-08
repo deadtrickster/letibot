@@ -1279,7 +1279,11 @@ impl Hub {
                         ""
                     }
                 ),
-                (CommandKind::Slash { line }, _) => format!("/{line}"),
+                // **Redacted, because this note is appended to the session log.** The
+                // model picker's key card sent `/models P --key K` here, and the key went
+                // into the log in plaintext and back to every head in `Accepted`. The
+                // worker still gets the line whole — `CommandKind` is not persisted.
+                (CommandKind::Slash { line }, _) => format!("/{}", redact_key_args(line)),
                 // A read, not a mutation: a head that asked while the screen moved
                 // still meant it, and nothing this command alters depends on the seq.
                 (CommandKind::ReadJobOutput { job, .. }, _) => {
@@ -2632,5 +2636,52 @@ mod mode_steering_tests {
             Delivery::Closed,
             "the hub must still report Closed once it has delivered what it owed"
         );
+    }
+}
+
+/// **A slash line with its key arguments masked**: the value after `--key` or `--api-key`
+/// (or in `--key=VALUE`) becomes `•••`. For anything that persists or echoes a command line.
+pub fn redact_key_args(line: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut mask_next = false;
+    for word in line.split(' ') {
+        if mask_next && !word.is_empty() {
+            out.push("•••".into());
+            mask_next = false;
+            continue;
+        }
+        match word.split_once('=') {
+            Some((flag @ ("--key" | "--api-key"), _)) => out.push(format!("{flag}=•••")),
+            _ => {
+                if word == "--key" || word == "--api-key" {
+                    mask_next = true;
+                }
+                out.push(word.to_string());
+            }
+        }
+    }
+    out.join(" ")
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::redact_key_args;
+
+    #[test]
+    fn a_key_argument_never_survives_into_the_note() {
+        assert_eq!(
+            redact_key_args("models deepseek --key sk-abc123"),
+            "models deepseek --key •••"
+        );
+        assert_eq!(
+            redact_key_args("models glm --api-key=xyz"),
+            "models glm --api-key=•••"
+        );
+        assert_eq!(
+            redact_key_args("models grok  --key  k"),
+            "models grok  --key  •••"
+        );
+        assert_eq!(redact_key_args("models deepseek"), "models deepseek");
+        assert!(!redact_key_args("models x --key sk-SECRET y").contains("SECRET"));
     }
 }

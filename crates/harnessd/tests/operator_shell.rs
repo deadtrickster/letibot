@@ -55,7 +55,7 @@ fn config(session: &str, socket: &std::path::Path) -> Config {
     cfg.seat = Seat::Leticode;
     cfg.allow_bash = true;
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = g.into();
+        cfg.vocab_gguf = Some(g.into());
     }
     cfg
 }
