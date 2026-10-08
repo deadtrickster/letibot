@@ -356,7 +356,7 @@ fn a_secret_cannot_be_routed_through_the_prompt_card() {
         let Ok(inbound) = hrx.recv_timeout(Duration::from_millis(200)) else {
             continue;
         };
-        if let ServerFrame::Secret { secret } = inbound.frame() {
+        if let ServerFrame::Secret { secret, .. } = inbound.frame() {
             carried = Some(secret);
         }
     }

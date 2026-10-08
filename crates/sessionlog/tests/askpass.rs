@@ -72,7 +72,7 @@ fn the_secret_reaches_the_helper_and_nothing_else() {
         c.askpass("[sudo] password for dead: ", "sudo apt install x")
             .expect("ask");
         wait_for(&mut r, |f| match f {
-            ServerFrame::Secret { secret } => Some(secret.clone()),
+            ServerFrame::Secret { secret, .. } => Some(secret.clone()),
             _ => None,
         })
     });
@@ -153,7 +153,7 @@ fn a_refusal_and_a_late_answer_are_both_honest() {
         c.askpass("[sudo] password: ", "sudo rm -rf /")
             .expect("ask");
         wait_for(&mut r, |f| match f {
-            ServerFrame::Secret { secret } => Some(secret.clone()),
+            ServerFrame::Secret { secret, .. } => Some(secret.clone()),
             _ => None,
         })
     });
