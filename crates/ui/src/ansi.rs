@@ -147,7 +147,7 @@
 //! payload line with a gutter (`  `) in front of it, which is exactly what a leaked colour
 //! would ruin. A terminal would carry the state; a row list must not.
 
-use crate::painter::{Painter, Sgr};
+use crate::painter::Painter;
 use letibot_vt::Screen;
 use letibot_vt::attr::{Attr, Hue, apply_sgr};
 use rano::style::{Palette, Role};
@@ -377,6 +377,7 @@ pub fn pane_rows(screen: &mut Screen, cols: usize, room: usize, palette: Palette
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::painter::Sgr;
     use rano::style::Palette;
 
     fn colour() -> Painter {

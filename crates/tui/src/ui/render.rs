@@ -22,7 +22,7 @@
 //! title, a count of what was elided, and its last N lines — which is what a reader
 //! of a streaming model actually wants, because the interesting end is the end.
 
-use letibot_ui::painter::{Painter, Sgr};
+use letibot_ui::painter::Painter;
 use rano::style::{Palette, Role};
 
 use rano::syntax::Stream;
@@ -1117,6 +1117,7 @@ mod tests {
     use super::*;
     use crate::ui::markdown::lex;
     use letibot_sessionlog::testing::MARKDOWN;
+    use letibot_ui::painter::Sgr;
 
     fn cfg() -> RenderConfig {
         RenderConfig {
