@@ -8,9 +8,13 @@ scripts/__pycache__/
 # lives beside its test at crates/tools/tests/data/answer-key.tsv.
 scratch/
 
-# **The local rano override, and it must never be committed.** `rano` is a git
-# dependency pinned to a tag so the tree builds from a clone; this file points it
-# back at the operator's own checkout so editing rano takes effect immediately.
-# An absolute path in a committed file is exactly what made the daemon
-# unbuildable on a runner, which is the defect this arrangement exists to fix.
+# **No local `.cargo/config.toml`, and never a committed one.** `rano` is a git
+# dependency pinned to a tag, and unreleased rano work is built through a `[patch]`
+# on the branch that needs it, dropped before the merge. A `paths = [...]` override
+# here is the old arrangement and a trap: cargo swaps the dependency for the local
+# checkout whatever version the lock asks for, so a checkout left at an old release
+# breaks the build silently. MEASURED 2026-10-08 on the Linux box: a v0.2.1 checkout
+# under a lock that wanted v0.6.0, and nothing that depends on crates/ui compiled.
+# Still ignored, because an absolute path in a committed file is what made the
+# daemon unbuildable on a runner.
 /.cargo/config.toml
