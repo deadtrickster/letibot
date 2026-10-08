@@ -591,7 +591,7 @@ impl App {
 
     /// **The pane's keyboard: the raw bytes the reader consumed, turned into actions.**
     ///
-    /// # The way out is found HERE, and that is what makes it untrappable
+    /// # The way out is found HERE and nowhere else, and that is what makes it untrappable
     ///
     /// `0x1c` — `Ctrl-\` — is looked for in the byte stream **before anything is forwarded**,
     /// and the bytes before it are the last thing the program gets. A key the program never
@@ -599,6 +599,14 @@ impl App {
     /// handling. **And the act it performs is a detach**: the head hides the rectangle and sends
     /// nothing at all, so the program is not signalled, not killed, and not even told — see
     /// [`TermPane`] for why the default is the non-destructive one.
+    ///
+    /// **This is the one recogniser, and the caller's route decides what it ever sees.**
+    /// `Link::tick` calls this with a pane open — from the tick's start, or opened by the keys
+    /// of the same read — and hands a read the composer consumed to nobody: a way-out byte in
+    /// *that* read (a paste of text carrying a literal `0x1c`) is content, not a leaving. The
+    /// head once kept such bytes in a latch of its own and spent them on the next pane that
+    /// opened, which opened already detached — the same fact recognised in two places, and the
+    /// two disagreeing about what a byte with no pane behind it means.
     ///
     /// **The byte cannot be part of anything else.** `0x1c` is below `0x20`, so it is not a
     /// UTF-8 continuation and cannot appear inside a character; and it is not a CSI final byte

@@ -6,11 +6,14 @@ use super::*;
 /// **The way out of a pane: `Ctrl-\`.** See [`TermPane`] for why this byte and not `Esc`.
 ///
 /// It is looked for on the raw byte stream, before anything is forwarded, so the program never
-/// receives it — see [`App::pane_keys`], and `Link::tick`, which looks for it on every read and
-/// not only on the reads where the pane was already open. `0x1c` is `FS` in ASCII and `QUIT`
-/// only under `ISIG`, which raw mode clears; it is one of the three bytes letibot's own decoder
-/// had no arm for, and [`crate::app::key_of`] keeps it that way: rano reads it as Ctrl+`\`, and
-/// the map drops it.
+/// receives it — and it is looked for in **one** place, [`App::pane_keys`], called by
+/// `Link::tick` when a pane is open at the tick's start or was opened by the keys in the same
+/// read. A read the composer consumed — no pane, none opening, such as a paste of text with a
+/// literal `0x1c` in it — has no way out in it: the byte there is content, and keeping it (as
+/// the head once did, in a latch spent on the next pane that opened) counterfeited a leaving
+/// nobody asked for. `0x1c` is `FS` in ASCII and `QUIT` only under `ISIG`, which raw mode
+/// clears; it is one of the three bytes letibot's own decoder had no arm for, and
+/// [`crate::app::key_of`] keeps it that way: rano reads it as Ctrl+`\`, and the map drops it.
 ///
 /// `pub` because the interception is the driver's as much as the app's: the byte is a fact
 /// about the stream, and `Link::tick` is where the stream is routed.
