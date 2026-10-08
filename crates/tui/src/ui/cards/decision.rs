@@ -4,11 +4,11 @@
 use crate::app::*;
 use crate::ui::render::{sgr, wrap};
 use crate::ui::*;
-use letibot_sessionlog::view::{OpenDecision, SettledDecision};
-use letibot_ui::painter::Sgr;
+use letibot_sessionlog::view::OpenDecision;
+#[cfg(test)]
+use letibot_sessionlog::view::SettledDecision;
 use letibot_ui::progress;
 use letibot_ui::text::without_control_lines;
-use rano::style::Role;
 
 impl App {
     /// **The card, split where R20 says the split is.**
@@ -582,117 +582,10 @@ pub(crate) fn ask_without_target(summary: &str, target: &str) -> Option<String> 
     Some(head.strip_suffix(" to").unwrap_or(head).to_string())
 }
 
-/// The decision a settled call was gated by, in the dim register: the approval is
-/// a fact about the call, not a stray note. Folded it is one line — who decided
-/// and how; open it adds what the oracle was shown and what it said back. Shared
-/// by the one-line (inline) and the folded arms, because a gated call whose result
-/// fit on the header is no less gated for it.
-pub(crate) fn decision_lines(
-    d: &letibot_sessionlog::view::SettledDecision,
-    tools: Fold,
-    w: usize,
-    p: rano::style::Palette,
-) -> Vec<String> {
-    use letibot_sessionlog::event::DecisionOutcome as O;
-    let mut out = Vec::new();
-    let word = match &d.outcome {
-        O::Selected { option_id } if option_id.starts_with("allow") => "allowed",
-        O::Selected { .. } => "refused",
-        O::Cancelled => "cancelled",
-        O::TimedOut => "not answered",
-    };
-    let who = if d.by.identity.is_empty() {
-        d.by.kind.clone()
-    } else {
-        format!("{} {}", d.by.kind, d.by.identity)
-    };
-    out.push(p.painted(Role::Faint, &format!("  · {word}, by {who}")));
-    if tools.is_open() {
-        for l in decision_detail(d, w.saturating_sub(4)) {
-            out.push(p.painted(Role::Faint, &format!("    {l}")));
-        }
-    }
-    out
-}
-
-/// **The two reasons a settled decision carries, labelled as whose they are.**
-///
-/// `basis` is the DECIDER's — for an operator answer, `dead chose `allow_once` at
-/// the head`. `advice` is the guard model's, and only exists when one was
-/// consulted. They used to be one line, rendered as `oracle: {basis}`, which under
-/// `/supervise` printed the operator's own words under the oracle's name.
-///
-/// One function so the card and the settled row cannot label them differently.
-/// Returns wrapped, unpainted lines; each caller indents and paints its own way.
+/// **The two reasons a settled decision carries, labelled as whose they are** — rano's
+/// `decision_detail`, which the tool card and the settled row both draw through, asked of
+/// this head's own decision. Here for the tests that pin what it says.
+#[cfg(test)]
 pub(crate) fn decision_detail(d: &SettledDecision, w: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    // **§3.1, and this is the last of the untrusted free text on a row.** Three
-    // sentences here are somebody else's: the ask the daemon wrote, the DECIDER's
-    // basis (a person's words, or a policy rule), and the guard model's verdict with
-    // the operator's phrases it cites. All of them end up in a row `paint_full`
-    // writes verbatim, so all of them are sanitised before they are wrapped.
-    //
-    // One `without_control_lines` per line rather than per field, because the
-    // `format!` is where the string is built and therefore where the escaping has to
-    // happen — sanitising the inputs would leave the separators unguarded and reads
-    // as if the format string were trusted, which is the habit this whole item is
-    // against.
-    if !d.summary.is_empty() {
-        out.extend(wrap(
-            &without_control_lines(&format!("asked: {}", d.summary)),
-            w,
-        ));
-    }
-    if !d.basis.is_empty() {
-        // Named by the decider's own kind, so "decided:" never stands in for a
-        // model when a person chose, or the reverse.
-        let who = if d.by.kind.is_empty() {
-            "decided"
-        } else {
-            &d.by.kind
-        };
-        out.extend(wrap(
-            &without_control_lines(&format!("{who}: {}", d.basis)),
-            w,
-        ));
-    }
-    match &d.advice {
-        Some(a) => {
-            // **The same distinction the card draws**: a verdict from an oracle that was
-            // asked, and layer A's answer from one that was not.
-            out.extend(wrap(
-                &without_control_lines(&if a.consulted {
-                    format!(
-                        "oracle ({}, {}ms) would {}: {}",
-                        a.by, a.latency_ms, a.would, a.basis
-                    )
-                } else {
-                    format!("no model verdict — {}", a.basis)
-                }),
-                w,
-            ));
-            // **Empty cites is loud.** An authorisation the oracle could not ground
-            // in anything the operator said is a different fact from one it grounded
-            // in four utterances, and rendering nothing for the first makes them
-            // look the same.
-            if a.cites.is_empty() {
-                out.extend(wrap(
-                    "oracle cited: nothing — it could not ground this in anything you said",
-                    w,
-                ));
-            } else {
-                for c in &a.cites {
-                    out.extend(wrap(
-                        &without_control_lines(&format!("oracle cited: {c}")),
-                        w,
-                    ));
-                }
-            }
-        }
-        // Said out loud rather than left blank: "no oracle was asked" and "an
-        // oracle was asked and said nothing" are different, and a blank looks
-        // like the second.
-        None => out.extend(wrap("no oracle was consulted for this one", w)),
-    }
-    out
+    rano::agent::decision::decision_detail(&crate::ui::settled_decision(d), w)
 }

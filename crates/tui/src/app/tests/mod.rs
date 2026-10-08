@@ -29,7 +29,8 @@ use rano::style::Role;
 
 use letibot_ui::text::without_control_lines;
 
-use letibot_ui::{card, progress};
+use letibot_ui::progress;
+use rano::agent::card;
 use rano::width::text as width;
 
 fn app() -> App {

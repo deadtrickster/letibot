@@ -34,14 +34,15 @@
 //!
 //! | module | what it owns |
 //! |---|---|
-//! | [`highlight`] | rano capture names → this crate's syntax roles |
-//! | [`diff`] | line diff, intra-line word diff, unified rendering |
-//! | [`sidediff`] | the two-panel before/after view of a file edit |
 //! | [`progress`] | the prefill bar, which needs data neither upstream has |
-//! | [`card`] | tool calls: collapsed, expanded, and what a long result looks like |
 //! | [`editor`] | multi-line input, history, paste, kill ring |
 //! | [`painter`] | string painting that closes a span back to its block (the role table is `rano::style`) |
 //! | [`ansi`] | SGR a foreign program wrote, drawn as the palette's own roles |
+//!
+//! **The tool card, the diffs and the capture → role table are not here any more.** They are
+//! `rano::agent::card`, `rano::diff`, `rano::sidediff` and `rano::highlight`, ported from this
+//! crate with their tests: every terminal rendering has one home, and a head maps its state
+//! onto rano's view models rather than carrying its own painter.
 //!
 //! **A program's whole screen is not here.** It is `letibot-vt` — a crate *below* this one, so
 //! the head depends on the model rather than the model on the head — and this crate owns the half
@@ -50,13 +51,9 @@
 //! is the one that carries the terminal's own pen per cell; see `ansi.rs`'s header.
 
 pub mod ansi;
-pub mod card;
-pub mod diff;
 pub mod editor;
-pub mod highlight;
 pub mod painter;
 pub mod progress;
-pub mod sidediff;
 /// **Text this head did not author, made safe for a terminal** (§3.1). Here rather than
 /// in a head, because this crate draws every card and had no sanitiser at all.
 pub mod text;

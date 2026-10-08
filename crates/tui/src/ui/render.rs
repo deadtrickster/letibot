@@ -284,6 +284,28 @@ pub fn rows(lines: &[Line], p: Palette) -> Vec<String> {
     lines.iter().map(|l| l.to_ansi_inside(p)).collect()
 }
 
+/// **One rano line as the head's row string** — the edge every `rano::agent` widget's output
+/// crosses on its way to the frame.
+///
+/// A line with no style of its own is [`Line::to_ansi_inside`], which is `to_ansi`: every
+/// styled span opened and reset. A line that carries a register — a tool row's dim payload,
+/// the reasoning — is that register opened once at the start, its spans closing back to it,
+/// and a reset at the end: the shape this head's `dim(cfg, …)` around a `Painter::inside`
+/// line always wrote. Under [`Palette::None`] it is the text and nothing else.
+pub fn row(l: &Line, p: Palette) -> String {
+    let open = l.style.look(p).sgr();
+    if open.is_empty() {
+        l.to_ansi_inside(p)
+    } else {
+        format!("{open}{}{}", l.to_ansi_inside(p), sgr::RESET)
+    }
+}
+
+/// [`row`] for each of `lines`.
+pub fn row_strings(lines: &[Line], p: Palette) -> Vec<String> {
+    lines.iter().map(|l| row(l, p)).collect()
+}
+
 /// Render one block to rows, unbounded. One-shot: see `rano::markdown::render_block`.
 pub fn render_block(b: &Block, cfg: &RenderConfig) -> Vec<String> {
     rows(

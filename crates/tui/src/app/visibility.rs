@@ -873,3 +873,14 @@ impl Fold {
         self == Fold::Open
     }
 }
+
+/// The same fact in rano's words: its widgets take `rano::agent::Fold`, and this is the one
+/// place the two are reconciled.
+impl From<Fold> for rano::agent::Fold {
+    fn from(f: Fold) -> rano::agent::Fold {
+        match f {
+            Fold::Folded => rano::agent::Fold::Folded,
+            Fold::Open => rano::agent::Fold::Open,
+        }
+    }
+}

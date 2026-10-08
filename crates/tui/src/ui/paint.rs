@@ -2,7 +2,6 @@
 
 use crate::app::*;
 use crate::ui::render::{RenderConfig, sgr};
-use std::borrow::Cow;
 
 pub(crate) fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
     if cfg.color {
@@ -64,29 +63,12 @@ pub(crate) fn git_paint(cfg: &RenderConfig, role: crate::gitfield::GitRole, s: &
 /// a function whose job is to point at part of one. It is called per tool row drawn, and the
 /// `Owned` branch is only the over-long case (past `CAP`), where the truncation genuinely has to
 /// build something new.
-pub(crate) fn first_sentence(basis: &str) -> Cow<'_, str> {
-    let line = basis.lines().next().unwrap_or("").trim();
-    let end = line.find(". ").map(|i| i + 1).unwrap_or(line.len());
-    let s = &line[..end];
-    const CAP: usize = 140;
-    if s.chars().count() <= CAP {
-        return Cow::Borrowed(s);
-    }
-    let cut: String = s.chars().take(CAP).collect();
-    Cow::Owned(format!("{}…", cut.trim_end()))
-}
+pub(crate) use rano::agent::text::first_sentence;
 
-/// A result envelope's marker line: `<<<TOOL_ERROR 5ebfdef6>>>`, `<<<END_OK …>>>`.
-///
-/// Matched by SHAPE rather than against a list of kinds, so a kind added to
-/// `letibot_tools::result::Envelope` does not start leaking here on the day it
-/// lands. A body line that happens to look like one cannot exist: the envelope
-/// rewrites every `<<<` in a payload to `< < <` precisely so its own markers are
-/// unforgeable.
-pub(crate) fn is_envelope(line: &str) -> bool {
-    let l = line.trim();
-    l.starts_with("<<<") && l.ends_with(">>>") && l.len() > 6
-}
+/// A result envelope's marker line: `<<<TOOL_ERROR 5ebfdef6>>>`, `<<<END_OK …>>>` — rano's
+/// rule now (the tool row filters by it), here for the tests that pin its shape.
+#[cfg(test)]
+pub(crate) use rano::agent::text::is_envelope;
 
 pub(crate) fn dim(cfg: &RenderConfig, s: &str) -> String {
     colour(cfg, sgr::DIM, s)

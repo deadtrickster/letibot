@@ -1,16 +1,18 @@
 //! **A tool's result row**: the header, the diff or the payload's window, the decision that gated
-//! it, and the picture it returned.
+//! it, and the picture it returned — drawn by `rano::agent::tool_row` from the transcript row.
+//!
+//! What the row's rules are — the header built of roles so the scan works unread, the subject
+//! shortened before the tail is lost, the one-line form, the reason's gist, the diff in place
+//! of an edit's prose, the payload's window and its seams — is on `rano::agent::tool_row`,
+//! with the operator's reports that caused each one. What stays here is this head's half: the
+//! transcript's facts mapped onto the widget, and the payload read out of a foreign
+//! program's bytes.
 
-use crate::ui::render::{trim_to, visible_width, wrap};
+use crate::ui::render::row_strings;
 use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
-use letibot_ui::ansi;
-use letibot_ui::painter::{Painter, Sgr};
-use letibot_ui::text::{without_control, without_control_lines};
-use letibot_ui::{card, diff::DiffConfig, sidediff};
-use rano::style::Role;
-use std::borrow::Cow;
+use rano::agent::tool_row::ToolRow;
 
 pub(crate) fn tool_result_row_lines(
     it: &SnapshotItem,
@@ -49,21 +51,18 @@ pub(crate) fn tool_result_row_lines(
     // under this row's id. PNG only — the protocol takes it as it is — and every other
     // format keeps the line the payload already says. Built here and appended at each
     // way out of this arm, the one-line form's included.
-    let picture: Vec<String> = match media {
+    let picture: Vec<rano::render::Line> = match media {
         Some(m) if cfg.images && m.mime == "image/png" => {
             let (cols, rows) = rano::term::graphics::image_cells(
                 m.width,
                 m.height,
                 rano::term::graphics::image_box(cfg.width),
             );
-            rano::term::graphics::image_rows(
+            rano::term::graphics::image_lines(
                 rano::term::graphics::image_id(&it.item_id),
                 cols,
                 rows,
             )
-            .into_iter()
-            .map(|r| format!("  {r}"))
-            .collect()
         }
         _ => Vec::new(),
     };
@@ -121,96 +120,14 @@ pub(crate) fn tool_result_row_lines(
     // so `+N lines` counts lines a reader can read and a painted line's escapes
     // cannot inflate it. `trim_to` and the wrapper measure columns escape-aware, so
     // a painted line is cut where an unpainted one would be.
-    let flat: Vec<String> = payload.lines().map(without_control).collect();
-    // The raw bytes beside the text of each line that survives the envelope
-    // filter: **the painter needs the sequence and the fold needs the text**, and
-    // one vector cannot be both.
-    let kept: Vec<(&str, &str)> = payload
-        .lines()
-        .zip(flat.iter())
-        .filter(|(_, clean)| !is_envelope(clean))
-        .map(|(raw, clean)| (raw, clean.as_str()))
-        .collect();
-    let lines: Vec<&str> = kept.iter().map(|(_, clean)| *clean).collect();
-    let bad = !matches!(outcome, letibot_transcript::ToolOutcome::Ok);
-    let mark = if tools.is_open() { "▾" } else { "▸" };
-    // `▾ Read crates/ui/src/style.rs · ok · 183 lines · ctrl-v`, not
-    // `▾ read(call_0) …`. The verb and the target are the two words a
-    // person scans a settled call for, and the id — a correlation key —
-    // takes their place only when the target is not known.
-    let verb = card::Verb::of(name).label(false).to_string();
-    let subject = match targets.get(call_id) {
-        Some(t) if !t.is_empty() => t.clone(),
-        _ => format!("({call_id})"),
-    };
-    // How long it took, when this head watched it run. Carried from the
-    // live card at the moment the transcript took the call over — a
-    // `TranscriptItem::ToolResult` has no timestamps of its own — and
-    // simply absent for a row read out of a snapshot, which is the same
-    // rule `card::Phase::Replayed` follows and for the same reason.
-    let took = match elapsed_ms {
-        Some(ms) => format!(" · {}", letibot_ui::progress::duration(ms)),
-        None => String::new(),
-    };
-    // # Everything used to be the same weight
     //
-    // A one-line `ls` and a two-hundred-line search rendered identically:
-    // one grey header, one dim body. The operator's words — *"size,
-    // indentation and rule-weight should tell you what matters before you
-    // read a word"*.
-    //
-    // The header is now built out of roles rather than painted one colour,
-    // and the roles are chosen so the **scan** works with no reading at
-    // all:
-    //
-    // - The subject — the path, the pattern — is [`Role::Plain`], i.e. no
-    //   sequence at all, so it is the brightest thing on the row. It is
-    //   what a person is looking for.
-    // - Everything structural around it is [`Role::Faint`]: the glyph, the
-    //   verb, the separators, the chord. Present, skippable.
-    // - `ok` is faint too. It is the boring case and it is most of them;
-    //   anything else keeps its own loud role, which is §8.2's rule
-    //   (abstention must not read like success) and is now the *only*
-    //   coloured thing on an ordinary row.
-    // - The line count is [`Role::Strong`] once the output is big enough
-    //   to be worth a fold — that is the size signal, and it is an
-    //   attribute rather than a second colour, so it survives a
-    //   terminal-native theme.
-    //
-    // Under [`Palette::None`] the words are unchanged and the count is
-    // still a number, which is the whole reason the weighting is carried
-    // by *which* field rather than by a decoration.
-    const BIG: usize = 40;
+    // So each line is read by `letibot_ui::ansi::line` — the sanitiser's own walk with SGR
+    // interpreted into the palette's roles, everything that is not SGR removed whole — and
+    // the widget filters the envelope, counts and folds by the line's text, which has no
+    // escape byte in it.
+    let payload = payload.lines().map(letibot_ui::ansi::line).collect();
     let p = cfg.palette();
-    // **The painter for the payload's own block, which is dim.** `dim` below opens
-    // the body with `sgr::DIM`, so a coloured run inside it has to close back to dim
-    // rather than to the terminal's default — the defect `Painter` exists for, and
-    // the reason this is not a `Palette`. Under `Palette::None` it paints nothing and
-    // the line is the sanitised text, which is what `--replay` and CI need.
-    let painter = Painter::inside(p, Role::Faint);
     let w = cfg.width.saturating_sub(ind).max(20);
-    let outcome_role = outcome_role(outcome);
-    let size_role = if lines.len() >= BIG {
-        Role::Strong
-    } else {
-        Role::Faint
-    };
-    // # It degrades by shortening the subject, never by losing the tail
-    //
-    // The same rule `header_line` had to learn, and for the same reason:
-    // this row was built left to right and trimmed at the right, so a long
-    // target ate the outcome. Measured on the operator's session — an
-    // `ask_code` call that did not run rendered
-    // `▸ ask_code "Give an overview of the crate architecture: what each…`
-    // with the word `not run` cut off the end, which is a failed call
-    // wearing the shape of a successful one.
-    //
-    // So the tail is measured first and the subject is given what is left.
-    // A path is shortened from its LEFT at a separator — the end of a path
-    // is what identifies it, and `crates/tui/src/…` names nothing.
-    let word = outcome_word(outcome);
-    let tail_cols =
-        3 + visible_width(word) + visible_width(&took) + 3 + 6 + lines.len().to_string().len();
     // # A call the person ran says so, in the mark this file already keeps for them
     //
     // MEASURED, and this is the whole of the report: the operator typed `! ls` and
@@ -250,321 +167,53 @@ pub(crate) fn tool_result_row_lines(
     // still names the call id where a model's names the command. That is the honest
     // degradation: the command is the operator's own `User` line, verbatim, one row
     // above, which is a place a model's call has nothing in.
-    let mine = matches!(
+    let operator = matches!(
         origin,
         Some(letibot_transcript::CallOrigin::Operator { .. })
     );
-    let provenance = if mine {
-        format!("{} ", p.painted(Role::UserAccent, "▌"))
-    } else {
-        String::new()
+    let target = match targets.get(call_id) {
+        Some(t) if !t.is_empty() => t.clone(),
+        _ => String::new(),
     };
-    let lead = format!("{provenance}{mark} {verb} ");
-    let subject = shorten_subject(
-        &subject,
-        w.saturating_sub(visible_width(&lead) + tail_cols).max(8),
-    );
-    let mut head = provenance;
-    head.push_str(&p.painted(outcome_role, mark));
-    head.push_str(&p.painted(Role::Faint, &format!(" {verb} ")));
-    // **The file, as a link** (OSC 8) where the terminal speaks it: the full target
-    // the shortened subject stands for, so a click opens the file and not `…/app.rs`.
-    let painted = p.painted(Role::Plain, &subject);
-    let painted = match (&cfg.links, targets.get(call_id), card::Verb::of(name)) {
-        (
-            Some(root),
-            Some(full),
-            card::Verb::Read | card::Verb::Edit | card::Verb::Write | card::Verb::List,
-        ) => rano::term::links::file_link(root, full, &painted),
-        _ => painted,
+    let verb = rano::agent::card::Verb::of(name);
+    // **An edit draws its diff, not the tool's prose** — when this head holds both sides; a
+    // row it did not watch keeps the prose, which is the `Replayed` rule.
+    let diff = edit
+        .filter(|_| verb.is_an_edit())
+        .map(|e| crate::ui::edit_diff(e, w.saturating_sub(2), cfg, diff_split));
+    // **The payload's own window**: `payload_view` carries *which* row, because several
+    // payloads can be unfolded on one screen and a bare offset would page all of them.
+    let window = payload_view
+        .filter(|(id, _)| *id == it.item_id.as_str())
+        .map(|(_, page)| page);
+    let row = ToolRow {
+        target,
+        elapsed_ms,
+        operator,
+        diff,
+        decision: decision.map(crate::ui::settled_decision),
+        picture,
+        // **The file, as a link** (OSC 8) where the terminal speaks it: the full target the
+        // shortened subject stands for, so a click opens the file and not `…/app.rs`.
+        link_root: cfg.links.clone(),
+        fold: tools.into(),
+        window,
+        window_rows,
+        body_lines: cfg.budget.body_lines,
+        newest,
+        // **The step is the head's, applied to the strings** — outside the row's own
+        // register. A payload row is drawn as its dim body with the step in front of it,
+        // and a step taken inside the line would put the step under the dim: the same
+        // columns, but not the bytes this row has always been.
+        indent: 0,
+        ..ToolRow::new(name, call_id, crate::ui::display_outcome(outcome), payload)
     };
-    head.push_str(&painted);
-    head.push_str(&p.painted(outcome_role, &format!(" · {word}")));
-    head.push_str(&p.painted(Role::Faint, &took));
-
-    // A result of one line goes ON the header. `▸ Read .gitignore · ok ·
-    // 1.1s · /target` is one row where `▸ Read .gitignore · ok · 1 line ·
-    // ctrl-t` over `  /target` was two, and the second of them carried the
-    // count and the chord for a fold that has nothing to fold. At 34 rows
-    // that halving is the difference between four calls fitting and eight.
-    //
-    // **And it is the one place on this row that does not paint.** `lines` is the
-    // *sanitised* text — `without_control`'s — so a one-line payload's SGR is removed
-    // whole and its colour goes with it: `! ls` is drawn plain while `! ls -la`'s four
-    // lines are drawn coloured by the body below. That is a **loss** and not a
-    // passthrough, and it is the only disagreement between the two readers on the
-    // operator's own row — `letibot_ui::ansi`'s header states the same fact from the
-    // other side. Left as it is rather than painted here: the header's registers are
-    // `Faint`/`Plain` and the one-line form's whole argument is that the payload's text
-    // is part of the header, so colouring it is a decision about the header and not a
-    // fix to the payload. A one-line `! ls` is the case to weigh if that changes.
-    let inline = (!bad
-            && lines.len() == 1
-            // An edit with an excerpt draws its diff, not the tool's prose —
-            // the rule the folded arm below already follows. The one-line
-            // shortcut used to preempt it: a landed edit whose payload was a
-            // single line put the prose on the header and returned before the
-            // diff block, so the change was nowhere on the screen even when
-            // the head held both sides.
-            && edit.is_none())
-    .then(|| strip_gutter(lines[0]))
-    .filter(|l| !l.is_empty())
-    .filter(|l| visible_width(&head) + 3 + visible_width(l) <= w);
-    if let Some(l) = inline {
-        head.push_str(&p.painted(Role::Faint, " · "));
-        head.push_str(&p.painted(Role::Plain, &l));
-        let mut out = vec![trim_to(&head, w)];
-        // The approval rides the one-line form too: a gated call whose
-        // result fit on the header is no less gated for it.
-        if let Some(d) = decision {
-            out.extend(decision_lines(d, tools, w, p));
-        }
-        out.extend(picture);
-        return (RowClass::Activity, step_in(out, ind));
+    let layout = row.layout(cfg.width.saturating_sub(ind));
+    if let (Some(max), Some(cell)) = (layout.max_page, payload_max) {
+        cell.set(max);
     }
-
-    head.push_str(&p.painted(
-        size_role,
-        &format!(
-            " · {} line{}",
-            lines.len(),
-            if lines.len() == 1 { "" } else { "s" }
-        ),
-    ));
-    // No `· ctrl-v` here. The chord belongs on the elision row below, which
-    // exists exactly when something is hidden — an affordance on a card
-    // with nothing folded is eight columns of every row spent advertising
-    // a key that would do nothing, and the hint bar already teaches it.
-    let mut out = vec![trim_to(&head, w)];
-    // The reason, on its own wrapping line rather than in the header's
-    // tail. Never folded, never truncated, and in the outcome's own role:
-    // a call that abstained or was refused said *why*, and that sentence
-    // is the whole content of the row.
-    // **Owned, and it has to be**: `w` is this closure's own temporary, so a borrowed
-    // `Cow` would be a reference to a value that dies at the end of the closure. This is
-    // the one place in the head where the sanitiser's fast path cannot be taken, and the
-    // compiler is what found it.
-    let why = outcome_why(outcome).map(|w| without_control_lines(&w).into_owned());
-    // **A reason that is a DOCUMENT is not a sentence.**
-    //
-    // This printed the reason in full, unfoldable, on the argument that a
-    // refusal nobody can read is a refusal nobody acts on. That holds while
-    // the reason is a sentence. Layer A's is not: it names every construct
-    // it could not resolve, one indented paragraph each, and ends with the
-    // instruction to re-issue — twenty lines of prose addressed to the
-    // MODEL, which the head then painted into the operator's chat. Measured
-    // on a six-line shell loop; the operator's answer was *"i get what it
-    // tries to do, but it just throws up on my chat"*.
-    //
-    // So the first sentence stands unfolded — what happened, always visible,
-    // which is what the original rule was protecting — and the rest arrives
-    // with ctrl-t like every other long thing on this screen.
-    let mut why_folded = false;
-    if let Some(why) = &why {
-        // **The payload says it too, so this stays a gist.** Unfolding is
-        // what reveals the payload, and a refusal's payload is a complete
-        // explanation — it names the decider, the basis and what to do.
-        // Printing the whole `why` above it meant ctrl-t produced the same
-        // paragraph twice in one card, three times counting the envelope's
-        // own `outcome:` line. The operator, counting: *"how many times is
-        // 'nothing ran' needed?"*
-        //
-        // Once. When the reason is NOT below, unfolding still shows all of
-        // it, because then this is the only place it is said.
-        // Matched on the reason's FIRST LINE: `why` is a paragraph and
-        // `lines` is the payload already split, so a whole-paragraph
-        // containment can never hit. One line of forty-plus characters
-        // appearing verbatim below is not a coincidence.
-        let first = why.lines().next().unwrap_or("").trim();
-        let echoed = first.len() >= 40 && lines.iter().any(|l| l.contains(first));
-        let shown: Cow<'_, str> = if tools.is_open() && !echoed {
-            Cow::Borrowed(why)
-        } else {
-            let gist = first_sentence(why);
-            why_folded = gist.len() < why.len();
-            gist
-        };
-        out.extend(
-            wrap(&shown, w.saturating_sub(2))
-                .into_iter()
-                .map(|l| p.painted(outcome_role, &format!("  {l}"))),
-        );
-    }
-    // The decision this call was gated by, in the dim register — the same
-    // block the live card draws, carried across with the card. Without this
-    // the approval leaves the screen the moment the result row takes the
-    // call over.
-    if let Some(d) = decision {
-        out.extend(decision_lines(d, tools, w, p));
-    }
-    // Folded shows the first line, which is where a tool puts what it did.
-    //
-    // A failure used to be exempt — *an error nobody can read is an error
-    // nobody acts on* — and that rule is satisfied by the line above,
-    // which prints the reason in full, wrapped, unfoldable. What the
-    // exemption was actually doing on the screen was printing a tool's
-    // whole `<<<TOOL_ERROR>>>` envelope, in which the reason appears twice
-    // more. So the exemption now applies only when there is **no** reason
-    // to have printed: a timeout, where the payload is all there is.
-    // **A file edit draws its diff, not the tool's prose.** The tool's
-    // payload is addressed to the model — "path: 1 replacement(s)" and a
-    // window of the new file — and a folded row showed two lines of it.
-    // When this head watched the call run it holds both sides, and the
-    // operator's question about an edit is "what changed", which is a
-    // diff in whichever of the two shapes the toggle picks
-    // (`sidediff::edit_view`).
-    // Folded keeps the first hunk's opening rows so the change is on the
-    // screen without the fold; open shows it whole, up to the diff's own
-    // cap. A row this head did not watch run has no pair and keeps the
-    // prose, which is the `Replayed` rule.
-    if let Some(e) = edit
-        && matches!(card::Verb::of(name), card::Verb::Edit | card::Verb::Write)
-        && !bad
-    {
-        let dcfg = DiffConfig {
-            width: w.saturating_sub(2),
-            palette: p,
-            context: 3,
-            line_numbers: true,
-            intra_line: false,
-            max_rows: 60,
-        };
-        let view = sidediff::edit_view(diff_split);
-        // **The same rule as the live card's** (§3.1): a diff is a file's
-        // bytes and this head did not author them. Sanitised before the
-        // diff is taken so the two sides compared are the two sides
-        // shown.
-        let path = without_control_lines(&e.path);
-        let before = without_control_lines(&e.before);
-        let after = without_control_lines(&e.after);
-        let mut rows = sidediff::render_edit_view(
-            &path,
-            &before,
-            &after,
-            e.before_start,
-            e.after_start,
-            &dcfg,
-            view,
-        );
-        if header_names_the_file(&subject, &path) && !rows.is_empty() {
-            rows.remove(0);
-        }
-        if e.truncated {
-            rows.push(p.painted(
-                Role::Faint,
-                &format!(
-                    "… the excerpt was capped; the file is {} lines now",
-                    e.after_lines
-                ),
-            ));
-        }
-        let keep = if tools.is_open() {
-            rows.len()
-        } else {
-            8.min(rows.len())
-        };
-        let hidden = rows.len() - keep;
-        out.extend(rows.into_iter().take(keep).map(|l| format!("  {l}")));
-        if hidden > 0 {
-            out.push(p.painted(
-                Role::Faint,
-                &format!("  … +{hidden} diff rows · /t unfolds it"),
-            ));
-        }
-        return (RowClass::Activity, step_in(out, ind));
-    }
-    // **The payload's own window, which is what makes the rest of it
-    // reachable.**
-    //
-    // Under the fold this card may draw two rows; opened, the body budget. Either
-    // way it was drawn from the **head** — so for a 418 KB log the fold reported
-    // `… +N lines` and the chord revealed nothing, because opening the fold
-    // changed the *budget*, not the *offset*. There was no offset.
-    //
-    // So a row whose view is open draws a window into its payload and the arrows
-    // page it. `payload_view` carries *which* row, because several payloads can
-    // be unfolded on one screen and a bare offset would page all of them.
-    let window = payload_view.is_some_and(|(id, _)| id == it.item_id.as_str());
-    let total = lines.len();
-    // **The window is the row's own length, not the fold's.** This read
-    // `window && tools.is_open()`, so the only way to give one result its rest was
-    // to unfold every result in the conversation — which is what made `ctrl-t` a
-    // wall. See [`ItemCtx::payload_newest`].
-    let shown_rows = if window {
-        cfg.budget.body_lines.min(window_rows).max(4)
-    } else if tools.is_open() || (bad && why.is_none()) {
-        cfg.budget.body_lines
-    } else {
-        2
-    };
-    // **The last page is a full one.** It clamped to `total - 1`, so the end of a
-    // long output was one line under a seam; the furthest useful offset is the one
-    // whose window ends on the last line (a window with the `↑` seam above it).
-    let max_page = total.saturating_sub(shown_rows.saturating_sub(2).max(1));
-    if window && let Some(cell) = payload_max {
-        cell.set(max_page);
-    }
-    let page = match payload_view {
-        Some((_, p)) if window => p.min(max_page),
-        _ => 0,
-    };
-    // One row is spent on the seam when there is more payload, on either side.
-    let above = page > 0;
-    let body = shown_rows
-        .saturating_sub(1)
-        .saturating_sub(usize::from(above))
-        .max(1);
-    let end = (page + body).min(total);
-    let below = end < total;
-    if above {
-        out.push(p.painted(
-            Role::Faint,
-            &format!("  ↑ {page} more lines above · ↑ scrolls up"),
-        ));
-    }
-    out.extend(
-        kept[page..end]
-            .iter()
-            .map(|(raw, _)| dim(cfg, &format!("  {}", ansi::painted(painter, raw)))),
-    );
-    if below {
-        let hidden = total - end;
-        // grok-build's `execute.rs:549` form, kept: the seam where content was
-        // taken out, not a sentence. **And it says which key now does what** —
-        // the chord opens the view, the arrows move inside it, and a row that
-        // named only the chord was the row that could not be read past its head.
-        out.push(p.painted(
-            Role::Faint,
-            &if window {
-                format!("  … +{hidden} lines · ↓ pages down · esc closes")
-            } else if newest {
-                // **The chord, on the row it acts on.** `ctrl-t` opens the window
-                // into the newest long result, and this is that row.
-                format!("  … +{hidden} lines · ctrl-v opens it")
-            } else {
-                // **Not this chord.** `ctrl-t` acts on the newest long result and
-                // there is no cursor in this head to point it at an older one, so
-                // this row names the verb that does reach it: `/t` unfolds every
-                // tool row, and the newest one's window can then be paged. A seam
-                // that named `ctrl-t` here is what the operator met as a wall.
-                format!("  … +{hidden} lines · /t unfolds it")
-            },
-        ));
-    } else if window {
-        // The end of the payload: say so, so "no more" is not confused with
-        // "the arrow stopped working".
-        out.push(p.painted(Role::Faint, "  … end of output · esc closes"));
-    } else {
-        // The payload was short enough to show whole, but the REASON was
-        // cut — so the affordance has to be here, or the rest of it would
-        // be hidden behind a chord nothing on the row mentions.
-        if why_folded {
-            out.push(p.painted(Role::Faint, "  … the rest of the reason · /t unfolds it"));
-        }
-    }
-    out.extend(picture);
     (
         RowClass::Activity,
-        step_in(out.into_iter().map(|l| trim_to(&l, w)).collect(), ind),
+        step_in(row_strings(&layout.lines, p), ind),
     )
 }

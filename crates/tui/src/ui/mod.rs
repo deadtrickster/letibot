@@ -16,6 +16,7 @@ pub mod status;
 pub mod transcript;
 pub mod turn_status;
 
+#[cfg(test)]
 pub(crate) use cards::decision::*;
 pub(crate) use fit::*;
 pub(crate) use loading::*;

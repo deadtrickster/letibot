@@ -4,9 +4,9 @@ use crate::ui::render::{BlockCache, trim_to};
 use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
-use letibot_ui::card;
 use letibot_ui::painter::Sgr;
 use letibot_ui::text::without_control_lines;
+use rano::agent::card;
 use rano::markdown::IncrementalMarkdown;
 use rano::style::Role;
 

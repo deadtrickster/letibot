@@ -214,6 +214,70 @@ pub fn painted(p: Painter, line: &str) -> String {
     out
 }
 
+/// **[`painted`], as a `rano::render::Line`** — the same walk and the same [`role`] table,
+/// with each painted run a span carrying its role instead of the sequences that draw it.
+///
+/// For a widget that takes lines rather than strings (`rano::agent::tool_row`'s payload): the
+/// row it goes into decides the register around it, and drawing the line under that register
+/// with `Line::to_ansi_inside` writes the bytes [`painted`] writes under
+/// [`Painter::inside`] — a run opened where the program's colour starts, closed back to the
+/// block where it ends, a run with no text still opened and closed. That is why an empty run
+/// is kept as a span here rather than dropped: the bytes the head's rows are compared by are
+/// the bytes a terminal was always sent.
+pub fn line(line: &str) -> rano::render::Line {
+    use rano::render::{Line, Span};
+    if !line.chars().any(char::is_control) {
+        return Line::raw(line);
+    }
+    let mut spans: Vec<Span> = Vec::new();
+    // The run being built: its role (`None` is the block's own style) and its text.
+    let mut cur: (Option<Role>, String) = (None, String::new());
+    let mut pen = Attr::default();
+    let mut open = false;
+    let mut last: Option<Role> = None;
+    let flush = |cur: &mut (Option<Role>, String), spans: &mut Vec<Span>, force: bool| {
+        let text = std::mem::take(&mut cur.1);
+        match cur.0 {
+            Some(r) => spans.push(Span::role(text, r)),
+            None if !text.is_empty() || force => spans.push(Span::raw(text)),
+            None => {}
+        }
+    };
+    for piece in letibot_transcript::sanitize::pieces(line) {
+        let params = match piece {
+            letibot_transcript::sanitize::Piece::Text(t) => {
+                cur.1.push_str(&t);
+                continue;
+            }
+            letibot_transcript::sanitize::Piece::Sgr(params) => params,
+        };
+        if apply_sgr(&params, &mut pen) {
+            last = None;
+        }
+        let role = role(pen);
+        match (open, role) {
+            (true, None) => {
+                flush(&mut cur, &mut spans, false);
+                cur.0 = None;
+                open = false;
+            }
+            (false, Some(r)) => {
+                flush(&mut cur, &mut spans, false);
+                cur.0 = Some(r);
+                open = true;
+            }
+            (true, Some(r)) if Some(r) != last => {
+                flush(&mut cur, &mut spans, false);
+                cur.0 = Some(r);
+            }
+            _ => {}
+        }
+        last = role;
+    }
+    flush(&mut cur, &mut spans, false);
+    Line::new(spans)
+}
+
 /// The role a pen is drawn as, or `None` for the block's own style.
 ///
 /// **This is the whole of the head's half of the mapping**, and it is a function of the *pen*

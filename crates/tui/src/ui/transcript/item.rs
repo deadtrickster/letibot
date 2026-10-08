@@ -6,15 +6,15 @@ use crate::ui::render::{RenderConfig, trim_to, visible_width, wrap};
 use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
-use letibot_ui::card;
 use letibot_ui::text::without_control_lines;
+use rano::agent::card;
 
-/// A `card::CardConfig` from this head's own config. One place, so the width, the
-/// palette and the fold cannot drift between the live pane and the transcript.
+/// A `card::CardConfig` from this head's own config. One place, so the width and the fold
+/// cannot drift between the live pane and the transcript (the palette is applied where the
+/// lines become rows).
 pub(crate) fn card_cfg(cfg: &RenderConfig, fold: Fold) -> card::CardConfig {
     card::CardConfig {
         width: cfg.width,
-        palette: cfg.palette(),
         mode: match fold {
             Fold::Open => card::DisplayMode::Expanded,
             Fold::Folded => card::DisplayMode::Truncated,
@@ -79,25 +79,6 @@ pub(crate) fn activity_indent(w: usize) -> usize {
         card::REASONING_RAIL_WIDTH
     } else {
         0
-    }
-}
-
-/// Drop a leading line-number gutter — `     1| ` — from one line of tool output.
-///
-/// Only ever applied to a **one-line preview inlaid on a header**, never to a
-/// body: a body's gutter is how a reader refers to a line, and taking it away
-/// there would lose a fact. On a header it is `1|` before the only line there is,
-/// which is three columns saying "this is line one of one".
-///
-/// A prefix match rather than a parse of any tool's format. It matches what
-/// `read` emits and nothing that is not shaped exactly like it; a tool whose
-/// output happens to begin `12| ` gets three columns back and loses nothing.
-pub(crate) fn strip_gutter(l: &str) -> String {
-    let t = l.trim_start();
-    let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-    match t[digits..].strip_prefix("| ") {
-        Some(rest) if digits > 0 => rest.trim_end().to_string(),
-        _ => l.trim().to_string(),
     }
 }
 

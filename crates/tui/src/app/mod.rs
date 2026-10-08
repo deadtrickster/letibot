@@ -30,8 +30,8 @@ use letibot_sessionlog::event::{Timings, Usage};
 use letibot_sessionlog::registry::{SessionBrief, SessionWiring};
 use letibot_sessionlog::view::{OpenDecision, SnapshotItem};
 
-use letibot_ui::card;
 use letibot_ui::editor::Editor;
+use rano::agent::card;
 
 use crate::ui::render::{RenderConfig, visible_width};
 use crate::ui::*;
