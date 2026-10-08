@@ -550,18 +550,43 @@ fn the_thinking_chord_in_read_edits_says_why_rather_than_storing_it() {
     );
 }
 
+/// **Responding is green while the turn goes and yellow when it goes quiet, and nothing else
+/// is said.** The operator, 2026-10-08: *"we have Responding in yellow which is a warning color
+/// … I dont want notification that it is slow yet we continue … let usual Responding be green
+/// and when we detect delays - yellow it"*. The sentence this replaced (*"nothing received for
+/// 40.0s"*) dated from failed turns that never ended; they end with `TurnFailed` now.
 #[test]
-fn a_turn_that_has_gone_quiet_says_so_rather_than_spinning() {
-    // Measured live: a turn failed, the engine published a `Warning` and no
-    // `TurnFinished`, and the head span a spinner at a dead session for as long
-    // as anyone left it open.
-    let mut a = app();
+fn a_quiet_turn_turns_responding_yellow_and_says_nothing_more() {
+    let mut a = App::new(RenderConfig {
+        width: 120,
+        color: true,
+        ..RenderConfig::default()
+    });
     a.clock(1_000);
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
-    assert!(!a.screen(120, 12).join("\n").contains("nothing received"));
+    let responding = |a: &mut App| {
+        a.screen(120, 12)
+            .into_iter()
+            .find(|l| l.contains("Responding"))
+            .unwrap_or_default()
+    };
+    let going = responding(&mut a);
+    assert!(
+        going.contains(sgr::GREEN),
+        "a turn that is going is green: {going:?}"
+    );
+    assert!(!going.contains(sgr::YELLOW), "{going:?}");
     a.clock(1_000 + 40_000);
+    let quiet = responding(&mut a);
+    assert!(
+        quiet.contains(sgr::YELLOW),
+        "a quiet turn is yellow: {quiet:?}"
+    );
     let screen = a.screen(120, 12).join("\n");
-    assert!(screen.contains("nothing received for 40.0s"), "{screen}");
+    assert!(
+        !screen.contains("nothing received"),
+        "and says nothing more:\n{screen}"
+    );
 }
 
 #[test]

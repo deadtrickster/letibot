@@ -206,9 +206,9 @@ impl App {
     /// round's generation ends — **which is precisely when a tool call starts.** A reader asking
     /// *is the model working* who reaches for this gets *no* for the whole of every command.
     ///
-    /// It is kept because one caller genuinely asks the generating question: [`App::stuck_line`],
-    /// which reports silence from a model that should be emitting. A call that runs for two
-    /// minutes emits nothing and is not stuck, and gating that line on `turn_busy` would make it
+    /// It is kept because one caller genuinely asks the generating question: [`App::turn_slow`],
+    /// which reads silence from a model that should be emitting. A call that runs for two
+    /// minutes emits nothing and is not stuck, and gating that on `turn_busy` would make it
     /// cry wolf through every long command.
     pub(crate) fn turn_generating(&self) -> bool {
         matches!(

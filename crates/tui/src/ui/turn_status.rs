@@ -1,8 +1,8 @@
-//! **The turn's status row**: what the model is doing, and a stuck turn said out loud.
+//! **The turn's status row**: what the model is doing — green while it goes, yellow when slow.
 
 use crate::app::*;
 use crate::ui::render::row;
-use rano::agent::turn_status::{Prefill, TurnStatus, stuck_line};
+use rano::agent::turn_status::{Prefill, SLOW_AFTER_MS, TurnStatus};
 
 impl App {
     /// The turn's status, inlaid in the composer's bottom border and pinned
@@ -52,40 +52,25 @@ impl App {
                 time_ms: pp.time_ms,
             }),
             now_ms: self.now_ms,
+            slow: self.turn_slow(),
         };
         row(&status.line(w), self.cfg.palette())
     }
 
-    /// A turn that is generating and silent. The daemon sends prefill progress
-    /// while it prefills and a delta per chunk while it generates, so a gap this
-    /// long is a real gap and not a slow model — and the case that produced this
-    /// line is one a head cannot otherwise show: when a turn *fails*, the engine
-    /// publishes a `Warning` and nothing else, so `TurnState` stays `Running`
-    /// and the old head span its spinner at a dead session indefinitely. See the
-    /// report: `TurnFinished`/`TurnInterrupted` on failure is the daemon's to
-    /// fix, and a head saying "nothing for 40s" is not a substitute for it.
+    /// **The turn is slow**: the model should be emitting and nothing has arrived for
+    /// [`SLOW_AFTER_MS`]. It turns the Responding row yellow and says nothing else — the
+    /// operator, 2026-10-08: *"I dont want notification that it is slow yet we continue"*. The
+    /// sentence that used to sit above the composer (*"nothing received for 17s. The turn is
+    /// still marked running"*) was there because a FAILED turn used to look like this; it ends
+    /// with `TurnFailed` now, so silence here is only ever slowness.
     ///
-    /// A row of its own, above the border, and not inlaid: it is a disclosure
-    /// with a sentence in it, and a sentence truncated to fit a border is a
-    /// disclosure that lost the words that mattered.
-    ///
-    /// **`turn_generating` and deliberately NOT `turn_busy`, and this is the one site where
-    /// R51's instruction has to be read carefully.** R51 lists this line among the sites keyed on
-    /// the state name; measured, its gate is right and widening it would be a regression. The
-    /// question here is not *is the model working* but *should it be emitting and is it not* —
-    /// and a `cargo test` that runs silently for two minutes is a call, not a stall. Gated on
-    /// `turn_busy` this line would fire through every long command, which is exactly the false
-    /// alarm that trains a reader to ignore it.
-    pub(crate) fn stuck_line(&self, w: usize) -> Option<String> {
-        let t = self.turn.as_ref()?;
-        if !self.turn_generating() {
-            return None;
-        }
-        let quiet = if self.last_event_at == 0 {
-            0
-        } else {
-            self.now_ms.saturating_sub(self.last_event_at)
-        };
-        stuck_line(&t.model, quiet, w).map(|l| row(&l, self.cfg.palette()))
+    /// **`turn_generating` and deliberately NOT `turn_busy`**: a `cargo test` that runs silently
+    /// for two minutes is a call, not a slow model, and gated on busy the row would go yellow
+    /// through every long command — the false alarm that trains a reader to ignore it.
+    pub(crate) fn turn_slow(&self) -> bool {
+        self.turn.is_some()
+            && self.turn_generating()
+            && self.last_event_at != 0
+            && self.now_ms.saturating_sub(self.last_event_at) > SLOW_AFTER_MS
     }
 }

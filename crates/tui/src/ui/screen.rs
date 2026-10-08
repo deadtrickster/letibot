@@ -181,7 +181,6 @@ impl App {
         // is in flight, so the link line is empty here and this is the sentence the
         // operator reads while the daemon goes.
         let stopping = self.stopping_line(w);
-        let stuck = self.stuck_line(w);
         // **A pane this head is not drawing, and the fact that it is still running.** See
         // [`App::pane_behind`] for the two sources of that fact and for why it is a line and
         // not a row: a detach is not an event, so what a reader gets is a statement about NOW
@@ -247,7 +246,7 @@ impl App {
             rows,
             hint,
             show_notice,
-            show_stuck,
+            show_stuck: _,
             show_pane,
             show_status,
             boxed,
@@ -258,7 +257,8 @@ impl App {
             card: dec.len(),
             pinned: dec_pinned.len(),
             notice: notice.is_some(),
-            stuck: stuck.is_some(),
+            // No stuck sentence any more: a slow turn is the Responding row in yellow.
+            stuck: false,
             pane: pane.is_some(),
             completion_slot,
             link: link.len(),
@@ -292,9 +292,6 @@ impl App {
         let (card_rows, _) = self.card_window(w, &dec, content_rows);
         chrome.extend(card_rows);
         chrome.extend(dec_pinned);
-        if show_stuck && let Some(l) = stuck {
-            chrome.push(l);
-        }
         if show_pane && let Some(l) = pane {
             chrome.push(l);
         }
