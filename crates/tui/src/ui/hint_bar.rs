@@ -27,6 +27,10 @@ impl App {
             HintMode::QuitCard
         } else if self.detached() {
             HintMode::Detached
+        } else if self.editor_focused() {
+            HintMode::Editor
+        } else if self.editor_drawn() {
+            HintMode::EditorBehind
         } else if self.help || self.stats {
             HintMode::Reading
         } else if self.picker {

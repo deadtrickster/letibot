@@ -679,6 +679,10 @@ impl App {
         // The borrow is over — nothing below reads `segs` — so what follows is the head's
         // own state rather than the frame's.
         let mut out = take_window(&segs, start, end);
+        // **Which of these rows are about a file**, for a click to open (see `file_rows`). Only
+        // the history's own lines are rows of the conversation with a span behind them — the
+        // live pane and the tail below them are not — so the map stops where `hist_lines` does.
+        self.file_rows = self.file_rows_in(start, end);
         // **The disclosure is about the HOLD, not about a number** (R36). It used to be
         // `scroll > 0`, which ties the reader's sentence to a derived count: a hold whose
         // anchored row happens to sit near the END of a shortened transcript has
@@ -690,6 +694,8 @@ impl App {
             // **The state, and the act that undoes it** — R29's rule for a disclosure, and
             // R36's for the reader who cannot tell pinned from following.
             out[last] = row(&rano::agent::screens::holding(behind), self.cfg.palette());
+            // The banner took that row, so it is no longer a row of any file.
+            self.file_rows.retain(|(r, _)| *r != last);
         }
         out
     }

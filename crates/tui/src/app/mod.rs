@@ -73,6 +73,21 @@ pub struct App {
     /// the pane's own ending is drawn; this head does not refuse it locally, because the
     /// authority on *is a pane open* is the daemon that owns the pty.
     pub(crate) term: Option<TermPane>,
+    /// **The editor pane — rano, on a file this conversation changed**, when it is open.
+    ///
+    /// `None` is the ordinary state and costs nothing: no rano is made until a click or
+    /// `ctrl-]` asks for one. `Some` takes the conversation's rectangle the way a `!term` pane
+    /// does, under it in precedence (a `!term` pane drawn over it owns the keyboard). See
+    /// [`EditorPane`] and `app/editor.rs` for the movements in and out.
+    pub(crate) edit_pane: Option<EditorPane>,
+    /// **The conversation's rectangle in the last frame**, in terminal cells — what a pane
+    /// opened between frames is given before it draws, so it opens centred on its change.
+    pub(crate) edit_area: rano::editor::Area,
+    /// **Which screen rows of the last frame are about a file**: `(row, place)` for every row
+    /// of a finished edit or write the transcript drew. Rebuilt every frame the conversation is
+    /// drawn and emptied when anything else is, so a click is only ever measured against rows
+    /// that are on the glass. See [`FileRef`].
+    pub(crate) file_rows: Vec<(usize, FileRef)>,
     /// **What this head believes about the session's pane** — the daemon's answer to
     /// `ClientFrame::TermStatus`, kept because a head that is **not drawing** the pane still has
     /// to say that something is running in it (and a `!term close` has to name what it is about
@@ -1356,6 +1371,9 @@ impl App {
             prefs_path: None,
             settings: Vec::new(),
             term: None,
+            edit_pane: None,
+            edit_area: rano::editor::Area::default(),
+            file_rows: Vec::new(),
             term_fact: PaneFact::Unasked,
             term_ask: None,
             close_pending: false,
@@ -1714,6 +1732,7 @@ mod asks;
 mod attention;
 mod commands;
 mod composer;
+mod editor;
 mod events;
 mod keys;
 mod notes;
@@ -1731,6 +1750,7 @@ pub(crate) use asks::*;
 pub(crate) use attention::*;
 pub(crate) use commands::*;
 pub(crate) use composer::*;
+pub use editor::*;
 pub(crate) use events::*;
 pub use keys::*;
 pub(crate) use notes::*;

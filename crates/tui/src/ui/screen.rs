@@ -400,6 +400,11 @@ impl App {
             (body_rows + caret_at).min(out.len().saturating_sub(1)),
             caret_col.min(w.saturating_sub(1)) + gutter,
         ));
+        // **While the editor pane has the keyboard, the caret is rano's** — where it put it, or
+        // hidden when rano hides it (over its diff view, a list, a help page).
+        if self.editor_focused() {
+            self.cursor = self.edit_pane.as_ref().and_then(|p| p.caret);
+        }
         // **The gutter and the trim, in ONE pass and in place.**
         //
         // This was `out.into_iter().map(…).collect()`, and it cost two allocations per line per
@@ -493,6 +498,14 @@ impl App {
     /// **What fills the screen above the cards**: the terminal pane, an open output or pane,
     /// the help, the picker — or, when none of them is open, the conversation.
     pub(crate) fn main_area(&mut self, w: usize, room: usize, has_header: bool) -> Vec<String> {
+        // **The rectangle, in the terminal's cells, whatever is drawn in it** — the editor pane
+        // is given it before its first frame — and the click map emptied: only the
+        // conversation's own branch below fills it, so a click is never measured against rows
+        // a pane is covering.
+        let (x, y) = (Self::gutter(self.term_cols), usize::from(has_header));
+        let cell = |n: usize| n.min(u16::MAX as usize) as u16;
+        self.edit_area = rano::editor::Area::new(cell(x), cell(y), cell(w), cell(room));
+        self.file_rows.clear();
         if self.pane_open() {
             // **The pane takes the conversation's rectangle and gives it back.**
             //
@@ -526,6 +539,11 @@ impl App {
                 self.queued.push(Action::TermResize { cols, rows: rows_n });
             }
             rows
+        } else if self.edit_pane.is_some() {
+            // **The editor pane takes the rectangle next**, under a `!term` pane and over
+            // everything else the conversation's rectangle can hold: it was opened on purpose,
+            // with a click or a chord, and it is what the keys go to while it has them.
+            self.editor_rows(x, y, w, room)
         } else if let Some((echo, lines)) = self.slash_out.clone() {
             let p = self.cfg.palette();
             // **Not sanitised, and the regression is why.** The rows in `slash_out` are
@@ -604,7 +622,12 @@ impl App {
             let rows = self.jobs_lines(w);
             self.pane_window(rows, room)
         } else {
-            self.body_window(room)
+            let rows = self.body_window(room);
+            // The window's rows, as the terminal's: the header is above them.
+            for (row, _) in &mut self.file_rows {
+                *row += y;
+            }
+            rows
         }
     }
 }

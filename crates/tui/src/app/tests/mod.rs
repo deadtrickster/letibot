@@ -1325,6 +1325,7 @@ mod attention;
 mod commands;
 mod composer;
 mod decisions;
+mod editor;
 mod jobs;
 mod misc;
 mod notes;

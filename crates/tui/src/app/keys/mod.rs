@@ -103,6 +103,17 @@ impl App {
         if let ControlFlow::Break(r) = self.key_chords(&k) {
             return r;
         }
+        // **A click on an edit or write row opens rano on its change.** The whole row — its
+        // header and the diff under it — is the target, because the row is one call about one
+        // file and a reader aims at the diff as often as at the name. Measured against the last
+        // frame's map (`file_rows`), which holds only rows the conversation drew this frame; a
+        // click anywhere else falls through to whatever it did before.
+        if let Key::Click { y, .. } = k
+            && let Some(f) = self.file_at_row(y)
+        {
+            self.open_in_editor(&f);
+            return None;
+        }
 
         if let ControlFlow::Break(r) = self.key_sub_out(&k) {
             return r;
@@ -1031,6 +1042,14 @@ pub enum Key {
     /// `/notes restore` brings it back. A head that can silently drop a warning is a head whose
     /// warnings cannot be trusted to be complete.
     CtrlN,
+    /// **Ctrl+`]` — between the conversation and the editor pane.**
+    ///
+    /// From the composer it opens rano on the newest file this conversation changed, or goes
+    /// back into a pane already open; from inside the pane rano hands the same chord back and
+    /// the keyboard returns to the composer (see `app/editor.rs`). `]` because every letter
+    /// is a readline key, a composer key or one of the head's panes already, and `0x1d` was
+    /// the one control byte this head decoded to nothing that rano does not bind either.
+    CtrlBracket,
     PageUp,
     PageDown,
     /// Mouse wheel up, decoded from the SGR mouse protocol. Scrolls the
@@ -1088,6 +1107,7 @@ impl Key {
             | Key::CtrlO
             | Key::CtrlQ
             | Key::CtrlN
+            | Key::CtrlBracket
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp

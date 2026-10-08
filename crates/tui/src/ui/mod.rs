@@ -4,6 +4,7 @@
 
 pub mod cards;
 pub mod composer;
+pub mod editor;
 pub mod header;
 pub mod hint_bar;
 pub mod loading;

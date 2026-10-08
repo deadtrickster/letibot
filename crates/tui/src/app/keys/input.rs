@@ -20,9 +20,10 @@
 //! **Ctrl+`\` (`0x1c`)** is the pane's way out. A program inside a pane must never be given it,
 //! or it could trap it, so it is found on the raw stream (`Terminal::raw_input`, read in the
 //! head's loop) before anything is forwarded — and it is never a [`Key`]. rano decodes it as
-//! Ctrl+`\`; this map is where that is dropped. Ctrl+`]`, Ctrl+`^` and Ctrl+Space likewise:
-//! letibot's decoder had no arm for them, and a key that did nothing stays a key that does
-//! nothing.
+//! Ctrl+`\`; this map is where that is dropped. Ctrl+`^` and Ctrl+Space likewise: letibot's
+//! decoder had no arm for them, and a key that did nothing stays a key that does nothing.
+//! Ctrl+`]` was one of them too, and is now the crossing to the editor pane
+//! ([`Key::CtrlBracket`]).
 //!
 //! Every mouse report but a plain wheel step and a plain left press is dropped: selecting text
 //! stays the terminal's own Shift+drag, and a report the head does not act on must never
@@ -111,7 +112,9 @@ fn ctrl(c: char) -> Option<Key> {
         't' => Key::CtrlT,
         'v' => Key::CtrlV,
         'x' => Key::CtrlX,
-        // `\` is the pane's way out (see the module header); ` `, `]` and `^` were never keys.
+        // The editor pane's crossing: see `app/editor.rs`.
+        ']' => Key::CtrlBracket,
+        // `\` is the pane's way out (see the module header); ` ` and `^` were never keys.
         _ => return None,
     })
 }
@@ -197,7 +200,7 @@ mod tests {
             (0x19, Some(Key::Yank)),
             (0x1a, Some(Key::Undo)),
             (0x1c, None),
-            (0x1d, None),
+            (0x1d, Some(Key::CtrlBracket)),
             (0x1e, None),
             (0x1f, Some(Key::Undo)),
             (0x7f, Some(Key::Backspace)),

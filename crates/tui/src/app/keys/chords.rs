@@ -194,6 +194,9 @@ impl App {
             // `/promote` names. See [`App::promote`] for why the fact it guards is a
             // running CALL and not a running turn.
             Key::CtrlO => return ControlFlow::Break(self.promote()),
+            // **Ctrl+]: to the editor pane** — back into it when it is open, onto the newest
+            // change when it is not. See [`App::editor_chord`].
+            Key::CtrlBracket => return ControlFlow::Break(self.editor_chord()),
             // **The wheel and the page keys move what is on the screen.** They
             // moved the transcript unconditionally, so a wheel in the subagent
             // output view scrolled the conversation underneath it, and Esc

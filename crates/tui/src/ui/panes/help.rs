@@ -95,6 +95,14 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
              It is one row, not a switch: `/t` unfolds every tool row at once",
         ),
         (
+            "ctrl-]",
+            "open the newest file this conversation changed in rano, on the change — a click \
+             on an edit or write row opens that one. In the editor, ctrl-] comes back to the \
+             composer (and goes again), alt-s puts your place — and the selection, fenced — \
+             in the composer for you to finish and send, alt-p shows the change again, and \
+             ctrl-q or ^X closes it, asking first about unsaved edits",
+        ),
+        (
             "ctrl-p",
             "hold the view: while it is held the head writes nothing, so a text selection \
              survives a streaming turn. Press again to release — it says how many rows arrived",
