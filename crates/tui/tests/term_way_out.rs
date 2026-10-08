@@ -234,6 +234,114 @@ fn ctrl_backslash_detaches_through_the_drivers_loop() {
     );
 }
 
+/// **Enter and the way out in ONE read: BOTH effects, not one of them.**
+///
+/// The coalescing question with the pane already open, which is the case every fast hand
+/// hits: the operator presses Enter — in `nano`, a newline — and reaches for `ctrl-\`, and
+/// the tty hands the head both bytes as one read: `\r\x1c`. The pane's split
+/// ([`App::pane_keys`]) is *bytes before the way out are the program's, the way out itself
+/// detaches*, and a read that carried both is not two decisions but one read of that rule —
+/// **the `\r` must reach the program AND the detach must be taken**. The defect this test
+/// is written against is the silent winner: a path where one of the two eats the other —
+/// a head that detached without the Enter ever reaching the pty, or a head that kept the
+/// pane up with no key left that would leave it. So both are asserted on the socket and on
+/// the app, never one without the other.
+#[test]
+fn enter_and_the_way_out_in_one_read_forward_the_enter_and_detach() {
+    let path = socket_path("enter-wayout");
+    let frames = scripted_daemon(path.clone());
+    let mut a = app();
+    let mut link = Link::open(&path, SESSION, 0, "tui", "wayout-enter-wayout").expect("attach");
+    settle(&mut link, &mut a);
+
+    step(&mut link, &mut a, b"!term nano\r");
+    settle(&mut link, &mut a);
+    assert!(a.pane_open(), "the pane is up before the coalesced read");
+    let _ = sent(&frames);
+
+    // One read, exactly as `Terminal::events` would have consumed it: Enter + ctrl-\.
+    step(&mut link, &mut a, b"\r\x1c");
+    settle(&mut link, &mut a);
+
+    let frames = sent(&frames);
+    assert!(
+        frames
+            .iter()
+            .any(|f| matches!(f, ClientFrame::TermInput { bytes } if bytes == b"\r")),
+        "the Enter is the program's — a coalesced read must not detach it away: {frames:?}"
+    );
+    assert!(
+        !frames.iter().any(|f| matches!(f, ClientFrame::TermClose)),
+        "and the way out is a DETACH — nothing that ends anything left the head: {frames:?}"
+    );
+    assert!(
+        !a.pane_open(),
+        "the detach is taken in the same read: the rectangle is back"
+    );
+    assert!(
+        a.holds_pane(),
+        "and the pane is still held — the program keeps running on the daemon's pty"
+    );
+}
+
+/// **A way-out byte in a read the COMPOSER consumed is not a way out of anything.**
+///
+/// The other edge of the coalesced question, and the one the head's own scan gets wrong:
+/// `0x1c` can be in a read with no pane in it and no pane opening from it — a paste of a
+/// file that contains a literal `0x1c` (FS is a real byte in real files), or a burst a
+/// terminal coalesced out of a fast hand. The bytes of that read are the composer's: the
+/// paste is text, nothing submits, no pane opens. **Nothing should be kept.**
+///
+/// What the head's own second scan (`raw.contains(&WAY_OUT)`, beside [`App::pane_keys`]'s
+/// scan — the same fact recognised in two places) does instead is keep it: the latch arms
+/// on a byte no pane will ever see, and it is spent on the NEXT pane that opens. Measured
+/// as the test below: the operator comes back with `!term` — the attach protocol 32 exists
+/// for exactly this — and the pane opens already detached, with the rectangle gone before
+/// a single frame was drawn. From the seat: *I can never get back in.* The one recogniser
+/// must be the one that also owns the forwarding ([`App::pane_keys`]), and a read whose
+/// keys were the composer's has no way out in it at all.
+#[test]
+fn a_way_out_byte_in_a_read_the_composer_consumed_is_not_a_way_out_of_anything() {
+    let path = socket_path("phantom");
+    let frames = scripted_daemon(path.clone());
+    let mut a = app();
+    let mut link = Link::open(&path, SESSION, 0, "tui", "wayout-phantom").expect("attach");
+    settle(&mut link, &mut a);
+
+    // The operator is at the composer: no pane, none opening. A paste of text that
+    // contains a literal `0x1c` — one read, one `Key::Paste`, nothing submitted.
+    step(&mut link, &mut a, b"\x1b[200~notes\x1c\x1b[201~");
+    settle(&mut link, &mut a);
+    assert!(!a.pane_open(), "a paste opens nothing");
+    assert!(
+        !sent(&frames)
+            .iter()
+            .any(|f| matches!(f, ClientFrame::TermOpen { .. })),
+        "and sends nothing: the paste is composer text"
+    );
+
+    // The pasted text is submitted as the ordinary line it is — a prompt, not a pane — and
+    // the composer is empty again.
+    step(&mut link, &mut a, b"\r");
+    settle(&mut link, &mut a);
+    assert!(!a.pane_open(), "submitting the paste opened no pane");
+
+    // Only now does the operator open one — and the poisoned latch spends itself on it.
+    step(&mut link, &mut a, b"!term nano\r");
+    settle(&mut link, &mut a);
+    assert!(
+        sent(&frames)
+            .iter()
+            .any(|f| matches!(f, ClientFrame::TermOpen { line, .. } if line == "!term nano")),
+        "the open went out"
+    );
+    assert!(
+        a.pane_open(),
+        "the rectangle is drawn: a way out nobody pressed must not spend itself on the \
+         pane that just opened"
+    );
+}
+
 /// **The byte that opens the pane and the byte that leaves it can arrive in one read.**
 ///
 /// This is the defect, as a test. `!term nano` + Enter + `ctrl-\` in one coalesced tty

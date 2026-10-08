@@ -954,8 +954,9 @@ fn read_routed(term: &Terminal, app: &mut App) -> (Vec<crate::app::Key>, Vec<u8>
     };
     let (keys, rano_took) = app.route(events);
     // **Bytes rano read are not a `!term` pane's.** `ctrl-\` is rano's replace, and a byte
-    // the editor consumed must not be kept as a way out for a pane that opens later (see
-    // `Link::tick`).
+    // the editor consumed must not reach the pane's way-out scan as though the operator's
+    // terminal had sent it at a pane (see `Link::tick`, where the scan lives and where a
+    // read the composer consumed has no way out in it at all).
     let raw = if rano_took { Vec::new() } else { raw };
     // rano's work between events, before the frame — rano's rule for a host.
     app.editor_tick(Instant::now());
