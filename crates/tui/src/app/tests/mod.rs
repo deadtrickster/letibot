@@ -29,7 +29,8 @@ use rano::style::Role;
 
 use letibot_ui::text::without_control_lines;
 
-use letibot_ui::progress;
+// The compact numbers the head prints — rano's, where letibot's `progress` went.
+use rano::agent::header as progress;
 use rano::agent::card;
 use rano::width::text as width;
 

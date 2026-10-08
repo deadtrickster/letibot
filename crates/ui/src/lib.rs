@@ -34,14 +34,13 @@
 //!
 //! | module | what it owns |
 //! |---|---|
-//! | [`progress`] | the prefill bar, which needs data neither upstream has |
 //! | [`editor`] | multi-line input, history, paste, kill ring |
 //! | [`painter`] | string painting that closes a span back to its block (the role table is `rano::style`) |
 //! | [`ansi`] | SGR a foreign program wrote, drawn as the palette's own roles |
 //!
-//! **The tool card, the diffs and the capture → role table are not here any more.** They are
-//! `rano::agent::card`, `rano::diff`, `rano::sidediff` and `rano::highlight`, ported from this
-//! crate with their tests: every terminal rendering has one home, and a head maps its state
+//! **The tool card, the diffs, the capture → role table and the prefill bar are not here any
+//! more.** They are `rano::agent::card`, `rano::diff`, `rano::sidediff`, `rano::highlight` and
+//! `rano::agent::turn_status`, ported from this crate with their tests: every terminal rendering has one home, and a head maps its state
 //! onto rano's view models rather than carrying its own painter.
 //!
 //! **A program's whole screen is not here.** It is `letibot-vt` — a crate *below* this one, so
@@ -53,7 +52,6 @@
 pub mod ansi;
 pub mod editor;
 pub mod painter;
-pub mod progress;
 /// **Text this head did not author, made safe for a terminal** (§3.1). Here rather than
 /// in a head, because this crate draws every card and had no sanitiser at all.
 pub mod text;
