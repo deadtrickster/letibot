@@ -7,8 +7,10 @@ use letibot_ui::editor::Reaction;
 
 mod cards;
 mod chords;
+mod input;
 mod panes;
 mod window;
+pub use input::key_of;
 
 use std::ops::ControlFlow;
 
@@ -944,7 +946,7 @@ pub(crate) fn decision_rows(d: &OpenDecision) -> usize {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
     Char(char),
-    /// The terminal window gained focus (`?1004`, see `crate::features`).
+    /// The terminal window gained focus (`?1004`, see `rano::term::features`).
     FocusIn,
     /// The terminal window lost focus.
     FocusOut,

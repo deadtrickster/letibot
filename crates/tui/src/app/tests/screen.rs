@@ -39,7 +39,7 @@ fn the_window_title_names_the_session_and_follows_a_rename() {
             title: "evil\u{1b}]0;pwned\u{7}\u{9b}31m title".into(),
         },
     )));
-    let written = crate::backend::terminal::window_title_text(&a.window_title());
+    let written = rano::term::terminal::window_title_text(&a.window_title());
     assert!(
         !written.chars().any(|c| c.is_control()),
         "a control character would reach the terminal: {written:?}"

@@ -142,9 +142,8 @@ fn the_pane_draws_exactly_the_rows_it_is_given() {
 /// the bytes, including a control byte and half a UTF-8 character.
 ///
 /// **`ctrl-\` (0x1c) is found in that stream before anything is forwarded**, so the program
-/// never receives it and cannot trap it. It is also one of the three bytes this head's own
-/// decoder has no arm for, so it could never have arrived as a `Key` at all — see
-/// `Terminal::raw_keys`.
+/// never receives it and cannot trap it. It is also a byte `key_of` maps to nothing, so it
+/// could never have arrived as a `Key` at all — see `Terminal::raw_input`.
 ///
 /// # And the act is a DETACH — the operator's *"but i dont want it to exit"*
 ///

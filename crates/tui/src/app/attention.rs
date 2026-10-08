@@ -7,8 +7,8 @@ use letibot_sessionlog::view::TurnState;
 use letibot_transcript::TranscriptItem;
 
 impl App {
-    /// **Tell the head's state what the terminal speaks** (see `crate::features`).
-    pub fn set_features(&mut self, f: crate::backend::features::Features) {
+    /// **Tell the head's state what the terminal speaks** (see `rano::term::features`).
+    pub fn set_features(&mut self, f: rano::term::Features) {
         if self.features != f {
             self.features = f;
             self.invalidate_history();
@@ -19,8 +19,8 @@ impl App {
     /// **The tab's progress bar** (OSC 9;4): what it should show this tick. Somebody waiting on
     /// the person outranks the model working — a tab that wants you must not look like one
     /// that is merely busy.
-    pub fn progress(&self) -> crate::backend::terminal::Progress {
-        use crate::backend::terminal::Progress;
+    pub fn progress(&self) -> rano::term::Progress {
+        use rano::term::Progress;
         if !self.open.is_empty() || self.secret.is_some() {
             return Progress::Waiting;
         }
@@ -143,13 +143,13 @@ impl App {
         // **The size follows the window.** Every image already in the terminal is placed again
         // at the box this frame's width gives — a placement command each, no image bytes — so
         // the rows the renderers draw at this width match what the terminal will fill.
-        let box_cols = crate::backend::graphics::image_box(self.cfg.width);
+        let box_cols = rano::term::graphics::image_box(self.cfg.width);
         if box_cols != self.images_box {
             self.images_box = box_cols;
             for (id, (w, h)) in &self.images_sent {
-                let (cols, rows) = crate::backend::graphics::image_cells(*w, *h, box_cols);
+                let (cols, rows) = rano::term::graphics::image_cells(*w, *h, box_cols);
                 self.image_uploads
-                    .push(crate::backend::graphics::image_place(*id, cols, rows));
+                    .push(rano::term::graphics::image_place(*id, cols, rows));
             }
         }
         if self.images_scanned > self.items.len() {
@@ -166,7 +166,7 @@ impl App {
             match item {
                 TranscriptItem::ToolResult { media: Some(m), .. } if m.mime == "image/png" => {
                     found.push((
-                        crate::backend::graphics::image_id(&it.item_id),
+                        rano::term::graphics::image_id(&it.item_id),
                         m.width,
                         m.height,
                         m.wire_base64().to_string(),
@@ -178,7 +178,7 @@ impl App {
                             continue;
                         };
                         let id =
-                            crate::backend::graphics::image_id(&format!("{}#{target}", it.item_id));
+                            rano::term::graphics::image_id(&format!("{}#{target}", it.item_id));
                         crate::ui::render::remember_reply_image(
                             &it.item_id,
                             &target,
@@ -193,11 +193,11 @@ impl App {
         self.images_scanned = scanned;
         for (id, w, h, b64) in found {
             if self.images_sent.insert(id, (w, h)).is_none() {
-                let (cols, rows) = crate::backend::graphics::image_cells(w, h, box_cols);
+                let (cols, rows) = rano::term::graphics::image_cells(w, h, box_cols);
                 self.image_uploads
-                    .push(crate::backend::graphics::image_upload(id, &b64));
+                    .push(rano::term::graphics::image_upload(id, &b64));
                 self.image_uploads
-                    .push(crate::backend::graphics::image_place(id, cols, rows));
+                    .push(rano::term::graphics::image_place(id, cols, rows));
             }
         }
     }

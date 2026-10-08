@@ -46,9 +46,9 @@ use letibot_sessionlog::server::default_socket_path;
 use letibot_sessionlog::{SessionBrief, testing};
 
 use crate::app::App;
-use crate::backend::terminal::Terminal;
 use crate::driver::Link;
 use crate::ui::render::{Budget, RenderConfig};
+use rano::term::Terminal;
 
 struct Args {
     socket: std::path::PathBuf,
@@ -351,7 +351,7 @@ fn replay(args: &Args, cfg: RenderConfig) {
                 let frame = app.screen(w, h);
                 outside_the_frame(&term, &mut app);
                 term.draw_with_cursor(&frame, app.cursor());
-                for k in term.keys() {
+                for k in read_keys(&term) {
                     if app.key(k).is_some() {
                         break;
                     }
@@ -378,7 +378,7 @@ fn replay(args: &Args, cfg: RenderConfig) {
                 let frame = app.screen(w, h);
                 outside_the_frame(&term, &mut app);
                 term.draw_with_cursor(&frame, app.cursor());
-                for k in term.keys() {
+                for k in read_keys(&term) {
                     app.key(k);
                 }
                 if app.should_quit() {
@@ -646,7 +646,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     //
     // This loop draws the cat while `HeadClient` waits for a `Hello`. The first version
     // read nothing from the terminal, so **keys went nowhere**: the main loop — the only
-    // place `term.keys()` was called — had not started, and the terminal is in raw mode,
+    // place the terminal was read — had not started, and the terminal is in raw mode,
     // so Ctrl-C is a key event rather than a signal. The operator, on a daemon that
     // accepted the connection and then died without answering:
     //
@@ -674,7 +674,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
                         // what the hint bar under this frame has promised the operator
                         // since before there was a frame: a hint that names a key the
                         // wait does not read is a hint that lies.
-                        for k in t.keys() {
+                        for k in read_keys(t) {
                             let _ = app.key(k);
                         }
                         if app.should_quit() {
@@ -741,12 +741,12 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
         Some(term) => {
             let mut draw = |lines: &[String], cursor| term.draw_with_cursor(lines, cursor);
             while !app.should_quit() {
-                let keys = term.keys();
+                let keys = read_keys(&term);
                 // **The same read, as bytes.** The pane is a terminal and its program reads the
                 // bytes the operator's terminal sent, not this head's decoding of them — and
-                // `ctrl-\`, the pane's one way out, is a byte this head's decoder has no arm
-                // for and therefore never sees as a `Key`. See `Terminal::raw_keys`.
-                let raw = term.raw_keys();
+                // `ctrl-\`, the pane's one way out, is a byte `key_of` maps to nothing, so this head
+                // never sees it as a `Key`. See `Terminal::raw_input`.
+                let raw = term.raw_input();
                 let size = term.size();
                 if app.take_redraw() {
                     term.invalidate();
@@ -902,7 +902,7 @@ mod probe_tests {
 /// **Everything the head writes to the terminal that is not the frame**: the window title, the
 /// tab's progress bar, a desktop notification, a clipboard copy. Once a tick, after the tick —
 /// the app decides what each should be, and the terminal writes only what changed and only
-/// what it speaks (see `crate::features`).
+/// what it speaks (see `rano::term::features`).
 fn outside_the_frame(term: &Terminal, app: &mut App) {
     term.set_title(&app.window_title());
     term.set_progress(app.progress());
@@ -915,4 +915,14 @@ fn outside_the_frame(term: &Terminal, app: &mut App) {
     for upload in app.take_image_uploads() {
         term.write_raw(&upload);
     }
+}
+
+/// **One read of the terminal, as this head's keys**: whatever `Terminal::events` returns —
+/// at most ~100 ms of quiet, the `VMIN=0 VTIME=1` read the loops above are paced by — mapped
+/// through [`crate::app::key_of`]. The bytes that read consumed are `Terminal::raw_input`.
+fn read_keys(term: &Terminal) -> Vec<crate::app::Key> {
+    term.events()
+        .into_iter()
+        .filter_map(crate::app::key_of)
+        .collect()
 }

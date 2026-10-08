@@ -42,7 +42,7 @@ use letibot_sessionlog::registry::SessionWiring;
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 
 use letibot_tui::app::App;
-use letibot_tui::backend::decode::decode;
+use letibot_tui::app::{Key, key_of};
 use letibot_tui::driver::Link;
 use letibot_tui::ui::render::RenderConfig;
 
@@ -135,6 +135,14 @@ fn app() -> App {
 
 /// One pass of the driver's loop, with the bytes and the keys the reader would have
 /// produced from them. A test has no terminal, so the drawing goes to a sink.
+/// The keys this head reads from `raw`: rano decodes the bytes, [`key_of`] says what they mean.
+fn decode(raw: &[u8]) -> Vec<Key> {
+    rano::term::decode(raw)
+        .into_iter()
+        .filter_map(key_of)
+        .collect()
+}
+
 fn step(link: &mut Link, a: &mut App, raw: &[u8]) {
     let mut sink = |_lines: &[String], _cursor| {};
     link.tick(a, (100, 30), &decode(raw), raw, &mut sink);
@@ -246,7 +254,7 @@ fn the_way_out_is_not_eaten_by_the_read_that_opens_the_pane() {
     let mut link = Link::open(&path, SESSION, 0, "tui", "wayout-same-read").expect("attach");
     settle(&mut link, &mut a);
 
-    // One read, exactly as `Terminal::keys` would have consumed it.
+    // One read, exactly as `Terminal::events` would have consumed it.
     step(&mut link, &mut a, b"!term nano\r\x1c");
     settle(&mut link, &mut a);
 

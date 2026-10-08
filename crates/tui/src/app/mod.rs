@@ -388,9 +388,9 @@ pub struct App {
     /// arrives the card can no longer say what it was — and a refused key would be
     /// noted as sudo's refused password.
     pub(crate) key_secrets: Vec<String>,
-    /// **What the terminal speaks beyond cells** (`crate::features`), told by the head after
+    /// **What the terminal speaks beyond cells** (`rano::term::features`), told by the head after
     /// it entered the terminal. Default — nothing — for a test, a replay and a pipe.
-    pub(crate) features: crate::backend::features::Features,
+    pub(crate) features: rano::term::Features,
     /// Whether the terminal window has focus, from `?1004` reports. `None` until the first
     /// report, and read as focused: a notification goes only to somebody known to be away.
     pub(crate) focused: Option<bool>,
@@ -1402,7 +1402,7 @@ impl App {
             secret: None,
             secret_buf: String::new(),
             key_secrets: Vec::new(),
-            features: crate::backend::features::Features::default(),
+            features: rano::term::Features::default(),
             focused: None,
             light_background: None,
             attention: None,

@@ -84,8 +84,8 @@ pub struct Link {
     /// The byte is looked for on the stream the reader consumed, and one read can carry
     /// both the keystroke that opens the pane and the `ctrl-\` after it — `!term nano` +
     /// Enter + the way out, coalesced by the tty. The pane is not open yet when that read
-    /// is handled, and `term.rs`'s decoder has no arm for `0x1c`, so the byte would be
-    /// eaten on its `_ => i += 1` arm and the pane would open with no way out of it.
+    /// is handled, and `app::key_of` maps `0x1c` to nothing (letibot's own decoder had no
+    /// arm for it), so the byte would be dropped and the pane would open with no way out of it.
     /// Measured on a live head: the pane opened and stayed open, with nano in it and no
     /// key that would end it.
     ///
@@ -590,8 +590,8 @@ impl Link {
             // out of it.** This is the one hole the branch above leaves, and it is a hole
             // with no exit from it: `!term nano` + Enter + `ctrl-\` in one coalesced tty
             // read begins with no pane, so the whole stream goes down `App::key` — and
-            // `term.rs`'s decoder has no arm for `0x1c`, so it eats the byte on its
-            // `_ => i += 1` arm and the pane opens a moment later **with no way out at
+            // `app::key_of` maps `0x1c` to nothing (letibot's own decoder ate it on its
+            // `_ => i += 1` arm), and the pane opens a moment later **with no way out at
             // all**. A person in a full-screen program whose one way out was dropped before
             // anything looked for it is stuck with no key that ends it, which is the whole
             // reason the way out is intercepted on the byte stream rather than decoded.

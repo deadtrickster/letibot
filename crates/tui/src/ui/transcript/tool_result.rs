@@ -50,13 +50,13 @@ pub(crate) fn tool_result_row_lines(
     // way out of this arm, the one-line form's included.
     let picture: Vec<String> = match media {
         Some(m) if cfg.images && m.mime == "image/png" => {
-            let (cols, rows) = crate::backend::graphics::image_cells(
+            let (cols, rows) = rano::term::graphics::image_cells(
                 m.width,
                 m.height,
-                crate::backend::graphics::image_box(cfg.width),
+                rano::term::graphics::image_box(cfg.width),
             );
-            crate::backend::graphics::image_rows(
-                crate::backend::graphics::image_id(&it.item_id),
+            rano::term::graphics::image_rows(
+                rano::term::graphics::image_id(&it.item_id),
                 cols,
                 rows,
             )
@@ -274,7 +274,7 @@ pub(crate) fn tool_result_row_lines(
             Some(root),
             Some(full),
             card::Verb::Read | card::Verb::Edit | card::Verb::Write | card::Verb::List,
-        ) => crate::backend::links::file_link(root, full, &painted),
+        ) => rano::term::links::file_link(root, full, &painted),
         _ => painted,
     };
     head.push_str(&painted);

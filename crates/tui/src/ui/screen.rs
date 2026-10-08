@@ -36,7 +36,7 @@ impl App {
         if self.features.links {
             for l in out.iter_mut() {
                 if l.contains("://") {
-                    *l = crate::backend::links::link_urls(l);
+                    *l = rano::term::links::link_urls(l);
                 }
             }
         }

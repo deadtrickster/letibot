@@ -8,8 +8,9 @@ use super::*;
 /// It is looked for on the raw byte stream, before anything is forwarded, so the program never
 /// receives it — see [`App::pane_keys`], and `Link::tick`, which looks for it on every read and
 /// not only on the reads where the pane was already open. `0x1c` is `FS` in ASCII and `QUIT`
-/// only under `ISIG`, which raw mode clears; it is one of the three bytes `term.rs`'s decoder
-/// has no arm for, and its own comment says so.
+/// only under `ISIG`, which raw mode clears; it is one of the three bytes letibot's own decoder
+/// had no arm for, and [`crate::app::key_of`] keeps it that way: rano reads it as Ctrl+`\`, and
+/// the map drops it.
 ///
 /// `pub` because the interception is the driver's as much as the app's: the byte is a fact
 /// about the stream, and `Link::tick` is where the stream is routed.
@@ -39,7 +40,7 @@ pub const WAY_OUT: u8 = 0x1c;
 ///
 /// **`Ctrl-\` (0x1c), and it is intercepted on the raw byte stream before a single byte is
 /// forwarded**, so the program never receives it and cannot trap it — which is the whole
-/// requirement. The tree chose it long before this branch: `term.rs`'s own decoder lists the
+/// requirement. The tree chose it long before this branch: letibot's own decoder listed the
 /// bytes with no arm and says *"`0x1c`-`0x1e` are the only bytes left in this table with no
 /// arm, and none of the three has a mnemonic worth having"*. It is not a tty control character
 /// (`cfmakeraw` clears `IXON`/`IEXTEN`, and `0x1c` is `QUIT` only under `ISIG`, which raw mode

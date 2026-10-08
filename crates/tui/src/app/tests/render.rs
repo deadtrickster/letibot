@@ -1107,7 +1107,7 @@ fn a_light_background_reply_switches_the_palette() {
     a.key(Key::Background { light: true });
     a.screen(80, 24);
     assert_eq!(a.cfg.palette(), letibot_ui::style::Palette::Colour);
-    a.set_features(crate::backend::features::Features::ALL);
+    a.set_features(rano::term::Features::ALL);
     a.screen(80, 24);
     assert_eq!(a.cfg.palette(), letibot_ui::style::Palette::Light);
     a.key(Key::Background { light: false });

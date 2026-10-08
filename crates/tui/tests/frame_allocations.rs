@@ -151,7 +151,7 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
     );
 
     // ---- the terminal's diff --------------------------------------------------------------
-    use letibot_tui::backend::terminal::paint_full;
+    use rano::term::terminal::paint_full;
 
     let glass: Vec<String> = (0..40)
         .map(|i| format!("row {i} of a settled screen"))

@@ -230,7 +230,7 @@ fn content_this_head_did_not_write_cannot_reconfigure_the_terminal() {
 /// two look identical on a screen.** leticl's number was already read from its own
 /// clock; what was frozen was the *asking*, because its loop painted only when a
 /// frame or a key marked the head dirty. This head composes a frame on every tick
-/// — `term.keys()` returns after ~100 ms of quiet under `VMIN=0 VTIME=1`, and
+/// — `Terminal::events()` returns after ~100 ms of quiet under `VMIN=0 VTIME=1`, and
 /// `App::screen` is called unconditionally after it — so the asking was never the
 /// problem here. What was wrong is that **the row read a different clock from the
 /// spinner two hundred lines below it**: the spinner is `App::now_ms`, which the
