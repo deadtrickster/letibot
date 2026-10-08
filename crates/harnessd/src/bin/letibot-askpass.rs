@@ -69,11 +69,21 @@ fn main() {
                 let _ = client.detach();
                 std::process::exit(0);
             }
-            Ok(ServerFrame::Secret { secret: None }) => {
-                eprintln!(
-                    "letibot-askpass: no password was given — no head answered before the \
-                     deadline, or the person refused"
-                );
+            Ok(ServerFrame::Secret { secret: None, why }) => {
+                // **The daemon says WHICH failure this was, and the helper does not guess.**
+                // It used to print one sentence covering three different facts — no head
+                // attached (a fault in the wiring), a head attached and nobody answering
+                // (a person who did not act), and a person declining the card (a decision)
+                // — because `None` on the wire carried no reason. `why` is that reason;
+                // an older daemon does not send it, and the old sentence is the honest
+                // thing to print then.
+                match why {
+                    Some(why) => eprintln!("letibot-askpass: no password was given — {why}"),
+                    None => eprintln!(
+                        "letibot-askpass: no password was given — no head answered before the \
+                         deadline, or the person refused"
+                    ),
+                }
                 let _ = client.detach();
                 std::process::exit(1);
             }

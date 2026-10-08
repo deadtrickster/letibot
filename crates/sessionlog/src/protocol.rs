@@ -1969,10 +1969,25 @@ pub enum ServerFrame {
     /// `NewSession` is answered with the whole list rather than with the new id
     /// alone, because a head that has just created a session is a head about to
     /// draw a picker, and the list it would then ask for is this one.
-    /// The password for the `Askpass` this connection sent, or `None`: nobody
-    /// gave one before the deadline, or a head refused. Only ever written to an
-    /// `askpass` head. Added at `PROTOCOL_VERSION` 12.
-    Secret { secret: Option<String> },
+    /// The password for the `Askpass` this connection sent, or `None` — and, when it is
+    /// `None`, **which of the three facts that was**.
+    ///
+    /// `None` was one word for three different things: no head was attached to this
+    /// session, a head was attached and nothing was answered before the deadline, and a
+    /// person read the card and declined it. The first is a fault in the wiring — the card
+    /// reached nobody; the second is a person who did not act in time; the third is a
+    /// decision. They arrived at the helper as the same byte, so it printed one sentence
+    /// covering all three, and the operator could do nothing with it. Only ever written to
+    /// an `askpass` head. Added at `PROTOCOL_VERSION` 12.
+    Secret {
+        secret: Option<String>,
+        /// **Why there was no password**, in the daemon's own words, or `None` when one
+        /// was given (nothing to explain). Added at `PROTOCOL_VERSION` 36 with
+        /// `#[serde(default)]`: an added field with a default is the case that needs no
+        /// bump, and a helper talking to an older daemon prints its old sentence.
+        #[serde(default)]
+        why: Option<String>,
+    },
     Sessions {
         sessions: Vec<SessionBrief>,
         /// The session this connection is in right now.

@@ -223,11 +223,17 @@ fn askpass(args: &[std::ffi::OsString]) -> ExitCode {
                 let _ = client.detach();
                 return ExitCode::SUCCESS;
             }
-            Ok(ServerFrame::Secret { secret: None }) => {
-                eprintln!(
-                    "letibot-askpass: no password was given — no head answered before the \
-                     deadline, or the person refused"
-                );
+            Ok(ServerFrame::Secret { secret: None, why }) => {
+                // The daemon says which failure this was — see the sibling helper in
+                // `harnessd/src/bin/letibot-askpass.rs`; an older daemon sends no reason and
+                // the old sentence is what is left to say.
+                match why {
+                    Some(why) => eprintln!("letibot-askpass: no password was given — {why}"),
+                    None => eprintln!(
+                        "letibot-askpass: no password was given — no head answered before the \
+                         deadline, or the person refused"
+                    ),
+                }
                 let _ = client.detach();
                 return ExitCode::FAILURE;
             }

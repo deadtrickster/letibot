@@ -310,6 +310,57 @@ fn is_transient(e: &io::Error) -> bool {
 /// know about a registry to serve it. It is a thin wrapper and not a second
 /// implementation: [`Registry::of`] wraps the hub and [`serve_registry`] does the
 /// work, so there is one attach path and one switch path.
+/// **Nobody gave a password, and WHICH silence that was** — the sentence the daemon puts on
+/// the frame the `askpass` helper reads.
+///
+/// Built here, where the head count is known, because the helper cannot know it: it held
+/// one connection and got a `None`. That `None` was three facts wearing one word —
+/// *no head was attached*, *a head was attached and nobody answered*, and *a person
+/// declined* (that one is written at the call site, where the refusal arrives) — and the
+/// operator's report was that the sentence they got covered all three and told them
+/// nothing. The first is a fault in the wiring and the second is a person who did not act;
+/// they need different next actions, so they are different sentences.
+///
+/// MEASURED 2026-10-08: `no password was given — no head answered before the deadline, or
+/// the person refused`.
+fn no_password_sentence(heads: usize) -> String {
+    if heads == 0 {
+        "no head was attached to this session, so no card could reach anybody".to_string()
+    } else {
+        format!(
+            "a head was attached and nothing was answered before the deadline ({heads} attached)"
+        )
+    }
+}
+
+#[cfg(test)]
+mod no_password_tests {
+    use super::no_password_sentence;
+
+    /// **The two silences are two sentences**, and neither says "or the person refused".
+    ///
+    /// This test cannot fail on the code before it: the function did not exist. What it
+    /// pins is the distinction the old wording destroyed — no head attached is a bug, a
+    /// head attached and silent is a person who did not act — and that a refusal is not
+    /// among them (it is written where the refusal arrives, as a decision).
+    #[test]
+    fn no_password_says_which_silence_it_was() {
+        let nobody = no_password_sentence(0);
+        let nobody_answered = no_password_sentence(2);
+        assert!(nobody.contains("no head was attached"), "{nobody}");
+        assert!(!nobody.contains("deadline"), "{nobody}");
+        assert!(nobody_answered.contains("attached"), "{nobody_answered}");
+        assert!(nobody_answered.contains("deadline"), "{nobody_answered}");
+        assert_ne!(nobody, nobody_answered);
+        for s in [&nobody, &nobody_answered] {
+            assert!(
+                !s.contains("refused"),
+                "a refusal is a decision and has its own sentence: {s}"
+            );
+        }
+    }
+}
+
 pub fn serve(hub: Arc<Hub>, path: impl AsRef<Path>) -> io::Result<ServerHandle> {
     serve_registry(Registry::of(hub), path)
 }
@@ -640,21 +691,36 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 // this connection is the helper's and sends nothing else — and
                 // answer on it. The deadline is sudo's patience, roughly: past it
                 // the helper exits and sudo reports that no password was given.
+                //
+                // **The head count is taken BEFORE the card is raised, and it is what
+                // makes the failure readable.** `None` on the wire says only that no
+                // password came back; whether that is *the card reached nobody* or *a
+                // person did not answer* is decided by whether there was anybody to ask.
                 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
                 let deadline = crate::event::now_ms() + PATIENCE.as_millis() as u64;
+                let heads = seat.hub.attached_heads();
                 let (req_id, rx) = seat.hub.request_secret(&prompt, &command, deadline);
-                let secret = match rx.recv_timeout(PATIENCE) {
-                    Ok(s) => s,
+                let (secret, why) = match rx.recv_timeout(PATIENCE) {
+                    // A password: nothing to explain.
+                    Ok(Some(s)) => (Some(s), None),
+                    // A head answered the card and declined it. That is a decision, and
+                    // the helper must not report it as a timeout.
+                    Ok(None) => (
+                        None,
+                        Some("a head was shown the card and the person declined it".to_string()),
+                    ),
+                    // The deadline — and WHICH silence, which is the fact one sentence
+                    // could not carry.
                     Err(_) => {
                         seat.hub
                             .abandon_secret(&req_id, "nobody, before the deadline");
-                        None
+                        (None, Some(no_password_sentence(heads)))
                     }
                 };
                 writer
                     .lock()
                     .unwrap()
-                    .write(&ServerFrame::Secret { secret })?;
+                    .write(&ServerFrame::Secret { secret, why })?;
             }
             Ok(ClientFrame::Secret { req_id, secret }) => {
                 // A head's answer. Not a command: it is never queued, announced or

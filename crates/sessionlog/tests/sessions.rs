@@ -152,7 +152,7 @@ fn frame_kind(f: &ServerFrame) -> String {
         // Never the secret itself, not even in a test's diagnostic: the whole
         // point of the frame is that the password goes to the waiting askpass
         // connection and nowhere else, and a panic message is somewhere else.
-        ServerFrame::Secret { secret } => {
+        ServerFrame::Secret { secret, .. } => {
             format!("Secret(given={})", secret.is_some())
         }
     }
