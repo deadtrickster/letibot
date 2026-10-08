@@ -2259,14 +2259,21 @@ mod tests {
 
     struct TempDir(std::path::PathBuf);
     impl TempDir {
+        /// **A counter in the name, not only the clock.** The tests in this module run in
+        /// parallel in one process, and macOS's `SystemTime` has microsecond resolution: two
+        /// that started in the same microsecond shared a directory, and the first to finish
+        /// removed the other's store under it — `an_empty_scope_is_refused…` failed `opening`
+        /// one workspace run in a few. MEASURED 2026-10-08.
         fn new() -> Self {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let p = std::env::temp_dir().join(format!(
-                "harnessd-scope-{}-{}",
+                "harnessd-scope-{}-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
-                    .as_nanos()
+                    .as_nanos(),
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
             std::fs::create_dir_all(&p).expect("scratch");
             TempDir(p)
