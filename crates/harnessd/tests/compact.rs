@@ -74,7 +74,7 @@ fn load_parts(cfg: &Config) -> Parts {
     Parts::load(cfg).expect("the vocabulary must load")
 }
 
-fn opened<'a>(cfg: &Config, parts: &'a Parts) -> Harness<'a> {
+fn opened(cfg: &Config, parts: &Parts) -> Harness {
     let hub = Hub::new(&cfg.session_id);
     Harness::open(parts, cfg.clone(), hub).expect("the session must open")
 }

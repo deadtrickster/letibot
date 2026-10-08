@@ -269,6 +269,82 @@ pub fn matches(served: &str, want: &str) -> bool {
     norm(served).contains(&norm(want))
 }
 
+/// **What one `/props` answer says about the model a server is serving** — the
+/// three facts a session switch needs, from ONE probe.
+///
+/// A switch used to ask twice (the weights via [`served_model`], the window via
+/// [`served_ctx`]); deriving the DIALECT as well would have made it three, and
+/// each probe is a full connect-read round trip against a server that may not be
+/// there. One GET, one struct: `model_path` names the GGUF (the vocabulary's one
+/// source), `chat_template` is the Jinja the server says it renders with (the
+/// dialect's one source), `media_marker` is the per-process image placeholder.
+///
+/// Every field is `Option`: a server can answer `/props` and still omit a field
+/// (an OpenAI-compatible proxy, an older llama.cpp without `chat_template`), and
+/// **each absence is its own fact** — the caller refuses by naming the missing
+/// thing rather than falling back to a default that would be a guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServedProps {
+    /// The GGUF the server loaded, as it reports it — `…/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf`.
+    pub model_path: Option<String>,
+    /// The chat template the server reports, verbatim.
+    ///
+    /// **Measured against this fleet's own unit, 2026-10-07:** `/props` carries
+    /// the GGUF's `tokenizer.chat_template` with the final newline stripped —
+    /// 10647 bytes where the file (and the dialect crates' embedded copy) has
+    /// 10648, identical through every other byte. A comparison against a shipped
+    /// template therefore trims trailing whitespace on both sides; anything else
+    /// is a different template and must not be called a match.
+    pub chat_template: Option<String>,
+    /// The per-process media marker, when the server has `mtmd`.
+    pub media_marker: Option<String>,
+}
+
+/// Ask one endpoint's `/props` for [`ServedProps`], or name why it could not.
+///
+/// The error is a sentence with the address in it — "nothing answers at
+/// HOST:PORT" names the unit to look at, which is what an operator with three
+/// mutually-exclusive units needs. The connect timeout is the client's 10 s, so
+/// a dead port costs seconds rather than the read timeout's three minutes.
+pub fn served_props(endpoint: &Endpoint) -> Result<ServedProps, String> {
+    let body = http::get(endpoint, "/props")
+        .map_err(|e| format!("{} did not answer /props ({e})", endpoint.authority()))?
+        .read_to_string()
+        .map_err(|e| {
+            format!(
+                "{} answered /props but the body could not be read ({e})",
+                endpoint.authority()
+            )
+        })?;
+    Ok(ServedProps {
+        model_path: field(&body, "\"model_path\"").or_else(|| field(&body, "\"model\"")),
+        // **Through a JSON string reader, not [`field`].** The served template is a
+        // Jinja document — MEASURED on this fleet's `glm.service`, 10648 bytes with
+        // ten `"` and 257 newlines in the file — and a JSON encoder escapes every
+        // one of them (`\"`, `\n`). `field` reads to the next `"` byte, so on this
+        // very field it would return the first 705 bytes of the template and call
+        // it the whole thing: the comparison would then fail against EVERY dialect
+        // and the refusal would blame a template that was never served. A value
+        // that is not a string (a newer server's template VARIANTS array) is an
+        // ABSENT template rather than a parse error — the caller refuses by naming
+        // what is missing, which is the honest sentence for a shape it cannot read.
+        chat_template: json_string(&body, "\"chat_template\""),
+        media_marker: field(&body, "\"media_marker\""),
+    })
+}
+
+/// **Does this served chat template match this dialect's shipped one?**
+///
+/// The comparison is on the bytes, with trailing whitespace trimmed on both
+/// sides — the one divergence measured between a live `/props` answer and the
+/// GGUF's own `tokenizer.chat_template` (see [`ServedProps::chat_template`] for
+/// the numbers). Anything beyond that trim is a different template: a server
+/// running a modified or overridden Jinja must not be called a match, because
+/// the renderer this tree would drive it with writes the SHIPPED bytes.
+pub fn template_matches(spec: &letibot_dialect::DialectSpec, served: &str) -> bool {
+    spec.template.trim_end() == served.trim_end()
+}
+
 fn field(body: &str, key: &str) -> Option<String> {
     let at = body.find(key)? + key.len();
     let rest = body.get(at..)?;
@@ -277,6 +353,75 @@ fn field(body: &str, key: &str) -> Option<String> {
     let end = rest.find('"')?;
     let v = &rest[..end];
     (!v.is_empty()).then(|| v.to_string())
+}
+
+/// **One JSON string value, read as its encoder wrote it** — escapes decoded, not
+/// skipped — or `None` when the key is absent or its value is not a string.
+///
+/// This is [`field`] for values that may CONTAIN quotes and newlines, which in this
+/// module is exactly one: `chat_template` (see [`served_props`] for why `field`'s
+/// scan-to-the-next-quote cannot serve there). The escape set is RFC 8259's — the
+/// two-character escapes plus `\uXXXX`, surrogate pairs folded to one scalar —
+/// because that is what a JSON encoder is free to emit and a reader that decodes
+/// only the two-character half would return a template that differs from the
+/// served one in exactly the bytes a Jinja document is full of.
+fn json_string(body: &str, key: &str) -> Option<String> {
+    let at = body.find(key)? + key.len();
+    let rest = body.get(at..)?;
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let mut rest = rest.strip_prefix('"')?;
+    let mut out = String::with_capacity(rest.len());
+    loop {
+        let end = rest.find(['\"', '\\'])?;
+        out.push_str(&rest[..end]);
+        rest = &rest[end..];
+        let mut esc = rest.chars();
+        let c = esc.next()?;
+        rest = esc.as_str();
+        match c {
+            // The terminator: an unescaped quote. `c` consumed it, so there is
+            // nothing to strip — `rest` already points past the value.
+            '"' => return (!out.is_empty()).then_some(out),
+            '\\' => {
+                let e = rest.chars().next()?;
+                rest = &rest[e.len_utf8()..];
+                match e {
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    '/' => out.push('/'),
+                    'b' => out.push('\u{0008}'),
+                    'f' => out.push('\u{000C}'),
+                    'n' => out.push('\n'),
+                    'r' => out.push('\r'),
+                    't' => out.push('\t'),
+                    'u' => {
+                        let hex = rest.get(..4)?;
+                        let mut n = u32::from_str_radix(hex, 16).ok()?;
+                        rest = &rest[4..];
+                        // A high surrogate is only half a scalar; the next `\uXXXX`
+                        // must be its low half or the pair is malformed. Replaced
+                        // rather than failed — the served value is still a string —
+                        // but a template with a broken pair is not one this tree
+                        // drives anyway, so the byte difference is the mismatch it
+                        // should be.
+                        if (0xD800..0xDC00).contains(&n)
+                            && let Some(tail) = rest.strip_prefix("\\u")
+                            && let Ok(low) = u32::from_str_radix(tail.get(..4)?, 16)
+                            && (0xDC00..0xE000).contains(&low)
+                        {
+                            n = 0x10000 + ((n - 0xD800) << 10) + (low - 0xDC00);
+                            rest = &tail[4..];
+                        }
+                        out.push(char::from_u32(n).unwrap_or('\u{FFFD}'));
+                    }
+                    // Not an escape RFC 8259 allows: the value is malformed, and a
+                    // malformed value is an absent one rather than a guess.
+                    _ => return None,
+                }
+            }
+            _ => unreachable!("find stopped on a byte that is neither"),
+        }
+    }
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -337,6 +482,74 @@ mod tests {
         assert_eq!(
             field(body, "\"model_path\"").as_deref(),
             Some("/m/GLM-5.3-Flash.gguf")
+        );
+    }
+
+    /// **A served chat template survives the JSON it arrives in, quotes and all.**
+    ///
+    /// The first cut read `chat_template` with [`field`], which scans to the next
+    /// `"` byte — and a Jinja template is FULL of them once a JSON encoder has
+    /// escaped it. This is the regression that would have shipped inside the
+    /// preserved probe: every dialect comparison would have failed against a
+    /// template that was never served, and the refusal would have blamed the
+    /// server for the reader's truncation. MEASURED on the bytes this pins: the
+    /// served glm template is 10648 bytes with its first `"` at offset 705, so
+    /// `field` would have returned 705 bytes and called it the document.
+    #[test]
+    fn a_served_chat_template_survives_the_json_it_arrives_in() {
+        // A Jinja fragment with every byte class the reader must survive: escaped
+        // quotes, a backslash, newlines, tabs, and one `\\u` scalar.
+        let served = "{%- if tools %}\n{{- \"tool calls\" \\ \"here\" -}}\n\t\u{2014} -}\n";
+        let body = format!(
+            "{{\"model_path\":\"/m/glm.gguf\",\"chat_template\":\"{}\"}}",
+            served
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\t', "\\t")
+                .replace('\u{2014}', "\\u2014")
+        );
+        assert_eq!(
+            json_string(&body, "\"chat_template\"").as_deref(),
+            Some(served)
+        );
+        // The terminator is the UNescaped quote: an escaped one is content.
+        assert_eq!(
+            json_string(
+                r#"{"chat_template":"a \"quoted\" word"}"#,
+                "\"chat_template\""
+            )
+            .as_deref(),
+            Some("a \"quoted\" word")
+        );
+    }
+
+    /// **A `chat_template` that is not a string is an absent one, not a parse error.**
+    ///
+    /// A newer llama.cpp can answer the template VARIANTS as an array; a reader
+    /// that crashed there would turn a server that answered into one that
+    /// "did not answer", and a reader that guessed would compare a fragment.
+    /// Absent is the honest reading: the caller refuses naming the missing
+    /// template and the block key that asserts a dialect by hand.
+    #[test]
+    fn a_chat_template_that_is_not_a_string_is_absent() {
+        assert_eq!(
+            json_string(r#"{"chat_template":[]}"#, "\"chat_template\""),
+            None
+        );
+        assert_eq!(
+            json_string(r#"{"chat_template":42}"#, "\"chat_template\""),
+            None
+        );
+        assert_eq!(
+            json_string(r#"{"chat_template":""}"#, "\"chat_template\""),
+            None
+        );
+        assert_eq!(json_string(r#"{"n_ctx":8192}"#, "\"chat_template\""), None);
+        // A malformed escape is a malformed value: absent rather than half-read.
+        assert_eq!(
+            json_string(r#"{"chat_template":"a\qb"}"#, "\"chat_template\""),
+            None
         );
     }
 }

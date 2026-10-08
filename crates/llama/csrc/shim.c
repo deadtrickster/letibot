@@ -38,13 +38,36 @@ void letibot_llama_init(int quiet) {
  * shard 1 of a six-way split 199 GB model, with the other five shards absent
  * from the call entirely.
  *
+ * **`devices` names the CPU backend explicitly, and that is not cosmetic.** With
+ * `devices = NULL` the loader takes its "default selection" branch, which
+ * enumerates EVERY backend device and queries each one's properties -- and a
+ * CUDA device's property query initializes that device's context. On a box whose
+ * GPUs are already full (both of this fleet's carry ~97 GiB of 97.9), that
+ * context creation fails, `ggml_cuda_set_device` raises `CUDA error: out of
+ * memory`, and ggml ABORTS the process -- measured 2026-10-07, twice: once with
+ * ~2.6 GiB free on GPU 1, where the same load succeeded, and again at ~0.8 GiB
+ * free on GPU 0, where `cudaSetDevice(0)` died inside
+ * `llama_prepare_model_devices`, before the `vocab_only` early exit was reached.
+ * A vocabulary needs none of that: naming the CPU device skips the enumeration,
+ * and the load then touches no GPU at all -- which is also what lets a daemon
+ * already holding one model's weights load a SECOND model's vocabulary for a
+ * `/models` switch without asking either GPU for anything.
+ *
  * Returns NULL on failure; the caller turns that into a Rust error. */
 struct llama_model * letibot_vocab_load(const char * path) {
     struct llama_model_params p = llama_model_default_params();
 
+    /* The CPU device, and only it: a NULL-terminated list is the loader's
+     * contract (llama.h, `devices`), and one entry plus the terminator is the
+     * smallest list that says "auto-enumerate nothing". */
+    ggml_backend_dev_t cpu_only[2] = {
+        ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU),
+        NULL,
+    };
+
     p.vocab_only              = true;
     p.n_gpu_layers            = 0;
-    p.devices                 = NULL;
+    p.devices                 = cpu_only;
     p.check_tensors           = false;
     p.progress_callback       = NULL;
     p.progress_callback_user_data = NULL;

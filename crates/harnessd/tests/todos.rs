@@ -29,7 +29,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg
 }
 
-fn opened<'a>(cfg: &Config, parts: &'a Parts) -> Harness<'a> {
+fn opened(cfg: &Config, parts: &Parts) -> Harness {
     let hub = Hub::new(&cfg.session_id);
     Harness::open(parts, cfg.clone(), hub).expect("the session must open")
 }

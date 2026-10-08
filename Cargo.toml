@@ -98,5 +98,5 @@ letibot-tui = { path = "crates/tui" }
 letibot-ui = { path = "crates/ui" }
 letibot-tools = { path = "crates/tools" }
 letibot-code = { path = "crates/code" }
-letibot-harnessd = { path = "crates/harnessd" }
+letibot-harnessd = { path = "crates/harnessd", default-features = false }
 letibot-opencode = { path = "crates/opencode" }

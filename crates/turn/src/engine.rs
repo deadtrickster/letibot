@@ -32,6 +32,7 @@
 //! turn — which is the actual lesson of the nine unnoticed rows, rather than
 //! "remember to check a flag".
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use letibot_backend::BackendCaps;
@@ -233,13 +234,25 @@ impl TurnOk {
 }
 
 /// Everything about the model that does not change between turns.
-pub struct TurnEngine<'a> {
-    vocab: &'a Vocab,
+///
+/// **It owns its model facts, by `Arc`.** The fields used to be borrows
+/// (`vocab: &'a Vocab`, `renderer: &'a dyn PromptRenderer`), which tied every
+/// engine to the one `Parts` its daemon opened with — and made "this session now
+/// renders with another dialect and tokenizes with another vocabulary"
+/// inexpressible without a self-referential struct. The switch to a declared
+/// local model needs exactly that: the target's `/props` names a GGUF and a chat
+/// template, and the engine built from THOSE is what sends ids the target can
+/// read. An `Arc` clone of each fact costs one refcount bump per engine and keeps
+/// the sharing `Parts` already meant — several sessions, one vocabulary load.
+/// Nothing else changed: the constructor still resolves the dialect against the
+/// vocabulary it is handed and fails now if it does not fit.
+pub struct TurnEngine {
+    vocab: Arc<Vocab>,
     control: ControlMap,
     stop_ids: Vec<TokenId>,
     client_stop_ids: Vec<TokenId>,
-    renderer: &'a dyn PromptRenderer,
-    parser: &'a dyn Parser,
+    renderer: Arc<dyn PromptRenderer>,
+    parser: Arc<dyn Parser>,
     spec: DialectSpec,
     pub endpoint: Endpoint,
     pub caps: BackendCaps,
@@ -277,7 +290,7 @@ pub struct TurnEngine<'a> {
     suppress_reasoning: bool,
 }
 
-impl TurnEngine<'_> {
+impl TurnEngine {
     /// Run `f` with the next turn's lead closing the reasoning block.
     ///
     /// Scoped rather than a pair of setters, so the flag cannot outlive the turn
@@ -306,7 +319,7 @@ fn debug_warnings() -> bool {
     })
 }
 
-impl<'a> TurnEngine<'a> {
+impl TurnEngine {
     /// Resolve the dialect against the vocabulary and fail **now** if it does not
     /// fit. Every failure this can raise is one that is otherwise silent at
     /// runtime.
@@ -317,17 +330,17 @@ impl<'a> TurnEngine<'a> {
     /// alternative here trades an awkward call site for a silently mis-wired one.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        vocab: &'a Vocab,
-        renderer: &'a dyn PromptRenderer,
-        parser: &'a dyn Parser,
+        vocab: Arc<Vocab>,
+        renderer: Arc<dyn PromptRenderer>,
+        parser: Arc<dyn Parser>,
         endpoint: Endpoint,
         caps: BackendCaps,
         model: impl Into<String>,
         sampling: Value,
     ) -> Result<Self, EngineError> {
         let spec = renderer.spec().clone();
-        let control = resolve(vocab, &spec.control_tokens).map_err(EngineError::Control)?;
-        let stop_ids = resolve_stops(vocab, &spec.stop_tokens).map_err(EngineError::Control)?;
+        let control = resolve(&vocab, &spec.control_tokens).map_err(EngineError::Control)?;
+        let stop_ids = resolve_stops(&vocab, &spec.stop_tokens).map_err(EngineError::Control)?;
         // A stop that the vocabulary marks end-of-generation is one the *server*
         // stops on. Enforcing it here as well would close the socket one frame
         // early and throw away the terminal frame — with it the `timings`, so a
@@ -365,8 +378,12 @@ impl<'a> TurnEngine<'a> {
     }
 
     /// The vocabulary this engine tokenizes with — a GGUF's, or the byte one.
-    pub fn vocab(&self) -> &'a Vocab {
-        self.vocab
+    ///
+    /// Borrowed from the `Arc` the engine owns (the enabling refactor: the
+    /// vocabulary became replaceable at runtime, so it is shared rather than
+    /// borrowed for the engine's whole life).
+    pub fn vocab(&self) -> &Vocab {
+        self.vocab.as_ref()
     }
 
     pub fn spec(&self) -> &DialectSpec {
@@ -435,7 +452,7 @@ impl<'a> TurnEngine<'a> {
     }
 
     fn decoder(&self) -> VocabDecoder<'_> {
-        VocabDecoder::new(self.vocab, &self.control)
+        VocabDecoder::new(&self.vocab, &self.control)
     }
 
     /// The literal a control id spells, so a live stream can cut it out of the text
@@ -460,7 +477,7 @@ impl<'a> TurnEngine<'a> {
     }
 
     fn tokenize(&self, spans: &[RenderSpan]) -> Result<Vec<TokenId>, EngineError> {
-        tokenize_spans(self.vocab, &self.control, spans)
+        tokenize_spans(&self.vocab, &self.control, spans)
             .map_err(|e| EngineError::Tokenize(e.to_string()))
     }
 
@@ -531,7 +548,7 @@ impl Session {
     /// what keeps the rows aligned with the items.
     pub fn append_items(
         &mut self,
-        engine: &TurnEngine<'_>,
+        engine: &TurnEngine,
         new_items: &[TranscriptItem],
         sink: &mut dyn EventSink,
     ) -> Result<(), EngineError> {
@@ -569,7 +586,7 @@ impl Session {
     }
 }
 
-impl TurnEngine<'_> {
+impl TurnEngine {
     /// Run one turn with no steering source.
     pub fn run_turn(
         &mut self,
@@ -765,7 +782,7 @@ impl TurnEngine<'_> {
             &lead,
             &outcome.ids,
             &self.stop_ids,
-            self.parser,
+            self.parser.as_ref(),
             &decoder,
             reasoning_field,
         );
