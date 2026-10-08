@@ -354,9 +354,8 @@ impl App {
         //   editor below. That one *is* changed while this head is inside a subagent, and
         //   it is the conflict rather than an oversight — see the note under this arm.
         //
-        // The empty-composer and no-decision guards are the ones every pane key in this
-        // file uses: while a permission is on the screen, or words are half-typed, Esc is
-        // not available to mean *up*.
+        // No empty-composer guard here, unlike every pane key in this file: see the note at
+        // the arm. An open decision keeps the operator in the child, said and not armed.
         //
         // # The conflict, reported rather than taken
         //
@@ -383,11 +382,23 @@ impl App {
         // fixed because the fix is a way for a head to disarm the editor's pair, and
         // `Editor` publishes no such call — inventing one is a change to the UI crate for
         // a window narrower than the keystroke that opens it.
+        // **Inside a subagent, a single Esc never reaches the composer**, and that is the
+        // second fix of this arm. It used to step aside for a half-typed line and for an open
+        // decision, and both handed the press to the editor — which counted it as the FIRST of
+        // the Esc-Esc pair, so the operator's next Esc interrupted the child they were only
+        // trying to leave: *"pressed esc and it didnt work, pressed second time - subagent
+        // stopped lol"* (2026-10-08). A switch keeps the composer's text (it is the head's, not
+        // the session's), so the draft goes up with the operator and nothing is lost by
+        // leaving; a decision waiting in the child is the one thing that keeps them there, and
+        // it is said rather than armed.
         if matches!(k, Key::Esc)
-            && self.editor.text().is_empty()
-            && self.open.is_empty()
             && let Some(parent) = self.parent_session()
         {
+            if !self.open.is_empty() {
+                self.say("a decision is waiting in this subagent — answer it, then esc goes up");
+                self.redraw = true;
+                return None;
+            }
             // The rows the operator climbed out of are the ones the pane shows, so the
             // pane opens and the cursor lands on the child they came from — the row is
             // found by id once the parent's `Hello` has rebuilt the list

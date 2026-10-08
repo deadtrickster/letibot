@@ -283,7 +283,7 @@ fn enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from() {
     assert!(screen.contains("1 subagent running"), "{screen}");
 }
 
-/// **Esc's other meanings, inside a subagent — the four that must not be shaved.**
+/// **Esc's other meanings, inside a subagent — and the two it gave up.**
 ///
 /// The descent arm sits below every arm that already owns Esc, and this is the proof
 /// rather than the claim: a pane the operator is standing in closes, a half-typed line
@@ -301,19 +301,35 @@ fn esc_keeps_every_other_meaning_it_has_while_inside_a_subagent() {
         "esc also switched out of the session"
     );
 
-    // A half-typed line: Esc is the composer's, which is what arms the interrupt frame.
+    // **A half-typed line goes up WITH the operator** — it used to keep Esc for the composer,
+    // which armed the interrupt, and the next Esc stopped the child the operator was only
+    // leaving (2026-10-08). The composer is the head's, so the draft is still there above.
     let mut a = inside_a_subagent();
+    a.clock(1_000);
     a.key(Key::Char('x'));
-    assert_eq!(a.key(Key::Esc), None);
-    assert_eq!(a.session_id, "s-sub-1");
+    assert_eq!(a.key(Key::Esc), Some(Action::Switch("s".into())));
+    assert_eq!(a.editor.text(), "x", "the draft goes up with the operator");
 
-    // A decision on the screen: Esc does not leave a prompt behind.
+    // A decision on the screen keeps the operator in the child — said, and NOT armed: a
+    // second Esc there interrupts nothing.
     let mut a = inside_a_subagent();
+    a.clock(1_000);
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
     a.open.push(decision_with(&[
         letibot_sessionlog::event::OptionKind::AllowOnce,
     ]));
     assert_eq!(a.key(Key::Esc), None);
     assert_eq!(a.session_id, "s-sub-1");
+    let screen = a.screen(120, 30).join("\n");
+    assert!(screen.contains("answer it, then esc goes up"), "{screen}");
+    a.clock(1_200);
+    assert_eq!(a.key(Key::Esc), None);
+    assert!(
+        !a.take_actions()
+            .iter()
+            .any(|x| matches!(x, Action::Interrupt(_))),
+        "two Escs in a subagent interrupted it"
+    );
 
     // And a conversation at the top of the tree has no parent to go to, so Esc is
     // exactly what it was there — the arm cannot fire at all.
