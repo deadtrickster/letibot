@@ -1443,3 +1443,76 @@ fn a_prose_only_subagent_shows_its_answer_and_not_its_thinking() {
         "the thinking is not the answer: {lines}"
     );
 }
+
+/// **A message taken from the queue mid-turn lands BELOW the reply it interrupted, and never
+/// above it first.** The operator, 2026-10-08: *"when it dequeued during active turn it can go
+/// above the most recent piece of reply and then get reordered to the bottom. very strange
+/// feeling."* At the step boundary the daemon announces the round's assistant row and then the
+/// taken prompt's row; the reply's TEXT is already on screen (it streamed), its row's BODY
+/// arrives a moment later. Every frame in between must keep the reply above the message.
+#[test]
+fn a_message_taken_mid_turn_never_jumps_above_the_reply_it_follows() {
+    let mut a = app();
+    a.clock(1_000);
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    a.apply(ServerFrame::Event(env(
+        2,
+        testing::delta("t1", "the reply so far."),
+    )));
+    // The operator types a follow-up while the reply streams: it is queued.
+    typed(&mut a, "a follow-up");
+    a.key(Key::Enter);
+    let order = |a: &mut App, when: &str| {
+        let s = a.screen(120, 30).join("\n");
+        let reply = s.find("the reply so far.");
+        let msg = s.find("a follow-up");
+        if let (Some(r), Some(m)) = (reply, msg) {
+            assert!(
+                r < m,
+                "{when}: the message is drawn ABOVE the reply it follows:\n{s}"
+            );
+        }
+        s
+    };
+    order(&mut a, "queued");
+    // The boundary: the round's assistant row is announced (no body yet)…
+    a.apply(ServerFrame::Event(env(
+        3,
+        testing::appended("t1.0", "assistant"),
+    )));
+    order(&mut a, "assistant row announced");
+    // …then the taken prompt's row, with its body.
+    a.apply(ServerFrame::Event(env(
+        4,
+        testing::appended("t1.1", "user"),
+    )));
+    order(&mut a, "user row announced");
+    a.apply(ServerFrame::Event(env(
+        5,
+        SessionEvent::TranscriptContent {
+            item_id: "t1.1".into(),
+            item: Box::new(TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: "a follow-up".into(),
+                }],
+            }),
+        },
+    )));
+    order(&mut a, "user row's body landed");
+    // …and last, the assistant row's body.
+    a.apply(ServerFrame::Event(env(
+        6,
+        SessionEvent::TranscriptContent {
+            item_id: "t1.0".into(),
+            item: Box::new(TranscriptItem::Assistant {
+                text: "the reply so far.".into(),
+                tool_calls: vec![],
+                truncated: false,
+            }),
+        },
+    )));
+    let settled = order(&mut a, "settled");
+    assert_eq!(settled.matches("the reply so far.").count(), 1, "{settled}");
+    assert_eq!(settled.matches("a follow-up").count(), 1, "{settled}");
+}

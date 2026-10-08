@@ -313,10 +313,7 @@ fn an_echo_queued_after_the_snapshot_still_says_queued() {
         "the new echo is not marked by a snapshot that predates it"
     );
     let screen = a.screen(140, 30).join("\n");
-    assert!(
-        screen.contains("unconfirmed · before the snapshot"),
-        "{screen}"
-    );
+    assert!(screen.contains("queued · before the snapshot"), "{screen}");
     assert!(screen.contains("queued · after the snapshot"), "{screen}");
 }
 
@@ -857,7 +854,7 @@ fn a_snapshot_keeps_only_the_bindings_whose_rows_are_still_bodyless() {
     // The operator, from leticl's screen and true here: an echo the head cannot resolve
     // must stop saying `queued`, *"which is a claim the head can actually support"*.
     assert!(
-        screen.contains("unconfirmed · still queued"),
+        screen.contains("queued · still queued"),
         "a snapshot that does not carry the row must stop claiming the daemon owes it: \
              {screen}"
     );
@@ -4054,7 +4051,7 @@ fn an_echo_that_grew_after_it_was_bound_is_not_drawn_twice() {
         "`A` is on the screen more than once: {screen:?}"
     );
     assert_eq!(
-        screen.matches("▌ unconfirmed · B").count(),
+        screen.matches("▌ queued · B").count(),
         1,
         "the leftover of a claimed entry is drawn once, hedged: {screen:?}"
     );
@@ -4104,13 +4101,13 @@ fn a_grown_entry_keeps_the_mark_its_original_text_carried() {
     a.key(Key::Enter);
     let screen = a.screen(100, 30).join("\n");
     assert!(
-        screen.contains("unconfirmed · A"),
+        screen.contains("queued · A"),
         "the row is drawing the words it was bound to: {screen:?}"
     );
     // **And the tail's remainder carries the same word**, because it is the same prompt: the
     // row above asked `unconfirmed` under the text it is drawing, and so does this.
     assert!(
-        screen.contains("unconfirmed · B"),
+        screen.contains("queued · B"),
         "the remainder disagreed with its own row about one prompt: {screen:?}"
     );
 }
@@ -7065,10 +7062,10 @@ fn a_composer_line_that_could_not_be_completed_pays_no_row() {
     assert_eq!(conversation(&plain), conversation(&empty));
 
     assert_eq!(
-        last_row_at(&bang) + 1,
+        last_row_at(&bang),
         last_row_at(&plain),
-        "**the `!` line pays the row, not the session**: with the slot reserved the \
-             transcript's window is one row shorter and the same in every other respect:\n\
+        "**a completable line pays no row either**: its suggestions are in the composer's \
+             bottom edge, so the conversation keeps every row it had:\n\
              bang:\n{}\nplain:\n{}",
         bang.join("\n"),
         plain.join("\n")
@@ -7076,8 +7073,7 @@ fn a_composer_line_that_could_not_be_completed_pays_no_row() {
     assert_eq!(
         composer_at(&bang),
         composer_at(&plain),
-        "the composer itself does not move either — the row comes out of the conversation, \
-             which is why a stable slot is enough:\n{}",
+        "{}",
         bang.join("\n")
     );
 }

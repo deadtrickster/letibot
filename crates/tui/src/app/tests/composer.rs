@@ -1424,7 +1424,7 @@ fn a_suggestion_only_fills_the_composer_and_never_submits() {
 /// **And the slot is still the typing aid it was**: the layout change may not cost the
 /// completion, so the last act here is a Tab.
 #[test]
-fn the_suggestion_row_is_a_slot_and_the_transcript_does_not_move() {
+fn the_suggestions_are_in_the_bottom_edge_and_nothing_moves() {
     let mut a = app();
     a.apply(hello(
         "s",
@@ -1475,85 +1475,71 @@ fn the_suggestion_row_is_a_slot_and_the_transcript_does_not_move() {
         f[top.saturating_sub(3)..].join("\n")
     };
 
-    // 1. Candidates.
+    let bottom_edge = |f: &[String]| {
+        f.iter()
+            .find(|l| l.contains('╰'))
+            .cloned()
+            .expect("the composer's bottom edge")
+    };
+    let empty = a.screen(100, 24);
+    let top = composer_at(&empty);
+
+    // 1. Candidates — **in the composer's bottom edge**, and nothing above it moved.
     typed(&mut a, "! cargo");
     let candidates = a.screen(100, 24);
-    let top = composer_at(&candidates);
     assert!(
-        candidates[top - 2].contains("! cargo test 199"),
-        "the slot above the status row is where the suggestion is drawn:\n{}",
+        bottom_edge(&candidates).contains("! cargo test 199"),
+        "the suggestion is drawn in the bottom edge:\n{}",
         near_the_composer(&candidates)
     );
-    assert!(
-        !candidates[top - 2].contains('▌'),
-        "and it is the slot, not the session's own row from the transcript:\n{}",
+    assert_eq!(
+        composer_at(&candidates),
+        top,
+        "typing a completable line moved the composer:\n{}",
         near_the_composer(&candidates)
     );
-    assert!(
-        last_row_at(&candidates) < top - 2,
-        "the transcript's last line is above the slot, which is above the status row, which \
-             is above the composer:\n{}",
+    assert_eq!(
+        last_row_at(&candidates),
+        last_row_at(&empty),
+        "**typing a completable line moved the conversation** — the operator, 2026-10-08: \
+             *\"when i type / this gray hint line appears and conversation jumps one line\"*:\n{}",
         near_the_composer(&candidates)
     );
+    assert_eq!(conversation(&candidates), conversation(&empty));
 
-    // 2. **Dismissed** — the same line one character on, where nothing matches. The row
-    //    stays and it is empty: what disappeared is the text, not the slot.
+    // 2. **Dismissed** — one character on, where nothing matches: the edge goes plain, and
+    //    still nothing moves.
     typed(&mut a, " x");
     let dismissed = a.screen(100, 24);
-    assert_eq!(
-        composer_at(&dismissed),
-        top,
-        "the composer moved when the candidates went:\n{}",
-        near_the_composer(&dismissed)
-    );
-    assert_eq!(
-        last_row_at(&dismissed),
-        last_row_at(&candidates),
-        "**the transcript moved when the candidates went** — the row a hint takes from the \
-             conversation and gives back is the whole defect:\n{}",
-        near_the_composer(&dismissed)
-    );
-    assert_eq!(
-        conversation(&dismissed),
-        conversation(&candidates),
-        "the conversation was given a different number of rows:\n{}",
-        near_the_composer(&dismissed)
-    );
+    assert_eq!(composer_at(&dismissed), top);
+    assert_eq!(last_row_at(&dismissed), last_row_at(&empty));
     assert!(
-        dismissed[top - 2].is_empty(),
-        "the slot is reserved and EMPTY with nothing to suggest, which is the price of a \
-             frame that does not move:\n{}",
+        !bottom_edge(&dismissed).contains("cargo"),
+        "nothing to suggest, and the edge says nothing:\n{}",
         near_the_composer(&dismissed)
     );
 
-    // 3. And back, which is the dismissal in reverse — the reader who goes on typing and
-    //    then backspaces must not watch the page move either way.
+    // 3. And back — the reader who goes on typing and then backspaces must not watch the
+    //    page move either way.
     a.key(Key::Backspace);
     a.key(Key::Backspace);
     let again = a.screen(100, 24);
     assert_eq!(composer_at(&again), top, "{:#?}", near_the_composer(&again));
-    assert_eq!(
-        last_row_at(&again),
-        last_row_at(&candidates),
-        "the transcript did not come back to where it was:\n{}",
-        near_the_composer(&again)
-    );
-    assert_eq!(conversation(&again), conversation(&candidates));
+    assert_eq!(last_row_at(&again), last_row_at(&empty));
     assert!(
-        again[top - 2].contains("! cargo test 199"),
-        "and the candidates are back in the slot:\n{}",
+        bottom_edge(&again).contains("! cargo test 199"),
+        "and the candidates are back in the edge:\n{}",
         near_the_composer(&again)
     );
 
-    // **The `/command` half is the same slot.** A half-typed verb is a line that could be
-    // completed, so it pays the row too — the jump must not come back on the other door.
+    // **The `/command` half is the same edge** — the door the operator reported.
     a.set_composer("/se");
     let slash = a.screen(100, 24);
     assert_eq!(composer_at(&slash), top, "{:#?}", near_the_composer(&slash));
-    assert_eq!(last_row_at(&slash), last_row_at(&candidates));
+    assert_eq!(last_row_at(&slash), last_row_at(&empty));
     assert!(
-        slash[top - 2].contains("/sessions"),
-        "the matches are in the slot:\n{}",
+        bottom_edge(&slash).contains("/sessions"),
+        "the matches are in the edge:\n{}",
         near_the_composer(&slash)
     );
 
