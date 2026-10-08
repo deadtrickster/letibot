@@ -1324,11 +1324,14 @@ pub struct App {
 /// `queued` is a claim about the DAEMON's queue — *you owe me a row for this*. It is a
 /// claim the head can make for an echo it has just sent and has not seen land.
 ///
-/// `unconfirmed` is the honest one after a snapshot has replaced the transcript: the
-/// head can no longer tell *still coming* from *replaced by a fork*, so it stops
-/// asserting the first. See [`App::unconfirmed`].
+/// `UNCONFIRMED` is the state after a snapshot has replaced the transcript: the head can no
+/// longer tell *still coming* from *replaced by a fork*. It is still a separate state in the
+/// code (see [`App::unconfirmed`]), and it is SPELLED `queued` on the screen: the operator,
+/// 2026-10-08, *"rename unconfirmed back to queued"* — to the reader both mean the same
+/// thing, a message of theirs that has not become a row of the conversation yet, and a second
+/// word for it was a distinction the screen did not need to draw.
 pub const QUEUED: &str = "queued";
-pub const UNCONFIRMED: &str = "unconfirmed";
+pub const UNCONFIRMED: &str = "queued";
 
 /// The commands the composer completes, in the order Tab offers them. Aliases
 /// (`s`, `q`, `h`, …) are deliberately absent: this list is what Tab offers
