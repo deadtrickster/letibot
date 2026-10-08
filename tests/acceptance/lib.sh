@@ -41,12 +41,18 @@ _t() { tmux -L "$SERVER" "$@"; }
 # screen [-e] -- the pane as a person sees it; -e keeps the SGR (colour, reverse, cursor).
 screen() { _t capture-pane -p -t acc "$@" 2>/dev/null; }
 
+# The run's own HOME: the head's prefs and rano's config are read from here, never from the
+# person running the suite, so a spec sees the same screen on a laptop and in CI. A spec that
+# needs a setting writes it into $CONFIG first (rano's is $CONFIG/rano/config.toml).
+CONFIG="$WORK/home/.config"
+mkdir -p "$CONFIG"
+
 # start ARGS... -- the head, in $WORK, at COLS x ROWS. A spec writes its files into $WORK
 # first: a replay has no session workspace, so the pane opens paths relative to here.
 start() {
   [ -x "$TUI" ] || { echo "acceptance: no binary at $TUI (cargo build -p letibot-tui)"; exit 2; }
   local cmd
-  cmd="cd $(printf '%q' "$WORK") && exec $(printf '%q' "$TUI")"
+  cmd="cd $(printf '%q' "$WORK") && HOME=$(printf '%q' "$WORK/home") XDG_CONFIG_HOME=$(printf '%q' "$CONFIG") exec $(printf '%q' "$TUI")"
   for a in "$@"; do cmd="$cmd $(printf '%q' "$a")"; done
   _t new-session -d -s acc -x "$COLS" -y "$ROWS" "$cmd"
 }

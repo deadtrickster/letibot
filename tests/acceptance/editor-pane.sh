@@ -9,6 +9,10 @@
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 
 for i in $(seq 1 30); do echo "line $i"; done > "$WORK/notes.txt"
+# multibuffer on, as the operator runs rano: the pane's empty starting buffer must still be
+# replaced by the file rather than kept beside it as a [1/2].
+mkdir -p "$CONFIG/rano"
+echo 'multibuffer = true' > "$CONFIG/rano/config.toml"
 start --replay "$FIXTURES/edit.jsonl"
 
 spec "the edit row is there to open"
@@ -23,6 +27,7 @@ expect "-old 11"
 expect "+line 11"
 expect "Ln 11, Col 1"
 expect "ctrl-] to the composer"
+expect_not "[2/2]"
 
 spec "s turns the review into a split"
 press s
