@@ -215,7 +215,9 @@ fn askpass(args: &[std::ffi::OsString]) -> ExitCode {
     // `Secret` frame is for us, and it comes on this connection or not at all.
     loop {
         match reader.read::<ServerFrame>() {
-            Ok(ServerFrame::Secret { secret: Some(s) }) => {
+            Ok(ServerFrame::Secret {
+                secret: Some(s), ..
+            }) => {
                 let mut out = std::io::stdout().lock();
                 let _ = out.write_all(s.as_bytes());
                 let _ = out.write_all(b"\n");
