@@ -945,6 +945,34 @@ pub struct SubagentAsk {
     pub root: String,
 }
 
+/// **Which of the two facts a prompt card is raised on** — the reading, or the absence of
+/// one. The card's raise reason is not "the run is asking" but **"a run of the operator's
+/// own is in flight"** (the operator, 2026-10-09: *"sudo can get input from here so can
+/// others"*), so the card has to say which of the two it knows, and this is that word.
+///
+/// The distinction is the one `letibot_tools::exec::ask::Waiting` keeps between `Yes` and
+/// `Unreadable`, carried one layer up: [`PromptReading::Blocked`] is *the daemon read the
+/// process and found it blocked on the input this daemon holds*, and
+/// [`PromptReading::Unreadable`] is *the daemon could not look at the run at all* — the
+/// `sudo` case, where a card that claimed a reading would be a guess. A head that draws one
+/// card for both would draw a card that claims the program asked; the whole point of the
+/// field is that it never has to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptReading {
+    /// The signal was read: a process of the run is blocked reading the input this daemon
+    /// holds. The card may say the command is asking, and the request's `question` is the
+    /// program's own last line, to show.
+    #[default]
+    Blocked,
+    /// **The signal could not be read** — a process of the run belongs to another uid, or a
+    /// `/proc` this daemon may not open. The card may NOT say the command is asking: its
+    /// text is the honest sentence (*this daemon could not look at the run, so it cannot say
+    /// whether it is asking; a line you send goes into it either way*), and `question` is
+    /// `None` because there is no reading to quote from.
+    Unreadable,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum SessionEvent {
@@ -1376,7 +1404,29 @@ pub enum SessionEvent {
         /// **The last line the program wrote, for the card to SHOW.** `None` when it has
         /// written nothing at all, which is a real case (`! cat`, blocked before its first
         /// byte). Nothing anywhere decides anything by this string.
+        ///
+        /// `None` also when `reading` is [`PromptReading::Unreadable`]: there the daemon has
+        /// no reading of the process to quote from, and the card's own words are the honest
+        /// sentence instead.
         question: Option<String>,
+        /// **Which of the two facts the card is raised on** — the reading, or the absence of
+        /// one. See [`PromptReading`]: the card's text says which it is, and a head that
+        /// draws one card for both would be claiming a reading it was never given.
+        ///
+        /// **No `PROTOCOL_VERSION` bump**: an added, defaulted field on an existing variant,
+        /// the precedent `Warning::compaction` states — *an older head ignores an unknown
+        /// field and renders exactly what it rendered before; a newer head reading an older
+        /// daemon sees the default and falls back*. The default is [`PromptReading::Blocked`],
+        /// which is the only kind of card a daemon older than this field ever raised, so both
+        /// directions are safe — which is this file's own test for whether a bump is owed.
+        ///
+        /// What a head built before the field does with an `Unreadable` card: it ignores
+        /// `reading`, draws its asking card with no question line, and the warning notice —
+        /// which still names `!send` — lands beside it. An overclaiming headline on an old
+        /// head is the skew an added field buys; a wrong card on every head was the
+        /// alternative.
+        #[serde(default)]
+        reading: PromptReading,
     },
     /// Whether a line was sent to the waiting run, and by whom — the record, without the
     /// line.
@@ -1918,6 +1968,48 @@ mod tests {
             let back: SessionEvent = serde_json::from_str(&s).unwrap();
             assert_eq!(e, back, "{s}");
         }
+    }
+
+    /// **The `reading` a prompt card is raised on is safe in both directions**, which is the
+    /// test for whether a `PROTOCOL_VERSION` bump is owed — and here it is not (the
+    /// `Warning::compaction` precedent: *an older head ignores an unknown field and renders
+    /// exactly what it rendered before; a newer head reading an older daemon sees the default
+    /// and falls back*).
+    ///
+    /// The default is `Blocked` because a daemon older than the field only ever raised cards
+    /// on a reading — so an absent `reading` is not a missing fact but the one fact there was.
+    #[test]
+    fn a_prompt_request_without_a_reading_reads_as_blocked_and_one_with_it_round_trips() {
+        // An older daemon's frame: no `reading` at all.
+        let old = r#"{"event":"prompt_requested","req_id":"r1","job":"j1",
+                     "command":"sudo apt install mc","question":"Continue? [Y/n]"}"#;
+        let e: SessionEvent = serde_json::from_str(old).expect("an absent reading decodes");
+        assert_eq!(
+            e,
+            SessionEvent::PromptRequested {
+                req_id: "r1".into(),
+                job: "j1".into(),
+                command: "sudo apt install mc".into(),
+                question: Some("Continue? [Y/n]".into()),
+                reading: PromptReading::Blocked,
+            },
+            "the default is the only kind of card an older daemon ever raised"
+        );
+        // This daemon's frame: `unreadable`, spelled once on the wire and read back.
+        let unreadable = SessionEvent::PromptRequested {
+            req_id: "r2".into(),
+            job: "j2".into(),
+            command: "sudo apt install mc".into(),
+            question: None,
+            reading: PromptReading::Unreadable,
+        };
+        let s = serde_json::to_string(&unreadable).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SessionEvent>(&s).unwrap(),
+            unreadable,
+            "{s}"
+        );
+        assert!(s.contains("\"unreadable\""), "the word travels: {s}");
     }
 
     #[test]

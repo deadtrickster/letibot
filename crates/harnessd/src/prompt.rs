@@ -17,7 +17,8 @@
 //! | **the run** | the one operator command this session has in flight: its job, the command the person typed, and the input handle |
 //! | **the card** | the open `req_id` for that run, minted here and published as [`SessionEvent::PromptRequested`] |
 //! | **the write** | [`PromptDriver::send`], which is what a head's answer and a `!send` both become |
-//! | **the silence** | [`Prompts::unreadable`], for the run this daemon may not look at — see the report itself |
+//! | **the offer** | [`Prompts::unreadable`], for the run this daemon may not look at — the card that does
+//! not claim the program asked, beside the sentence that names `!send` — see the method |
 //!
 //! # Why the state is here and not in the harness
 //!
@@ -50,10 +51,12 @@
 //!   holds**.
 //! * [`Prompts::unreadable`] comes from the same thread too, once per run, when `ask` says the
 //!   opposite of a reading: **it could not look** — a process of the run belongs to another
-//!   uid, which is every `! sudo …` that reaches a program running as root. There is no card
-//!   to raise on that, and this is the sentence the person is owed instead: *I cannot tell,
-//!   and `!send` is the way in.* See the method: the operator's own report is the state this
-//!   exists for.
+//!   uid, which is every `! sudo …` that reaches a program running as root. The sentence that
+//!   says so is still here, and beside it now stands the **offer**: a card raised on the fact
+//! that a run of the operator's own is in flight — not on a reading — whose text says it
+//! cannot tell whether the run is asking and that a line sent goes into it either way. See
+//! the method: the operator's own report is the state this exists for, and their correction
+//! (*"sudo can get input from here so can others"*) is what the card answers to.
 //! * [`PromptDriver::send`] comes from the **server's reader thread**, because the answer is
 //!   not an act on the session's timeline — it is the second half of one already in flight.
 //!   See the trait for why the queue cannot carry it.
@@ -75,7 +78,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use letibot_sessionlog::hub::Hub;
-use letibot_sessionlog::{PromptDriver, SessionEvent};
+use letibot_sessionlog::{PromptDriver, PromptReading, SessionEvent};
 use letibot_tools::exec::Stdin;
 
 /// **One operator command, in flight.**
@@ -98,6 +101,11 @@ struct Run {
     /// Once per run: the report is about a condition that holds for as long as the run does,
     /// and a sentence per beat would be a sentence nobody reads. See [`Prompts::unreadable`].
     unreadable_said: bool,
+    /// **Whether this run is one the daemon may not look at at all** — the condition, as
+    /// distinct from the once-per-run sentence above. It is what brings the card back after
+    /// an answer: a run this daemon cannot read stays that way for as long as it runs, and
+    /// `apt` asks more than one question. See [`Prompts::send`].
+    unreadable: bool,
 }
 
 /// See the module header.
@@ -159,20 +167,18 @@ impl Prompts {
             stdin,
             req: None,
             unreadable_said: false,
+            unreadable: false,
         });
     }
 
-    /// **The run looks like it is waiting for an answer**, by `letibot_tools::exec::ask`'s
-    /// reading of the process — never of its words.
+    /// **Mint a request and publish the card** — the one place a card is raised, so that the
+    /// reading-backed card and the offer cannot drift apart in what they carry.
     ///
-    /// `question` is the last line the program wrote, carried to be **shown**. It is
-    /// `Option` because a program blocked before its first byte is a real case (`! cat`), and
-    /// *nothing to show* is a different thing from an empty line.
-    ///
-    /// **One card per run at a time.** The tool already refuses to report the same question
-    /// twice, and this refuses independently: a run that is blocked stays blocked, and a
-    /// second card for it would be a second field on the screen for one question.
-    pub fn asking(&self, job: &str, question: Option<&str>) {
+    /// `reading` is which of the two facts the card is raised on
+    /// ([`PromptReading`]); `question` is the program's own last line when there is one to
+    /// show, and `None` on [`PromptReading::Unreadable`] — there the card's own words are the
+    /// honest sentence, drawn by the head from the reading alone.
+    fn offer(&self, job: &str, question: Option<&str>, reading: PromptReading) {
         let (req_id, command) = {
             let mut g = self.lock();
             let Some(run) = g.as_mut() else {
@@ -196,40 +202,67 @@ impl Prompts {
             job: job.to_string(),
             command,
             question: question.map(str::to_string),
+            reading,
         });
     }
 
-    /// **This daemon cannot tell whether the run is waiting for a line**, and it says so.
+    /// **The run looks like it is waiting for an answer**, by `letibot_tools::exec::ask`'s
+    /// reading of the process — never of its words.
     ///
-    /// # Why this is a sentence and not a card
+    /// `question` is the last line the program wrote, carried to be **shown**. It is
+    /// `Option` because a program blocked before its first byte is a real case (`! cat`), and
+    /// *nothing to show* is a different thing from an empty line.
     ///
-    /// The card is raised on a **reading of the process** — `letibot_tools::exec::ask` — and
-    /// the whole reason it is a reading rather than a guess is the operator's own correction:
-    /// *"i think `Continue?` is an overfit"*. [`OperatorRun::Unreadable`] is the third answer,
-    /// *"I could not look"*: one process of the run belongs to a uid this daemon is not (the
-    /// `sudo` case), or a `/proc` a confined session's daemon may not open. A card raised on
-    /// it would be a guess, and a wrong one for every long quiet command that is not asking
-    /// anything — so no card, which is what `ask`'s miss 4 already ruled.
+    /// **One card per run at a time.** The tool already refuses to report the same question
+    /// twice, and this refuses independently: a run that is blocked stays blocked, and a
+    /// second card for it would be a second field on the screen for one question.
+    pub fn asking(&self, job: &str, question: Option<&str>) {
+        self.offer(job, question, PromptReading::Blocked);
+    }
+
+    /// **This daemon cannot tell whether the run is waiting for a line**, and it says so —
+    /// **and offers the way in as a card that does not claim the program asked.**
     ///
-    /// # What the person was owed instead
+    /// # The ruling this card is raised under, and the correction that changed it
     ///
-    /// *Something*. The operator's report — `! sudo apt install mc`, *"after entering the
-    /// sudo password, the command appears queued and the daemon hangs"* — is exactly this
-    /// state with nothing said about it: `apt` waits at `Continue? [Y/n]` as root, where
-    /// `/proc/<pid>/fd/0` is `EACCES` for the daemon, so no card can be raised — and, in the
-    /// days when a `!` run held the worker (see `crate::bangrun`), it held that one worker
-    /// until its deadline. The person has no way to learn that
-    /// the command is waiting at all.
+    /// The card used to be raised only on a **reading of the process** —
+    /// `letibot_tools::exec::ask` — and the whole reason it is a reading rather than a guess
+    /// is the operator's own correction: *"i think `Continue?` is an overfit"*
+    /// ([`OperatorRun::Unreadable`] is the third answer, *"I could not look"*: one process of
+    /// the run belongs to a uid this daemon is not, which is every `! sudo …` that reaches a
+    /// program running as root). A card whose TEXT claimed the run was asking would still be
+    /// that guess, and is still not raised.
     ///
-    /// So the daemon says the one thing that is true and the one thing that helps: it cannot
-    /// tell, and **`!send` is the way in** — the verb that needs no signal, which the card's
-    /// own docs already name as the floor under every miss the heuristic has. The command is
-    /// named because the person typed it, and the job is named because `job_output` reads it.
+    /// But raising **no card at all** was measured to a dead command, 2026-10-09: `! sudo
+    /// apt install mc`, the password taken through the askpass card, `apt` waiting at
+    /// `Continue? [Y/n]` as root — the sentence landed, no card did, and the person typed `y`
+    /// at the composer, where it became a prompt and reached the MODEL while their own
+    /// command waited and its deadline killed it. The operator's correction, verbatim: *"sudo
+    /// can get input from here so can others"*. So the card's **raise reason** stops being *the
+    /// run is blocked reading its terminal* and becomes **a run of the operator's own is in
+    /// flight** — a fact this object holds (the run, its stdin) and not a guess about the
+    /// process — and the card's own text says which of the two is known:
+    /// [`PromptReading::Blocked`] carries the program's last line under a headline that says
+    /// it is asking, and [`PromptReading::Unreadable`] carries the honest sentence (*this
+    /// daemon could not look at the run, so it cannot say whether it is asking; a line you
+    /// send goes into it either way*). The line a card takes goes into the run the same way
+    /// `!send`'s does, so an answered offer can only ever do what the verb would have.
     ///
-    /// **Once per run.** A condition, not an event: the run stays unreadable for as long as it
-    /// lasts, and one sentence per beat would be a red block nobody reads.
+    /// # What the person was owed besides the card
     ///
-    /// # And it says WHICH of the two facts it is
+    /// The sentence, still. The operator's first report — *"after entering the sudo password,
+    /// the command appears queued and the daemon hangs"* — is exactly this state with nothing
+    /// said about it. So the daemon says the one thing that is true and the one thing that
+    /// helps: it cannot tell, and **`!send` is the way in** — the verb that needs no signal,
+    /// which the card's own docs already name as the floor under every miss the heuristic
+    /// has. The card is the offer ADDED to that floor, not a replacement for it. The command
+    /// is named because the person typed it, and the job is named because `job_output` reads
+    /// it.
+    ///
+    /// **Both once per run.** A condition, not an event: the run stays unreadable for as
+    /// long as it lasts, and one sentence per beat would be a red block nobody reads.
+    ///
+    /// # And the sentence says WHICH of the two facts it is
     ///
     /// `quiet` is the beat the run had — or had not — when the tool reported. The two facts are
     /// different things to a person, and one sentence for both would be the defect the askpass
@@ -260,6 +293,10 @@ impl Prompts {
                 return;
             }
             run.unreadable_said = true;
+            // **The condition itself**, kept apart from the once-per-run sentence: it is what
+            // re-offers the card after an answer in [`Prompts::send`], because `apt` asks
+            // more than one question and the tool reports `Unreadable` only once per run.
+            run.unreadable = true;
             run.command.clone()
         };
         // **The two facts, in two sentences.** The first clause is the whole of what differs:
@@ -297,6 +334,11 @@ impl Prompts {
 
             compaction: None,
         });
+        // **And the offer, beside the sentence** — after it, because the disclosure is what
+        // the offer stands on: *I cannot tell, and here is the way in anyway*. `offer` itself
+        // declines if a card is already up (a run that was readable long enough to ask once
+        // and then went behind `sudo`), so this cannot double-card a run.
+        self.offer(job, None, PromptReading::Unreadable);
     }
 
     /// **The run is over.** The card comes down, and the handle is forgotten.
@@ -374,13 +416,44 @@ impl PromptDriver for Prompts {
         stdin.send_line(line)?;
         // The card comes down, if it is still the one this answered. Re-locked rather than
         // held: see above.
-        {
+        //
+        // **And on a run this daemon cannot read, the offer comes straight back.** The tool
+        // reports `Unreadable` once per run, so nothing else will re-raise it — and `apt` asks
+        // more than one question: the measured run died at its deadline with the first answer
+        // sent and no card for the second. The run is still in flight and still unlookable,
+        // which is the whole of the card's raise reason, so the offer is honest the moment it
+        // is re-made. Only when the answer came as a CARD's (`req` was `Some`, which is
+        // `PromptAnswer`): a `!send` reaches here as `None` even when it happens to settle a
+        // card that was up, and it is the act of somebody who has already chosen the verb —
+        // giving them a card afterwards would be the daemon second-guessing the door they
+        // picked.
+        let reoffered = {
             let mut g = self.lock();
+            let mut again = None;
             if let Some(run) = g.as_mut()
                 && run.req == settled
             {
                 run.req = None;
+                if run.unreadable && req.is_some() {
+                    let id = format!(
+                        "prompt-{}-{}",
+                        self.session,
+                        self.next.fetch_add(1, Ordering::Relaxed) + 1
+                    );
+                    run.req = Some(id.clone());
+                    again = Some((id, run.job.clone(), run.command.clone()));
+                }
             }
+            again
+        };
+        if let Some((req_id, job, command)) = reoffered {
+            self.hub.publish(SessionEvent::PromptRequested {
+                req_id,
+                job,
+                command,
+                question: None,
+                reading: PromptReading::Unreadable,
+            });
         }
         Ok(settled)
     }
@@ -459,10 +532,14 @@ mod tests {
     ///
     /// The operator's report, as an assertion: `! sudo apt install mc`, the password given,
     /// and then *nothing* — `apt` waits at `Continue? [Y/n]` as root, `/proc/<pid>/fd/0` is
-    /// `EACCES` for the daemon, so no card can be raised (a card is a reading and this is not
-    /// one) and the run holds the worker until its deadline. The sentence is the whole of what
-    /// the person is owed there, and it has to name the way in: **`!send`**, the verb that
-    /// needs no signal at all.
+    /// `EACCES` for the daemon, and the run holds its thread until its deadline. The sentence
+    /// has to name the way in: **`!send`**, the verb that needs no signal at all.
+    ///
+    /// **And beside the sentence, the offer** — a card raised on the run being in flight
+    /// rather than on a reading, which is the correction of 2026-10-09 (*"sudo can get input
+    /// from here so can others"*; the person typed `y` at the composer and it reached the
+    /// model). See [`Prompts::unreadable`] for the ruling, and the separate test below for
+    /// what the card carries.
     ///
     /// **Once per run**, and that is the assertion this test exists for beside the wording: a
     /// condition reported per beat is a red block nobody reads, which is the failure mode the
@@ -493,6 +570,24 @@ mod tests {
         p.unreadable("j1", true);
         p.unreadable("j1", true);
         p.unreadable("j1", true);
+        // **And now the card, raised on the fact that the run is in flight.** Its `reading`
+        // says the daemon could not look, and it carries no question line — there is no
+        // reading to quote from, and a card that showed the program's last line under a
+        // headline claiming it asked would be the guess this whole design refuses.
+        let cards: Vec<(Option<String>, letibot_sessionlog::PromptReading)> = events(&hub)
+            .into_iter()
+            .filter_map(|e| match e {
+                SessionEvent::PromptRequested {
+                    question, reading, ..
+                } => Some((question, reading)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            cards,
+            vec![(None, letibot_sessionlog::PromptReading::Unreadable)],
+            "one card, raised on the absence of a reading and claiming none: {cards:?}"
+        );
         let said: Vec<String> = events(&hub)
             .into_iter()
             .filter_map(|e| match e {
@@ -517,15 +612,12 @@ mod tests {
             said[0].contains("!send"),
             "and the way in, which needs no card: {said:?}"
         );
-        // **No card.** This is the other half of the ruling and the reason the report is a
-        // Warning: `ask::Waiting::Unreadable` is *I could not look*, and a card raised on it
-        // would be a guess — wrong for every long quiet command that is not asking anything.
-        assert!(
-            !events(&hub)
-                .into_iter()
-                .any(|e| matches!(e, SessionEvent::PromptRequested { .. })),
-            "an unreadable run raises no card: a card is a reading of the process"
-        );
+        // **The ruling this block used to carry — "no card" — is the half that changed.** A
+        // card whose TEXT claims the run is asking would still be a guess, and the assertions
+        // above are the ones that keep that true: the card carries no question and says it
+        // was raised without a reading. What it offers is the way in, which is the same line
+        // `!send` writes — so the offer can only ever do what the verb would have.
+        //
         // A report about a job that is not this run's is about something else, and a new run
         // starts its own once.
         p.unreadable("j2", true);
@@ -562,6 +654,123 @@ mod tests {
             all[1].contains("!send"),
             "and the way in is named on this path too: {all:?}"
         );
+    }
+
+    /// **An unreadable run offers the card as well as the sentence.**
+    ///
+    /// The operator's correction this branch answers, 2026-10-09: *"sudo can get input
+    /// from here so can others"* — the run they measured (`! sudo apt install mc`, the
+    /// password taken, `apt` at `Continue? [Y/n]` under root) got the sentence and no card,
+    /// typed `y` at the composer, and the line went to the MODEL while their own command
+    /// waited and died at its deadline. The card's raise reason therefore stops being *the
+    /// run is blocked reading its terminal* — a reading — and becomes **a run of the
+    /// operator's own is in flight**, which is a fact this object holds and not a guess
+    /// about the process; the card's own text is what says which of the two it is raised
+    /// on. The sentence stays beside it: `!send` is the floor, and the offer is added to
+    /// the floor rather than in place of it.
+    #[test]
+    fn an_unreadable_run_offers_the_card_beside_the_sentence() {
+        let hub = a_hub();
+        let p = Prompts::new("p-1", hub.clone());
+        p.opened("j1", "sudo apt install mc", Stdin::none());
+        p.unreadable("j1", true);
+        assert!(
+            events(&hub)
+                .into_iter()
+                .any(|e| matches!(e, SessionEvent::PromptRequested { .. })),
+            "the run is in flight and this daemon holds its stdin: the offer is a fact this \
+             daemon has, not a guess about the process"
+        );
+        assert!(
+            events(&hub)
+                .into_iter()
+                .any(|e| matches!(
+                    e,
+                    SessionEvent::Warning { code, .. } if code == "operator_run_unreadable"
+                )),
+            "and the sentence stays: `!send` is the floor under the offer"
+        );
+    }
+
+    /// **Answering the offer brings it back, because the run is still in flight and still
+    /// unlookable — and `apt` asks more than one question.**
+    ///
+    /// The tool reports `Unreadable` once per run, so the re-offer is the daemon's own act in
+    /// [`Prompts::send`], made only when what was answered was a CARD: a `!send` is the act of
+    /// somebody who has already chosen the verb, and a card appearing afterwards would be the
+    /// daemon second-guessing the door they picked. The stdin is a real pipe to a real `cat`,
+    /// because the re-offer only happens after a write that succeeded.
+    #[test]
+    fn answering_the_offer_brings_it_back_and_a_send_does_not() {
+        use std::process::{Command, Stdio};
+        let mut cat = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("a cat to write to");
+        let pipe = cat.stdin.take().expect("the pipe");
+        let stdin = Stdin::pipe(pipe);
+        let offers = |hub: &Arc<Hub>| {
+            events(hub)
+                .into_iter()
+                .filter_map(|e| match e {
+                    SessionEvent::PromptRequested { req_id, .. } => Some(req_id),
+                    _ => None,
+                })
+                .collect::<Vec<String>>()
+        };
+
+        // **Run one: a `!send` answers the offer and raises nothing.** The manual verb keeps
+        // the screen it chose — it settles the card that was up, because every head must see
+        // the card come down, and it does not bring one back.
+        let hub = a_hub();
+        let p = Prompts::new("p-1", hub.clone());
+        p.opened("j1", "sudo apt install mc", stdin.clone());
+        p.unreadable("j1", true);
+        assert_eq!(offers(&hub).len(), 1, "the offer was raised");
+        p.send("p-1", None, "n")
+            .expect("the line went into the pipe");
+        assert_eq!(
+            offers(&hub).len(),
+            1,
+            "a `!send` must not be answered with a card"
+        );
+        p.ended("j1");
+
+        // **Run two: a CARD's answer settles that card and offers the next one immediately**
+        // — a different `req_id`, so a stale answer for the first cannot reach the second.
+        p.opened("j2", "sudo apt install mc", stdin);
+        p.unreadable("j2", true);
+        let first = offers(&hub).last().cloned().expect("the offer was raised");
+        let settled = p
+            .send("p-1", Some(&first), "y")
+            .expect("the answer went into the pipe");
+        assert_eq!(settled.as_deref(), Some(first.as_str()));
+        let got = offers(&hub);
+        assert_eq!(got.len(), 3, "the offer came back: {got:?}");
+        assert_ne!(got[1], got[2], "a fresh request, not the old one");
+        // And the old card can no longer answer anything.
+        let refused = p
+            .send("p-1", Some(&first), "y")
+            .expect_err("the answered card is spent");
+        assert!(refused.contains("nothing was waiting"), "{refused}");
+
+        // **And the run ending takes the re-offered card down**, so nobody types into a
+        // program that has exited.
+        p.ended("j2");
+        let settled = events(&hub)
+            .into_iter()
+            .filter_map(|e| match e {
+                SessionEvent::PromptSettled { req_id, sent, by } => Some((req_id, sent, by)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            settled.iter().any(|(id, sent, _)| id == &got[2] && !sent),
+            "the re-offered card came down with the run: {settled:?}"
+        );
+        let _ = cat.kill();
+        let _ = cat.wait();
     }
 
     /// **A run that ends takes its card down**, and the settlement says nobody answered it.
