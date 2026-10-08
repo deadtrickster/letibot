@@ -199,15 +199,22 @@ pub(crate) fn settled_decision(d: &letibot_sessionlog::view::SettledDecision) ->
         by_identity: d.by.identity.clone(),
         summary: d.summary.clone(),
         basis: d.basis.clone(),
-        advice: d.advice.as_ref().map(|a| Advice {
-            consulted: a.consulted,
-            by: a.by.clone(),
-            latency_ms: a.latency_ms,
-            would: a.would.clone(),
-            basis: a.basis.clone(),
-            cites: a.cites.clone(),
-            unsure: a.unsure.clone(),
-        }),
+        advice: d.advice.as_ref().map(model_advice),
+    }
+}
+
+/// **What the guard model said**, in rano's words: whether it was consulted at all (R11 — an
+/// unconsulted verdict is nobody speaking), who, how fast, what it would do and why, what it
+/// cited, and the non-answer it gave when it gave one (R12).
+pub(crate) fn model_advice(a: &letibot_sessionlog::event::ModelAdvice) -> Advice {
+    Advice {
+        consulted: a.consulted,
+        by: a.by.clone(),
+        latency_ms: a.latency_ms,
+        would: a.would.clone(),
+        basis: a.basis.clone(),
+        cites: a.cites.clone(),
+        unsure: a.unsure.clone(),
     }
 }
 

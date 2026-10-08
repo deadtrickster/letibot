@@ -1,9 +1,10 @@
 //! **The cards that ask the person for something typed**: a provider key, a terminal's
-//! answer, a prompt, a secret (masked).
+//! answer, a prompt, a secret (masked) — drawn by `rano::agent::asks` from the ask this head
+//! holds.
 
 use crate::app::*;
-use crate::ui::render::{sgr, trim_to, wrap};
-use crate::ui::*;
+use crate::ui::render::row_strings;
+use rano::agent::asks;
 
 impl App {
     /// **The key-ask card**: what is asking, and where the key goes.
@@ -15,26 +16,10 @@ impl App {
         let Some(ask) = &self.key_ask else {
             return Vec::new();
         };
-        let mut out = vec![colour(
-            &self.cfg,
-            sgr::YELLOW,
-            &trim_to(
-                &format!("{} needs a key this box does not hold", ask.provider),
-                w,
-            ),
-        )];
-        for l in wrap(
-            &format!(
-                "paste the {} key below — shown as dots, sent once to the daemon, stored at \
-                 mode 600; it never enters the conversation or the transcript. Enter stores it \
-                 and takes the row; Esc cancels",
-                ask.provider
-            ),
-            w,
-        ) {
-            out.push(dim(&self.cfg, &l));
-        }
-        out
+        let card = asks::KeyAsk {
+            provider: ask.provider.clone(),
+        };
+        row_strings(&card.lines(w), self.cfg.palette())
     }
 
     /// **The card that asks before a pane is ended** — the daemon's own question about killing
@@ -54,28 +39,10 @@ impl App {
     /// * **it spells both keys and says which is the default**, because a destructive
     ///   confirmation that leaves the reader to guess is a trap.
     pub(crate) fn term_ask_lines(&self, ask: &TermAsk, w: usize) -> Vec<String> {
-        let mut out = Vec::new();
-        // The headline is the question, and it carries the `?` every other card in this file
-        // carries. Yellow for the reason the gate card is: it exists to interrupt.
-        out.push(colour(
-            &self.cfg,
-            sgr::YELLOW,
-            &trim_to(&format!("? end the pane — {} is running", ask.line), w),
-        ));
-        out.push(dim(
-            &self.cfg,
-            &trim_to("  ending it kills the program and everything it started", w),
-        ));
-        // **The keys, both of them, and which one is the default.** Not Enter: that key is the
-        // prompt card's and the composer's, and a stray one must not be able to kill a program.
-        out.push(dim(
-            &self.cfg,
-            &trim_to(
-                "  y ends it  ·  any other key (esc) leaves it running — that is the default",
-                w,
-            ),
-        ));
-        out
+        let card = asks::TermAsk {
+            line: ask.line.clone(),
+        };
+        row_strings(&card.lines(w), self.cfg.palette())
     }
 
     /// **The prompt card: a command of the operator's own is waiting for a line.**
@@ -105,107 +72,21 @@ impl App {
     /// reading has misses it names. `!send` needs no reading at all, and a person who would
     /// rather type there than here should be told so on the card rather than in a document.
     pub(crate) fn prompt_lines(&self, ask: &PromptAsk, w: usize) -> Vec<String> {
-        let mut out = Vec::new();
-        // The headline is the fact, and it carries the marker the decision card carries —
-        // this is a card and not three lines of prose above the composer. Yellow, for the
-        // reason that card is: it exists to interrupt.
-        out.push(colour(
-            &self.cfg,
-            sgr::YELLOW,
-            &trim_to("? your command is asking", w),
-        ));
-        // The operator's own words, which is the one thing the daemon is certain of.
-        for l in wrap(&format!("run: {}", ask.command), w.saturating_sub(2)) {
-            out.push(dim(&self.cfg, &format!("  {l}")));
-        }
-        // **The program's own last line, quoted.** `None` is a real case — a `read` that
-        // asks nothing, blocked before its first byte — and it says so rather than showing
-        // an empty line as if that were the question.
-        match ask.question.as_deref().map(str::trim) {
-            Some(q) if !q.is_empty() => {
-                for l in wrap(q, w.saturating_sub(4)) {
-                    out.push(dim(&self.cfg, &format!("  │ {l}")));
-                }
-            }
-            _ => out.push(dim(
-                &self.cfg,
-                &trim_to("  │ (it has not written anything yet)", w),
-            )),
-        }
-        // The job handle, so the row can be found in `/jobs` and killed if it must be — and
-        // the two keys, keys first, for the reason the password card puts them first.
-        out.push(dim(
-            &self.cfg,
-            &trim_to(
-                &format!(
-                    "  enter sends it · esc puts the card away · `!send LINE` also works · {}",
-                    ask.job
-                ),
-                w,
-            ),
-        ));
-        out
+        let card = asks::PromptAsk {
+            command: ask.command.clone(),
+            question: ask.question.clone(),
+            job: ask.job.clone(),
+        };
+        row_strings(&card.lines(w), self.cfg.palette())
     }
 
     /// The password card: what is asking, for which command, and the two keys.
     pub(crate) fn secret_lines(&self, ask: &SecretAsk, w: usize) -> Vec<String> {
-        // **The same countdown the gate card draws** (§1.6), which is the other half of
-        // this commit's finding: the instrument was here all along and nothing had
-        // pointed it at the gate. One function, so the two cards cannot disagree about
-        // how long there is — and `saturating_sub` is why an expired one reads `0s left`
-        // rather than counting backwards, which is a number that means nothing.
-        let left = letibot_ui::progress::countdown(ask.deadline.saturating_sub(self.now_ms));
-        let mut out = Vec::new();
-        // **The headline is the question, and it carries the `?` the decision card
-        // carries** — this is a card, not three lines of prose above the composer, and
-        // the marker is what says so at a glance. Yellow for the reason that card is:
-        // it exists to interrupt.
-        //
-        // **And it says the thing ONCE.** The operator, having just answered one: *"the
-        // ask is ugly as hell"*. The worst of it was the old first line, which read
-        // `sudo wants a password — [sudo] password for dead:` — the same fact twice, in
-        // the same weight, trailing off a colon.
-        // **Two askers share this card**: sudo, through `letibot-askpass`, and the daemon
-        // asking for a provider's API key (`Harness::obtain_key`), which sends no command.
-        // The headline says which; the masking, the keys and the countdown are the same.
-        let key = ask.command.is_empty();
-        out.push(colour(
-            &self.cfg,
-            sgr::YELLOW,
-            &trim_to(
-                if key {
-                    "? an API key is needed"
-                } else {
-                    "? sudo wants a password"
-                },
-                w,
-            ),
-        ));
-        // **sudo's own words**, which name the account — faint and indented, because the
-        // headline has already said what this is.
-        for l in wrap(ask.prompt.trim(), w.saturating_sub(2)) {
-            out.push(dim(&self.cfg, &format!("  {l}")));
-        }
-        // The command keeps its own rows — it is the one thing here worth the rows, and
-        // the thing being authorised — and it is faint, because it is a fact about the
-        // ask rather than the ask itself. `run:` names it, where the old `for:` named
-        // nothing. A key ask has no command, so no row.
-        if !key {
-            for l in wrap(&format!("run: {}", ask.command), w.saturating_sub(2)) {
-                out.push(dim(&self.cfg, &format!("  {l}")));
-            }
-        }
-        // **Short enough to survive a narrow terminal whole, keys first.** The old
-        // sentence ran past a hundred columns and `trim_to` cuts from the end — which is
-        // where the countdown lives, so on a narrow screen the one field that is moving
-        // was the first thing sacrificed. The keys come first for the same reason the
-        // gate card's refusal names its remedy first: what is cut must not be the way
-        // out. Forty-two columns, so the countdown survives even a 44-column frame —
-        // and `to sudo` is not in it because the headline has already named sudo.
-        out.push(dim(
-            &self.cfg,
-            &trim_to(&format!("  enter sends it · esc refuses · {left}"), w),
-        ));
-        out
+        let card = asks::SecretAsk {
+            prompt: ask.prompt.clone(),
+            command: ask.command.clone(),
+            remaining_ms: ask.deadline.saturating_sub(self.now_ms),
+        };
+        row_strings(&card.lines(w), self.cfg.palette())
     }
 }
