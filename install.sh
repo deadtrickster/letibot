@@ -361,10 +361,14 @@ build_from_source() {
         warn "Building letibot (cloud-only) from $src — this takes a few minutes..."
         cargo build --release --manifest-path "$src/Cargo.toml" --no-default-features \
             -p letibot-harnessd --bin harnessd --bin letibot-askpass >&2
+        # The launcher too: it is one of $BINARIES, and the copy below takes every name
+        # there. Building it here rather than trusting a target/ left by some earlier build
+        # is what makes a fresh checkout install — CI's Linux job only passed because its
+        # release step had already built the whole workspace.
         cargo build --release --manifest-path "$src/Cargo.toml" \
-            -p letibot-tui --bin letibot-tui >&2
+            -p letibot-tui --bin letibot-tui -p letibot --bin letibot >&2
         out="$src/target/release"
-        for want in harnessd letibot-tui letibot-askpass; do
+        for want in $BINARIES; do
             [ -x "$out/$want" ] || die "the build produced no $out/$want"
         done
         # Nothing to carry: no binary of this build links a llama library. (`main` empties
@@ -380,7 +384,7 @@ build_from_source() {
 
     warn "Building letibot from $src — this takes a few minutes..."
     cargo build --release --manifest-path "$src/Cargo.toml" \
-        --bin harnessd --bin letibot-tui --bin letibot-askpass >&2
+        --bin harnessd --bin letibot-tui --bin letibot-askpass --bin letibot >&2
     out="$src/target/release"
     for want in $BINARIES; do
         [ -x "$out/$want" ] || die "the build produced no $out/$want"
