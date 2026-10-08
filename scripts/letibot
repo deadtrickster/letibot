@@ -1668,8 +1668,16 @@ daemon_models() {
 }
 
 if live && [ -n "$ENDPOINT" ]; then
+  # THE PROBE'S FAILURE IS NOT THE LAUNCHER'S FAILURE (found 2026-10-09, measured:
+  # `letibot --continue` in a folder whose model server was down printed the resolved
+  # session and exited 7 without ever exec'ing the head -- exit 7 being curl's own
+  # connection-refused code, surfaced through `set -e -o pipefail` by this very
+  # assignment). The probe exists to catch a VOCAB MISMATCH, which needs the server to
+  # ANSWER; a server that does not answer is not a mismatch, is not this pre-flight's
+  # verdict to deliver, and is the daemon's own story on the next turn. `|| :` keeps
+  # the empty answer an answer.
   SERVING="$(curl -sf -m 3 "http://$ENDPOINT/props" 2>/dev/null \
-    | sed -n 's/.*"model_alias"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    | sed -n 's/.*"model_alias"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)" || :
   BOUND="$(daemon_models | paste -sd, -)"
   if [ -n "$SERVING" ] && [ -n "$BOUND" ] && ! printf '%s\n' "$BOUND" | tr ',' '\n' | grep -qxF "$SERVING"; then
     echo "letibot: the daemon on $SOCKET is bound to '$BOUND' but $ENDPOINT is serving '$SERVING'." >&2
