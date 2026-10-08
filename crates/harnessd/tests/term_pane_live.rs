@@ -382,7 +382,12 @@ fn a_bare_term_line_attaches_to_the_screen_the_daemon_holds() {
     // attach, which is the case the operator was in.
     open(
         &mut w,
-        "!term sh -c 'printf drawn-by-the-program; read x; printf \"GOT:%s\" \"$x\"'",
+        // **`read y` after the answer keeps the program waiting**, so the deliberate close
+        // below is the only way this pane ends. Without it the program exited the moment it
+        // printed `GOT:hi`, and the close raced that exit: when the exit won, the daemon
+        // rightly said "the program exited" and the test failed — on CI's macOS job and
+        // then its Linux job, 2026-10-08.
+        "!term sh -c 'printf drawn-by-the-program; read x; printf \"GOT:%s\" \"$x\"; read y'",
         80,
         24,
     );
