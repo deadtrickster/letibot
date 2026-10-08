@@ -1,6 +1,5 @@
 //! **A row the model wrote**: its prose, and a line for each call it made that has no result.
 
-use crate::ui::markdown::IncrementalMarkdown;
 use crate::ui::render::{BlockCache, trim_to};
 use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
@@ -8,6 +7,7 @@ use letibot_transcript::TranscriptItem;
 use letibot_ui::card;
 use letibot_ui::painter::Sgr;
 use letibot_ui::text::without_control_lines;
+use rano::markdown::IncrementalMarkdown;
 use rano::style::Role;
 
 pub(crate) fn assistant_row_lines(

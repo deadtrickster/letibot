@@ -2,9 +2,9 @@
 //! a call, and a compaction's progress.
 
 use super::*;
-use crate::ui::markdown::IncrementalMarkdown;
 use crate::ui::render::BlockCache;
 use letibot_sessionlog::view::{CallState, SettledDecision, TurnState};
+use rano::markdown::IncrementalMarkdown;
 
 /// line. See `crates/ui/DESIGN.md` §2.3.
 #[derive(Debug, Clone)]

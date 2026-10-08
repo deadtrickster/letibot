@@ -1,13 +1,13 @@
 //! **The model's working-out**, dimmed and folded.
 
 use crate::app::*;
-use crate::ui::markdown::IncrementalMarkdown;
 use crate::ui::render::{BlockCache, Decor, RenderConfig, trim_to, visible_width};
 use crate::ui::*;
 use letibot_transcript::TranscriptItem;
 use letibot_ui::card;
 use letibot_ui::painter::{Painter, Sgr};
 use letibot_ui::text::without_control_lines;
+use rano::markdown::IncrementalMarkdown;
 use rano::style::Role;
 
 /// The rail every line of the model's reasoning carries.

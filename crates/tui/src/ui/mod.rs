@@ -8,7 +8,6 @@ pub mod fit;
 pub mod header;
 pub mod hint_bar;
 pub mod loading;
-pub mod markdown;
 pub mod paint;
 pub mod panes;
 pub mod render;

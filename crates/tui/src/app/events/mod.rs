@@ -2,7 +2,6 @@
 //! recorded, and the bookkeeping of forks and echoed prompts.
 
 use super::*;
-use crate::ui::markdown::IncrementalMarkdown;
 use crate::ui::render::BlockCache;
 use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::protocol::ServerFrame;
@@ -10,6 +9,7 @@ use letibot_sessionlog::view::{
     CallState, OpenDecision, SettledDecision, Snapshot, TurnState, Warned,
 };
 use letibot_transcript::{TranscriptItem, UserPart};
+use rano::markdown::IncrementalMarkdown;
 
 mod asks;
 mod children;
