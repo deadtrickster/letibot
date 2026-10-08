@@ -11,6 +11,7 @@ pub mod loading;
 pub mod paint;
 pub mod panes;
 pub mod render;
+pub mod rows;
 pub mod screen;
 pub mod status;
 pub mod transcript;

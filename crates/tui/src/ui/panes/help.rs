@@ -1,7 +1,9 @@
-//! **The help screen** (`/help`).
+//! **The help screen** (`/help`): this head's keys and verbs, drawn by
+//! `rano::agent::help`. The rows are the head's — they are what it does — and the layout is
+//! rano's.
 
-use crate::ui::render::{RenderConfig, sgr, wrap};
-use crate::ui::*;
+use crate::ui::render::{RenderConfig, row_strings};
+use rano::agent::help::HelpPane;
 
 pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
     let rows = [
@@ -180,18 +182,13 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
             "detach. The turn keeps running: idle means quiet, not unwatched",
         ),
     ];
-    let mut out = vec![colour(cfg, sgr::BOLD, "keys and commands"), String::new()];
-    for (k, v) in rows {
-        let head = format!("  {k:<16}");
-        for (i, l) in wrap(v, w.saturating_sub(19)).into_iter().enumerate() {
-            out.push(if i == 0 {
-                format!("{}{}", colour(cfg, sgr::CYAN, &head), l)
-            } else {
-                format!("{:19}{l}", "")
-            });
-        }
-    }
-    out.push(String::new());
-    out.push(dim(cfg, "  /help or esc closes this"));
-    out
+    let pane = HelpPane {
+        title: "keys and commands".into(),
+        rows: rows
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        footer: "/help or esc closes this".into(),
+    };
+    row_strings(&pane.lines(w), cfg.palette())
 }

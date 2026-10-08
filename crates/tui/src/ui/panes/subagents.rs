@@ -1,13 +1,14 @@
 //! **The subagents pane**: the tree of children this session spawned, and a child's output.
 
 use crate::app::*;
-use crate::ui::render::{sgr, trim_to};
+use crate::ui::render::row_strings;
 use crate::ui::*;
 use letibot_sessionlog::event::{Envelope, SessionEvent};
 use letibot_sessionlog::registry::short_id;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
 use letibot_ui::text::without_control_lines;
+use rano::agent::subagents::{SubagentOutput, SubagentRow, SubagentsPane};
 
 impl App {
     /// The subagent tree: the subagents this session spawned, their state and their
@@ -24,143 +25,32 @@ impl App {
     /// what the arrows scroll to: a list longer than the screen can be walked without the cursor
     /// leaving it. Takes `&mut self` for that record alone — the sibling of [`App::todos_lines`].
     pub(crate) fn subagents_lines(&mut self, w: usize) -> Vec<String> {
-        let mut out = vec![colour(&self.cfg, sgr::BOLD, "subagents")];
-        out.push(String::new());
-        if self.subagents.is_empty() {
-            out.push(dim(
-                &self.cfg,
-                "    none spawned yet. The model spawns them with the task tool.",
-            ));
+        let content = self.subagents_view().content(w);
+        self.subagents_stop_rows = content.stop_rows;
+        row_strings(&content.lines, self.cfg.palette())
+    }
+
+    /// **The subagents pane's facts, in rano's words**: each child's state and what it was
+    /// asked ([`subagent_asked`], the words the folded notice uses too), its short id, role,
+    /// model and answer, the fold of the finished ones, and the cursor.
+    pub(crate) fn subagents_view(&self) -> SubagentsPane {
+        SubagentsPane {
+            agents: self
+                .subagents
+                .iter()
+                .map(|s| SubagentRow {
+                    state: s.state.clone(),
+                    asked: subagent_asked(s),
+                    session: short_id(&s.session_id),
+                    role: s.role.clone(),
+                    model: s.model.clone(),
+                    generating: s.generating,
+                    answer: s.answer.clone(),
+                })
+                .collect(),
+            finished_open: self.subagents_finished_open,
+            selected: self.subagents_sel,
         }
-        let stops = self.subagent_stops();
-        let cursor = self.subagents_sel.min(stops.len().saturating_sub(1));
-        let mut stop_rows: Vec<usize> = Vec::with_capacity(stops.len());
-        for (k, stop) in stops.iter().enumerate() {
-            stop_rows.push(out.len());
-            let picked = k == cursor;
-            // **The `finished` fold, when the cursor is on it.** A group row and not a child:
-            // there is nobody to switch into, and Enter folds or unfolds the children under it.
-            let i = match *stop {
-                SubStop::Finished => {
-                    let n = self.subagents.iter().filter(|s| s.is_finished()).count();
-                    let fold = if self.subagents_finished_open {
-                        "[-]"
-                    } else {
-                        "[+]"
-                    };
-                    let left =
-                        format!("{} {} finished ({n})", if picked { "▸" } else { " " }, fold);
-                    let left = if picked {
-                        colour(&self.cfg, sgr::REVERSE, &left)
-                    } else {
-                        left
-                    };
-                    out.push(left);
-                    out.push(dim(
-                        &self.cfg,
-                        if self.subagents_finished_open {
-                            "       the ones that have ended · enter folds them away"
-                        } else {
-                            "       enter shows the ones that have ended"
-                        },
-                    ));
-                    continue;
-                }
-                SubStop::Agent(i) => i,
-            };
-            let s = &self.subagents[i];
-            let (mark, state_colour) = match s.state.as_str() {
-                // Not a session yet: the child is copying its workspace or booting.
-                // Enter does nothing here, and the row says so below.
-                "opening" => ("[…]", ""),
-                "running" => ("[~]", sgr::YELLOW),
-                "done" => ("[x]", sgr::GREEN),
-                "failed" => ("[!]", sgr::RED),
-                // **No state word, which is the honest reading for a row rebuilt from the
-                // daemon's session list.** That list says whether a turn is generating and
-                // nothing about how a settled child ended, so a `[?]` here means *this head
-                // was not watching when it happened* — and `done` or `failed` written on
-                // that row would be an invention about the one thing the pane exists to
-                // report. See [`App::fold_subagents`].
-                _ => ("[?]", ""),
-            };
-            // **The task, drawn whole; `prompt` is the pre-field fallback.** See
-            // [`subagent_asked`] — the notice folds to the same words.
-            let asked: String = subagent_asked(s);
-            let left = format!(
-                "{} {} {}",
-                if picked { "▸" } else { " " },
-                colour(&self.cfg, state_colour, mark),
-                without_control_lines(&asked)
-            );
-            let left = if picked {
-                colour(&self.cfg, sgr::REVERSE, &left)
-            } else {
-                left
-            };
-            out.push(left);
-            // **The row's own facts, as clauses that VANISH when the daemon did not say
-            // them** — the rule the model clause already keeps. It matters more now that a
-            // row can be rebuilt from the session list: that list carries a child's name
-            // and its model and no role and no state, so a fixed `role {role} · {state}`
-            // would draw `role · ` with two holes in it on every rebuilt row.
-            let mut facts: Vec<String> = vec![short_id(&s.session_id)];
-            if !s.role.is_empty() {
-                facts.push(format!("role {}", without_control_lines(&s.role)));
-            }
-            // **The child's own model, when it has one** — the operator's ask,
-            // 2026-10-05: a tree of children on different models is a fact the pane
-            // has to show, or a reader cannot tell which child ran on what. Empty on
-            // a child that inherited its parent's model, which is most of them, and
-            // the clause goes with it rather than claiming one.
-            if !s.model.is_empty() {
-                facts.push(format!("on {}", without_control_lines(&s.model)));
-            }
-            // **The state word, or the word for not having one**, and the second is a fact
-            // about this head rather than about the child — so it says which.
-            if s.state.is_empty() {
-                facts.push("state unknown".into());
-            } else if s.state == "running" && !s.generating {
-                // **A child that is up with no turn generating this instant** — parked on its
-                // own background job, or sitting between two rounds. It is alive (the event
-                // said so and nothing has ended it) and it is not generating (the daemon's own
-                // list measured that), and this is the head saying both rather than drawing
-                // `running` for a child that is not, or dropping it from the count. The word is
-                // the head's, like `state unknown` beside it — the child's own words are
-                // `opening`, `running`, `done` and `failed`. See [`SubagentState::generating`].
-                facts.push("waiting".into());
-            } else {
-                facts.push(without_control_lines(&s.state).to_string());
-            }
-            // **The answer as the SUBTITLE, where it belongs** — its own dim clause
-            // rather than the row, which is the question.
-            if let (Some(a), "done") = (&s.answer, s.state.as_str()) {
-                facts.push(without_control_lines(a).to_string());
-            }
-            if s.state == "opening" {
-                facts.push("not attachable yet".into());
-            }
-            out.push(dim(&self.cfg, &format!("       {}", facts.join(" · "))));
-        }
-        // **The rows the stops landed on, taken as they went out** — the record the arrows
-        // scroll by. Assigned at the end because the loop above holds `&self.subagents`.
-        self.subagents_stop_rows = stop_rows;
-        out.push(String::new());
-        // **The keys, said where they are used** — and the last clause is the one that cannot be
-        // learned anywhere else, because the gesture only exists while the head is standing
-        // inside a subagent. It says which way each key goes *from here*: `esc` closes the pane
-        // that is up (the contract every pane keeps — *whichever surface prints `esc closes`
-        // owns Esc*), and from inside a child the same key goes up to this list. The line this
-        // replaces said *"subagents are hidden from ctrl-s"*, which stopped being true when the
-        // picker started listing sub-sessions; a row that tells the operator a session is not
-        // in the list they are looking at it in is worse than no row.
-        out.push(dim(
-            &self.cfg,
-            "    arrows move · enter switches into the subagent (o does the same), or folds the \
-             finished group · p reads its output · esc closes this, and from inside a subagent \
-             esc goes up to the parent",
-        ));
-        out.into_iter().map(|l| trim_to(&l, w)).collect()
     }
 
     /// **A peeked session's rows, drawn by the renderer every other row goes through** — the
@@ -252,54 +142,23 @@ impl App {
     /// The output view: the session's own rows, as a terminal scrolls them — or, when the daemon
     /// answered with its event ring, the plain fallback sayings so on the screen.
     pub(crate) fn sub_out_lines(&mut self, room: usize) -> Vec<String> {
+        let p = self.cfg.palette();
         let Some(v) = self.sub_out.as_mut() else {
             return Vec::new();
         };
-        let mut out = vec![colour(
-            &self.cfg,
-            sgr::BOLD,
-            &format!("subagent output — {}", short_id(&v.session_id)),
-        )];
-        if v.dropped > 0 {
-            out.push(dim(
-                &self.cfg,
-                &format!(
-                    "    {} earlier event{} fell off the daemon's scrollback before this read",
-                    v.dropped,
-                    if v.dropped == 1 { "" } else { "s" }
-                ),
-            ));
-        }
-        // **A degraded render says so.** The rows could not be read — an older daemon, which
-        // ignores the shape a head asks with — so what follows is the event ring drawn plainly.
-        // A reader who cannot tell the two apart cannot tell a session from a list of its events,
-        // and the sentence names the way to get the real one.
-        if v.degraded {
-            out.push(dim(
-                &self.cfg,
-                "    this daemon answered with its event ring, not this session's rows — what \
-                 follows is drawn plainly, without the tool cards or the markdown. A daemon built \
-                 with `Peeked::snapshot` draws it as a session.",
-            ));
-        }
-        out.push(String::new());
-        let footer = 1;
-        let visible = room.saturating_sub(out.len() + footer).max(1);
-        let max_scroll = v.lines.len().saturating_sub(visible);
-        v.scroll = v.scroll.min(max_scroll);
-        let end = v.lines.len() - v.scroll;
-        let start = end.saturating_sub(visible);
-        for l in &v.lines[start..end] {
-            out.push(l.clone());
-        }
-        while out.len() < room.saturating_sub(footer) {
-            out.push(String::new());
-        }
-        let spill = v.spill.as_deref().unwrap_or("not written");
-        out.push(dim(
-            &self.cfg,
-            &format!("    arrows scroll, Enter re-reads, Esc back — full: {spill}"),
-        ));
+        let frame = SubagentOutput {
+            session: short_id(&v.session_id),
+            dropped: v.dropped,
+            degraded: v.degraded,
+            spill: v.spill.clone(),
+        };
+        let l = frame.layout(room, v.lines.len(), v.scroll);
+        v.scroll = l.scroll;
+        let mut out = row_strings(&l.head, p);
+        // The child's own rows, already drawn by this head's renderer.
+        out.extend(v.lines[l.start..l.end].iter().cloned());
+        out.extend(std::iter::repeat_n(String::new(), l.pad));
+        out.push(crate::ui::render::row(&l.footer, p));
         out.truncate(room);
         out
     }

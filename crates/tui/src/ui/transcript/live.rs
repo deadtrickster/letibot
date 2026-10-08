@@ -118,7 +118,7 @@ pub(crate) fn push_turn_pane<'a>(
             let (stable, tail) =
                 reasoning_cache.split(reasoning, &rcfg, cfg.budget.reasoning_lines);
             segs.push(Seg::Borrowed(stable));
-            segs.push(Seg::Owned(tail));
+            segs.push(Seg::Borrowed(tail));
         } else {
             // Folded, but a *running* turn still shows the last line, so
             // "it is thinking" and "it is stuck" do not look the same.
@@ -194,7 +194,7 @@ pub(crate) fn push_turn_pane<'a>(
         if !text.is_empty() {
             let (stable, tail) = text_cache.split(text, &cfg, cfg.budget.body_lines);
             segs.push(Seg::Borrowed(stable));
-            segs.push(Seg::Owned(tail));
+            segs.push(Seg::Borrowed(tail));
             // The same air the reasoning block and the call cards already
             // carry. Without it the last line of a running decode touches
             // the top border of the composer, and the blank appears only

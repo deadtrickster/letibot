@@ -42,23 +42,7 @@ impl App {
     /// is unfolded — the finished children themselves. The active half is never empty for a live
     /// spawn, which is the whole point: the row the operator opened the pane to see is at the top.
     pub(crate) fn subagent_stops(&self) -> Vec<SubStop> {
-        let mut out = Vec::with_capacity(self.subagents.len() + 1);
-        for (i, s) in self.subagents.iter().enumerate() {
-            if !s.is_finished() {
-                out.push(SubStop::Agent(i));
-            }
-        }
-        if self.subagents.iter().any(SubagentState::is_finished) {
-            out.push(SubStop::Finished);
-            if self.subagents_finished_open {
-                for (i, s) in self.subagents.iter().enumerate() {
-                    if s.is_finished() {
-                        out.push(SubStop::Agent(i));
-                    }
-                }
-            }
-        }
-        out
+        self.subagents_view().stops()
     }
 
     /// **The pane row the stop at the cursor was DRAWN on**, read out of
@@ -492,14 +476,9 @@ impl SubagentState {
 /// **One row of the subagent pane** — the ONE enumeration the arrows, Enter, `p`, the drawn
 /// `▸` and the scroll all read. A pane whose cursor comes from one list and whose rows come
 /// from another is the defect leticl's `todos-stops` docstring names; see [`App::subagent_stops`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SubStop {
-    /// A child in [`App::subagents`], by index.
-    Agent(usize),
-    /// **The `finished` group row.** The finished children live under it, collapsed by
-    /// default; Enter unfolds them.
-    Finished,
-}
+/// rano's, because the pane that draws the rows is rano's: `Agent(i)` is a child in
+/// [`App::subagents`] by index, `Finished` the folded group row.
+pub(crate) use rano::agent::subagents::SubStop;
 
 /// **One row of the jobs pane** — the ONE enumeration the arrows, Enter, the drawn `▸` and the
 /// scroll all read, exactly as [`SubStop`] is for the subagents pane. See [`App::job_stops`].

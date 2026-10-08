@@ -1,11 +1,8 @@
 //! **The todo card**: writing a todo, field by field.
 
 use crate::app::*;
-use crate::ui::render::{sgr, trim_to};
-use crate::ui::*;
-use letibot_ui::painter::Sgr;
-use letibot_ui::text::without_control_lines;
-use rano::style::Role;
+use crate::ui::render::row_strings;
+use rano::agent::todos::{TodoCard, TodoField as Field};
 
 impl App {
     /// The line the screen shows while `mode_confirm` is set. Spells out the three
@@ -26,54 +23,19 @@ impl App {
         let Some(draft) = &self.todo_draft else {
             return Vec::new();
         };
-        let p = self.cfg.palette();
-        // The field under the cursor is drawn from the COMPOSER, the other two from the draft — so
-        // the row being typed is never a keystroke behind. leticl's `%todo-draft-focus` for the same
-        // reason.
+        // The field with the keyboard shows what is being typed into the composer, not what
+        // was last stored for it.
         let live = self.input();
-        let field = |key: &str, which: TodoField, empty: &str| {
-            let head = dim(&self.cfg, &format!("  {key:<7} "));
-            let value = draft.shown(&live, which);
-            let body = if value.is_empty() {
-                dim(&self.cfg, empty)
-            } else if draft.focus == which {
-                p.painted(Role::Strong, &without_control_lines(&value))
-            } else {
-                p.painted(Role::Faint, &without_control_lines(&value))
-            };
-            format!("{head}{body}")
+        let card = TodoCard {
+            title: draft.shown(&live, TodoField::Title),
+            detail: draft.shown(&live, TodoField::Detail),
+            when: draft.shown(&live, TodoField::When),
+            focus: match draft.focus {
+                TodoField::Title => Field::Title,
+                TodoField::Detail => Field::Detail,
+                TodoField::When => Field::When,
+            },
         };
-        let mut out = vec![colour(&self.cfg, sgr::BOLD, "adding a todo item")];
-        out.push(String::new());
-        out.push(field("title", TodoField::Title, "(empty)"));
-        out.push(field("detail", TodoField::Detail, "(empty)"));
-        // **The field nobody knows**, so it says what it wants rather than `(empty)`: a handle, and
-        // the sentence under the fields says what a handle DOES.
-        out.push(field("when", TodoField::When, "(waits on nothing)"));
-        out.push(String::new());
-        for (k, why) in [
-            ("tab", "moves between the fields"),
-            ("enter", "adds it to the session's plan, marked as yours"),
-            ("esc", "cancels, and adds nothing"),
-        ] {
-            out.push(format!(
-                "{}{}",
-                dim(&self.cfg, &format!("  {k:<7}")),
-                p.painted(Role::Plain, why)
-            ));
-        }
-        out.push(String::new());
-        out.push(dim(
-            &self.cfg,
-            "  `when` is a JOB handle: the row is filed now and comes up again when that job is \
-             not running. A job this daemon has never heard of counts as ended, which is what a \
-             restart looks like.",
-        ));
-        out.push(dim(
-            &self.cfg,
-            "  the model sees these and is reminded of them; it can mark one done, and cannot \
-             remove yours",
-        ));
-        out.into_iter().map(|l| trim_to(&l, w)).collect()
+        row_strings(&card.lines(w), self.cfg.palette())
     }
 }

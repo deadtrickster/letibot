@@ -273,80 +273,25 @@ pub fn md_options(cfg: &RenderConfig, limit: usize) -> RenderOptions {
     }
 }
 
-/// **rano's lines as the head's rows**: each one ANSI under the config's palette.
-///
-/// `rano::render::Line::to_ansi` opens each span's look and closes it with a reset — the
-/// shape this head's string painter wrote, and the one a row pasted into another string
-/// needs, since it cannot leave an attribute open in the next. Under [`Palette::None`] it
-/// is the plain text and nothing else, byte for byte, which is what `--replay`, a pipe and
-/// CI compare.
+/// **rano's markdown lines as the head's rows**: each one ANSI under the config's palette —
+/// the plain text and nothing else, byte for byte, under [`Palette::None`], which is what
+/// `--replay`, a pipe and CI compare.
 pub fn rows(lines: &[Line], p: Palette) -> Vec<String> {
-    lines.iter().map(|l| l.to_ansi_inside(p)).collect()
+    lines.iter().map(|l| md_row(l, p)).collect()
 }
 
-/// **One rano line as the head's row string** — the edge every `rano::agent` widget's output
-/// crosses on its way to the frame.
-///
-/// A line with no style of its own is [`Line::to_ansi_inside`], which is `to_ansi`: every
-/// styled span opened and reset. A line that carries a register — a tool row's dim payload,
-/// the reasoning — is that register opened once at the start, its spans closing back to it,
-/// and a reset at the end: the shape this head's `dim(cfg, …)` around a `Painter::inside`
-/// line always wrote. Under [`Palette::None`] it is the text and nothing else.
-///
-/// **A run of reversed spans is one reverse** — the highlighted row of a picker or a pane,
-/// which this head always drew as `colour(REVERSE, row)`: the inverse opened once, the
-/// spans inside it written in their own look with a plain reset, and one reset at the end
-/// of the run. rano patches the highlight into each span, which is the same cells; this is
-/// the bytes the head's frames (and its tests) have always carried.
-///
-/// That includes what the convention does after a coloured span inside the run: its plain
-/// reset ends the inverse too, so the subagents pane's highlighted row is inverse up to its
-/// state mark and not after it. That is letibot's row as it was, kept here on purpose and
-/// named as the defect it is: fixing it is a change to what the row shows, and this move
-/// changes nothing a person sees.
-pub fn row(l: &Line, p: Palette) -> String {
-    let open = l.style.look(p).sgr();
-    if !open.is_empty() {
-        return format!("{open}{}{}", l.to_ansi_inside(p), sgr::RESET);
+/// One markdown row. A row in the reasoning register is opened and reset by the pane's own
+/// decor (`Decor::open`), so its spans close back to it: `Painter::inside`'s shape. Any other
+/// row is written as the head's string painter nested it (`crate::ui::rows`).
+fn md_row(l: &Line, p: Palette) -> String {
+    if l.style == rano::render::Style::default() {
+        row(l, p)
+    } else {
+        l.to_ansi_inside(p)
     }
-    let reversed =
-        |sp: &rano::render::Span| sp.style.look(p).attrs.contains(rano::style::Attrs::REVERSE);
-    if !l.spans.iter().any(reversed) {
-        return l.to_ansi_inside(p);
-    }
-    let mut out = String::new();
-    let mut i = 0;
-    while i < l.spans.len() {
-        if !reversed(&l.spans[i]) {
-            out.push_str(&Line::new(vec![l.spans[i].clone()]).to_ansi_inside(p));
-            i += 1;
-            continue;
-        }
-        out.push_str(&p.reverse_look().sgr());
-        while i < l.spans.len() && reversed(&l.spans[i]) {
-            let sp = &l.spans[i];
-            let mut look = sp.style.look(p);
-            look.attrs = look.attrs.without(rano::style::Attrs::REVERSE);
-            let seq = look.sgr();
-            let text = Line::new(vec![rano::render::Span::raw(sp.content.clone())]).plain();
-            if seq.is_empty() {
-                out.push_str(&text);
-            } else {
-                out.push_str(&seq);
-                out.push_str(&text);
-                out.push_str(sgr::RESET);
-            }
-            i += 1;
-        }
-        out.push_str(sgr::RESET);
-    }
-    out
 }
 
-/// [`row`] for each of `lines`.
-pub fn row_strings(lines: &[Line], p: Palette) -> Vec<String> {
-    lines.iter().map(|l| row(l, p)).collect()
-}
+pub use crate::ui::rows::{row, row_strings};
 
 /// Render one block to rows, unbounded. One-shot: see `rano::markdown::render_block`.
 pub fn render_block(b: &Block, cfg: &RenderConfig) -> Vec<String> {
@@ -418,6 +363,13 @@ pub struct BlockCache {
     key: Option<(usize, Palette, Option<Role>, usize)>,
     /// The view's settled lines, as rows, decorated.
     stable_rows: Vec<String>,
+    /// **The live tail's rows, and the document they were drawn from.** A frame with nothing
+    /// new to draw — the settled steady state, which is most frames — hands these back
+    /// rather than rendering and converting the tail again: the document has not moved
+    /// (`lex_calls` counts every push, the length every byte), and neither has anything else
+    /// the rows depend on, because a change of key or decor clears them.
+    tail_rows: Vec<String>,
+    tail_of: Option<(u64, usize)>,
 }
 
 impl BlockCache {
@@ -441,6 +393,7 @@ impl BlockCache {
         if self.decor != decor {
             self.decor = decor;
             self.stable_rows.clear();
+            self.tail_of = None;
         }
     }
 
@@ -458,14 +411,15 @@ impl BlockCache {
     ) -> Vec<String> {
         let (stable, tail) = self.split(md, cfg, limit);
         let mut out = stable.to_vec();
-        out.extend(tail);
+        out.extend(tail.iter().cloned());
         while out.last().is_some_and(|l| l.is_empty()) {
             out.pop();
         }
         out
     }
 
-    /// The frozen prefix **by reference**, and the live tail freshly rendered.
+    /// The frozen prefix **by reference**, and the live tail — rendered afresh when the
+    /// document has moved, handed back as it was when it has not.
     ///
     /// This is the per-frame form. The prefix is the part that grows without bound
     /// over a long answer, and handing it back borrowed is what keeps the cost of
@@ -476,12 +430,17 @@ impl BlockCache {
         md: &IncrementalMarkdown,
         cfg: &RenderConfig,
         limit: usize,
-    ) -> (&[String], Vec<String>) {
+    ) -> (&[String], &[String]) {
         let p = cfg.palette();
         let key = Some((cfg.width, p, cfg.base, limit));
         if self.key != key {
             self.key = key;
             self.stable_rows.clear();
+            self.tail_of = None;
+        }
+        let now = Some((md.lex_calls(), md.raw().len()));
+        if self.tail_of == now {
+            return (&self.stable_rows, &self.tail_rows);
         }
         let (stable, tail) = self.view.split(md, cfg.width, &md_options(cfg, limit));
         // The view only ever appends to its prefix while the key holds; it starts again
@@ -496,13 +455,14 @@ impl BlockCache {
             if l.is_empty() {
                 String::new()
             } else {
-                decor.apply(&l.to_ansi_inside(p))
+                decor.apply(&md_row(l, p))
             }
         };
         let have = self.stable_rows.len();
         self.stable_rows.extend(stable[have..].iter().map(row));
-        let tail = tail.iter().map(row).collect();
-        (&self.stable_rows, tail)
+        self.tail_rows = tail.iter().map(row).collect();
+        self.tail_of = now;
+        (&self.stable_rows, &self.tail_rows)
     }
 
     /// Blocks handed to rano's renderer over this cache's life.

@@ -93,15 +93,6 @@ pub(crate) fn warn_line(cfg: &RenderConfig, s: &str) -> String {
 /// reader greps the log for. Which codes are routine is [`letibot_sessionlog::warning`]'s
 /// table and not this head's opinion: the codes are the log's vocabulary and both heads
 /// render them.
-/// **One note line, in the register its code was classified into** — R19, R29 part two.
-///
-/// The colour comes in rather than being decided here, because the decision is
-/// `letibot_sessionlog::warning`'s and this is only where it is painted. The three are named
-/// at the call site so the whole mapping is readable in one place.
-pub(crate) fn note_line(cfg: &RenderConfig, sgr_code: &str, s: &str) -> String {
-    colour(cfg, sgr_code, s)
-}
-
 pub(crate) fn fold_word(f: Fold) -> &'static str {
     match f {
         Fold::Folded => "folded",
