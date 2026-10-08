@@ -55,7 +55,7 @@ spec "ctrl-] goes back into the pane, and ctrl-q closes it without quitting the 
 press C-]
 wait_for "ctrl-] to the composer"
 press C-q
-wait_gone "rano 0.5"
+wait_gone "rano 0."
 expect "Edited notes.txt"
 expect "please fix line eleven"
 
@@ -69,6 +69,6 @@ wait_gone "Review notes.txt"
 click "Line eleven is fixed."
 settle
 expect_not "Review notes.txt"
-expect_not "rano 0.5"
+expect_not "rano 0."
 
 done_spec

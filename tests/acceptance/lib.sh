@@ -24,8 +24,16 @@ set -u
 ACCEPTANCE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$(cd -- "$ACCEPTANCE/../.." && pwd -P)"
 FIXTURES="$ACCEPTANCE/fixtures"
-# The binary under test: LETIBOT_TUI names one, else the workspace's debug build.
-TUI="${LETIBOT_TUI:-$ROOT/target/debug/letibot-tui}"
+# The binary under test: LETIBOT_TUI names one, else the newer of the workspace's debug
+# and release builds — a stale debug binary beside a fresh release one fails every spec
+# that tests anything new.
+if [ -n "${LETIBOT_TUI:-}" ]; then
+  TUI="$LETIBOT_TUI"
+elif [ "$ROOT/target/release/letibot-tui" -nt "$ROOT/target/debug/letibot-tui" ]; then
+  TUI="$ROOT/target/release/letibot-tui"
+else
+  TUI="$ROOT/target/debug/letibot-tui"
+fi
 COLS="${ACCEPTANCE_COLS:-120}"
 ROWS="${ACCEPTANCE_ROWS:-36}"
 TIMEOUT="${ACCEPTANCE_TIMEOUT:-10}"
@@ -34,7 +42,16 @@ SERVER="letibot-acc-$$"
 WORK="$(mktemp -d)"
 FAILS=0
 STEPS=0
-trap 'tmux -L "$SERVER" kill-server 2>/dev/null; rm -rf "$WORK"' EXIT
+FAKE_PID=""
+SESSION_UP=0
+teardown() {
+  tmux -L "$SERVER" kill-server 2>/dev/null
+  # The run's own daemon, never anyone else's: same HOME, same runtime dir, same folder.
+  ((SESSION_UP)) && (cd "$WORK/ws" && session_env "$ROOT/scripts/letibot" --stop >/dev/null 2>&1)
+  [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null
+  rm -rf "$WORK"
+}
+trap teardown EXIT
 
 _t() { tmux -L "$SERVER" "$@"; }
 
@@ -55,6 +72,53 @@ start() {
   cmd="cd $(printf '%q' "$WORK") && HOME=$(printf '%q' "$WORK/home") XDG_CONFIG_HOME=$(printf '%q' "$CONFIG") exec $(printf '%q' "$TUI")"
   for a in "$@"; do cmd="$cmd $(printf '%q' "$a")"; done
   _t new-session -d -s acc -x "$COLS" -y "$ROWS" "$cmd"
+}
+
+# fake_model -- the scripted model (`fakemodel.py`) on a port of its own, and the run's
+# providers.toml pointing deepseek at it as the default, so a whole session — parent and
+# subagents — runs on it with no network, no key and no cost. Its requests are logged to
+# $WORK/model.log.
+fake_model() {
+  FAKEMODEL_LOG="$WORK/model.log" python3 "$ACCEPTANCE/fakemodel.py" "$WORK/model.port" \
+    >"$WORK/model.out" 2>&1 &
+  FAKE_PID=$!
+  local i=0
+  while [ ! -s "$WORK/model.port" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  mkdir -p "$CONFIG/letibot"
+  printf '[deepseek]\nkey = "sk-acceptance"\nurl = "http://127.0.0.1:%s/chat/completions"\n\n[default]\nprovider = "deepseek"\n' \
+    "$(cat "$WORK/model.port")" >"$CONFIG/letibot/providers.toml"
+}
+
+# session_env CMD... -- CMD with the run's environment and nothing else: its HOME, its
+# runtime dir, the repository's launcher scripts first on PATH, and firecode's directory
+# when there is one. The daemon this starts is the run's alone.
+session_env() {
+  local path="$ROOT/scripts:/usr/bin:/bin:/usr/sbin:/sbin"
+  command -v firecode >/dev/null 2>&1 && path="$(dirname "$(command -v firecode)"):$path"
+  mkdir -p "$WORK/run"
+  env -i PATH="$path" HOME="$WORK/home" XDG_CONFIG_HOME="$CONFIG" XDG_RUNTIME_DIR="$WORK/run" \
+    TERM=xterm-256color USER="$(id -un)" LOGNAME="$(id -un)" LETIBOT_LOG="$WORK/harnessd.log" "$@"
+}
+
+# start_session ARGS... -- the real launcher, `leticode ARGS`, in a fresh git workspace at
+# $WORK/ws: launcher, daemon and head, the way a person starts one. Uses the release build
+# beside the scripts (`cargo build --release`).
+start_session() {
+  mkdir -p "$WORK/ws"
+  (cd "$WORK/ws" && git init -q && echo "# acceptance" >README.md && git add -A &&
+    git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm init)
+  SESSION_UP=1
+  # A script, not a command line: tmux runs its command under the person's login shell,
+  # and the environment is bash's to build.
+  {
+    echo '#!/usr/bin/env bash'
+    declare -p ROOT WORK CONFIG
+    declare -f session_env
+    printf 'cd %q && session_env leticode' "$WORK/ws"
+    printf ' %q' "$@"
+    echo
+  } >"$WORK/start.sh"
+  _t new-session -d -s acc -x "$COLS" -y "$ROWS" "bash $(printf '%q' "$WORK/start.sh")"
 }
 
 # press KEY... -- tmux key names: C-], M-s, Escape, Enter, s.
