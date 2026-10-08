@@ -105,19 +105,21 @@ fn qwen_is_served() -> bool {
 
 fn vocab() -> std::sync::Arc<Vocab> {
     static VOCAB: OnceLock<std::sync::Arc<Vocab>> = OnceLock::new();
-    VOCAB.get_or_init(|| {
-        let path = std::env::var("LETIBOT_VOCAB_GGUF").unwrap_or_else(|_| {
+    VOCAB
+        .get_or_init(|| {
+            let path = std::env::var("LETIBOT_VOCAB_GGUF").unwrap_or_else(|_| {
             "/home/dead/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
                 .to_string()
         });
-        let p = std::path::PathBuf::from(&path);
-        assert!(
-            p.is_file(),
-            "no vocabulary GGUF at {path}. Set LETIBOT_VOCAB_GGUF; for a split model \
+            let p = std::path::PathBuf::from(&path);
+            assert!(
+                p.is_file(),
+                "no vocabulary GGUF at {path}. Set LETIBOT_VOCAB_GGUF; for a split model \
              pass the first shard."
-        );
-        std::sync::Arc::new(letibot_llama::load(&p).expect("the vocabulary must load"))
-    }).clone()
+            );
+            std::sync::Arc::new(letibot_llama::load(&p).expect("the vocabulary must load"))
+        })
+        .clone()
 }
 
 /// A fresh session with a nonce in its system prompt, so no earlier run's cache

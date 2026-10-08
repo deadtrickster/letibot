@@ -34,14 +34,16 @@ const TOOL_CALL_CLOSE: u32 = 248059;
 
 fn vocab() -> std::sync::Arc<Vocab> {
     static VOCAB: OnceLock<std::sync::Arc<Vocab>> = OnceLock::new();
-    VOCAB.get_or_init(|| {
-        // One home for this path: `letibot_tokencore::apparatus`. It was
-        // written out in seven crates, and `LETIBOT_VOCAB_GGUF` now wins
-        // unconditionally there rather than being a hint.
-        let p = letibot_tokencore::apparatus::gguf_path();
-        assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
-        std::sync::Arc::new(letibot_llama::load(&p).expect("the vocabulary must load"))
-    }).clone()
+    VOCAB
+        .get_or_init(|| {
+            // One home for this path: `letibot_tokencore::apparatus`. It was
+            // written out in seven crates, and `LETIBOT_VOCAB_GGUF` now wins
+            // unconditionally there rather than being a hint.
+            let p = letibot_tokencore::apparatus::gguf_path();
+            assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
+            std::sync::Arc::new(letibot_llama::load(&p).expect("the vocabulary must load"))
+        })
+        .clone()
 }
 
 fn serial() -> MutexGuard<'static, ()> {
