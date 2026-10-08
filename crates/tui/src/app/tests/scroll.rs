@@ -2196,8 +2196,9 @@ fn the_model_picker_greens_the_providers_this_box_holds_a_key_for() {
         .find(|l| l.contains(" 1  ") && l.contains("local"))
         .unwrap_or_else(|| panic!("the local row is drawn:\n{screen}"))
         .to_string();
+    // The cursor sits on `local`, so its green comes with the highlight's inverse.
     assert!(
-        local_row.contains(sgr::GREEN),
+        local_row.contains(sgr::GREEN) || local_row.contains("\x1b[7;32m"),
         "`local` needs no key, so it must not read as one of the unkeyed rows: {local_row:?}"
     );
     assert!(

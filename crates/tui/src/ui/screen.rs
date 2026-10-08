@@ -472,7 +472,7 @@ impl App {
                 .filter(|j| j.running && j.redirect.is_some())
                 .count(),
         };
-        crate::ui::rows::edge_row(&top.line(w), self.cfg.palette())
+        crate::ui::rows::row(&top.line(w), self.cfg.palette())
     }
 
     /// **The composer box's bottom edge**, carrying the alarm, where the reader is in the
@@ -487,7 +487,7 @@ impl App {
             holding: self.scroll_state().is_some(),
             rung: self.rung_state(),
         };
-        crate::ui::rows::edge_row(&bottom.line(w), self.cfg.palette())
+        crate::ui::rows::row(&bottom.line(w), self.cfg.palette())
     }
 
     /// **What fills the screen above the cards**: the terminal pane, an open output or pane,
