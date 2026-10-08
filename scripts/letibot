@@ -1480,7 +1480,12 @@ SESSIONS_EOF
     # invited the same reading. See `daemon_line`.
     # No resolved address is a refusal here too, not a quiet skip of the line:
     # "what would answer locally" is half of what --status exists to say.
-    [ -n "$ENDPOINT" ] || die "$(endpoint_refusal)"
+    if [ -z "$ENDPOINT" ]; then
+      # A provider answers the turns, so no local home is a fact to report, not a refusal.
+      [ -n "$PROVIDER_SET" ] || [ -n "$(default_provider provider)" ] || die "$(endpoint_refusal)"
+      echo "local    none  ('$LOOKUP_MODEL' has no [model.\"…\"] block in $PROVIDERS; the turns go to the provider)"
+      exit 0
+    fi
     printf 'local    %s ' "$ENDPOINT"
     if curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1; then
       # Name what is actually loaded, not what the default says. One port serves
@@ -1576,7 +1581,19 @@ esac
 # or whose block carries no url, has no home — refused here, once, by `endpoint_refusal`,
 # naming the flag that asked, the model it wanted and the file it read. Before the health
 # gate, because a gate needs an address to curl.
-[ -n "$ENDPOINT" ] || die "$(endpoint_refusal)"
+#
+# **But only a run whose turns go to the local model needs that home.** With a provider
+# (`--provider`, or `[default] provider` in providers.toml) the local alias answers nothing,
+# so a missing block is no reason to refuse -- and refusing was a regression: a box whose
+# providers.toml is a `[default]` and a key, and no `[model."…"]` block at all, worked
+# before the lookup and died after it. MEASURED 2026-10-08, the operator's `leticode` with
+# deepseek as the default. The daemon then keeps its own default endpoint, which no turn
+# reaches; `tests/launcher.sh` holds both halves.
+if [ -z "$ENDPOINT" ] && [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ]; then
+  die "$(endpoint_refusal)"
+fi
+ENDPOINT_ARGS=()
+[ -z "$ENDPOINT" ] || ENDPOINT_ARGS=(--endpoint "$ENDPOINT")
 if [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ] \
   && ! curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1; then
   # **Nothing to answer, and a person at the keyboard: ask, rather than die.** The
@@ -1650,7 +1667,7 @@ daemon_models() {
   done
 }
 
-if live; then
+if live && [ -n "$ENDPOINT" ]; then
   SERVING="$(curl -sf -m 3 "http://$ENDPOINT/props" 2>/dev/null \
     | sed -n 's/.*"model_alias"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
   BOUND="$(daemon_models | paste -sd, -)"
@@ -1675,7 +1692,7 @@ mkdir -p "$(dirname "$STORE")" "$(dirname "$LOG")"
 # exited before its prompt ran).
 if [ $# -gt 0 ]; then
   ONESHOT_SOCK="$RUNDIR/oneshot-$$.sock"
-  exec "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --endpoint "$ENDPOINT" \
+  exec "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
        --socket "$ONESHOT_SOCK" \
        ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" \
        --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} \
@@ -1717,7 +1734,7 @@ if ! live; then
   # The daemon opens its first session eagerly, so passing `--session ID` here is
   # what makes the resume -- and its hash-chain check -- happen at startup, where a
   # failure is a line in this terminal rather than a surprise inside a prompt.
-  detach "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --endpoint "$ENDPOINT" \
+  detach "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
       ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
       --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
       ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \

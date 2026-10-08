@@ -565,6 +565,10 @@ jobs:
           /bin/bash --version | head -1
           /bin/bash -n scripts/letibot
           /bin/bash -n scripts/leticode
+      # Which endpoint a run gets is decided in the launcher, before any Rust runs, so no
+      # cargo test reaches it: a [default] provider with no local model block was refused.
+      - name: The launcher's endpoint gate, run against stub binaries
+        run: /bin/bash tests/launcher.sh
       - name: Test
         run: cargo test --workspace --no-fail-fast -- --nocapture
       - name: Release build
