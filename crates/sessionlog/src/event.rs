@@ -551,7 +551,7 @@ pub struct Decider {
 ///
 /// **The elision is still disclosed, and still where it happens.** [`truncate_target`] keeps
 /// appending `…` for the wire cut, and the head keeps appending its own when it cuts to its own
-/// width ([`letibot_ui::width::truncate`], which has done exactly that all along). Two cuts,
+/// width (`rano::width::text::truncate`, which has done exactly that all along). Two cuts,
 /// two marks, each at the layer that made it.
 ///
 /// **A stored corpus row is unaffected, and that is worth stating rather than assuming.**
@@ -2137,7 +2137,7 @@ mod tests {
     fn a_target_never_carries_a_control_character_into_a_one_line_header() {
         // A newline here would put a row on the screen the head did not count,
         // which scrolls the frame it has just painted — the same fault
-        // `letibot_ui::width::break_cells` had, one layer up.
+        // `rano::width::text::break_cells` had, one layer up.
         let t = display_target("{\"cmd\":\"a\\nb\"}");
         assert!(!t.contains('\n'), "{t:?}");
     }

@@ -31,7 +31,7 @@
 //!
 //! A cell carries the terminal's own vocabulary — a foreground slot `0`–`15`, a background slot
 //! `0`–`15`, bold, dim, reverse —
-//! and nothing here names a *meaning*. The head's vocabulary is `letibot_ui::style::Role`
+//! and nothing here names a *meaning*. The head's vocabulary is `rano::style::Role`
 //! (*"something failed"*, *"this is syntax"*), and the mapping between them has one definition:
 //! [`crate::attr`] owns the walk that reads an `SGR` parameter list into a pen, and
 //! `letibot_ui::ansi` owns which role a pen is drawn as. That is why `letibot-ui` depends on this

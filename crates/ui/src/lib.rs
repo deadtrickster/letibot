@@ -34,7 +34,6 @@
 //!
 //! | module | what it owns |
 //! |---|---|
-//! | [`width`] | columns, grapheme clusters, escape-aware wrap and truncate |
 //! | [`highlight`] | rano capture names → this crate's syntax roles |
 //! | [`diff`] | line diff, intra-line word diff, unified rendering |
 //! | [`sidediff`] | the two-panel before/after view of a file edit |
@@ -61,4 +60,3 @@ pub mod sidediff;
 /// **Text this head did not author, made safe for a terminal** (§3.1). Here rather than
 /// in a head, because this crate draws every card and had no sanitiser at all.
 pub mod text;
-pub mod width;

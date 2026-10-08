@@ -510,7 +510,7 @@ fn a_path_is_shortened_at_a_separator_and_a_pattern_is_not() {
     );
     // A single segment with no separator to cut on falls back to characters
     // rather than returning something wider than it was asked for.
-    assert!(letibot_ui::width::width(&ellipsise_left("averylongsinglesegment", 10)) <= 10);
+    assert!(rano::width::text::width(&ellipsise_left("averylongsinglesegment", 10)) <= 10);
 }
 
 /// With a name after it the line goes over as typed — `--once` and `--key`

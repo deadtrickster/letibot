@@ -64,8 +64,8 @@
 //! [`thousands`] were written to the same brief and land on the same shape.
 
 use crate::painter::Sgr;
-use crate::width;
 use rano::style::{Palette, Role};
+use rano::width::text as width;
 
 /// The server's prefill progress, as it arrives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

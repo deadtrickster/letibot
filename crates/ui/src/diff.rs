@@ -86,8 +86,8 @@
 //!   context.
 
 use crate::painter::Sgr;
-use crate::width::{self, RESET};
 use rano::style::{Palette, Role};
+use rano::width::text::{self as width, RESET};
 
 /// Byte spans within one line, in order and non-overlapping.
 pub type Spans = Vec<(usize, usize)>;
@@ -774,7 +774,7 @@ pub fn expand_tabs(s: &str, stop: usize) -> String {
             col += n;
         } else {
             out.push(c);
-            col += width::char_width(c);
+            col += rano::width::char_width(c);
         }
     }
     out

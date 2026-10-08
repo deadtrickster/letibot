@@ -5,8 +5,8 @@ use crate::ui::render::{trim_to, visible_width};
 use crate::ui::*;
 use letibot_ui::editor::Editor;
 use letibot_ui::painter::Sgr;
-use letibot_ui::width;
 use rano::style::Role;
+use rano::width::text as width;
 
 impl App {
     /// The live completion row shown above the composer while a `/command` or a

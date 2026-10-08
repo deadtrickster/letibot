@@ -49,8 +49,8 @@
 use crate::diff::{DiffConfig, Hunk, Row, diff_lines, hunks};
 use crate::highlight::role_for_capture;
 use crate::painter::{Painter, Sgr};
-use crate::width;
 use rano::style::{Palette, Role};
+use rano::width::text as width;
 
 /// How the two panels are coloured, and where their numbers start.
 pub struct SplitConfig<'a> {
@@ -474,7 +474,7 @@ fn side_lines(
                 if vis < panel_w {
                     cell.push_str(&" ".repeat(panel_w - vis));
                 }
-                cell.push_str(crate::width::RESET);
+                cell.push_str(rano::width::text::RESET);
             }
             cell
         })
@@ -854,7 +854,7 @@ mod tests {
         // The cell ends with a reset — the padding inside the tint, then a
         // clean handoff — so the separator opens from a clean slate, not from
         // inside the tint.
-        assert!(added.ends_with(crate::width::RESET), "{added:?}");
+        assert!(added.ends_with(rano::width::text::RESET), "{added:?}");
         assert!(
             added.contains("\x1b[0m\x1b[2m │ "),
             "the separator must open from a clean slate, not from inside the tint: {added:?}"

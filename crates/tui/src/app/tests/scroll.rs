@@ -1750,7 +1750,7 @@ fn the_fork_line_keeps_its_width_as_the_cat_and_the_count_change() {
     for done in [0u64, 7, 99, 100, 999, 1000, 2702] {
         for tick in &ticks {
             let line = filling_line("carrying", "rows", done, 2702, *tick, &cfg);
-            seen.push(letibot_ui::width::width(&line[1]));
+            seen.push(rano::width::text::width(&line[1]));
         }
     }
     seen.dedup();

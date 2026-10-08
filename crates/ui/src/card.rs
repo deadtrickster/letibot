@@ -71,8 +71,8 @@
 //!   §8.3 disclosure obligation and has no grok-build counterpart.
 
 use crate::painter::{Painter, Sgr};
-use crate::width;
 use rano::style::{Palette, Role};
+use rano::width::text as width;
 
 /// How much of a block is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

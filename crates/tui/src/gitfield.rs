@@ -35,11 +35,11 @@
 use std::process::Command;
 
 /// How many columns a segment's text takes — the same ANSI-aware measure the header
-/// centres with (`letibot_ui::width`), because a piece's width is what fitting spends
+/// centres with (`rano::width::text`), because a piece's width is what fitting spends
 /// and the pieces are plain text anyway; kept as a local so the module has no renderer
 /// import for one `usize`.
 fn visible_width(s: &str) -> usize {
-    letibot_ui::width::width(s)
+    rano::width::text::width(s)
 }
 
 /// How long a reading is trusted before the loop takes another.

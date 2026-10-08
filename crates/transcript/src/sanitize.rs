@@ -180,7 +180,7 @@ fn clean(s: &str) -> bool {
 /// # Why removal is the honest arithmetic
 ///
 /// A well-formed sequence occupies **no columns**: a terminal acts on it and
-/// `letibot_ui::width::width` skips it. Removing it therefore leaves the column count
+/// `rano::width::text::width` skips it. Removing it therefore leaves the column count
 /// exactly as it was, while replacing it with a space would add one. A **lone** control
 /// byte that is not part of a sequence — a tab, a `\r`, a DEL — becomes a space instead,
 /// because dropping it would silently reflow the line.

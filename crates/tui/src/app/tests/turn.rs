@@ -401,7 +401,7 @@ fn every_reset_in_a_reasoning_row_restores_the_reasoning_style() {
     let rows = a.screen(100, 40);
 
     let reopen = rano::style::Palette::Colour.open(Role::Reasoning);
-    let reset = letibot_ui::width::RESET;
+    let reset = rano::width::text::RESET;
     let rail: Vec<&String> = rows.iter().filter(|l| l.contains('┃')).collect();
     assert!(
         rail.len() >= 4,

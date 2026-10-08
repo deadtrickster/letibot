@@ -438,7 +438,11 @@ mod tests {
     /// what `Painter::paint` produces at the top level, spelled out so the test asserts on
     /// bytes rather than on another call into the thing it is testing.
     fn span(role: Role, text: &str) -> String {
-        format!("{}{text}{}", Palette::Colour.sgr(role), crate::width::RESET)
+        format!(
+            "{}{text}{}",
+            Palette::Colour.sgr(role),
+            rano::width::text::RESET
+        )
     }
 
     /// **`grep --color`'s own sequence**, which is the other half of the operator's report:
@@ -492,7 +496,7 @@ mod tests {
     fn a_run_that_reaches_the_end_of_the_line_is_closed_before_the_next_one() {
         let out = painted(colour(), "src/\u{1b}[31mno reset here");
         assert!(
-            out.ends_with(crate::width::RESET),
+            out.ends_with(rano::width::text::RESET),
             "the line must not leave a colour open: {out:?}"
         );
         assert_eq!(
@@ -500,7 +504,7 @@ mod tests {
             format!(
                 "{}X{}",
                 Palette::Colour.sgr(Role::Failure),
-                crate::width::RESET
+                rano::width::text::RESET
             )
         );
     }
@@ -548,7 +552,7 @@ mod tests {
         // the `\u{9b}31m` in the middle was a colour, so `Failure`'s sequence is what it
         // became, and it is the only escape the output carries.
         let mut rest = out.clone();
-        for own in [Palette::Colour.sgr(Role::Failure), crate::width::RESET] {
+        for own in [Palette::Colour.sgr(Role::Failure), rano::width::text::RESET] {
             rest = rest.replace(own, "");
         }
         assert!(
@@ -603,7 +607,11 @@ mod tests {
         );
         // And the block's own style is re-established, not the terminal's default.
         assert!(
-            out.contains(&format!("{}{}", crate::width::RESET, p.sgr(Role::Faint))),
+            out.contains(&format!(
+                "{}{}",
+                rano::width::text::RESET,
+                p.sgr(Role::Faint)
+            )),
             "the run closed to the terminal rather than to the block: {out:?}"
         );
     }
@@ -790,5 +798,56 @@ mod tests {
             vec![span(Role::Failure, "ab   ")],
             "the run's own trailing blanks are the run"
         );
+    }
+
+    /// (Moved here with `width.rs`'s deletion: the head measures with `rano::width` now, and
+    /// this crate is still the one that reads both.)
+    ///
+    /// **The two width tables in this process agree, and where they do not it is written down.**
+    ///
+    /// A cell grid has to measure a character in columns for itself: `letibot_vt` is below this
+    /// crate and cannot call `rano::width::char_width`, and the ranges below are the ones this tree is willing
+    /// to carry, so they are the ones it copies. **A copy is a thing that drifts**, so the
+    /// agreement is asserted here rather than claimed in a comment — and the one deliberate
+    /// divergence is asserted too, because a difference nobody wrote down is a bug somebody will
+    /// "fix" in the wrong place.
+    ///
+    /// The divergence is the emoji planes: a grid has one cell per code point and the head has
+    /// one per *grapheme cluster*, so a single emoji is two columns to the head and one to the
+    /// screen, and a ZWJ sequence is one glyph here and its parts there. `letibot_vt::width`'s
+    /// header is where the cost is stated.
+    #[test]
+    fn the_cell_grid_measures_the_way_the_head_does_except_where_it_says_otherwise() {
+        // Everything a full-screen program's box, a path and a CJK filename are made of.
+        let agree = [
+            'a', 'Z', '~', ' ', '0', '-', '_', '\u{e9}', '\u{301}', '\u{200b}',
+            '\u{fe0f}', // combining and zero-width
+            '日', '本', '語', 'あ', 'ア', '한', 'Ａ', '。', '「',
+            '　', // CJK, kana, Hangul, fullwidth
+            '─', '│', '┌', '┐', '└', '┘', '├',
+            '┼', // box drawing: one column, and it must stay one
+            '\u{fffd}', '\u{a0}',
+        ];
+        for c in agree {
+            assert_eq!(
+                letibot_vt::width::char_width(c),
+                rano::width::char_width(c),
+                "the two tables disagree about {c:?} ({:#x})",
+                c as u32
+            );
+        }
+        // And the divergence, named: two columns to the head, one to the grid.
+        for c in ['✅', '🦀', '👍'] {
+            assert_eq!(
+                rano::width::char_width(c),
+                2,
+                "the head draws {c:?} double-width"
+            );
+            assert_eq!(
+                letibot_vt::width::char_width(c),
+                1,
+                "the grid gives {c:?} one cell, which is the documented cost"
+            );
+        }
     }
 }

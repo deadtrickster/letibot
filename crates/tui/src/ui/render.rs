@@ -36,12 +36,12 @@ use crate::ui::markdown::{Align, Block, IncrementalMarkdown, InlineStyle, Run};
 /// vendoring a width table"*, and the cost is not accepted anywhere a person can
 /// see it: a status line one column too long is wrapped by the terminal, which
 /// puts a row on the screen the head did not count, which scrolls the frame it
-/// just painted. [`letibot_ui::width`] measures grapheme clusters and knows the
+/// just painted. [`rano::width::text`] measures grapheme clusters and knows the
 /// wide ranges, never splits a cluster or an escape, breaks between wide clusters
 /// so CJK wraps at all, and carries SGR state across a break — which matters here
 /// because [`crate::term::paint`] emits `\x1b[K` per row and erase-to-end-of-line
 /// uses the *current* attributes.
-pub use letibot_ui::width::{truncate as trim_to, width as visible_width, wrap};
+pub use rano::width::text::{truncate as trim_to, width as visible_width, wrap};
 
 /// ANSI, kept as constants rather than a dependency.
 pub mod sgr {
@@ -196,7 +196,7 @@ pub fn reply_image(item_id: &str, target: &str) -> Option<(u32, Option<u32>, Opt
 pub fn picture_anchor(lines: &[String], from: usize, alt: &str, target: &str) -> Option<usize> {
     let plain = |l: &String| {
         let mut t = String::with_capacity(l.len());
-        letibot_ui::width::for_each_cell(l, |c| t.push_str(c.text));
+        rano::width::text::for_each_cell(l, |c| t.push_str(c.text));
         t
     };
     let reference = format!("]({target}");
@@ -351,7 +351,7 @@ impl CodePaint {
     ///
     /// **Tabs become spaces HERE, before anything parses or measures.** A raw tab
     /// handed to the terminal is expanded at THAT terminal's stop — conventionally
-    /// eight — while `width::char_width` counts it as ZERO columns, so the row on the
+    /// eight — while `rano::width::char_width` counts it as ZERO columns, so the row on the
     /// glass and this head's model of it were two different lines. The stop is
     /// [`letibot_ui::diff::TAB_STOP`], the same one both diff renderers use: a Go body
     /// indented four deep in the diff view must not be eight deep in a fence.
@@ -1160,7 +1160,7 @@ mod tests {
     ///
     /// MEASURED 2026-10-02, comparing notes with leticl: the fence path expanded tabs
     /// NOWHERE, so a raw `\t` reached the terminal and was expanded at ITS stop —
-    /// conventionally eight — while `width::char_width` counted it as ZERO columns. A Go
+    /// conventionally eight — while `rano::width::char_width` counted it as ZERO columns. A Go
     /// body indented four deep in the diff view was eight deep in a fence, and this
     /// head's idea of the row disagreed with the glass.
     ///

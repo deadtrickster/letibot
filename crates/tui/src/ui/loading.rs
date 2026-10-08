@@ -4,8 +4,9 @@
 use crate::app::*;
 use crate::ui::render::RenderConfig;
 use letibot_ui::painter::Sgr;
-use letibot_ui::{progress, width};
+use letibot_ui::progress;
 use rano::style::Role;
+use rano::width::text as width;
 
 /// One row, centred horizontally in `w` columns.
 ///

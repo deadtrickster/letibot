@@ -84,8 +84,8 @@
 //!   opencode's is SolidJS reactive. These are the rules, in Rust, as data.
 
 use crate::painter::Sgr;
-use crate::width;
 use rano::style::{Palette, Role};
+use rano::width::text as width;
 
 /// Which characters make up a "word" for a word motion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

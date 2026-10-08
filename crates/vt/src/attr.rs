@@ -5,7 +5,7 @@
 //!
 //! A cell carries what the program **said**: a foreground slot `0`–`15`, a background slot
 //! `0`–`15`, bold, dim, reverse. Nothing here names a meaning. The head's vocabulary is
-//! `letibot_ui::style::Role` — *"something failed"*, *"this is syntax"* — and the mapping between
+//! `rano::style::Role` — *"something failed"*, *"this is syntax"* — and the mapping between
 //! the two lives in exactly one place, `letibot_ui::ansi`. That is why there is no `Role` in this
 //! crate and must not be: a screen model that knew what red *means* could not be reused by a head
 //! that means something else by it, and `Role::Failure` is `31` in *this* palette rather than in
