@@ -2,10 +2,10 @@
 //! the conversation, the cards and panes, the composer and the hint bar — and where the cursor goes.
 
 use crate::app::*;
-use crate::ui::render::{sgr, trim_to, visible_width, wrap};
+use crate::ui::render::{row, row_strings, trim_to, visible_width, wrap};
 use crate::ui::*;
-use letibot_ui::painter::Sgr;
 use rano::agent::composer::{BoxBottom, BoxTop};
+use rano::agent::screens;
 use rano::style::Role;
 
 impl App {
@@ -48,10 +48,10 @@ impl App {
             // about keys, which is the row a held view's one sentence belongs on.
             let gutter = Self::gutter(term_w);
             let w = term_w.saturating_sub(2 * gutter).max(1);
-            let marker = self
-                .cfg
-                .palette()
-                .painted(Role::Attention, &trim_to(HOLD_MARKER, w));
+            let marker = row(
+                &rano::agent::text::one(trim_to(HOLD_MARKER, w), Role::Attention),
+                self.cfg.palette(),
+            );
             let row = if gutter > 0 {
                 format!("{}{marker}", " ".repeat(gutter))
             } else {
@@ -190,15 +190,9 @@ impl App {
         //
         // **Nothing is drawn while the pane is on the screen**: the pane itself is the fact,
         // and a sentence about it would be the same fact twice.
-        let pane = self.pane_behind().map(|line| {
-            self.cfg.palette().painted(
-                Role::Pending,
-                &trim_to(
-                    &format!("a pane is running: {line} — `!term` attaches, `!term close` ends it"),
-                    w,
-                ),
-            )
-        });
+        let pane = self
+            .pane_behind()
+            .map(|line| row(&screens::pane_behind(&line, w), self.cfg.palette()));
         // **The turn's status is a ROW of its own, immediately above the composer** (R51 item 1).
         //
         // It used to be a legend inlaid in the composer's bottom border, sharing that edge with
@@ -223,7 +217,7 @@ impl App {
         let notice = self
             .notice
             .clone()
-            .map(|n| colour(&self.cfg, sgr::MAGENTA, &trim_to(&format!("· {n}"), w)));
+            .map(|n| row(&screens::notice(&n, w), self.cfg.palette()));
         // Live slash-command matches, one dim row above the composer. It is a
         // typing aid, not a message.
         //
@@ -286,10 +280,7 @@ impl App {
         // the thing on screen. Wrapped rather than trimmed: this one is read, not
         // glanced at.
         if let Some(line) = self.mode_confirm_line() {
-            let p = self.cfg.palette();
-            for l in wrap(&line, w) {
-                chrome.push(p.painted(Role::Attention, &l));
-            }
+            chrome.extend(row_strings(&screens::asking(&line, w), self.cfg.palette()));
         }
         // **The content, as a window** (R20), then the answer in full underneath it.
         //
@@ -550,10 +541,16 @@ impl App {
             // is showing, the strings in this `Vec` went through a renderer that
             // sanitised its own foreign inputs already — a note's detail, a job's
             // command, a gate's summary — so there is nothing left here to guard.
-            let mut rows = vec![p.painted(Role::Strong, &echo), String::new()];
+            let mut rows = vec![
+                row(&rano::agent::text::one(echo, Role::Strong), p),
+                String::new(),
+            ];
             rows.extend(lines.iter().flat_map(|l| wrap(l, w)));
             rows.push(String::new());
-            rows.push(p.painted(Role::Faint, "    esc closes · up/down scrolls"));
+            rows.push(row(
+                &rano::agent::pane::faint("    esc closes · up/down scrolls"),
+                p,
+            ));
             self.pane_window(rows, room)
         } else if self.help {
             let help = help_lines(&self.cfg, w);

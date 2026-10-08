@@ -2,19 +2,8 @@
 //! filling or being compacted — drawn by `rano::agent::loading`.
 
 use crate::app::*;
-use crate::ui::render::{RenderConfig, row, row_strings};
-use rano::agent::loading::{Compacting, Filling, centred};
-
-/// One row, centred horizontally in `w` columns.
-///
-/// Escape-aware, because the thing being centred may already be painted: `width::width`
-/// skips ANSI sequences, so a coloured cat and a plain one land in the same column.
-/// A plain `chars().count()` is what puts a painted string two columns left of centre,
-/// and the whole point of centring is that the eye finds it in the same place from
-/// frame to frame as the string changes length — which the walking cat does.
-pub(crate) fn centred_row(cfg: &RenderConfig, text: &str, w: usize) -> String {
-    row(&centred(text, w), cfg.palette())
-}
+use crate::ui::render::{RenderConfig, row_strings};
+use rano::agent::loading::{Compacting, Filling};
 
 /// **How long a bulk announcement may stay unfilled before the head says it is not
 /// coming**, in milliseconds.
@@ -114,17 +103,12 @@ pub(crate) fn compacting_line(c: &CompactionLine, now_ms: u64, cfg: &RenderConfi
     row_strings(&line.lines(cfg.width), cfg.palette())
 }
 
-/// When the waiting frame starts naming the way out, in milliseconds.
-///
-/// Under it the cat is a cat and the wait is usually over in a few hundred
-/// milliseconds; over it something is wrong, and the operator should be told the escape
-/// hatch exists rather than having to discover it. The wait loop in `letibot-tui`'s
-/// `main` is what makes the keys live — the first version of that screen did not read
-/// them at all, so the hint bar under it named a key that did nothing.
-pub(crate) const ATTACH_IMPATIENT: u64 = 2_000;
-
+/// How long an attach may go unanswered before the waiting screen says how to get out —
+/// rano's (`rano::agent::screens`), named here for the tests that drive the clock past it.
 #[cfg(test)]
-pub(crate) use rano::agent::loading::CAT_FRAMES;
-/// The cat, its slot and its frame at a time — rano's (`rano::agent::loading`), one copy for
-/// the attach screen and the fill and compaction rows.
-pub(crate) use rano::agent::loading::{CAT_SLOT, cat_frame};
+pub(crate) use rano::agent::screens::ATTACH_IMPATIENT;
+
+/// The cat's frames — rano's (`rano::agent::loading`), one copy for the attach screen and the
+/// fill and compaction rows — named here for the tests that pin their width and their walk.
+#[cfg(test)]
+pub(crate) use rano::agent::loading::{CAT_FRAMES, CAT_SLOT, cat_frame};

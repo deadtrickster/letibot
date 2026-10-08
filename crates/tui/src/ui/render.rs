@@ -25,7 +25,6 @@
 //! last N lines — which is what a reader of a streaming model actually wants, because the
 //! interesting end is the end.
 
-use letibot_ui::painter::Painter;
 use rano::style::{Palette, Role};
 
 use rano::markdown::{Block, IncrementalMarkdown, MarkdownView, RenderOptions};
@@ -239,16 +238,6 @@ impl RenderConfig {
             Palette::Colour
         } else {
             Palette::None
-        }
-    }
-
-    /// The palette bound to [`RenderConfig::base`]. Everything painted by this
-    /// module goes through it, which is what makes the restore structural rather
-    /// than a fix applied to whichever call site somebody noticed.
-    pub fn painter(&self) -> Painter {
-        match self.base {
-            Some(b) => Painter::inside(self.palette(), b),
-            None => Painter::new(self.palette()),
         }
     }
 

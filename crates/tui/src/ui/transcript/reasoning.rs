@@ -1,10 +1,9 @@
 //! **The model's working-out**, dimmed and folded.
 
 use crate::app::*;
-use crate::ui::render::{BlockCache, Decor, RenderConfig, trim_to, visible_width};
+use crate::ui::render::{BlockCache, Decor, RenderConfig, visible_width};
 use crate::ui::*;
 use letibot_transcript::TranscriptItem;
-use letibot_ui::painter::{Painter, Sgr};
 use letibot_ui::text::without_control_lines;
 use rano::agent::card;
 use rano::markdown::IncrementalMarkdown;
@@ -45,10 +44,14 @@ pub(crate) fn reasoning_decor(cfg: &RenderConfig) -> Decor {
     // an invariant with an exception at column 0 is an invariant nobody can check.
     // The cost is the block's opening sequence twice at the head of each row,
     // which a terminal collapses to nothing.
-    let rail = Painter::inside(p, Role::Reasoning);
+    let register = rano::render::Style::of(Role::Reasoning);
+    let rail = rano::render::Line {
+        spans: vec![rano::render::Span::role("┃", Role::Faint)],
+        style: register.clone(),
+    };
     Decor {
-        prefix: format!("{step}{} ", rail.painted(Role::Faint, "┃")),
-        open: p.sgr(Role::Reasoning).to_string(),
+        prefix: format!("{step}{} ", rail.to_ansi_inside(p)),
+        open: register.look(p).sgr(),
     }
 }
 
@@ -91,22 +94,23 @@ pub(crate) fn thinking_header(
     let w = cfg.width.max(20);
     let lines = reasoning_display_lines(raw, cfg.width);
     let mark = if open { "▾" } else { "▸" };
-    let word = card::reasoning(&[], running, elapsed_ms, &card_cfg(cfg, Fold::Folded))
-        .first()
-        .map(|l| crate::ui::render::row(l, cfg.palette()))
-        .unwrap_or_default();
-    trim_to(
-        &format!(
-            "{mark} {word}{}",
-            dim(
-                cfg,
-                &format!(
-                    " · {lines} line{} · ctrl-r",
-                    if lines == 1 { "" } else { "s" }
-                )
-            )
+    let mut header = rano::render::Line::raw(format!("{mark} "));
+    if let Some(word) = card::reasoning(&[], running, elapsed_ms, &card_cfg(cfg, Fold::Folded))
+        .into_iter()
+        .next()
+    {
+        header.spans.extend(word.spans);
+    }
+    header.push(rano::render::Span::role(
+        format!(
+            " · {lines} line{} · ctrl-r",
+            if lines == 1 { "" } else { "s" }
         ),
-        w,
+        Role::Faint,
+    ));
+    crate::ui::render::row(
+        &rano::render::text::truncate_owned(header, w),
+        cfg.palette(),
     )
 }
 

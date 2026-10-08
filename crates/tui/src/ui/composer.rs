@@ -3,9 +3,7 @@
 use crate::app::*;
 use crate::ui::render::{row, trim_to};
 use letibot_ui::editor::Editor;
-use letibot_ui::painter::Sgr;
 use rano::agent::composer::{Candidate, completions_line};
-use rano::style::Role;
 use rano::width::text as width;
 
 impl App {
@@ -152,7 +150,7 @@ impl App {
         // `Role::Faint`, not `sgr::GREY`. 90 is the theme's *bright black*, which `style.rs`
         // measured landing within a hair of the background on several light themes; the attribute
         // de-emphasises whatever foreground the reader has already chosen.
-        let wall = boxed.then(|| self.cfg.palette().painted(Role::Faint, "│"));
+        let wall = boxed.then(|| row(&rano::agent::pane::faint("│"), self.cfg.palette()));
         for i in start..start + show {
             let body = lines.get(i).cloned().unwrap_or_default();
             out.push(match &wall {

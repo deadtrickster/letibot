@@ -1,14 +1,12 @@
 //! **A row the model wrote**: its prose, and a line for each call it made that has no result.
 
-use crate::ui::render::{BlockCache, trim_to};
+use crate::ui::render::{BlockCache, row};
 use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
-use letibot_ui::painter::Sgr;
 use letibot_ui::text::without_control_lines;
 use rano::agent::card;
 use rano::markdown::IncrementalMarkdown;
-use rano::style::Role;
 
 pub(crate) fn assistant_row_lines(
     it: &SnapshotItem,
@@ -106,7 +104,6 @@ pub(crate) fn assistant_row_lines(
             continue;
         }
         let verb = card::Verb::of(&c.name);
-        let mut line = format!("→ {}", verb.label(false));
         // Derived from the arguments **on this row**, never looked up by
         // call id. The row is holding the very bytes the rule reads, and it
         // is the only copy of them that is guaranteed to belong to this
@@ -119,23 +116,24 @@ pub(crate) fn assistant_row_lines(
         // a second copy of the rule here is what would make a switched head
         // disagree with the head it switched away from.
         let target = letibot_sessionlog::display_target(&c.arguments);
-        if target.is_empty() {
+        let subject = if target.is_empty() {
             // The call id earns its columns only when there is nothing
             // better: it is a correlation key, and it is the only thing
             // that distinguishes two calls to the same tool.
-            line.push_str(&format!(" ({})", c.id));
+            format!("({})", c.id)
         } else {
-            line.push(' ');
-            line.push_str(&target);
-        }
-        // Said out loud, because a row that looks like every other tool row
-        // and quietly has no output is the shape a person reads straight
-        // past. It is the only thing this row now means.
-        line.push_str(" · no result");
+            target
+        };
+        // ` · no result` said out loud, because a row that looks like every
+        // other tool row and quietly has no output is the shape a person reads
+        // straight past. It is the only thing this row now means.
         acted = true;
-        out.push(trim_to(
-            &format!("{}{}", " ".repeat(ind), p.painted(Role::Attention, &line)),
-            cfg.width,
+        out.push(row(
+            &rano::render::text::truncate_owned(
+                rano::agent::screens::unanswered_call(verb.label(false), &subject, ind),
+                cfg.width,
+            ),
+            p,
         ));
         // The settled row's half of `ctrl-x`. A live turn shows the raw
         // markup from the `ToolCall` deltas; once the row is committed the

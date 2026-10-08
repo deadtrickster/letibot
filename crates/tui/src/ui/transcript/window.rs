@@ -2,13 +2,10 @@
 //! anchor the reader holds or the bottom they follow.
 
 use crate::app::*;
-use crate::ui::render::{RenderConfig, sgr, visible_width};
+use crate::ui::render::{RenderConfig, row, row_strings, visible_width};
 use crate::ui::*;
 use letibot_sessionlog::view::{CallState, TurnState};
 use letibot_transcript::TranscriptItem;
-use letibot_ui::painter::Sgr;
-use letibot_ui::progress;
-use rano::style::Role;
 
 impl App {
     /// The visible `room` lines of the body, and nothing else built.
@@ -581,7 +578,7 @@ impl App {
             };
             segs.push(Seg::Owned(vec![
                 String::new(),
-                cfg.palette().painted(Role::Faint, &said),
+                row(&rano::agent::pane::faint(said), cfg.palette()),
             ]));
         }
 
@@ -604,45 +601,13 @@ impl App {
         let waiting;
         if self.attaching {
             let elapsed = self.now_ms.saturating_sub(self.attach_started_ms);
-            let cat = cat_frame(elapsed);
-            let width = cfg.width;
-            // **Fixed-width cat, centred as a block.** `(^.^=)` and `(^.^=)~` are
-            // different widths, and centring each row on its own makes the cat slide
-            // left and right as it changes expression — which reads as a jitter rather
-            // than a walk. Each frame is padded to the widest one, so the cat is a
-            // fixed thing whose expression changes.
-            let cat_padded = format!("{cat:<CAT_SLOT$}");
-            let mut rows: Vec<String> = vec![String::new(); room / 2];
-            // The cat **alone** on its row, so "centred" is about the cat and nothing
-            // else — a `… attach` suffix beside it makes the row's centre a statement
-            // about the suffix's length too, which is not what a waiting indicator is
-            // for.
-            rows.push(centred_row(&cfg, &cat_padded, width));
-            rows.push(String::new());
-            // A pawprint trail, so a still frame still reads as *going somewhere*.
-            rows.push(centred_row(&cfg, &"· · · · ›".to_string(), width));
-            rows.push(String::new());
-            rows.push(centred_row(
-                &cfg,
-                "asking the daemon for this session",
-                width,
-            ));
-            rows.push(String::new());
-            rows.push(centred_row(&cfg, &progress::duration(elapsed), width));
-            // **And, once it has gone on long enough to be worth saying, how to get
-            // out.** Under a couple of seconds this is noise on a wait that is usually
-            // over before it is read; over it, something is wrong and the operator
-            // should not have to work out that the keys they can see in the hint bar
-            // are live — the first version of this screen did not read them at all, so
-            // the bar under it named a key that did nothing (`main`'s wait loop).
-            if elapsed >= ATTACH_IMPATIENT {
-                rows.push(String::new());
-                rows.push(centred_row(
-                    &cfg,
-                    "the daemon has not answered. ctrl-c twice, or wait",
-                    width,
-                ));
-            }
+            // The cat, its trail, the sentence, the clock — and the way out once it is late
+            // (`ATTACH_IMPATIENT`): `rano::agent::screens::attaching`, which keeps the reasons
+            // for each (the cat padded to its widest frame, alone on its row).
+            let rows = row_strings(
+                &rano::agent::screens::attaching(elapsed, room, cfg.width),
+                cfg.palette(),
+            );
             waiting = rows;
             segs.push(Seg::Borrowed(&waiting));
         }
@@ -655,22 +620,7 @@ impl App {
         // that nobody has reported yet.
         let opening;
         if segs.iter().all(|s| s.len() == 0) && !self.attaching {
-            opening = vec![
-                colour(&cfg, sgr::BOLD, "letibot"),
-                String::new(),
-                dim(
-                    &cfg,
-                    "attached, and this session has said nothing yet. Type a question and \
-                     press enter.",
-                ),
-                dim(
-                    &cfg,
-                    "The turn runs in the daemon: closing this window does not stop it, and \
-                     reattaching picks it up.",
-                ),
-                String::new(),
-                dim(&cfg, "/help lists the keys."),
-            ];
+            opening = row_strings(&rano::agent::screens::opening(), cfg.palette());
             segs.push(Seg::Borrowed(&opening));
         }
 
@@ -737,17 +687,9 @@ impl App {
         if !self.following() {
             let behind = total - end;
             let last = out.len().saturating_sub(1);
-            out[last] = colour(
-                &self.cfg,
-                sgr::YELLOW,
-                // **The state, and the act that undoes it** — R29's rule for a
-                // disclosure, and R36's for the reader who cannot tell pinned from
-                // following: they scroll to find out, which is the affordance failing.
-                &format!(
-                    "── holding your place · {behind} line(s) below arrive underneath and do not \
-                     move this · ↑↓ pgup/pgdn move · ↓ to the bottom or esc follows again"
-                ),
-            );
+            // **The state, and the act that undoes it** — R29's rule for a disclosure, and
+            // R36's for the reader who cannot tell pinned from following.
+            out[last] = row(&rano::agent::screens::holding(behind), self.cfg.palette());
         }
         out
     }

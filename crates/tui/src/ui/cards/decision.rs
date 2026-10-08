@@ -4,7 +4,7 @@
 //! the open decision this head holds.
 
 use crate::app::*;
-use crate::ui::render::row_strings;
+use crate::ui::render::{row, row_strings};
 use crate::ui::*;
 use letibot_sessionlog::view::OpenDecision;
 #[cfg(test)]
@@ -151,19 +151,25 @@ impl App {
         let above = at;
         let below = content.len() - (at + shown);
         let seam = if below == 0 {
-            dim(
-                &self.cfg,
-                &format!("  … {above} line(s) out of view · pgup scrolls"),
+            row(
+                &rano::agent::pane::faint(format!(
+                    "  … {above} line(s) out of view · pgup scrolls"
+                )),
+                self.cfg.palette(),
             )
         } else if above == 0 {
-            dim(
-                &self.cfg,
-                &format!("  … {below} line(s) out of view · pgdn scrolls"),
+            row(
+                &rano::agent::pane::faint(format!(
+                    "  … {below} line(s) out of view · pgdn scrolls"
+                )),
+                self.cfg.palette(),
             )
         } else {
-            dim(
-                &self.cfg,
-                &format!("  … {above} above, {below} below · pgup/pgdn scrolls"),
+            row(
+                &rano::agent::pane::faint(format!(
+                    "  … {above} above, {below} below · pgup/pgdn scrolls"
+                )),
+                self.cfg.palette(),
             )
         };
         let mut out: Vec<String> = Vec::with_capacity(room);

@@ -1,26 +1,8 @@
-//! **Small painting helpers** shared by the widgets: dim, warn, a git colour, a fold word.
+//! **Small helpers the rows share**: the first sentence of a reason, a fold's word. The
+//! painting they once did here is `crate::ui::rows` and rano's.
 
 use crate::app::*;
-use crate::ui::render::{RenderConfig, sgr};
 
-pub(crate) fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
-    if cfg.color {
-        format!("{code}{s}{}", sgr::RESET)
-    } else {
-        s.to_string()
-    }
-}
-
-/// **One git segment, painted for its role** — leticl's `+git-styles+`, one colour per
-/// segment, chosen to say what the segment SAYS: green branch when the tree is clean and
-/// yellow when it is not (the one fact a person reads at a glance), staged green, unstaged
-/// yellow, conflicts red and bold because nothing else on that row is a demand, the action
-/// magenta and bold, untracked dim because it is usually noise.
-///
-/// `colour`'s one-code shape is kept — bold is spelled as a second SGR rather than a composed
-/// `1;35`, the same way `sgr::BOLD_ITALIC` composes exactly the pairs that recur — because
-/// two escapes reset once and read the same as the composed ones in every terminal this row
-/// has been drawn on.
 /// The first sentence of a refusal's reasoning, capped.
 ///
 /// Layer A's `basis` is written for the model: it names every construct it could
@@ -42,10 +24,6 @@ pub(crate) use rano::agent::text::first_sentence;
 /// rule now (the tool row filters by it), here for the tests that pin its shape.
 #[cfg(test)]
 pub(crate) use rano::agent::text::is_envelope;
-
-pub(crate) fn dim(cfg: &RenderConfig, s: &str) -> String {
-    colour(cfg, sgr::DIM, s)
-}
 
 pub(crate) fn fold_word(f: Fold) -> &'static str {
     match f {

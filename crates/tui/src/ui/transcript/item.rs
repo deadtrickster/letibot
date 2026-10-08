@@ -2,11 +2,10 @@
 //! lines, under the visibility, folds and budgets the frame was asked for.
 
 use crate::app::*;
-use crate::ui::render::{RenderConfig, trim_to, wrap};
+use crate::ui::render::{RenderConfig, row_strings, trim_to};
 use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
-use letibot_ui::text::without_control_lines;
 use rano::agent::card;
 
 /// A `card::CardConfig` from this head's own config. One place, so the width and the fold
@@ -251,21 +250,23 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
         return (RowClass::Other, Vec::new());
     };
     match item {
-        TranscriptItem::System { text, origin } => {
-            let mut out = vec![dim(cfg, &format!("system ({origin:?})"))];
-            out.extend(
-                wrap(&without_control_lines(text), cfg.width)
-                    .into_iter()
-                    .map(|l| dim(cfg, &l)),
-            );
-            (RowClass::Other, out)
-        }
+        TranscriptItem::System { text, origin } => (
+            RowClass::Other,
+            row_strings(
+                &rano::agent::screens::system_row(&format!("{origin:?}"), text, cfg.width),
+                cfg.palette(),
+            ),
+        ),
         TranscriptItem::User { .. } => user_row_lines(it, item, ctx),
         TranscriptItem::Reasoning { .. } => reasoning_row_lines(item, ctx, ind),
         TranscriptItem::Assistant { .. } => assistant_row_lines(it, item, ctx, ind),
         TranscriptItem::ToolResult { .. } => tool_result_row_lines(it, item, ctx, newest, ind),
-        TranscriptItem::SegmentMark { label, .. } => {
-            (RowClass::Other, vec![dim(cfg, &format!("─── {label} ───"))])
-        }
+        TranscriptItem::SegmentMark { label, .. } => (
+            RowClass::Other,
+            vec![crate::ui::render::row(
+                &rano::agent::screens::segment_mark(label),
+                cfg.palette(),
+            )],
+        ),
     }
 }
