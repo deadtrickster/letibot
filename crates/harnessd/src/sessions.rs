@@ -1891,7 +1891,12 @@ impl<'a> Sessions<'a> {
     /// race the spawn — and spawns it. `Err` only when the thread could not be started
     /// at all; the flag is undone first, because a run that never started must not
     /// block every line behind it.
-    fn start_operator_run(&mut self, session_id: &str, line: &str, who: &str) -> Result<(), String> {
+    fn start_operator_run(
+        &mut self,
+        session_id: &str,
+        line: &str,
+        who: &str,
+    ) -> Result<(), String> {
         let state = self
             .bang_state(session_id)
             .ok_or_else(|| "no operator-run state for this session".to_string())?;

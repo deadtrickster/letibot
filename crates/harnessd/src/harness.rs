@@ -3970,7 +3970,10 @@ impl Harness {
         let result = self.runtime.invoke_operator("", &call, &mut quiet);
         // The pieces, not the type: [`Self::settle_operator_shell`] takes what the split
         // path carries over the hub, and this path hands it the same shape.
-        let spill = result.spill.as_ref().map(|s| (s.full_bytes, s.hash.clone()));
+        let spill = result
+            .spill
+            .as_ref()
+            .map(|s| (s.full_bytes, s.hash.clone()));
         let outcome = result.outcome.clone();
         self.settle_operator_shell(line, who, &call_id, outcome, result.render(), spill)
     }
@@ -4350,10 +4353,7 @@ impl Harness {
     /// mutates in place. Held across a decision by the caller that makes one; these
     /// reads and moves are momentary.
     fn gate(&self) -> std::sync::MutexGuard<'_, Box<dyn letibot_tools::Gate>> {
-        self.runtime
-            .gate
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        self.runtime.gate.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Point this session's guard at `endpoint`, build it and attach it.
@@ -4519,8 +4519,7 @@ impl Harness {
         self.cfg.oracle = Some(endpoint.clone());
         let advisor = model_adjudicator(&self.cfg, "`/supervise`", Some(self.hub.clone()))
             .map_err(|e| e.to_string())?;
-        self.gate()
-            .attach_advisor(std::sync::Arc::from(advisor))?;
+        self.gate().attach_advisor(std::sync::Arc::from(advisor))?;
         Ok(format!(
             "guard model at {} for this session. To make it the default, put it in \
              {}:\n  [gatekeeper]\n  endpoint = \"{}\"",

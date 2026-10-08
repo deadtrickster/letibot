@@ -67,8 +67,8 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use letibot_sessionlog::hub::{CommandKind, Hub, ShellSpill};
 use letibot_tools::ToolRuntime;
