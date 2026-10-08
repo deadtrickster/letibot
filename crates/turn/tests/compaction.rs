@@ -32,16 +32,18 @@ const THINK_CLOSE: u32 = 248069;
 const TOOL_CALL_OPEN: u32 = 248058;
 const TOOL_CALL_CLOSE: u32 = 248059;
 
-fn vocab() -> &'static Vocab {
-    static VOCAB: OnceLock<Vocab> = OnceLock::new();
-    VOCAB.get_or_init(|| {
-        // One home for this path: `letibot_tokencore::apparatus`. It was
-        // written out in seven crates, and `LETIBOT_VOCAB_GGUF` now wins
-        // unconditionally there rather than being a hint.
-        let p = letibot_tokencore::apparatus::gguf_path();
-        assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
-        Vocab::load(&p).expect("the vocabulary must load")
-    })
+fn vocab() -> std::sync::Arc<Vocab> {
+    static VOCAB: OnceLock<std::sync::Arc<Vocab>> = OnceLock::new();
+    VOCAB
+        .get_or_init(|| {
+            // One home for this path: `letibot_tokencore::apparatus`. It was
+            // written out in seven crates, and `LETIBOT_VOCAB_GGUF` now wins
+            // unconditionally there rather than being a hint.
+            let p = letibot_tokencore::apparatus::gguf_path();
+            assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
+            std::sync::Arc::new(letibot_llama::load(&p).expect("the vocabulary must load"))
+        })
+        .clone()
 }
 
 fn serial() -> MutexGuard<'static, ()> {
@@ -51,15 +53,11 @@ fn serial() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-fn engine<'a>(
-    renderer: &'a ChatMlRenderer,
-    parser: &'a ChatMlParser,
-    endpoint: Endpoint,
-) -> TurnEngine<'a> {
+fn engine(endpoint: Endpoint) -> TurnEngine {
     TurnEngine::new(
         vocab(),
-        renderer,
-        parser,
+        std::sync::Arc::new(ChatMlRenderer::default()),
+        std::sync::Arc::new(ChatMlParser),
         endpoint,
         BackendCaps::OWN_SERVER,
         "canned",
@@ -68,7 +66,7 @@ fn engine<'a>(
     .expect("the fixture dialect resolves against Qwen's vocabulary")
 }
 
-fn session(engine: &TurnEngine<'_>, tag: &str) -> Session {
+fn session(engine: &TurnEngine, tag: &str) -> Session {
     engine
         .open(
             tag,
@@ -138,13 +136,12 @@ fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
         return;
     };
     let _lock = serial();
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
 
     // Turn one: an ordinary answer over a session with one user item.
     let answer = ids_of("the answer was forty-two");
     let first = a_summary_turn(&ids_of("count the things"), &answer, 20, 18);
     let canned = Canned::serve(first, 1);
-    let mut engine1 = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine1 = engine(canned.endpoint.clone());
     let mut session = session(&engine1, "compact-happy");
     let mut sink = RecordingSink::new();
     session
@@ -166,7 +163,7 @@ fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
         39, // the server reused all but the instruction suffix
     );
     let canned = Canned::serve(frames, 1);
-    let mut engine2 = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine2 = engine(canned.endpoint.clone());
     let outcome = letibot_turn::run_compaction(
         &mut engine2,
         &mut session,
@@ -225,7 +222,6 @@ fn a_summary_turn_that_calls_tools_surfaces_them() {
         return;
     };
     let _lock = serial();
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
 
     let mut frames = vec![Frame::Progress {
         total: 30,
@@ -250,7 +246,7 @@ fn a_summary_turn_that_calls_tools_surfaces_them() {
         cache_n: 29,
     });
     let canned = Canned::serve(frames, 1);
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "compact-tools");
     let mut sink = RecordingSink::new();
     session
@@ -284,7 +280,6 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
         return;
     };
     let _lock = serial();
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
 
     // All budget spent thinking; `finish_reason: length`, no content. The same
     // frames every time: a model that truncates once usually truncates again,
@@ -304,7 +299,7 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
     // Four requests: three salvages, then the turn whose failure is the spent
     // budget itself. The script cycles, so one list covers all of them.
     let canned = Canned::serve_each(vec![frames], 4);
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "compact-fail");
     let mut sink = RecordingSink::new();
     session
@@ -403,7 +398,6 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
         return;
     };
     let _lock = serial();
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
 
     let summary_text = "decided: answer is forty-two; no files changed; open: none";
     let salvaged = a_summary_turn(
@@ -414,7 +408,7 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
     );
     // Request one ends unfinished; request two is the retry and answers.
     let canned = Canned::serve_each(vec![an_unfinished_reasoning_turn(30), salvaged], 2);
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "compact-salvage");
     let mut sink = RecordingSink::new();
     session
@@ -581,11 +575,10 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
     }
 
     let _lock = serial();
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     // A local server that must NOT be asked: it serves nothing, so any request
     // to it fails the turn and the test with it.
     let idle = Canned::serve(Vec::new(), 0);
-    let mut engine = engine(&renderer, &parser, idle.endpoint.clone());
+    let mut engine = engine(idle.endpoint.clone());
     let mut session = session(&engine, "compact-provider");
     let mut sink = RecordingSink::new();
     session

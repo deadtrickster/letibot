@@ -103,13 +103,23 @@ set -eu
 # rather than from `target/release` — see the copy loop below.
 ARCHIVE_BINARIES="harnessd letibot-tui letibot-askpass letibot"
 ARCHIVE_LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
-ARCHIVE="$ARCHIVE_BINARIES $ARCHIVE_LIBRARIES"
+# The same four for an `*-apple-darwin` triple, which install.sh's LIBRARIES_DARWIN
+# must match (`check-dist-names.sh` holds the two to each other).
+ARCHIVE_LIBRARIES_DARWIN="libllama.0.dylib libggml.0.dylib libggml-cpu.0.dylib libggml-base.0.dylib"
 
 triple="${1:-}"
 if [ -z "$triple" ]; then
     echo "usage: make-dist.sh <target-triple> [outdir]" >&2
     exit 2
 fi
+case "$triple" in
+    *-apple-darwin)
+        darwin=1
+        ARCHIVE_LIBRARIES=$ARCHIVE_LIBRARIES_DARWIN
+        ;;
+    *) darwin=0 ;;
+esac
+ARCHIVE="$ARCHIVE_BINARIES $ARCHIVE_LIBRARIES"
 outdir="${2:-dist}"
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -144,7 +154,7 @@ for so in $ARCHIVE_LIBRARIES; do
     if [ ! -f "$lib/$so" ]; then
         echo "make-dist: $lib/$so not found." >&2
         echo "  harnessd links it and needs it in the package. Set LETIBOT_LLAMA_LIB" >&2
-        echo "  to the directory holding libllama.so.0 (a llama.cpp build tree's bin/)." >&2
+        echo "  to the directory holding ${ARCHIVE_LIBRARIES%% *} (a llama.cpp build tree's bin/)." >&2
         exit 1
     fi
 done
@@ -221,6 +231,64 @@ chmod 755 "$stage"/*
 # release script that rewrote somebody's llama.cpp checkout would be a worse bug
 # than the one it fixes, and `patchelf` is only needed when the libraries were built
 # without `$ORIGIN` in the first place.
+# **macOS: the same two guarantees, in Mach-O's terms**, and then the Linux checks below
+# are skipped as a block. A dylib finds its siblings through its own install name
+# (`@rpath/<name>`) and its own LC_RPATH, which — like DT_RUNPATH — is not inherited, so
+# each staged library must say `@loader_path` (dyld's `$ORIGIN`) and nothing absolute.
+# Unlike `patchelf`, `install_name_tool` is on every Mac, so the staged copy is fixed
+# rather than refused; the edit breaks a copy's ad-hoc signature, and Apple silicon will
+# not load an unsigned dylib, so it is re-signed (`codesign -s -`: no certificate). Then
+# the closure: every dependency of every staged file is either `@rpath/` and in the
+# stage, or part of the OS (`/usr/lib`, `/System/Library`).
+if [ "$darwin" = 1 ]; then
+    for so in $ARCHIVE_LIBRARIES; do
+        f="$stage/$so"
+        changed=0
+        if [ "$(otool -D "$f" | sed -n 2p)" != "@rpath/$so" ]; then
+            install_name_tool -id "@rpath/$so" "$f"
+            changed=1
+        fi
+        for rp in $(otool -l "$f" | awk '/cmd LC_RPATH/ { getline; getline; print $2 }'); do
+            [ "$rp" = "@loader_path" ] && continue
+            install_name_tool -delete_rpath "$rp" "$f"
+            changed=1
+        done
+        if ! otool -l "$f" | grep -q 'path @loader_path '; then
+            install_name_tool -add_rpath @loader_path "$f"
+            changed=1
+        fi
+        if [ "$changed" = 1 ]; then
+            codesign --force -s - "$f" 2>/dev/null ||
+                { echo "make-dist: codesign failed on the fixed copy of $so" >&2; exit 1; }
+            echo "make-dist: $so: install name and rpath set to @rpath/@loader_path, re-signed"
+        fi
+        chmod 644 "$f"
+    done
+    staged_libs=""
+    for so in $ARCHIVE_LIBRARIES; do staged_libs="$staged_libs $stage/$so"; done
+    for f in "$stage"/harnessd "$stage"/letibot-tui "$stage"/letibot-askpass $staged_libs; do
+        for dep in $(otool -L "$f" | tail -n +2 | awk '{print $1}'); do
+            case "$dep" in
+                @rpath/*)
+                    [ -f "$stage/${dep#@rpath/}" ] && continue
+                    echo "make-dist: ${dep#@rpath/} is needed by $(basename "$f") and is not in" >&2
+                    echo "  the package. A Metal or BLAS build of llama.cpp also links" >&2
+                    echo "  libggml-metal and libggml-blas; the release builds CPU-only" >&2
+                    echo "  (-DGGML_METAL=OFF -DGGML_BLAS=OFF) so that the four listed are all." >&2
+                    exit 1
+                    ;;
+                /usr/lib/* | /System/Library/*) ;;
+                *)
+                    echo "make-dist: $(basename "$f") links $dep, which is neither in the" >&2
+                    echo "  package nor part of macOS — an absolute path from the build machine." >&2
+                    exit 1
+                    ;;
+            esac
+        done
+    done
+    echo "make-dist: dependency closure complete for $stage (otool: package + OS only)"
+else
+
 for so in $ARCHIVE_LIBRARIES; do
     [ -f "$stage/$so" ] || continue
     # **Both spellings, and the empty case is NOT a pass.** `RPATH` is the older tag
@@ -421,6 +489,8 @@ fi
 
 # COPYFILE_DISABLE stops macOS tar writing AppleDouble `._harnessd` entries, which
 # would otherwise land in the archive and be extracted by the installer.
+fi # the Linux half, from the RUNPATH check down; macOS's is the block above it
+
 COPYFILE_DISABLE=1 tar -czf "$outdir/$name" -C "$stage" .
 
 # **Prove the archive is what the installer expects before it is published.** Every

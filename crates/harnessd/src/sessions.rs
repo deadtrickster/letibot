@@ -181,7 +181,7 @@ pub struct Sessions<'a> {
     /// configuration nobody typed.
     base: Config,
     registry: Arc<Registry>,
-    open: HashMap<String, Harness<'a>>,
+    open: HashMap<String, Harness>,
     /// Sessions whose monitor waiter is already running. **One waiter per name**,
     /// which is T24 requirement 4 — the fleet has already paid for what two
     /// processes under one reader costs: the roster shows a seat attached while the
@@ -961,7 +961,7 @@ impl<'a> Sessions<'a> {
     /// `Err` is a session that cannot be served at all; the caller announces it on
     /// that session's log rather than taking the daemon down, because every other
     /// session is still fine.
-    fn harness(&mut self, session_id: &str) -> Result<&mut Harness<'a>, HarnessError> {
+    fn harness(&mut self, session_id: &str) -> Result<&mut Harness, HarnessError> {
         if !self.open.contains_key(session_id) {
             let hub = self.registry.get(session_id).ok_or_else(|| {
                 HarnessError::Setup(format!("no session {session_id} in this daemon"))
@@ -1631,7 +1631,7 @@ impl<'a> Sessions<'a> {
 
     /// Read-only access to a session's harness, for a caller that wants the ledger
     /// or the prefix. `None` for a session nothing has run in yet.
-    pub fn harness_of(&self, session_id: &str) -> Option<&Harness<'a>> {
+    pub fn harness_of(&self, session_id: &str) -> Option<&Harness> {
         self.open.get(session_id)
     }
 

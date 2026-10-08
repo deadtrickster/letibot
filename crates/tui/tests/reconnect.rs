@@ -51,7 +51,7 @@ use letibot_transcript::{TranscriptItem, UserPart};
 
 use letibot_tui::app::{App, Key, RECONNECT_BACKOFF_MS};
 use letibot_tui::driver::Link;
-use letibot_tui::render::RenderConfig;
+use letibot_tui::ui::render::RenderConfig;
 
 const SESSION: &str = "s-reconnect";
 

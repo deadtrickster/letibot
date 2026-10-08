@@ -17,7 +17,7 @@
 #   letibot --rename ID TITLE   name a stored session
 #   letibot --delete ID         remove a stored session that has no rows
 #   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
-#   letibot --glm               use GLM instead of Qwen (needs GLM serving on 8080)
+#   letibot --glm               GLM's dialect+vocab; providers.toml names the address
 #   letibot --stop              stop the daemon
 #   letibot --status            is it up, and on what
 #
@@ -117,9 +117,89 @@ if ! WORKSPACE="$(cd "$WORKSPACE" 2>/dev/null && pwd -P)" || [ -z "$WORKSPACE" ]
   echo "         or set LETIBOT_WORKSPACE." >&2
   exit 1
 fi
-RUNDIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/letibot"
+# **The host's facts, asked the way each kernel answers them.** Linux has `/proc`, `ss`,
+# `setsid(1)` and GNU `stat`/`date`; macOS has none of those and answers the same
+# questions through `ps`, `lsof`, BSD `stat`/`date` and perl's `POSIX::setsid`. Every
+# caller below goes through these, so the two spellings live in one place. On Linux each
+# helper is the exact command the script used before.
+HOST_OS="$(uname -s)"
+# The first twelve hex of the workspace's SHA-256 — `launcher.rs`'s key, on either box.
+sha12() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -c1-12
+}
+# Is this pid still there? Linux: its `/proc` directory. macOS: `ps` has a state for it,
+# and the state is not a zombie's.
+pid_alive() { # pid_alive PID
+  [ -n "$1" ] || return 1
+  if [ "$HOST_OS" = Darwin ]; then
+    case "$(ps -o stat= -p "$1" 2>/dev/null)" in '' | Z*) return 1 ;; *) return 0 ;; esac
+  fi
+  [ -d "/proc/$1" ]
+}
+# A pid's argument vector, one argument per line. macOS has no `cmdline` file; `ps` gives
+# the arguments space-joined, which is enough for the flags this script looks for.
+pid_argv() { # pid_argv PID
+  if [ "$HOST_OS" = Darwin ]; then
+    ps -ww -o args= -p "$1" 2>/dev/null | tr ' ' '\n'
+    return 0
+  fi
+  tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null
+}
+# The pids listening on a unix socket, by its bound path — which both `ss` and `lsof`
+# still report after the file has been unlinked, the case `live` below is written for.
+# Each listing runs to completion before the match, for the SIGPIPE reason `live` gives.
+socket_pids() { # socket_pids PATH
+  local listing
+  if [ "$HOST_OS" = Darwin ]; then
+    listing="$(lsof -nP -U -a -F pn 2>/dev/null || true)"
+    printf '%s\n' "$listing" \
+      | awk -v s="$1" '/^p/ { p = substr($0, 2) } /^n/ && substr($0, 2) == s { print p }' \
+      | sort -u
+    return 0
+  fi
+  listing="$(ss -lxpH 2>/dev/null || true)"
+  printf '%s\n' "$listing" | grep -F "$1" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true
+}
+# When a process started and when a file was written, as epoch seconds; empty if unknown.
+pid_started() { # pid_started PID
+  if [ "$HOST_OS" = Darwin ]; then
+    local l
+    l="$(LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | sed 's/ *$//')"
+    [ -n "$l" ] && LC_ALL=C date -j -f '%a %b %e %T %Y' "$l" +%s 2>/dev/null
+    return 0
+  fi
+  stat -c %Y "/proc/$1" 2>/dev/null || true
+}
+file_mtime() { # file_mtime PATH
+  if [ "$HOST_OS" = Darwin ]; then stat -f %m "$1" 2>/dev/null || true; else stat -c %Y "$1" 2>/dev/null || true; fi
+}
+epoch_fmt() { # epoch_fmt SECONDS FORMAT
+  if [ "$HOST_OS" = Darwin ]; then date -r "$1" "$2"; else date -d "@$1" "$2"; fi
+}
+# Run a command as the leader of a new session, detached from this terminal. macOS has the
+# system call and not the command, and perl's POSIX module is on every Mac.
+detach() { # detach COMMAND [ARGS...]
+  if [ "$HOST_OS" = Darwin ]; then
+    /usr/bin/perl -MPOSIX -e 'POSIX::setsid(); exec { $ARGV[0] } @ARGV or die "detach: $ARGV[0]: $!\n"' -- "$@"
+  else
+    setsid "$@"
+  fi
+}
+
+# The runtime dir: `$XDG_RUNTIME_DIR/letibot`, else `/run/user/<uid>/letibot` on Linux and
+# the per-user temp dir on macOS — asked of `getconf`, not read from `$TMPDIR`, so a
+# daemon started without that variable lands where the head looks (`launcher.rs::rundir`).
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+  RUNDIR="$XDG_RUNTIME_DIR/letibot"
+elif [ "$HOST_OS" = Darwin ]; then
+  _tmp="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+  RUNDIR="${_tmp:-${TMPDIR:-/tmp/}}"
+  RUNDIR="${RUNDIR%/}/letibot"
+else
+  RUNDIR="/run/user/$(id -u)/letibot"
+fi
 mkdir -p "$RUNDIR"
-KEY="$(printf '%s' "$WORKSPACE" | sha256sum | cut -c1-12)"
+KEY="$(printf '%s' "$WORKSPACE" | sha12)"
 SOCKET="${LETIBOT_SOCKET:-$RUNDIR/$KEY.sock}"
 RECORD="$RUNDIR/$KEY.json"
 STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot/sessions.db}"
@@ -143,9 +223,38 @@ LOG="${LETIBOT_LOG:-$HOME/logs/harnessd.log}"
 # Set for harnessd ONLY, not exported: a later child of this script that does
 # want a GPU must not inherit a blindfold from a line about the tokenizer.
 NOGPU=(env CUDA_VISIBLE_DEVICES=)
-ENDPOINT="${LETIBOT_ENDPOINT:-127.0.0.1:8080}"
 
 die() { echo "letibot: $*" >&2; exit 1; }
+
+# **THE COMMAND THE PERSON ACTUALLY TYPED**, for every sentence that hands one back.
+#
+# `leticode` execs this script, so `$0` here is `letibot` on that path — and a fix line
+# built from it told the operator to run a different command: not their seat
+# (`LETIBOT_ROLE=leticode`, which the wrapper exports) and not their model flag, so
+# `leticode --glm` answered *"Fix:  letibot --stop && letibot"*, which starts a
+# **coder** daemon on the **default** model. MEASURED 2026-10-07, and it is the whole
+# of why that pair of words could not be reached. The wrapper names itself in
+# `LETIBOT_INVOKED_AS`; a bare `letibot` names nothing and `$0` is already right.
+ME="${LETIBOT_INVOKED_AS:-$(basename "$0")}"
+
+# **`--glm`/`--flash`/`--dense` are CONSUMED by the flag loop and never reach
+# `EXTRA_ARGS`.** No other check in this script can see that a model was asked for —
+# which is how a warning about swallowed flags came to say nothing about the one flag
+# that picks the model, and how `leticode --glm` against a daemon bound to another
+# model attached in SILENCE whenever the port happened to serve what that daemon was
+# bound to. Recorded the moment it is parsed; empty means the model was left alone.
+MODEL_FLAG=""
+
+# **What would apply this run's model choice**, in the person's own words: their verb,
+# their flag. One function because three sentences hand a command back and three
+# copies would be three answers to *what do I run next*.
+restart_advice() {
+  if [ -n "$MODEL_FLAG" ]; then
+    printf '%s --stop && %s %s' "$ME" "$ME" "$MODEL_FLAG"
+  else
+    printf '%s --stop && %s' "$ME" "$ME"
+  fi
+}
 
 # HELP BEFORE ANYTHING. No network, no daemon probe, no vocabulary: a question
 # about the command must not cost a model turn to answer.
@@ -173,11 +282,13 @@ already up, then attaches the TUI head to it.
   letibot --rename ID TITLE   name a stored session
   letibot --delete ID         remove a stored session that has no rows
   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
-  letibot --glm               use GLM instead of Qwen (needs GLM serving on 8080)
+  letibot --glm               GLM's dialect+vocab; providers.toml names the address
   letibot --stop              stop the daemon
   letibot --stop --force      interrupt all in-flight turns, then stop
   letibot --status            is it up, and on what
 
+  letibot                     the leticode seat: opencode's tools and bash, on this host
+                              (LETIBOT_ROLE=coder for the namespace-confined seat, Linux)
   letibot --read-only         no write tools at all (orchestrator seat)
   letibot --ask               the old behaviour: every write asks, every time
   letibot --writes            approve a class once, for the session (default)
@@ -216,14 +327,17 @@ already up, then attaches the TUI head to it.
   LETIBOT_MODE=writes-allowed letibot        the same, by env
 
 Env overrides: LETIBOT_BIN LETIBOT_SOCKET LETIBOT_WORKSPACE LETIBOT_STORE
-LETIBOT_LOG LETIBOT_ENDPOINT LETIBOT_DIALECT LETIBOT_MODEL LETIBOT_VOCAB
+LETIBOT_LOG LETIBOT_PROVIDERS LETIBOT_DIALECT LETIBOT_MODEL LETIBOT_VOCAB
 LETIBOT_ROLE LETIBOT_ADJUDICATOR LETIBOT_MODE LETIBOT_BASH LETIBOT_WEB_FETCH
-LETIBOT_GRANTS_RO
-LETIBOT_ORACLE LETIBOT_ORACLE_BUDGET_MS
+LETIBOT_GRANTS_RO LETIBOT_ORACLE LETIBOT_ORACLE_BUDGET_MS
+LETIBOT_ENDPOINT — the manual override: the address for this run's model server,
+                   winning over the [model."…"] lookup in providers.toml
 
-The daemon logs to ~/logs/harnessd.log. Model choice is detected from what the
-server on 8080 has loaded (letibot --status reports it); explicit --glm/--flash/
---dense choose a model only when the daemon STARTS.
+The daemon logs to ~/logs/harnessd.log. The model server's address comes from
+providers.toml — the [model."…"] block whose model matches this run's (the flag,
+or the default); LETIBOT_ENDPOINT overrides it by hand. Model choice is detected
+from what that server has loaded (letibot --status reports it); explicit
+--glm/--flash/--dense choose a model only when the daemon STARTS.
 EOF
 }
 
@@ -264,7 +378,13 @@ done
 # refusal that cannot be lifted from where it is met -- the exact failure
 # docs/boundary-and-adjudication.md 4b makes a requirement -- and it made the
 # price of writing a file a flag nobody should have to know.
-ROLE="${LETIBOT_ROLE:-coder}"
+#
+# **And the seat is `leticode`** — opencode's tool union, run on this host, with bash —
+# because that is the one the operator runs, on Linux and on a Mac alike (2026-10-07:
+# *"in fact even on linux i use only leticode"*). It was `coder`, the namespace-confined
+# seat, which on a Mac cannot start at all (no bubblewrap there) and on Linux was the
+# default nobody chose. `coder` is still one variable away: LETIBOT_ROLE=coder.
+ROLE="${LETIBOT_ROLE:-leticode}"
 # `head` posts the decision to the attached TUI and waits for your answer.
 # `console` reads the daemon's own stdin, which a detached daemon does not have,
 # so every write would refuse with "nobody answered".
@@ -359,10 +479,106 @@ BASH_ON="${LETIBOT_BASH-1}"
 WEB_FETCH="${LETIBOT_WEB_FETCH-}"
 GRANTS_RO="${LETIBOT_GRANTS_RO:-$HOME/.cargo $HOME/.rustup}"
 
-# WHICH MODEL. Three servers share port 8080 and are systemd `Conflicts=` with
-# each other, so exactly one is up at a time. That makes the question answerable
-# rather than declarable: ASK THE SERVER what it loaded instead of making the
-# operator remember and type it.
+# THE PROVIDERS FILE, READ BY THE LAUNCHER TOO. The daemon reads
+# ~/.config/letibot/providers.toml for provider keys, per-model sampling and the
+# [default] block; this launcher asks the same file the two questions it cannot
+# answer alone -- where a named model lives (`model_home`, below), and what
+# [default] sends the turns to (`default_provider`, for `answers_now`). One file,
+# one reader shape, so the launcher and the daemon cannot disagree about where a
+# model lives. `LETIBOT_PROVIDERS` points both readers at another file.
+PROVIDERS="${LETIBOT_PROVIDERS:-$HOME/.config/letibot/providers.toml}"
+
+# The [default] block's KEY, or empty when the file or the key is absent (callers
+# test `-n`). Used by `answers_now`; it lives up here beside the file's other
+# reader so the two stay one shape.
+default_provider() { # default_provider [KEY]
+  [ -f "$PROVIDERS" ] || return 0
+  awk -v want="${1:-provider}" '
+    /^\[default\][[:space:]]*$/ { inblock = 1; next }
+    /^\[/                        { inblock = 0 }
+    inblock && $0 ~ "^[[:space:]]*" want "[[:space:]]*=" {
+      sub(/^[^=]*=[[:space:]]*/, "")
+      gsub(/^"|"[[:space:]]*$/, "")
+      print
+      exit
+    }
+  ' "$PROVIDERS" 2>/dev/null
+}
+
+# Every `[model."…"]` block that serves one alias, one `name<TAB>host:port` line
+# per block, in file order. The daemon's reader of these blocks is `local_models`
+# (crates/provider/src/keys.rs) and this mirrors it ruling for ruling rather than
+# inventing a second dialect of the file:
+#
+#   * a block header is `[model.<name>]`; the name may be quoted and dotted --
+#     `[model."local.qwe"]` -- which is the one shape the `[default]` matcher
+#     above never had to meet;
+#   * `url` is the address, and `endpoint` is accepted as the same key (`url` wins
+#     when a block carries both), as it is on the daemon side;
+#   * the alias a block serves is its `model` value when it has one, else the
+#     block's own name;
+#   * a scheme and a path are discarded (`http://h:p/v1` is `h:p`) -- the same
+#     deal `parse_local_url` makes in harnessd, because `$ENDPOINT` below is a
+#     bare host:port;
+#   * `#` starts a comment anywhere on a line, as `parse_file` has it.
+#
+# Blocks without an address are sampling profiles, not homes, and are not listed
+# -- a lookup that returned one would point a run at an address it does not have.
+model_home() { # model_home ALIAS — matching blocks, `name<TAB>host:port` each
+  [ -f "$PROVIDERS" ] || return 0
+  awk -v want="$1" '
+    function hp(s) {                    # http://h:p/v1 -> h:p, the daemon deal
+      sub(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "", s)
+      sub(/\/.*$/, "", s)
+      return s
+    }
+    function flush() {
+      if (sec != "" && (u != "" || e != "") && (m != "" ? m : sec) == want) {
+        addr = (u != "" ? u : e)        # url wins, endpoint fills
+        printf "%s\t%s\n", sec, hp(addr)
+      }
+    }
+    {
+      line = $0
+      sub(/#.*/, "", line)              # a comment starts anywhere, as parse_file has it
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+      if (line == "") next
+      if (substr(line, 1, 1) == "[") {  # any header ends the block; flush first
+        flush()
+        u = ""; e = ""; m = ""
+        if (line ~ /^\[model\./) {
+          sec = line
+          sub(/^\[model\./, "", sec)
+          sub(/\][[:space:]]*$/, "", sec)
+          gsub(/^"|"$/, "", sec)
+        } else {
+          sec = ""
+        }
+        next
+      }
+      if (sec == "") next
+      eq = index(line, "=")
+      if (eq == 0) next
+      key = substr(line, 1, eq - 1)
+      val = substr(line, eq + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+      gsub(/^"|"$/, "", val)
+      if      (key == "url")      u = val
+      else if (key == "endpoint") e = val
+      else if (key == "model")    m = val
+    }
+    END { flush() }
+  ' "$PROVIDERS" 2>/dev/null
+}
+
+# WHICH MODEL, AND WHERE IT LIVES. Three units serve this fleet's models and are
+# systemd `Conflicts=` with one another, so exactly one is up at a time -- glm on
+# one port, the Qwen dense on another, the flash on a third, one port each since
+# the split of 2026-10-07. Two questions follow, answered in order below: WHICH
+# model this run wants (the env vars, a --glm/--flash/--dense flag, or the server
+# itself over /props), and WHERE that model lives (the [model."…"] block in
+# providers.toml that carries its alias -- nothing here hard-codes an address).
 #
 # This matters beyond convenience. The vocab is how the harness counts tokens and
 # how it renders tool calls, and the dialect is which parser reads the model's
@@ -387,26 +603,23 @@ model_by_path() {
   esac
 }
 
-# Qwen is the fallback because it is what this box serves most of the time. Both
-# Qwen models ship a byte-identical template, so the one dialect covers
-# Flash-Next and the 27B dense; only the vocab differs between them.
-DETECTED=""
-if [ -z "${LETIBOT_DIALECT:-}${LETIBOT_MODEL:-}${LETIBOT_VOCAB:-}" ]; then
-  # One `curl` and a `sed`, not a `curl` piped into an interpreter: this is on the
-  # path that runs before the screen exists.
-  DETECTED="$(model_by_path "$(curl -sf -m 2 "http://$ENDPOINT/props" 2>/dev/null \
-    | sed -n 's/.*"model_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)")"
-fi
-
-if [ -n "$DETECTED" ]; then
-  DIALECT="${DETECTED%%|*}"
-  MODEL="$(echo "$DETECTED" | cut -d'|' -f2)"
-  VOCAB="${DETECTED##*|}"
-else
-  DIALECT="${LETIBOT_DIALECT:-qwen}"
-  MODEL="${LETIBOT_MODEL:-qwen-3.8-flash-next}"
-  VOCAB="${LETIBOT_VOCAB:-$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL.gguf}"
-fi
+# The model this run starts from, before any flag or server has spoken: the three
+# env vars, else the Qwen flash default, which is what this box serves most of the
+# time. Both Qwen models ship a byte-identical template, so the one dialect covers
+# Flash-Next and the 27B dense; only the vocab differs between them. --glm/--flash/
+# --dense overwrite all three in the flag loop below, and /props detection refines
+# them only when neither the env nor a flag has spoken.
+DIALECT="${LETIBOT_DIALECT:-qwen}"
+MODEL="${LETIBOT_MODEL:-qwen-3.8-flash-next}"
+VOCAB="${LETIBOT_VOCAB:-$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL.gguf}"
+# MODEL_FLAG is the flag that settled the model, if any: it is what silences the
+# /props detect (an explicit choice does not need the server's opinion) and, with
+# MODEL_FROM, what an unresolved-endpoint refusal quotes back. MODEL_FROM is the
+# SENTENCE-TRUE name of whatever chose the model -- a flag, $LETIBOT_MODEL, or the
+# default -- so a refusal says who asked for the model it could not find a home for.
+MODEL_FLAG=""
+MODEL_FROM="${LETIBOT_MODEL:+\$LETIBOT_MODEL}"
+[ -n "$MODEL_FROM" ] || MODEL_FROM="the default (no flag chose one)"
 
 # --force only means something with --stop, and saying so beats silently
 # ignoring it: a flag that does nothing is a flag the operator cannot trust.
@@ -422,6 +635,10 @@ fi
 # one-shot prompt: harnessd ran in the foreground with `--prompt --bash`, the
 # vocabulary loaded, and GLM answered a prompt that said "--bash". Measured
 # 2026-09-14, from the operator's own leticode --glm --bash.
+# **Every expansion of an array that may be empty is `${A[@]+"${A[@]}"}`.** Bash before 4.4
+# — which is `/usr/bin/env bash` on every stock Mac (3.2) — calls an empty array unbound
+# under `set -u`, so a plain `"${A[@]}"` killed the launch with no flags given. MEASURED
+# 2026-10-07: `EXTRA_ARGS[@]: unbound variable` on the first macOS start.
 EXTRA_ARGS=()
 MODEL_OVERRIDE=""
 PROVIDER_SET=""
@@ -492,21 +709,181 @@ while [ $# -gt 0 ]; do
       MODEL_OVERRIDE="$2"; shift 2 ;;
     # Explicit model overrides. Each names one of the three singleton servers;
     # they do not START it -- `model glm` / `systemctl --user start glm` does.
+    # The flag also settles the model question (MODEL_FLAG, so /props detection
+    # below keeps quiet) and names itself for a refusal (MODEL_FROM): a flag
+    # whose model has no home in providers.toml is refused BY FLAG NAME below,
+    # not silently pointed somewhere else.
     --glm)
       DIALECT=glm; MODEL=glm-5.3-flash
       VOCAB="$HOME/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf"
+      MODEL_FLAG="--glm"; MODEL_FROM="--glm"
       shift ;;
     --flash)
       DIALECT=qwen; MODEL=qwen-3.8-flash-next
       VOCAB="$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
+      MODEL_FLAG="--flash"; MODEL_FROM="--flash"
       shift ;;
     --dense)
       DIALECT=qwen; MODEL=qwen-3.8-27b
       VOCAB="$HOME/models/Qwen3.8-27B-UD-Q6_K_XL.gguf"
+      MODEL_FLAG="--dense"; MODEL_FROM="--dense"
       shift ;;
     *) break ;;
   esac
 done
+
+# **WHERE THAT MODEL LIVES -- the entry says, not this script.**
+#
+# The operator: *"and you dont have to teach letibot anything - it should come
+# from providers.toml"*. ENDPOINT used to be a literal `127.0.0.1:8080`: a claim
+# about one box wearing the grammar of a constant, and the port split of
+# 2026-10-07 ended even that -- the three units no longer share a port, so the
+# literal was pointing the default (flash-next) at whatever 8080 happened to be
+# serving. Now the flag names a MODEL, the [model."…"] block carrying that model
+# value says the address, and `LETIBOT_ENDPOINT` remains the manual override that
+# wins over all of it.
+#
+# Matching the MODEL VALUE, not a flag→entry-name table (`--dense → local.qwe`),
+# is the point: a table here would be a second list of the same models -- right
+# today, wrong the first time an entry is renamed. The value moves only when the
+# weights do.
+#
+# THE ONE AMBIGUITY IS MEASURED, on this box's own file: `qwen-3.8-27b` is
+# served twice on the fleet -- `[model."dense78"]` (192.168.1.78, another box)
+# and `[model."local.qwe"]` (127.0.0.1, this one) both carry it, and the file
+# itself warns about exactly this. First-match-in-file-order would take dense78,
+# which is on another machine, while --glm/--flash/--dense and the default all
+# name THIS box's servers (the units are `systemctl --user` ones). So among
+# blocks that carry the model, one whose address is on this box wins -- a
+# loopback address is "this box" by definition, not by the entry's naming
+# convention, so it survives a rename. If that still leaves the home ambiguous
+# (the same model twice off-box, or twice on it), that is refused by name below
+# rather than guessed. A model with exactly one home is taken wherever that home
+# is: that is the file's answer, and it is not this script's to second-guess.
+#
+# Nothing here starts anything or talks to any server: it is a file read, once,
+# before the screen exists.
+ENDPOINT="${LETIBOT_ENDPOINT:-}"
+LOOKUP_MODEL="$MODEL"
+PROV_MISSING=""
+PROV_LISTED=""
+if [ -n "$MODEL_OVERRIDE" ] && [ -z "$PROVIDER_SET" ]; then
+  # `--model M` with no --provider names what the LOCAL server is asked for, so M
+  # is the model whose home the lookup needs. With a provider it names a CLOUD
+  # model, and the local endpoint is not where those turns go -- the lookup keeps
+  # the local alias.
+  LOOKUP_MODEL="$MODEL_OVERRIDE"
+  MODEL_FROM="--model $MODEL_OVERRIDE"
+fi
+if [ -z "$ENDPOINT" ]; then
+  if [ ! -f "$PROVIDERS" ]; then
+    PROV_MISSING="file"
+  else
+    homes="$(model_home "$LOOKUP_MODEL")"
+    if [ -z "$homes" ]; then
+      PROV_MISSING="entry"
+    else
+      listed=""; onbox=""; n_all=0; n_onbox=0
+      while IFS=$'\t' read -r n a; do
+        [ -n "$n" ] || continue
+        n_all=$((n_all + 1))
+        listed="${listed:+$listed, }$n ($a)"
+        case "$a" in
+          127.*|localhost:*|::1:*|\[::1\]:*)
+            n_onbox=$((n_onbox + 1))
+            [ -n "$onbox" ] || onbox="$n"$'\t'"$a" ;;
+        esac
+      done <<< "$homes"
+      PROV_LISTED="$listed"
+      if [ "$n_onbox" -eq 1 ]; then
+        ENDPOINT="${onbox#*$'\t'}"
+        if [ "$n_all" -gt 1 ]; then
+          echo "letibot: '$LOOKUP_MODEL' is listed at more than one address in $PROVIDERS -- $listed." >&2
+          echo "         Taking ${onbox%%$'\t'*} (${ENDPOINT}): its address is on this box, which is what" >&2
+          echo "         --glm/--flash/--dense and the default name." >&2
+        fi
+      elif [ "$n_onbox" -eq 0 ] && [ "$n_all" -eq 1 ]; then
+        while IFS=$'\t' read -r n a; do [ -n "$n" ] && { ENDPOINT="$a"; break; } done <<< "$homes"
+      else
+        PROV_MISSING="ambiguous"
+      fi
+    fi
+  fi
+fi
+
+# The refusal, once, for both readers of it (the health gate below and --status's
+# local line). A missing FILE is a different fact from a missing ENTRY, and each
+# sentence says which; every sentence names what asked for the model, the model
+# value searched for, and the file searched, and leaves two doors: give the model
+# a home in the file, or name a server by hand for this run. `127.0.0.1:8080` is
+# deliberately NOT fallen back to: a silent default here would send token ids to
+# whatever 8080 is serving -- the 2026-09-10 incident further down -- while
+# reading as though the flag had worked.
+endpoint_refusal() {
+  case "$PROV_MISSING" in
+    file)
+      cat <<EOF
+no endpoint for this run: $MODEL_FROM asked for the model '$LOOKUP_MODEL', and
+the file that says where a model lives is not there:
+  $PROVIDERS
+A missing file is a different fact from a missing entry -- there is no list to
+search at all. Give the model a home:
+  [model."local.NAME"]
+  url = "http://127.0.0.1:PORT"
+  model = "$LOOKUP_MODEL"
+or name a server by hand for this run:  LETIBOT_ENDPOINT=host:port
+EOF
+      ;;
+    entry)
+      cat <<EOF
+no endpoint for this run: $MODEL_FROM asked for the model '$LOOKUP_MODEL', and
+no [model."…"] block in
+  $PROVIDERS
+carries model = "$LOOKUP_MODEL" with a url. The file is there; that model is not
+in it. Give the model a home:
+  [model."local.NAME"]
+  url = "http://host:port"
+  model = "$LOOKUP_MODEL"
+or name a server by hand for this run:  LETIBOT_ENDPOINT=host:port
+EOF
+      ;;
+    ambiguous)
+      cat <<EOF
+no endpoint for this run: $MODEL_FROM asked for the model '$LOOKUP_MODEL', and
+  $PROVIDERS
+does not leave where it lives unambiguous: $PROV_LISTED. Keep one of them and
+drop or rename the rest, or name a server by hand for this run:
+LETIBOT_ENDPOINT=host:port
+EOF
+      ;;
+    *) printf 'no endpoint was resolved for this run.\n' ;;
+  esac
+}
+
+# ASK THE SERVER WHAT IT IS ACTUALLY SERVING (the /props detect). This needs the
+# endpoint, so it runs after the resolution above -- and the flag loop sits
+# between them for the same reason: a flag changes which model is wanted, and the
+# endpoint follows the model. It refines DIALECT/MODEL/VOCAB only when nothing
+# else has spoken (none of the three env vars, no --glm/--flash/--dense), and it
+# is skipped entirely when no endpoint resolved: there is nothing to ask, and
+# the refusal above is what this run meets at the gates that need an address.
+# When the server names a model other than the one looked up, the server wins
+# for dialect/model/vocab -- it is what is actually loaded -- and the endpoint
+# stays where the entry sent it: that is a file misdescribing its server, and
+# the vocab is the thing that has to be right.
+DETECTED=""
+if [ -z "${LETIBOT_DIALECT:-}${LETIBOT_MODEL:-}${LETIBOT_VOCAB:-}" ] && [ -z "$MODEL_FLAG" ] && [ -n "$ENDPOINT" ]; then
+  # One `curl` and a `sed`, not a `curl` piped into an interpreter: this is on the
+  # path that runs before the screen exists.
+  DETECTED="$(model_by_path "$(curl -sf -m 2 "http://$ENDPOINT/props" 2>/dev/null \
+    | sed -n 's/.*"model_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)")"
+fi
+
+if [ -n "$DETECTED" ]; then
+  DIALECT="${DETECTED%%|*}"
+  MODEL="$(echo "$DETECTED" | cut -d'|' -f2)"
+  VOCAB="${DETECTED##*|}"
+fi
 
 # The model flag: an override names it; a provider without one takes the
 # preset's default (passing the LOCAL alias to a cloud provider was measured as
@@ -538,20 +915,8 @@ fi
 # Used for the start banner and the record. **Not** passed to harnessd: the daemon
 # resolves this itself, and a launcher that also passed it would be a second opinion on a
 # question with one owner.
-default_provider() { # default_provider [KEY] — the [default] block's KEY, or empty
-  local f="${LETIBOT_PROVIDERS:-$HOME/.config/letibot/providers.toml}"
-  [ -f "$f" ] || return 0
-  awk -v want="${1:-provider}" '
-    /^\[default\][[:space:]]*$/ { inblock = 1; next }
-    /^\[/                        { inblock = 0 }
-    inblock && $0 ~ "^[[:space:]]*" want "[[:space:]]*=" {
-      sub(/^[^=]*=[[:space:]]*/, "")
-      gsub(/^"|"[[:space:]]*$/, "")
-      print
-      exit
-    }
-  ' "$f" 2>/dev/null
-}
+# (the reader itself, `default_provider`, lives up beside `model_home` at the top
+# of the providers-file section, so the file's two readers stay one shape)
 # `deepseek/deepseek-flash`, or the local alias when no provider is configured.
 #
 # **The provider and its model come from the same place, and which place differs.** An
@@ -614,6 +979,10 @@ PROBE=""
 # record rather than this folder's, and a fix applied to one caller and forgotten in the
 # other is exactly how this class of bug survives.
 socket_is_listening() { # socket_is_listening PATH
+  if [ "$HOST_OS" = Darwin ]; then
+    [ -n "$(socket_pids "$1")" ]
+    return
+  fi
   case "$(ss -lxpH 2>/dev/null || true)" in
     *"$1"*) return 0 ;;
     *) return 1 ;;
@@ -760,7 +1129,7 @@ retarget() {
       [ "$n" -ge "$want" ] || die "there is no daemon $want — \`letibot --ls\` numbers them"
       ;;
   esac
-  KEY="$(printf '%s' "$WORKSPACE" | sha256sum | cut -c1-12)"
+  KEY="$(printf '%s' "$WORKSPACE" | sha12)"
   SOCKET="$RUNDIR/$KEY.sock"
   RECORD="$RUNDIR/$KEY.json"
 }
@@ -775,11 +1144,11 @@ retarget() {
 wait_gone() { # wait_gone PID [TENTHS]
   local p="$1" n="${2:-10}" i=0
   while [ "$i" -lt "$n" ]; do
-    [ -d "/proc/$p" ] || return 0
+    pid_alive "$p" || return 0
     sleep 0.5
     i=$((i + 1))
   done
-  [ -d "/proc/$p" ] && return 1
+  pid_alive "$p" && return 1
   return 0
 }
 
@@ -790,10 +1159,10 @@ daemon_pid() {
   # `|| true`: `head -1` SIGPIPEs the upstream under `pipefail`, and a failing command
   # substitution in an assignment aborts the script under `set -e` — from a helper
   # whose whole job is to be a fallback.
-  p="$(ss -lxpH 2>/dev/null | grep -F "$SOCKET" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)"
+  p="$(socket_pids "$SOCKET" | head -1 || true)"
   [ -n "$p" ] && { echo "$p"; return 0; }
   p="$(record_field pid)"
-  [ -n "$p" ] && [ -d "/proc/$p" ] && { echo "$p"; return 0; }
+  [ -n "$p" ] && pid_alive "$p" && { echo "$p"; return 0; }
   return 1
 }
 
@@ -807,6 +1176,9 @@ warn_swallowed_flags() {
   # cannot change it, and the honest thing is to say so, not to look only at the
   # args a person typed after the verb.
   local want_role="$ROLE" want_bash have_role have_bash mism=0
+  # The model this run asked for: an explicit `--model` wins over the flag that
+  # picked a family, and the daemon's record carries the same word for both.
+  local want_model="${MODEL_OVERRIDE:-$MODEL}"
   want_bash="$([ -n "$BASH_ON" ] && echo true || echo false)"
   have_role="$(record_field role 2>/dev/null || true)"
   have_bash="$(record_field bash 2>/dev/null || true)"
@@ -819,16 +1191,44 @@ warn_swallowed_flags() {
       echo "letibot: you asked for $([ "$want_bash" = true ] && echo "a shell" || echo "no shell"), but this folder's daemon was started with $([ "$have_bash" = true ] && echo "one" || echo "none")."
       mism=1
     fi
+    # **And the MODEL flag, which no other check in this script can see.** The
+    # port check above fires only when the port serves a model the daemon is not
+    # bound to — so a daemon bound to `qwen-3.8-27b` while 8081 serves that same
+    # model, plus a `--glm`, passed every gate and attached in silence to the
+    # wrong model. That is the same silent shape the seat check exists for.
+    if [ -n "$MODEL_FLAG" ]; then
+      local dpid have_model
+      # **The process's own command line first, the record second**, for the reason
+      # `daemon_models` reads `/proc` at all: a record written before the field existed
+      # has no `model`, and MEASURED 2026-10-07 on this box, the daemon holding the
+      # operator's own workspace is exactly such a record — `--status` printed
+      # `vocab unknown`, so a check that only read the record stayed SILENT about the
+      # model flag on the one daemon it had to speak about.
+      dpid="$(daemon_pid 2>/dev/null || true)"
+      have_model=""
+      [ -n "$dpid" ] && have_model="$(pid_argv "$dpid" \
+        | awk '/^--model$/{getline; print; exit}')"
+      [ -n "$have_model" ] || have_model="$(record_field model 2>/dev/null || true)"
+      if [ -n "$have_model" ] && [ "$have_model" != "$want_model" ]; then
+        echo "letibot: you asked for \`$want_model\` ($MODEL_FLAG), but this folder's daemon is already running as \`$have_model\` (pid ${dpid:-?})."
+        mism=1
+      fi
+    fi
+    # **One advice line for both mismatches, and it comes AFTER the model check.**
+    # The first version put this block before it, so a MODEL mismatch set `mism` and
+    # then nothing printed it: a warning with no way out. MEASURED 2026-10-07 by
+    # running `leticode --flash` against this folder's glm daemon and reading the
+    # output — one line, and it ended there.
     if [ "$mism" = 1 ]; then
-      echo "         The seat is fixed when harnessd STARTS; attaching to a running one cannot change it."
-      echo "         For the seat you asked for:  letibot --stop && (the command you just ran)"
-      echo "         Sessions are on disk, so nothing is lost -- '--continue' reopens this one under the new seat."
+      echo "         The seat and the model are fixed when harnessd STARTS; attaching to a running one cannot change either."
+      echo "         For what you asked for:  $(restart_advice)"
+      echo "         Sessions are on disk, so nothing is lost -- '--continue' reopens this one."
     fi
     if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
       echo "letibot: this folder's daemon is ALREADY RUNNING (pid $(daemon_pid 2>/dev/null || echo "?")) and these flags did NOT take effect:"
       printf '         %s\n' "${EXTRA_ARGS[*]}"
       echo "         They are read when harnessd STARTS and are fixed for the life of the daemon."
-      echo "         To apply them:  letibot --stop && letibot ${EXTRA_ARGS[*]}"
+      echo "         To apply them:  $(restart_advice) ${EXTRA_ARGS[*]}"
       echo "         Sessions are on disk, so nothing is lost -- 'letibot --continue' reopens this one."
     fi
   } >&2
@@ -901,8 +1301,8 @@ daemon_stale_line() {
   p="$(daemon_pid 2>/dev/null || true)"
   [ -n "$p" ] || return 0
   [ -x "$BIN/harnessd" ] || return 0
-  dt="$(stat -c %Y "/proc/$p" 2>/dev/null || true)"
-  bt="$(stat -c %Y "$BIN/harnessd" 2>/dev/null || true)"
+  dt="$(pid_started "$p")"
+  bt="$(file_mtime "$BIN/harnessd")"
   # A `stat` that could not answer, or a value that is not a number: say nothing.
   # Silence is the right answer for an unknown — this is a hint about a process, not
   # a gate, and a guess here would be a warning about a daemon that is fine.
@@ -914,7 +1314,7 @@ daemon_stale_line() {
   # this line exists to name is a day count as often as it is minutes, so both ends
   # carry the day. The path is quoted as resolved, which is what `BIN` now holds.
   printf 'daemon %s started %s; %s was built %s — it is not running what is on disk\n' \
-    "$p" "$(date -d "@$dt" '+%m-%d %H:%M')" "$BIN/harnessd" "$(date -d "@$bt" '+%m-%d %H:%M')"
+    "$p" "$(epoch_fmt "$dt" '+%m-%d %H:%M')" "$BIN/harnessd" "$(epoch_fmt "$bt" '+%m-%d %H:%M')"
 }
 
 # Questions about the store need no socket, no model and no vocabulary. They are
@@ -1003,7 +1403,7 @@ SESSIONS_EOF
         [ -f "$r" ] || continue
         pid="$(json_num pid "$r")"
         ws="$(json_str workspace "$r")"
-        if [ -d "/proc/$pid" ] && tr '\0' '\n' < "/proc/$pid/cmdline" | head -1 | grep -q harnessd; then
+        if pid_alive "$pid" && pid_argv "$pid" | head -1 | grep -q harnessd; then
           # **Signal, then WAIT, then say it.** The exit status of `kill` says the
           # signal was delivered and nothing about whether the process took it —
           # which is the whole of the 2026-09-16 incident, one verb over.
@@ -1037,11 +1437,11 @@ SESSIONS_EOF
       line="$(daemon_line)"
       kill "$p" || true
       wait_gone "$p" || true
-      if [ -d "/proc/$p" ] && [ "$FORCE" = 1 ]; then
+      if pid_alive "$p" && [ "$FORCE" = 1 ]; then
         kill -9 "$p" 2>/dev/null || true
         wait_gone "$p" 4 || true
       fi
-      if [ -d "/proc/$p" ]; then
+      if pid_alive "$p"; then
         echo "NOT stopped: $line (pid $p) is ignoring SIGTERM after 5s." >&2
         echo "  letibot --stop --force    sends SIGKILL; the record is kept until it is gone" >&2
         exit 1
@@ -1078,6 +1478,9 @@ SESSIONS_EOF
     # daemon whose turns go to a provider, which reads as "this is the model": the
     # operator's *"so - qwen again"* was about the line two rows up, but this one
     # invited the same reading. See `daemon_line`.
+    # No resolved address is a refusal here too, not a quiet skip of the line:
+    # "what would answer locally" is half of what --status exists to say.
+    [ -n "$ENDPOINT" ] || die "$(endpoint_refusal)"
     printf 'local    %s ' "$ENDPOINT"
     if curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1; then
       # Name what is actually loaded, not what the default says. One port serves
@@ -1154,14 +1557,68 @@ esac
 # message that is true where it was written and unusable everywhere else.
 #
 # What is true for everyone: a model server has to be running, it speaks the OpenAI
-# shape, and the address is whatever `$ENDPOINT` says. The llama.cpp line is the same
-# one `install.sh` prints, so the two agree.
-curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1 \
-  || die "nothing serving on $ENDPOINT
+# shape, and the address is whatever `$ENDPOINT` says -- which since the providers.toml
+# lookup is the home of THIS run's model, so the example port below is the endpoint's
+# own rather than a literal. (install.sh still prints the generic `--port 8080` line:
+# it advises a bare box before any providers.toml exists.)
+#
+# **Only when the turns go there.** A provider — `--provider`, or the `[default]` block in
+# providers.toml — answers over the network, and a box that has only a key (a laptop, a Mac
+# with no llama-server) died here on the very remedy the message below suggests. MEASURED
+# 2026-10-07 on macOS: `letibot --provider deepseek` with nothing on 8080 refused to start.
+# **The vocabulary goes with the same question.** A local model needs the GGUF it serves,
+# so `--vocab` is always passed then. A provider needs none — the daemon keeps its ledger
+# in the byte vocabulary (`letibot_tokencore::Vocab::bytes`) — so it is passed only when
+# it names a file that is there (a box with the model keeps using it, and its sessions
+# keep their ids) or when LETIBOT_VOCAB asked for it by name.
+#
+# **And the address is a LOOKUP now, so it can be ABSENT.** A model whose block is missing,
+# or whose block carries no url, has no home — refused here, once, by `endpoint_refusal`,
+# naming the flag that asked, the model it wanted and the file it read. Before the health
+# gate, because a gate needs an address to curl.
+[ -n "$ENDPOINT" ] || die "$(endpoint_refusal)"
+if [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ] \
+  && ! curl -sf -m 3 "http://$ENDPOINT/health" >/dev/null 2>&1; then
+  # **Nothing to answer, and a person at the keyboard: ask, rather than die.** The
+  # operator: *"id prefer leticode to ask me of course"*. The choice becomes `--provider`;
+  # the KEY is not asked here — the daemon asks for it on the first turn, on the masked
+  # card sudo's password uses, and saves it (0600) with this provider as the default, so
+  # this question is asked once per box. Without a terminal there is nobody to ask, and
+  # the refusal stands as it was.
+  if [ -t 0 ] && [ -t 1 ]; then
+    printf '%s\n' "letibot: nothing is serving a local model on $ENDPOINT, and no cloud provider is set up." \
+      "  Use a cloud provider? Its key is asked for on the first turn and saved." \
+      "    1) deepseek    2) glm    3) grok        (enter quits)" >&2
+    printf '  > ' >&2
+    _choice=""
+    read -r _choice || _choice=""
+    case "$_choice" in
+      1 | deepseek) PROVIDER_NAME=deepseek ;;
+      2 | glm) PROVIDER_NAME=glm ;;
+      3 | grok) PROVIDER_NAME=grok ;;
+      *) die "no provider chosen, and nothing serving on $ENDPOINT — nothing was started." ;;
+    esac
+    PROVIDER_SET=1
+    EXTRA_ARGS+=(--provider "$PROVIDER_NAME")
+    # The local alias is a LOCAL binding; handed to a provider it is a 400 naming models
+    # the provider has (the reason MODEL_ARGS is empty for `--provider` above).
+    [ -n "$MODEL_OVERRIDE" ] || MODEL_ARGS=()
+  else
+    die "nothing serving on $ENDPOINT
   Start a model server first — letibot is a harness, and a turn needs one:
-    llama-server -m MODEL.gguf --port 8080
+    llama-server -m MODEL.gguf --port ${ENDPOINT##*:}
   or a cloud provider instead:  --provider deepseek|glm|grok
   Point this launcher elsewhere with LETIBOT_ENDPOINT=host:port."
+  fi
+fi
+
+VOCAB_ARGS=(--vocab "$VOCAB")
+if [ -n "$PROVIDER_SET" ] || [ -n "$(default_provider provider)" ]; then
+  if [ -z "${LETIBOT_VOCAB:-}" ] && [ ! -f "$VOCAB" ]; then
+    VOCAB_ARGS=()
+  fi
+fi
+
 
 # THE RUNNING DAEMON'S MODEL MUST BE THE MODEL ON THE PORT.
 #
@@ -1186,10 +1643,10 @@ daemon_models() {
   # rebound out from under it still shows in `ps`, and killing or trusting the
   # wrong one is how a live session gets taken down to fix a dead one.
   local pids
-  pids="$(ss -lxpH 2>/dev/null | grep -F "$SOCKET" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)"
+  pids="$(socket_pids "$SOCKET")"
   local pid
   for pid in $pids; do
-    tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | awk '/^--model$/{getline; print; exit}'
+    pid_argv "$pid" | awk '/^--model$/{getline; print; exit}'
   done
 }
 
@@ -1204,7 +1661,7 @@ if live; then
     echo "         --glm/--flash/--dense choose a model only when the daemon STARTS. They" >&2
     echo "         cannot rebind one that is already running, and neither can autodetection." >&2
     echo "" >&2
-    echo "         Fix:  letibot --stop && letibot" >&2
+    echo "         Fix:  $(restart_advice)" >&2
     echo "         Sessions are on disk, so nothing is lost -- 'letibot --continue' reopens this one." >&2
     exit 1
   fi
@@ -1218,12 +1675,12 @@ mkdir -p "$(dirname "$STORE")" "$(dirname "$LOG")"
 # exited before its prompt ran).
 if [ $# -gt 0 ]; then
   ONESHOT_SOCK="$RUNDIR/oneshot-$$.sock"
-  exec "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" "${MODEL_ARGS[@]}" --endpoint "$ENDPOINT" \
+  exec "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --endpoint "$ENDPOINT" \
        --socket "$ONESHOT_SOCK" \
-       --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" \
+       ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" \
        --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} \
        ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
-       "${EXEC_ARGS[@]}" "${EXTRA_ARGS[@]}" \
+       ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
        ${SESSION:+--session "$SESSION"} --prompt "$*"
 fi
 
@@ -1260,11 +1717,11 @@ if ! live; then
   # The daemon opens its first session eagerly, so passing `--session ID` here is
   # what makes the resume -- and its hash-chain check -- happen at startup, where a
   # failure is a line in this terminal rather than a surprise inside a prompt.
-  setsid "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" "${MODEL_ARGS[@]}" --endpoint "$ENDPOINT" \
-      --vocab "$VOCAB" --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
+  detach "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --endpoint "$ENDPOINT" \
+      ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
       --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
       ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
-      "${EXEC_ARGS[@]}" "${EXTRA_ARGS[@]}" \
+      ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
       ${SESSION:+--session "$SESSION"} ${NEW_TITLE:+--title "$NEW_TITLE"} \
       >>"$LOG" 2>&1 </dev/null &
   DPID=$!
@@ -1305,7 +1762,7 @@ stale="$(daemon_stale_line)"
 daemon_has_bash() {
   local p
   p="$(daemon_pid)" || return 1
-  tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -qx -- '--bash'
+  pid_argv "$p" | grep -qx -- '--bash'
 }
 
 if [ -n "$BASH_ON" ] && ! daemon_has_bash; then

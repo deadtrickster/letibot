@@ -84,23 +84,41 @@ fn open_seat(f: &crate::config::FlowyConfig) -> Result<letibot_flowy::Seat, Stri
     Ok(seat)
 }
 
-/// **Apply a `main_model` from the project file to the session's config.**
+/// **Apply a `main_model` from a file to the session's config.**
 ///
-/// The project file's `main_model` is a model name, the same shape the operator
-/// types for `--model` and the names `/models` offers: a `provider/model` for a
-/// metered session, a bare alias for a local one. This is the one place that
-/// turns that name into the `cfg` fields the session runs on, and it is the
-/// project-file half of the precedence — called only when the command line did
-/// not name a model, so a `main_model` the operator typed is never overridden by
-/// one the project set.
+/// A `main_model` is a model name, the same shape the operator types for `--model`
+/// and the names `/models` offers: a `provider/model` for a metered session, a bare
+/// alias for a local one. This is the one place that turns that name into the `cfg`
+/// fields the session runs on, and it is the file half of the precedence — called
+/// for the user level and then for the project level, each over the last, and never
+/// when the command line chose who answers.
 ///
-/// A `provider/model` name sets the metered provider, and a bare alias sets the
-/// local model and clears the provider, because the two are the two ways a
-/// session's turns go and a name is one or the other, not both. The provider's
-/// key is not set here: it is resolved along the usual path (`$PROVIDER_API_KEY`,
-/// then `providers.toml`), and a project file that names a model but not a key is
-/// a model the operator has a key for, not a secret the project carries.
-fn apply_main_model(cfg: &mut Config, model: &str) {
+/// A `provider/model` name sets the metered provider; a bare alias sets the local
+/// model and **clears the provider**, because the two are the two ways a session's
+/// turns go and a name is one or the other, not both. The clearing is the half that
+/// gives the operator their local model back: `[default] provider = deepseek` in
+/// `providers.toml` is read into `cfg.provider` below this, and a file that says
+/// `main_model = "glm-5.3-flash"` is a file saying *answer on this box*. The
+/// provider's key is not set here: it is resolved along the usual path
+/// (`$PROVIDER_API_KEY`, then `providers.toml`), and a file that names a model but
+/// not a key is a model the operator has a key for, not a secret the file carries.
+///
+/// # `bound`: the alias `--model` bound, and why it is not overwritten
+///
+/// The launcher passes `--model` on every start, and what it names is the LOCAL
+/// alias — the vocabulary this daemon tokenises with (`scripts/letibot` labels the
+/// two facts apart in its own banner: `model` is the binding, `answers` is what
+/// answers). So `--model` is not a choice of who answers and does not suppress a
+/// file's `main_model`; but it IS the binding, and a file that re-bound it would
+/// point the daemon's GGUF at weights the server is not serving. That failure is
+/// `400 Prompt contains invalid tokens` at the first turn, which names nothing.
+///
+/// So a file's bare alias clears the provider — the half that decides who answers —
+/// and does not overwrite a binding the command line set. When the two disagree the
+/// disagreement is RETURNED and the caller puts it on the screen, because a file
+/// the operator wrote that silently did not take effect is the defect this whole
+/// feature is against.
+fn apply_main_model(cfg: &mut Config, model: &str, bound: Option<&str>) -> Option<String> {
     if let Some((provider, m)) = model.split_once('/') {
         cfg.provider = Some(crate::config::ProviderConfig {
             name: provider.to_string(),
@@ -108,10 +126,141 @@ fn apply_main_model(cfg: &mut Config, model: &str) {
             api_key: None,
             thinking: false,
         });
-    } else {
-        cfg.model = model.to_string();
-        cfg.provider = None;
+        return None;
     }
+    // A bare alias: the file is saying *answer locally, on this model*.
+    cfg.provider = None;
+    match bound {
+        Some(b) if b != model => Some(format!(
+            "main_model = \"{model}\" names a local alias, and the command line bound \
+             `--model {b}`. This session tokenises with {b}'s vocabulary, so {b} is the model \
+             it runs on and the file's alias is not applied — the server is serving one set \
+             of weights and ids from another are valid numbers that mean other words. The \
+             file's alias still cleared the provider, which is the half that decides who \
+             answers."
+        )),
+        _ => {
+            cfg.model = model.to_string();
+            None
+        }
+    }
+}
+
+/// **A `provider/model` name a file set that this box cannot reach**, as a sentence.
+///
+/// No network and no endpoint, so this is asked of every model name in either file:
+/// the provider must be one this build knows, and a key for it must resolve here.
+/// The alternative is the failure the tree has paid for three times — a *plausible*
+/// string reaching the first turn and coming back as a `401` that names neither the
+/// file nor the line that wrote it.
+fn unreachable_provider(model: &str) -> Option<String> {
+    let (provider, m) = model.split_once('/')?;
+    let Ok(preset) = letibot_provider::Preset::parse(provider) else {
+        let known: Vec<&str> = letibot_provider::presets::ALL
+            .iter()
+            .map(|p| p.name)
+            .collect();
+        return Some(format!(
+            "`{model}` names provider `{provider}`, which this build does not know — the \
+             presets are {}. Nothing refuses this at startup, so the first turn would fail \
+             on a name nothing here can resolve.",
+            known.join(", ")
+        ));
+    };
+    if m.trim().is_empty() {
+        return Some(format!(
+            "`{model}` names no model on provider `{provider}` — write `{provider}/MODEL`, \
+             the way `/models` prints it"
+        ));
+    }
+    if let Err(why) = letibot_provider::keys::resolve(preset, None, None) {
+        return Some(format!(
+            "`{model}` names provider `{provider}`, and no key for it resolves on this box: \
+             {why}. The first turn would fail as an authorization error that names none of \
+             this."
+        ));
+    }
+    None
+}
+
+/// **A bare local alias that names a model this daemon cannot reach**, as a sentence.
+///
+/// Asked only of the name that decides THIS daemon's own turns — `main_model` — and
+/// `served` is the alias the local server reports off `/props`. A `subagent_model` is
+/// decided per spawn, and the guard's model answers at the `[gatekeeper]` endpoint,
+/// which is a different server on this fleet: comparing either against this daemon's
+/// would be a false alarm, and a warning that cries wolf is worse than none.
+///
+/// `local` is reachable by definition — it is the word the file's own documentation
+/// uses for *this daemon's server* (`LeticodeConfig::spawn_model`) — and so is a
+/// `[model."..."]` block in `providers.toml` that carries an address, because that is
+/// a model `/models NAME` can switch to.
+fn unreachable_local(cfg: &Config, model: &str, served: Option<&str>) -> Option<String> {
+    if model.eq_ignore_ascii_case("local") {
+        return None;
+    }
+    let declared = letibot_provider::keys::local_models(None);
+    if declared
+        .iter()
+        .any(|m| m.name == model || m.model == model || m.name.eq_ignore_ascii_case(model))
+    {
+        return None;
+    }
+    match served {
+        Some(s) if letibot_turn::serving::matches(s, model) => None,
+        Some(s) => Some(format!(
+            "`{model}` is a local alias, and the server at {} is serving `{s}` — not it — \
+             and providers.toml declares no `[model.\"{model}\"]` block with a url. A daemon \
+             submits token ids, so the first turn would come back `400 Prompt contains \
+             invalid tokens`, which names nothing.",
+            cfg.endpoint.authority()
+        )),
+        None => Some(format!(
+            "`{model}` is a local alias, nothing answers `/props` at {} to confirm it, and \
+             providers.toml declares no `[model.\"{model}\"]` block with a url — so this \
+             name is not one this daemon can reach.",
+            cfg.endpoint.authority()
+        )),
+    }
+}
+
+/// **Every model name either file set, with the faults this box can see.**
+///
+/// The provider-shaped half is asked of all of them; the local half only of
+/// `main_model`, which is the one that decides this daemon's own turns.
+fn unreachable_models(
+    cfg: &Config,
+    files: &crate::leticode_config::LeticodeConfig,
+    served: Option<&str>,
+) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for m in [
+        files.subagent_model.as_deref(),
+        files.gatekeeper_model.as_deref(),
+        files.judge_model.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        names.push(m.to_string());
+    }
+    for role in files.roles.values() {
+        if let Some(m) = &role.model {
+            names.push(m.clone());
+        }
+    }
+    let mut out: Vec<String> = names
+        .iter()
+        .filter_map(|m| unreachable_provider(m))
+        .collect();
+    if let Some(m) = &files.main_model {
+        if let Some(why) = unreachable_provider(m) {
+            out.push(why);
+        } else if let Some(why) = unreachable_local(cfg, m, served) {
+            out.push(why);
+        }
+    }
+    out
 }
 
 fn usage() -> String {
@@ -219,6 +368,17 @@ fn usage() -> String {
      \x20                           --workspace is found by walking up, read, and\n\
      \x20                           disclosed at startup; a file that does not parse\n\
      \x20                           is reported and the session still starts\n\
+     \x20 the model, and which level decided it:\n\
+     \x20                           command line > project `leticode.toml` > user\n\
+     \x20                           `~/.config/letibot/leticode.toml` > built-in. The\n\
+     \x20                           user file is the same keys as the project's, read\n\
+     \x20                           once for the whole box, so a `main_model` line\n\
+     \x20                           there decides what a session runs on without a\n\
+     \x20                           flag. `--provider` is the flag that\n\
+     \x20                           outranks both; `--model` alone names the LOCAL\n\
+     \x20                           alias the daemon tokenises with, and does not\n\
+     \x20                           suppress the files. Startup names the level that won,\n\
+     \x20                           and names a model this box cannot reach\n\
      \n\
      store queries (no socket, no model):\n\
      \x20 --list-sessions [--tsv]   what is on disk: id, title, workspace, age, rows\n\
@@ -294,13 +454,27 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // `--model` under `--provider` names the provider's model, not the local
     // alias; resolved after the flags, because either may come first.
     let mut model_given: Option<String> = None;
-    // **Whether the command line named the main model.** `--model` or `--provider`
-    // is the CLI half of the project file's precedence: command line beats the
-    // project file, so a `main_model` the operator typed must not be overridden by
-    // one the project set. Tracked rather than read off `cfg`, because `cfg.model`
-    // and `cfg.provider` are also set by the user config (`[default]`), and the two
-    // must not be told apart by a field they share.
+    // **Whether the command line chose WHO ANSWERS.** That is `--provider`, and it
+    // is the flag level of the precedence: `--provider deepseek` beats the project
+    // file, the project file beats the user file, and the user file beats the
+    // built-in default.
+    //
+    // **`--model` alone is deliberately not this**, and the reason is the tree's own
+    // vocabulary rather than a convenience. `--model` names the LOCAL alias — the
+    // vocabulary this daemon tokenises with, which `scripts/letibot` labels apart
+    // from `answers` in its own banner — and the launcher passes it on EVERY start,
+    // including a start where the operator said nothing about a model at all. A
+    // `--model` that suppressed the files would make both of them unreachable for
+    // every launcher-started daemon, which is the defect this level exists to fix.
+    // Tracked rather than read off `cfg`, because `cfg.model` and `cfg.provider` are
+    // also set by the files, and the two must not be told apart by a field they
+    // share.
     let mut cli_main_model = false;
+    // **The local alias `--model` bound**, when it named one. The binding and the
+    // choice of who answers are two facts and this is the other one: a file's
+    // `main_model` may clear the provider without re-binding the vocabulary — see
+    // `apply_main_model`.
+    let mut cli_binding: Option<String> = None;
     // **The explicit "ignore the project file".** See the flag's own note.
     let mut no_project_config = false;
 
@@ -392,10 +566,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--model" => {
                 let m = next()?;
                 model_given = Some(m.clone());
-                cfg.model = m;
-                cli_main_model = true;
+                cfg.model = m.clone();
+                // The binding, not the choice of who answers — see `cli_main_model`.
+                cli_binding = Some(m);
             }
-            "--vocab" => cfg.vocab_gguf = PathBuf::from(next()?),
+            "--vocab" => cfg.vocab_gguf = Some(PathBuf::from(next()?)),
             "--effort" => cfg.effort = Some(next()?),
             // **The four flags that make anything reachable, and all four are
             // opt-in.** Nothing here changes what an invocation without them gets.
@@ -479,6 +654,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--provider" => {
                 cfg.provider.get_or_insert_with(Default::default).name = next()?;
                 cli_main_model = true;
+                // A provider answers the turns, so there is no local binding left to
+                // keep: the file levels do not speak at all from here down.
+                cli_binding = None;
             }
             "--api-key" => {
                 cfg.provider.get_or_insert_with(Default::default).api_key = Some(next()?);
@@ -689,8 +867,6 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         });
     }
 
-    let parts = Parts::load(&cfg).map_err(|e| e.to_string())?;
-
     // One registry, seeded with the session named on the command line. A head can
     // make more over the socket; this one is the daemon's own, and it is opened
     // eagerly so that a dialect which does not fit the vocabulary is a startup
@@ -699,32 +875,6 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // What is on disk, so a head's picker can show sessions from daemons that are no
     // longer running and `ResumeSession` can find them. A daemon with no `--store`
     // sets no source and lists only what it holds, which is what it always did.
-    // **The operator's standing choice, resolved once, here.** Explicit
-    // `--provider` wins; else `[default]` in providers.toml, which
-    // `/default-model` writes; else the local server this daemon was launched
-    // against. Resolved in the binary because it reads the operator's own config
-    // file, and a `Harness` that reached for that file made every test inherit it.
-    // The Err is said, not swallowed: a daemon that comes up local while the file
-    // says deepseek is a fault the operator cannot find from the outside. The line
-    // follows the one prompts.toml already gets — the file, the parser's own
-    // message, and what happens instead.
-    if cfg.provider.is_none() {
-        match letibot_provider::keys::default_choice(None) {
-            Ok(Some(d)) => {
-                cfg.provider = Some(crate::config::ProviderConfig {
-                    name: d.provider,
-                    model: d.model,
-                    api_key: None,
-                    thinking: false,
-                });
-            }
-            Ok(None) => {}
-            Err(u) => eprintln!(
-                "  {u} — the standing choice could not be read, so new sessions \
-                 start on the local server this daemon was launched against"
-            ),
-        }
-    }
     if let Some(src) = crate::sessions::StoreSessions::open(&cfg) {
         // **One store, two questions** (R19.2b): the same instance lists sessions the
         // registry is not holding, and answers `FetchRow` for a row its bounded view has
@@ -855,7 +1005,6 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 
     let socket = daemon.socket().display().to_string();
     let dialect = cfg.dialect.name();
-    let model = cfg.model.clone();
     let endpoint = cfg.endpoint.authority();
     let workspace = cfg.workspace.display().to_string();
     let stored = stored_sessions(&cfg);
@@ -878,8 +1027,289 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         },
     };
 
+    // **The user's `leticode.toml`, at one fixed path beside `providers.toml`.**
+    //
+    // The box-wide level: `main_model = "glm-5.3-flash"` here decides what a session
+    // runs on **without a flag**, for every project on this box — which is the thing a
+    // *project's* file cannot say and the thing the operator asked for. Same name,
+    // same keys, same parser as the project file (`load_user` is `load` at this path);
+    // the discovery is the whole difference, because a project file is FOUND by
+    // walking up and this one is AT AN ADDRESS.
+    //
+    // Read before the project file, because the project file overrides it, and before
+    // `[default]`, because `[default]` is the level below both.
+    //
+    // **A file that does not parse does not take the daemon down.** The file, the
+    // line the parser stopped on, and what happens instead — the same sentence
+    // `prompts.toml` already gets, and the same one the project file gets below. A
+    // user file that took every daemon on the box down would be a worse failure than
+    // the one it reports.
+    let user_level = match crate::leticode_config::load_user() {
+        Ok(u) => u,
+        Err(why) => {
+            eprintln!(
+                "  ~/.config/letibot/leticode.toml: {why} — the session runs without the \
+                 user level"
+            );
+            crate::leticode_config::LeticodeConfig::default()
+        }
+    };
+    if let Some(path) = &user_level.path {
+        let set = user_level.set_models();
+        if set.is_empty() {
+            eprintln!("  leticode.toml (user): {} sets no models", path.display());
+        } else {
+            eprintln!(
+                "  leticode.toml (user): {} sets {}",
+                path.display(),
+                set.join(", ")
+            );
+        }
+    }
+
+    // **The project's `leticode.toml`, discovered by walking up from the workspace.**
+    //
+    // Read after the user file rather than before, because the precedence is command
+    // line beats the project file, the project file beats the user file, the user file
+    // beats the built-in default, and an unset key falls through — and the user file is
+    // already loaded by the time this runs, so merging the project's keys over it now
+    // is what makes the project level win. The command line is checked rather than
+    // re-applied: a model the operator's own `--provider` named must not be overridden
+    // by one a file set.
+    let project_level = if no_project_config {
+        eprintln!(
+            "  leticode.toml: --no-project-config, so the project file is not read \
+             and the session runs on the daemon's own models"
+        );
+        crate::leticode_config::LeticodeConfig::default()
+    } else {
+        match crate::leticode_config::LeticodeConfig::discover(&cfg.workspace) {
+            None => {
+                // No project file at or above the workspace: the daemon's own
+                // models, and nothing to name. Said rather than silent, because a
+                // project that expects a `leticode.toml` and does not find one is a
+                // setting the operator will reasonably believe took effect.
+                eprintln!(
+                    "  leticode.toml: none found at or above {} — the session runs \
+                     on the daemon's own models",
+                    cfg.workspace.display()
+                );
+                crate::leticode_config::LeticodeConfig::default()
+            }
+            Some(path) => match crate::leticode_config::LeticodeConfig::load(&path) {
+                Ok(project) => {
+                    let set = project.set_models();
+                    if set.is_empty() {
+                        eprintln!(
+                            "  leticode.toml: {} sets no models — the session runs \
+                             on the daemon's own models",
+                            path.display()
+                        );
+                    } else {
+                        eprintln!(
+                            "  leticode.toml: {} sets {}",
+                            path.display(),
+                            set.join(", ")
+                        );
+                    }
+                    project
+                }
+                Err(why) => {
+                    eprintln!(
+                        "  leticode.toml: {why} — the session runs on the daemon's \
+                         own models"
+                    );
+                    crate::leticode_config::LeticodeConfig::default()
+                }
+            },
+        }
+    };
+
+    // **The two file levels as one value, the project's over the user's.** This is
+    // what the spawn reads (`cfg.leticode`) and what the disclosure names, and
+    // merging here rather than at each read is what makes a project that sets one
+    // key keep the user's others.
+    //
+    // **`subagent_model` and `[roles]` do not ride the config for a path to read
+    // later** — the spawn reads them off `cfg.leticode` at the moment it seats a child
+    // (`HarnessTaskRunner::run_to_completion`), which is the only place a child's
+    // model and its samplers are decided. A key carried "for the path that reads it"
+    // and read by no path is the defect this feature is written against.
+    cfg.leticode = user_level.overridden_by(&project_level);
+    cfg.leticode_user = user_level.clone();
+
+    // **`main_model`, through the one function that states the precedence.**
+    //
+    // The command line is the flag level when it chose WHO ANSWERS — `--provider`,
+    // and not `--model`, which is the local BINDING the launcher passes on every
+    // start; see `cli_main_model` and `apply_main_model`. `[default]` is not a level
+    // here at all: it is the built-in, applied below and only if none of the three
+    // above spoke.
+    if !cli_main_model {
+        if let Some((model, level)) = crate::leticode_config::precedence(
+            None,
+            project_level.main_model.as_deref(),
+            user_level.main_model.as_deref(),
+        ) {
+            let note = apply_main_model(&mut cfg, &model, cli_binding.as_deref());
+            let file = match level {
+                crate::leticode_config::Level::Project => project_level.path.clone(),
+                crate::leticode_config::Level::User => user_level.path.clone(),
+                _ => None,
+            };
+            cfg.model_source = crate::config::ModelSource {
+                level,
+                value: Some(model),
+                file,
+                origin: String::new(),
+                note,
+            };
+        }
+    } else if cfg.provider.is_some() {
+        // The flag level, and `Level::describe` already names `--provider` — so there
+        // is nothing to add and nothing that could disagree with it. The provider and
+        // its model are on the front of the same sentence (`main deepseek/…`).
+        cfg.model_source = crate::config::ModelSource {
+            level: crate::leticode_config::Level::Flag,
+            value: Some(cfg.prompt_model_name()),
+            file: None,
+            origin: String::new(),
+            note: None,
+        };
+    }
+
+    // **The built-in default, and it is BELOW the two files.**
+    //
+    // `[default]` in providers.toml — what `/models NAME` writes — is the daemon's
+    // standing choice, and it is read here rather than before the files so that a
+    // line the operator wrote in `leticode.toml` outranks it. That ordering is the
+    // asymmetry this level exists to fix, and the shape of the defect is worth
+    // keeping in view: `[default]` is read into `cfg.provider` only when
+    // `cfg.provider.is_none()`, and `--model` (the launcher's binding) leaves it
+    // `None` — so a FILE outranked a COMMAND LINE, and `letibot --glm` answered on
+    // deepseek while its own banner said `glm-5.3-flash`.
+    //
+    // The Err is said, not swallowed: a daemon that comes up local while the file
+    // says deepseek is a fault the operator cannot find from the outside. The line
+    // follows the one prompts.toml already gets — the file, the parser's own message,
+    // and what happens instead.
+    if cfg.model_source.level == crate::leticode_config::Level::Builtin {
+        match letibot_provider::keys::default_choice(None) {
+            Ok(Some(d)) => {
+                let origin = format!(
+                    "[default] in {}",
+                    letibot_provider::keys::config_file().display()
+                );
+                let model = Some(match &d.model {
+                    Some(m) => format!("{}/{m}", d.provider),
+                    None => d.provider.clone(),
+                });
+                cfg.provider = Some(crate::config::ProviderConfig {
+                    name: d.provider,
+                    model: d.model,
+                    api_key: None,
+                    thinking: false,
+                });
+                cfg.model_source = crate::config::ModelSource {
+                    level: crate::leticode_config::Level::Builtin,
+                    value: model,
+                    file: Some(letibot_provider::keys::config_file()),
+                    origin,
+                    note: None,
+                };
+            }
+            Ok(None) => {
+                cfg.model_source = crate::config::ModelSource {
+                    level: crate::leticode_config::Level::Builtin,
+                    value: Some(cfg.model.clone()),
+                    file: None,
+                    origin: format!(
+                        "the local server this daemon was launched against, {}",
+                        cfg.endpoint.authority()
+                    ),
+                    note: None,
+                };
+            }
+            Err(u) => {
+                eprintln!(
+                    "  {u} — the standing choice could not be read, so new sessions \
+                     start on the local server this daemon was launched against"
+                );
+                cfg.model_source = crate::config::ModelSource {
+                    level: crate::leticode_config::Level::Builtin,
+                    value: Some(cfg.model.clone()),
+                    file: None,
+                    origin: format!(
+                        "the local server this daemon was launched against, {} — the \
+                         `[default]` block could not be read",
+                        cfg.endpoint.authority()
+                    ),
+                    note: None,
+                };
+            }
+        }
+    }
+
+    // **The guard's model, and the adjudicator's — two words for the ONE oracle this
+    // build has**, which `load` has already refused to see disagree. The precedence
+    // goes through the one function that states it rather than being spelled out
+    // again here: there is no command-line flag for the guard's model, and
+    // `[gatekeeper] model` from providers.toml is already in `cfg.oracle_model` — so
+    // the merged file's word wins over the user's, and an unset key leaves the user's
+    // where it was.
+    if let Some((m, _)) = crate::leticode_config::precedence(
+        None,
+        cfg.leticode
+            .gatekeeper_model
+            .as_deref()
+            .or(cfg.leticode.judge_model.as_deref()),
+        cfg.oracle_model.as_deref(),
+    ) {
+        cfg.oracle_model = Some(m);
+    }
+
+    // **A model a file named that this box cannot reach, said at startup.**
+    //
+    // The third loud failure, and the one the tree has paid for three times: a name
+    // that is a *plausible* string reaches the first turn and comes back `401` or
+    // `400 Prompt contains invalid tokens`, neither of which names the file or the
+    // line that wrote it. `/props` is asked once, and only when a file set a bare
+    // local alias — a start where no file spoke pays nothing for this.
+    {
+        let wants_served = cfg.provider.is_none()
+            && cfg
+                .leticode
+                .main_model
+                .as_deref()
+                .is_some_and(|m| !m.contains('/'));
+        let served = if wants_served {
+            letibot_turn::serving::served_model(&cfg.endpoint).ok()
+        } else {
+            None
+        };
+        for why in unreachable_models(&cfg, &cfg.leticode.clone(), served.as_deref()) {
+            eprintln!("  leticode.toml: {why}");
+            // The one about the model that decides this session also rides the
+            // disclosure, because the screen is where the operator asked for it.
+            if cfg
+                .leticode
+                .main_model
+                .as_deref()
+                .is_some_and(|m| why.contains(&format!("`{m}`")))
+            {
+                cfg.model_source.note = Some(why);
+            }
+        }
+    }
+
     // **The per-model profile out of `providers.toml`** — `[model.<family>]` for the
     // dialect's effort, `[model."<alias>"]` for this model's sampling.
+    //
+    // Read HERE, after the levels rather than before them, because the profile is
+    // looked up BY the alias the session runs on: a file that set `main_model` had its
+    // `[model."…"]` sampling block skipped entirely while this ran earlier, so a
+    // project or user file could name a model and get the built-in greedy literal
+    // instead of the numbers the operator wrote for those weights.
     //
     // This is the wire that was missing. The file has documented the two blocks, the
     // precedence and a worked example since 2026-09-19, and nothing in the tree parsed
@@ -916,6 +1346,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     }
 
+    // **Captured here rather than before the levels**, because this is the banner's
+    // copy of the model and the levels are what decide it: a file that set
+    // `main_model` would otherwise be disclosed by the daemon's own launch line.
+    // The source goes with it, because `cfg` is handed to `Sessions` a few lines
+    // down and the banner is printed after that.
+    let model = cfg.model.clone();
+    let model_from = cfg.model_source.describe();
+
     // **The operator's `prompts.toml`, read once, here.** The per-model system-prompt
     // overrides, beside `providers.toml` in the same config dir.
     //
@@ -932,113 +1370,6 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             Err(why) => {
                 eprintln!("  prompts.toml: {why} — the session runs on the built-in prompt")
             }
-        }
-    }
-
-    // **The project's `leticode.toml`, discovered by walking up from the workspace
-    // and read once, here.** The per-project models, beside the daemon's own
-    // standing choice in `~/.config/letibot/`.
-    //
-    // Read after the user config (`[default]`, `[gatekeeper]`) rather than before,
-    // because the precedence is command line beats the project file, the project
-    // file beats `~/.config/letibot/`, and an unset key falls through — and the
-    // user config is already in `cfg` by the time this runs, so applying the
-    // project file now is what makes it beat the user config. The command line is
-    // checked rather than re-applied: a `main_model` the operator typed must not be
-    // overridden by one the project set, so the project's `main_model` is applied
-    // only when the command line did not name one.
-    //
-    // **A file that does not parse does not take the session down.** The daemon
-    // runs on its own defaults and says so — the file, the parser's own message,
-    // and what happens instead — the way `prompts.toml` already does. Silently
-    // ignoring an unreadable project file is the failure this feature exists to
-    // forbid: somebody sets a model, sees no change, and cannot tell whether they
-    // were ignored.
-    if no_project_config {
-        eprintln!(
-            "  leticode.toml: --no-project-config, so the project file is not read \
-             and the session runs on the daemon's own models"
-        );
-    } else {
-        match crate::leticode_config::LeticodeConfig::discover(&cfg.workspace) {
-            None => {
-                // No project file at or above the workspace: the daemon's own
-                // models, and nothing to name. Said rather than silent, because a
-                // project that expects a `leticode.toml` and does not find one is a
-                // setting the operator will reasonably believe took effect.
-                eprintln!(
-                    "  leticode.toml: none found at or above {} — the session runs \
-                     on the daemon's own models",
-                    cfg.workspace.display()
-                );
-            }
-            Some(path) => match crate::leticode_config::LeticodeConfig::load(&path) {
-                Ok(project) => {
-                    // **The precedence, applied.** Command line beats the project
-                    // file, the project file beats `~/.config/letibot/`, and an
-                    // unset key falls through. The user config is already in `cfg`,
-                    // so applying the project file now is what makes it beat the
-                    // user config; the command line is checked rather than
-                    // re-applied.
-                    //
-                    // **This is the one level `precedence` itself is not called
-                    // for**, and the reason is in `apply_main_model`: its argument
-                    // is not a name but a whole `provider` block, and re-applying
-                    // the USER config's model through it would drop the key
-                    // resolved for it (the block it builds carries `api_key: None`).
-                    // So the two levels that can win are spelled out here, and the
-                    // third is left where `cfg` already has it.
-                    if !cli_main_model {
-                        if let Some(m) = &project.main_model {
-                            apply_main_model(&mut cfg, m);
-                        }
-                    }
-                    // **The guard's model, and the adjudicator's — two words for the ONE oracle
-                    // this build has**, which `load` has already refused to see disagree. The
-                    // precedence goes through the one function that states it rather than being
-                    // spelled out again here: there is no command-line flag for the guard's
-                    // model, and `[gatekeeper] model` from providers.toml is already in
-                    // `cfg.oracle_model` above — so the project's word wins over the user's,
-                    // and an unset key leaves the user's where it was.
-                    if let Some(m) = crate::leticode_config::precedence(
-                        None,
-                        project
-                            .gatekeeper_model
-                            .as_deref()
-                            .or(project.judge_model.as_deref()),
-                        cfg.oracle_model.as_deref(),
-                    ) {
-                        cfg.oracle_model = Some(m);
-                    }
-                    // **`subagent_model` and `[roles]` do not ride the config for a path to
-                    // read later** — the spawn reads them off `cfg.leticode` at the moment it
-                    // seats a child (`HarnessTaskRunner::run_to_completion`), which is the only
-                    // place a child's model and its samplers are decided. A key carried "for
-                    // the path that reads it" and read by no path is the defect this feature
-                    // is written against, and both were exactly that until now.
-                    cfg.leticode = project;
-                    let set = cfg.leticode.set_models();
-                    if set.is_empty() {
-                        eprintln!(
-                            "  leticode.toml: {} sets no models — the session runs \
-                             on the daemon's own models",
-                            path.display()
-                        );
-                    } else {
-                        eprintln!(
-                            "  leticode.toml: {} sets {}",
-                            path.display(),
-                            set.join(", ")
-                        );
-                    }
-                }
-                Err(why) => {
-                    eprintln!(
-                        "  leticode.toml: {why} — the session runs on the daemon's \
-                         own models"
-                    );
-                }
-            },
         }
     }
 
@@ -1087,6 +1418,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         };
     }
 
+    // **Loaded here, after every source of the provider has spoken** — the flag,
+    // `main_model` in leticode.toml, `[default]` in providers.toml — because which
+    // vocabulary a daemon needs depends on who answers: a cloud provider with no
+    // `--vocab` is the byte vocabulary, and that is only knowable once the provider is.
+    let parts = Parts::load(&cfg).map_err(|e| e.to_string())?;
+
     // Captured before `cfg` and `parts` are handed to the worker: the HTTP head
     // needs the same vocabulary and dialect and none of the session state.
     let cfg_http = cfg.http.clone();
@@ -1126,7 +1463,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         .unwrap_or_default();
 
     eprintln!("harnessd: session {session_id}");
-    eprintln!("  model    {model} via {endpoint} (/completion, token array)");
+    // **The model, AND where it came from.** The operator's own question of the
+    // evening — *"why is my session on deepseek"* — was answered by a file they had to
+    // go and read, and a banner that says `model deepseek` without saying *which
+    // level* is the same defect one line shorter. So the level is on this line, and
+    // the `session model` disclosure under it carries the whole sentence.
+    eprintln!("  model    {model} via {endpoint} (/completion, token array) — from {model_from}");
     eprintln!("  dialect  {dialect}");
     eprintln!("  workspace {workspace}");
     eprintln!("  socket   {socket}");
@@ -1485,7 +1827,7 @@ fn run_query(
                     tools_json: prefix.tools_json.clone(),
                     tokens: opened.ledger.prefix_tokens().to_vec(),
                     h_init: opened.ledger.h_init(),
-                    vocab_source: cfg.vocab_gguf.display().to_string(),
+                    vocab_source: parts.vocab.source().to_string(),
                 };
                 // Content-addressed: the id is the hash of the system text and the
                 // schemas, so this is the same row and the write fills it in.
@@ -1936,17 +2278,20 @@ mod tests {
         }
     }
 
-    /// **A `main_model` from the project file lands on the right `cfg` field.** A
+    /// **A `main_model` from a file lands on the right `cfg` field.** A
     /// `provider/model` name sets the metered provider, and a bare alias sets the
     /// local model and clears the provider, because the two are the two ways a
     /// session's turns go and a name is one or the other, not both. A regression
-    /// here would be a project that set a model the session did not run on, which
-    /// is the defect this feature exists to forbid.
+    /// here would be a file that set a model the session did not run on, which is
+    /// the defect this feature exists to forbid.
     #[test]
-    fn a_project_main_model_lands_on_the_right_config_field() {
+    fn a_file_main_model_lands_on_the_right_config_field() {
         // A `provider/model` name sets the metered provider.
         let mut cfg = Config::for_this_box("/tmp");
-        apply_main_model(&mut cfg, "deepseek/deepseek-chat");
+        assert_eq!(
+            apply_main_model(&mut cfg, "deepseek/deepseek-chat", None),
+            None
+        );
         let pc = cfg
             .provider
             .expect("a provider/model name sets the provider");
@@ -1957,7 +2302,9 @@ mod tests {
             "the key is resolved along the usual path"
         );
 
-        // A bare alias sets the local model and clears the provider.
+        // A bare alias sets the local model and clears the provider. **The clearing
+        // is the whole point**: this is the line that takes a session off
+        // `[default] provider = deepseek` and back onto the box's own model.
         let mut cfg = Config::for_this_box("/tmp");
         cfg.provider = Some(crate::config::ProviderConfig {
             name: "deepseek".into(),
@@ -1965,9 +2312,124 @@ mod tests {
             api_key: None,
             thinking: false,
         });
-        apply_main_model(&mut cfg, "qwen-3.8-flash-next");
+        assert_eq!(
+            apply_main_model(&mut cfg, "qwen-3.8-flash-next", None),
+            None
+        );
         assert_eq!(cfg.model, "qwen-3.8-flash-next");
         assert!(cfg.provider.is_none(), "a bare alias is a local session");
+    }
+
+    /// **A file's alias does not overwrite the binding `--model` set, and says so.**
+    ///
+    /// The launcher passes `--model` on every start, and what it names is the
+    /// vocabulary this daemon tokenises with. A file that re-bound it would point the
+    /// GGUF at weights the server is not serving — `400 Prompt contains invalid
+    /// tokens` at the first turn — so the binding stands, the provider is still
+    /// cleared (the half that decides who answers), and the disagreement is returned
+    /// for the banner rather than resolved in silence.
+    #[test]
+    fn a_file_alias_does_not_rebind_the_command_line_and_says_so() {
+        let mut cfg = Config::for_this_box("/tmp");
+        cfg.provider = Some(crate::config::ProviderConfig {
+            name: "deepseek".into(),
+            model: Some("deepseek-chat".into()),
+            api_key: None,
+            thinking: false,
+        });
+        let note = apply_main_model(&mut cfg, "glm-5.3-flash", Some("qwen-3.8-flash-next"))
+            .expect("a disagreement is said, not swallowed");
+        assert!(
+            note.contains("glm-5.3-flash") && note.contains("qwen-3.8-flash-next"),
+            "the sentence names both: {note}"
+        );
+        assert_eq!(
+            cfg.model, "qwen-3.8-flash-next",
+            "the binding is the command line's"
+        );
+        assert!(
+            cfg.provider.is_none(),
+            "and the file still cleared the provider"
+        );
+
+        // Agreeing is not a disagreement: the file's alias IS the binding, and it
+        // applies with nothing to say.
+        let mut cfg = Config::for_this_box("/tmp");
+        assert_eq!(
+            apply_main_model(&mut cfg, "glm-5.3-flash", Some("glm-5.3-flash")),
+            None
+        );
+        assert_eq!(cfg.model, "glm-5.3-flash");
+    }
+
+    /// **A model a file named that this box cannot reach is named at startup.**
+    ///
+    /// The three shapes the tree has paid for: a provider this build does not know, a
+    /// provider with no key here, and a local alias the server is not serving. Each is
+    /// a sentence naming the value; the reachable cases are silent, because a warning
+    /// that cries wolf is worse than none.
+    #[test]
+    fn a_model_a_file_named_that_cannot_be_reached_is_named() {
+        let cfg = Config::for_this_box("/tmp");
+
+        // A provider this build does not know.
+        let why = unreachable_provider("notaprovider/x").expect("an unknown provider is named");
+        assert!(why.contains("notaprovider"), "{why}");
+
+        // A provider this build knows, with no key on this box. `grok` is the one
+        // preset whose key this tree documents as absent on the operator's box — the
+        // opencode entry is `type: oauth`, and an oauth entry is deliberately not read
+        // as a key. The test asserts the SHAPE rather than the key: whatever this box
+        // resolves, the answer is either `None` (a key is here) or a sentence naming
+        // the provider (no key is).
+        if let Some(why) = unreachable_provider("grok/grok-4-fast") {
+            assert!(why.contains("grok"), "{why}");
+        }
+
+        // A local alias the server is not serving, with no block to switch to.
+        let why = unreachable_local(&cfg, "no-such-alias", Some("qwen-3.8-flash-next"))
+            .expect("a local alias nothing serves is named");
+        assert!(why.contains("no-such-alias"), "{why}");
+        assert!(
+            why.contains("400"),
+            "and it says what the turn would be: {why}"
+        );
+
+        // The reachable cases are silent: the word `local`, an alias the server is
+        // serving, a `[model."..."]` block with an address, and any local name at all
+        // when the file did not set `main_model`.
+        assert_eq!(unreachable_local(&cfg, "local", None), None);
+        assert_eq!(
+            unreachable_local(&cfg, "qwen-3.8-flash-next", Some("qwen-3.8-flash-next")),
+            None,
+            "the alias the server reports"
+        );
+        assert_eq!(unreachable_provider("glm-5.3-flash"), None);
+    }
+
+    /// **`unreachable_models` asks the local half only of `main_model`.** The guard's
+    /// model answers at the `[gatekeeper]` endpoint and a subagent's is decided per
+    /// spawn, so comparing either against this daemon's own server would be a false
+    /// alarm — and a banner that cries wolf is a banner nobody reads.
+    #[test]
+    fn only_main_model_is_checked_against_this_daemons_own_server() {
+        use crate::leticode_config::LeticodeConfig;
+        let cfg = Config::for_this_box("/tmp");
+        let mut files = LeticodeConfig::default();
+        files.main_model = Some("no-such-alias".into());
+        files.subagent_model = Some("also-not-served".into());
+        files.gatekeeper_model = Some("qwen-3.8-27b".into());
+        let found = unreachable_models(&cfg, &files, Some("qwen-3.8-flash-next"));
+        assert_eq!(
+            found.len(),
+            1,
+            "one fault, and it is main_model's: {found:?}"
+        );
+        assert!(found[0].contains("no-such-alias"), "{found:?}");
+        assert!(
+            !found.iter().any(|w| w.contains("also-not-served")),
+            "a subagent's model is decided per spawn, not here: {found:?}"
+        );
     }
 
     /// **The empty scope matched everything.** `Path::new("/a").starts_with("")` is

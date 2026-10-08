@@ -53,19 +53,15 @@ pub fn default_socket_path() -> PathBuf {
 }
 
 fn libc_getuid() -> u32 {
-    // Avoiding a `libc` dependency in a crate that otherwise has none. The uid is
-    // only used to keep two users' fallback sockets apart.
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("Uid:"))?
-                .split_whitespace()
-                .nth(1)?
-                .parse()
-                .ok()
-        })
-        .unwrap_or(0)
+    // Avoiding a `libc` dependency in a crate that otherwise has none: `getuid` is in the C
+    // library every target links, and declaring it works on Linux and macOS alike, where
+    // the `/proc/self/status` read this replaced fell back to 0 on a Mac — one fallback
+    // socket for every user. The uid is only used to keep two users' fallback sockets apart.
+    unsafe extern "C" {
+        fn getuid() -> u32;
+    }
+    // SAFETY: getuid cannot fail.
+    unsafe { getuid() }
 }
 
 /// A running server. Dropping it does **not** stop the session: see

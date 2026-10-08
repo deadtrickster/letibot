@@ -546,13 +546,17 @@ impl Tool for TaskTool {
             handle.clone(),
             std::time::Duration::ZERO,
             letibot_transcript::Backgrounding::Asked,
-            format!("call `task_result` with task=\"{handle}\" and a `timeout_ms`"),
+            format!(
+                "carry on — `{handle}`'s answer is delivered to you on its own when it \
+                 finishes, so there is nothing to wait for. `task_result` with \
+                 task=\"{handle}\" and no `timeout_ms` shows where it has got to."
+            ),
             format!(
                 "started subagent `{handle}` as `{}`.\n  subtask: {}\n\nIt is working \
                  now, and this call did not wait for it — the rest of this round runs \
-                 while it does. `task_result` with task=\"{handle}\" and a `timeout_ms` \
-                 blocks until it answers and returns what it said; with no `timeout_ms` \
-                 it reports where the subagent has got to without waiting.",
+                 while it does, and its answer comes back to you as a turn of its own \
+                 when it finishes. `task_result` with task=\"{handle}\" (no \
+                 `timeout_ms`) reports where it has got to.",
                 match &spec.model {
                     // **The model is named when the child was given one** — a spawn that
                     // prints only the role would leave the reader to guess which model is
@@ -819,7 +823,9 @@ impl Tool for TaskStartTool {
             std::time::Duration::ZERO,
             letibot_transcript::Backgrounding::Asked,
             format!(
-                "call `task_result` with task=\"{}\" and a `timeout_ms`",
+                "carry on — `{0}`'s answer is delivered to you on its own when it \
+                 finishes, so there is nothing to wait for. `task_result` with \
+                 task=\"{0}\" and no `timeout_ms` shows where it has got to.",
                 handle.handle
             ),
             format!(
@@ -827,9 +833,9 @@ impl Tool for TaskStartTool {
                  branch: {}\n  base: {}\n{seam_line}\nThe branch is the deliverable and \
                  is NOT pushed; it is to be landed by a merge queue. It is working now, \
                  and this call did not wait for it — the rest of this round runs while \
-                 it does. `task_result` with task=\"{}\" and a `timeout_ms` blocks until \
-                 it answers and returns what it said; with no `timeout_ms` it reports \
-                 where the subagent has got to without waiting. A child in the wrong \
+                 it does, and its answer comes back to you as a turn of its own when it \
+                 finishes. `task_result` with task=\"{}\" (no `timeout_ms`) reports \
+                 where it has got to. A child in the wrong \
                  PLACE is corrected with `task_message`, not killed: killing is for \
                  wrong work.",
                 handle.handle,
@@ -863,9 +869,11 @@ impl Tool for TaskResultTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "task_result",
-            "Collect a subagent started by `task`. Give `task` (the handle `task` \
-             returned) and optionally `timeout_ms` to block until it answers — \
-             without one this reports where it has got to and returns at once. The \
+            "Look at a subagent started by `task`. You do not need this to get its \
+             answer: that is delivered to you on its own, as a turn, when it finishes. \
+             Give `task` (the handle `task` returned) to see where it has got to. \
+             `timeout_ms` blocks only for a child this session is not already being \
+             told about. The \
              three endings are three different outcomes: it answered, it failed, or \
              it is still working. Call with no `task` to list the subagents this \
              session started.",
@@ -873,7 +881,7 @@ impl Tool for TaskResultTool {
                 "type": "object",
                 "properties": {
                     "task": {"type": "string", "description": "The handle `task` returned. Omit to list this session's subagents."},
-                    "timeout_ms": {"type": "integer", "description": "Block up to this long for the subagent to answer. Omit to report its state without waiting."}
+                    "timeout_ms": {"type": "integer", "description": "Block up to this long for a subagent whose answer is not already being delivered to you. Omit to report its state without waiting."}
                 }
             }),
             // Reading the answer of a child that has already been governed by its
@@ -882,7 +890,7 @@ impl Tool for TaskResultTool {
         )
     }
 
-    fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &serde_json::Value) -> Invocation {
+    fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &serde_json::Value) -> Invocation {
         let Some(handle) = args.get("task").and_then(|v| v.as_str()) else {
             let started = self.runner.started();
             if started.is_empty() {
@@ -913,6 +921,33 @@ impl Tool for TaskResultTool {
             .and_then(|v| v.as_u64())
             .map(std::time::Duration::from_millis)
             .unwrap_or(std::time::Duration::ZERO);
+        // **R23, which `job_wait` got and this tool did not.** The daemon watches every child
+        // and hands its answer to the model as a turn of its own, so a wait on a watched child
+        // holds the floor for a deadline while the answer is already on its way. The operator,
+        // after a stroppy session spent 240 s inside `task_result`: *"why it decided to wait
+        // for it explicitly if we have completion events"*, and *"on other hosts they just
+        // start subagents and dont wait"*. So a watched child is looked at, not waited on: an
+        // answer or a failure already in is returned as ever, and a child still working is
+        // reported as such at once. Unwatched handles — another session's, a runtime with no
+        // watcher — keep the blocking wait they asked for.
+        let timeout = if !timeout.is_zero() && ctx.completion_delivered(handle) {
+            match self.runner.collect(handle, std::time::Duration::ZERO) {
+                TaskStatus::Running { note } => {
+                    return Invocation::ok(format!(
+                        "nothing to wait for: `{handle}` is still working{}, and its answer \
+                         reaches you on its own when it finishes — the daemon is watching it \
+                         and will hand you the result unprompted, as a turn of its own. \
+                         Waiting here would hold the floor while the answer is already on its \
+                         way. Carry on with something else; `task_message` steers it and \
+                         `job_kill` stops it.",
+                        note.map(|n| format!(" (last: {n})")).unwrap_or_default()
+                    ));
+                }
+                _ => std::time::Duration::ZERO,
+            }
+        } else {
+            timeout
+        };
         match self.runner.collect(handle, timeout) {
             TaskStatus::Done { answer } => {
                 // **The child has finished, so its branch goes to be landed.** This is the one
@@ -1207,6 +1242,85 @@ mod tests {
     /// the child lived. Measured 2026-09-17 in the operator's session — a block
     /// of `todo_write`, `task` and three `web_search` calls, all unfinished for
     /// the fifteen minutes the subagent ran.
+    /// **R23 for subagents: a watched child is looked at, not waited on.** The stroppy session
+    /// spent 240 s in `task_result` on a child whose answer the daemon was already going to
+    /// deliver as a turn — *"why it decided to wait for it explicitly if we have completion
+    /// events"*. With the watch question wired, a `timeout_ms` on a child still working returns
+    /// at once and says the answer is on its way; an answer already in is returned as ever; and
+    /// a child nobody is watching keeps the wait it asked for.
+    #[test]
+    fn a_watched_subagent_is_not_waited_on() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Gate {
+            done: Arc<AtomicBool>,
+        }
+        impl TaskRunner for Gate {
+            fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+                Ok("sub-w".into())
+            }
+            fn collect(&self, _h: &str, timeout: std::time::Duration) -> TaskStatus {
+                let deadline = std::time::Instant::now() + timeout;
+                loop {
+                    if self.done.load(Ordering::SeqCst) {
+                        return TaskStatus::Done {
+                            answer: "the child's answer".into(),
+                        };
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return TaskStatus::Running { note: None };
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+            fn started(&self) -> Vec<String> {
+                vec!["sub-w".into()]
+            }
+        }
+        let run = |watched: bool, done: bool| {
+            let runner: Arc<dyn TaskRunner> = Arc::new(Gate {
+                done: Arc::new(AtomicBool::new(done)),
+            });
+            let d = crate::backend::tempdir::TempDir::new();
+            let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+            let mut reg = crate::runtime::Registry::new();
+            reg.register(Box::new(TaskResultTool::new(runner))).unwrap();
+            let mut rt = crate::runtime::ToolRuntime::new(reg, Box::new(backend));
+            if watched {
+                rt = rt.with_completion_delivered(Arc::new(|j: &str| j == "sub-w"));
+            }
+            let started = std::time::Instant::now();
+            let r = rt.invoke(
+                "t1",
+                &letibot_transcript::ToolCall {
+                    id: "c0".into(),
+                    name: "task_result".into(),
+                    arguments: r#"{"task": "sub-w", "timeout_ms": 400}"#.into(),
+                },
+                &mut crate::NullToolSink,
+            );
+            (r, started.elapsed())
+        };
+
+        let (r, took) = run(true, false);
+        assert!(
+            took < std::time::Duration::from_millis(200),
+            "a watched child held the floor for {took:?}"
+        );
+        assert!(r.payload.contains("nothing to wait for"), "{}", r.payload);
+        assert!(r.payload.contains("on its own"), "{}", r.payload);
+
+        let (r, _) = run(true, true);
+        assert!(r.payload.contains("the child's answer"), "{}", r.payload);
+
+        // Unwatched: the wait it asked for, to the deadline.
+        let (r, took) = run(false, false);
+        assert!(
+            took >= std::time::Duration::from_millis(400),
+            "an unwatched wait returned early: {took:?}"
+        );
+        assert!(r.payload.contains("has not answered yet"), "{}", r.payload);
+    }
+
     #[test]
     fn starting_a_subagent_does_not_wait_for_it() {
         use std::sync::Arc as StdArc;

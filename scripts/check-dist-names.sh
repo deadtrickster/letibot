@@ -135,6 +135,23 @@ if [ -n "$missing_from_installer" ]; then
     exit 1
 fi
 
+# **The macOS list, held to the same rule.** install.sh's LIBRARIES_DARWIN is what a Mac
+# copies and make-dist.sh's ARCHIVE_LIBRARIES_DARWIN is what an `*-apple-darwin` archive
+# holds; the binaries are shared with the Linux lists above.
+inst_darwin=$(sed -n 's/^LIBRARIES_DARWIN="\(.*\)"$/\1/p' "$repo/install.sh" | head -1)
+pack_darwin=$(sed -n 's/^ARCHIVE_LIBRARIES_DARWIN="\(.*\)"$/\1/p' "$repo/scripts/make-dist.sh" | head -1)
+if [ -z "$inst_darwin" ] || [ -z "$pack_darwin" ]; then
+    echo "check-dist-names: install.sh's LIBRARIES_DARWIN or make-dist.sh's" >&2
+    echo "  ARCHIVE_LIBRARIES_DARWIN is missing, so the macOS asset has no list to agree with." >&2
+    exit 1
+fi
+if [ "$(printf '%s\n' $inst_darwin | sort)" != "$(printf '%s\n' $pack_darwin | sort)" ]; then
+    echo "check-dist-names: the macOS library lists disagree:" >&2
+    echo "  install.sh  LIBRARIES_DARWIN:         $inst_darwin" >&2
+    echo "  make-dist   ARCHIVE_LIBRARIES_DARWIN: $pack_darwin" >&2
+    exit 1
+fi
+
 echo "check-dist-names: $(printf '%s ' $built | wc -w) triple(s) built, all asked for by install.sh; install.sh and the archive agree on $(printf '%s ' $packaged | wc -w) file(s)"
 
 # **The two workflows must build against the SAME llama.cpp.**

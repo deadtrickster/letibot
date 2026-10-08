@@ -43,16 +43,18 @@ use letibot_turn::{Endpoint, TurnEngine};
 
 use chatml::{ChatMlParser, ChatMlRenderer};
 
-fn vocab() -> &'static Vocab {
-    static VOCAB: OnceLock<Vocab> = OnceLock::new();
-    VOCAB.get_or_init(|| {
-        // One home for this path: `letibot_tokencore::apparatus`. It was
-        // written out in seven crates, and `LETIBOT_VOCAB_GGUF` now wins
-        // unconditionally there rather than being a hint.
-        let p = letibot_tokencore::apparatus::gguf_path();
-        assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
-        Vocab::load(&p).expect("the vocabulary must load")
-    })
+fn vocab() -> std::sync::Arc<Vocab> {
+    static VOCAB: OnceLock<std::sync::Arc<Vocab>> = OnceLock::new();
+    VOCAB
+        .get_or_init(|| {
+            // One home for this path: `letibot_tokencore::apparatus`. It was
+            // written out in seven crates, and `LETIBOT_VOCAB_GGUF` now wins
+            // unconditionally there rather than being a hint.
+            let p = letibot_tokencore::apparatus::gguf_path();
+            assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
+            std::sync::Arc::new(letibot_llama::load(&p).expect("the vocabulary must load"))
+        })
+        .clone()
 }
 
 fn endpoint() -> Endpoint {
@@ -149,8 +151,8 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
         let parser = ChatMlParser;
         let mut engine = TurnEngine::new(
             vocab(),
-            &renderer,
-            &parser,
+            std::sync::Arc::new(renderer),
+            std::sync::Arc::new(parser),
             endpoint(),
             BackendCaps::OWN_SERVER,
             "qwen-3.8-flash-next",

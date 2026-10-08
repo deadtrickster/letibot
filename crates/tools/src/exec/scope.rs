@@ -115,6 +115,16 @@ pub struct Reaped {
 
 impl Reaped {
     /// Read what a pid is, from `/proc`, while it is still there to read.
+    #[cfg(target_os = "macos")]
+    pub fn observe(pid: u32) -> Reaped {
+        Reaped {
+            pid,
+            comm: super::darwin::info(pid).map(|i| i.comm).unwrap_or_default(),
+            cmdline: super::darwin::cmdline(pid),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub fn observe(pid: u32) -> Reaped {
         let comm = std::fs::read_to_string(format!("/proc/{pid}/comm"))
             .unwrap_or_default()
@@ -150,6 +160,7 @@ impl Reaped {
 }
 
 /// `/proc/<pid>/cmdline` is NUL-separated and NUL-terminated.
+#[cfg(any(not(target_os = "macos"), test))]
 pub(crate) fn cmdline_of(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .split('\0')
@@ -506,6 +517,7 @@ impl Cgroup2 {
 /// asks exactly this question, and asking it through the kernel's own
 /// `cgroup.events` is what makes the monitor's predicate unable to match its own
 /// waiter.
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn populated_at(dir: &Path) -> bool {
     match std::fs::read_to_string(dir.join("cgroup.events")) {
         Ok(s) => s
@@ -649,7 +661,7 @@ impl ScopeTree for Cgroup2 {
             "nothing to kill"
         } else {
             match kill_tree(&scope.path) {
-                Ok(()) => "cgroup.kill",
+                Ok(()) => CGROUP_KILL,
                 Err(e) => {
                     // A fallback that is not visible is a fallback nobody knows
                     // they are running.
@@ -842,6 +854,382 @@ fn prune_at(dir: &Path, n: &mut usize) {
                 }
             }
         }
+    }
+}
+
+/// The [`Reaping::mechanism`] a cgroup reap records.
+pub const CGROUP_KILL: &str = "cgroup.kill";
+/// The [`Reaping::mechanism`] a process-group reap records (macOS).
+pub const PGROUP_KILL: &str = "killpg SIGKILL per process group";
+/// **What a reap on this host's own tree is recorded as** — the name [`host_tree`]'s kill
+/// goes by, for a test or a reader that asserts on it.
+pub const HOST_KILL: &str = if cfg!(target_os = "macos") {
+    PGROUP_KILL
+} else {
+    CGROUP_KILL
+};
+
+/// **The lifetime mechanism this host has**: cgroup v2 on Linux, process groups on
+/// macOS. Every production caller that used to say `Cgroup2::probe()` asks this,
+/// so the choice is made once.
+pub fn host_tree() -> Result<Box<dyn ScopeTree>, ExecError> {
+    #[cfg(target_os = "macos")]
+    return Ok(Box::new(ProcessGroups::probe()?));
+    #[cfg(not(target_os = "macos"))]
+    return Ok(Box::new(Cgroup2::probe()?));
+}
+
+/// **The live processes in a scope and every scope under it**, asked the way this host's
+/// tree asks it — with no tree instance needed, because both answers are a function of
+/// the scope's directory. On Linux that is `cgroup.procs`, which the kernel keeps to the
+/// live members. On macOS `cgroup.procs` holds the recorded **group ids**, which stay
+/// until the reaper removes the directory — so a reader of the file sees a group a kill
+/// has already emptied, and only this, which asks which of those groups still has a
+/// member, is the membership.
+pub fn live_members(scope: &ScopeId) -> Vec<u32> {
+    #[cfg(target_os = "macos")]
+    return pg_members(&scope.path);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut out = Vec::new();
+        members_at(&scope.path, &mut out);
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+/// Whether a scope directory, or anything under it, holds a live process — the
+/// macOS reading of the same question, from the recorded process groups.
+#[cfg(target_os = "macos")]
+pub(crate) fn populated_at(dir: &Path) -> bool {
+    let mut pids = Vec::new();
+    pg_members_at(dir, &mut pids);
+    !pids.is_empty()
+}
+
+/// **Process groups, on macOS** — the same three scopes with a weaker floor.
+///
+/// macOS has no cgroups. What it has is the process group: a number every process
+/// carries, inherited across `fork`, and `killpg` to signal all of them at once. So
+/// the tree keeps the cgroup *layout* — one directory per scope, a `cgroup.procs`
+/// file per job — in the temp dir, and what [`join_script`] writes into that file
+/// is the wrapper's own pid, which is its **process group id** because every
+/// spawn makes the wrapper a group leader (`setsid` on the pty paths,
+/// `process_group(0)` on the plain one). Membership is then "every live process
+/// whose group is one this scope recorded", read from the kernel, never from a
+/// pattern.
+///
+/// **What is weaker, said rather than discovered:**
+///
+/// - A process can leave its group (`setsid`, `setpgid`). A cgroup cannot be left.
+///   Ordinary tools do not do this; daemons that double-fork do, and such a process
+///   is outside the scope and is not reaped.
+/// - A group id is a pid, and pids are reused. A group with no members is
+///   forgotten as soon as any read notices it is empty, so the window is between
+///   the last member's exit and the next read — but it is a window, where a cgroup
+///   has none.
+/// - There is no `cgroup.kill`: the kill is `killpg(SIGKILL)` per recorded group,
+///   repeated until the members are gone, and the record names that mechanism.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone)]
+pub struct ProcessGroups {
+    root: PathBuf,
+    open: std::sync::Arc<std::sync::Mutex<Vec<ScopeId>>>,
+}
+
+#[cfg(target_os = "macos")]
+impl ProcessGroups {
+    /// Make a root under the temp dir (`$TMPDIR`, per user on macOS). Fails only if
+    /// it cannot be created, and says where.
+    pub fn probe() -> Result<ProcessGroups, ExecError> {
+        Self::probe_under(&std::env::temp_dir().join("letibot-scopes"))
+    }
+
+    pub fn probe_under(parent: &Path) -> Result<ProcessGroups, ExecError> {
+        sweep_orphans(parent);
+        let root = parent.join(format!(
+            "letibot.{}.{}",
+            std::process::id(),
+            TREE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).map_err(|e| ExecError::Cgroup {
+            op: "mkdir",
+            path: root.display().to_string(),
+            why: format!("{e} — the process-group scope tree needs a writable temp dir"),
+        })?;
+        Ok(ProcessGroups {
+            root,
+            open: Default::default(),
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+/// **Roots whose daemon is gone and which hold nothing**, removed before a new one is made.
+///
+/// A cgroup root is a child of its daemon's own cgroup and goes when that does; a directory
+/// in the temp dir goes when somebody removes it, and a daemon that was killed, or a test
+/// binary that never pruned, does not. The owner's pid is in the name (`letibot.<pid>.<n>`),
+/// so a root is debris exactly when that process is not alive **and** no recorded group still
+/// has a member — a root still holding a live process is somebody's work, whoever made it.
+#[cfg(target_os = "macos")]
+fn sweep_orphans(parent: &Path) {
+    let Ok(rd) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let Some(owner) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("letibot."))
+            .and_then(|r| r.split('.').next())
+            .and_then(|p| p.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if owner == std::process::id() || super::darwin::alive(owner) {
+            continue;
+        }
+        if pg_members(&e.path()).is_empty() {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// The group ids recorded in one scope directory and every directory under it.
+#[cfg(target_os = "macos")]
+fn pg_recorded_at(dir: &Path, out: &mut Vec<u32>) {
+    members_at(dir, out);
+}
+
+/// The live processes in the groups a scope recorded, and — the forgetting half —
+/// any recorded group found empty is struck from its file, so its number is not
+/// held after the kernel is free to hand it to somebody else.
+#[cfg(target_os = "macos")]
+fn pg_members_at(dir: &Path, out: &mut Vec<u32>) {
+    if let Ok(s) = std::fs::read_to_string(dir.join("cgroup.procs")) {
+        let recorded: Vec<u32> = s.lines().filter_map(|l| l.trim().parse().ok()).collect();
+        let live = super::darwin::members_of_groups(&recorded);
+        let groups: Vec<u32> = live
+            .iter()
+            .filter_map(|p| super::darwin::info(*p).map(|i| i.pgid))
+            .collect();
+        let kept: Vec<u32> = recorded
+            .iter()
+            .copied()
+            .filter(|g| groups.contains(g))
+            .collect();
+        if kept.len() != recorded.len() {
+            let body: String = kept.iter().map(|g| format!("{g}\n")).collect();
+            let _ = std::fs::write(dir.join("cgroup.procs"), body);
+        }
+        out.extend(live);
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                pg_members_at(&e.path(), out);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn pg_members(dir: &Path) -> Vec<u32> {
+    let mut v = Vec::new();
+    pg_members_at(dir, &mut v);
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+#[cfg(target_os = "macos")]
+impl ScopeTree for ProcessGroups {
+    fn describe(&self) -> String {
+        format!(
+            "process groups, rooted at {} (lifetime only — this is NOT a sandbox; \
+             a process that calls setsid/setpgid leaves its scope)",
+            self.root.display()
+        )
+    }
+
+    fn open(
+        &self,
+        kind: ScopeKind,
+        name: &str,
+        parent: Option<&ScopeId>,
+    ) -> Result<ScopeId, ExecError> {
+        // The same placement rule as `Cgroup2::open`, for the same reason.
+        let base = match parent {
+            Some(p) if kind == ScopeKind::Explicit && p.kind != ScopeKind::Explicit => {
+                self.root.clone()
+            }
+            Some(p) => p.path.clone(),
+            None => self.root.clone(),
+        };
+        let dir = base.join(format!("{}.{}", kind.as_str(), sanitise(name)));
+        std::fs::create_dir_all(&dir).map_err(|e| ExecError::Cgroup {
+            op: "mkdir",
+            path: dir.display().to_string(),
+            why: e.to_string(),
+        })?;
+        let id = ScopeId {
+            kind,
+            name: name.to_string(),
+            path: dir,
+        };
+        let mut open = self.open.lock().expect("scope list");
+        if !open.contains(&id) {
+            open.push(id.clone());
+        }
+        Ok(id)
+    }
+
+    fn members(&self, scope: &ScopeId) -> Result<Vec<u32>, ExecError> {
+        if std::fs::metadata(&scope.path).is_err() {
+            return Err(ExecError::NoSuchScope(scope.to_string()));
+        }
+        Ok(pg_members(&scope.path))
+    }
+
+    /// Presence, then `killpg`, then absence — the same three-part record.
+    fn end(&self, scope: &ScopeId) -> Reaping {
+        let started = Instant::now();
+        let at = SystemTime::now();
+
+        let pids = pg_members(&scope.path);
+        let observed: Vec<Reaped> = pids.iter().map(|p| Reaped::observe(*p)).collect();
+
+        let mechanism = if observed.is_empty() {
+            "nothing to kill"
+        } else {
+            PGROUP_KILL
+        };
+
+        // Repeated, because a member can fork between one `killpg` and its exit; the
+        // child is in the same group and the next pass reaches it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut groups = Vec::new();
+        pg_recorded_at(&scope.path, &mut groups);
+        loop {
+            for g in &groups {
+                unsafe { libc::killpg(*g as libc::pid_t, libc::SIGKILL) };
+            }
+            if pg_members(&scope.path).is_empty() || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let survivors = pg_members(&scope.path);
+
+        let removed = survivors.is_empty() && std::fs::remove_dir_all(&scope.path).is_ok();
+        let note = (!removed && survivors.is_empty())
+            .then(|| "every process is gone but the scope directory would not be removed".into());
+        self.open.lock().expect("scope list").retain(|s| s != scope);
+
+        Reaping {
+            scope: scope.clone(),
+            at,
+            mechanism,
+            observed,
+            survivors,
+            waited: started.elapsed(),
+            removed,
+            note,
+        }
+    }
+
+    /// Moving a group is moving its number: the recorded ids go from `from`'s files
+    /// to `to`'s. Membership is then read back from the kernel, as for cgroups.
+    fn migrate(&self, from: &ScopeId, to: &ScopeId) -> Result<Migration, ExecError> {
+        if std::fs::metadata(&from.path).is_err() {
+            return Err(ExecError::NoSuchScope(from.to_string()));
+        }
+        if std::fs::metadata(&to.path).is_err() {
+            return Err(ExecError::NoSuchScope(to.to_string()));
+        }
+        let started = Instant::now();
+        let observed_pids = pg_members(&from.path);
+        let observed: Vec<Reaped> = observed_pids.iter().map(|p| Reaped::observe(*p)).collect();
+
+        let mut groups = Vec::new();
+        pg_recorded_at(&from.path, &mut groups);
+        let mut note = None;
+        let w = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(to.path.join("cgroup.procs"))
+            .and_then(|mut f| {
+                for g in &groups {
+                    writeln!(f, "{g}")?;
+                }
+                Ok(())
+            });
+        if let Err(e) = w {
+            note = Some(format!(
+                "the group ids could not be written into the target: {e}"
+            ));
+        }
+        let removed = note.is_none() && std::fs::remove_dir_all(&from.path).is_ok();
+
+        let left_behind = if removed {
+            Vec::new()
+        } else {
+            pg_members(&from.path)
+        };
+        let mut moved = pg_members(&to.path);
+        moved.retain(|p| observed_pids.contains(p));
+        if !left_behind.is_empty() && note.is_none() {
+            note = Some(format!(
+                "{} process(es) would not move; they are STILL owned by `{from}` and die when it does",
+                left_behind.len()
+            ));
+        }
+        self.open.lock().expect("scope list").retain(|s| s != from);
+
+        Ok(Migration {
+            from: from.clone(),
+            to: to.clone(),
+            observed,
+            moved,
+            left_behind,
+            passes: 1,
+            waited: started.elapsed(),
+            removed,
+            mechanism: "move process-group ids",
+            note,
+        })
+    }
+
+    fn list(&self) -> Vec<ScopeId> {
+        self.open.lock().expect("scope list").clone()
+    }
+
+    fn prune(&self) -> usize {
+        fn at(dir: &Path, n: &mut usize) {
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        let child = e.path();
+                        at(&child, n);
+                        if pg_members(&child).is_empty() && std::fs::remove_dir_all(&child).is_ok()
+                        {
+                            *n += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let mut n = 0;
+        at(&self.root, &mut n);
+        if pg_members(&self.root).is_empty() && std::fs::remove_dir_all(&self.root).is_ok() {
+            n += 1;
+        }
+        n
     }
 }
 
@@ -1061,5 +1449,75 @@ mod tests {
         assert!(join_script().contains("exit 125"));
         assert!(join_script().contains("was NOT run"));
         assert!(join_script().contains("exec"));
+    }
+
+    /// The macOS tree, end to end through the real wrapper: a job that backgrounds a
+    /// grandchild and returns is still reaped whole, the record carries both, and a
+    /// promotion moves them so the old scope's end no longer touches them.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_groups_reap_a_backgrounded_grandchild_and_promotion_moves_it() {
+        use std::os::unix::process::CommandExt;
+        let t = ProcessGroups::probe().unwrap();
+        let session = t.open(ScopeKind::Session, "s", None).unwrap();
+        let turn = t.open(ScopeKind::Turn, "t", Some(&session)).unwrap();
+        let job = t.open(ScopeKind::Turn, "job.1", Some(&turn)).unwrap();
+
+        let mut wrapper = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(join_script())
+            .arg("letibot-scope")
+            .arg(Cgroup2::procs_path(&job))
+            .arg("/dev/null")
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg("sleep 30 & sleep 30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while t.members(&turn).unwrap().len() < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(t.members(&turn).unwrap().len(), 3, "sh and two sleeps");
+        assert!(populated_at(&session.path));
+
+        // Promote the job to the session: the turn's end must now find nothing.
+        let m = t.migrate(&job, &session).unwrap();
+        assert!(m.complete(), "{}", m.summary());
+        assert_eq!(m.moved.len(), 3, "{}", m.summary());
+        let turn_end = t.end(&turn);
+        assert!(turn_end.observed.is_empty(), "{}", turn_end.summary());
+        assert_eq!(t.members(&session).unwrap().len(), 3);
+
+        let r = t.end(&session);
+        let _ = wrapper.wait();
+        assert_eq!(r.observed.len(), 3, "{}", r.summary());
+        assert_eq!(r.mechanism, PGROUP_KILL);
+        assert!(r.clean(), "{}", r.summary());
+        assert!(
+            r.observed.iter().any(|o| o.label().contains("sleep 30")),
+            "{}",
+            r.summary()
+        );
+        t.prune();
+    }
+
+    /// A root left by a process that is gone, holding nothing, is swept by the next probe;
+    /// one whose owner is alive is not touched.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_dead_daemons_empty_root_is_swept_and_a_live_ones_is_kept() {
+        let parent = std::env::temp_dir().join(format!("letibot-sweep-{}", std::process::id()));
+        // pid 0 is never a user process; this process is certainly alive.
+        let dead = parent.join("letibot.0.0/session.s");
+        let live = parent.join(format!("letibot.{}.99/session.s", std::process::id()));
+        std::fs::create_dir_all(&dead).unwrap();
+        std::fs::create_dir_all(&live).unwrap();
+        let t = ProcessGroups::probe_under(&parent).unwrap();
+        assert!(!parent.join("letibot.0.0").exists(), "the dead root stayed");
+        assert!(live.exists(), "a live owner's root was removed");
+        drop(t);
+        let _ = std::fs::remove_dir_all(&parent);
     }
 }

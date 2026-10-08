@@ -57,7 +57,7 @@ use letibot_sessionlog::server::serve_registry;
 use letibot_sessionlog::wire::{FrameReader, FrameWriter};
 use letibot_tui::app::App;
 use letibot_tui::driver::Link;
-use letibot_tui::render::RenderConfig;
+use letibot_tui::ui::render::RenderConfig;
 
 const SESSION: &str = "s-stop";
 

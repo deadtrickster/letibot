@@ -327,13 +327,18 @@ impl Drop for Dir {
 }
 
 fn tempdir() -> Dir {
+    // **A counter as well as the clock**: macOS's clock resolves microseconds, so two tests
+    // in this process starting in the same one got the same directory, seeded the corpus
+    // twice, and read `matched: 2` — measured 2026-10-07 under a full workspace run.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let p = std::env::temp_dir().join(format!(
-        "letibot-decisions-{}-{}",
+        "letibot-decisions-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&p).expect("scratch dir");
     Dir(p)

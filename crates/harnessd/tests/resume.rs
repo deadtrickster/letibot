@@ -168,9 +168,9 @@ fn config(store: &std::path::Path, session_id: &str, workspace: &str) -> Config 
     cfg.dialect = WANTED;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
-    if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = g.into();
-    }
+    // The GGUF the apparatus names (`LETIBOT_VOCAB_GGUF`, else this box's default) —
+    // `Config` no longer defaults to one, and each test asks `present_gguf` first.
+    cfg.vocab_gguf = Some(letibot_tokencore::apparatus::gguf_path());
     cfg
 }
 
@@ -182,6 +182,11 @@ fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
         return letibot_tokencore::apparatus::absent(
             "a session store (LETIBOT_STORE, or ~/.local/share/letibot/sessions.db)",
         );
+    };
+    // **And a vocabulary to render it with.** The store being here is not enough: it is
+    // present on any box that has run a session, a GGUF only where a model is.
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
     };
     // Loaded before the pick, because which session this build can resume depends
     // on the template it renders — and that is a property of the loaded wiring, not
@@ -258,6 +263,11 @@ fn a_session_recorded_under_another_dialect_is_re_rendered_not_refused() {
         return letibot_tokencore::apparatus::absent(
             "a session store (LETIBOT_STORE, or ~/.local/share/letibot/sessions.db)",
         );
+    };
+    // **And a vocabulary to render it with.** The store being here is not enough: it is
+    // present on any box that has run a session, a GGUF only where a model is.
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
     };
     let probe = Parts::load(&config(&path, "", "/tmp")).expect("the vocabulary must load");
     let (session_id, _, workspace) = biggest(&path, &renders_template(&probe));

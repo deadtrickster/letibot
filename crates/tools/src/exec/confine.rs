@@ -1052,6 +1052,23 @@ impl Bwrap {
     /// missing: no helper; the helper would not run; the readback could not be
     /// parsed; a required namespace was not entered.
     pub fn probe(mut view: ViewSpec, egress: Egress) -> Result<Bwrap, ExecError> {
+        // **No bubblewrap on macOS, and no installing one**: it is a front end to Linux
+        // namespaces, which Darwin does not have. Said by name, with what a Mac does have,
+        // rather than through the Linux sentence below and its `apt install`.
+        #[cfg(target_os = "macos")]
+        {
+            let _ = (&mut view, egress);
+            return Err(ExecError::NoConfinement(
+                "macOS has no namespace boundary: bubblewrap is a front end to Linux \
+                 namespaces and cannot be installed here. A confined session on a Mac runs \
+                 in a firecode VM instead (`letibot --vm`, which needs firecode's macOS \
+                 build), or seat `leticode` for an unconfined session on this host — its \
+                 banner says it is unconfined. Nothing was run, and nothing was run \
+                 unconfined."
+                    .to_string(),
+            ));
+        }
+        #[allow(unreachable_code)]
         let helper = find_helper()?;
         let mechanism = version_of(&helper);
 

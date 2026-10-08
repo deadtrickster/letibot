@@ -55,9 +55,14 @@ fn config(seat: Seat) -> Config {
     cfg.permission = Vec::new();
     cfg.dialect = Dialect::Qwen;
     cfg.seat = seat;
-    if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = g.into();
-    }
+    // `Config::for_this_box` carries no vocabulary default any more (a daemon on
+    // the byte vocabulary needs none), so a harness built here is handed one: the
+    // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
+    // same path this file's `present_gguf` gate consults.
+    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(letibot_tokencore::apparatus::present_gguf);
     cfg
 }
 

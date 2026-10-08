@@ -371,9 +371,18 @@ pub fn truncate(s: &str, cols: usize) -> String {
     let mut out = String::new();
     let mut sgr = Sgr::default();
     let mut used = 0usize;
+    // **A hyperlink open where the cut lands is closed with it**, the way an open colour is:
+    // an OSC 8 opener whose closer was cut off would make the rest of the row — and on some
+    // terminals the rows after it — one link.
+    let mut link_open = false;
     for c in cells(s) {
         sgr.feed(c.esc);
         out.push_str(c.esc);
+        // `ESC ] 8 ; params ; URI ST` — an empty URI is the closer.
+        for part in c.esc.split("\x1b]8;").skip(1) {
+            let uri = part.split_once(';').map(|(_, u)| u).unwrap_or("");
+            link_open = !uri.is_empty() && !uri.starts_with('\x1b') && !uri.starts_with('\x07');
+        }
         if used + c.cols > cols.saturating_sub(1) {
             break;
         }
@@ -381,6 +390,9 @@ pub fn truncate(s: &str, cols: usize) -> String {
         used += c.cols;
     }
     out.push('…');
+    if link_open {
+        out.push_str("\x1b]8;;\x1b\\");
+    }
     if sgr.is_open() {
         out.push_str(RESET);
     }
@@ -904,5 +916,16 @@ mod tests {
                 "the grid gives {c:?} one cell, which is the documented cost"
             );
         }
+    }
+
+    /// A link cut by the truncation is closed, or the rest of the row would be one link.
+    #[test]
+    fn truncate_closes_a_link_it_cuts() {
+        let s = "\x1b]8;;https://x.org\x1b\\a long link text\x1b]8;;\x1b\\";
+        let t = truncate(s, 6);
+        assert!(t.ends_with("…\x1b]8;;\x1b\\"), "{t:?}");
+        assert_eq!(width(&t), 6);
+        // Uncut, nothing is added.
+        assert_eq!(truncate(s, 40), s);
     }
 }

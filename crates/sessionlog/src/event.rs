@@ -569,6 +569,17 @@ pub const TARGET_MAX_BYTES: usize = 2048;
 /// subject has another name keeps the written order.
 const SUBJECT_KEYS: [&str; 3] = ["path", "file_path", "file"];
 
+/// The keys that carry a file's new **body**, which never belong in a label beside a named file.
+///
+/// The operator, on a write row titled `Wrote "Mechanism confirmed — thank you, this one was
+/// worth checking, and it is now pinned by tests: …` with the file name pushed off the end:
+/// *"i already see what was written from the diff. we dont need the line in quotes - just put
+/// the file name here please"*. A body under the cap never tripped the budget, so the prepend
+/// below did not fire and the content led; the head then shortened the row from the end, which
+/// is where the path was. Key names again, not tools — and only dropped when a subject key is
+/// present, so a call with nothing else to name still says something.
+const BODY_KEYS: [&str; 3] = ["content", "old_string", "new_string"];
+
 /// The display target for a tool call: the one argument a person reads.
 ///
 /// # Why it is derived and not tool-supplied
@@ -591,8 +602,9 @@ const SUBJECT_KEYS: [&str; 3] = ["path", "file_path", "file"];
 /// composing an edit writes the content before the file it is going into, and the
 /// budget then breaks before `path` lands — the operator's card read
 /// `Edited "        let view = sidediff::edit_view…` and could not answer *which
-/// file*. So a subject key ([`SUBJECT_KEYS`]) the loop never reached is prepended:
-/// the file leads, the content head follows. An order that already shows every
+/// file*. So a subject key ([`SUBJECT_KEYS`]) the loop never reached is prepended, and a
+/// body ([`BODY_KEYS`]) beside a named file is not in the label at all:
+/// the file leads, alone. An order that already shows every
 /// argument — grep's pattern, then its path — does not move.
 ///
 /// Nested values are **elided, not flattened**: `{…}` and `[…]` say there is more
@@ -644,7 +656,11 @@ pub fn display_target(arguments: &str) -> String {
     // reads like the arguments the model wrote.
     let mut elided: Vec<&'static str> = Vec::new();
     let mut subject_seen = false;
+    let names_a_file = SUBJECT_KEYS.iter().any(|k| map.contains_key(*k));
     for (_k, val) in &map {
+        if names_a_file && BODY_KEYS.contains(&_k.as_str()) {
+            continue;
+        }
         if SUBJECT_KEYS.contains(&_k.as_str()) {
             subject_seen = true;
         }
@@ -2048,6 +2064,21 @@ mod tests {
         );
         let t = display_target(&args);
         assert!(t.starts_with("crates/tui/src/app.rs"), "{t}");
+        // **And the body is not in the label at all** — under the cap or over it.
+        assert_eq!(t, "crates/tui/src/app.rs");
+        assert_eq!(
+            display_target(
+                r#"{"content":"Mechanism confirmed — thank you, this one was worth checking","path":"/tmp/reply-thread-1.txt"}"#
+            ),
+            "/tmp/reply-thread-1.txt",
+            "a write's row is its file, whatever order the model wrote the arguments in"
+        );
+        assert_eq!(
+            display_target(r#"{"path":"a.rs","old_string":"x y","new_string":"z w"}"#),
+            "a.rs"
+        );
+        // With no file named, a body is still the only thing to show, and is shown.
+        assert_eq!(display_target(r#"{"content":"hello"}"#), "hello");
         // An order that already shows every argument — grep's pattern, then
         // its path — does not move.
         assert_eq!(

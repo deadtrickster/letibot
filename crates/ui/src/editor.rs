@@ -309,6 +309,17 @@ impl Editor {
         &self.history
     }
 
+    /// **Replace the history**, oldest first — for a head that derives it from somewhere
+    /// else (the session's own prompts). Ignored while a recall is in progress, because
+    /// the walk's position is an index into the list it started on.
+    pub fn set_history(&mut self, entries: Vec<String>) {
+        if self.history_at.is_some() {
+            return;
+        }
+        self.history = entries;
+        self.trim_history();
+    }
+
     /// Feed a key. `now_ms` is a monotonic millisecond clock supplied by the
     /// caller.
     pub fn key(&mut self, k: Key, now_ms: u64) -> Reaction {

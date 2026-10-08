@@ -132,6 +132,7 @@
 use std::os::fd::RawFd;
 // `is_char_device` is a `FileTypeExt` method and not a `FileType` one, so the trait has to be
 // in scope where `stdin_of` asks whether fd 0's target is a character device.
+#[cfg(not(target_os = "macos"))]
 use std::os::unix::fs::FileTypeExt;
 
 /// **Which descriptor the daemon is holding for a run** — the identity a process's fd 0 is
@@ -194,6 +195,18 @@ pub enum Waiting {
 ///
 /// `None` for `ours` is [`Waiting::Unreadable`] rather than `No`, and so is an empty `pids`
 /// — a host that cannot say which processes a job has has not said *nothing is running*.
+///
+/// **macOS: always [`Waiting::Unreadable`].** The signal is `wchan` and
+/// `/proc/<tid>/syscall` — *blocked in a read, on fd 0* — and Darwin exposes neither: a
+/// thread's run state says *waiting* without saying on what. A guess from "fd 0 is ours and
+/// the threads are asleep" would raise a card over every quiet `sleep`, so the daemon says
+/// it could not look, which is the fact.
+#[cfg(target_os = "macos")]
+pub fn waiting_for_an_answer(_pids: &[u32], _ours: Option<&InputEnd>) -> Waiting {
+    Waiting::Unreadable
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn waiting_for_an_answer(pids: &[u32], ours: Option<&InputEnd>) -> Waiting {
     let Some(ours) = ours else {
         return Waiting::Unreadable;
@@ -264,6 +277,7 @@ pub fn pipe_inode(fd: RawFd) -> Option<u64> {
 /// `Pipe` and `Device` are the two kinds [`InputEnd`] can be. `Other` is the rest — a
 /// regular file, a socket, `/dev/null` — and it is its own arm rather than folded into
 /// `Device` because a path that is not a device has nothing to compare with either.
+#[cfg(not(target_os = "macos"))]
 enum StdinRead {
     /// fd 0 is a pipe, and this is its inode.
     Pipe(u64),
@@ -309,6 +323,7 @@ enum StdinRead {
 /// tell* about a descriptor it had just read — the empty-haystack mistake with the sign
 /// flipped, and it would put a sentence about the daemon's own reach on a run whose stdin is
 /// a socket.
+#[cfg(not(target_os = "macos"))]
 fn stdin_of(pid: u32) -> StdinRead {
     let Ok(target) = std::fs::read_link(format!("/proc/{pid}/fd/0")) else {
         return StdinRead::Unreadable;
@@ -374,6 +389,7 @@ fn stdin_of(pid: u32) -> StdinRead {
 /// deciding, and the person's way in is `!send`. It costs nothing on a box where the two files
 /// move together — measured here, `/proc/<pid>/fd/0` and `/proc/<pid>/task/<tid>/syscall` are
 /// both readable for this uid and both `EACCES` for a uid that is not.
+#[cfg(not(target_os = "macos"))]
 fn blocked_reading_fd0(pid: u32) -> bool {
     let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
         return false;
@@ -398,6 +414,7 @@ fn blocked_reading_fd0(pid: u32) -> bool {
 /// `None` when the file cannot be read or does not hold a syscall: the kernel answers
 /// `running` for a task that is not in one, and `-1` with zeroes for a task it will not
 /// describe. Both are *could not look*, and both are answered by not counting the thread.
+#[cfg(not(target_os = "macos"))]
 fn blocked_on_fd(syscall: &std::path::Path) -> Option<i64> {
     let text = std::fs::read_to_string(syscall).ok()?;
     let mut fields = text.split_whitespace();
@@ -482,6 +499,17 @@ fn clip_front(line: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// macOS has no reading of the signal, and says so rather than answering `No`.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn on_macos_the_signal_is_unreadable_and_never_a_no() {
+        let ours = InputEnd::Pipe(1);
+        assert_eq!(
+            waiting_for_an_answer(&[std::process::id()], Some(&ours)),
+            Waiting::Unreadable
+        );
+    }
+
     use super::*;
     use std::os::fd::AsRawFd;
 
@@ -493,6 +521,7 @@ mod tests {
     /// a language with no marker this file has ever heard of: both are `Yes`, which is the
     /// whole point of asking the process instead.
     #[test]
+    #[cfg(target_os = "linux")] // the signal is `/proc`'s; macOS answers `Unreadable` (see `waiting_for_an_answer`)
     fn a_child_blocked_on_the_pipe_we_hold_is_waiting() {
         let mut child = std::process::Command::new("/bin/sh")
             .arg("-c")
@@ -593,6 +622,7 @@ mod tests {
     /// stdout and blocks reading it, and its fd 0 is untouched. The control is in the same
     /// test — the identical shell with `read x`, which is `read(0, …)` and must still be `Yes`.
     #[test]
+    #[cfg(target_os = "linux")] // the signal is `/proc`'s; macOS answers `Unreadable` (see `waiting_for_an_answer`)
     fn a_process_blocked_on_its_own_pipe_is_not_waiting_on_ours() {
         let ours = |command: &str| {
             let mut child = std::process::Command::new("/bin/sh")
@@ -653,6 +683,7 @@ mod tests {
     /// waits at `Continue? [Y/n]` invisible, no card is raised and the run sits on the pipe
     /// until its deadline. A list with a hole in it is not an empty list.
     #[test]
+    #[cfg(target_os = "linux")] // the signal is `/proc`'s; macOS answers `Unreadable` (see `waiting_for_an_answer`)
     fn a_process_that_could_not_be_looked_at_is_not_a_no() {
         // This process is readable and is not blocked on the pipe inode named here, so it
         // alone would answer `No`. A pid that does not exist cannot be looked at at all — the
@@ -680,6 +711,7 @@ mod tests {
     /// the answer, whatever else in the run the daemon could not open. A card is raised on this
     /// and it is right to raise it.
     #[test]
+    #[cfg(target_os = "linux")] // the signal is `/proc`'s; macOS answers `Unreadable` (see `waiting_for_an_answer`)
     fn a_process_seen_waiting_is_yes_even_beside_one_that_could_not_be_read() {
         let mut child = std::process::Command::new("/bin/sh")
             .arg("-c")
@@ -715,6 +747,7 @@ mod tests {
     /// two ways it happens are both here — no pipe inode to compare against, and no process
     /// list to walk — and both must be `Unreadable` rather than `No`.
     #[test]
+    #[cfg(target_os = "linux")] // the signal is `/proc`'s; macOS answers `Unreadable` (see `waiting_for_an_answer`)
     fn a_signal_that_cannot_be_read_is_not_a_no() {
         assert_eq!(
             waiting_for_an_answer(&[], Some(&InputEnd::Pipe(1234))),
@@ -755,6 +788,7 @@ mod tests {
     /// second assertion worth something: nothing but the **device** keeps this from being a
     /// card, so the test would fail if the comparison were dropped as well.
     #[test]
+    #[cfg(target_os = "linux")] // the signal is `/proc`'s; macOS answers `Unreadable` (see `waiting_for_an_answer`)
     fn a_socket_on_fd_zero_is_a_no_and_not_an_unreadable() {
         let (child_end, _keep) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
         let mut child = std::process::Command::new("/bin/cat")
@@ -794,6 +828,7 @@ mod tests {
     /// terminal, must not be waiting on ours. That second pty is what keeps the rule from
     /// being *any tty will do*.
     #[test]
+    #[cfg(target_os = "linux")] // the signal is `/proc`'s; macOS answers `Unreadable` (see `waiting_for_an_answer`)
     fn a_child_blocked_on_the_runs_own_terminal_is_waiting() {
         let p = super::super::pty::Pty::open().expect("a pty on this box");
         let mut child = on_the_terminal(&p, "read x");
@@ -827,6 +862,7 @@ mod tests {
     /// blocks reading it, with fd 0 untouched. The control is in the same test: the identical
     /// shell with `read x`, which is `read(0, …)` and must still be `Yes`.
     #[test]
+    #[cfg(target_os = "linux")] // the signal is `/proc`'s; macOS answers `Unreadable` (see `waiting_for_an_answer`)
     fn a_process_blocked_on_its_own_pipe_is_not_waiting_on_the_terminal() {
         let p = super::super::pty::Pty::open().expect("a pty on this box");
         let ours = InputEnd::Terminal(p.slave_path().to_string());

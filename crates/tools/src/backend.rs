@@ -609,9 +609,10 @@ impl HostBackend {
         };
         let rel = match given.strip_prefix(&self.root) {
             Ok(r) => r.to_path_buf(),
-            Err(_) if given.is_absolute() => {
-                return Err(BackendError::Outside(path.to_string()));
-            }
+            Err(_) if given.is_absolute() => match relative_to_root(&given, &self.root) {
+                Some(r) => r,
+                None => return Err(BackendError::Outside(path.to_string())),
+            },
             Err(_) => given.to_path_buf(),
         };
 
@@ -1011,6 +1012,32 @@ fn expand_tilde(path: &str, home: &Path) -> String {
     path.to_string()
 }
 
+/// **An absolute path, as a remainder under `root`** — also when it is spelled
+/// through a symlinked ancestor.
+///
+/// The root is canonical, and an absolute path need not be: on macOS the temp dir is
+/// `/var/folders/…` and its canonical form `/private/var/folders/…`, so a link written
+/// with the first never `strip_prefix`es the second, and an internal link was refused as
+/// outside. When the plain strip fails, the longest existing ancestor is canonicalised and
+/// the strip is tried again. Containment is not decided here: the remainder still goes
+/// through [`resolve_under`]'s walk from the root. A `..` in the tail ends the attempt
+/// (`file_name` has none), which is a refusal and never a guess.
+fn relative_to_root(p: &Path, root: &Path) -> Option<PathBuf> {
+    if let Ok(r) = p.strip_prefix(root) {
+        return Some(r.to_path_buf());
+    }
+    let mut ancestor = p;
+    let mut tail = Vec::new();
+    loop {
+        if let Ok(real) = ancestor.canonicalize() {
+            let full = tail.iter().rev().fold(real, |acc, t| acc.join(t));
+            return full.strip_prefix(root).ok().map(Path::to_path_buf);
+        }
+        tail.push(ancestor.file_name()?.to_os_string());
+        ancestor = ancestor.parent()?;
+    }
+}
+
 fn resolve_under(root: &Path, rel: &Path) -> Option<PathBuf> {
     use std::collections::VecDeque;
     use std::ffi::OsString;
@@ -1079,7 +1106,7 @@ fn resolve_under(root: &Path, rel: &Path) -> Option<PathBuf> {
         // at all for a path that did not exist.
         let mut front: VecDeque<OsString> = VecDeque::new();
         if target.is_absolute() {
-            let inside = target.strip_prefix(root).ok()?;
+            let inside = relative_to_root(&target, root)?;
             out = root.to_path_buf();
             for c in inside.components() {
                 match c {
@@ -1303,10 +1330,12 @@ mod tests {
             .with_home(d.path().to_path_buf());
 
         let p = b.resolve("~/sub/f.txt").unwrap();
-        assert_eq!(p, d.path().join("sub/f.txt"));
+        // Canonical, because the walk from `/` follows every link on the way — on macOS
+        // the temp dir is under `/var`, which is `/private/var`.
+        assert_eq!(p, d.path().canonicalize().unwrap().join("sub/f.txt"));
         assert_eq!(b.read("~/sub/f.txt").unwrap(), b"tilta\n");
         // `~` alone is the home itself.
-        assert_eq!(b.resolve("~").unwrap(), d.path().to_path_buf());
+        assert_eq!(b.resolve("~").unwrap(), d.path().canonicalize().unwrap());
     }
 
     /// The promote channel the daemon wires from the hub is read **and cleared** by
@@ -1395,6 +1424,33 @@ mod tests {
         assert!(!outside.join("a").exists(), "a deep write escaped the root");
     }
 
+    /// **A link spelled through a symlinked ancestor is still inside.** The root is
+    /// canonical; the link's absolute target need not be — on macOS the temp dir is
+    /// `/var/folders/…`, canonically `/private/var/folders/…`. Built here with an explicit
+    /// symlinked ancestor so it means the same on a box whose temp dir is canonical.
+    #[test]
+    fn an_absolute_link_through_a_symlinked_ancestor_stays_inside() {
+        let d = tempdir::TempDir::new();
+        let real = d.path().join("real-ws");
+        std::fs::create_dir_all(real.join("src")).expect("src");
+        std::os::unix::fs::symlink(&real, d.path().join("alias")).expect("alias");
+        // The link names its target through the alias, not through the root's spelling.
+        std::os::unix::fs::symlink(d.path().join("alias/src"), real.join("via")).expect("via");
+        let b = HostBackend::writable(&real).expect("writable");
+        let p = b
+            .resolve("via/x.txt")
+            .expect("a link through an alias of the root resolves");
+        assert_eq!(p, real.canonicalize().unwrap().join("src/x.txt"));
+        // And an absolute path the model spells through the alias is the same file.
+        let q = b
+            .resolve(&d.path().join("alias/src/y.txt").display().to_string())
+            .expect("an absolute path through the alias resolves");
+        assert_eq!(q, real.canonicalize().unwrap().join("src/y.txt"));
+        // Still a refusal for a target that really is outside.
+        std::os::unix::fs::symlink(d.path(), real.join("up")).expect("up");
+        assert!(matches!(b.resolve("up/x"), Err(BackendError::Outside(_))));
+    }
+
     #[test]
     fn a_symlink_that_stays_inside_the_root_still_works() {
         // The other direction, because a containment fix that refuses everything
@@ -1403,6 +1459,9 @@ mod tests {
         let d = tempdir::TempDir::new();
         let root = d.path().join("root");
         std::fs::create_dir_all(root.join("real")).expect("real");
+        // Canonical, so the `starts_with` checks below compare like with like (macOS: `/var`
+        // is `/private/var`). The links are still made under it, absolute and relative.
+        let root = root.canonicalize().expect("root");
         std::os::unix::fs::symlink(root.join("real"), root.join("link")).expect("symlink");
         let b = HostBackend::writable(&root).expect("writable");
         let p = b

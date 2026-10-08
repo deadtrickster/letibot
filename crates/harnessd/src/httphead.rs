@@ -181,7 +181,7 @@ pub fn serve(listener: TcpListener, parts: Parts, cfg: Config) {
 
 fn handle(
     stream: &mut TcpStream,
-    engine: &mut TurnEngine<'_>,
+    engine: &mut TurnEngine,
     prefix: &StablePrefix,
 ) -> std::io::Result<()> {
     let Some((method, path, body)) = read_request(stream)? else {
@@ -214,7 +214,7 @@ fn handle(
 
 /// One turn on a scratch transcript, discarded afterwards.
 fn run_once(
-    engine: &mut TurnEngine<'_>,
+    engine: &mut TurnEngine,
     prefix: &StablePrefix,
     msgs: &[Msg],
 ) -> Result<String, String> {

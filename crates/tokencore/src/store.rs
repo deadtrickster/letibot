@@ -766,6 +766,12 @@ impl StablePrefixRecord {
     ///
     /// The dialect is in the address because the *tokens* are what this row
     /// stores, and two dialects render the same text to different tokens.
+    ///
+    /// **So is the vocabulary, when it is the byte one**, for the same reason: the byte
+    /// vocabulary and a GGUF tokenize one rendering to different ids, and without this a
+    /// session moved between them would reuse a row whose tokens are the other's. It is
+    /// hashed in only for a `bytes:` source so that every id written before the byte
+    /// vocabulary existed — all of them GGUF rows — is the id it always was.
     pub fn id(&self) -> String {
         let mut h = Sha256::new();
         h.update(self.dialect_sha.as_bytes());
@@ -774,6 +780,11 @@ impl StablePrefixRecord {
         h.update([0]);
         for tool in &self.tools_json {
             h.update(tool.as_bytes());
+            h.update([0]);
+        }
+        if self.vocab_source.starts_with(crate::vocab::BYTES_SOURCE) {
+            h.update(b"vocab\0");
+            h.update(self.vocab_source.as_bytes());
             h.update([0]);
         }
         crate::ledger::hex(&h.finalize().into())
@@ -5307,5 +5318,40 @@ mod corpus_tests {
         s.record_adjudication(&a_decision("after-migration", &sid))
             .expect("record");
         assert_eq!(s.corpus_counts().expect("counts").total, 1);
+    }
+}
+
+#[cfg(test)]
+mod prefix_id_tests {
+    use super::*;
+
+    fn rec(vocab_source: &str) -> StablePrefixRecord {
+        StablePrefixRecord {
+            dialect_sha: "d".into(),
+            system: "sys".into(),
+            tools_json: vec!["t1".into(), "t2".into()],
+            tokens: vec![1, 2, 3],
+            h_init: [0; 32],
+            vocab_source: vocab_source.into(),
+        }
+    }
+
+    /// **Every id written before the byte vocabulary is the id it always was**: a GGUF
+    /// row hashes exactly what the old formula hashed, recomputed here by hand.
+    #[test]
+    fn a_gguf_rows_id_is_unchanged_and_a_byte_rows_is_its_own() {
+        let mut h = Sha256::new();
+        for part in ["d", "sys", "t1", "t2"] {
+            h.update(part.as_bytes());
+            h.update([0]);
+        }
+        let old_formula = crate::ledger::hex(&h.finalize().into());
+        assert_eq!(rec("/m/Qwen.gguf").id(), old_formula);
+        assert_eq!(rec("").id(), old_formula);
+        assert_ne!(rec("bytes:aaaaaaaaaaaa").id(), old_formula);
+        assert_ne!(
+            rec("bytes:aaaaaaaaaaaa").id(),
+            rec("bytes:bbbbbbbbbbbb").id()
+        );
     }
 }

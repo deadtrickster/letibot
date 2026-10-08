@@ -70,6 +70,10 @@ jobs:
             triple: x86_64-unknown-linux-gnu
           - runs: ubuntu-24.04-arm
             triple: aarch64-unknown-linux-gnu
+          # Apple silicon. install.sh maps `Darwin/arm64` here; an Intel Mac builds from
+          # source.
+          - runs: macos-14
+            triple: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
@@ -84,6 +88,7 @@ jobs:
           case "${{ matrix.triple }}:$host" in
             x86_64-unknown-linux-gnu:x86_64) ;;
             aarch64-unknown-linux-gnu:aarch64|aarch64-unknown-linux-gnu:arm64) ;;
+            aarch64-apple-darwin:arm64) ;;
             *) echo "::error::runner is $host, claiming ${{ matrix.triple }}"; exit 1 ;;
           esac
 
@@ -103,6 +108,7 @@ jobs:
       # package never ships. MEASURED on run 36835882659, then verified against v0.3.0 by
       # configuring it and confirming `llama-app` is not among its 18 targets.
       - name: Build llama.cpp (CPU, $ORIGIN rpath)
+        if: runner.os == 'Linux'
         run: |
           set -eu
           git clone --depth 1 --branch "$LLAMA_REF" \
@@ -138,6 +144,39 @@ jobs:
             fi
           done
 
+      # **macOS: the same build in dyld's terms.** CPU-only (Metal and BLAS are a Mac's
+      # defaults, and each adds a library the archive would have to carry for a daemon that
+      # only tokenises), `@loader_path` where Linux says `$ORIGIN`, and the same equality:
+      # each library's install name is `@rpath/<name>` and its ONLY rpath is
+      # `@loader_path`, so no path from this runner is baked into the asset.
+      - name: Build llama.cpp (CPU, @loader_path rpath)
+        if: runner.os == 'macOS'
+        run: |
+          set -eu
+          git clone --depth 1 --branch "$LLAMA_REF" \
+            https://github.com/deadtrickster/llama.cpp llama.cpp
+          cmake -S llama.cpp -B llama.cpp/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_METAL=OFF \
+            -DGGML_BLAS=OFF \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_TOOLS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_BUILD_APP=OFF \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_INSTALL_RPATH=@loader_path
+          cmake --build llama.cpp/build --config Release -j "$(sysctl -n hw.ncpu)"
+          for so in libllama.0.dylib libggml.0.dylib libggml-cpu.0.dylib libggml-base.0.dylib; do
+            id=$(otool -D "$LETIBOT_LLAMA_LIB/$so" | sed -n 2p)
+            rp=$(otool -l "$LETIBOT_LLAMA_LIB/$so" | awk '/cmd LC_RPATH/ { getline; getline; print $2 }' | tr '\n' ' ')
+            echo "$so: id [$id] rpath [$rp]"
+            if [ "$id" != "@rpath/$so" ] || [ "$rp" != "@loader_path " ]; then
+              echo "::error::$so is not @rpath/$so with exactly [@loader_path]."
+              exit 1
+            fi
+          done
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.triple }}
@@ -172,8 +211,8 @@ jobs:
           tar -xzf dist/letibot-${{ matrix.triple }}.tar.gz -C "$d"
           n=$(ls -1 "$d" | wc -l)
           test "$n" -eq 8 || { echo "::error::archive holds $n entries, expected 8"; ls -la "$d"; exit 1; }
-          ( cd "$d" && env -u LD_LIBRARY_PATH ./harnessd --version )
-          ( cd "$d" && env -u LD_LIBRARY_PATH ./letibot-tui --version )
+          ( cd "$d" && env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH ./harnessd --version )
+          ( cd "$d" && env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH ./letibot-tui --version )
 
       - uses: actions/upload-artifact@v4
         with:
@@ -221,11 +260,18 @@ jobs:
         run: |
           set -eu
           bins=$(sed -n 's/^BINARIES="\(.*\)"$/\1/p' install.sh | head -1)
-          libs=$(sed -n 's/^LIBRARIES="\(.*\)"$/\1/p' install.sh | head -1)
+          libs_linux=$(sed -n 's/^LIBRARIES="\(.*\)"$/\1/p' install.sh | head -1)
+          libs_darwin=$(sed -n 's/^LIBRARIES_DARWIN="\(.*\)"$/\1/p' install.sh | head -1)
           [ -n "$bins" ] || { echo "::error::install.sh at this tag has no BINARIES line"; exit 1; }
-          [ -n "$libs" ] || { echo "::error::install.sh at this tag has no LIBRARIES line"; exit 1; }
-          echo "install.sh at $GITHUB_REF_NAME wants: $bins $libs"
+          [ -n "$libs_linux" ] || { echo "::error::install.sh at this tag has no LIBRARIES line"; exit 1; }
+          [ -n "$libs_darwin" ] || { echo "::error::install.sh at this tag has no LIBRARIES_DARWIN line"; exit 1; }
+          echo "install.sh at $GITHUB_REF_NAME wants: $bins + $libs_linux (Linux) / $libs_darwin (macOS)"
           for f in dist/*.tar.gz; do
+            # A Mac copies LIBRARIES_DARWIN, so the Darwin asset answers to that list.
+            case "$f" in
+              *-apple-darwin.tar.gz) libs=$libs_darwin ;;
+              *) libs=$libs_linux ;;
+            esac
             d=$(mktemp -d)
             tar -xzf "$f" -C "$d"
             for want in $bins $libs; do

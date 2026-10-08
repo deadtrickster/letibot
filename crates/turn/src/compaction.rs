@@ -383,7 +383,7 @@ pub enum Answerer<'a> {
 impl Answerer<'_> {
     fn run(
         &self,
-        engine: &mut TurnEngine<'_>,
+        engine: &mut TurnEngine,
         session: &mut Session,
         sink: &mut dyn EventSink,
     ) -> Result<TurnOk, TurnFailure> {
@@ -438,7 +438,7 @@ impl Answerer<'_> {
 /// notices ride in the same span — the summary replaces everything before it,
 /// instruction and notices included.
 pub fn run_compaction(
-    engine: &mut TurnEngine<'_>,
+    engine: &mut TurnEngine,
     session: &mut Session,
     sink: &mut dyn EventSink,
     answerer: &Answerer<'_>,
@@ -601,7 +601,7 @@ mod harvesting_a_summary {
 /// token region and the `TranscriptAppended` event in step with every other row.
 fn append_salvage_notice(
     session: &mut Session,
-    engine: &TurnEngine<'_>,
+    engine: &TurnEngine,
     sink: &mut dyn EventSink,
     text: &str,
 ) -> Result<(), TurnFailure> {
@@ -1557,7 +1557,7 @@ mod overrun_planning {
 /// that is the order they happened in, and a reader that meets the recent past
 /// before the distant one has to re-derive the sequence.
 pub fn summarise_overrun(
-    engine: &mut TurnEngine<'_>,
+    engine: &mut TurnEngine,
     prefix: &StablePrefix,
     scratch_id: &str,
     items: &[TranscriptItem],
@@ -1713,7 +1713,7 @@ impl EventSink for CompactionSink<'_> {
 /// two of these, the cloud plan one. `what` names the slice in the operator's words,
 /// for the line that opens and closes each half.
 fn summarise_one(
-    engine: &mut TurnEngine<'_>,
+    engine: &mut TurnEngine,
     prefix: &StablePrefix,
     scratch_id: &str,
     slice: &[TranscriptItem],
@@ -1864,7 +1864,7 @@ pub fn plan_fold(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> Option
 /// returns only the summary, because whether that system item is a fork, a
 /// rewrite or a fresh session is the caller's business and not this crate's.
 pub fn summarise_first_half(
-    engine: &mut TurnEngine<'_>,
+    engine: &mut TurnEngine,
     prefix: &StablePrefix,
     scratch_id: &str,
     items: &[TranscriptItem],

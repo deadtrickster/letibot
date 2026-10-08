@@ -38,16 +38,18 @@ const TOOL_CALL_OPEN: u32 = 248058;
 const TOOL_CALL_CLOSE: u32 = 248059;
 
 /// The vocabulary load is ~0.6 s and the tests are cheap; share one.
-fn vocab() -> &'static Vocab {
-    static VOCAB: OnceLock<Vocab> = OnceLock::new();
-    VOCAB.get_or_init(|| {
-        // One home for this path: `letibot_tokencore::apparatus`. It was
-        // written out in seven crates, and `LETIBOT_VOCAB_GGUF` now wins
-        // unconditionally there rather than being a hint.
-        let p = letibot_tokencore::apparatus::gguf_path();
-        assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
-        Vocab::load(&p).expect("the vocabulary must load")
-    })
+fn vocab() -> std::sync::Arc<Vocab> {
+    static VOCAB: OnceLock<std::sync::Arc<Vocab>> = OnceLock::new();
+    VOCAB
+        .get_or_init(|| {
+            // One home for this path: `letibot_tokencore::apparatus`. It was
+            // written out in seven crates, and `LETIBOT_VOCAB_GGUF` now wins
+            // unconditionally there rather than being a hint.
+            let p = letibot_tokencore::apparatus::gguf_path();
+            assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
+            std::sync::Arc::new(letibot_llama::load(&p).expect("the vocabulary must load"))
+        })
+        .clone()
 }
 
 fn serial() -> MutexGuard<'static, ()> {
@@ -57,15 +59,18 @@ fn serial() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-fn engine<'a>(
-    renderer: &'a ChatMlRenderer,
-    parser: &'a ChatMlParser,
-    endpoint: Endpoint,
-) -> TurnEngine<'a> {
+fn engine(endpoint: Endpoint) -> TurnEngine {
+    engine_with(ChatMlRenderer::default(), endpoint)
+}
+
+/// The same engine over a caller-supplied renderer — the one test that tunes the
+/// guards builds its own, and the constructor must not quietly substitute the
+/// default for it.
+fn engine_with(renderer: ChatMlRenderer, endpoint: Endpoint) -> TurnEngine {
     TurnEngine::new(
         vocab(),
-        renderer,
-        parser,
+        std::sync::Arc::new(renderer),
+        std::sync::Arc::new(ChatMlParser),
         endpoint,
         BackendCaps::OWN_SERVER,
         "canned",
@@ -74,7 +79,7 @@ fn engine<'a>(
     .expect("the fixture dialect resolves against Qwen's vocabulary")
 }
 
-fn session(engine: &TurnEngine<'_>, tag: &str) -> Session {
+fn session(engine: &TurnEngine, tag: &str) -> Session {
     engine
         .open(
             tag,
@@ -173,7 +178,6 @@ fn a_reasoning_only_length_turn_fails_and_leaves_the_region_untouched() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Progress {
         total: 10,
         processed: 10,
@@ -193,7 +197,7 @@ fn a_reasoning_only_length_turn_fails_and_leaves_the_region_untouched() {
     });
     let canned = Canned::serve(frames, 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "reasoning-only");
     let mut sink = RecordingSink::new();
     session
@@ -253,7 +257,6 @@ fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Progress {
         total: 10,
         processed: 10,
@@ -275,7 +278,7 @@ fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
     });
     let canned = Canned::serve(frames, 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "unfinished-reasoning");
     let mut sink = RecordingSink::new();
     session
@@ -332,7 +335,6 @@ fn a_turn_that_closes_its_reasoning_and_says_something_still_succeeds() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Progress {
         total: 10,
         processed: 10,
@@ -355,7 +357,7 @@ fn a_turn_that_closes_its_reasoning_and_says_something_still_succeeds() {
     });
     let canned = Canned::serve(frames, 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "closed-reasoning");
     let mut sink = RecordingSink::new();
     session
@@ -377,7 +379,6 @@ fn a_truncated_tool_argument_refuses_the_entire_batch() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Token {
         id: THINK_OPEN,
         text: "",
@@ -419,7 +420,7 @@ fn a_truncated_tool_argument_refuses_the_entire_batch() {
     });
     let canned = Canned::serve(frames, 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "batch");
     let mut sink = RecordingSink::new();
     session
@@ -465,7 +466,6 @@ fn the_same_content_succeeds_when_it_was_not_truncated() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Token {
         id: THINK_OPEN,
         text: "",
@@ -491,7 +491,7 @@ fn the_same_content_succeeds_when_it_was_not_truncated() {
     });
     let canned = Canned::serve(frames, 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "ok");
     let mut sink = RecordingSink::new();
     session
@@ -532,8 +532,6 @@ fn repetition_collapse_aborts_the_turn_and_raises_a_named_warning() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let renderer = ChatMlRenderer::with_guards(vec![Guard::RepetitionRun { run: 8 }]);
-    let parser = ChatMlParser;
     let at = ids_of("@")[0];
     let mut frames = vec![Frame::Token {
         id: THINK_OPEN,
@@ -552,7 +550,10 @@ fn repetition_collapse_aborts_the_turn_and_raises_a_named_warning() {
     });
     let canned = Canned::serve(frames, 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine_with(
+        ChatMlRenderer::with_guards(vec![Guard::RepetitionRun { run: 8 }]),
+        canned.endpoint.clone(),
+    );
     let mut session = session(&engine, "collapse");
     let mut sink = RecordingSink::new();
     session
@@ -633,7 +634,6 @@ fn a_message_already_waiting_is_read_before_the_model_speaks() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![
         Frame::Token {
             id: THINK_OPEN,
@@ -658,7 +658,7 @@ fn a_message_already_waiting_is_read_before_the_model_speaks() {
     });
     let canned = Canned::serve(frames, 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "greedy");
     let mut sink = RecordingSink::new();
     session
@@ -720,7 +720,6 @@ fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Token {
         id: THINK_OPEN,
         text: "",
@@ -743,7 +742,7 @@ fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
     });
     let canned = Canned::serve(frames, 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "steer");
     let mut sink = RecordingSink::new();
     session
@@ -802,7 +801,6 @@ fn a_failed_turn_gives_the_operators_words_back_to_the_source() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Progress {
         total: 10,
         processed: 10,
@@ -822,7 +820,7 @@ fn a_failed_turn_gives_the_operators_words_back_to_the_source() {
     });
     let canned = Canned::serve(frames, 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "steer-loss");
     let mut sink = RecordingSink::new();
     session
@@ -884,7 +882,6 @@ fn an_urgent_message_interrupts_the_generation_rather_than_waiting_for_it() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Token {
         id: THINK_OPEN,
         text: "",
@@ -904,7 +901,7 @@ fn an_urgent_message_interrupts_the_generation_rather_than_waiting_for_it() {
     });
     let canned = Canned::serve(frames, 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "abort");
     let mut sink = RecordingSink::new();
     session
@@ -949,7 +946,6 @@ fn two_turns_hold_the_invariant_and_the_reuse_is_reported_separately() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let make = |n: u64, cache: u64| {
         let mut f = vec![
             Frame::Token {
@@ -979,7 +975,7 @@ fn two_turns_hold_the_invariant_and_the_reuse_is_reported_separately() {
     // does on a hybrid model. It is still a `Held`.
     let canned = Canned::serve_each(vec![make(n, 0), make(n, 4)], 2);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "two-turns");
     let mut sink = RecordingSink::new();
 
@@ -1061,12 +1057,11 @@ fn the_first_delta_of_a_turn_is_reasoning_because_the_generation_prompt_opened_i
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let thought = ids_of("The user wants the days of the week.");
     let answer = ids_of("Monday");
     let canned = Canned::serve(a_thinking_turn(&thought, &answer), 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "seed");
     let mut sink = RecordingSink::new();
     session
@@ -1110,12 +1105,11 @@ fn a_boundary_literal_is_cut_out_of_the_stream_rather_than_shown_to_a_head() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let thought = ids_of("Seven of them.");
     let answer = ids_of("Monday");
     let canned = Canned::serve(a_thinking_turn(&thought, &answer), 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "boundary");
     let mut sink = RecordingSink::new();
     session
@@ -1155,12 +1149,11 @@ fn a_heads_deltas_split_by_channel_equal_the_rows_the_turn_committed() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let thought = ids_of("They want seven lines and nothing else.");
     let answer = ids_of("Monday\nTuesday");
     let canned = Canned::serve(a_thinking_turn(&thought, &answer), 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "agree");
     let mut sink = RecordingSink::new();
     session
@@ -1219,7 +1212,6 @@ fn the_body_of_a_tool_call_is_never_announced_as_assistant_text() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let mut frames = vec![Frame::Token {
         id: THINK_OPEN,
         text: "",
@@ -1250,7 +1242,7 @@ fn the_body_of_a_tool_call_is_never_announced_as_assistant_text() {
     });
     let canned = Canned::serve(frames, 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "agree");
     let mut sink = RecordingSink::new();
     session
@@ -1332,14 +1324,13 @@ fn a_suppressed_token_costs_the_tail_of_a_turn_and_not_the_whole_of_it() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let head = ids_of("Reading it now.");
     let tail = ids_of(" And then some more.");
     let canned = Canned::serve(suppressed_script(&head, &tail), 1);
 
     let dir = std::env::temp_dir().join(format!("letibot-t23-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     engine.frame_capture = letibot_turn::FrameCapture::to_dir(&dir);
     let mut session = session(&engine, "t23");
     let mut sink = RecordingSink::new();
@@ -1446,12 +1437,11 @@ fn the_ids_after_an_unaccountable_frame_never_reach_the_ledger() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let head = ids_of("Reading it now.");
     let tail = ids_of(" And then some more.");
     let canned = Canned::serve(suppressed_script(&head, &tail), 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     engine.frame_capture = letibot_turn::FrameCapture::disabled();
     let mut session = session(&engine, "t23-guard");
     let mut sink = RecordingSink::new();
@@ -1520,7 +1510,6 @@ fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
 
     // Open a reasoning block and fill it with the shape that caused this: a model
     // counting by hand, at length, never closing the block because it is stopped.
@@ -1539,7 +1528,7 @@ fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
     });
     let canned = Canned::serve(frames, 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "abandoned");
     let mut sink = RecordingSink::new();
     session
@@ -1599,12 +1588,11 @@ fn a_streaming_turn_reports_the_servers_counter_on_every_frame_that_advances_it(
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let thought = ids_of("The user wants the days of the week.");
     let answer = ids_of("Monday");
     let canned = Canned::serve(a_thinking_turn(&thought, &answer), 1);
 
-    let mut engine = engine(&renderer, &parser, canned.endpoint.clone());
+    let mut engine = engine(canned.endpoint.clone());
     let mut session = session(&engine, "counter");
     let mut sink = RecordingSink::new();
     session
@@ -1683,9 +1671,8 @@ fn an_unreached_provider_is_an_io_failure_and_not_a_malformed_answer() {
         eprintln!("SKIPPED: no vocabulary GGUF, so the engine cannot open a session");
         return;
     };
-    let (renderer, parser) = (ChatMlRenderer::default(), ChatMlParser);
     let idle = Canned::serve(Vec::new(), 0);
-    let mut engine = engine(&renderer, &parser, idle.endpoint.clone());
+    let mut engine = engine(idle.endpoint.clone());
     let mut session = session(&engine, "unreached-provider");
     let mut sink = RecordingSink::new();
     session

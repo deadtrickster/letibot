@@ -42,9 +42,11 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Glm;
     cfg.model = "glm-5.3-flash".into();
-    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| GLM_GGUF.into());
+    cfg.vocab_gguf = Some(
+        std::env::var("LETIBOT_VOCAB_GGUF")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| GLM_GGUF.into()),
+    );
     cfg.store = Some(path.clone());
     cfg.session_id = session_id.into();
     // The same escape hatch the other live files honour: with this set, the guard

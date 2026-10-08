@@ -188,14 +188,43 @@ const FILLING_STRIDE: usize = 64;
 
 impl Parts {
     pub fn load(cfg: &Config) -> Result<Parts, HarnessError> {
-        if !cfg.vocab_gguf.is_file() {
-            return Err(HarnessError::Setup(format!(
-                "no vocabulary GGUF at {}. For a split model, pass the first shard.",
-                cfg.vocab_gguf.display()
-            )));
-        }
-        let vocab = Vocab::load(&cfg.vocab_gguf)
-            .map_err(|e| HarnessError::Setup(format!("loading the vocabulary: {e}")))?;
+        let wiring = cfg.dialect.wiring(cfg.effort.as_deref());
+        // **Which vocabulary, decided by what the turns need.** A GGUF named on the command
+        // line is read by llama.cpp — the only vocabulary a local llama-server can take ids
+        // from. None named and a provider answering: the byte vocabulary, because there
+        // the ids never leave this machine (see `letibot_tokencore::vocab`). None named and
+        // no provider: a refusal naming both ways out, rather than a guessed path.
+        let vocab = match &cfg.vocab_gguf {
+            Some(path) => {
+                if !path.is_file() {
+                    return Err(HarnessError::Setup(format!(
+                        "no vocabulary GGUF at {}. For a split model, pass the first shard.",
+                        path.display()
+                    )));
+                }
+                load_gguf(path)
+                    .map_err(|e| HarnessError::Setup(format!("loading the vocabulary: {e}")))?
+            }
+            None if cfg.provider.is_some() => {
+                let spec = wiring.spec();
+                Vocab::bytes(
+                    spec.control_tokens
+                        .as_slice()
+                        .iter()
+                        .map(|t| t.literal.as_ref())
+                        .chain(spec.stop_tokens.iter().map(|t| t.literal.as_ref())),
+                    spec.stop_tokens.iter().map(|t| t.literal.as_ref()),
+                )
+            }
+            None => {
+                return Err(HarnessError::Setup(
+                    "no vocabulary: a local model needs the GGUF it serves (--vocab PATH, the \
+                     first shard of a split model), and a cloud provider needs none \
+                     (--provider deepseek|glm|grok, or [default] in providers.toml)"
+                        .into(),
+                ));
+            }
+        };
         let skills =
             std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::load_default());
         let lsp = std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default());
@@ -206,7 +235,7 @@ impl Parts {
         ));
         Ok(Parts {
             vocab: std::sync::Arc::new(vocab),
-            wiring: std::sync::Arc::new(cfg.dialect.wiring(cfg.effort.as_deref())),
+            wiring: std::sync::Arc::new(wiring),
             mode_store: std::sync::Arc::new(
                 std::sync::RwLock::new(crate::modes::ModeStore::open()),
             ),
@@ -1125,8 +1154,38 @@ impl SteeringSource for HubSteering {
     }
 }
 
+/// **The daemon's own server, exactly as this session's daemon was started against
+/// it** — what `/models local` returns to.
+///
+/// Captured at open, before any switch can move anything, because a switch
+/// overwrites the very fields this holds: a session that moved to another fleet
+/// model's weights has an `engine` rendering another dialect and a `cfg.endpoint`
+/// naming another box, and "back to local" is a RETURN, not a no-op. Before this
+/// existed the return was partial in a way nobody could see: the window came back
+/// (its own remember-on-first-move) while the address stayed wherever the last
+/// fleet switch put it, and the line still said *"turns go to the local server"*.
+///
+/// The vocabulary and the wiring are held here as `Arc`s — the same ones
+/// [`Parts`] opened with — so the return does not reload a tokenizer or rebuild a
+/// renderer; it reseats the pair the daemon started with.
+#[derive(Clone)]
+struct OwnServer {
+    endpoint: Endpoint,
+    model: String,
+    /// The GGUF the daemon started on, or `None` when it started on the byte
+    /// vocabulary — the same `Option` `Config::vocab_gguf` carries since main
+    /// made the vocabulary optional. `vocab` below holds the thing itself
+    /// either way, and its `source()` is the honest name for both.
+    vocab_gguf: Option<PathBuf>,
+    dialect: crate::dialect::Dialect,
+    media_marker: Option<String>,
+    sampling: serde_json::Value,
+    vocab: Arc<Vocab>,
+    wiring: Arc<Wiring>,
+}
+
 /// One session: the engine, the transcript, the tools, the log and the store.
-pub struct Harness<'a> {
+pub struct Harness {
     cfg: Config,
     /// **When the prompt this turn is serving arrived, carried across its rounds.**
     ///
@@ -1149,7 +1208,7 @@ pub struct Harness<'a> {
     /// Where the mode came from, for the settings row: the project store or
     /// the daemon's flag/default. Decided at open and not kept by `Config`.
     mode_source: String,
-    engine: TurnEngine<'a>,
+    engine: TurnEngine,
     session: Session,
     /// **Shared, because the operator's run does not run on this harness's thread.**
     ///
@@ -1273,8 +1332,17 @@ pub struct Harness<'a> {
     /// its children with — which is the defect, measured, that this exists for.
     subagents: Arc<dyn letibot_tools::builtins::task::TaskRunner>,
     /// The cloud provider the turns go to, when the session has one. `None` is
-    /// the local server through the engine's own `/completion` path.
+    /// the local server through the engine's own `/completion` path — **unless**
+    /// [`Harness::key_wanted`] is set, which is a provider with no key yet.
     provider: Option<Box<dyn letibot_backend::MessagesBackend>>,
+    /// **A provider chosen and not yet usable, because no key for it resolves.**
+    ///
+    /// It used to be a refusal at open: the daemon bound its socket and died before a
+    /// head could attach, so the person who could fix it never saw the sentence. Now the
+    /// session opens and the first turn asks for the key on the masked secret card —
+    /// the sudo password's machinery, so the key never enters an event — saves it to
+    /// providers.toml (0600), and builds the provider. See [`Harness::obtain_key`].
+    key_wanted: Option<crate::config::ProviderConfig>,
     /// **The local server's own context window**, kept from before the first
     /// switch to a provider so `/models local` can put it back.
     ///
@@ -1284,6 +1352,11 @@ pub struct Harness<'a> {
     /// "never switched" and "switched away from a server with no window" the same
     /// state, and only one of them should restore anything.
     local_window: Option<Option<u64>>,
+    /// **What `/models local` returns to**: the daemon's own server, vocabulary
+    /// and dialect, captured at open before any switch moved them. See
+    /// [`OwnServer`] for why a return needs a record rather than a re-derivation,
+    /// and [`Harness::set_own_server`] for the return itself.
+    own_server: OwnServer,
     /// **The same fact, shared with the subagent runner** — so a child spawned with
     /// `model: "local"` plans its compaction against the daemon's own server window
     /// rather than the cloud model's number the parent is carrying. Written wherever
@@ -1464,11 +1537,11 @@ pub struct ReseatReport {
 /// For a caller that needs to turn a prompt into tokens and nothing else — the
 /// prefix repair does exactly that. Built the same way `open` builds its engine,
 /// so what it renders is what a session would.
-pub fn engine_for<'a>(parts: &'a Parts, cfg: &Config) -> Result<TurnEngine<'a>, HarnessError> {
+pub fn engine_for(parts: &Parts, cfg: &Config) -> Result<TurnEngine, HarnessError> {
     TurnEngine::new(
-        &parts.vocab,
-        parts.wiring.renderer.as_ref(),
-        parts.wiring.parser.as_ref(),
+        parts.vocab.clone(),
+        parts.wiring.renderer.clone(),
+        parts.wiring.parser.clone(),
         cfg.endpoint.clone(),
         letibot_backend::BackendCaps::OWN_SERVER,
         cfg.model.clone(),
@@ -1577,13 +1650,13 @@ fn transcript_exists(store: &Store, transcript_id: &str) -> bool {
         .is_ok()
 }
 
-impl<'a> Harness<'a> {
+impl Harness {
     /// Open a session: resolve the dialect against the vocabulary, seat the tools,
     /// render the stable prefix, and record all of it.
     ///
     /// Every failure this can raise is one that is otherwise silent at runtime,
     /// which is why they are all raised **here** rather than on the first turn.
-    pub fn open(parts: &'a Parts, cfg: Config, hub: Arc<Hub>) -> Result<Self, HarnessError> {
+    pub fn open(parts: &Parts, cfg: Config, hub: Arc<Hub>) -> Result<Self, HarnessError> {
         Self::open_with(parts, cfg, hub, None, None)
     }
 
@@ -1593,7 +1666,7 @@ impl<'a> Harness<'a> {
     /// every test — gets a harness whose `task` tool cannot spawn a subagent, which
     /// is the honest state for a session nobody registered.
     pub fn open_with(
-        parts: &'a Parts,
+        parts: &Parts,
         cfg: Config,
         hub: Arc<Hub>,
         adjudicator: Option<Box<dyn Adjudicator>>,
@@ -1614,7 +1687,7 @@ impl<'a> Harness<'a> {
     /// store row it can resume). The daemon passes its registry; tests and the
     /// single-session binaries pass a fresh one through [`Harness::open`].
     pub fn open_with_registry(
-        parts: &'a Parts,
+        parts: &Parts,
         mut cfg: Config,
         hub: Arc<Hub>,
         adjudicator: Option<Box<dyn Adjudicator>>,
@@ -2179,6 +2252,7 @@ impl<'a> Harness<'a> {
                 head_answers: head_answers_slot.clone(),
                 local_window: local_window_cell.clone(),
                 point: point_cell.clone(),
+                foreign_vocabs: Default::default(),
                 placed: Arc::new(std::sync::Mutex::new(Vec::new())),
                 merge_store: Arc::new(std::sync::Mutex::new(None)),
             });
@@ -2900,9 +2974,9 @@ impl<'a> Harness<'a> {
             });
 
         let mut engine = TurnEngine::new(
-            &parts.vocab,
-            parts.wiring.renderer.as_ref(),
-            parts.wiring.parser.as_ref(),
+            parts.vocab.clone(),
+            parts.wiring.renderer.clone(),
+            parts.wiring.parser.clone(),
             cfg.endpoint.clone(),
             // A llama.cpp server we run: token ids in, per-stage cache accounting,
             // a wall-clock meter, and a structural prefix guarantee — so §18.1-I1's
@@ -2960,11 +3034,24 @@ impl<'a> Harness<'a> {
                 // them with a different dialect would put two templates' bytes in
                 // one prompt, and nothing downstream can see it: the chain still
                 // verifies, because every row was hashed by whoever wrote it.
-                let stored_sha = s
+                let stored_meta = s
                     .stable_prefix_meta(&loaded.stable_prefix_id)
-                    .map_err(|e| HarnessError::Store(e.to_string()))?
-                    .map(|m| m.dialect_sha)
+                    .map_err(|e| HarnessError::Store(e.to_string()))?;
+                let stored_sha = stored_meta
+                    .as_ref()
+                    .map(|m| m.dialect_sha.clone())
                     .unwrap_or_default();
+                // **And the vocabulary that cut the stored ids.** A resume replays them as
+                // numbers, so ids from the byte vocabulary under a GGUF — or the reverse, or
+                // under another dialect's byte table — are valid numbers that mean other
+                // text. Same remedy as a dialect change, from the same record. Two GGUFs are
+                // compared nowhere here, as before: a local model's file is the operator's
+                // binding, refused at the switch rather than guessed at by path.
+                let stored_vocab = stored_meta
+                    .as_ref()
+                    .map(|m| m.vocab_source.clone())
+                    .unwrap_or_default();
+                let vocab_moved = vocab_differs(&stored_vocab, parts.vocab.source());
                 // **A rendering that cannot be reused is not a conversation that
                 // cannot be continued.**
                 //
@@ -2990,7 +3077,7 @@ impl<'a> Harness<'a> {
                 // tokens and its chain, exactly as a compaction leaves what it
                 // stopped carrying. Nothing stored is edited, so the append-only
                 // triggers stay honest.
-                if stored_sha != dialect_sha {
+                if stored_sha != dialect_sha || vocab_moved {
                     let store = s;
                     let items: Vec<letibot_transcript::TranscriptItem> =
                         loaded.items.iter().map(|(i, _, _)| i.clone()).collect();
@@ -3006,7 +3093,7 @@ impl<'a> Harness<'a> {
                         tools_json: prefix.tools_json.clone(),
                         tokens: probe.ledger.prefix_tokens().to_vec(),
                         h_init: probe.ledger.h_init(),
-                        vocab_source: cfg.vocab_gguf.display().to_string(),
+                        vocab_source: parts.vocab.source().to_string(),
                     };
                     drop(probe);
                     let new_prefix_id = store
@@ -3066,16 +3153,27 @@ impl<'a> Harness<'a> {
                     }
 
                     let before: usize = loaded.items.iter().map(|(_, _, t)| t.len()).sum();
+                    let recorded_under = if vocab_moved {
+                        format!(
+                            "the vocabulary `{}` and this daemon tokenizes with `{}`",
+                            stored_vocab,
+                            parts.vocab.source()
+                        )
+                    } else {
+                        format!(
+                            "dialect template {} and this daemon renders {}",
+                            &stored_sha[..16.min(stored_sha.len())],
+                            &dialect_sha[..16]
+                        )
+                    };
                     notes.push(format!(
-                        "this conversation was recorded under dialect template {} and this \
-                         daemon renders {}. Its {} item(s) were RE-RENDERED for this one — \
+                        "this conversation was recorded under {recorded_under}. Its {} item(s) \
+                         were RE-RENDERED for this one — \
                          the stored tokens are a cache of the other rendering, the items \
                          themselves are the record, and nothing was detokenized to do it. \
                          {} token(s) became {}, which is one cold prefill, once, on the next \
                          turn. The old transcript {} keeps its tokens and its chain; this is \
                          a fork, and nothing stored was rewritten.",
-                        &stored_sha[..16],
-                        &dialect_sha[..16],
                         items.len(),
                         before,
                         rebuilt.ledger.len(),
@@ -3235,7 +3333,7 @@ impl<'a> Harness<'a> {
                         tools_json: prefix.tools_json.clone(),
                         tokens: session.ledger.prefix_tokens().to_vec(),
                         h_init: session.ledger.h_init(),
-                        vocab_source: cfg.vocab_gguf.display().to_string(),
+                        vocab_source: parts.vocab.source().to_string(),
                     };
                     prefix_id = s
                         .put_stable_prefix(&rec)
@@ -3335,9 +3433,20 @@ impl<'a> Harness<'a> {
         // session exists, and `Sessions` clones that config for every session it
         // opens — so a real daemon behaves exactly as before and a `Config` built
         // in a test carries only what the test put in it.
+        // **A key that does not resolve is asked for, not refused** — see `key_wanted`.
+        // Any other failure (an unknown preset, an unreadable providers.toml) still
+        // refuses here: those are not something a pasted key fixes.
+        let mut key_wanted = None;
         let provider: Option<Box<dyn letibot_backend::MessagesBackend>> = match &cfg.provider {
             None => None,
-            Some(pc) => Some(build_provider(pc, &cfg.sampling).map_err(HarnessError::Setup)?),
+            Some(pc) => match build_provider(pc, &cfg.sampling) {
+                Ok(p) => Some(p),
+                Err(_) if key_is_missing(pc) => {
+                    key_wanted = Some(pc.clone());
+                    None
+                }
+                Err(e) => return Err(HarnessError::Setup(e)),
+            },
         };
         // **The ledger-to-provider ratio survives a restart, because it is already
         // in the store.**
@@ -3405,6 +3514,21 @@ impl<'a> Harness<'a> {
             .into_iter()
             .map(|d| (d.subject, d.state, d.detail))
             .collect();
+        // **What `/models local` returns to**, captured from the pre-move `cfg` and
+        // `parts` before the struct expression below takes `cfg` by value: the
+        // daemon's own server, vocabulary and dialect. A switch to other weights
+        // replaces the engine wholesale, so "back to local" is a re-seat of this
+        // pair and a re-render of the conversation under it, not a field flip.
+        let own_server = OwnServer {
+            endpoint: cfg.endpoint.clone(),
+            model: cfg.model.clone(),
+            vocab_gguf: cfg.vocab_gguf.clone(),
+            dialect: cfg.dialect,
+            media_marker: cfg.media_marker.clone(),
+            sampling: cfg.sampling.clone(),
+            vocab: parts.vocab.clone(),
+            wiring: parts.wiring.clone(),
+        };
         let mut h = Harness {
             // no prompt yet: the first `TurnStarted` after a prompt stamps it
             turn_began_ms: None,
@@ -3447,12 +3571,18 @@ impl<'a> Harness<'a> {
             // field: an interrupt has to be able to stop this session's children.
             subagents: subagent_runner,
             provider,
+            key_wanted,
             // Filled on the first switch away from local, never at open: a session
             // that started on a provider has no local window to go back to, and
             // `None` here says exactly that.
             local_window: None,
             local_window_cell: local_window_cell.clone(),
             point_cell: point_cell.clone(),
+            // Captured from the pre-move `cfg` and `parts` above: everything
+            // `/models local` returns to, held before the first switch can
+            // overwrite it. See the field's own doc for why a return needs a
+            // record and cannot re-derive.
+            own_server,
         };
         h.publish_settings();
         h.publish_jobs();
@@ -4710,7 +4840,7 @@ impl<'a> Harness<'a> {
         self.monitors.as_ref()
     }
 
-    /// **Switch to a model this fleet hosts** — `/models dense78`.
+    /// **Switch to a model this fleet hosts** — `/models dense78`, `/models local.glm`.
     ///
     /// Declared in `providers.toml` as a `[model."…"]` block with an address; see
     /// [`letibot_provider::keys::LocalModel`]. These are `local` in every sense that
@@ -4724,32 +4854,95 @@ impl<'a> Harness<'a> {
     /// it at a server holding different weights and nothing fails: the ids are valid
     /// numbers and mean other words. That is silent corruption of the one thing a
     /// transcript is for, so a switch that cannot show the weights match does not
-    /// happen.
+    /// happen — unless it does something better than refuse: load the vocabulary of
+    /// the weights the target itself names, seat the dialect the target's own
+    /// template settles on, and re-render the conversation into a fork under both.
     ///
-    /// Three outcomes, and each is a sentence rather than a shrug:
+    /// Four outcomes, and each is a sentence rather than a shrug:
     ///
-    ///   * `/props` names the same GGUF this daemon tokenizes with — switch.
-    ///   * `/props` names a different one — refuse, and print both names.
+    ///   * `/props` names the same GGUF this daemon tokenizes with — the address
+    ///     moves, and nothing else does. The engine, the dialect and the
+    ///     conversation's tokens all stay.
+    ///   * `/props` names OTHER weights whose template matches a dialect this tree
+    ///     drives (or the block asserts one) — a full switch: their vocabulary
+    ///     loaded from the GGUF they name, their dialect seated, the conversation
+    ///     re-rendered into a fork keyed by that dialect's template, the window
+    ///     retuned against the box that will answer. `/models local.glm` from a
+    ///     qwen daemon is this arm, and it is the arm the operator asked for.
+    ///   * the weights differ and no dialect can be named honestly — refused,
+    ///     naming what was looked for and the key that asserts it by hand.
     ///   * nothing answers, or `/props` names no model at all (a proxy, a server
-    ///     without it) — refuse, and name the block key that asserts it by hand.
-    ///     An operator saying *"I know these are the same weights"* is a decision on
-    ///     the record; this guessing it would not be.
+    ///     without it) — refused, and `same_vocab = true` in the block asserts by
+    ///     hand that the weights match. An operator saying *"I know these are the
+    ///     same weights"* is a decision on the record; this guessing it would not be.
+    ///
+    /// # Why the cross-weights arm forks rather than swapping the renderer under a
+    /// live transcript
+    ///
+    /// Every token in the session's ledger was rendered by one dialect against one
+    /// vocabulary. Appending another dialect's bytes to them builds a prompt no
+    /// model was trained on — the exact corruption the vocabulary check exists to
+    /// refuse, one layer down. So the switch re-renders the conversation whole,
+    /// the same way a resume into a daemon of another dialect does, into a fork
+    /// whose stable-prefix row is keyed by the NEW dialect's template sha: another
+    /// dialect's cache row is never reused, by construction rather than by check.
     pub fn set_local_model(
         &mut self,
         m: &letibot_provider::keys::LocalModel,
     ) -> Result<String, HarnessError> {
         let want = parse_local_url(&m.url)
             .map_err(|e| HarnessError::Setup(format!("[model.\"{}\"] {e}", m.name)))?;
-        if let Some(why) = local_model_vocab_refusal(&want, m, &self.cfg.vocab_gguf) {
-            return Err(HarnessError::Setup(why));
-        }
+        // **One `/props` probe decides the whole switch** — weights, dialect,
+        // marker — before anything moves, so a refusal leaves the session exactly
+        // as it was. The daemon's own vocabulary is optional since main made it
+        // so (a box with only an API key starts on the byte one), and the
+        // decision takes it as an `Option`: with one, behaviour is as it was;
+        // without one, nothing can be the SAME weights as a vocabulary that does
+        // not exist, and the probe alone settles which weights the switch seats
+        // — the target's own, reported by the target.
+        let switch = local_switch_decision(&want, m, self.cfg.vocab_gguf.as_deref())
+            .map_err(HarnessError::Setup)?;
 
         // Off any metered provider first, and by its own door, so the ledger scale and
         // the restored window are handled where that is understood. Its report is
         // discarded deliberately: it describes a move to the daemon's own server, which
         // is a waypoint here rather than where this switch lands.
-        self.set_provider(None)?;
+        //
+        // **But not its re-seat half, when this switch replaces the engine anyway.**
+        // `/models local`'s door returns a session sitting on the daemon's own
+        // weights — re-rendered back, if a previous switch moved it — and a
+        // conversation forked back only to be forked again onto the target's
+        // dialect a moment later pays two cold prefills for one decision. So the
+        // same-weights arm takes the full door and the other-weights arm takes
+        // the door with its re-seat withheld: the engine this arm is about to
+        // discard is not rebuilt first.
+        match switch {
+            LocalSwitch::SameWeights => {
+                self.set_provider(None)?;
+                self.move_local_endpoint(&want, m)
+            }
+            LocalSwitch::OtherWeights {
+                props,
+                dialect,
+                gguf,
+            } => {
+                self.set_own_server(false)?;
+                self.set_local_model_weights(&want, m, props, dialect, gguf)
+            }
+        }
+    }
 
+    /// The address move a same-weights switch is: the engine, the dialect and the
+    /// conversation all stay, and only where turns are posted changes.
+    ///
+    /// Split from [`Harness::set_local_model`] so the arm that changes nothing but
+    /// the address is readable as exactly that, beside the arm that changes
+    /// everything.
+    fn move_local_endpoint(
+        &mut self,
+        want: &Endpoint,
+        m: &letibot_provider::keys::LocalModel,
+    ) -> Result<String, HarnessError> {
         // **The engine is what actually holds the address** — `cfg.endpoint` is the
         // record and `engine.endpoint` is where `/completion` is posted. Writing one
         // and not the other is how a switch reports a move it did not make.
@@ -4765,7 +4958,7 @@ impl<'a> Harness<'a> {
         // A different box is a different KV cache and a different window; the ratio
         // measured on the old one is not evidence about this one.
         self.cfg.ledger_scale = None;
-        let moved = self.retune_window_local(&want, &m.name, m.profile.window);
+        let moved = self.retune_window_local(want, &m.name, m.profile.window);
         let line = format!(
             "turns go to `{}` at {} from the next one on (fleet, no meter){}{moved}",
             m.model,
@@ -4776,6 +4969,202 @@ impl<'a> Harness<'a> {
                 format!(", sampling {}", render_sampling(&m.profile.sampling))
             }
         );
+        Ok(line)
+    }
+
+    /// **The cross-weights switch** — the arm that makes `/models local.glm` work
+    /// from a daemon started on the qwen weights.
+    ///
+    /// Everything here happens in an order where a failure leaves a session that
+    /// still works: the probe and the dialect were decided before this was called,
+    /// the vocabulary loads before anything is written, the fork is written before
+    /// anything is swapped, and the engine moves only once the fork exists. A
+    /// failure at any step is the sentence naming the step.
+    fn set_local_model_weights(
+        &mut self,
+        want: &Endpoint,
+        m: &letibot_provider::keys::LocalModel,
+        props: letibot_turn::serving::ServedProps,
+        dialect: crate::dialect::Dialect,
+        gguf: std::path::PathBuf,
+    ) -> Result<String, HarnessError> {
+        if self.store.is_none() {
+            return Err(HarnessError::Setup(format!(
+                "switching to the other weights at {} re-renders this conversation \
+                 into a fork, and a fork needs a store to write it to; this session \
+                 has none, so the weights, the dialect and the address were all left \
+                 alone",
+                want.authority()
+            )));
+        }
+        // The GGUF `/props` named is a path on the box that RUNS the server; a
+        // LAN target can name one this box cannot read, and the switch tokenizes
+        // HERE. Refused with the path and what to do about it, rather than
+        // searched for by basename — a basename hunt that found the wrong file
+        // would be this switch's own corruption, committed by its own fix.
+        if !gguf.is_file() {
+            return Err(HarnessError::Setup(format!(
+                "{} serves weights at `{}` (its /props answer), and that is not a file \
+                 this box can read. A switch tokenizes here and sends ids, so it needs \
+                 those weights' GGUF on THIS box — mount or link it at that path (the \
+                 first shard of a split model is enough) and switch again. Nothing was \
+                 changed.",
+                want.authority(),
+                gguf.display()
+            )));
+        }
+        let old_dialect = self.cfg.dialect;
+        // What tokenizes NOW, read before the engine below replaces it: a GGUF's
+        // path, or `bytes:<hash>` for a daemon that started with no GGUF of its
+        // own — which is exactly the daemon this arm is new for.
+        let old_gguf = self.engine.vocab().source().to_string();
+        let was_tokens = self.session.ledger.len();
+
+        // **The vocabulary of the weights that will answer.** The second
+        // vocabulary a process ever loads — the daemon's own came first, at
+        // start — and the one a box short of memory cannot afford. It is CPU-only
+        // by the shim's own construction (see `csrc/shim.c`), which is what lets
+        // a daemon already holding one model's weights load another's tokenizer.
+        let vocab = Arc::new(load_gguf(&gguf).map_err(|e| {
+            HarnessError::Setup(format!(
+                "loading the vocabulary at `{}`, which {}'s /props named: {e}. A \
+                 switch tokenizes here and sends ids, so it needs that file on this \
+                 box. Nothing was changed.",
+                gguf.display(),
+                want.authority()
+            ))
+        })?);
+        let wiring = Arc::new(dialect.wiring(self.cfg.effort.as_deref()));
+        let sampling = if m.profile.sampling.is_empty() {
+            self.cfg.sampling.clone()
+        } else {
+            serde_json::Value::Object(m.profile.sampling.clone())
+        };
+        // Resolving the dialect's control and stop tokens against the target's
+        // vocabulary is the fit check `open` runs at daemon start; refused here
+        // for the same reason — at runtime a mismatch is silent.
+        let mut engine = TurnEngine::new(
+            vocab.clone(),
+            wiring.renderer.clone(),
+            wiring.parser.clone(),
+            want.clone(),
+            letibot_backend::BackendCaps::OWN_SERVER,
+            m.model.clone(),
+            sampling.clone(),
+        )
+        .map_err(|e| {
+            HarnessError::Setup(format!(
+                "the {} dialect does not fit the vocabulary at `{}`: {e}. Every \
+                 control token and stop literal must resolve to exactly one vocab \
+                 entry — a mismatch is a dialect/weights pairing error, refused now \
+                 because at runtime it is silent. Nothing was changed.",
+                dialect.name(),
+                gguf.display()
+            ))
+        })?;
+        engine.media_marker = props.media_marker.clone();
+
+        // **The fork's prefix, keyed by the NEW dialect's own template sha.**
+        // `stable_prefix.dialect_sha` is the key a resume checks before reusing a
+        // rendering, so the row this writes is what makes a switch to another
+        // dialect never reuse this one's cache — including by a daemon that
+        // resumes this session later.
+        let next = StablePrefix {
+            system: self.cfg.system.clone(),
+            tools_json: wiring.tools_json(&self.runtime.registry.schemas()),
+        };
+        let measured = engine
+            .open(&format!("{}#switch-probe", self.cfg.session_id), &next)
+            .map_err(|e| HarnessError::Setup(format!("rendering the new prompt: {e}")))?;
+        let rec = StablePrefixRecord {
+            dialect_sha: hex32(&wiring.spec().template_sha),
+            system: next.system.clone(),
+            tools_json: next.tools_json.clone(),
+            tokens: measured.ledger.prefix_tokens().to_vec(),
+            h_init: measured.ledger.h_init(),
+            vocab_source: gguf.display().to_string(),
+        };
+        drop(measured);
+        let next_id = self
+            .store
+            .as_ref()
+            .expect("refused at the top of this method")
+            .put_stable_prefix(&rec)
+            .map_err(|e| HarnessError::Store(e.to_string()))?;
+
+        // **The engine moves first**, because the fork below renders with
+        // `self.engine` — and the fork is the first thing that can no longer fail
+        // cheaply, so by the time it runs, everything it renders with is already
+        // the pair the next turn will use.
+        self.engine = engine;
+        self.render = wiring.clone();
+        self.cfg.dialect = dialect;
+        self.cfg.vocab_gguf = Some(gguf.clone());
+        self.cfg.endpoint = want.clone();
+        self.cfg.model = m.model.clone();
+        self.cfg.sampling = sampling;
+        self.cfg.media_marker = props.media_marker.clone();
+        self.cfg.ledger_scale = None;
+
+        // **The conversation, re-rendered whole under the new pair.** The items
+        // are dialect-neutral (`item_json`); the tokens were a cache of one
+        // rendering — the same rationale the resume fork is built on, and the
+        // same machinery `reingest` drives: fork, carry every item, summarise
+        // nothing.
+        let items = self.session.items.clone();
+        let outcome = CompactionOutcome {
+            turn_id: format!("{}#weights", self.transcript_id),
+            summary: String::new(),
+            tool_calls: 0,
+            truncated: false,
+            cached_tokens: 0,
+            reusable: 0,
+            generated_tokens: 0,
+        };
+        self.compacting = true;
+        let forked = (|| {
+            self.fork_to_summary(
+                &outcome,
+                Some(&next),
+                Some(&next_id),
+                ForkTail {
+                    items: &items,
+                    split: None,
+                    because: "",
+                },
+            )
+        })();
+        self.compacting = false;
+        let fork = forked?;
+        self.adopt_reseat(Some((next, next_id)));
+
+        // A different box is a different KV cache and a different window; the
+        // ratio measured on the old one is not evidence about this one, and the
+        // conversation just changed size under it anyway.
+        let moved = self.retune_window_local(want, &m.name, m.profile.window);
+        let line = format!(
+            "turns go to `{}` at {} from the next one on (fleet, no meter). Weights \
+             changed — `{}` → `{}`, dialect {} → {} — so this conversation's {} \
+             item(s) were re-rendered for them: {} → {} tokens, fork {}, one cold \
+             prefill on the next turn{}{}",
+            m.model,
+            want.authority(),
+            old_gguf,
+            gguf.display(),
+            old_dialect.name(),
+            dialect.name(),
+            items.len(),
+            was_tokens,
+            fork.base_tokens,
+            fork.transcript_id,
+            if m.profile.sampling.is_empty() {
+                String::new()
+            } else {
+                format!(", sampling {}", render_sampling(&m.profile.sampling))
+            },
+            moved
+        );
+        self.publish_settings();
         Ok(line)
     }
 
@@ -4841,6 +5230,114 @@ impl<'a> Harness<'a> {
         }
     }
 
+    /// **Ask the operator for the key [`Harness::key_wanted`] names, and make it the
+    /// session's provider.**
+    ///
+    /// The masked card is the sudo password's: [`letibot_sessionlog::hub::Hub::request_secret`]
+    /// raises `SecretRequested` to every head and the answer comes back on a channel, never
+    /// in an event — so the key reaches providers.toml and nowhere else. The worker blocks
+    /// while it waits, which is safe for the same reason it is for sudo: the answer is
+    /// handled on the answering head's own reader thread.
+    ///
+    /// Refuses at once, rather than after a wait, when no head that answers decisions is
+    /// attached (a one-shot `--prompt`, say): the sentence then names the variable and the
+    /// file instead. A key that providers.toml could not hold is asked for again, saying
+    /// why, up to three times. `why` is the reason for asking again — a 401's own words.
+    fn obtain_key(&mut self, why: Option<String>) -> Result<(), HarnessError> {
+        let Some(pc) = self.key_wanted.clone() else {
+            return Ok(());
+        };
+        let preset = letibot_provider::Preset::parse(&pc.name).map_err(HarnessError::Setup)?;
+        let file = letibot_provider::keys::config_file();
+        if self.hub.deciding_heads().is_empty() {
+            return Err(HarnessError::Setup(format!(
+                "no key for `{name}`, and no head is attached to ask for one. Set ${env}, or put \
+                 `key = \"…\"` under [{name}] in {file}",
+                name = pc.name,
+                env = preset.key_env,
+                file = file.display(),
+            )));
+        }
+        let mut reason = why;
+        for _ in 0..3 {
+            // The prompt is persisted with the request (the secret never is), so it says
+            // where the key goes and nothing it should not.
+            let prompt = format!(
+                "{name} needs an API key. It is saved to {file} (mode 0600, under [{name}]) \
+                 and this session's turns go to {name}.{again}",
+                name = pc.name,
+                file = file.display(),
+                again = reason
+                    .as_deref()
+                    .map(|r| format!(" Asking again: {r}"))
+                    .unwrap_or_default(),
+            );
+            let deadline = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| (d + KEY_PATIENCE).as_millis() as u64)
+                .unwrap_or(0);
+            // An empty `command` is what tells a head this is not sudo's card.
+            let (req_id, rx) = self.hub.request_secret(&prompt, "", deadline);
+            let given = match rx.recv_timeout(KEY_PATIENCE) {
+                Ok(s) => s,
+                Err(_) => {
+                    self.hub
+                        .abandon_secret(&req_id, "nobody, before the deadline");
+                    None
+                }
+            };
+            let Some(key) = given.map(|k| k.trim().to_string()) else {
+                return Err(HarnessError::Setup(format!(
+                    "no key was given for `{name}`, so this turn did not run and nothing was \
+                     sent. Send the message again to be asked again, or set ${env}, or put \
+                     `key = \"…\"` under [{name}] in {file}",
+                    name = pc.name,
+                    env = preset.key_env,
+                    file = file.display(),
+                )));
+            };
+            if let Some(bad) = unsavable_key(&key) {
+                reason = Some(format!("that key was not saved — {bad}."));
+                continue;
+            }
+            letibot_provider::keys::store_key(Some(&file), &pc.name, &key).map_err(|e| {
+                HarnessError::Setup(format!("saving the key to {}: {e}", file.display()))
+            })?;
+            // **The first key on a box also chooses the default**, so the next `letibot`
+            // starts here without a flag. Only when there is none: an existing choice is the
+            // operator's and is not this card's to move.
+            let mut made_default = false;
+            if let Ok(None) = letibot_provider::keys::default_choice(Some(&file)) {
+                made_default =
+                    letibot_provider::keys::set_default(Some(&file), &pc.name, pc.model.as_deref())
+                        .is_ok();
+            }
+            self.key_wanted = None;
+            self.set_provider(Some(pc.clone()))?;
+            self.hub.publish(SessionEvent::Warning {
+                code: "provider_key_saved".into(),
+                detail: format!(
+                    "the key for {name} is saved in {file}{default}; this session's turns go to \
+                     {name}",
+                    name = pc.name,
+                    file = file.display(),
+                    default = if made_default {
+                        format!(", and [default] provider = \"{}\" is set", pc.name)
+                    } else {
+                        String::new()
+                    },
+                ),
+                compaction: None,
+            });
+            return Ok(());
+        }
+        Err(HarnessError::Setup(format!(
+            "no usable key for `{}` after three tries: {}",
+            pc.name,
+            reason.unwrap_or_default()
+        )))
+    }
+
     /// **Switch what answers this session's turns**, underneath the conversation.
     /// `None` is the local server. The transcript, the ledger and the tools are
     /// untouched: the next turn simply goes elsewhere. Returns a line saying what
@@ -4869,32 +5366,19 @@ impl<'a> Harness<'a> {
         // for a provider whose key turned out to be missing would be a change made by a
         // refusal.
         match choice {
-            None => {
-                self.provider = None;
-                self.cfg.ledger_scale = None;
-                self.cfg.provider = None;
-                // Back to the server's own window, which is the one its `/props`
-                // reported at startup. Restored rather than recomputed: the local
-                // endpoint is not asked again here, and keeping a cloud model's
-                // window over a local conversation is the same bug pointing the
-                // other way.
-                let mut line = format!(
-                    "turns go to the local server at {} ({}) from the next one on",
-                    self.cfg.endpoint.authority(),
-                    self.cfg.model
-                );
-                if let Some(w) = self.local_window.take() {
-                    if w != self.cfg.context_window {
-                        line.push_str(&match w {
-                            Some(w) => format!(". Context window back to {w}"),
-                            None => ". The local server never reported a window".into(),
-                        });
-                    }
-                    self.cfg.context_window = w;
-                }
-                self.publish_settings();
-                Ok(line)
+            // The daemon's own server takes token ids, and a byte-vocabulary session has
+            // none it could read: refused before anything changes, as the promise above
+            // says. (main's guard, kept: a daemon with no vocabulary of its own has
+            // nothing `/models local` could return to. The guard and the return below
+            // read the same fact — the vocabulary the engine tokenizes with NOW, which
+            // a cross-weights switch may have replaced since the daemon started.)
+            None if self.engine.vocab().is_bytes() => {
+                Err(HarnessError::Setup(NO_VOCAB_FOR_LOCAL.to_string()))
             }
+            // **`/models local` is a RETURN** — to the daemon's own weights, address,
+            // sampling, marker, window and vocabulary, re-seated — and not a provider
+            // clear. `set_own_server` is this arm; see its doc for the re-seat half.
+            None => self.set_own_server(true),
             Some(pc) => {
                 let p = build_provider(&pc, &self.cfg.sampling).map_err(HarnessError::Setup)?;
                 let mut line = format!(
@@ -4924,6 +5408,206 @@ impl<'a> Harness<'a> {
                 Ok(line)
             }
         }
+    }
+
+    /// **Back to the daemon's own server** — the `None` arm of [`Harness::set_provider`].
+    ///
+    /// `reseat_foreign` is the one honest wrinkle: `/models local` means *this
+    /// daemon's own server, exactly as it was started*, so a session sitting on
+    /// another fleet model's WEIGHTS comes back to the daemon's vocabulary and
+    /// dialect here, conversation re-rendered into a fork under them. But a switch
+    /// straight from one fleet model's weights to another's calls this only to get
+    /// off a metered provider first — its engine is about to be replaced, and a
+    /// conversation forked back to the daemon's dialect only to be forked again a
+    /// moment later pays two cold prefills for one decision — so that caller passes
+    /// `false` and takes the field clears without the re-seat.
+    fn set_own_server(&mut self, reseat_foreign: bool) -> Result<String, HarnessError> {
+        self.provider = None;
+        self.cfg.ledger_scale = None;
+        self.cfg.provider = None;
+        // **The return itself**: address, alias, sampling, marker, vocabulary,
+        // dialect — every field a fleet switch overwrote, given back the value
+        // the daemon started with. The window is restored from its own memory
+        // below, the same way it always was.
+        //
+        // Before this was a return it was half of one: the address stayed
+        // wherever the last fleet switch put it while the line still said "the
+        // local server", and the operator's own file documents `local` as
+        // *(the bare word) is the daemon's own model*. A line that names the
+        // wrong box is the provenance defect in report form.
+        let own = self.own_server.clone();
+        let mut reseat = String::new();
+        let foreign = self.cfg.vocab_gguf != own.vocab_gguf || self.cfg.dialect != own.dialect;
+        if foreign && reseat_foreign {
+            // The mirror of the switch's cross-weights arm, aimed home: the
+            // daemon's own pair, the conversation re-rendered under it, a fork
+            // keyed by the daemon's own template sha. It can only fail where the
+            // switch can fail, and for the same reasons. What moved is said in
+            // the values AS THEY STOOD — the re-seat overwrites them, so they are
+            // read before it runs.
+            // The names in the line are the vocabularies' own `source()`s — a
+            // GGUF's path, or `bytes:<hash>` for a daemon that started on the
+            // byte vocabulary — read before the re-seat overwrites them.
+            let (was_vocab, was_dialect) =
+                (self.engine.vocab().source().to_string(), self.cfg.dialect);
+            self.reseat_to_own(&own)?;
+            reseat = format!(
+                ". Weights back — `{}` → `{}`, dialect {} → {} — and the conversation \
+                 was re-rendered for them again: one more cold prefill, one more fork",
+                was_vocab,
+                own.vocab.source(),
+                was_dialect.name(),
+                own.dialect.name()
+            );
+        } else if foreign {
+            // Off a metered provider on the way to another fleet model's weights:
+            // everything the cross-weights switch is about to overwrite is left
+            // exactly as it is, and the fork that would waste a prefill is not run.
+        } else {
+            self.cfg.endpoint = own.endpoint.clone();
+            self.cfg.model = own.model.clone();
+            self.engine.endpoint = own.endpoint.clone();
+            self.engine.model = own.model.clone();
+            if self.cfg.media_marker != own.media_marker {
+                self.cfg.media_marker = own.media_marker.clone();
+                self.engine.media_marker = own.media_marker;
+            }
+            // A fleet switch may have replaced the sampling; the daemon's own
+            // server gets the sampling it started with back.
+            self.cfg.sampling = own.sampling.clone();
+            self.engine.sampling = own.sampling;
+        }
+        // Back to the server's own window, which is the one its `/props`
+        // reported at startup. Restored rather than recomputed: the local
+        // endpoint is not asked again here, and keeping a cloud model's
+        // window over a local conversation is the same bug pointing the
+        // other way.
+        let mut line = format!(
+            "turns go to the local server at {} ({}) from the next one on",
+            self.cfg.endpoint.authority(),
+            self.cfg.model
+        );
+        if let Some(w) = self.local_window.take() {
+            if w != self.cfg.context_window {
+                line.push_str(&match w {
+                    Some(w) => format!(". Context window back to {w}"),
+                    None => ". The local server never reported a window".into(),
+                });
+            }
+            self.cfg.context_window = w;
+        }
+        line.push_str(&reseat);
+        self.publish_settings();
+        Ok(line)
+    }
+
+    /// The re-seat half of a return to the daemon's own weights: the mirror of
+    /// [`Harness::set_local_model_weights`], aimed at the [`OwnServer`] pair.
+    ///
+    /// Everything is the same shape and for the same reasons — the engine is
+    /// rebuilt from the daemon's own vocabulary and wiring (no load, they are the
+    /// `Arc`s open captured), the fork's prefix row is keyed by the daemon's own
+    /// template sha, the conversation is re-rendered whole and nothing is
+    /// summarised. The one thing that differs is where the facts come from: not a
+    /// probe, the record.
+    fn reseat_to_own(&mut self, own: &OwnServer) -> Result<(), HarnessError> {
+        if self.store.is_none() {
+            return Err(HarnessError::Setup(
+                "coming back to this daemon's own weights re-renders the conversation \
+                 into a fork, and a fork needs a store to write it to; this session \
+                 has none, so it stays on the weights it is on"
+                    .into(),
+            ));
+        }
+        let mut engine = TurnEngine::new(
+            own.vocab.clone(),
+            own.wiring.renderer.clone(),
+            own.wiring.parser.clone(),
+            own.endpoint.clone(),
+            letibot_backend::BackendCaps::OWN_SERVER,
+            own.model.clone(),
+            own.sampling.clone(),
+        )
+        .map_err(|e| {
+            HarnessError::Setup(format!(
+                "the {} dialect does not fit the vocabulary at `{}`: {e} — the pair \
+                 this daemon STARTED with, which cannot have drifted. This is a bug, \
+                 not a configuration: the same pair opened this session.",
+                own.dialect.name(),
+                own.vocab.source()
+            ))
+        })?;
+        engine.media_marker = own.media_marker.clone();
+        let next = StablePrefix {
+            system: self.cfg.system.clone(),
+            tools_json: own.wiring.tools_json(&self.runtime.registry.schemas()),
+        };
+        let measured = engine
+            .open(&format!("{}#return-probe", self.cfg.session_id), &next)
+            .map_err(|e| HarnessError::Setup(format!("rendering the home prompt: {e}")))?;
+        let rec = StablePrefixRecord {
+            dialect_sha: hex32(&own.wiring.spec().template_sha),
+            system: next.system.clone(),
+            tools_json: next.tools_json.clone(),
+            tokens: measured.ledger.prefix_tokens().to_vec(),
+            h_init: measured.ledger.h_init(),
+            vocab_source: own.vocab.source().to_string(),
+        };
+        drop(measured);
+        let next_id = self
+            .store
+            .as_ref()
+            .expect("refused above")
+            .put_stable_prefix(&rec)
+            .map_err(|e| HarnessError::Store(e.to_string()))?;
+
+        self.engine = engine;
+        self.render = own.wiring.clone();
+        self.cfg.dialect = own.dialect;
+        self.cfg.vocab_gguf = own.vocab_gguf.clone();
+        self.cfg.endpoint = own.endpoint.clone();
+        self.cfg.model = own.model.clone();
+        self.cfg.sampling = own.sampling.clone();
+        self.cfg.media_marker = own.media_marker.clone();
+
+        let items = self.session.items.clone();
+        let outcome = CompactionOutcome {
+            turn_id: format!("{}#home", self.transcript_id),
+            summary: String::new(),
+            tool_calls: 0,
+            truncated: false,
+            cached_tokens: 0,
+            reusable: 0,
+            generated_tokens: 0,
+        };
+        self.compacting = true;
+        let forked = (|| {
+            self.fork_to_summary(
+                &outcome,
+                Some(&next),
+                Some(&next_id),
+                ForkTail {
+                    items: &items,
+                    split: None,
+                    because: "",
+                },
+            )
+        })();
+        self.compacting = false;
+        // The engine moved first, so a fork failure here would leave the session
+        // rendering the own dialect over a foreign-rendered ledger — the
+        // corruption this whole file refuses. The fork cannot fail halfway
+        // (`fork_to_summary` writes every store row before it swaps), so this
+        // names the state rather than papering over it.
+        forked.map_err(|e| {
+            HarnessError::Setup(format!(
+                "re-rendering the conversation for this daemon's own weights: {e}. \
+                 The switch to them did not complete; stay on the weights the \
+                 conversation is rendered for and re-try the switch"
+            ))
+        })?;
+        self.adopt_reseat(Some((next, next_id)));
+        Ok(())
     }
 
     /// Point `context_window` at the model that will answer, and say what moved.
@@ -5939,7 +6623,7 @@ impl<'a> Harness<'a> {
             tools_json: next.tools_json.clone(),
             tokens: measured.ledger.prefix_tokens().to_vec(),
             h_init: measured.ledger.h_init(),
-            vocab_source: self.cfg.vocab_gguf.display().to_string(),
+            vocab_source: self.engine.vocab().source().to_string(),
         };
         drop(measured);
         let id = self
@@ -6803,6 +7487,15 @@ impl<'a> Harness<'a> {
     }
 
     fn run_rounds(&mut self) -> Result<Reply, HarnessError> {
+        // **The key first, before anything is drained or sent.** A provider with no key
+        // is asked for one here; a refusal returns before the turn takes the operator's
+        // message, so nothing they typed is spent on a turn that could not run.
+        if self.key_wanted.is_some() {
+            self.obtain_key(None)?;
+        }
+        // How many times this turn has asked again after a refused key. Bounded, so a
+        // provider that refuses every key does not hold the worker in a loop of cards.
+        let mut key_asks = 0usize;
         let mut metrics = Vec::new();
         let mut tool_calls = 0usize;
         let mut truncated = false;
@@ -6977,6 +7670,26 @@ impl<'a> Harness<'a> {
                     attempt = 0;
                     break attempted;
                 };
+                // **A refused key is asked for again**, on the same card, and the round is
+                // taken again — nothing was recorded, so the retry sends the same bytes.
+                // Only a key this session can replace: one from `$PROVIDER_API_KEY` or
+                // `--api-key` wins over the file, so a typed one would be saved and ignored.
+                if let letibot_turn::HttpError::Status {
+                    code: code @ (401 | 403),
+                    body,
+                } = &e
+                    && self.provider.is_some()
+                    && key_asks < 2
+                    && let Some(pc) = self.cfg.provider.clone()
+                    && key_is_replaceable(&pc)
+                {
+                    key_asks += 1;
+                    let why = format!("{} refused the key ({code}): {body}", pc.name);
+                    self.provider = None;
+                    self.key_wanted = Some(pc);
+                    self.obtain_key(Some(why))?;
+                    continue;
+                }
                 let Some(wait) = http_retry_after(&e, attempt, self.cfg.http_retries) else {
                     break Err(TurnFailure::Http(e));
                 };
@@ -7641,7 +8354,7 @@ impl<'a> Harness<'a> {
     /// reason the row pairing is a free function.
     fn run_summary_turn(
         hub: &Arc<Hub>,
-        engine: &mut TurnEngine<'_>,
+        engine: &mut TurnEngine,
         session: &mut Session,
         sink: &mut CapturingSink,
         answerer: &letibot_turn::compaction::Answerer<'_>,
@@ -8126,7 +8839,7 @@ fn recorded_job_lines(row: &JobRecord) -> Vec<String> {
     lines
 }
 
-impl<'a> Harness<'a> {
+impl Harness {
     /// **The window for a handle this daemon never ran**, or the refusal when the store has
     /// never heard of it either.
     ///
@@ -8872,6 +9585,20 @@ impl TaskSlot {
         self.state.lock().expect("task slot").clone()
     }
 
+    /// **Settle a slot nobody has settled** — the spawning thread's last word, for a refusal
+    /// `run_to_completion` returned before its own guard existed. A slot already settled keeps
+    /// what it has: that answer, or that failure, came from the child's own path and is the
+    /// truer one.
+    fn settle_if_running(&self, status: letibot_tools::builtins::task::TaskStatus) {
+        let running = matches!(
+            *self.state.lock().expect("task slot"),
+            letibot_tools::builtins::task::TaskStatus::Running { .. }
+        );
+        if running {
+            self.settle(status);
+        }
+    }
+
     fn settle(&self, status: letibot_tools::builtins::task::TaskStatus) {
         // **`Done` under a kill is not an answer.** See the field: the text is what the
         // child had written when it was stopped, and reporting it as the child's word is
@@ -8888,6 +9615,15 @@ impl TaskSlot {
         };
         *self.state.lock().expect("task slot") = status;
         self.settled.notify_all();
+    }
+}
+
+/// **What a child's thread leaves behind when `run_to_completion` returns**: a refusal that came
+/// before the child's own [`AnswerOnce`] existed becomes the slot's answer, because nothing else
+/// will ever settle it. A slot already settled keeps what it has.
+fn finish_child_thread(slot: &TaskSlot, ran: Result<String, String>) {
+    if let Err(why) = ran {
+        slot.settle_if_running(letibot_tools::builtins::task::TaskStatus::Failed { why });
     }
 }
 
@@ -9072,7 +9808,7 @@ fn stop_children_first(
 /// It ends when the hub is closed — the same liveness test `jobwatch::watch_task` uses for the
 /// thread it parks per child — and **nothing here is on a clock**: a child asked something an hour
 /// later answers it.
-fn serve_child(sub: &mut Harness<'_>, hub: &Hub, sub_id: &str) {
+fn serve_child(sub: &mut Harness, hub: &Hub, sub_id: &str) {
     use letibot_sessionlog::hub::OwnWork;
     loop {
         let kind = match hub.take_own_work() {
@@ -9243,6 +9979,16 @@ struct HarnessTaskRunner {
     /// child's own. Written by [`Harness::set_mode_consented`]; read by the spawn, which
     /// hands it to the child as `sub_cfg.mode`.
     point: Arc<std::sync::Mutex<letibot_tools::mode::Mode>>,
+    /// **Vocabularies loaded for other weights, by GGUF path** — the spawn cache.
+    ///
+    /// A fan-out of children all seated on one declared model would otherwise load
+    /// that model's tokenizer once per child, and a tokenizer load is seconds of
+    /// reading a first shard. Keyed by the path the target's own `/props` named,
+    /// so two different models never share an entry and the same model is loaded
+    /// once however many children ask. The session switch does not use this: it
+    /// loads its own, once per switch, because the switch is rare and the harness
+    /// does not hold this runner.
+    foreign_vocabs: Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, Arc<Vocab>>>>,
     /// **The `task_start` children this session has put in a tree**, by handle — the ask each
     /// was given and the placement it works in.
     ///
@@ -9348,8 +10094,10 @@ pub struct SubagentModel {
     /// preset otherwise — and overloading `None` to mean *either* the daemon's server
     /// *or* some other box is the same conflation `ModelChoice` was widened to end.
     ///
-    /// The child still tokenizes with the daemon's vocabulary, so the spawn path runs
-    /// [`local_model_vocab_refusal`] against it exactly as a session switch does.
+    /// The child tokenizes with the parent's vocabulary when the target serves the
+    /// same weights, and with the target's own when it does not — the spawn path
+    /// runs [`local_switch_decision`] exactly as a session switch does, and seats
+    /// the child on the pair it answers with.
     pub local: Option<letibot_provider::keys::LocalModel>,
 }
 
@@ -9431,6 +10179,20 @@ fn apply_spawn_parameters(
     sub_cfg.sampling = leticode.parameters_for(role).to_sampling();
 }
 
+/// **The model a child runs on when nobody named one: its parent's.** The parent's own
+/// provider configuration when it is on one — taken as it is, key and all, so a parent that
+/// was given its key by `--api-key` or the masked card does not leave a child that cannot find
+/// it again — and `local` when the parent is on this daemon's own server.
+fn inherited_spawn_model(
+    parent: &Option<crate::config::ProviderConfig>,
+    local_window: Option<Option<u64>>,
+) -> Result<SubagentModel, Vec<String>> {
+    match parent {
+        Some(pc) => provider_model(pc.clone()),
+        None => subagent_model("local", local_window),
+    }
+}
+
 /// See [`SubagentModel`]. `want` is `local`, a declared local model, or
 /// `PROVIDER[/MODEL]`.
 pub fn subagent_model(
@@ -9506,6 +10268,12 @@ pub fn subagent_model_in(
             )]);
         }
     };
+    provider_model(pc)
+}
+
+/// A child seated on a provider configuration already in hand: the label and window the
+/// catalogue gives it, and the configuration — key included — as it is.
+fn provider_model(pc: crate::config::ProviderConfig) -> Result<SubagentModel, Vec<String>> {
     let preset = letibot_provider::Preset::parse(&pc.name).map_err(|e| vec![e])?;
     let cat = letibot_provider::catalogue::Catalogue::load();
     let window = preset.window(pc.model.as_deref(), &cat);
@@ -9667,6 +10435,101 @@ fn mint_sub_id_at(
     id
 }
 
+/// **The target's own tokenizer and dialect, for a child seated on other weights.**
+///
+/// Built by the spawn path from the same decision a session switch makes; the
+/// child's [`Parts`], its config and its session row are all derived from these
+/// facts so nothing about the child still names the daemon's weights.
+struct ForeignWeights {
+    vocab: Arc<Vocab>,
+    wiring: Arc<Wiring>,
+    dialect: crate::dialect::Dialect,
+    gguf: PathBuf,
+    media_marker: Option<String>,
+}
+
+impl HarnessTaskRunner {
+    /// **Load and seat another model's tokenizer for a child** — the spawn half of
+    /// [`LocalSwitch::OtherWeights`].
+    ///
+    /// The session switch loads the target's vocabulary itself, once per switch;
+    /// this is the fan-out version, cached by GGUF path so five children on one
+    /// model load its tokenizer once. The dialect is resolved against the
+    /// vocabulary HERE rather than at the child's open, because a pairing that
+    /// does not fit is a fact about the request (the operator's block names a
+    /// model this tree cannot drive) and `start` answers those inline rather than
+    /// parking them in a failed child.
+    fn foreign_weights(
+        &self,
+        gguf: &std::path::Path,
+        dialect: crate::dialect::Dialect,
+        props: &letibot_turn::serving::ServedProps,
+        want_at: &Endpoint,
+    ) -> Result<ForeignWeights, String> {
+        if !gguf.is_file() {
+            return Err(format!(
+                "{} serves weights at `{}` (its /props answer), and that is not a \
+                 file this box can read. A child tokenizes here and sends ids, so it \
+                 needs those weights' GGUF on THIS box — mount or link it at that path \
+                 (the first shard of a split model is enough) and spawn again.",
+                want_at.authority(),
+                gguf.display()
+            ));
+        }
+        let vocab = {
+            let mut cache = self
+                .foreign_vocabs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(v) = cache.get(gguf) {
+                v.clone()
+            } else {
+                let v = Arc::new(load_gguf(gguf).map_err(|e| {
+                    format!(
+                        "loading the vocabulary at `{}`, which {}'s /props named: {e}. \
+                         A child tokenizes here and sends ids, so it needs that file on \
+                         this box.",
+                        gguf.display(),
+                        want_at.authority()
+                    )
+                })?);
+                cache.insert(gguf.to_path_buf(), v.clone());
+                v
+            }
+        };
+        let wiring = Arc::new(dialect.wiring(self.base.effort.as_deref()));
+        // The fit check, with this method's own words for the same reason `start`
+        // answers inline. The child's open would run it too; this way the refusal
+        // is a spawn answer rather than a child that failed at birth.
+        TurnEngine::new(
+            vocab.clone(),
+            wiring.renderer.clone(),
+            wiring.parser.clone(),
+            want_at.clone(),
+            letibot_backend::BackendCaps::OWN_SERVER,
+            "fit-probe",
+            serde_json::Value::Null,
+        )
+        .map_err(|e| {
+            format!(
+                "the {} dialect does not fit the vocabulary at `{}`: {e}. Every control \
+                 token and stop literal must resolve to exactly one vocab entry — a \
+                 mismatch is a dialect/weights pairing error, refused now because at \
+                 runtime it is silent.",
+                dialect.name(),
+                gguf.display()
+            )
+        })?;
+        Ok(ForeignWeights {
+            vocab,
+            wiring,
+            dialect,
+            gguf: gguf.to_path_buf(),
+            media_marker: props.media_marker.clone(),
+        })
+    }
+}
+
 impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     /// **Start the child and come back.** The body below is the work, and it
     /// runs on its own thread: the daemon executes a round's calls in order on
@@ -9739,7 +10602,16 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 // the turn ends, because what follows — a host child serving its own queue until
                 // the hub closes — does not end until the daemon does. There is nothing for this
                 // thread to do with the answer; the slot already has it.
-                let _ = me.run_to_completion(&id, &prompt, &spec, &slot, &mut |n| slot2.note(n));
+                //
+                // **Except for a refusal that came before the guard existed.** The checks at the
+                // top of `run_to_completion` — the seat, the model door, the local vocabulary,
+                // the child's window — return before `AnswerOnce` is made, and their sentence
+                // used to be dropped right here: the slot stayed `Running` with no thread behind
+                // it, and `task_result` waited out its whole timeout to report a child "still
+                // working" that had never been created. The operator, on a stroppy session whose
+                // `where: firecode` child did exactly that: *"it hanged on task_result wtf"*.
+                let ran = me.run_to_completion(&id, &prompt, &spec, &slot, &mut |n| slot2.note(n));
+                finish_child_thread(&slot, ran);
                 // **And this is where the child's thread ends — the fact stopping needs.** See
                 // [`TaskSlot::exited`]: a child that answered is still alive (it parks and can be
                 // asked more), so `stop_all` cannot read "has an answer" as "is gone".
@@ -10291,6 +11163,9 @@ impl HarnessTaskRunner {
             // has nothing to put in them, and `None` is what a root session starts with.
             tree_watch: Arc::new(std::sync::Mutex::new(None)),
             head_answers: Arc::new(std::sync::Mutex::new(None)),
+            // No spawn runs through this constructor, so no foreign vocabulary is
+            // ever loaded through it: an empty cache is the honest start.
+            foreign_vocabs: Default::default(),
             local_window: Arc::new(std::sync::Mutex::new(None)),
             point: Arc::new(std::sync::Mutex::new(point)),
             placed: Arc::new(std::sync::Mutex::new(placed)),
@@ -10514,18 +11389,27 @@ impl HarnessTaskRunner {
         // not a guess about the absent case — it is what `models_choice` and `/models local`
         // already mean by it, and the child's `provider: None` below is that same door.
         // **The call's own word for the model, then the project file's for this seat, then
-        // `local`.** The two leticode keys are read here and nowhere else: the call's `model:`
-        // beats `[roles.<seat>] model`, which beats the file's `subagent_model`, which beats
-        // `local` below. Read at the spawn rather than at daemon start because the seat is
+        // the parent's model.** The two leticode keys are read here and nowhere else: the
+        // call's `model:` beats `[roles.<seat>] model`, which beats the file's
+        // `subagent_model`, which beats the inheritance below. Read at the spawn rather than at daemon start because the seat is
         // only known now — and read at all because both keys were parsed, disclosed and
         // answered by nobody until this line, which is the defect the feature is written
         // against. The label the refusals below name is this one, so a child stopped for its
         // window says the model the PROJECT chose for it.
-        let want = spec
+        //
+        // **Then the PARENT's model, not `local`** — the operator, 2026-10-07, after a DeepSeek
+        // session on a Mac with no model server spawned a child with no `model:`: *"so if no
+        // local config, and no model - default to the same"*, and *"local - anyway must be
+        // configured"*. `local` as the silent default was a guess that this box serves one,
+        // and where it did not the child was refused before it opened. A parent on its own
+        // server still gives `local`, which is the same model; a parent on a provider gives
+        // that provider and model, through the same door a named one takes — so its window is
+        // the catalogue's, or the parent's own via `runs_on_the_parents_model`. `local` is now
+        // only ever a choice somebody wrote.
+        let named = spec
             .model
             .as_deref()
-            .or_else(|| self.base.leticode.spawn_model(seat.as_str()))
-            .unwrap_or("local");
+            .or_else(|| self.base.leticode.spawn_model(seat.as_str()));
         // **And measure the local window when nobody remembered one.** `retune_window` fills it
         // *on the way out to a first provider*, so a session that STARTED on one has never
         // measured its own server — this session had not. `served_ctx` is the same `/props`
@@ -10538,16 +11422,29 @@ impl HarnessTaskRunner {
                 None => Some(letibot_turn::serving::served_ctx(&self.base.endpoint)),
             }
         };
-        let (sub_model, sub_provider, sub_window, sub_local) =
-            match subagent_model(want, local_window) {
-                Ok(m) => (m.label, m.provider, Some(m.window), m.local),
-                Err(why) => return Err(why.join("; ")),
-            };
-        // **A declared local model: check the weights, then measure the wall.**
+        // **No model named is the parent's model** (main, 65d05eb: a child with no
+        // `model:` runs on what its parent runs on — `inherited_spawn_model`), and a
+        // NAMED one goes through the same door `/models` uses. Both doors produce
+        // the four facts a spawn needs, and neither is allowed to guess.
+        let chosen = match named {
+            Some(want) => subagent_model(want, local_window),
+            None => inherited_spawn_model(&self.base.provider, local_window),
+        };
+        let (sub_model, sub_provider, sub_window, sub_local) = match chosen {
+            Ok(m) => (m.label, m.provider, Some(m.window), m.local),
+            Err(why) => return Err(why.join("; ")),
+        };
+        // The name the refusals below use: what was asked for, or what was inherited.
+        let want: &str = named.unwrap_or(&sub_model);
+        // **A declared local model: decide the weights, then measure the wall.**
         //
-        // The child tokenizes with the parent's vocabulary — one daemon, one GGUF — so
-        // the same refusal a session switch gets applies here, from the same function
-        // rather than a second copy of the reasoning.
+        // One `/props` probe decides it, from the same function a session switch
+        // uses rather than a second copy of the reasoning. Same weights and the
+        // child tokenizes with the parent's vocabulary — one daemon, one GGUF.
+        // Other weights and the child gets THEIR vocabulary and THEIR dialect,
+        // loaded and seated here, because a child rendering qwen's template onto
+        // glm's weights is the same silent corruption a session switch refuses to
+        // commit — and the child is the case nobody is watching.
         //
         // And the window is this box's, not the daemon's. Measured on this fleet the
         // day it was written: the same 27B GGUF at `n_ctx` 262144 on `127.0.0.1:8080`
@@ -10555,12 +11452,25 @@ impl HarnessTaskRunner {
         // planning against the larger would run off the end of the KV cache with every
         // check it makes saying there is room — which is why a block that states no
         // window is probed here rather than allowed to inherit.
+        let mut sub_foreign: Option<ForeignWeights> = None;
         let (sub_endpoint, sub_window) = match &sub_local {
             Some(m) => {
                 let want_at =
                     parse_local_url(&m.url).map_err(|e| format!("[model.\"{}\"] {e}", m.name))?;
-                if let Some(why) = local_model_vocab_refusal(&want_at, m, &self.base.vocab_gguf) {
-                    return Err(why);
+                // The switch's own decision, on the parent's vocabulary — which is
+                // optional the same way it is everywhere else: a byte-vocabulary
+                // parent cannot give a child SAME weights (there are none), so the
+                // child gets the target's own, loaded here.
+                match local_switch_decision(&want_at, m, self.base.vocab_gguf.as_deref()) {
+                    Ok(LocalSwitch::SameWeights) => {}
+                    Ok(LocalSwitch::OtherWeights {
+                        props,
+                        dialect,
+                        gguf,
+                    }) => {
+                        sub_foreign = Some(self.foreign_weights(&gguf, dialect, &props, &want_at)?);
+                    }
+                    Err(why) => return Err(why),
                 }
                 let w = match sub_window {
                     Some(Some(w)) => Some(Some(w)),
@@ -10665,7 +11575,11 @@ impl HarnessTaskRunner {
             } else {
                 sub_model.clone()
             },
-            dialect: self.base.dialect.name().to_string(),
+            dialect: sub_foreign
+                .as_ref()
+                .map(|f| f.dialect.name())
+                .unwrap_or_else(|| self.base.dialect.name())
+                .to_string(),
             // **The box that will answer this child**, which is not the daemon's own
             // when the child was seated on a declared local model. The row is what the
             // picker and the store show, and a row naming the wrong address is the
@@ -10730,6 +11644,18 @@ impl HarnessTaskRunner {
                 sub_cfg.effort = Some(eff.clone());
             }
         }
+        // **And the foreign weights' own vocabulary, dialect and marker**, when the
+        // declared model serves other weights: the child's engine, its stable
+        // prefix and its session row are all built from these three, so a child
+        // on `local.glm` from a qwen daemon is a glm child in every part and not
+        // a qwen child posting to a glm port. `sub_cfg.dialect` is also what the
+        // child's OWN spawns and switches will compare against, so the fact
+        // travels down the tree.
+        if let Some(f) = &sub_foreign {
+            sub_cfg.dialect = f.dialect;
+            sub_cfg.vocab_gguf = Some(f.gguf.clone());
+            sub_cfg.media_marker = f.media_marker.clone();
+        }
         if let Some(w) = sub_window {
             sub_cfg.context_window = w;
             // The child's ledger is its own conversation, so it has no measured ratio:
@@ -10745,9 +11671,21 @@ impl HarnessTaskRunner {
 
         // Reassemble the shared parts so the sub harness can borrow them for the
         // duration of this call. Cheap: the vocabs and the wiring are already `Arc`.
+        //
+        // **Except when the child was seated on other weights**: then the
+        // vocabulary and the wiring are the TARGET's, from the decision this
+        // spawn already made, and every other part — the mode store, the task
+        // journal, the tree — stays the daemon's, because a child on another
+        // model is still a child of this tree.
         let parts = Parts {
-            vocab: self.vocab.clone(),
-            wiring: self.wiring.clone(),
+            vocab: sub_foreign
+                .as_ref()
+                .map(|f| f.vocab.clone())
+                .unwrap_or_else(|| self.vocab.clone()),
+            wiring: sub_foreign
+                .as_ref()
+                .map(|f| f.wiring.clone())
+                .unwrap_or_else(|| self.wiring.clone()),
             mode_store: self.mode_store.clone(),
             tasks: self.tasks.clone(),
             lsp: self.lsp.clone(),
@@ -10979,68 +11917,282 @@ fn steer_for_turn(
     }
 }
 
-/// **Do the weights at this address match the vocabulary we tokenize with?** — the
-/// refusal, or `None` to go ahead.
+/// **What one `/props` probe says about switching to a declared local model** —
+/// the decision, or a refusal that names the fact it is missing.
 ///
-/// A free function because two callers need the identical answer and must not drift:
+/// The free function both doors need, so their answers cannot drift:
 /// [`Harness::set_local_model`] for a session switching, and the spawn path for a
-/// child seated on a declared local model. A second copy of this check would be a
-/// second answer to *are these the same weights*, which is the class of defect this
-/// tree keeps finding by looking for it.
+/// child seated on a declared local model. Its predecessor answered one question
+/// (*are these the weights we tokenize with?*) with a basename comparison and a
+/// refusal; the switch this tree owes the operator asks three, and each has its
+/// own honest "cannot tell" rather than a default:
 ///
-/// # Why it exists at all
+///   * **which weights answer there** — `/props`'s `model_path`, the vocabulary's
+///     one source;
+///   * **which template they render** — `/props`'s `chat_template`, the dialect's
+///     one source, because what the target SAYS it renders with cannot drift from
+///     what it actually renders the way a table of weight names can;
+///   * **what to do when they are other weights** — this used to be "refuse, and
+///     let the operator start another daemon". Now it is a switch: the target's
+///     own vocabulary, loaded from the GGUF it names, and the dialect its
+///     template (or the block's hand-asserted `dialect =` key) settles on.
 ///
-/// The engine tokenizes HERE, with this daemon's GGUF, and sends token ids. Point it
-/// at a server holding different weights and nothing fails: the ids are valid numbers
-/// that mean other words. There is no error to catch and no output that looks wrong
-/// until a person reads the transcript, which makes it the worst shape of bug this
-/// code can produce — so it is refused up front rather than detected later.
+/// # The three refusals that are not this function's business
 ///
-/// Three outcomes, each a sentence:
+/// Loading the vocabulary and resolving the dialect against it happen in the
+/// caller, where a failure can leave the caller's state untouched. This function
+/// only decides; it probes nothing twice and mutates nothing.
 ///
-///   * `/props` names the same GGUF file — `None`, go ahead.
-///   * it names a different one — refused, with both names printed.
-///   * nothing answers, or it names no model (a proxy, a server without `/props`) —
-///     refused, naming the key that asserts it by hand. An operator writing
-///     `same_vocab = true` is a decision on the record; this assuming it would not be.
-fn local_model_vocab_refusal(
-    want: &Endpoint,
+/// # Why `same_vocab = true` is read here and not interpreted here
+///
+/// It is the operator's assertion that the target serves the weights this
+/// session's vocabulary already tokenizes for — the same kind of decision on the
+/// record `dialect =` is. It short-circuits the weights question because the
+/// person who wrote it answered it; it does NOT assert anything about the
+/// dialect, which is why the same-weights arm keeps the dialect this session
+/// already speaks. A `same_vocab` that also smuggled a dialect change would be a
+/// key that guesses, and a guess is the one thing this switch refuses to make.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalSwitch {
+    /// The target serves the weights this session's vocabulary already tokenizes
+    /// for — measured by basename, or asserted with `same_vocab = true`. The
+    /// engine, dialect and vocabulary all stay; only the address moves.
+    ///
+    /// A session with no vocabulary of its own (the byte vocabulary a cloud-only
+    /// daemon starts on) can never take this arm: there are no weights to be the
+    /// same as, so such a switch always seats the target's own.
+    SameWeights,
+    /// **The target serves other weights**: the switch must load their vocabulary
+    /// and seat their dialect, and the conversation must be re-rendered into a
+    /// fork before the first turn on them.
+    OtherWeights {
+        /// The probe everything here was derived from, for the caller's marker
+        /// and its report.
+        props: letibot_turn::serving::ServedProps,
+        /// The dialect the served template (or the block's assertion) settled on.
+        dialect: crate::dialect::Dialect,
+        /// The GGUF `/props` named, as a path THIS box must be able to read.
+        gguf: std::path::PathBuf,
+    },
+}
+
+/// Decide a switch to a declared local model from ONE `/props` probe.
+///
+/// Every refusal is a sentence naming the endpoint, what it looked for, and the
+/// key that asserts the fact by hand — because "it refused" names nothing and
+/// this is the sentence an operator reads at a picker.
+///
+/// The daemon's own vocabulary is an `Option`, because main made it one: `None`
+/// is the byte vocabulary, and there the decision changes shape rather than
+/// refusing wholesale — nothing can be `SameWeights`, `same_vocab = true` has
+/// no vocabulary to assert against, and the probe alone settles that the switch
+/// seats the weights the target itself reports, with their vocabulary and
+/// dialect. The refusals that remain name the GGUF the target reported.
+pub fn local_switch_decision(
+    want: &letibot_turn::http::Endpoint,
     m: &letibot_provider::keys::LocalModel,
-    vocab: &std::path::Path,
-) -> Option<String> {
-    // `same_vocab` is not sampling, so the reader files it under `unknown` — which is
-    // where a key it does not interpret belongs. Read here, where it means something.
-    let asserted = m
-        .profile
-        .unknown
-        .iter()
-        .any(|u| u == "same_vocab" || u.starts_with("same_vocab "));
-    if asserted {
-        return None;
+    vocab: Option<&std::path::Path>,
+) -> Result<LocalSwitch, String> {
+    // `same_vocab` is not sampling, so the profile reader files it under
+    // `unknown` — which is where a key it does not interpret belongs. Read
+    // here, where it means something (see the enum's doc for what it does
+    // and does not assert).
+    //
+    // **But only where there is a vocabulary to be the same as.** A daemon
+    // started for a cloud provider has none — the byte vocabulary — and there
+    // the assertion cannot be true: the target's weights differ from a
+    // vocabulary that does not exist, so NOTHING can be `SameWeights` and the
+    // probe below decides alone, whatever the block asserts. The switch that
+    // comes out of it is the honest one for that box anyway: the target's own
+    // reported weights, with their vocabulary loaded and their dialect seated.
+    let asserted_same = vocab.is_some()
+        && m.profile
+            .unknown
+            .iter()
+            .any(|u| u == "same_vocab" || u.starts_with("same_vocab "));
+    if asserted_same {
+        return Ok(LocalSwitch::SameWeights);
     }
-    let mine = vocab_basename(vocab);
-    match letibot_turn::serving::served_model(want) {
-        Ok(theirs) => {
-            let theirs_base = vocab_basename(std::path::Path::new(&theirs));
-            (theirs_base != mine).then(|| {
-                format!(
-                    "{} serves `{theirs}` and this daemon tokenizes with `{}`. The ids are \
-                     computed here and sent as numbers, so pointing them at other weights is \
-                     silent corruption rather than an error. Start a daemon on those weights, \
-                     or put `same_vocab = true` in [model.\"{}\"] to say you know they match.",
-                    want.authority(),
-                    vocab.display(),
-                    m.name
-                )
-            })
-        }
-        Err(why) => Some(format!(
-            "{} did not answer /props with a model ({why}), so this cannot check that its \
-             weights are the ones `{}` tokenizes for. Put `same_vocab = true` in \
-             [model.\"{}\"] to assert it.",
-            want.authority(),
-            vocab.display(),
+    let props = letibot_turn::serving::served_props(want).map_err(|why| match vocab {
+        Some(vocab) => format!(
+            "{why}, so this cannot check which weights answer there or which \
+             template they render. Put `same_vocab = true` in [model.\"{}\"] to \
+             assert they are the ones `{}` tokenizes for, or — if they are other \
+             weights — a reachable target that answers /props.",
+            m.name,
+            vocab.display()
+        ),
+        None => format!(
+            "{why}, so this cannot check which weights answer there or which \
+             template they render. This daemon has no vocabulary of its own (it was \
+             started for a cloud provider, whose turns need none), so there are no \
+             weights here a switch could keep and no vocabulary `same_vocab = true` \
+             could assert against: the switch to `{}` needs a reachable target that \
+             answers /props and names the GGUF it serves, whose vocabulary and \
+             dialect are then loaded from that file.",
             m.name
+        ),
+    })?;
+    let Some(theirs) = props.model_path.clone() else {
+        return Err(match vocab {
+            Some(vocab) => format!(
+                "{} answered /props but named no model_path, so there is no GGUF to \
+                 load a vocabulary from. Put `same_vocab = true` in [model.\"{}\"] to \
+                 assert by hand that it serves the ones `{}` tokenizes for.",
+                want.authority(),
+                m.name,
+                vocab.display()
+            ),
+            None => format!(
+                "{} answered /props but named no model_path, and this daemon has no \
+                 vocabulary of its own that `same_vocab = true` could assert against: \
+                 no weights here to keep, none reported there to load. The switch to \
+                 `{}` was refused and nothing changed.",
+                want.authority(),
+                m.name
+            ),
+        });
+    };
+    if vocab
+        .is_some_and(|vocab| vocab_basename(std::path::Path::new(&theirs)) == vocab_basename(vocab))
+    {
+        // Same weights carry the same template, so the dialect this session
+        // speaks is the dialect they render: nothing to re-derive, nothing to
+        // re-render, and the switch is the address move it always was.
+        // (Unreachable with no vocabulary of our own: a basename cannot match
+        // one that does not exist.)
+        return Ok(LocalSwitch::SameWeights);
+    }
+    let dialect = dialect_for_target(&props, m, want).map_err(|why| {
+        format!(
+            "{}, so the switch to `{}` at {}{} \
+             was refused and nothing changed",
+            why,
+            m.model,
+            want.authority(),
+            match vocab {
+                // With no vocabulary of this daemon's own, the GGUF the target
+                // reported is the only weights this switch could ever have
+                // seated — so the refusal names it, which is what is true.
+                None => format!(
+                    " (it reports its weights at `{theirs}`; this daemon has no \
+                     vocabulary of its own, so those are the only weights this \
+                     switch could ever have seated)"
+                ),
+                Some(_) => String::new(),
+            }
+        )
+    })?;
+    Ok(LocalSwitch::OtherWeights {
+        props,
+        dialect,
+        gguf: std::path::PathBuf::from(theirs),
+    })
+}
+
+/// **Which dialect does this target render?** — from its own template when it
+/// says, from the block's assertion when it cannot, refused when neither speaks.
+///
+/// The order is the whole decision, and it is not a priority contest:
+///
+///   * the **served template** matching a dialect this tree drives is the one
+///     source that cannot drift from what the server actually renders, so it
+///     settles the question outright;
+///   * the **asserted `dialect =`** exists for the cases where that source is not
+///     available honestly — a server too old to report a template, or one whose
+///     template matches nothing this tree drives;
+///   * a served template that matches NEITHER dialect with no assertion is a
+///     refusal, because the alternative is guessing a dialect for weights it was
+///     not written for — valid ids meaning other words, silently;
+///   * an assertion that CONTRADICTS a matching template is a refusal too, for
+///     the same reason in the other direction: the server's own template is the
+///     thing it renders with, and a block that disagrees with it is a mistake
+///     somewhere that a person should fix rather than a tie this code breaks.
+fn dialect_for_target(
+    props: &letibot_turn::serving::ServedProps,
+    m: &letibot_provider::keys::LocalModel,
+    want: &letibot_turn::http::Endpoint,
+) -> Result<crate::dialect::Dialect, String> {
+    use crate::dialect::Dialect;
+    let all = [Dialect::Glm, Dialect::Qwen];
+    // An asserted value that names no dialect is refused rather than dropped:
+    // honouring an assertion nobody can read is the regression the profile
+    // reader's own test names, one layer down.
+    let asserted = m.profile.dialect.as_deref().map(|name| {
+        Dialect::parse(name).ok_or_else(|| {
+            format!(
+                "[model.\"{}\"] asserts `dialect = \"{name}\"`, which is not a dialect \
+                 this tree drives; the names are {}",
+                m.name,
+                all.iter()
+                    .map(|d| d.family())
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            )
+        })
+    });
+    let matched: Vec<Dialect> = props
+        .chat_template
+        .as_deref()
+        .map(|served| {
+            all.iter()
+                .copied()
+                .filter(|d| letibot_turn::serving::template_matches(&d.wiring(None).spec(), served))
+                .collect()
+        })
+        .unwrap_or_default();
+    match (matched.as_slice(), asserted) {
+        // An unreadable assertion is refused before anything else, with its own
+        // sentence: a key nobody can honour must not be stepped over, whatever
+        // the template said — the operator wrote it, so it is read or refused.
+        (_, Some(Err(why))) => Err(why),
+        ([], None) if props.chat_template.is_none() => Err(format!(
+            "{} did not report a chat_template, so the dialect cannot be derived \
+             from what it renders. Put `dialect = \"glm\"` (or `\"qwen\"`) in \
+             [model.\"{}\"] to assert one by hand",
+            want.authority(),
+            m.name
+        )),
+        ([], None) => Err(format!(
+            "{} reports a chat template {} bytes long that matches no dialect \
+             this tree drives ({}), so driving it with either renderer would be a \
+             guess about weights it was not written for. Put `dialect = \"glm\"` \
+             (or `\"qwen\"`) in [model.\"{}\"] to assert one by hand",
+            want.authority(),
+            props.chat_template.as_deref().map(str::len).unwrap_or(0),
+            all.iter()
+                .map(|d| d.family())
+                .collect::<Vec<_>>()
+                .join(" and "),
+            m.name
+        )),
+        ([], Some(Ok(d))) => Ok(d),
+        ([only], None) => Ok(*only),
+        ([only], Some(Ok(d))) if *only == d => Ok(d),
+        ([only], Some(Ok(d))) => Err(format!(
+            "{} reports the {} dialect's own chat template, while [model.\"{}\"] \
+             asserts `dialect = \"{}\"`. These disagree, and the server's template \
+             is the one it renders with — fix the block (or the server) and switch \
+             again. Guessing between them is the silent corruption this check exists \
+             to refuse.",
+            want.authority(),
+            only.family(),
+            m.name,
+            d.family()
+        )),
+        // Two byte-identical templates would mean two dialects rendering the
+        // same bytes; unreachable with the dialects this tree ships, and the
+        // honest answer if it ever happens is a person's, not a first-element
+        // pick the compiler would silently make of it.
+        (many, _) => Err(format!(
+            "{} reports a chat template that matches {} dialects this tree drives \
+             ({}), which this code cannot choose between",
+            want.authority(),
+            many.len(),
+            many.iter()
+                .map(|d| d.family())
+                .collect::<Vec<_>>()
+                .join(" and ")
         )),
     }
 }
@@ -11086,6 +12238,104 @@ fn parse_local_url(url: &str) -> Result<Endpoint, String> {
 /// The GGUF's own file name, which is what two servers holding one model agree on
 /// even when the directories differ. A split GGUF's `-00001-of-00006` suffix is kept:
 /// two servers that disagree about the shard count are not serving the same file.
+/// **Do stored ids mean something else under this vocabulary?** Yes when one side is the
+/// byte vocabulary and the other is not, or both are byte tables of different literals.
+/// Two GGUFs: not decided here (see the resume that calls this). An empty stored source is
+/// a row from before the column was filled, and is taken to be a GGUF — which every such
+/// row is.
+fn vocab_differs(stored: &str, current: &str) -> bool {
+    let bytes = |s: &str| s.starts_with(letibot_tokencore::BYTES_SOURCE);
+    match (bytes(stored), bytes(current)) {
+        (false, false) => false,
+        (true, true) => stored != current,
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod vocab_differs_tests {
+    use super::vocab_differs;
+
+    #[test]
+    fn only_a_move_into_or_out_of_bytes_or_between_byte_tables_differs() {
+        let (q, g) = ("bytes:aaaaaaaaaaaa", "bytes:bbbbbbbbbbbb");
+        assert!(!vocab_differs(q, q));
+        assert!(vocab_differs(q, g), "two byte tables mean different ids");
+        assert!(vocab_differs(q, "/m/Qwen.gguf"));
+        assert!(vocab_differs("/m/Qwen.gguf", q));
+        // Two GGUFs are the operator's binding, refused at the switch, not here.
+        assert!(!vocab_differs("/m/Qwen.gguf", "/other/Qwen.gguf"));
+        // A row from before the column was filled is a GGUF row.
+        assert!(!vocab_differs("", "/m/Qwen.gguf"));
+        assert!(vocab_differs("", q));
+    }
+}
+
+/// **Does `pc`'s key fail to resolve** — the one failure a pasted key fixes?
+fn key_is_missing(pc: &crate::config::ProviderConfig) -> bool {
+    let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
+        return false;
+    };
+    matches!(
+        letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), None),
+        Err(letibot_provider::keys::KeyError::Missing { .. })
+    )
+}
+
+/// **Would a key saved to providers.toml be the one used?** Not when the command line
+/// (`--api-key`) or the environment (`$DEEPSEEK_API_KEY`…) supplies it: both come first in
+/// the resolution order, so asking would save a key that is then ignored.
+fn key_is_replaceable(pc: &crate::config::ProviderConfig) -> bool {
+    if pc.api_key.is_some() {
+        return false;
+    }
+    let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
+        return false;
+    };
+    match letibot_provider::keys::resolve(preset, None, None) {
+        Ok(c) => !c.from.starts_with('$'),
+        Err(_) => true,
+    }
+}
+
+/// **Why a pasted key cannot be saved**, or `None` when it can. providers.toml is parsed by
+/// hand (`keys::parse_file`): a `#` anywhere starts a comment and quotes are stripped, not
+/// escaped — so such a key would be saved and read back as something else.
+fn unsavable_key(k: &str) -> Option<&'static str> {
+    if k.is_empty() {
+        Some("it was empty")
+    } else if k.contains('#') || k.contains('"') {
+        Some("it contains `#` or `\"`, which providers.toml cannot hold")
+    } else if k.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        Some("it contains a space or a control character — likely a paste of more than the key")
+    } else {
+        None
+    }
+}
+
+/// How long the key card waits for an answer — longer than sudo's 120 s, because this one
+/// may send somebody to a provider's website to make a key.
+const KEY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Why a session on the byte vocabulary cannot be pointed at a local model.
+const NO_VOCAB_FOR_LOCAL: &str = "this daemon has no model vocabulary — it was started for a cloud provider, whose \
+     turns need none — and a local llama-server reads token ids computed here. Start a \
+     daemon with --vocab <the served model's GGUF> to run on a local model.";
+
+/// Read a GGUF's vocabulary — llama.cpp's job, so only in a build with the `local`
+/// feature. Without it the answer is a sentence saying so, and a cloud provider still works.
+#[cfg(feature = "local")]
+fn load_gguf(path: &std::path::Path) -> Result<Vocab, letibot_tokencore::VocabError> {
+    letibot_llama::load(path)
+}
+
+#[cfg(not(feature = "local"))]
+fn load_gguf(path: &std::path::Path) -> Result<Vocab, letibot_tokencore::VocabError> {
+    Err(letibot_tokencore::VocabError::NoLlama {
+        path: path.display().to_string(),
+    })
+}
+
 fn vocab_basename(p: &std::path::Path) -> String {
     p.file_name()
         .map(|s| s.to_string_lossy().to_string())
@@ -12486,6 +13736,84 @@ mod tests {
             &*failed.state.lock().expect("slot"),
             TaskStatus::Failed { why } if why.contains("went away")
         ));
+    }
+
+    /// **A child nobody gave a model runs on its parent's** — *"so if no local config, and no
+    /// model - default to the same"*. `local` only for a parent that is itself local.
+    #[test]
+    fn a_child_with_no_model_named_runs_on_its_parents_model() {
+        let on = |name: &str, model: Option<&str>| {
+            Some(crate::config::ProviderConfig {
+                name: name.into(),
+                model: model.map(str::to_string),
+                api_key: None,
+                thinking: false,
+            })
+        };
+        // The parent's configuration as it is — its key with it, which no file holds here.
+        let mut parent = on("deepseek", Some("deepseek-chat"));
+        parent.as_mut().unwrap().api_key = Some("sk-only-in-memory".into());
+        let m = inherited_spawn_model(&parent, Some(None))
+            .expect("the parent's own model needs no lookup");
+        let pc = m.provider.as_ref().expect("a provider child");
+        assert_eq!(pc.name, "deepseek");
+        assert_eq!(pc.model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(pc.api_key.as_deref(), Some("sk-only-in-memory"));
+        assert_eq!(m.label, "deepseek/deepseek-chat");
+        assert!(m.local.is_none(), "{}", m.label);
+
+        // A parent on its own server gives `local` — the same model, which is the point.
+        let l = inherited_spawn_model(&None, Some(Some(32768))).expect("local");
+        assert_eq!(l.label, "local");
+        assert_eq!(l.window, Some(32768));
+        assert!(l.provider.is_none());
+    }
+
+    /// **A child refused before it opened is a failure `task_result` can read, at once.**
+    ///
+    /// The operator, on a stroppy session whose `task` (`where: firecode`) came back "started"
+    /// and whose `task_result` then sat out its whole 240 s: *"it hanged on task_result wtf"*.
+    /// The refusal — whichever check at the top of `run_to_completion` it was — returned before
+    /// `AnswerOnce` existed, the thread dropped the sentence, and the slot read `Running` with
+    /// nothing behind it. No session row, no `opening` record, no thread: only the job row
+    /// saying `running`.
+    #[test]
+    fn a_child_refused_before_it_opened_settles_its_slot_with_the_reason() {
+        use letibot_tools::builtins::task::TaskStatus;
+        let refused = TaskSlot::new("s-parent");
+        finish_child_thread(
+            &refused,
+            Err("model `nope` is not one this daemon can run".into()),
+        );
+        match refused.status() {
+            TaskStatus::Failed { why } => assert!(why.contains("nope"), "{why}"),
+            other => panic!("a refused child still reads {other:?} — task_result would wait"),
+        }
+
+        // **A slot the child's own path settled keeps that**, answer or failure: the thread's
+        // fallback is for the case nothing spoke, not a second opinion.
+        let answered = TaskSlot::new("s-parent");
+        answered.settle(TaskStatus::Done {
+            answer: "the child's own answer".into(),
+        });
+        finish_child_thread(&answered, Err("a later error".into()));
+        assert!(
+            matches!(answered.status(), TaskStatus::Done { ref answer } if answer == "the child's own answer"),
+            "{:?}",
+            answered.status()
+        );
+
+        // And an Ok return changes nothing: `AnswerOnce` already said it.
+        let ok = TaskSlot::new("s-parent");
+        ok.settle(TaskStatus::Failed {
+            why: "the child's own failure".into(),
+        });
+        finish_child_thread(&ok, Ok(String::new()));
+        assert!(
+            matches!(ok.status(), TaskStatus::Failed { ref why } if why == "the child's own failure"),
+            "{:?}",
+            ok.status()
+        );
     }
 
     /// **A stop takes THIS session's children and nobody else's, and not the ones that are

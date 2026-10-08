@@ -63,20 +63,33 @@
 //! does not need them — but a choice is not evidence about the API, and it was
 //! mistaken for evidence here for a day.
 //!
-//! # What is still unexplained, said rather than guessed at
+//! # The trigger, found 2026-10-07: a TRAILING SYSTEM MESSAGE plus `tools`
 //!
-//! `The reasoning_content in the thinking mode must be passed back to the API` is a
-//! refusal this harness really has received, and **nothing in this file explains its
-//! trigger.** Both explanations it has offered are disproven: it is not "we dropped
-//! them while carrying tools" — a compaction carrying **no** tools got exactly that
-//! 400 on 2026-10-02 — and it is not the `tools` parameter at all, per the table
-//! above.
+//! `The reasoning_content in the thinking mode must be passed back to the API` names a
+//! field the API would accept as a remedy, **not the shape that provokes it** — which
+//! is why this file chased the field twice and a session note recorded *"cause not yet
+//! located in code"*. The refusal needs the request to END on a `system` message while
+//! `tools` is present. See [`trailing_system_becomes_user`] for the measured table and
+//! the fix.
 //!
-//! What is known is only the company this refusal has kept: it arrives on requests whose
-//! conversation is large, alongside a size complaint. Whether the cause is a message
-//! ordering, a field present-and-empty rather than absent, or something else is **not
-//! known**, and it will not be inferred from documentation that has already misled this
-//! file twice. The size, which was the last obvious answer, is measured away below.
+//! **Why the five shapes above all passed**: every one of them ends with a USER
+//! message. The row nobody had sent was the trailing system one, so size, structure and
+//! the echo were each correctly measured away while the cause sat outside the sampled
+//! space. The one claim in the earlier note that does not survive is *"a compaction
+//! carrying no tools got exactly that 400"* — four no-tools shapes answer 200, the real
+//! interleaved pattern among them, so that request carried tools or the two
+//! observations were paired by adjacency.
+//!
+//! **And it is why compaction alone failed.** `run_compaction` is the only path that
+//! appends an instruction after the conversation; an ordinary turn ends on the
+//! operator's message. The summary turn carried no tools between `ad95971`
+//! (2026-09-18) and `6d73ba6` (2026-10-02 18:15), which is exactly the window in which
+//! compaction worked — the trailing system message was there the whole time and
+//! harmless without `tools`.
+//!
+//! **Measured on `deepseek-flash` only.** Whether another vendor refuses the same shape
+//! is untested: the GLM key on this box answers `429 余额不足` to every shape, so it
+//! carries no signal either way. The fix is therefore not gated on a vendor name.
 //!
 //! **And the size is refuted too, MEASURED 2026-10-02 against the live API.** That theory
 //! was the last one standing and it was the most attractive, because it explained the
@@ -398,7 +411,74 @@ fn pair_tool_calls(rows: Vec<Value>, own_author: &std::collections::HashSet<Stri
     for id in owed {
         out.push(unanswered(&id));
     }
+    trailing_system_becomes_user(&mut out);
     out
+}
+
+/// **A request may not END on a system message**, and that is the trigger this file
+/// spent two wrong theories looking for.
+///
+/// MEASURED against the live API 2026-10-07 (`deepseek-flash`), one axis at a time,
+/// everything else held:
+///
+/// ```text
+///                                                   no tools   with tools
+/// system at the head, ends with a user message        200         200
+/// ends with ONE system message                        200         400
+/// ends with TWO system messages                       200         400
+/// systems interleaved mid-conversation, ends system   200         400
+/// the same, reasoning_content echoed on assistants    200         200
+/// ```
+///
+/// So the refusal needs **a trailing system message AND `tools`**, and echoing
+/// `reasoning_content` is one way out of it. The table already in this file's header
+/// varied `reasoning_content` and `tools` across five shapes and got 200 five times —
+/// because **every one of them ended with a user message.** The trailing-system row is
+/// the one nobody had sent, which is why size, structure and the echo were all
+/// correctly measured away and the cause stayed hidden.
+///
+/// The error text is literally true and completely misleading. `The reasoning_content
+/// in the thinking mode must be passed back to the API` names a field the API would
+/// accept as a remedy, not the shape that provoked it, and three readers in a row
+/// (this file twice, and the session note that said *"cause not yet located in code"*)
+/// chased the field.
+///
+/// # Why the translation lives here and not in the transcript
+///
+/// `compaction::run_compaction` appends [`letibot_turn::compaction::SUMMARY_INSTRUCTION`]
+/// as `SystemOrigin::Update`, and that is correct AS A RECORD — the docstring earns it,
+/// the instruction really was appended after the cached history rather than rewriting
+/// anything, and the local dialect path renders it that way and reuses the prefix.
+/// Changing the stored item would make the transcript lie about what the daemon did in
+/// order to satisfy one provider's validator.
+///
+/// This function is the layer that already translates the record into one provider's
+/// dialect, so the translation belongs here: the item stays a system update, and on
+/// **this transport only** the final message carries the user role. The local path is
+/// untouched, which matters because the operator's ruling on the tools revert was about
+/// prefix reuse and this must not quietly undo it.
+///
+/// **Not gated on the vendor's name.** A trailing system message is an odd thing to
+/// send any provider, and this file has been bitten twice by rules written from
+/// DeepSeek's documentation. Translating it is defensible without claiming anything
+/// about who refuses it; gating it on `tools` would also be defensible and is not done,
+/// because a request that ends on an instruction reads better as a user turn in every
+/// case and the narrower rule is the one that rots when the next shape appears.
+fn trailing_system_becomes_user(out: &mut [Value]) {
+    // **A lone system message is the system PROMPT, and it stays one.** A request of
+    // exactly one message is a session with no items yet; translating it would send a
+    // conversation whose only turn is the operator saying the system prompt, which is
+    // a different request rather than the same one in a shape the API accepts. The
+    // trigger measured is a system message arriving AFTER a conversation, so the
+    // translation needs a conversation to be after.
+    if out.len() < 2 {
+        return;
+    }
+    if let Some(last) = out.last_mut() {
+        if last.get("role").and_then(Value::as_str) == Some("system") {
+            last["role"] = Value::String("user".into());
+        }
+    }
 }
 
 /// **A result the OPERATOR ran, carried as the person's own turn.**
@@ -477,6 +557,84 @@ pub fn tools(tools_json: &[String]) -> Result<Vec<Value>, String> {
 mod tests {
     use super::*;
     use letibot_transcript::{ReasoningField, SystemOrigin, ToolCall};
+
+    /// **A request must not end on a system message**, which is the shape that refused
+    /// every compaction this session attempted. See
+    /// [`super::trailing_system_becomes_user`] for the measured table; this pins the
+    /// behaviour so the next reader does not have to re-run it against a paid API.
+    #[test]
+    fn a_trailing_system_item_is_sent_as_a_user_message() {
+        let items = vec![
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
+            },
+            TranscriptItem::Assistant {
+                text: "hello".into(),
+                tool_calls: vec![],
+                truncated: false,
+            },
+            TranscriptItem::System {
+                text: "Write the record in exactly these sections.".into(),
+                origin: SystemOrigin::Update,
+            },
+        ];
+        let msgs = convert("you are helpful", &items, true);
+        let last = msgs.last().expect("messages");
+        assert_eq!(
+            last["role"], "user",
+            "the trailing instruction travels as a user turn: a trailing `system` with \
+             `tools` present is the 400 (measured 2026-10-07)"
+        );
+        assert_eq!(
+            last["content"], "Write the record in exactly these sections.",
+            "the text is unchanged -- only the role is translated"
+        );
+    }
+
+    /// A request whose only message is the system prompt keeps it: there is no
+    /// conversation for a trailing instruction to trail, and turning the prompt into a
+    /// user turn would be a different request rather than the same one reshaped.
+    #[test]
+    fn a_lone_system_prompt_is_not_translated() {
+        let msgs = convert("you are helpful", &[], true);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "system");
+    }
+
+    /// **A system message that is not last keeps its role.** The translation is about
+    /// the shape of the request's END, not about system messages in general: the head
+    /// system prompt and any mid-conversation update are left exactly as they were, and
+    /// narrowing it to the last message is what keeps this from being a rewrite of the
+    /// transcript's meaning.
+    #[test]
+    fn an_interior_system_item_keeps_its_role() {
+        let items = vec![
+            TranscriptItem::System {
+                text: "boot".into(),
+                origin: SystemOrigin::Bootstrap,
+            },
+            TranscriptItem::System {
+                text: "an update".into(),
+                origin: SystemOrigin::Update,
+            },
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![letibot_transcript::UserPart::Text { text: "go".into() }],
+            },
+        ];
+        let msgs = convert("", &items, true);
+        assert_eq!(msgs[0]["role"], "system", "the head stays a system message");
+        assert_eq!(
+            msgs[1]["role"], "system",
+            "an interior update stays one too"
+        );
+        assert_eq!(
+            msgs.last().unwrap()["role"],
+            "user",
+            "and the request already ended on a user turn"
+        );
+    }
 
     #[test]
     fn items_become_the_apis_messages_without_tools() {

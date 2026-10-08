@@ -25,6 +25,7 @@
 //! but because a listing that names what you cannot act on reads as a claim
 //! that you can.
 
+#[cfg(not(target_os = "macos"))]
 use std::path::Path;
 use std::time::Duration;
 
@@ -91,6 +92,39 @@ pub fn age_word(d: Duration) -> String {
 }
 
 /// Read one process. `None` when it is gone or not ours to read.
+///
+/// macOS: the same fields from `libproc` (see [`super::darwin`]). `start` is the
+/// start time in microseconds since the epoch rather than in ticks since boot —
+/// it is only ever compared with itself, as half of the pid's identity.
+#[cfg(target_os = "macos")]
+pub fn read(pid: u32) -> Option<ProcInfo> {
+    let i = super::darwin::info(pid)?;
+    let state = match i.status {
+        libc::SZOMB => 'Z',
+        libc::SRUN => 'R',
+        libc::SSTOP => 'T',
+        libc::SIDL => 'D',
+        _ => 'S',
+    };
+    let (cpu_ns, rss) = super::darwin::task(pid).unwrap_or((0, 0));
+    let now_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
+        .unwrap_or(0);
+    Some(ProcInfo {
+        pid,
+        ppid: i.ppid,
+        start: i.start_us,
+        cmdline: super::darwin::cmdline(pid),
+        comm: i.comm,
+        age: Duration::from_micros(now_us.saturating_sub(i.start_us)),
+        state,
+        cpu_ticks: cpu_ns / (1_000_000_000 / clock_ticks().max(1)),
+        rss_kb: rss / 1024,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn read(pid: u32) -> Option<ProcInfo> {
     let dir = Path::new("/proc").join(pid.to_string());
     let stat = std::fs::read_to_string(dir.join("stat")).ok()?;
@@ -132,6 +166,12 @@ pub fn read(pid: u32) -> Option<ProcInfo> {
     })
 }
 
+#[cfg(target_os = "macos")]
+fn uid_of(pid: u32) -> Option<u32> {
+    super::darwin::info(pid).map(|i| i.uid)
+}
+
+#[cfg(not(target_os = "macos"))]
 fn uid_of(pid: u32) -> Option<u32> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     status
@@ -147,21 +187,21 @@ fn clock_ticks() -> u64 {
     if hz <= 0 { 100 } else { hz as u64 }
 }
 
-// `libc` is not a dependency of this crate (its manifest says so, on purpose);
-// `_SC_CLK_TCK` is 2 on Linux and sysconf is in libc, which is always linked.
-unsafe extern "C" {
-    fn sysconf(name: i32) -> i64;
-}
+// `_SC_CLK_TCK` is 2 on Linux and 3 on macOS — the hard-coded 2 this used to pass
+// was `_SC_CHILD_MAX` there — so the constant comes from `libc`, which is now a
+// dependency of this crate (for the pty).
 unsafe fn libc_sysconf_clk_tck() -> i64 {
-    unsafe { sysconf(2) }
+    unsafe { libc::sysconf(libc::_SC_CLK_TCK) as i64 }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn boot_uptime() -> Option<Duration> {
     let up = std::fs::read_to_string("/proc/uptime").ok()?;
     let secs: f64 = up.split_whitespace().next()?.parse().ok()?;
     Some(Duration::from_secs_f64(secs))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn age_of(start_ticks: u64) -> Duration {
     let Some(up) = boot_uptime() else {
         return Duration::ZERO;
@@ -204,14 +244,18 @@ pub fn all(exclude: &[u32]) -> Vec<ProcInfo> {
     let me = self_and_ancestors();
     // SAFETY: getuid cannot fail.
     let my_uid = unsafe { getuid() };
-    let Ok(rd) = std::fs::read_dir("/proc") else {
-        return Vec::new();
+    #[cfg(target_os = "macos")]
+    let pids = super::darwin::pids();
+    #[cfg(not(target_os = "macos"))]
+    let pids: Vec<u32> = match std::fs::read_dir("/proc") {
+        Ok(rd) => rd
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()))
+            .collect(),
+        Err(_) => return Vec::new(),
     };
     let mut out = Vec::new();
-    for e in rd.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
-            continue;
-        };
+    for pid in pids {
         if pid <= 1 || me.contains(&pid) || exclude.contains(&pid) {
             continue;
         }
@@ -384,7 +428,7 @@ mod tests {
         use super::super::monitor::Condition;
         let mut child = Command::new("sh")
             .arg("-c")
-            .arg("sleep 30")
+            .arg("sleep 30; :")
             .arg("letibot-sh")
             .arg("letibot-procs-cond")
             .stdin(Stdio::null())
@@ -428,7 +472,7 @@ mod tests {
         let marker = format!("letibot-procs-excl-{}", std::process::id());
         let mut child = Command::new("sh")
             .arg("-c")
-            .arg("sleep 30")
+            .arg("sleep 30; :")
             .arg("letibot-sh")
             .arg(&marker)
             .stdin(Stdio::null())
@@ -450,7 +494,7 @@ mod tests {
         // it is on the command line and not in the command.
         let mut child = Command::new("sh")
             .arg("-c")
-            .arg("sleep 30")
+            .arg("sleep 30; :")
             .arg("letibot-sh")
             .arg(&marker)
             .stdin(Stdio::null())

@@ -737,6 +737,7 @@ mod tests {
     /// in the same test so a green run cannot be a `stat` that answered `same` for another
     /// reason.
     #[test]
+    #[cfg(target_os = "linux")] // the check reads `/proc/self/fd/0`
     fn the_program_gets_this_pty_as_its_controlling_terminal() {
         // `exec 9</dev/tty` is the question `nano` asks. Without a controlling terminal the
         // open fails with `ENXIO` — measured on this box — so `no-ctty` is the control's
@@ -757,6 +758,7 @@ mod tests {
         // The control: the same pair, the same shell, no `setsid`, no `TIOCSCTTY`.
         let p = Pty::open().expect("a pty");
         let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.env_remove("SHELLOPTS").env_remove("BASH_ENV");
         cmd.arg("-c").arg(ASK);
         let (a, b, c) = (p.stdio().unwrap(), p.stdio().unwrap(), p.stdio().unwrap());
         cmd.stdin(a).stdout(b).stderr(c);

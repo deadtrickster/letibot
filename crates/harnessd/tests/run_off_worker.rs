@@ -66,6 +66,15 @@ fn config(session: &str, socket: &std::path::Path, model_port: u16) -> Config {
     cfg.web_search = None;
     cfg.permission = Vec::new();
     cfg.dialect = Dialect::Qwen;
+    // **The `present_gguf` gate at each test says this box HAS a vocabulary; this is the
+    // one it was talking about.** `Config::for_this_box` carries no default any more — a
+    // daemon on the byte vocabulary needs none, which is main's change — so a harness
+    // built here must be handed one. `LETIBOT_VOCAB_GGUF` wins, as everywhere else; the
+    // box's own GGUF is the same path the test's gate consulted.
+    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(letibot_tokencore::apparatus::present_gguf);
     cfg.session_id = session.into();
     cfg.socket = socket.to_path_buf();
     cfg.endpoint = Endpoint::new("127.0.0.1", model_port);
@@ -73,9 +82,14 @@ fn config(session: &str, socket: &std::path::Path, model_port: u16) -> Config {
     // mode that needs no oracle — the point here is the exec path, not the mode.
     cfg.seat = Seat::Leticode;
     cfg.allow_bash = true;
-    if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = g.into();
-    }
+    // `Config::for_this_box` carries no vocabulary default any more (a daemon on
+    // the byte vocabulary needs none), so a harness built here is handed one: the
+    // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
+    // same path this file's `present_gguf` gate consults.
+    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(letibot_tokencore::apparatus::present_gguf);
     cfg
 }
 
@@ -185,7 +199,9 @@ fn setup(tag: &str, session: &str) -> (Setup, Config) {
             .expect("a head attaches");
     let (tx, rx) = channel();
     std::thread::spawn(move || pump(reader, tx));
-    let hub = registry.get(session).expect("the session is in the registry");
+    let hub = registry
+        .get(session)
+        .expect("the session is in the registry");
     (
         Setup {
             daemon,
@@ -233,9 +249,7 @@ enum Seen {
 fn classify(frame: ServerFrame) -> Seen {
     match frame {
         ServerFrame::Event(env) => match &env.event {
-            SessionEvent::TodosUpdated { todos }
-                if todos.iter().any(|t| t.content == PROBE) =>
-            {
+            SessionEvent::TodosUpdated { todos } if todos.iter().any(|t| t.content == PROBE) => {
                 Seen::Todos(env.seq)
             }
             SessionEvent::Warning { code, .. } if code == "operator_shell_ran" => {
@@ -330,11 +344,8 @@ fn a_bang_run_in_flight_leaves_the_worker_free() {
         registry,
     } = setup;
     let marker = format!("bang-free-marker-{}", std::process::id());
-    let line = format!(
-        "! sleep {RUN_SLEEP} && printf bang-ran > {marker} && cat {marker}"
-    );
-    let mut sessions =
-        Sessions::open_first(&p, cfg, registry.clone()).expect("the session opens");
+    let line = format!("! sleep {RUN_SLEEP} && printf bang-ran > {marker} && cat {marker}");
+    let mut sessions = Sessions::open_first(&p, cfg, registry.clone()).expect("the session opens");
 
     let driver = {
         let registry = registry.clone();
@@ -368,7 +379,9 @@ fn a_bang_run_in_flight_leaves_the_worker_free() {
     // **1. The probe was served first.** On the old shape both of these fail: the
     // worker came back from the run with the note and the rows already appended,
     // and only then reached the probe.
-    let todos_seq = rec.todos_seq.expect("the probe's TodosUpdated never arrived");
+    let todos_seq = rec
+        .todos_seq
+        .expect("the probe's TodosUpdated never arrived");
     let note_seq = rec.note_seq.expect("the run's size note never landed");
     assert!(
         !rec.tool_rows.is_empty(),
@@ -398,8 +411,7 @@ fn a_bang_run_in_flight_leaves_the_worker_free() {
 
     // **3. The run happened anyway, once, in the feature's own shape.**
     let snap = hub.snapshot();
-    let items: Vec<&TranscriptItem> =
-        snap.items.iter().filter_map(|i| i.item.as_ref()).collect();
+    let items: Vec<&TranscriptItem> = snap.items.iter().filter_map(|i| i.item.as_ref()).collect();
     let typed = items
         .iter()
         .filter(|i| match i {
@@ -448,7 +460,10 @@ fn a_bang_run_in_flight_leaves_the_worker_free() {
         other => panic!("the row after the line is not the command's result: {other:?}"),
     };
     let wrote = std::fs::read_to_string(repo().join(&marker)).unwrap_or_default();
-    assert_eq!(wrote, "bang-ran", "the command ran in the session's workspace");
+    assert_eq!(
+        wrote, "bang-ran",
+        "the command ran in the session's workspace"
+    );
     let _ = std::fs::remove_file(repo().join(&marker));
 
     // And the size note names what it put in the conversation — the disclosure is
@@ -506,8 +521,7 @@ fn a_second_bang_line_waits_for_the_run_in_flight_and_runs_once() {
     let line2 = format!(
         "! if [ -f {first} ]; then printf after-first > {second}; else printf overlapped > {second}; fi"
     );
-    let mut sessions =
-        Sessions::open_first(&p, cfg, registry.clone()).expect("the session opens");
+    let mut sessions = Sessions::open_first(&p, cfg, registry.clone()).expect("the session opens");
 
     let driver = {
         let registry = registry.clone();
@@ -555,8 +569,7 @@ fn a_second_bang_line_waits_for_the_run_in_flight_and_runs_once() {
 
     // **And each ran exactly once, in the order typed.**
     let snap = hub.snapshot();
-    let items: Vec<&TranscriptItem> =
-        snap.items.iter().filter_map(|i| i.item.as_ref()).collect();
+    let items: Vec<&TranscriptItem> = snap.items.iter().filter_map(|i| i.item.as_ref()).collect();
     for (line, n) in [(&line1, "first"), (&line2, "second")] {
         let typed = items
             .iter()
@@ -575,14 +588,15 @@ fn a_second_bang_line_waits_for_the_run_in_flight_and_runs_once() {
     let bangs: Vec<&str> = items
         .iter()
         .filter_map(|i| match i {
-            TranscriptItem::ToolResult {
-                name, call_id, ..
-            } if name == "bash" => Some(call_id.as_str()),
+            TranscriptItem::ToolResult { name, call_id, .. } if name == "bash" => {
+                Some(call_id.as_str())
+            }
             _ => None,
         })
         .collect();
     assert_eq!(
-        bangs, ["bang-1", "bang-2"],
+        bangs,
+        ["bang-1", "bang-2"],
         "one result per run, minted in submission order, none repeated: {items:?}"
     );
 }

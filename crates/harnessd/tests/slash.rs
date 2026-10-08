@@ -42,7 +42,7 @@ fn slash_verbs_answer_on_the_log_and_name_the_next_command() {
     let mut cfg = Config::for_this_box(&ws);
     cfg.dialect = Dialect::Glm;
     cfg.model = "glm-5.3-flash".into();
-    cfg.vocab_gguf = VOCAB.into();
+    cfg.vocab_gguf = Some(VOCAB.into());
     cfg.socket = scratch.join("d.sock");
     cfg.session_id = "slash-test".into();
     let session = cfg.session_id.clone();

@@ -53,6 +53,12 @@ fn main() {
     // `libggml.so.0`, `libggml-cpu.so.0`, `libggml-base.so.0`. An earlier version
     // of this comment named three and stopped one level short. `libggml-cuda.so` is
     // not in the set for a CPU build, because CUDA is off and it is 68 MB.
-    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+    // dyld has no `$ORIGIN`; `@loader_path` is the same idea in its spelling.
+    let origin = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        "@loader_path"
+    } else {
+        "$ORIGIN"
+    };
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{origin}");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
 }
