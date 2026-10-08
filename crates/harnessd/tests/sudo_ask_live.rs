@@ -145,9 +145,25 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
         .arg("--adjudicator")
         .arg("console")
         .arg("--endpoint")
-        .arg("127.0.0.1:1")
-        // The session's own vocabulary is read from the box's default path; the workspace is
-        // this temp directory, so nothing of the operator's tree is in reach of the run.
+        .arg("127.0.0.1:1");
+    // **A real daemon must be handed a vocabulary, and `--vocab` is how.** The comment that
+    // used to stand here said the session's vocabulary was "read from the box's default path"
+    // — true when `harnessd` carried one, and no longer true since the vocabulary became
+    // optional (a daemon on the byte vocabulary needs none). Without this the daemon exits
+    // with `no vocabulary: a local model needs the GGUF it serves` and the test fails at
+    // "the daemon never served", which reads like a broken test rather than a missing
+    // argument. The question is the same one these tests' own `present_gguf` gate asks, so it
+    // is asked the same way: the operator's `LETIBOT_VOCAB_GGUF` if set, else the box's GGUF.
+    if let Some(gguf) = std::env::var("LETIBOT_VOCAB_GGUF")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(letibot_tokencore::apparatus::present_gguf)
+    {
+        cmd.arg("--vocab").arg(gguf);
+    }
+    cmd
+        // The workspace is this temp directory, so nothing of the operator's tree is in reach
+        // of the run.
         .current_dir(repo)
         .env("HOME", &home)
         // **`XDG_RUNTIME_DIR` is this temp directory, and that is not tidiness.**
