@@ -41,6 +41,23 @@ pub enum Placement {
     Firecode,
 }
 
+/// The handle's `seam:` line for a placement: what the child's work is made of and where it
+/// comes back. Empty for the host, whose work is the worktree itself.
+fn placement_seam(placement: Placement) -> String {
+    match placement {
+        // **No branch on this path.** The VM works on a copy, and firecode delivers the copy's
+        // final state as a directory beside it when the VM comes down — the old line promised a
+        // branch, which a reader then went looking for (FIRECODE-NOTES).
+        Placement::Firecode => {
+            "  seam: the VM works on a COPY of the tree; its work comes back as \
+             a directory beside that copy when the VM comes down, not as this branch — diff \
+             it and take what you want.\n"
+                .to_string()
+        }
+        _ => String::new(),
+    }
+}
+
 /// **The `where` argument, refused when it cannot be honoured on this host.** A `firecode`
 /// placement on a box with no `firecode` used to spawn a child that died at its start —
 /// `placing this session in a firecode VM: io: running firecode: No such file or directory` —
@@ -830,14 +847,7 @@ impl Tool for TaskStartTool {
         };
         let seam_line = match handle.placement.main_tree {
             true => String::new(),
-            false => match spec.placement {
-                Placement::Firecode => {
-                    "  seam: the VM received a COPY of the tree; the work comes back as \
-                     the branch, not as the directory.\n"
-                        .to_string()
-                }
-                _ => String::new(),
-            },
+            false => placement_seam(spec.placement),
         };
         // **`Backgrounded`, not `Ok`** — the same reason `task` gives: the outcome
         // names a fact about the world, *this is running and has not answered yet*.
@@ -1737,6 +1747,17 @@ mod tests {
         assert!(p.contains("Nothing was spawned"), "{p}");
         assert!(p.contains("`host`"), "{p}");
         assert!(!p.contains("started subagent `sub-2`"), "{p}");
+    }
+
+    /// **The seam line for a VM placement says where the work comes back** — FIRECODE-NOTES:
+    /// *"It says … 'the work comes back as the branch, not as the directory.' There is no branch
+    /// on this path — the work comes back as a sibling directory. A confidently wrong line in a
+    /// tool's own output is worse than no line."*
+    #[test]
+    fn a_vm_placement_does_not_promise_a_branch() {
+        let line = placement_seam(Placement::Firecode);
+        assert!(!line.contains("comes back as the branch"), "{line}");
+        assert!(line.contains("directory beside"), "{line}");
     }
 
     /// **The slug is short, kebab, and deterministic in the prompt.**
