@@ -14,6 +14,10 @@ first user message carries a marker, and the model plays its part for that marke
     PARENT-FIRECODE   call `task` with `where: firecode` and the CHILD-UNAME brief;
                       after the tool result, say it was dispatched; when the child's
                       answer arrives, repeat it (`parent: the subagent reported …`).
+    PARENT-HOST       call `task` in the parent's own boundary with the CHILD-SAY brief.
+    CHILD-SAY         answer `child-done: said hello from the subagent`, no tools.
+    PARENT-SLOW       call `task` with the CHILD-SLOW brief.
+    CHILD-SLOW        hold the answer $FAKEMODEL_SLOW_SECONDS (40), so the child is mid-turn.
     CHILD-UNAME       call `bash` with `uname -s; echo from-the-vm`; after the
                       result, answer `child-done:` and what the shell said.
 
@@ -70,6 +74,27 @@ def play(messages):
                 "where": "firecode",
             })
         return ("text", "parent: dispatched the subagent to a firecode VM.")
+    if "PARENT-HOST" in brief:
+        # A subagent in the parent's own boundary, whose work is a sentence: the session
+        # tree without a VM or a shell, for the specs that walk it.
+        if not results:
+            return ("call", "task", {"prompt": "CHILD-SAY: answer in one line.", "role": "researcher"})
+        return ("text", "parent: dispatched the subagent.")
+    if "PARENT-SLOW" in brief:
+        if not results:
+            call = {"prompt": "CHILD-SLOW: think for a while.", "role": "researcher"}
+            if "IN-VM" in brief:
+                call["where"] = "firecode"
+            return ("call", "task", call)
+        return ("text", "parent: dispatched the slow subagent.")
+    if "CHILD-SLOW" in brief:
+        # A turn that is still running when a spec walks into its session: the answer is held
+        # for SLOW_SECONDS (40 by default) before it streams.
+        import time
+        time.sleep(float(os.environ.get("FAKEMODEL_SLOW_SECONDS", "40")))
+        return ("text", "child-done: slow and steady")
+    if "CHILD-SAY" in brief:
+        return ("text", "child-done: said hello from the subagent")
     if "CHILD-UNAME" in brief:
         if not results:
             return ("call", "bash", {"command": "uname -s; echo from-the-vm"})
