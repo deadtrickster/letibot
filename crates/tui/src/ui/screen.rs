@@ -111,8 +111,19 @@ impl App {
         // and `dec_pinned` is the answer: the ladder, the deadline, the hint. The fit loop
         // below may not touch the second, because a card that has dropped its choices is a
         // question with no way to answer it. See [`App::decision_card`].
+        // **The prompt card is drawn only while it is UP.** `self.prompt` is the daemon's
+        // open request on the operator's own run — it survives `esc`, because `esc` puts the
+        // card away and does not close the request ([`App::prompt_away`]) — so the thing the
+        // renderer wants here is the request *and the card being shown*, not the request
+        // alone. Binding it once keeps every arm below reading the same fact; a match that
+        // reached into `self.prompt` directly would draw the card back the moment `esc` hid it.
+        let shown_prompt = if self.prompt_away {
+            None
+        } else {
+            self.prompt.as_ref()
+        };
         let (dec, dec_pinned): (Vec<String>, Vec<String>) =
-            match (&self.secret, &self.prompt, self.open.first()) {
+            match (&self.secret, shown_prompt, self.open.first()) {
                 (Some(ask), _, _) => (self.secret_lines(ask, w), Vec::new()),
                 // **The confirmation that ends a pane rides in the same slot and comes second**,
                 // ahead of the prompt card. The two are mutually exclusive — a `!term close` can

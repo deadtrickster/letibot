@@ -2,6 +2,47 @@
 
 use super::*;
 
+/// **A bare line is not spent on the model while the operator's own command waits.**
+///
+/// The measured case, 2026-10-09: `! sudo apt install mc`, the password taken, `apt` at
+/// `Continue? [Y/n]` under root where `/proc` refuses — so no card — and the person typed
+/// `y` here. The line became a prompt and reached the model; the command they had typed
+/// waited unanswered until its deadline killed it. While the daemon's request for their run
+/// is still open — the card up, or put away with esc, which does not end the run and does
+/// not close the request — a bare line must not quietly become the model's: it is held, and
+/// the sentence names the two doors (`!send` for the command, and waiting for the run to
+/// end for the model).
+#[test]
+fn a_bare_line_while_the_runs_request_is_open_is_not_spent_on_the_model() {
+    let mut a = app();
+    a.session_id = "s".into();
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::PromptRequested {
+            req_id: "r1".into(),
+            job: "j1".into(),
+            command: "sudo apt install mc".into(),
+            question: Some("Continue? [Y/n]".into()),
+            reading: letibot_sessionlog::PromptReading::Blocked,
+        },
+    )));
+    // **The card is put away, not answered** — esc's own act. The daemon keeps the request
+    // open and the run keeps waiting, which is exactly the window the measured `y` fell
+    // through.
+    a.key(Key::Esc);
+
+    let spent = a.submit("y".into());
+    assert!(
+        spent.is_none(),
+        "a bare `y` while the operator's own command waits must not become a prompt: {spent:?}"
+    );
+    assert_eq!(a.input(), "y", "the words are held, not swallowed");
+    assert!(
+        a.pending_prompts.is_empty(),
+        "nothing was queued as a prompt either"
+    );
+}
+
 /// **And the refusal answers nothing, in the head rather than in the matcher.**
 ///
 /// The matcher saying `Ambiguous` is not enough: `submit` is what turns a keypress

@@ -29,6 +29,7 @@ fn a_question_from_the_run_takes_the_screen_back_from_the_confirmation() {
             job: "j1".into(),
             command: "! sudo apt install mc".into(),
             question: Some("Continue? [Y/n]".into()),
+            reading: letibot_sessionlog::PromptReading::Blocked,
         },
     )));
     assert!(a.term_ask.is_none(), "the confirmation yielded");
@@ -246,6 +247,60 @@ fn a_password_field_owns_the_keys_shows_dots_and_never_reaches_the_composer() {
     );
 }
 
+/// **A card raised WITHOUT a reading does not claim the program asked.**
+///
+/// The two cards are the two facts, and the operator's measured run is why the second one
+/// exists at all (2026-10-09, `! sudo apt install mc`: the password taken, `apt` at
+/// `Continue? [Y/n]` as root, `/proc/<pid>/fd/0` `EACCES` for the daemon). The reading-backed
+/// card's headline is *your command is asking*; a card that carried that headline on a run
+/// nobody could look at would be a guess — and a wrong one for every long quiet command that
+/// is asking nothing. So this asserts the distinction the row is judged on: the text says it
+/// could not look, and it still offers the way in, because a line sent goes into the run's
+/// input either way.
+#[test]
+fn an_unreadable_card_says_it_could_not_look_and_offers_the_way_in_anyway() {
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::PromptRequested {
+            req_id: "prompt-s-9".into(),
+            job: "j9".into(),
+            command: "sudo apt install mc".into(),
+            question: None,
+            reading: letibot_sessionlog::PromptReading::Unreadable,
+        },
+    )));
+    let card = a.screen(120, 20).join("\n");
+    assert!(
+        !card.contains("your command is asking"),
+        "a card raised without a reading must not claim the program asked: {card}"
+    );
+    assert!(
+        card.contains("could not read"),
+        "it says which of the two facts it is: {card}"
+    );
+    assert!(card.contains("run: sudo apt install mc"), "{card}");
+    assert!(
+        card.contains("either way"),
+        "and that a line sent goes into the run regardless: {card}"
+    );
+    // The floor under both cards: the verb that needs no reading at all, and the job a
+    // person can read with `job_output`.
+    assert!(card.contains("!send"), "{card}");
+    assert!(card.contains("j9"), "{card}");
+    // And it is a card you can still answer — that is the whole point of it being a card.
+    for c in "y".chars() {
+        assert!(a.key(Key::Char(c)).is_none());
+    }
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::PromptAnswer {
+            req_id: "prompt-s-9".into(),
+            line: "y".into(),
+        })
+    );
+}
+
 /// **The prompt card: a command of the operator's own is asking, and the field is NOT
 /// masked.**
 ///
@@ -263,6 +318,7 @@ fn a_prompt_card_owns_the_keys_shows_what_is_typed_and_never_becomes_a_secret() 
             job: "j7".into(),
             command: "sudo apt install mc".into(),
             question: Some("Do you want to continue? [Y/n]".into()),
+            reading: letibot_sessionlog::PromptReading::Blocked,
         },
     )));
     let card = a.screen(100, 20).join("\n");
@@ -320,6 +376,7 @@ fn a_prompt_card_owns_the_keys_shows_what_is_typed_and_never_becomes_a_secret() 
             job: "j8".into(),
             command: "apt install mc".into(),
             question: Some("Continue? [Y/n]".into()),
+            reading: letibot_sessionlog::PromptReading::Blocked,
         },
     )));
     assert_eq!(
@@ -340,6 +397,7 @@ fn a_prompt_card_owns_the_keys_shows_what_is_typed_and_never_becomes_a_secret() 
             job: "j9".into(),
             command: "apt install mc".into(),
             question: None,
+            reading: letibot_sessionlog::PromptReading::Blocked,
         },
     )));
     let bare = a.screen(100, 20).join("\n");
@@ -370,6 +428,7 @@ fn a_settled_prompt_takes_the_card_down_and_says_which_way() {
             job: "j7".into(),
             command: "apt install mc".into(),
             question: Some("Continue? [Y/n]".into()),
+            reading: letibot_sessionlog::PromptReading::Blocked,
         },
     )));
     assert!(
@@ -399,6 +458,7 @@ fn a_settled_prompt_takes_the_card_down_and_says_which_way() {
             job: "j8".into(),
             command: "apt install mc".into(),
             question: None,
+            reading: letibot_sessionlog::PromptReading::Blocked,
         },
     )));
     a.apply(ServerFrame::Event(env(

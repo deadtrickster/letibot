@@ -226,7 +226,9 @@ impl App {
     /// [Y/n]` takes Enter as its default, and a person accepting a default must not have
     /// to type a letter to say so.
     pub(crate) fn key_prompt(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if let Some(ask) = &self.prompt {
+        if let Some(ask) = &self.prompt
+            && !self.prompt_away
+        {
             let req_id = ask.req_id.clone();
             match k {
                 Key::Char(c) => self.prompt_buf.push(*c),
@@ -243,7 +245,11 @@ impl App {
                 }
                 Key::Esc | Key::CtrlC => {
                     self.prompt_buf.clear();
-                    self.prompt = None;
+                    // **Put away, not closed.** The daemon keeps the request open and the run
+                    // keeps waiting, and [`App::submit`] reads `self.prompt` for exactly that
+                    // reason: a bare line typed while it is away must not become a prompt for
+                    // the model. See [`App::prompt_away`].
+                    self.prompt_away = true;
                     self.redraw = true;
                     self.say(
                         "card put away — the command is still waiting, and \
