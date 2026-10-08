@@ -469,7 +469,14 @@ impl Tool for TaskTool {
              permissions and can only be given less, never more. This returns as soon \
              as the subagent has STARTED, with a handle — a subagent is minutes of \
              work and this call does not wait for it, so the rest of your calls run \
-             while it does. Collect its answer with `task_result`.",
+             while it does. Collect its answer with `task_result`. **A child that \
+             writes code must be told, in its prompt, to END with \
+             `sh scripts/check-fmt.sh <the ref it was cut from>`**: code a child has \
+             written, built and TESTED can still be unformatted, because `cargo fmt` \
+             is in no brief and CI's `Format (the files this change touches)` job is \
+             the only thing that reads it. The same one line goes for `cargo test \
+             --workspace --no-run` when the child changes a type's SHAPE — one change \
+             reaches callers in crates the child never ran.",
             json!({
                 "type": "object",
                 "properties": {
