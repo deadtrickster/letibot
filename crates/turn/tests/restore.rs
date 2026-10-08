@@ -79,14 +79,20 @@ fn real_store_copy() -> Option<(TempDir, Store)> {
 struct TempDir(std::path::PathBuf);
 
 impl TempDir {
+    /// **A counter in the name, not only the clock**: the tests here run in parallel in one
+    /// process and macOS's clock has microsecond resolution, so two copies of the store could
+    /// land in one directory and the first test to finish removed the other's. Both store
+    /// tests failed `opening the copy` together on a workspace run, 2026-10-08.
     fn new(tag: &str) -> TempDir {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
-            "{tag}-{}-{}",
+            "{tag}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&p).expect("a temp dir");
         TempDir(p)
