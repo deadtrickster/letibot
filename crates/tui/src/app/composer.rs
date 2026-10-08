@@ -8,6 +8,20 @@ impl App {
     /// What a submitted line means: a command, an answer to an open decision, or
     /// a prompt.
     pub(crate) fn submit(&mut self, text: String) -> Option<Action> {
+        // **A pasted block is not a command, and this is checked before anything parses it.**
+        // The composer is one line; the only way a newline gets here is a paste, and a paste
+        // whose first line starts with `!` used to become one `!` command whose newlines the
+        // shell then split — MEASURED 2026-10-08: a copied `operator_run_unreadable` notice
+        // re-ran an earlier `sudo` with the notice's remaining words as its arguments. The
+        // rule lives in `sessionlog` so the composer and the daemon cannot disagree about it;
+        // the text is KEPT, because it is the person's and their next move is to take the
+        // command out of it.
+        if let Some(why) = letibot_sessionlog::operator_line_refusal(&text) {
+            self.set_composer(&text);
+            self.say(why);
+            self.redraw = true;
+            return None;
+        }
         // **`!term` is checked before the bare `!`**, because `!term mc` is also a perfectly
         // good `!` line — `operator_shell_command` reads it as the command `term mc`, which is
         // a program nobody has. The verb has to be taken first, and the parse is the daemon's
