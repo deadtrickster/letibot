@@ -664,6 +664,9 @@ pub struct App {
     /// lifetime a fact about the render loop rather than about the reader: see
     /// [`NOTICE_MS`], which is also where the two symptoms and the fix are written down.
     pub(crate) notice_until: Option<u64>,
+    /// What the theme `head.toml` names could not supply, held from `apply_theme` until
+    /// `load_prefs` says every problem of the file in one notice.
+    pub(crate) theme_problems: Vec<String>,
     pub(crate) help: bool,
     /// The session picker, which is a screen like `help` rather than a mode with a
     /// cursor. Same argument as the folds: there is one input surface here and it
@@ -1468,6 +1471,7 @@ impl App {
             raw_calls: false,
             notice: None,
             notice_until: None,
+            theme_problems: Vec::new(),
             help: false,
             picker: false,
             pick: None,
@@ -1561,6 +1565,17 @@ impl App {
     /// Tell the head what time it is. The driver calls this once a tick; nothing
     /// else in `App` reads a clock, so a test drives time by hand.
     pub fn clock(&mut self, now_ms: u64) {
+        // **A notice posted before the head had a clock starts timing at its first tick.**
+        // `head.toml`'s problems are said while the prefs load, when `now_ms` is still 0, so
+        // their deadline was `NOTICE_MS` after the epoch — long gone by the first frame, and
+        // the sentence was never seen.
+        if self.now_ms == 0
+            && now_ms > 0
+            && let Some(until) = self.notice_until
+            && until <= NOTICE_MS
+        {
+            self.notice_until = Some(now_ms.saturating_add(NOTICE_MS));
+        }
         self.now_ms = now_ms;
     }
 

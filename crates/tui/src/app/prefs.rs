@@ -4,6 +4,27 @@
 use super::*;
 
 impl App {
+    /// **The theme `head.toml` names, and its `color.` lines, made the look of every role.**
+    ///
+    /// The file is `themes/NAME.toml` beside `head.toml`; `terminal` or no `theme` key is the
+    /// terminal's own palette, which is what this head drew with before themes existed. What
+    /// cannot be used — a missing theme, a role that does not exist, a look that does not
+    /// read — is said in the conversation and not obeyed: a typo must not draw the same screen
+    /// as a deliberate default.
+    pub(crate) fn apply_theme(&mut self, head_toml: &std::path::Path, p: &crate::prefs::HeadPrefs) {
+        let dir = head_toml
+            .parent()
+            .map(|d| d.join("themes"))
+            .unwrap_or_default();
+        let (theme, problems) = rano::theme::resolve(&dir, p.theme.as_deref(), &p.colors);
+        rano::theme::set_active(theme);
+        self.theme_problems = problems
+            .into_iter()
+            .map(|s| format!("head.toml: {s}"))
+            .collect();
+        self.redraw = true;
+    }
+
     /// The session picker: every session this daemon holds, and how to go there.
     ///
     /// A screen and not a mode. There is no pointer in this head and no selection,
@@ -76,6 +97,7 @@ impl App {
             return;
         };
         let (p, notes) = crate::prefs::load(&path);
+        self.apply_theme(&path, &p);
         self.diff_split = p.diff == crate::prefs::DiffPref::Split;
         // **The set comes back too.** It is the one setting the card could change and the
         // file did not keep, so a reader who chose `conversation` got `normal` on every
@@ -149,8 +171,12 @@ impl App {
         // dismissal that lived only in this run would be a dismissal that lasts
         // until the next restart — which is the defect, not the fix.
         self.dismissed = p.retired.clone();
-        for n in notes {
-            self.say(&n);
+        // **One notice for all of them.** The notice is one line, and saying each problem in
+        // turn kept only the last: a theme that did not load hid the bad `diff` above it.
+        let mut all = notes;
+        all.extend(std::mem::take(&mut self.theme_problems));
+        if !all.is_empty() {
+            self.say(&all.join(" · "));
         }
     }
 
@@ -170,6 +196,10 @@ impl App {
             todo_template: self.todo_template.clone(),
             todo_seed: self.todo_seed.clone(),
             git_format: self.git_format.clone(),
+            // Not the head's to write: `save` keeps the file's own `theme` and `color.` lines
+            // where they are, so these are only what the struct needs to be whole.
+            theme: rano::theme::active_name(),
+            colors: Vec::new(),
         }
     }
 

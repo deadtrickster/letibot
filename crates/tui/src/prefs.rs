@@ -77,6 +77,14 @@ pub struct HeadPrefs {
     /// have to be escaped into this file. Order is oldest first, and the list is
     /// truncated to [`RETIRED_CAP`] on the way in and on the way out.
     pub retired: Vec<String>,
+    /// **The theme this head draws with** — `theme = NAME`, the file
+    /// `themes/NAME.toml` beside this one (`terminal`, or no key, is the terminal's own
+    /// palette). Read here and written back as the line it was: `save` does not own it,
+    /// so a hand-edited theme line survives the config pane. See `rano::theme`.
+    pub theme: Option<String>,
+    /// `color.ROLE = "look"` lines, in file order: one role overridden on top of the theme.
+    /// Kept as written; `rano::theme::resolve` reads and reports them.
+    pub colors: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +163,8 @@ impl Default for HeadPrefs {
             todo_template: TodoTemplate::Off,
             todo_seed: Vec::new(),
             git_format: None,
+            theme: None,
+            colors: Vec::new(),
         }
     }
 }
@@ -333,6 +343,13 @@ pub fn load(path: &Path) -> (HeadPrefs, Vec<String>) {
                     p.retired.drain(..over);
                 }
             }
+            // **The theme, and single-role overrides on top of it.** Their values are read by
+            // `rano::theme::resolve` when the head applies them, which is where a bad role or a
+            // bad look is reported — so here they are only kept.
+            "theme" => p.theme = (!v.is_empty()).then_some(v),
+            k if k.starts_with("color.") => {
+                p.colors.push((k["color.".len()..].to_string(), v));
+            }
             other => notes.push(format!("head.toml: `{other}` is not a key this head knows")),
         }
     }
@@ -418,6 +435,36 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// **A theme line and colour lines are read, not reported, and a save keeps them** — the
+    /// config pane rewrites this file, and a hand-edited theme must survive it.
+    #[test]
+    fn a_theme_and_its_colour_lines_are_read_and_survive_a_save() {
+        let path = tmp("theme");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "theme = \"gray\"\ncolor.user_block = \"bg:#2f363b\"\ndiff = \"unified\"\n",
+        )
+        .unwrap();
+        let (p, notes) = load(&path);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(p.theme.as_deref(), Some("gray"));
+        assert_eq!(p.colors, vec![("user_block".into(), "bg:#2f363b".into())]);
+        save(
+            &path,
+            &HeadPrefs {
+                diff: DiffPref::Split,
+                ..p
+            },
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("theme = \"gray\""), "{text}");
+        assert!(text.contains("color.user_block = \"bg:#2f363b\""), "{text}");
+        assert!(text.contains("diff = \"split\""), "{text}");
+    }
+
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {

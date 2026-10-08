@@ -74,6 +74,7 @@ struct Args {
     /// — see `harnessd`'s arm for the full reason. `CARGO_PKG_VERSION` is the WORKSPACE's version,
     /// which is the number the release tag must agree with.
     version: bool,
+    theme_template: bool,
     /// How long `--interrupt-all` waits for the turns to end.
     wait: u64,
     /// Answer "is there a daemon here, and does it speak this build's protocol" and
@@ -108,6 +109,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         interrupt_all: false,
         list_sessions: false,
         version: false,
+        theme_template: false,
         wait: 30,
         probe: false,
     };
@@ -140,6 +142,9 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--list-sessions" => a.list_sessions = true,
             "--wait" => a.wait = next()?.parse().map_err(|e| format!("--wait: {e}"))?,
             "-V" | "--version" => a.version = true,
+            // Every role with its default look, as a theme file reads them: the starting point
+            // for `~/.config/letibot/themes/NAME.toml`. See `rano::theme`.
+            "--theme-template" => a.theme_template = true,
             "-h" | "--help" => return Err(usage()),
             other => return Err(format!("unknown argument {other}\n\n{}", usage())),
         }
@@ -152,7 +157,7 @@ fn usage() -> String {
      \x20           [--since SEQ] [--identity NAME]\n\
      \x20           [--replay FILE.jsonl] [--demo] [--no-tty]\n\
      \x20           [--body-lines N] [--reasoning-lines N]\n\
-     \x20           [--interrupt-all [--wait SECS]] [--list-sessions]"
+     \x20           [--interrupt-all [--wait SECS]] [--list-sessions] [--theme-template]"
         .into()
 }
 
@@ -180,6 +185,11 @@ pub fn run(args: &[String]) -> i32 {
 
     if args.version {
         println!("letibot-tui {}", env!("CARGO_PKG_VERSION"));
+        return 0;
+    }
+
+    if args.theme_template {
+        print!("{}", rano::theme::Theme::template());
         return 0;
     }
 
@@ -850,6 +860,7 @@ mod probe_tests {
             interrupt_all: false,
             list_sessions: false,
             version: false,
+            theme_template: false,
             wait: 30,
             probe: true,
         }
