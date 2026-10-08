@@ -239,8 +239,10 @@ impl App {
         //
         // This is the same trade the turn's own row makes one row below (see `let status`),
         // and it is the reason that row is reserved too.
-        let completion_slot = self.completion_slot();
-        let completions = self.completions_line(w);
+        // **Drawn IN the composer's bottom edge, not as a row above it** — see
+        // [`App::completions_legend`]. The slot reasoning above still holds, one level up: the
+        // edge is there whether or not a `/` is typed, so nothing the conversation owns moves.
+        let completions = self.completions_legend(w);
 
         let Fit {
             rows,
@@ -260,7 +262,8 @@ impl App {
             // No stuck sentence any more: a slow turn is the Responding row in yellow.
             stuck: false,
             pane: pane.is_some(),
-            completion_slot,
+            // The completions live in the box's edge now; they never take a row.
+            completion_slot: false,
             link: link.len(),
             stopping: stopping.len(),
             alarmed: self.alarmed(),
@@ -298,14 +301,6 @@ impl App {
         if show_notice && let Some(l) = notice {
             chrome.push(l);
         }
-        if completion_slot {
-            // **Drawn even when it is empty.** The row is furniture while a `!` or `/` line
-            // is in the composer, and the price of a transcript that does not move is a blank
-            // row when the prefix matches nothing. It is NOT a rung of the ladder above:
-            // a row the fit loop may delete is a row that appears and disappears again, which
-            // is the jump this whole arrangement exists to stop.
-            chrome.push(completions.unwrap_or_default());
-        }
         // The turn's own row, last before the box: directly above the composer when nothing else
         // is up, and below the typing aids when they are — a completion list that is not adjacent
         // to the line being typed is the one row here that must not move.
@@ -333,7 +328,7 @@ impl App {
             // /status's, and were never worth a resident sentence of bright yellow. **The turn's
             // own status is no longer here** (R51 item 1): it is a row above the box, because a
             // legend on an edge truncates and a status is allowed to grow a sentence.
-            chrome.push(self.box_bottom(w));
+            chrome.push(self.box_bottom(w, completions.as_ref()));
         } else if self.alarmed() {
             chrome.push(self.status_line(w));
         }
@@ -479,7 +474,7 @@ impl App {
 
     /// **The composer box's bottom edge**, carrying the alarm, where the reader is in the
     /// conversation, and the visibility rung.
-    pub(crate) fn box_bottom(&self, w: usize) -> String {
+    pub(crate) fn box_bottom(&self, w: usize, completions: Option<&rano::render::Line>) -> String {
         // The alarm, then the viewport's state **only when it is holding** (R36 — following is
         // the ordinary state and owes the reader nothing), then the rung **when it is the one
         // that hides things** (R37): each drawn only when it is news, because a marker that is
@@ -489,7 +484,25 @@ impl App {
             holding: self.scroll_state().is_some(),
             rung: self.rung_state(),
         };
-        crate::ui::rows::row(&bottom.line(w), self.cfg.palette())
+        let p = self.cfg.palette();
+        let Some(legend) = completions.filter(|l| l.width() > 0) else {
+            return crate::ui::rows::row(&bottom.line(w), p);
+        };
+        // **The completions inlaid at the left**, as leticl draws them. The right side's own
+        // markers are what `BoxBottom` would pin there, and they keep their room: the
+        // completions are cut to what is left, so typing `/` never hides an alarm.
+        let right = bottom_markers(&bottom);
+        let keep = right.as_ref().map_or(0, |r| r.width() + 4);
+        let room = w.saturating_sub(6 + keep).max(8);
+        let mut left = legend.clone();
+        if let Some(first) = left.spans.first_mut() {
+            first.content = first.content.trim_start().to_string();
+        }
+        let left = rano::render::text::truncate(&left, room);
+        crate::ui::rows::row(
+            &rano::agent::composer::box_edge(w, '╰', '╯', &left, &right.unwrap_or_default()),
+            p,
+        )
     }
 
     /// **What fills the screen above the cards**: the terminal pane, an open output or pane,
@@ -627,4 +640,33 @@ impl App {
             rows
         }
     }
+}
+
+/// `BoxBottom`'s right-hand markers as a line (`None` when it has nothing to say): the alarm,
+/// `holding`, the rung — the same pieces in the same roles, for an edge that also carries the
+/// completions at its left.
+fn bottom_markers(b: &BoxBottom) -> Option<rano::render::Line> {
+    use rano::render::{Line, Span};
+    use rano::style::Role;
+    let mut right = Line::default();
+    let sep = |l: &mut Line| {
+        if l.width() > 0 {
+            l.push(Span::raw(" · "));
+        }
+    };
+    if b.alarmed {
+        right.push(Span::role("⚠", Role::Attention));
+    }
+    if b.holding {
+        sep(&mut right);
+        right.push(Span::role("holding", Role::Pending));
+    }
+    if let Some(r) = &b.rung {
+        sep(&mut right);
+        right.push(Span::role(
+            rano::agent::text::clean_line(r),
+            Role::Attention,
+        ));
+    }
+    (right.width() > 0).then_some(right)
 }

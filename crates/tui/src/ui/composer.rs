@@ -4,6 +4,7 @@ use crate::app::*;
 use crate::ui::render::{row, trim_to};
 use letibot_ui::editor::Editor;
 use rano::agent::composer::{Candidate, completions_line};
+use rano::render::Line;
 use rano::width::text as width;
 
 impl App {
@@ -15,11 +16,21 @@ impl App {
     /// and the composer block in `compose_screen`) — and Tab will say what went wrong when
     /// it is asked.
     pub(crate) fn completions_line(&mut self, w: usize) -> Option<String> {
+        let p = self.cfg.palette();
+        self.completions_legend(w).map(|l| row(&l, p))
+    }
+
+    /// **The completions as a line, for the composer's bottom edge** — where they are drawn, so
+    /// that typing `/` moves nothing: the operator, 2026-10-08, *"when i type / this gray hint
+    /// line appears and conversation jumps one line. i hate that. leticl does this gray thing
+    /// instead of the bottom input border line and nothing jumps"*. The edge is always there;
+    /// a row above the box was a row the conversation gave up the moment a `/` was typed.
+    pub(crate) fn completions_legend(&mut self, w: usize) -> Option<Line> {
         if !self.completion_slot() {
             return None;
         }
         if self.editor.text().starts_with('!') {
-            return self.shell_completions_line(w);
+            return self.shell_completions_legend(w);
         }
         let text = self.editor.text();
         let needle = text[1..].replace('_', "-");
@@ -36,7 +47,7 @@ impl App {
                 proposed: false,
             })
             .collect();
-        completions_line(&items, w).map(|l| row(&l, self.cfg.palette()))
+        completions_line(&items, w)
     }
 
     /// **The live `!` completion row, with provenance.**
@@ -53,11 +64,16 @@ impl App {
     /// here is submitted — the row is a typing aid, and Enter is still the
     /// operator's.
     pub(crate) fn shell_completions_line(&mut self, w: usize) -> Option<String> {
+        let p = self.cfg.palette();
+        self.shell_completions_legend(w).map(|l| row(&l, p))
+    }
+
+    /// [`App::shell_completions_line`] as a line, for the composer's bottom edge.
+    pub(crate) fn shell_completions_legend(&mut self, w: usize) -> Option<Line> {
         let text = self.editor.text().to_string();
         if !text.starts_with('!') {
             return None;
         }
-        let p = self.cfg.palette();
         let plain = |t: &String| Candidate {
             text: t.clone(),
             proposed: false,
@@ -69,11 +85,7 @@ impl App {
             && *line == text
         {
             let items: Vec<Candidate> = names.iter().map(plain).collect();
-            return Some(
-                completions_line(&items, w)
-                    .map(|l| row(&l, p))
-                    .unwrap_or_default(),
-            );
+            return Some(completions_line(&items, w).unwrap_or_default());
         }
         // The history's own lines first, then the model's proposals for this point of the
         // conversation, each marked `~` so a reader can tell a suggestion from a recollection.
@@ -95,7 +107,7 @@ impl App {
                     }),
             );
         }
-        completions_line(&items, w).map(|l| row(&l, p))
+        completions_line(&items, w)
     }
 
     /// The composer's rows, and the caret's `(row, column)` within them.
