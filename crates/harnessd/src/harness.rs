@@ -11866,8 +11866,7 @@ pub fn local_switch_decision(
     // comes out of it is the honest one for that box anyway: the target's own
     // reported weights, with their vocabulary loaded and their dialect seated.
     let asserted_same = vocab.is_some()
-        && m
-            .profile
+        && m.profile
             .unknown
             .iter()
             .any(|u| u == "same_vocab" || u.starts_with("same_vocab "));
@@ -11914,9 +11913,9 @@ pub fn local_switch_decision(
             ),
         });
     };
-    if vocab.is_some_and(|vocab| {
-        vocab_basename(std::path::Path::new(&theirs)) == vocab_basename(vocab)
-    }) {
+    if vocab
+        .is_some_and(|vocab| vocab_basename(std::path::Path::new(&theirs)) == vocab_basename(vocab))
+    {
         // Same weights carry the same template, so the dialect this session
         // speaks is the dialect they render: nothing to re-derive, nothing to
         // re-render, and the switch is the address move it always was.
