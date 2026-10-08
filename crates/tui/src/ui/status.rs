@@ -1,10 +1,9 @@
 //! **The status lines**: `/status`'s report, and the link's and a stop's one-line state.
 
 use crate::app::*;
-use crate::ui::render::{dur_human, sgr, trim_to, wrap};
+use crate::ui::render::{dur_human, row, row_strings};
 use crate::ui::*;
-use letibot_ui::painter::Sgr;
-use rano::style::Role;
+use rano::agent::status as facts;
 
 impl App {
     /// **The line a head with no daemon draws**, above the composer and under nothing.
@@ -44,10 +43,7 @@ impl App {
         } else {
             format!("the daemon connection is down — reconnecting. {why}")
         };
-        wrap(&format!("⚠ {said}"), w)
-            .into_iter()
-            .map(|l| colour(&self.cfg, sgr::YELLOW, &l))
-            .collect()
+        row_strings(&facts::warning(&said, w), self.cfg.palette())
     }
 
     /// **The line a head draws while it waits for a daemon it asked to stop** (R30).
@@ -63,15 +59,12 @@ impl App {
             return Vec::new();
         };
         if s.resolved(self.now_ms) {
-            // The wait is over and the head is leaving on the next pass. A line that said
-            // "waiting" under a verdict the farewell is about to give would be this head
-            // arguing with itself.
             return Vec::new();
         }
-        wrap(&format!("⚠ {}", s.waiting_line(self.now_ms)), w)
-            .into_iter()
-            .map(|l| colour(&self.cfg, sgr::YELLOW, &l))
-            .collect()
+        row_strings(
+            &facts::warning(&s.waiting_line(self.now_ms), w),
+            self.cfg.palette(),
+        )
     }
 
     /// The alarm line for the **unboxed** composer — the degenerate short-screen
@@ -112,7 +105,6 @@ impl App {
         if !self.alarmed() {
             return String::new();
         }
-        let p = self.cfg.palette();
         let mut said = format!(
             "⚠ dropped {} · scrubbed {} · resync {}",
             self.dropped, self.scrubbed, self.resyncs
@@ -139,7 +131,7 @@ impl App {
             ));
         }
         said.push_str(" · /status");
-        trim_to(&p.painted(Role::Attention, &said), w)
+        row(&facts::alarm(&said, w), self.cfg.palette())
     }
 
     /// `/status`: this head's own instrumentation, with what each number means.
@@ -150,8 +142,6 @@ impl App {
     /// interactive-only frame, at which point it is the answer to "why is this
     /// head quieter than the one next to it".
     pub(crate) fn status_lines(&self, w: usize) -> Vec<String> {
-        let p = self.cfg.palette();
-        let mut out = vec![p.painted(Role::Strong, "this head"), String::new()];
         // **The screen says what it just did** (R51 item 17). Opening it acknowledged the alarm,
         // and a mark that vanishes with nothing said is a mark the reader cannot tell from a bug —
         // the numbers below are unchanged, which is precisely why the sentence is owed.
@@ -159,25 +149,18 @@ impl App {
         // Only when there was something to acknowledge, and only while it is true: on a first read
         // of a clean head there is nothing to say, and a permanent sentence about a mark that is not
         // there is the furniture this file keeps deleting.
-        if self.acked != Counters::default() {
-            out.push(dim(
-                &self.cfg,
-                "  the alarm is acknowledged up to the values below — the ⚠ is gone, and any \
-                 counter that moves again brings it back",
-            ));
-            out.push(String::new());
-        }
+        let note = (self.acked != Counters::default()).then(|| {
+            "the alarm is acknowledged up to the values below — the ⚠ is gone, and any \
+             counter that moves again brings it back"
+                .to_string()
+        });
+        let mut rows: Vec<facts::Fact> = Vec::new();
         let mut row = |k: &str, v: String, why: &str| {
-            let head = format!("  {k:<12}");
-            out.push(format!(
-                "{}{}",
-                p.painted(Role::Faint, &head),
-                p.painted(Role::Plain, &v)
-            ));
-            for l in wrap(why, w.saturating_sub(16)) {
-                out.push(format!("{:14}{}", "", p.painted(Role::Faint, &l)));
-            }
-            out.push(String::new());
+            rows.push(facts::Fact {
+                key: k.to_string(),
+                value: v,
+                why: why.to_string(),
+            });
         };
 
         if !self.session_id.is_empty() {
@@ -435,7 +418,12 @@ impl App {
                 "Where the daemon is standing. Tools resolve relative paths here.",
             );
         }
-        out.push(p.painted(Role::Faint, "  /status or esc closes this"));
-        out
+        let pane = facts::FactsPane {
+            title: "this head".into(),
+            note,
+            facts: rows,
+            footer: "/status or esc closes this".into(),
+        };
+        row_strings(&pane.lines(w), self.cfg.palette())
     }
 }

@@ -1,10 +1,8 @@
 //! **The person's own rows**: their prompts, the session's banner, a queued line not yet sent.
 
 use crate::app::*;
-use crate::ui::render::{RenderConfig, trim_to, visible_width, wrap};
-use letibot_ui::painter::Sgr;
-use letibot_ui::text::without_control_lines;
-use rano::style::Role;
+use crate::ui::render::{RenderConfig, row_strings};
+use rano::agent::blocks::{QueuedBlock, SessionBlock, UserBlock};
 
 /// **A row this SESSION appended, drawn as the session's** — R42.
 ///
@@ -23,34 +21,11 @@ use rano::style::Role;
 /// prose and sanitised like any other content this head did not author.
 pub(crate) fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
     let folded = fold_cells(text);
-    let clean = without_control_lines(folded.as_deref().unwrap_or(text));
-    let text: &str = &clean;
-    let p = cfg.palette();
-    let w = cfg.width.max(20);
-    let mark = p.painted(Role::Faint, "session · ");
-    let stamp = clock_time(ts);
-    let mut lines = wrap(text, session_text_cols(ts, cfg));
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    let mut out = Vec::with_capacity(lines.len());
-    let indent = " ".repeat(visible_width("session · "));
-    for (i, l) in lines.iter().enumerate() {
-        let label = if i == 0 { mark.clone() } else { indent.clone() };
-        // The timestamp closes the last line rather than the first: this is a note about
-        // something that happened, and the block above it puts its stamp on the first row
-        // because that row is the person speaking.
-        let tail = if i + 1 == lines.len() && !stamp.is_empty() {
-            format!("  {stamp}")
-        } else {
-            String::new()
-        };
-        out.push(trim_to(
-            &format!("  {label}{}", p.painted(Role::Faint, &format!("{l}{tail}"))),
-            w,
-        ));
-    }
-    out
+    let block = SessionBlock {
+        text: folded.unwrap_or_else(|| text.to_string()),
+        stamp: clock_time(ts),
+    };
+    row_strings(&block.lines(cfg.width), cfg.palette())
 }
 
 /// **The columns a `session ·` row's own text has** — its label and its trailing clock taken
@@ -62,10 +37,7 @@ pub(crate) fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<Stri
 /// entire brief this head had written for that child — *"a giant prompt"* — five wrapped rows of
 /// instructions where a settlement should be one line.
 pub(crate) fn session_text_cols(ts: u64, cfg: &RenderConfig) -> usize {
-    let w = cfg.width.max(20);
-    let stamp = clock_time(ts);
-    w.saturating_sub(visible_width("session · ") + visible_width(&stamp) + 2)
-        .max(8)
+    SessionBlock::text_cols(&clock_time(ts), cfg.width)
 }
 
 /// **What a child was asked, as one line** — the rule the subagents pane and the folded
@@ -202,42 +174,15 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
 }
 
 pub(crate) fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
+    // **The renderer sanitises its own input** (§3.1), so a caller cannot forget: rano's
+    // block cleans the text before it is wrapped. The operator's own keystrokes cannot carry a
+    // control byte — the decoder hands back `Key::Char` — but a *paste* can.
     let folded = fold_cells(text);
-    // **The renderer sanitises its own input** (§3.1), so a caller cannot forget. The
-    // operator's own keystrokes cannot carry a control byte — the decoder hands back
-    // `Key::Char` — but a *paste* can, and it arrives here as theirs.
-    let clean = without_control_lines(folded.as_deref().unwrap_or(text));
-    let text: &str = &clean;
-    let p = cfg.palette();
-    let w = cfg.width.max(20);
-    let bar = p.painted(Role::UserAccent, "▌");
-    let stamp = clock_time(ts);
-    // The first row shares its width with the timestamp; the rest have the row.
-    let head_w = w.saturating_sub(2 + visible_width(&stamp) + usize::from(!stamp.is_empty()));
-    let mut lines = wrap(text, head_w.max(8));
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    let mut out = Vec::with_capacity(lines.len());
-    for (i, l) in lines.iter().enumerate() {
-        // Padded to the full width so the block is a block: `term::paint` erases
-        // each row it rewrites with `\x1b[K`, and a background that stops early
-        // leaves a ragged right edge that reads as damage.
-        let tail = if i == 0 && !stamp.is_empty() {
-            let pad = w
-                .saturating_sub(2)
-                .saturating_sub(visible_width(l))
-                .saturating_sub(visible_width(&stamp));
-            format!("{}{stamp}", " ".repeat(pad))
-        } else {
-            " ".repeat(w.saturating_sub(2).saturating_sub(visible_width(l)))
-        };
-        out.push(format!(
-            "{bar} {}",
-            p.painted(Role::UserBlock, &format!("{l}{tail}"))
-        ));
-    }
-    out
+    let block = UserBlock {
+        text: folded.unwrap_or_else(|| text.to_string()),
+        stamp: clock_time(ts),
+    };
+    row_strings(&block.lines(cfg.width), cfg.palette())
 }
 
 /// **A `/cells` message, with the screen taken back out of it.**
@@ -328,95 +273,19 @@ pub(crate) fn echo_mark(unconfirmed: &[String], text: &str, drawn: bool) -> &'st
 }
 
 pub(crate) fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: bool) -> Vec<String> {
-    // Folded here as well as in `user_block`, and it has to be the same text going
-    // in: the pending row is removed when the transcript's user item MATCHES it, so
-    // a head that queued an abbreviation and received the real thing would leave the
-    // `queued` line on the screen for the rest of the session. Measured — the fold
-    // belongs to the rendering, not to what was sent.
+    // Folded here as well as in `user_block`, and it has to be the same text going in: the
+    // pending row is removed when the transcript's user item MATCHES it, so a head that queued
+    // an abbreviation and received the real thing would leave the `queued` line on the screen
+    // for the rest of the session. Measured — the fold belongs to the rendering, not to what
+    // was sent. **And sanitised by the block itself** (§3.1): this echo once reached the
+    // screen raw while `user_block`, the settled row it becomes, was already guarded.
     let folded = fold_cells(text);
-    // **And sanitised here rather than at the two callers** (§3.1), which is the fix
-    // for a hole the falsification test found: this echo reached the screen raw while
-    // `user_block` — the settled row it becomes — was already guarded. Two callers and
-    // one of them forgetting is the same shape as every other leak in this family.
-    let clean = without_control_lines(folded.as_deref().unwrap_or(text));
-    let text: &str = &clean;
-    let p = cfg.palette();
-    let w = cfg.width.max(20);
-    let bar = p.painted(Role::UserAccent, "▌");
-    // The first row shares its width with the tag; the rest hang under the text.
-    let head_w = w.saturating_sub(2 + visible_width(mark) + 3);
-    let mut lines = wrap(text, head_w.max(8));
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-
-    // **R33: it is a thing WAITING, not content to read — so it is ONE elided
-    // headline.** The operator, looking at three of their own messages queued:
-    // *"three giant messages queued"* — a 63-row pane filled with the reader's own
-    // words, the conversation pushed off the screen. They typed it; they do not need
-    // it read back.
-    //
-    // The unit of the seam is **screen rows**, not source lines, and that is the same
-    // choice `thinking_header` makes: the model writes one enormous paragraph, so
-    // "3 lines" beside a fold that opens to half a screen answers the wrong question.
-    // What a reader wants to know is how much of the terminal this is about to cost.
-    //
-    // The key is `/t`, which is this head's *unfold the long rows* verb — one key for
-    // one idea, rather than a third fold chord. See `App::echo_open`.
-    // **A row that has landed carries no mark**, and then this draws the shape the settled row
-    // has — bar and text, no label. Without this the empty mark rendered as a bare ` · ` between
-    // the bar and the words, which is a mark saying nothing in the place a mark goes.
-    if mark.is_empty() {
-        let head_w = w.saturating_sub(2);
-        let mut lines = wrap(text, head_w.max(8));
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
-        return lines
-            .into_iter()
-            .enumerate()
-            .map(|(i, l)| {
-                if i == 0 {
-                    format!("{bar} {l}")
-                } else {
-                    format!("  {l}")
-                }
-            })
-            .collect();
-    }
-    if !open && lines.len() > 1 {
-        let seam = format!("  … +{} lines · /t opens it", lines.len() - 1);
-        let room = head_w.saturating_sub(visible_width(&seam));
-        if room >= 16 {
-            return vec![format!(
-                "{bar} {}{}{}",
-                p.painted(Role::Pending, &format!("{mark} · ")),
-                p.painted(Role::Faint, &trim_to(&lines[0], room)),
-                p.painted(Role::Faint, &seam),
-            )];
-        }
-        // **A terminal too narrow for the seam still gets one row.** The headline
-        // alone, elided by the bar's own width — a seam that does not fit would push
-        // the row to two lines and undo the requirement on exactly the screens where
-        // it matters most.
-        return vec![format!(
-            "{bar} {}{}",
-            p.painted(Role::Pending, &format!("{mark} · ")),
-            p.painted(Role::Faint, &trim_to(&lines[0], head_w.max(8))),
-        )];
-    }
-
-    let indent = " ".repeat(visible_width(mark) + 3);
-    let mut out = Vec::with_capacity(lines.len());
-    for (i, l) in lines.iter().enumerate() {
-        let label = if i == 0 {
-            p.painted(Role::Pending, &format!("{mark} · "))
-        } else {
-            indent.clone()
-        };
-        out.push(format!("{bar} {}{}", label, p.painted(Role::Faint, l)));
-    }
-    out
+    let block = QueuedBlock {
+        text: folded.unwrap_or_else(|| text.to_string()),
+        mark: mark.to_string(),
+        open,
+    };
+    row_strings(&block.lines(cfg.width), cfg.palette())
 }
 
 /// `14:32:07` in the local zone, or empty when the row carries no timestamp.

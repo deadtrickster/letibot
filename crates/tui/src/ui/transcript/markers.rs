@@ -6,8 +6,6 @@ use crate::ui::render::{RenderConfig, visible_width};
 use crate::ui::*;
 use letibot_sessionlog::view::{CallState, SnapshotItem};
 use letibot_transcript::TranscriptItem;
-use letibot_ui::painter::Sgr;
-use rano::style::Role;
 
 /// **Does this set hide this row** — R37, the row-level question in one place.
 ///
@@ -882,39 +880,14 @@ pub(crate) fn marker_painted(
     seam: &str,
     live: bool,
 ) -> String {
-    let p = cfg.palette();
-    // **The NUMBER goes pending and its noun does not** — *"yellow <count> not entire <Count> tool
-    // call"*, and leticl's `%counts-clause-segs` word for word: *"`2` in STYLE, ` tools` plain."*
-    // The digits are the thing that moves; `tool call` is the thing the digits are counting, and a
-    // phrase in yellow on a line whose job is to be punctuation inside a sentence reads as a
-    // highlight rather than as a signal.
-    let calls = match &counts.calls {
-        Some((n, noun)) if live => format!("{}{noun}", p.painted(Role::Pending, n)),
-        Some((n, noun)) => format!("{n}{noun}"),
-        None => String::new(),
+    let marker = rano::agent::blocks::RunMarker {
+        calls: counts.calls.clone(),
+        think: counts.think.clone(),
+        events: counts.events.clone(),
+        seam: seam.to_string(),
+        live,
     };
-    let think = counts
-        .think
-        .as_ref()
-        .map(|(n, noun)| format!("{n}{noun}"))
-        .unwrap_or_default();
-    // **The fallback is a branch and not a third element.** The events clause is drawn only when
-    // the run is one neither count describes — see [`COUNT_RUNGS`] — so a run of calls must not
-    // grow a `, 1 head event` beside it. Written as leticl writes it: `parts`, or the fallback.
-    let events = counts
-        .events
-        .as_ref()
-        .map(|(n, noun)| format!("{n}{noun}"))
-        .unwrap_or_default();
-    let body: Vec<&str> = if calls.is_empty() && think.is_empty() {
-        vec![events.as_str()]
-    } else {
-        vec![calls.as_str(), think.as_str()]
-    }
-    .into_iter()
-    .filter(|s| !s.is_empty())
-    .collect();
-    format!("[{}]{}", body.join(", "), p.painted(Role::Faint, seam))
+    crate::ui::render::row(&marker.line(), cfg.palette())
 }
 
 pub(crate) fn hidden_run_marker(

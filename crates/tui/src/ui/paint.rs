@@ -47,25 +47,6 @@ pub(crate) fn dim(cfg: &RenderConfig, s: &str) -> String {
     colour(cfg, sgr::DIM, s)
 }
 
-pub(crate) fn warn_line(cfg: &RenderConfig, s: &str) -> String {
-    colour(cfg, sgr::RED, s)
-}
-
-/// **The line a routine warning is drawn as** — the other register, and not a quieter
-/// version of the one above.
-///
-/// `head-parity-2026-09-21.md` **R19**, the operator's ruling of 2026-09-22: *"routine is
-/// painted as failure"* — `compacted`, `auto_compact`, `daemon_stopping` and a fourth
-/// arrived on a head that had just attached, all four in the red a denial gets, and four
-/// notes read as a wall. **A housekeeping notice and a refused call must not look
-/// alike**, and the argument is not taste: an operator met by a red block on every
-/// restart learns to skip it, and the block is where a real denial lives.
-///
-/// The difference is the whole of it: no `!`, no red — the bullet the head already uses
-/// for a line that is dim and factual — and the code is kept, because it is the word a
-/// reader greps the log for. Which codes are routine is [`letibot_sessionlog::warning`]'s
-/// table and not this head's opinion: the codes are the log's vocabulary and both heads
-/// render them.
 pub(crate) fn fold_word(f: Fold) -> &'static str {
     match f {
         Fold::Folded => "folded",
