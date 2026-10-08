@@ -13340,12 +13340,16 @@ mod tests {
         use std::process::Command;
         // A throwaway repo, the same shape `detect.rs`'s tests use.
         let root = std::env::temp_dir().join(format!(
-            "letibot-task-start-{}-{}",
+            "letibot-task-start-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("mkdir");

@@ -1343,12 +1343,16 @@ mod tests {
 
     fn tmp() -> PathBuf {
         let d = std::env::temp_dir().join(format!(
-            "letibot-mon-{}-{:?}",
+            "letibot-mon-{}-{:?}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         std::fs::create_dir_all(&d).unwrap();
         d

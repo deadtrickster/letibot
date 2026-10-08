@@ -131,9 +131,13 @@ fn a_head_attaching_mid_generation_reconstructs_the_turn_exactly() {
     let _ = endpoint();
     let hub = Hub::new("live");
     let sock = std::env::temp_dir().join(format!(
-        "letibot-live-{}-{}.sock",
+        "letibot-live-{}-{}-{}.sock",
         std::process::id(),
-        Instant::now().elapsed().as_nanos()
+        Instant::now().elapsed().as_nanos(),
+        {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
     ));
     let server = serve(hub.clone(), &sock).expect("bind");
 

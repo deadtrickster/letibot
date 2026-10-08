@@ -3564,12 +3564,16 @@ mod tests {
         // A file, not `open_in_memory`, because the point is a store that already
         // exists on disk at an older version. No dev-dependency for one test.
         let path = std::env::temp_dir().join(format!(
-            "letibot-migrate-v1-{}-{}.db",
+            "letibot-migrate-v1-{}-{}-{}.db",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let _ = std::fs::remove_file(&path);
         struct Clean(std::path::PathBuf);
@@ -3670,12 +3674,16 @@ mod tests {
         // Same fixture rule as the v1 test: a real store, one step reversed, and
         // the migration has to put back exactly what `SCHEMA_SQL` would have.
         let path = std::env::temp_dir().join(format!(
-            "letibot-migrate-v2-{}-{}.db",
+            "letibot-migrate-v2-{}-{}-{}.db",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let _ = std::fs::remove_file(&path);
         struct Clean(std::path::PathBuf);
@@ -3972,12 +3980,16 @@ mod tests {
     #[test]
     fn a_v15_store_is_migrated_and_gains_a_merge_queue_table() {
         let path = std::env::temp_dir().join(format!(
-            "letibot-migrate-v15-{}-{}.db",
+            "letibot-migrate-v15-{}-{}-{}.db",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let _ = std::fs::remove_file(&path);
         struct Clean(std::path::PathBuf);
@@ -4058,12 +4070,16 @@ mod tests {
     #[test]
     fn a_v14_store_is_migrated_and_gains_a_job_table() {
         let path = std::env::temp_dir().join(format!(
-            "letibot-migrate-v14-{}-{}.db",
+            "letibot-migrate-v14-{}-{}-{}.db",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let _ = std::fs::remove_file(&path);
         struct Clean(std::path::PathBuf);
@@ -4308,12 +4324,16 @@ mod tests {
         // Same fixture rule as the v1/v2 tests: a real store, one step reversed,
         // and the migration has to put back exactly what `SCHEMA_SQL` would have.
         let path = std::env::temp_dir().join(format!(
-            "letibot-migrate-v7-{}-{}.db",
+            "letibot-migrate-v7-{}-{}-{}.db",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let _ = std::fs::remove_file(&path);
         struct Clean(std::path::PathBuf);
@@ -4433,12 +4453,16 @@ mod tests {
     #[test]
     fn a_v13_store_gains_the_context_window_column() {
         let path = std::env::temp_dir().join(format!(
-            "letibot-migrate-v13-{}-{}.db",
+            "letibot-migrate-v13-{}-{}-{}.db",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let _ = std::fs::remove_file(&path);
         struct Clean(std::path::PathBuf);
@@ -4564,12 +4588,16 @@ mod tests {
     #[test]
     fn a_v12_store_gains_the_provider_column_as_never_switched() {
         let path = std::env::temp_dir().join(format!(
-            "letibot-v13-{}-{}.db",
+            "letibot-v13-{}-{}-{}.db",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let _ = std::fs::remove_file(&path);
         struct Clean(std::path::PathBuf);
@@ -4616,12 +4644,16 @@ mod tests {
         // no context until the next turn. The backfill sums the prefix and the
         // current transcript's items, the same rows the encoder reads.
         let path = std::env::temp_dir().join(format!(
-            "letibot-backfill-v8-{}-{}.db",
+            "letibot-backfill-v8-{}-{}-{}.db",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let _ = std::fs::remove_file(&path);
         struct Clean(std::path::PathBuf);
@@ -4954,12 +4986,16 @@ mod corpus_tests {
     #[test]
     fn an_older_store_gains_the_reading_and_its_rows_say_null() {
         let path = std::env::temp_dir().join(format!(
-            "letibot-store-v11-{}-{}.db",
+            "letibot-store-v11-{}-{}-{}.db",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let _ = std::fs::remove_file(&path);
         struct Clean(std::path::PathBuf);

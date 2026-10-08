@@ -1529,12 +1529,16 @@ pub mod tempdir {
         pub fn new() -> Self {
             let n = N.fetch_add(1, Ordering::Relaxed);
             let p = std::env::temp_dir().join(format!(
-                "letibot-tools-{}-{}-{n}",
+                "letibot-tools-{}-{}-{}-{n}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_nanos())
-                    .unwrap_or(0)
+                    .unwrap_or(0),
+                {
+                    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                    N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                }
             ));
             std::fs::create_dir_all(&p).expect("temp dir");
             TempDir(p)
