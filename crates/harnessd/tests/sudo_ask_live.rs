@@ -641,42 +641,50 @@ fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
     );
 }
 
-/// **The deadline ends it, for this shape too.**
+/// **The operator's own run has no deadline — not even the 120 s one.**
 ///
-/// The operator's report is *"harnessd hangs"*, and the todo their own session left behind
-/// says why that word is the right one: *"while a run is in flight **nothing else of the user's
-/// runs**, and if the deadline cannot fire the daemon is **hung, not busy**."* So the last
-/// thing to check is the one thing they could not see from their seat: that the deadline ends a
-/// run whose waiting process belongs to **root** — a process this daemon may not signal.
+/// Measured 2026-10-09, verbatim from the daemon's own row: `! sudo apt install mc`, apt
+/// at its `Continue? [Y/n]`, the person reading the package list, the run killed at 120 s
+/// and the install never run. The 120 s default exists for a command the MODEL did not ask
+/// to run longer; a person's `!` line is watched by the person who typed it, its output is
+/// on their screen, and their own acts — Ctrl+C, `!term`, closing the head — are its stop.
+/// `deadline_for` (in `letibot-tools`' `bash`) therefore hands the operator's run `None`,
+/// and this is the live proof that `None` means what it says at exactly the moment the old
+/// rule killed: past 120 s the run is still going, still the person's, and the daemon is
+/// not silent about it.
 ///
 /// # Why the door is not the route, which was tried first
 ///
 /// The head-run door looks like the cheap way in: it takes the same path into the same tool
-/// (`invoke_operator` → `bash` → `wait_with_progress` → the deadline branch) and a head may
-/// name a `timeout_ms`, so three seconds instead of two minutes. It is refused —
-/// `HEAD_RUN_TOOLS` does not contain `bash`, deliberately, because *"`bash` and `write` behind
-/// a composer's chord would put a shell one keystroke from where the operator is typing"*. So
-/// the operator's own `!` line is the only way to run a `bash` call as the operator, and the
-/// 120 s default is what it gets: `run_operator_shell` builds the call with the command and
-/// nothing else.
+/// (`invoke_operator` → `bash` → `wait_with_progress`). It is refused — `HEAD_RUN_TOOLS`
+/// does not contain `bash`, deliberately, because *"`bash` and `write` behind a composer's
+/// chord would put a shell one keystroke from where the operator is typing"*. So the
+/// operator's own `!` line is the only way to run a `bash` call as the operator — and the
+/// run it starts now arms no deadline at all, which is the rule this test measures.
 ///
 /// # Why this is opt-in
 ///
-/// Its cost is fixed and it is the largest in the file: two minutes of wall clock for a run
-/// that is *supposed* to sit still. `sudo_live.rs` gates its real-`sudo` test for the same
-/// reason, and a suite that blocks a child for two minutes on every run is a suite people stop
-/// running. `LETIBOT_DEADLINE_LIVE=1` turns it on.
+/// Unchanged from the test it replaces, whose cost profile it shares: over two minutes of
+/// wall clock for a run that is *supposed* to sit still. `sudo_live.rs` gates its
+/// real-`sudo` test for the same reason, and a suite that blocks a child that long on every
+/// run is a suite people stop running. `LETIBOT_DEADLINE_LIVE=1` turns it on.
 ///
 /// # What is asserted
 ///
-/// 1. The run ends at all — *"if the deadline cannot fire the daemon is **hung, not busy**"*,
-///    in the operator's own session's words.
-/// 2. It ends **because of the deadline**: the row it leaves says `was killed after 120s` and
-///    `outlived its deadline`. Ending for some other reason would prove nothing about this.
+/// 1. Past the old kill time the run is STILL the operator's: no `operator_shell_ran`
+///    warning, no row saying it was killed or that it outlived anything. The test this
+///    replaces waited for exactly that row at exactly 120 s — its assertion was the bug.
+/// 2. The daemon is not hung while it waits: the `operator_run_unreadable` sentence still
+///    arrives for a run whose waiting process belongs to root — *"harnessd hangs without
+///    printing anything to me"* is the report silence there would reproduce.
+/// 3. `stop` ends the run, by closing the pty it is blocked on — which is the stop a person
+///    gets by closing the head.
 #[test]
-fn the_deadline_ends_a_run_this_daemon_may_not_look_at() {
+fn the_operators_own_run_outlives_the_models_deadline() {
     if std::env::var("LETIBOT_DEADLINE_LIVE").as_deref() != Ok("1") {
-        eprintln!("LETIBOT_DEADLINE_LIVE=1 to spend two minutes on the 120 s deadline");
+        eprintln!(
+            "LETIBOT_DEADLINE_LIVE=1 to spend over two minutes on the operator's no-deadline run"
+        );
         return;
     }
     let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
@@ -695,28 +703,33 @@ fn the_deadline_ends_a_run_this_daemon_may_not_look_at() {
     let (mut head, rx) = attach(&socket, session, &log, &mut daemon);
 
     // ---- The run: `su` as root, reading the terminal the daemon holds, so it waits forever
-    // and cannot be signalled by this uid. The operator's `!` line, and the 120 s default it
-    // gets.
+    // and cannot be signalled by this uid. The operator's `!` line, which arms no deadline
+    // at all.
     let started = Instant::now();
     head.operator_shell(0, "! /usr/bin/su -c true")
         .expect("the line is submitted");
 
+    // ---- The window: PAST the old kill time, and it never exits early on any row. The test
+    // this replaced broke out of this loop the moment the deadline's own row arrived at
+    // 120 s; this one has to still be holding the run at 125 s, so it reads the whole window
+    // and lets the assertions below say what did and did not arrive.
     let mut ended = false;
     let mut rows = String::new();
-    let deadline = Instant::now() + Duration::from_secs(180);
-    // **And it keeps reading after the run has ended**, because the two halves arrive in this
-    // order: `run_operator_shell` publishes `operator_shell_ran` first and appends the rows
-    // second, so a loop that stopped at the warning would read the note and miss the row the
-    // note is about. That is what the first cut of this test did, and it measured a run that
-    // had ended by its deadline as having no row at all.
-    while Instant::now() < deadline && !(ended && rows.contains("outlived its deadline")) {
+    let mut unreadable: Option<String> = None;
+    let window = Instant::now() + Duration::from_secs(125);
+    while Instant::now() < window {
         let Ok(inbound) = rx.recv_timeout(Duration::from_millis(250)) else {
             continue;
         };
         if let ServerFrame::Event(env) = inbound.frame() {
             match &env.event {
                 SessionEvent::Warning { code, .. } if code == "operator_shell_ran" => ended = true,
-                // The row the run produced, which is where the deadline says what it did.
+                // The sentence for a run whose waiting process this daemon may not look at:
+                // the daemon SPEAKING is the not-hung half of what this test asserts.
+                SessionEvent::Warning { code, detail, .. } if code == "operator_run_unreadable" => {
+                    unreadable = Some(detail.clone());
+                }
+                // The row the run produced, had it ended — none may arrive claiming a kill.
                 SessionEvent::TranscriptContent { item, .. } => {
                     if let letibot_transcript::TranscriptItem::ToolResult { payload, .. } =
                         item.as_ref()
@@ -732,23 +745,20 @@ fn the_deadline_ends_a_run_this_daemon_may_not_look_at() {
     let took = started.elapsed();
     stop(&mut daemon);
     let _ = std::fs::remove_dir_all(&dir);
-    eprintln!("---- the deadline took {took:?}; the run's own row said ----");
+    eprintln!("---- {took:?} in, past the old kill time; the rows that arrived said ----");
     for line in rows.lines().filter(|l| !l.trim().is_empty()).take(12) {
         eprintln!("  {line}");
     }
     assert!(
-        ended,
-        "a run this daemon may not look at never ended — the deadline did not fire, which is \
-         the second, worse defect: the daemon is hung, not busy"
+        !ended && !rows.contains("outlived its deadline") && !rows.contains("was killed after"),
+        "the operator's own run met a clock {took:?} in: {rows}. `deadline_for` hands the \
+         operator's run no deadline, and this was to be the live proof that none is armed"
     );
     assert!(
-        rows.contains("was killed after 120s") && rows.contains("outlived its deadline"),
-        "the run ended, but not by its deadline — and *the deadline cannot fire* is the state \
-         the operator's own todo calls a hung daemon: {rows}"
-    );
-    assert!(
-        took < Duration::from_secs(180),
-        "the run ended after {took:?}, which is past the budget this test gives the deadline"
+        unreadable.is_some(),
+        "the daemon said nothing while the run sat — silent while waiting is the \
+         hung-not-busy state the operator reported, and removing the deadline must not \
+         bring it back"
     );
 }
 
