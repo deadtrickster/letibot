@@ -3986,6 +3986,14 @@ impl Harness {
     /// run the command: a [`ToolCall`] whose payload is the line minus its bang, already
     /// validated by [`letibot_sessionlog::operator_shell_command`].
     pub fn prepare_operator_shell(&mut self, line: &str) -> Result<(String, ToolCall), String> {
+        // **A pasted block is not a command, and the daemon checks this itself.** The composer
+        // refuses it too, and that is not a second opinion: a `!` line reaches here from any
+        // head that speaks the protocol, and the crate both halves share holds the rule. A
+        // five-line notice used to become one `!` command whose newlines the shell split,
+        // running `usage: sudo …`, `it.`, `so` and `/proc` as their own commands.
+        if let Some(why) = letibot_sessionlog::operator_line_refusal(line) {
+            return Err(why);
+        }
         let command = letibot_sessionlog::operator_shell_command(line)
             .ok_or_else(|| format!("`{line}` is not a `!` command — nothing was run"))?
             .to_string();

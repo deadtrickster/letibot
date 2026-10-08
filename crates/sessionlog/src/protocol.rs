@@ -717,6 +717,84 @@ pub fn operator_shell_command(line: &str) -> Option<&str> {
     (!cmd.is_empty()).then_some(cmd)
 }
 
+/// **Is this text a `!` line that is more than one line?** — the sentence to show, or `None`
+/// when the text may be parsed at all.
+///
+/// # Why this exists, measured
+///
+/// A `!` line is ONE line. The composer is a single-line field, so the only way a newline
+/// reaches [`operator_shell_command`] is a **paste** — and a pasted block whose first line
+/// starts with `!` is not "several commands", it is one notice somebody copied back into the
+/// composer. MEASURED 2026-10-08: the operator pasted the `operator_run_unreadable` notice,
+/// and because the daemon hands the command to a shell, the newlines split it —
+/// `! sudo apt install mc` re-ran an earlier `sudo` with the notice's remaining words as its
+/// arguments, and `usage: sudo …`, `it.`, `so` and `/proc` each ran as their own command.
+///
+/// **Nothing ran, and the shape that would have made it worse is worth naming:** the parse
+/// was right — it *is* a `!` line — so this is not a fix to [`operator_shell_command`] but a
+/// check in front of it, in the one crate both halves share, so the composer that submits and
+/// the daemon that runs cannot disagree about what may run.
+///
+/// A multi-line text that does **not** start with `!` is untouched: a pasted stack trace is a
+/// prompt, and it is the ordinary reason somebody pastes.
+pub fn operator_line_refusal(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    let first = lines.next().unwrap_or("");
+    if !first.trim_start().starts_with('!') {
+        return None;
+    }
+    let rest = lines.count();
+    (rest > 0).then(|| {
+        format!(
+            "that is {} lines and its first one starts with `!`, so running it would run every \
+             line of the pasted block as its own shell command. Nothing was run. A `!` line is \
+             ONE line: send the command on its own.",
+            rest + 1
+        )
+    })
+}
+
+#[cfg(test)]
+mod operator_line_tests {
+    use super::{operator_line_refusal, operator_shell_command};
+
+    /// **A pasted block is not a command.** The parse calls it a `!` line — correctly, which
+    /// is exactly why a check has to sit in front of it — and the refusal is what stops five
+    /// lines of a copied notice from becoming five shell commands.
+    ///
+    /// This test cannot fail on the code before it (the function did not exist); what it pins
+    /// is the pair of facts that make the defect: the parse says yes, the refusal says no.
+    #[test]
+    fn a_pasted_block_that_starts_with_a_bang_is_refused_and_nothing_runs() {
+        let notice = "! sudo apt install mc\nusage: sudo …\nit.\nso\n/proc";
+        // The parse still says it is a `!` line — which is why the refusal has to exist.
+        assert!(
+            operator_shell_command(notice).is_some(),
+            "the parse is right: this IS a `!` line"
+        );
+        let why = operator_line_refusal(notice).expect("a 5-line block must be refused");
+        assert!(why.contains("5 lines"), "{why}");
+        assert!(why.contains("Nothing was run"), "{why}");
+        assert!(why.contains("ONE line"), "{why}");
+    }
+
+    /// **One line is a command, and every ordinary paste is a prompt.** Neither is touched.
+    #[test]
+    fn one_line_and_prompt_pastes_pass_through() {
+        assert_eq!(operator_line_refusal("! sudo apt install mc"), None);
+        assert_eq!(operator_line_refusal("!ls"), None);
+        assert_eq!(operator_line_refusal("!term mc"), None);
+        // A pasted stack trace, a pasted diff, a pasted paragraph: all prompts.
+        assert_eq!(
+            operator_line_refusal("thread 'main' panicked\nat src/main.rs:12\nnote: run with"),
+            None
+        );
+        assert_eq!(operator_line_refusal("explain this:\n    fn f() {}"), None);
+        // A `!` that is not the first character of the line is not a `!` line at all.
+        assert_eq!(operator_line_refusal("look at `!send`\nand this"), None);
+    }
+}
+
 /// **The command a `!term` line carries, or `None` when it is not one.**
 ///
 /// Beside [`operator_shell_command`] and for its reason: this is the one place both halves of
