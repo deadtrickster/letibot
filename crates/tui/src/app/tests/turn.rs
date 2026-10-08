@@ -400,7 +400,7 @@ fn every_reset_in_a_reasoning_row_restores_the_reasoning_style() {
     a.key(Key::CtrlR);
     let rows = a.screen(100, 40);
 
-    let reopen = letibot_ui::style::Palette::Colour.open(Role::Reasoning);
+    let reopen = rano::style::Palette::Colour.open(Role::Reasoning);
     let reset = letibot_ui::width::RESET;
     let rail: Vec<&String> = rows.iter().filter(|l| l.contains('┃')).collect();
     assert!(
@@ -412,7 +412,7 @@ fn every_reset_in_a_reasoning_row_restores_the_reasoning_style() {
     // renderer that had simply stopped colouring anything.
     assert!(
         rail.iter()
-            .any(|l| l.contains(letibot_ui::style::Palette::Colour.open(Role::Subheading))),
+            .any(|l| l.contains(&rano::style::Palette::Colour.open(Role::Subheading))),
         "no heading was styled inside the reasoning; the fixture is not exercising the bug"
     );
     for l in rail {
@@ -427,7 +427,7 @@ fn every_reset_in_a_reasoning_row_restores_the_reasoning_style() {
         while let Some(hit) = body[at..].find(reset) {
             let after = at + hit + reset.len();
             assert!(
-                body[after..].starts_with(reopen),
+                body[after..].starts_with(&reopen),
                 "a reset inside the reasoning left the block: the text after \
                      it is {:?}\nwhole row: {:?}",
                 &body[after..body.len().min(after + 24)],

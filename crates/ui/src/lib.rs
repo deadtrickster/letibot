@@ -41,7 +41,7 @@
 //! | [`progress`] | the prefill bar, which needs data neither upstream has |
 //! | [`card`] | tool calls: collapsed, expanded, and what a long result looks like |
 //! | [`editor`] | multi-line input, history, paste, kill ring |
-//! | [`style`] | the one place a colour is chosen |
+//! | [`painter`] | string painting that closes a span back to its block (the role table is `rano::style`) |
 //! | [`ansi`] | SGR a foreign program wrote, drawn as the palette's own roles |
 //!
 //! **A program's whole screen is not here.** It is `letibot-vt` — a crate *below* this one, so
@@ -55,9 +55,9 @@ pub mod card;
 pub mod diff;
 pub mod editor;
 pub mod highlight;
+pub mod painter;
 pub mod progress;
 pub mod sidediff;
-pub mod style;
 /// **Text this head did not author, made safe for a terminal** (§3.1). Here rather than
 /// in a head, because this crate draws every card and had no sanitiser at all.
 pub mod text;

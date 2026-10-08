@@ -70,8 +70,9 @@
 //!   [`Card::bytes`] carries letibot's `inline`/`full` split instead, which is a
 //!   §8.3 disclosure obligation and has no grok-build counterpart.
 
-use crate::style::{Painter, Palette, Role};
+use crate::painter::{Painter, Sgr};
 use crate::width;
+use rano::style::{Palette, Role};
 
 /// How much of a block is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -482,9 +483,9 @@ impl Card {
         // operator's own report, in R53's words: a running call rendered as
         // `◐ Running "cd /tmp && (sleep 6; …) & …"` with no `· 12.4s` anywhere on it.
         let mut s = String::new();
-        s.push_str(&p.paint(mark_role, &mark.to_string()));
+        s.push_str(&p.painted(mark_role, &mark.to_string()));
         s.push(' ');
-        s.push_str(&p.paint(Role::Strong, self.verb.label(running)));
+        s.push_str(&p.painted(Role::Strong, self.verb.label(running)));
 
         // The right-hand side: state, timing, disclosure.
         let mut tail: Vec<String> = Vec::new();
@@ -544,11 +545,11 @@ impl Card {
             }
             _ => Role::Faint,
         };
-        let joined = p.paint(role, &format!(" · {}", tail.join(" · ")));
+        let joined = p.painted(role, &format!(" · {}", tail.join(" · ")));
         // The call id, kept beside the subject because it is the same kind of fact — and measured
         // before the subject, for the same reason the tail is.
         let id_str = if cfg.show_id {
-            p.paint(
+            p.painted(
                 Role::Faint,
                 &format!(" ({})", crate::text::without_control_lines(&self.call_id)),
             )
@@ -586,7 +587,7 @@ impl Card {
                 width::truncate(&target, room)
             };
             s.push(' ');
-            s.push_str(&p.paint(Role::Plain, &shown));
+            s.push_str(&p.painted(Role::Plain, &shown));
         }
         s.push_str(&id_str);
         s.push_str(&joined);
@@ -602,7 +603,7 @@ impl Card {
             if cfg.mode == DisplayMode::Collapsed && !self.body.is_empty() {
                 out.push(
                     cfg.palette
-                        .paint(Role::Faint, &format!("  … {} lines", self.body.len())),
+                        .painted(Role::Faint, &format!("  … {} lines", self.body.len())),
                 );
             }
             return out;
@@ -643,7 +644,7 @@ pub fn head_tail(lines: &[String], first: usize, last: usize, p: Palette) -> Vec
     }
     let hidden = lines.len() - first - last;
     let mut out: Vec<String> = lines[..first].to_vec();
-    out.push(p.paint(Role::Faint, &format!("… +{hidden} lines")));
+    out.push(p.painted(Role::Faint, &format!("… +{hidden} lines")));
     if last > 0 {
         out.extend_from_slice(&lines[lines.len() - last..]);
     }
@@ -668,24 +669,24 @@ pub fn reasoning(
 ) -> Vec<String> {
     let p = cfg.palette;
     let head = if running {
-        p.paint(Role::Reasoning, "Thinking…")
+        p.painted(Role::Reasoning, "Thinking…")
     } else {
         match elapsed_ms {
             Some(ms) => format!(
                 "{}{}",
-                p.paint(Role::Strong, "Thought"),
-                p.paint(
+                p.painted(Role::Strong, "Thought"),
+                p.painted(
                     Role::Faint,
                     &format!(" for {}", crate::progress::duration(ms))
                 )
             ),
-            None => p.paint(Role::Strong, "Thought"),
+            None => p.painted(Role::Strong, "Thought"),
         }
     };
     let mut out = vec![width::truncate(&head, cfg.width)];
     if cfg.mode == DisplayMode::Collapsed {
         if !body.is_empty() {
-            out.push(p.paint(Role::Faint, &format!("  … {} lines", body.len())));
+            out.push(p.painted(Role::Faint, &format!("  … {} lines", body.len())));
         }
         return out;
     }
@@ -706,8 +707,8 @@ pub fn reasoning(
         out.push(width::truncate(
             &format!(
                 "{} {}",
-                p.paint(Role::Faint, "┃"),
-                p.paint(Role::Reasoning, &inner.rebase_resets(&l))
+                p.painted(Role::Faint, "┃"),
+                p.painted(Role::Reasoning, &inner.rebase_resets(&l))
             ),
             cfg.width,
         ));

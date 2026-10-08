@@ -85,8 +85,9 @@
 //!   rather than one hunk at a time, so a construct spanning lines sees its own
 //!   context.
 
-use crate::style::{Palette, Role};
+use crate::painter::Sgr;
 use crate::width::{self, RESET};
+use rano::style::{Palette, Role};
 
 /// Byte spans within one line, in order and non-overlapping.
 pub type Spans = Vec<(usize, usize)>;
@@ -425,11 +426,11 @@ pub fn render_from(
     let hs = hunks(&d, cfg.context);
     let mut out = Vec::new();
     if hs.is_empty() {
-        out.push(cfg.palette.paint(Role::Faint, "no change"));
+        out.push(cfg.palette.painted(Role::Faint, "no change"));
         return out;
     }
     if d.degraded {
-        out.push(cfg.palette.paint(
+        out.push(cfg.palette.painted(
             Role::Attention,
             "! diff gave up on the minimal edit script; \
              the changed region is shown as a whole replacement",
@@ -467,7 +468,7 @@ pub fn render_from(
                 dropped += 1;
             } else {
                 rows_left -= 1;
-                out.push(cfg.palette.paint(
+                out.push(cfg.palette.painted(
                     Role::Faint,
                     &format!(
                         "@@ -{},{} +{},{} @@",
@@ -495,7 +496,7 @@ pub fn render_from(
         }
     }
     if dropped > 0 {
-        out.push(cfg.palette.paint(
+        out.push(cfg.palette.painted(
             Role::Faint,
             &format!("… {dropped} more diff lines not shown"),
         ));
@@ -555,7 +556,7 @@ fn row_lines(
     // The gutter takes the line's own foreground on a changed row — the same
     // rule the split renderer's number follows — and stays dim on a context
     // row.
-    let gut = cfg.palette.paint(
+    let gut = cfg.palette.painted(
         if role == Role::Plain {
             Role::Faint
         } else {
@@ -571,7 +572,7 @@ fn row_lines(
             // foregrounds (the operator's ruling on the first cube tint).
             out.push(format!(
                 "{gut}{}{l}",
-                cfg.palette.paint(role.foreground(), sign)
+                cfg.palette.painted(role.foreground(), sign)
             ));
         } else {
             // A wrapped continuation keeps the colour and loses the sign, so the
@@ -579,7 +580,7 @@ fn row_lines(
             out.push(format!(
                 "{}{}{l}",
                 cfg.palette
-                    .paint(Role::Faint, &" ".repeat(width::width(&gutter))),
+                    .painted(Role::Faint, &" ".repeat(width::width(&gutter))),
                 " "
             ));
         }
@@ -589,8 +590,8 @@ fn row_lines(
 
 /// Paint a line, emphasising the byte ranges in `emph`.
 fn paint_with_emphasis(text: &str, role: Role, emph: Option<&Spans>, p: Palette) -> String {
-    let base = p.open(role);
-    let em = p.open(Role::Emphasis);
+    let base = p.sgr(role);
+    let em = p.sgr(Role::Emphasis);
     let Some(spans) = emph else {
         return if base.is_empty() {
             text.to_string()

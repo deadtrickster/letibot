@@ -3,8 +3,9 @@
 use crate::app::*;
 use crate::ui::render::{dur_human, sgr, trim_to};
 use crate::ui::*;
+use letibot_ui::painter::Sgr;
 use letibot_ui::progress;
-use letibot_ui::style::Role;
+use rano::style::Role;
 
 impl App {
     /// The turn's status, inlaid in the composer's bottom border and pinned
@@ -72,7 +73,7 @@ impl App {
             ),
         };
         let p = self.cfg.palette();
-        let spin = p.paint(Role::Pending, &progress::spinner(self.now_ms).to_string());
+        let spin = p.painted(Role::Pending, &progress::spinner(self.now_ms).to_string());
         // **NO COUNT ON THIS ROW.** Ruled by the operator, 2026-09-27: *"i dont care about those
         // chars"* / *"just dont show me them"*. It carried `· 18.0k chars` (the whole stream since
         // the last round began) or `· 2,826 tok` when the server's own counter had spoken, and
@@ -110,7 +111,7 @@ impl App {
             // transcript's own marker (`[2 tool calls, 265 thinking lines]`). This row does not
             // repeat either — the operator's ruling is that it says the work is alive, and a
             // number it repeats from somewhere else is the row asking to be studied.
-            _ => p.paint(Role::Pending, &format!("{spin} Responding{since}")),
+            _ => p.painted(Role::Pending, &format!("{spin} Responding{since}")),
         }
     }
 

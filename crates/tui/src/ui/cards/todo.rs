@@ -3,8 +3,9 @@
 use crate::app::*;
 use crate::ui::render::{sgr, trim_to};
 use crate::ui::*;
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
 use letibot_ui::text::without_control_lines;
+use rano::style::Role;
 
 impl App {
     /// The line the screen shows while `mode_confirm` is set. Spells out the three
@@ -36,9 +37,9 @@ impl App {
             let body = if value.is_empty() {
                 dim(&self.cfg, empty)
             } else if draft.focus == which {
-                p.paint(Role::Strong, &without_control_lines(&value))
+                p.painted(Role::Strong, &without_control_lines(&value))
             } else {
-                p.paint(Role::Faint, &without_control_lines(&value))
+                p.painted(Role::Faint, &without_control_lines(&value))
             };
             format!("{head}{body}")
         };
@@ -58,7 +59,7 @@ impl App {
             out.push(format!(
                 "{}{}",
                 dim(&self.cfg, &format!("  {k:<7}")),
-                p.paint(Role::Plain, why)
+                p.painted(Role::Plain, why)
             ));
         }
         out.push(String::new());

@@ -3,7 +3,8 @@
 use crate::app::*;
 use crate::ui::render::{sgr, trim_to, wrap};
 use crate::ui::*;
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
+use rano::style::Role;
 
 impl App {
     /// The mode card: the daemon's own mode names, in the ask card's slot at
@@ -116,7 +117,7 @@ impl App {
                 &format!(
                     "{mark} {:>2}  {}",
                     i + 1,
-                    p.paint(if picked { Role::Strong } else { Role::Plain }, name)
+                    p.painted(if picked { Role::Strong } else { Role::Plain }, name)
                 ),
                 w,
             ));

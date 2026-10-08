@@ -3,8 +3,9 @@
 
 use crate::app::*;
 use crate::ui::render::RenderConfig;
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
 use letibot_ui::{progress, width};
+use rano::style::Role;
 
 /// One row, centred horizontally in `w` columns.
 ///
@@ -14,7 +15,7 @@ use letibot_ui::{progress, width};
 /// and the whole point of centring is that the eye finds it in the same place from
 /// frame to frame as the string changes length — which the walking cat does.
 pub(crate) fn centred_row(cfg: &RenderConfig, text: &str, w: usize) -> String {
-    let pad = cfg.palette().paint(Role::Faint, &text.to_string());
+    let pad = cfg.palette().painted(Role::Faint, &text.to_string());
     let taken = width::width(&pad);
     if taken >= w {
         return pad;
@@ -106,13 +107,13 @@ pub(crate) fn filling_line(
         format!(
             "  {} {}  {}",
             progress::bar(&p, bar_cols, cfg.palette()),
-            cfg.palette().paint(Role::Faint, &counts),
-            cfg.palette().paint(
+            cfg.palette().painted(Role::Faint, &counts),
+            cfg.palette().painted(
                 Role::Faint,
                 &format!("{cat:<CAT_SLOT$}", cat = cat_frame(now_ms))
             )
         ),
-        cfg.palette().paint(Role::Faint, &format!("  {what}")),
+        cfg.palette().painted(Role::Faint, &format!("  {what}")),
     ]
 }
 
@@ -155,13 +156,13 @@ pub(crate) fn compacting_line(c: &CompactionLine, now_ms: u64, cfg: &RenderConfi
             format!(
                 "  {} {}  {}",
                 progress::bar(&pre, bar_cols, p),
-                p.paint(Role::Faint, &counts),
-                p.paint(
+                p.painted(Role::Faint, &counts),
+                p.painted(
                     Role::Faint,
                     &format!("{cat:<CAT_SLOT$}", cat = cat_frame(now_ms))
                 )
             ),
-            p.paint(
+            p.painted(
                 Role::Faint,
                 &format!(
                     "  compacting {where_} — nothing shows on the \
@@ -175,11 +176,11 @@ pub(crate) fn compacting_line(c: &CompactionLine, now_ms: u64, cfg: &RenderConfi
         String::new(),
         format!(
             "  {} {}",
-            p.paint(
+            p.painted(
                 Role::Faint,
                 &format!("{cat:<CAT_SLOT$}", cat = cat_frame(now_ms))
             ),
-            p.paint(
+            p.painted(
                 Role::Faint,
                 &format!(
                     "compacting {where_} — {} {} written so far",

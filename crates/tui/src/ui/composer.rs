@@ -4,8 +4,9 @@ use crate::app::*;
 use crate::ui::render::{trim_to, visible_width};
 use crate::ui::*;
 use letibot_ui::editor::Editor;
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
 use letibot_ui::width;
+use rano::style::Role;
 
 impl App {
     /// The live completion row shown above the composer while a `/command` or a
@@ -177,7 +178,7 @@ impl App {
         // `Role::Faint`, not `sgr::GREY`. 90 is the theme's *bright black*, which `style.rs`
         // measured landing within a hair of the background on several light themes; the attribute
         // de-emphasises whatever foreground the reader has already chosen.
-        let wall = boxed.then(|| self.cfg.palette().paint(Role::Faint, "│"));
+        let wall = boxed.then(|| self.cfg.palette().painted(Role::Faint, "│"));
         for i in start..start + show {
             let body = lines.get(i).cloned().unwrap_or_default();
             out.push(match &wall {
@@ -213,8 +214,8 @@ impl App {
         // a plain reset, which restores the *terminal default* and not the grey
         // of the border it is inlaid into. So the border reopens itself on the
         // far side of each legend. Same defect and same fix as
-        // `style::Painter::inside`, one layer up: a reset is not a restore.
-        let reopen = self.cfg.palette().open(Role::Faint);
+        // `painter::Painter::inside`, one layer up: a reset is not a restore.
+        let reopen = self.cfg.palette().sgr(Role::Faint);
         let mut left_text = String::new();
         if !left.is_empty() && inner >= 10 {
             left_text = format!("─ {}{reopen} ", trim_to(left, inner - 4));
@@ -228,7 +229,7 @@ impl App {
             }
         }
         let fill = inner.saturating_sub(left_cols + visible_width(&right_text));
-        self.cfg.palette().paint(
+        self.cfg.palette().painted(
             Role::Faint,
             &format!("{open}{left_text}{}{right_text}{close}", "─".repeat(fill)),
         )

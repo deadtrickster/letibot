@@ -6,8 +6,9 @@ use crate::ui::render::{BlockCache, Decor, RenderConfig, trim_to, visible_width}
 use crate::ui::*;
 use letibot_transcript::TranscriptItem;
 use letibot_ui::card;
-use letibot_ui::style::{Painter, Role};
+use letibot_ui::painter::{Painter, Sgr};
 use letibot_ui::text::without_control_lines;
+use rano::style::Role;
 
 /// The rail every line of the model's reasoning carries.
 ///
@@ -46,8 +47,8 @@ pub(crate) fn reasoning_decor(cfg: &RenderConfig) -> Decor {
     // which a terminal collapses to nothing.
     let rail = Painter::inside(p, Role::Reasoning);
     Decor {
-        prefix: format!("{step}{} ", rail.paint(Role::Faint, "┃")),
-        open: p.open(Role::Reasoning).to_string(),
+        prefix: format!("{step}{} ", rail.painted(Role::Faint, "┃")),
+        open: p.sgr(Role::Reasoning).to_string(),
     }
 }
 

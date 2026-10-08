@@ -5,9 +5,10 @@ use crate::app::*;
 use crate::ui::render::{sgr, wrap};
 use crate::ui::*;
 use letibot_sessionlog::view::{OpenDecision, SettledDecision};
+use letibot_ui::painter::Sgr;
 use letibot_ui::progress;
-use letibot_ui::style::Role;
 use letibot_ui::text::without_control_lines;
+use rano::style::Role;
 
 impl App {
     /// **The card, split where R20 says the split is.**
@@ -590,7 +591,7 @@ pub(crate) fn decision_lines(
     d: &letibot_sessionlog::view::SettledDecision,
     tools: Fold,
     w: usize,
-    p: letibot_ui::style::Palette,
+    p: rano::style::Palette,
 ) -> Vec<String> {
     use letibot_sessionlog::event::DecisionOutcome as O;
     let mut out = Vec::new();
@@ -605,10 +606,10 @@ pub(crate) fn decision_lines(
     } else {
         format!("{} {}", d.by.kind, d.by.identity)
     };
-    out.push(p.paint(Role::Faint, &format!("  · {word}, by {who}")));
+    out.push(p.painted(Role::Faint, &format!("  · {word}, by {who}")));
     if tools.is_open() {
         for l in decision_detail(d, w.saturating_sub(4)) {
-            out.push(p.paint(Role::Faint, &format!("    {l}")));
+            out.push(p.painted(Role::Faint, &format!("    {l}")));
         }
     }
     out

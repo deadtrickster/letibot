@@ -3,7 +3,8 @@
 use crate::app::*;
 use crate::ui::render::{dur_human, sgr, trim_to, wrap};
 use crate::ui::*;
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
+use rano::style::Role;
 
 impl App {
     /// **The line a head with no daemon draws**, above the composer and under nothing.
@@ -138,7 +139,7 @@ impl App {
             ));
         }
         said.push_str(" · /status");
-        trim_to(&p.paint(Role::Attention, &said), w)
+        trim_to(&p.painted(Role::Attention, &said), w)
     }
 
     /// `/status`: this head's own instrumentation, with what each number means.
@@ -150,7 +151,7 @@ impl App {
     /// head quieter than the one next to it".
     pub(crate) fn status_lines(&self, w: usize) -> Vec<String> {
         let p = self.cfg.palette();
-        let mut out = vec![p.paint(Role::Strong, "this head"), String::new()];
+        let mut out = vec![p.painted(Role::Strong, "this head"), String::new()];
         // **The screen says what it just did** (R51 item 17). Opening it acknowledged the alarm,
         // and a mark that vanishes with nothing said is a mark the reader cannot tell from a bug —
         // the numbers below are unchanged, which is precisely why the sentence is owed.
@@ -170,11 +171,11 @@ impl App {
             let head = format!("  {k:<12}");
             out.push(format!(
                 "{}{}",
-                p.paint(Role::Faint, &head),
-                p.paint(Role::Plain, &v)
+                p.painted(Role::Faint, &head),
+                p.painted(Role::Plain, &v)
             ));
             for l in wrap(why, w.saturating_sub(16)) {
-                out.push(format!("{:14}{}", "", p.paint(Role::Faint, &l)));
+                out.push(format!("{:14}{}", "", p.painted(Role::Faint, &l)));
             }
             out.push(String::new());
         };
@@ -434,7 +435,7 @@ impl App {
                 "Where the daemon is standing. Tools resolve relative paths here.",
             );
         }
-        out.push(p.paint(Role::Faint, "  /status or esc closes this"));
+        out.push(p.painted(Role::Faint, "  /status or esc closes this"));
         out
     }
 }

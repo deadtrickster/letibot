@@ -63,8 +63,9 @@
 //! Their `format_tokens_short` (`turn_status.rs:749`) and this file's
 //! [`thousands`] were written to the same brief and land on the same shape.
 
-use crate::style::{Palette, Role};
+use crate::painter::Sgr;
 use crate::width;
+use rano::style::{Palette, Role};
 
 /// The server's prefill progress, as it arrives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -170,18 +171,18 @@ pub fn bar(p: &Prefill, cols: usize, palette: Palette) -> String {
     let mut s = String::with_capacity(cols * 8 + 48);
     s.push('▐');
     if cached > 0 {
-        s.push_str(&palette.paint(Role::Success, &"█".repeat(cached)));
+        s.push_str(&palette.painted(Role::Success, &"█".repeat(cached)));
     }
     if full > 0 {
         // A different *glyph*, not just a different colour: `Palette::None` is
         // the replay and CI case and the cache split has to survive it.
-        s.push_str(&palette.paint(Role::Pending, &"▓".repeat(full)));
+        s.push_str(&palette.painted(Role::Pending, &"▓".repeat(full)));
     }
     if partial == 1 {
-        s.push_str(&palette.paint(Role::Pending, EIGHTHS[rem]));
+        s.push_str(&palette.painted(Role::Pending, EIGHTHS[rem]));
     }
     if rest > 0 {
-        s.push_str(&palette.paint(Role::Faint, &"░".repeat(rest)));
+        s.push_str(&palette.painted(Role::Faint, &"░".repeat(rest)));
     }
     s.push('▌');
     s
@@ -243,7 +244,7 @@ pub fn decode_line(predicted: u64, elapsed_ms: u64, cols: usize, palette: Palett
     };
     let s = format!(
         "{} {} tok · {:.1} tok/s · {}",
-        palette.paint(Role::Pending, "generating"),
+        palette.painted(Role::Pending, "generating"),
         thousands(predicted),
         rate,
         duration(elapsed_ms)

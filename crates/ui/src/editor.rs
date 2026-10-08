@@ -83,8 +83,9 @@
 //! - Neither upstream is copied line for line: grok-build's is ratatui-typed and
 //!   opencode's is SolidJS reactive. These are the rules, in Rust, as data.
 
-use crate::style::{Palette, Role};
+use crate::painter::Sgr;
 use crate::width;
+use rano::style::{Palette, Role};
 
 /// Which characters make up a "word" for a word motion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -826,7 +827,7 @@ impl Editor {
         let mut out = Vec::with_capacity(ranges.len());
         for (i, r) in ranges.iter().enumerate() {
             let lead = if i == 0 {
-                palette.paint(Role::Faint, prompt)
+                palette.painted(Role::Faint, prompt)
             } else {
                 " ".repeat(width::width(prompt))
             };
@@ -841,7 +842,7 @@ impl Editor {
                 let mut b = body.to_string();
                 for (ph, _) in &self.pastes {
                     if b.contains(ph.as_str()) {
-                        b = b.replace(ph.as_str(), &palette.paint(Role::Attention, ph));
+                        b = b.replace(ph.as_str(), &palette.painted(Role::Attention, ph));
                     }
                 }
                 b
@@ -874,10 +875,10 @@ impl Editor {
     /// something different.
     pub fn hint(&self, now_ms: u64, palette: Palette) -> String {
         if self.esc_taps.armed(now_ms, INTERRUPT_WINDOW_MS) {
-            return palette.paint(Role::Attention, "esc again to interrupt");
+            return palette.painted(Role::Attention, "esc again to interrupt");
         }
         if self.ctrlc_taps.armed(now_ms, QUIT_WINDOW_MS) {
-            return palette.paint(Role::Attention, "ctrl+c again to exit");
+            return palette.painted(Role::Attention, "ctrl+c again to exit");
         }
         String::new()
     }
@@ -1259,7 +1260,7 @@ mod tests {
         e.key(Key::Paste("x\n".repeat(9)), 0);
         let (lines, _) = e.render(60, Palette::Colour);
         assert!(
-            lines[0].contains(Palette::Colour.open(Role::Attention)),
+            lines[0].contains(&Palette::Colour.sgr(Role::Attention)),
             "{:?}",
             lines[0]
         );

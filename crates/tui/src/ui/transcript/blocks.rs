@@ -2,8 +2,9 @@
 
 use crate::app::*;
 use crate::ui::render::{RenderConfig, trim_to, visible_width, wrap};
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
 use letibot_ui::text::without_control_lines;
+use rano::style::Role;
 
 /// **A row this SESSION appended, drawn as the session's** — R42.
 ///
@@ -26,7 +27,7 @@ pub(crate) fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<Stri
     let text: &str = &clean;
     let p = cfg.palette();
     let w = cfg.width.max(20);
-    let mark = p.paint(Role::Faint, "session · ");
+    let mark = p.painted(Role::Faint, "session · ");
     let stamp = clock_time(ts);
     let mut lines = wrap(text, session_text_cols(ts, cfg));
     if lines.is_empty() {
@@ -45,7 +46,7 @@ pub(crate) fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<Stri
             String::new()
         };
         out.push(trim_to(
-            &format!("  {label}{}", p.paint(Role::Faint, &format!("{l}{tail}"))),
+            &format!("  {label}{}", p.painted(Role::Faint, &format!("{l}{tail}"))),
             w,
         ));
     }
@@ -209,7 +210,7 @@ pub(crate) fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String>
     let text: &str = &clean;
     let p = cfg.palette();
     let w = cfg.width.max(20);
-    let bar = p.paint(Role::UserAccent, "▌");
+    let bar = p.painted(Role::UserAccent, "▌");
     let stamp = clock_time(ts);
     // The first row shares its width with the timestamp; the rest have the row.
     let head_w = w.saturating_sub(2 + visible_width(&stamp) + usize::from(!stamp.is_empty()));
@@ -233,7 +234,7 @@ pub(crate) fn user_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String>
         };
         out.push(format!(
             "{bar} {}",
-            p.paint(Role::UserBlock, &format!("{l}{tail}"))
+            p.painted(Role::UserBlock, &format!("{l}{tail}"))
         ));
     }
     out
@@ -341,7 +342,7 @@ pub(crate) fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: boo
     let text: &str = &clean;
     let p = cfg.palette();
     let w = cfg.width.max(20);
-    let bar = p.paint(Role::UserAccent, "▌");
+    let bar = p.painted(Role::UserAccent, "▌");
     // The first row shares its width with the tag; the rest hang under the text.
     let head_w = w.saturating_sub(2 + visible_width(mark) + 3);
     let mut lines = wrap(text, head_w.max(8));
@@ -389,9 +390,9 @@ pub(crate) fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: boo
         if room >= 16 {
             return vec![format!(
                 "{bar} {}{}{}",
-                p.paint(Role::Pending, &format!("{mark} · ")),
-                p.paint(Role::Faint, &trim_to(&lines[0], room)),
-                p.paint(Role::Faint, &seam),
+                p.painted(Role::Pending, &format!("{mark} · ")),
+                p.painted(Role::Faint, &trim_to(&lines[0], room)),
+                p.painted(Role::Faint, &seam),
             )];
         }
         // **A terminal too narrow for the seam still gets one row.** The headline
@@ -400,8 +401,8 @@ pub(crate) fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: boo
         // it matters most.
         return vec![format!(
             "{bar} {}{}",
-            p.paint(Role::Pending, &format!("{mark} · ")),
-            p.paint(Role::Faint, &trim_to(&lines[0], head_w.max(8))),
+            p.painted(Role::Pending, &format!("{mark} · ")),
+            p.painted(Role::Faint, &trim_to(&lines[0], head_w.max(8))),
         )];
     }
 
@@ -409,11 +410,11 @@ pub(crate) fn queued_lines(text: &str, cfg: &RenderConfig, mark: &str, open: boo
     let mut out = Vec::with_capacity(lines.len());
     for (i, l) in lines.iter().enumerate() {
         let label = if i == 0 {
-            p.paint(Role::Pending, &format!("{mark} · "))
+            p.painted(Role::Pending, &format!("{mark} · "))
         } else {
             indent.clone()
         };
-        out.push(format!("{bar} {}{}", label, p.paint(Role::Faint, l)));
+        out.push(format!("{bar} {}{}", label, p.painted(Role::Faint, l)));
     }
     out
 }

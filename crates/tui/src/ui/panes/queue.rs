@@ -3,8 +3,9 @@
 use crate::app::*;
 use crate::ui::render::{dur_human, sgr, trim_to, wrap};
 use crate::ui::*;
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
 use letibot_ui::text::without_control_lines;
+use rano::style::Role;
 
 impl App {
     /// **The merge queue, as rows** — one entry per row plus its state and reason beneath it.
@@ -128,7 +129,7 @@ impl App {
             ("base", e.base_sha.clone()),
             ("age", dur_human(self.now_ms.saturating_sub(e.created_ms))),
         ] {
-            out.push(format!("  {}", p.paint(Role::Faint, &format!("{k:<9}"))));
+            out.push(format!("  {}", p.painted(Role::Faint, &format!("{k:<9}"))));
             // The value goes on the same row as its label: one `format!` per row rather than
             // two pushes, because a label alone on a line reads as a heading.
             let last = out.len() - 1;
@@ -137,21 +138,21 @@ impl App {
         if let Some(wt) = &e.worktree {
             out.push(format!(
                 "  {}{}",
-                p.paint(Role::Faint, &format!("{:<9}", "worktree")),
+                p.painted(Role::Faint, &format!("{:<9}", "worktree")),
                 without_control_lines(wt)
             ));
         }
         if let Some(tip) = &e.landed_sha {
             out.push(format!(
                 "  {}{}",
-                p.paint(Role::Faint, &format!("{:<9}", "landed")),
+                p.painted(Role::Faint, &format!("{:<9}", "landed")),
                 tip
             ));
         }
         if !e.needs.is_empty() {
             out.push(format!(
                 "  {}{}",
-                p.paint(Role::Faint, &format!("{:<9}", "needs")),
+                p.painted(Role::Faint, &format!("{:<9}", "needs")),
                 e.needs.join(", ")
             ));
         }
@@ -199,7 +200,7 @@ impl App {
             Some(r) => {
                 out.push(format!(
                     "  {}{}",
-                    p.paint(Role::Faint, &format!("{:<9}", "decision")),
+                    p.painted(Role::Faint, &format!("{:<9}", "decision")),
                     match r.decision.as_deref() {
                         None => "(asked, no answer yet)".to_string(),
                         Some(d) => without_control_lines(d).into_owned(),
@@ -207,12 +208,12 @@ impl App {
                 ));
                 out.push(format!(
                     "  {}{}",
-                    p.paint(Role::Faint, &format!("{:<9}", "asked")),
+                    p.painted(Role::Faint, &format!("{:<9}", "asked")),
                     dur_human(self.now_ms.saturating_sub(r.asked_ms))
                 ));
                 out.push(format!(
                     "  {}{}",
-                    p.paint(Role::Faint, &format!("{:<9}", "session")),
+                    p.painted(Role::Faint, &format!("{:<9}", "session")),
                     // **Where the argument is.** A verdict is a summary of a review, and the
                     // review itself is a conversation — the operator can attach to it with
                     // the session's own id, which is the whole reason the reviewer is a

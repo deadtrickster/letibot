@@ -4,9 +4,10 @@ use crate::app::*;
 use crate::ui::render::{dur_human, trim_to, visible_width};
 use crate::ui::*;
 use letibot_sessionlog::registry::SessionBrief;
+use letibot_ui::painter::Sgr;
 use letibot_ui::progress;
-use letibot_ui::style::Role;
 use letibot_ui::text::without_control_lines;
+use rano::style::Role;
 
 impl App {
     /// The session header: which session, what it is talking to, and how big it
@@ -240,7 +241,7 @@ impl App {
         // Note the departure this settles: leticl recorded the register as *its* choice against
         // letibot (`4110e7b`), and the operator is now asking for it here too.
         let mut left = String::new();
-        left.push_str(&p.paint(Role::Faint, &without_control_lines(&name)));
+        left.push_str(&p.painted(Role::Faint, &without_control_lines(&name)));
         let mut left_cols = visible_width(&name);
         // **One label, and only for a subagent: `subagent of <parent>`.** This head can be
         // switched into a child session, and then the row that names the session named only
@@ -257,7 +258,7 @@ impl App {
         // guess about which session spawned it.
         if let Some(parent) = self.parent_session() {
             let of = format!("  subagent of {}", self.session_label(&parent));
-            left.push_str(&p.paint(Role::Faint, &without_control_lines(&of)));
+            left.push_str(&p.painted(Role::Faint, &without_control_lines(&of)));
             left_cols += visible_width(&of);
         }
         // The workspace fills whatever is left, shortened from its *left*: the end
@@ -267,7 +268,7 @@ impl App {
             let room = w.saturating_sub(left_cols + tail_cols + 2);
             if room >= 8 {
                 let shown = ellipsise_left(&path, room);
-                left.push_str(&p.paint(Role::Faint, &format!("  {shown}")));
+                left.push_str(&p.painted(Role::Faint, &format!("  {shown}")));
                 left_cols += 2 + visible_width(&shown);
             }
             // **The workspace's repository, in gitstatus's own segments and colours** — the
@@ -283,20 +284,20 @@ impl App {
                 let room = w.saturating_sub(left_cols + tail_cols + 4);
                 let fit = crate::gitfield::git_fit(pieces, room);
                 if !fit.is_empty() {
-                    left.push_str(&p.paint(Role::Faint, " ("));
+                    left.push_str(&p.painted(Role::Faint, " ("));
                     let mut cols = 3usize;
                     for (text, role) in fit {
                         cols += visible_width(text);
                         left.push_str(&git_paint(&self.cfg, *role, text));
                     }
-                    left.push_str(&p.paint(Role::Faint, ")"));
+                    left.push_str(&p.painted(Role::Faint, ")"));
                     left_cols += cols;
                 }
             }
         }
         let pad = w.saturating_sub(left_cols + tail.chars().count());
         trim_to(
-            &format!("{left}{}{}", " ".repeat(pad), p.paint(Role::Faint, &tail)),
+            &format!("{left}{}{}", " ".repeat(pad), p.painted(Role::Faint, &tail)),
             w,
         )
     }

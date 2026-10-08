@@ -6,9 +6,10 @@ use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
 use letibot_ui::ansi;
-use letibot_ui::style::{Painter, Role};
+use letibot_ui::painter::{Painter, Sgr};
 use letibot_ui::text::{without_control, without_control_lines};
 use letibot_ui::{card, diff::DiffConfig, sidediff};
+use rano::style::Role;
 use std::borrow::Cow;
 
 pub(crate) fn tool_result_row_lines(
@@ -254,7 +255,7 @@ pub(crate) fn tool_result_row_lines(
         Some(letibot_transcript::CallOrigin::Operator { .. })
     );
     let provenance = if mine {
-        format!("{} ", p.paint(Role::UserAccent, "▌"))
+        format!("{} ", p.painted(Role::UserAccent, "▌"))
     } else {
         String::new()
     };
@@ -264,11 +265,11 @@ pub(crate) fn tool_result_row_lines(
         w.saturating_sub(visible_width(&lead) + tail_cols).max(8),
     );
     let mut head = provenance;
-    head.push_str(&p.paint(outcome_role, mark));
-    head.push_str(&p.paint(Role::Faint, &format!(" {verb} ")));
+    head.push_str(&p.painted(outcome_role, mark));
+    head.push_str(&p.painted(Role::Faint, &format!(" {verb} ")));
     // **The file, as a link** (OSC 8) where the terminal speaks it: the full target
     // the shortened subject stands for, so a click opens the file and not `…/app.rs`.
-    let painted = p.paint(Role::Plain, &subject);
+    let painted = p.painted(Role::Plain, &subject);
     let painted = match (&cfg.links, targets.get(call_id), card::Verb::of(name)) {
         (
             Some(root),
@@ -278,8 +279,8 @@ pub(crate) fn tool_result_row_lines(
         _ => painted,
     };
     head.push_str(&painted);
-    head.push_str(&p.paint(outcome_role, &format!(" · {word}")));
-    head.push_str(&p.paint(Role::Faint, &took));
+    head.push_str(&p.painted(outcome_role, &format!(" · {word}")));
+    head.push_str(&p.painted(Role::Faint, &took));
 
     // A result of one line goes ON the header. `▸ Read .gitignore · ok ·
     // 1.1s · /target` is one row where `▸ Read .gitignore · ok · 1 line ·
@@ -310,8 +311,8 @@ pub(crate) fn tool_result_row_lines(
     .filter(|l| !l.is_empty())
     .filter(|l| visible_width(&head) + 3 + visible_width(l) <= w);
     if let Some(l) = inline {
-        head.push_str(&p.paint(Role::Faint, " · "));
-        head.push_str(&p.paint(Role::Plain, &l));
+        head.push_str(&p.painted(Role::Faint, " · "));
+        head.push_str(&p.painted(Role::Plain, &l));
         let mut out = vec![trim_to(&head, w)];
         // The approval rides the one-line form too: a gated call whose
         // result fit on the header is no less gated for it.
@@ -322,7 +323,7 @@ pub(crate) fn tool_result_row_lines(
         return (RowClass::Activity, step_in(out, ind));
     }
 
-    head.push_str(&p.paint(
+    head.push_str(&p.painted(
         size_role,
         &format!(
             " · {} line{}",
@@ -386,7 +387,7 @@ pub(crate) fn tool_result_row_lines(
         out.extend(
             wrap(&shown, w.saturating_sub(2))
                 .into_iter()
-                .map(|l| p.paint(outcome_role, &format!("  {l}"))),
+                .map(|l| p.painted(outcome_role, &format!("  {l}"))),
         );
     }
     // The decision this call was gated by, in the dim register — the same
@@ -449,7 +450,7 @@ pub(crate) fn tool_result_row_lines(
             rows.remove(0);
         }
         if e.truncated {
-            rows.push(p.paint(
+            rows.push(p.painted(
                 Role::Faint,
                 &format!(
                     "… the excerpt was capped; the file is {} lines now",
@@ -465,7 +466,7 @@ pub(crate) fn tool_result_row_lines(
         let hidden = rows.len() - keep;
         out.extend(rows.into_iter().take(keep).map(|l| format!("  {l}")));
         if hidden > 0 {
-            out.push(p.paint(
+            out.push(p.painted(
                 Role::Faint,
                 &format!("  … +{hidden} diff rows · /t unfolds it"),
             ));
@@ -516,7 +517,7 @@ pub(crate) fn tool_result_row_lines(
     let end = (page + body).min(total);
     let below = end < total;
     if above {
-        out.push(p.paint(
+        out.push(p.painted(
             Role::Faint,
             &format!("  ↑ {page} more lines above · ↑ scrolls up"),
         ));
@@ -532,7 +533,7 @@ pub(crate) fn tool_result_row_lines(
         // taken out, not a sentence. **And it says which key now does what** —
         // the chord opens the view, the arrows move inside it, and a row that
         // named only the chord was the row that could not be read past its head.
-        out.push(p.paint(
+        out.push(p.painted(
             Role::Faint,
             &if window {
                 format!("  … +{hidden} lines · ↓ pages down · esc closes")
@@ -552,13 +553,13 @@ pub(crate) fn tool_result_row_lines(
     } else if window {
         // The end of the payload: say so, so "no more" is not confused with
         // "the arrow stopped working".
-        out.push(p.paint(Role::Faint, "  … end of output · esc closes"));
+        out.push(p.painted(Role::Faint, "  … end of output · esc closes"));
     } else {
         // The payload was short enough to show whole, but the REASON was
         // cut — so the affordance has to be here, or the rest of it would
         // be hidden behind a chord nothing on the row mentions.
         if why_folded {
-            out.push(p.paint(Role::Faint, "  … the rest of the reason · /t unfolds it"));
+            out.push(p.painted(Role::Faint, "  … the rest of the reason · /t unfolds it"));
         }
     }
     out.extend(picture);

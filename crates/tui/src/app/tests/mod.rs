@@ -25,7 +25,7 @@ use letibot_sessionlog::view::{
 
 use letibot_transcript::{TranscriptItem, UserPart};
 
-use letibot_ui::style::Role;
+use rano::style::Role;
 
 use letibot_ui::text::without_control_lines;
 
@@ -279,8 +279,8 @@ fn model_bash_rows(a: &mut App, seq: u64, id: &str, payload: &str) {
 /// A helper for the coloured tests, because the assertion it feeds is one line and the list
 /// would otherwise be copied into each of them: `strip these off the row and nothing a
 /// terminal would act on is left`.
-fn head_vocabulary() -> Vec<&'static str> {
-    let mut v = vec![
+fn head_vocabulary() -> Vec<String> {
+    let mut v: Vec<String> = [
         sgr::RESET,
         sgr::BOLD,
         sgr::DIM,
@@ -293,7 +293,9 @@ fn head_vocabulary() -> Vec<&'static str> {
         sgr::MAGENTA,
         sgr::GREY,
         sgr::REVERSE,
-    ];
+    ]
+    .map(String::from)
+    .to_vec();
     for r in [
         Role::Plain,
         Role::Faint,
@@ -318,7 +320,7 @@ fn head_vocabulary() -> Vec<&'static str> {
         Role::TypeName,
         Role::FuncName,
     ] {
-        let o = letibot_ui::style::Palette::Colour.open(r);
+        let o = rano::style::Palette::Colour.open(r);
         if !o.is_empty() {
             v.push(o);
         }
@@ -334,7 +336,7 @@ fn head_vocabulary() -> Vec<&'static str> {
 fn only_the_heads_own_escapes(row: &str) -> bool {
     let mut rest = row.to_string();
     for own in head_vocabulary() {
-        rest = rest.replace(own, "");
+        rest = rest.replace(&own, "");
     }
     !rest.contains('\u{1b}')
         && !rest

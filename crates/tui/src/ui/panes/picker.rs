@@ -4,8 +4,9 @@ use crate::app::*;
 use crate::ui::render::{sgr, trim_to, wrap};
 use crate::ui::*;
 use letibot_sessionlog::registry::short_id;
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
 use letibot_ui::text::without_control_lines;
+use rano::style::Role;
 
 impl App {
     pub(crate) fn picker_lines(&self, w: usize) -> Vec<String> {
@@ -106,7 +107,7 @@ impl App {
             let left = format!(
                 "{indent}{mark}{fold} {:>digit_w$}  {}",
                 at + 1,
-                p.paint(
+                p.painted(
                     if here { Role::Strong } else { Role::Plain },
                     &without_control_lines(&name),
                 ),
@@ -148,7 +149,7 @@ impl App {
             if !s.wiring.model.is_empty() {
                 facts.push(s.wiring.model.clone());
             }
-            let right = p.paint(
+            let right = p.painted(
                 if s.status.running {
                     Role::Pending
                 } else {
@@ -253,9 +254,9 @@ impl App {
             } else {
                 Role::Plain
             };
-            let left = format!("{mark} {:>2}  {}", i + 1, p.paint(role, name),);
+            let left = format!("{mark} {:>2}  {}", i + 1, p.painted(role, name),);
             let right = if here {
-                p.paint(Role::Faint, "← now")
+                p.painted(Role::Faint, "← now")
             } else {
                 String::new()
             };

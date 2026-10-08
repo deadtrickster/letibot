@@ -4,9 +4,10 @@ use crate::app::*;
 use crate::ui::render::{RenderConfig, bytes_human, trim_to, visible_width, wrap};
 use crate::ui::*;
 use letibot_sessionlog::view::CallState;
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
 use letibot_ui::text::without_control_lines;
 use letibot_ui::{card, diff::DiffConfig, sidediff};
+use rano::style::Role;
 
 /// The pane's word for how a job came to be in the background — the three causes
 /// `Backgrounding` names, as a person reads them. The distinction is the one the
@@ -130,9 +131,9 @@ pub(crate) fn writing_call_line(cfg: &RenderConfig, now_ms: u64) -> String {
     trim_to(
         &format!(
             "{} {}{}",
-            p.paint(Role::Pending, &spin),
-            p.paint(Role::Pending, "writing a tool call"),
-            p.paint(Role::Faint, " · ctrl-x for the raw form")
+            p.painted(Role::Pending, &spin),
+            p.painted(Role::Pending, "writing a tool call"),
+            p.painted(Role::Faint, " · ctrl-x for the raw form")
         ),
         cfg.width,
     )
@@ -145,7 +146,7 @@ pub(crate) fn writing_call_line(cfg: &RenderConfig, now_ms: u64) -> String {
 /// and evidence that looks like prose is how the defect started.
 pub(crate) fn raw_call_lines(cfg: &RenderConfig, raw: &str) -> Vec<String> {
     let p = cfg.palette();
-    let mut out = vec![p.paint(Role::Faint, "┌─ raw tool call · ctrl-x")];
+    let mut out = vec![p.painted(Role::Faint, "┌─ raw tool call · ctrl-x")];
     // **Sanitised at the draw, because this is the only place it is drawn** (§3.1).
     // `ctrl-x` shows the model's own markup — `<function=…><parameter=…>` — and a
     // parameter's value is a string the model chose, so this is one more surface where
@@ -157,12 +158,12 @@ pub(crate) fn raw_call_lines(cfg: &RenderConfig, raw: &str) -> Vec<String> {
         for w in wrap(l, cfg.width.saturating_sub(2)) {
             out.push(format!(
                 "{}{}",
-                p.paint(Role::Faint, "│ "),
-                p.paint(Role::Code, &w)
+                p.painted(Role::Faint, "│ "),
+                p.painted(Role::Code, &w)
             ));
         }
     }
-    out.push(p.paint(Role::Faint, "└─"));
+    out.push(p.painted(Role::Faint, "└─"));
     out
 }
 
@@ -293,7 +294,7 @@ pub(crate) fn call_card(
             body.remove(0);
         }
         if e.truncated {
-            body.push(cfg.palette().paint(
+            body.push(cfg.palette().painted(
                 Role::Faint,
                 &format!(
                     "… the excerpt was capped; the file is {} lines now",
@@ -320,11 +321,11 @@ pub(crate) fn call_card(
         };
         body.push(
             cfg.palette()
-                .paint(Role::Faint, &format!("· {word}, by {who}")),
+                .painted(Role::Faint, &format!("· {word}, by {who}")),
         );
         if fold.is_open() {
             for l in decision_detail(d, cfg.width.saturating_sub(4)) {
-                body.push(cfg.palette().paint(Role::Faint, &format!("  {l}")));
+                body.push(cfg.palette().painted(Role::Faint, &format!("  {l}")));
             }
         }
     }

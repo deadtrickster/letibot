@@ -48,8 +48,9 @@
 
 use crate::diff::{DiffConfig, Hunk, Row, diff_lines, hunks};
 use crate::highlight::role_for_capture;
-use crate::style::{Painter, Palette, Role};
+use crate::painter::{Painter, Sgr};
 use crate::width;
+use rano::style::{Palette, Role};
 
 /// How the two panels are coloured, and where their numbers start.
 pub struct SplitConfig<'a> {
@@ -114,11 +115,11 @@ pub fn render_split(old: &[&str], new: &[&str], sc: &SplitConfig) -> Vec<String>
     let hs = hunks(&d, sc.cfg.context);
     let mut out = Vec::new();
     if hs.is_empty() {
-        out.push(p.paint(Role::Faint, "no change"));
+        out.push(p.painted(Role::Faint, "no change"));
         return out;
     }
     if d.degraded {
-        out.push(p.paint(
+        out.push(p.painted(
             Role::Attention,
             "! diff gave up on the minimal edit script; \
              the changed region is shown as a whole replacement",
@@ -159,7 +160,7 @@ pub fn render_split(old: &[&str], new: &[&str], sc: &SplitConfig) -> Vec<String>
         }
     }
     if dropped > 0 {
-        out.push(p.paint(
+        out.push(p.painted(
             Role::Faint,
             &format!("… {dropped} more diff lines not shown"),
         ));
@@ -229,7 +230,7 @@ fn hunk_header(h: &Hunk, sc: &SplitConfig, p: Palette) -> String {
         .iter()
         .filter(|r| matches!(r, Row::Context { .. } | Row::Added { .. }))
         .count();
-    p.paint(
+    p.painted(
         Role::Faint,
         &format!(
             "@@ -{},{} +{},{} @@",
@@ -374,7 +375,7 @@ fn render_pair(
         // **Each half pads to its OWN width.** Using the left width for both is what lost the
         // remainder column; see [`Geometry::panel_w_right`].
         s.push_str(&pad_to(l, g.panel_w));
-        s.push_str(&sc.cfg.palette.paint(Role::Faint, SEP));
+        s.push_str(&sc.cfg.palette.painted(Role::Faint, SEP));
         s.push_str(&pad_to(r, g.panel_w_right));
         out.push(s);
     }
@@ -434,7 +435,7 @@ fn side_lines(
                 // A continuation keeps its panel's colour and loses its
                 // number, exactly as the unified renderer's continuation
                 // loses its sign.
-                q.paint(Role::Faint, &" ".repeat(g.numw + 1))
+                q.painted(Role::Faint, &" ".repeat(g.numw + 1))
             } else if sc.cfg.line_numbers {
                 // The number takes the line's own foreground on a changed
                 // row — the operator, comparing notes: *"claude code does
@@ -447,7 +448,7 @@ fn side_lines(
                 } else {
                     Role::Faint
                 };
-                q.paint(fg, &format!("{:>numw$} ", num, numw = g.numw))
+                q.painted(fg, &format!("{:>numw$} ", num, numw = g.numw))
             } else {
                 String::new()
             };
@@ -456,7 +457,7 @@ fn side_lines(
                 // and red — while the cell's base is background-only, so the
                 // text keeps its own: the operator's *"keep original
                 // foregrounds"*.
-                q.paint(h.role.foreground(), &h.sign.to_string())
+                q.painted(h.role.foreground(), &h.sign.to_string())
             } else {
                 " ".to_string()
             };
@@ -465,7 +466,7 @@ fn side_lines(
                 // The role opens before the first visible column, or the
                 // gutter's leading spaces would sit outside the tint: a dim
                 // open sets an attribute, it does not set a background.
-                cell.push_str(p.open(h.role));
+                cell.push_str(p.sgr(h.role));
             }
             cell.push_str(&format!("{gutter}{sign} {body}"));
             if tinted {
@@ -517,7 +518,7 @@ fn paint_classed(text: &str, classes: &[Role], p: Palette) -> String {
 
 fn flush(run: &mut Role, run_buf: &mut String, out: &mut String, p: Palette) {
     if !run_buf.is_empty() {
-        out.push_str(&p.paint(*run, run_buf));
+        out.push_str(&p.painted(*run, run_buf));
         run_buf.clear();
     }
 }
@@ -611,7 +612,7 @@ pub fn render_edit_view(
     // in the `@@` header's own register, is that rule at card scale. It sits in the
     // ONE seam both views pass through, so split and unified cannot disagree about
     // whether the name is there.
-    let mut out = vec![cfg.palette.paint(Role::Faint, path)];
+    let mut out = vec![cfg.palette.painted(Role::Faint, path)];
     match view {
         EditView::Split => out.extend(render_edit(
             path,

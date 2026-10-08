@@ -147,9 +147,10 @@
 //! payload line with a gutter (`  `) in front of it, which is exactly what a leaked colour
 //! would ruin. A terminal would carry the state; a row list must not.
 
-use crate::style::{Painter, Palette, Role};
+use crate::painter::{Painter, Sgr};
 use letibot_vt::Screen;
 use letibot_vt::attr::{Attr, Hue, apply_sgr};
+use rano::style::{Palette, Role};
 
 /// One line of a foreign program's output, with its SGR drawn as this head's roles and
 /// every other control byte dropped.
@@ -194,12 +195,12 @@ pub fn painted(p: Painter, line: &str) -> String {
                 open = false;
             }
             (false, Some(r)) => {
-                out.push_str(p.open(r));
+                out.push_str(p.sgr(r));
                 open = true;
             }
             (true, Some(r)) if Some(r) != last => {
                 out.push_str(&p.close());
-                out.push_str(p.open(r));
+                out.push_str(p.sgr(r));
             }
             _ => {}
         }
@@ -285,7 +286,7 @@ impl Look {
             s.push_str(p.background(slot));
         }
         if let Some(r) = self.role {
-            s.push_str(p.open(r));
+            s.push_str(p.sgr(r));
         }
         s
     }
@@ -376,7 +377,7 @@ pub fn pane_rows(screen: &mut Screen, cols: usize, room: usize, palette: Palette
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::style::Palette;
+    use rano::style::Palette;
 
     fn colour() -> Painter {
         Painter::new(Palette::Colour)
@@ -407,7 +408,7 @@ mod tests {
                 painted(colour(), &format!("\u{1b}[{code}mX\u{1b}[0m")),
                 span(role, "X"),
                 "`{code}` is not painted as {}",
-                Palette::Colour.open(role)
+                Palette::Colour.sgr(role)
             );
         }
         // The bright forms take the same role: there is no second shade in the palette, and
@@ -437,11 +438,7 @@ mod tests {
     /// what `Painter::paint` produces at the top level, spelled out so the test asserts on
     /// bytes rather than on another call into the thing it is testing.
     fn span(role: Role, text: &str) -> String {
-        format!(
-            "{}{text}{}",
-            Palette::Colour.open(role),
-            crate::width::RESET
-        )
+        format!("{}{text}{}", Palette::Colour.sgr(role), crate::width::RESET)
     }
 
     /// **`grep --color`'s own sequence**, which is the other half of the operator's report:
@@ -502,7 +499,7 @@ mod tests {
             painted(colour(), "\u{1b}[31mX"),
             format!(
                 "{}X{}",
-                Palette::Colour.open(Role::Failure),
+                Palette::Colour.sgr(Role::Failure),
                 crate::width::RESET
             )
         );
@@ -551,7 +548,7 @@ mod tests {
         // the `\u{9b}31m` in the middle was a colour, so `Failure`'s sequence is what it
         // became, and it is the only escape the output carries.
         let mut rest = out.clone();
-        for own in [Palette::Colour.open(Role::Failure), crate::width::RESET] {
+        for own in [Palette::Colour.sgr(Role::Failure), crate::width::RESET] {
             rest = rest.replace(own, "");
         }
         assert!(
@@ -563,7 +560,7 @@ mod tests {
             "the text around the sequences is kept, and the lone DEL is a space"
         );
         assert_eq!(
-            out.matches(Palette::Colour.open(Role::Failure)).count(),
+            out.matches(Palette::Colour.sgr(Role::Failure)).count(),
             1,
             "the C1 form of a colour is a colour: {out:?}"
         );
@@ -602,11 +599,11 @@ mod tests {
         let out = painted(p, "\u{1b}[31mred\u{1b}[0m tail");
         assert_eq!(
             out,
-            format!("{}red{} tail", p.open(Role::Failure), p.close())
+            format!("{}red{} tail", p.sgr(Role::Failure), p.close())
         );
         // And the block's own style is re-established, not the terminal's default.
         assert!(
-            out.contains(&format!("{}{}", crate::width::RESET, p.open(Role::Faint))),
+            out.contains(&format!("{}{}", crate::width::RESET, p.sgr(Role::Faint))),
             "the run closed to the terminal rather than to the block: {out:?}"
         );
     }

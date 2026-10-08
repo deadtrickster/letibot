@@ -6,7 +6,8 @@ use crate::ui::render::{RenderConfig, visible_width};
 use crate::ui::*;
 use letibot_sessionlog::view::{CallState, SnapshotItem};
 use letibot_transcript::TranscriptItem;
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
+use rano::style::Role;
 
 /// **Does this set hide this row** — R37, the row-level question in one place.
 ///
@@ -888,7 +889,7 @@ pub(crate) fn marker_painted(
     // phrase in yellow on a line whose job is to be punctuation inside a sentence reads as a
     // highlight rather than as a signal.
     let calls = match &counts.calls {
-        Some((n, noun)) if live => format!("{}{noun}", p.paint(Role::Pending, n)),
+        Some((n, noun)) if live => format!("{}{noun}", p.painted(Role::Pending, n)),
         Some((n, noun)) => format!("{n}{noun}"),
         None => String::new(),
     };
@@ -913,7 +914,7 @@ pub(crate) fn marker_painted(
     .into_iter()
     .filter(|s| !s.is_empty())
     .collect();
-    format!("[{}]{}", body.join(", "), p.paint(Role::Faint, seam))
+    format!("[{}]{}", body.join(", "), p.painted(Role::Faint, seam))
 }
 
 pub(crate) fn hidden_run_marker(

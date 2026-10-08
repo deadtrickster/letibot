@@ -2,7 +2,8 @@
 
 use crate::app::*;
 use crate::ui::render::{trim_to, visible_width};
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
+use rano::style::Role;
 
 impl App {
     /// The bottom bar: what the keys do, right now.
@@ -93,9 +94,9 @@ impl App {
         // The separator belongs between two halves, not in front of one: with
         // the editor's half suppressed the bar used to open with a bare `·`.
         let joined = if s.is_empty() {
-            p.paint(Role::Faint, tail)
+            p.painted(Role::Faint, tail)
         } else {
-            format!("{s}{}", p.paint(Role::Faint, &format!(" · {tail}")))
+            format!("{s}{}", p.painted(Role::Faint, &format!(" · {tail}")))
         };
         // **Centred — the operator's ask of 2026-10-04: *"please center the keymap bottom line"*.**
         // Escape-aware on the VISIBLE width (`visible_width` skips the sequences), because the

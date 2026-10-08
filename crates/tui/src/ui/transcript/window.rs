@@ -6,8 +6,9 @@ use crate::ui::render::{RenderConfig, sgr, visible_width};
 use crate::ui::*;
 use letibot_sessionlog::view::{CallState, TurnState};
 use letibot_transcript::TranscriptItem;
+use letibot_ui::painter::Sgr;
 use letibot_ui::progress;
-use letibot_ui::style::Role;
+use rano::style::Role;
 
 impl App {
     /// The visible `room` lines of the body, and nothing else built.
@@ -580,7 +581,7 @@ impl App {
             };
             segs.push(Seg::Owned(vec![
                 String::new(),
-                cfg.palette().paint(Role::Faint, &said),
+                cfg.palette().painted(Role::Faint, &said),
             ]));
         }
 

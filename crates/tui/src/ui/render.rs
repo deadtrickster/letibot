@@ -22,7 +22,8 @@
 //! title, a count of what was elided, and its last N lines — which is what a reader
 //! of a streaming model actually wants, because the interesting end is the end.
 
-use letibot_ui::style::{Painter, Palette, Role};
+use letibot_ui::painter::{Painter, Sgr};
+use rano::style::{Palette, Role};
 
 use rano::syntax::Stream;
 
@@ -68,7 +69,7 @@ pub mod sgr {
 /// an elision marker.
 ///
 /// [`sgr::DIM`], not [`sgr::GREY`]. 90 is the theme's *bright black*, and
-/// `letibot_ui::style` measured it landing within a hair of the background on
+/// `rano::style` (then `letibot_ui::style`) measured it landing within a hair of the background on
 /// several light themes — which is why every role in that table is an attribute
 /// or a named slot and none of them is 90. The attribute de-emphasises whatever
 /// foreground the reader already chose, which is the thing a frame wants.
@@ -437,7 +438,7 @@ impl CodePaint {
                 painted.push_str(
                     &self
                         .painter
-                        .paint(letibot_ui::highlight::role_for_capture(&s.name), &text),
+                        .painted(letibot_ui::highlight::role_for_capture(&s.name), &text),
                 );
                 cursor = end;
             }
@@ -498,8 +499,8 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
             vec![trim_to(
                 &format!(
                     "{} {}",
-                    p.paint(Role::Faint, &hashes),
-                    p.paint(role, &paint_runs(runs, p))
+                    p.painted(Role::Faint, &hashes),
+                    p.painted(role, &paint_runs(runs, p))
                 ),
                 w,
             )]
@@ -597,7 +598,7 @@ fn render_block_with(b: &Block, cfg: &RenderConfig, code: Option<&mut CodePaint>
                         out.push(format!(
                             "{:nest$}{}{line}",
                             "",
-                            p.paint(marker_role, &marker)
+                            p.painted(marker_role, &marker)
                         ));
                     } else {
                         out.push(format!("{:width$}{line}", "", width = pad));
@@ -656,7 +657,7 @@ fn table_lines(
     // Painted once: the paint is what gets measured, wrapped and padded, so a
     // `**bold**` cell does not measure its escape bytes as columns.
     let head_p: Vec<String> = (0..cols)
-        .map(|i| p.paint(Role::Strong, &paint_runs(cell(head, i), p)))
+        .map(|i| p.painted(Role::Strong, &paint_runs(cell(head, i), p)))
         .collect();
     let rows_p: Vec<Vec<String>> = rows
         .iter()
@@ -678,7 +679,7 @@ fn table_lines(
     let available = w.saturating_sub(gaps).max(cols);
     let widths = fit_columns(&natural, available);
 
-    let sep = p.paint(Role::Faint, " │ ");
+    let sep = p.painted(Role::Faint, " │ ");
     let mut out = Vec::new();
     let push_row = |cells: &[String], out: &mut Vec<String>| {
         // Wrap every cell to its column, then emit one screen line per wrapped
@@ -718,7 +719,7 @@ fn table_lines(
         .map(|wd| "─".repeat(*wd))
         .collect::<Vec<_>>()
         .join("─┼─");
-    out.push(p.paint(Role::Faint, &rule));
+    out.push(p.painted(Role::Faint, &rule));
     for r in &rows_p {
         push_row(r, &mut out);
     }
@@ -1140,7 +1141,7 @@ mod tests {
             color: true,
             ..RenderConfig::default()
         };
-        let keyword = letibot_ui::style::Palette::Colour.open(Role::Keyword);
+        let keyword = rano::style::Palette::Colour.sgr(Role::Keyword);
         let mut md = crate::ui::markdown::IncrementalMarkdown::new();
         let mut cache = BlockCache::new();
         let mut last = Vec::new();
@@ -1150,7 +1151,7 @@ mod tests {
         }
         let streamed = last.join("\n");
         assert!(
-            streamed.contains(keyword),
+            streamed.contains(&keyword),
             "the streamed fence is plain:\n{streamed}"
         );
     }
@@ -1413,8 +1414,8 @@ mod tests {
         // …and it is actually painted. In the theme's own colours: the roles moved
         // off the 256-colour cube, so the evidence is a keyword wearing `35`, not
         // an absolute `38;5;140`.
-        let kw = letibot_ui::style::Palette::Colour.open(Role::Keyword);
-        assert!(lines.iter().any(|l| l.contains(kw)), "{lines:?}");
+        let kw = rano::style::Palette::Colour.sgr(Role::Keyword);
+        assert!(lines.iter().any(|l| l.contains(&kw)), "{lines:?}");
         assert!(
             !lines.iter().any(|l| l.contains("\x1b[38;5;")),
             "a cube colour survived: {lines:?}"

@@ -33,7 +33,7 @@
 //! long block should bound what it hands over, which is what `crates/tui`'s window does
 //! for the conversation.
 
-use crate::style::Role;
+use rano::style::Role;
 
 /// rano's capture names onto this crate's six syntax roles.
 ///

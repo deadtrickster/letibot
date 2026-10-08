@@ -109,7 +109,7 @@ fn the_operators_own_ls_payload_is_drawn_in_the_palettes_own_roles() {
     // rather than spelled as an escape here: a test that knew the sequence would pass on the
     // day the role moved.
     assert!(
-        frame.contains(letibot_ui::style::Palette::Colour.open(Role::Subheading)),
+        frame.contains(&rano::style::Palette::Colour.open(Role::Subheading)),
         "`ls`'s directory colour must be drawn in the palette's own role: {frame:?}"
     );
     // And the text is kept, **line for line and column for column**: the visible frame, with
@@ -151,7 +151,7 @@ fn the_operators_own_ls_payload_is_drawn_in_the_palettes_own_roles() {
 /// through one `item_lines` call with the fold open, so the body path is the one under test.
 #[test]
 fn a_colour_at_the_start_of_a_payload_line_and_one_mid_line_both_become_roles() {
-    let blue = letibot_ui::style::Palette::Colour.open(Role::Subheading);
+    let blue = rano::style::Palette::Colour.open(Role::Subheading);
     for (what, payload, coloured) in [
         (
             "at the start of the line",
@@ -167,7 +167,7 @@ fn a_colour_at_the_start_of_a_payload_line_and_one_mid_line_both_become_roles() 
         let rows = item_rows(true, bash_result(payload));
         let frame = rows.join("\n");
         assert!(
-            frame.contains(blue),
+            frame.contains(&blue),
             "{what}: the colour was not drawn: {frame:?}"
         );
         assert!(
@@ -228,7 +228,7 @@ fn the_real_payload_still_loses_every_byte_that_is_not_a_colour() {
     // And the colour the payload legitimately carries is still there, so this is not
     // "everything was dropped": the assertion above is about the other families.
     assert!(
-        frame.contains(letibot_ui::style::Palette::Colour.open(Role::Subheading)),
+        frame.contains(&rano::style::Palette::Colour.open(Role::Subheading)),
         "the payload's own colour went with the hostile bytes: {frame:?}"
     );
 }
@@ -270,7 +270,7 @@ fn on_a_head_that_emits_colour_a_foreign_escape_arrives_as_a_role_and_nothing_el
     let frame = rows.join("\n");
     // The colour arrived, as this head's role for it.
     assert!(
-        frame.contains(letibot_ui::style::Palette::Colour.open(Role::Subheading)),
+        frame.contains(&rano::style::Palette::Colour.open(Role::Subheading)),
         "the payload's own colour must be drawn in the palette's role for it: {frame:?}"
     );
     assert!(frame.contains("the-dir"), "and the text is kept: {frame:?}");
@@ -319,13 +319,13 @@ fn a_colour_that_runs_to_the_end_of_a_payload_line_does_not_tint_the_next_one() 
     );
     a.key(Key::CtrlV);
     let rows = a.screen(100, 40);
-    let red = letibot_ui::style::Palette::Colour.open(Role::Failure);
+    let red = rano::style::Palette::Colour.open(Role::Failure);
     let coloured = rows
         .iter()
         .find(|r| r.contains("red to the end"))
         .expect("the first line is drawn");
     assert!(
-        coloured.contains(red),
+        coloured.contains(&red),
         "the first line's own colour is drawn: {coloured:?}"
     );
     let next = rows
@@ -333,7 +333,7 @@ fn a_colour_that_runs_to_the_end_of_a_payload_line_does_not_tint_the_next_one() 
         .find(|r| r.contains("plain second line"))
         .expect("the second line is drawn");
     assert!(
-        !next.contains(red),
+        !next.contains(&red),
         "the first line's colour leaked into the next row: {next:?}"
     );
     assert!(
@@ -388,7 +388,7 @@ fn an_operators_tool_row_is_the_models_row_with_the_persons_own_mark_on_it() {
     // The person's own mark, built from the palette rather than spelled as an escape: the
     // assertion is about the ROLE, and a test that knew the sequence would pass on the day
     // the role moved.
-    let bar = letibot_ui::style::Palette::Colour.paint(Role::UserAccent, "▌");
+    let bar = rano::style::Palette::Colour.paint(Role::UserAccent, "▌");
     let indent = theirs[0].len() - theirs[0].trim_start().len();
     assert!(
         mine[0].starts_with(&format!("{}{bar} ", " ".repeat(indent))),
@@ -436,7 +436,7 @@ fn an_operators_tool_row_is_the_models_row_with_the_persons_own_mark_on_it() {
 #[test]
 fn the_persons_mark_reaches_the_screen_and_only_their_own_row_wears_it() {
     let body: String = (0..60).map(|i| format!("line {i}\n")).collect();
-    let bar = letibot_ui::style::Palette::Colour.paint(Role::UserAccent, "▌");
+    let bar = rano::style::Palette::Colour.paint(Role::UserAccent, "▌");
     // The settled tool row is the one line that names the call; ` Ran ` is the verb a `bash`
     // result is drawn with, and the operator's own line above it is not a tool row.
     let header = |a: &mut App| {
@@ -1106,11 +1106,11 @@ fn a_light_background_reply_switches_the_palette() {
     a.cfg.color = true;
     a.key(Key::Background { light: true });
     a.screen(80, 24);
-    assert_eq!(a.cfg.palette(), letibot_ui::style::Palette::Colour);
+    assert_eq!(a.cfg.palette(), rano::style::Palette::Colour);
     a.set_features(rano::term::Features::ALL);
     a.screen(80, 24);
-    assert_eq!(a.cfg.palette(), letibot_ui::style::Palette::Light);
+    assert_eq!(a.cfg.palette(), rano::style::Palette::Light);
     a.key(Key::Background { light: false });
     a.screen(80, 24);
-    assert_eq!(a.cfg.palette(), letibot_ui::style::Palette::Colour);
+    assert_eq!(a.cfg.palette(), rano::style::Palette::Colour);
 }

@@ -4,7 +4,8 @@
 use crate::app::*;
 use crate::ui::render::{sgr, trim_to, visible_width, wrap};
 use crate::ui::*;
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
+use rano::style::Role;
 
 impl App {
     /// One frame: `h` lines of at most `w` columns — **and while the view is held, the same frame
@@ -49,7 +50,7 @@ impl App {
             let marker = self
                 .cfg
                 .palette()
-                .paint(Role::Attention, &trim_to(HOLD_MARKER, w));
+                .painted(Role::Attention, &trim_to(HOLD_MARKER, w));
             let row = if gutter > 0 {
                 format!("{}{marker}", " ".repeat(gutter))
             } else {
@@ -189,7 +190,7 @@ impl App {
         // **Nothing is drawn while the pane is on the screen**: the pane itself is the fact,
         // and a sentence about it would be the same fact twice.
         let pane = self.pane_behind().map(|line| {
-            self.cfg.palette().paint(
+            self.cfg.palette().painted(
                 Role::Pending,
                 &trim_to(
                     &format!("a pane is running: {line} — `!term` attaches, `!term close` ends it"),
@@ -286,7 +287,7 @@ impl App {
         if let Some(line) = self.mode_confirm_line() {
             let p = self.cfg.palette();
             for l in wrap(&line, w) {
-                chrome.push(p.paint(Role::Attention, &l));
+                chrome.push(p.painted(Role::Attention, &l));
             }
         }
         // **The content, as a window** (R20), then the answer in full underneath it.
@@ -489,7 +490,9 @@ impl App {
         let top = if facts.is_empty() {
             String::new()
         } else {
-            self.cfg.palette().paint(Role::Pending, &facts.join(" · "))
+            self.cfg
+                .palette()
+                .painted(Role::Pending, &facts.join(" · "))
         };
         self.box_edge(w, '╭', '╮', "", &top)
     }
@@ -499,7 +502,7 @@ impl App {
     pub(crate) fn box_bottom(&self, w: usize) -> String {
         let mut right: Vec<String> = Vec::new();
         if self.alarmed() {
-            right.push(self.cfg.palette().paint(Role::Attention, "⚠"));
+            right.push(self.cfg.palette().painted(Role::Attention, "⚠"));
         }
         // **The viewport's state, where the reader's eye already crosses** (R36). It is
         // drawn **only when it is holding**, because following is the ordinary state and
@@ -507,14 +510,14 @@ impl App {
         // buys is the reader who would otherwise scroll to find out whether they are
         // pinned, which is the affordance failing rather than working.
         if let Some(state) = self.scroll_state() {
-            right.push(self.cfg.palette().paint(Role::Pending, state));
+            right.push(self.cfg.palette().painted(Role::Pending, state));
         }
         // **And the rung, when it is the one that hides things** (R37). Same rule as
         // `holding`: drawn only when it is news, because a marker that is always on is
         // furniture. What it buys is the reader who switched and then forgot — the rows
         // that are missing are named by the mode rather than by a placeholder on each.
         if let Some(rung) = self.rung_state() {
-            right.push(self.cfg.palette().paint(Role::Attention, &rung));
+            right.push(self.cfg.palette().painted(Role::Attention, &rung));
         }
         self.box_edge(w, '╰', '╯', "", &right.join(" · "))
     }
@@ -570,10 +573,10 @@ impl App {
             // is showing, the strings in this `Vec` went through a renderer that
             // sanitised its own foreign inputs already — a note's detail, a job's
             // command, a gate's summary — so there is nothing left here to guard.
-            let mut rows = vec![p.paint(Role::Strong, &echo), String::new()];
+            let mut rows = vec![p.painted(Role::Strong, &echo), String::new()];
             rows.extend(lines.iter().flat_map(|l| wrap(l, w)));
             rows.push(String::new());
-            rows.push(p.paint(Role::Faint, "    esc closes · up/down scrolls"));
+            rows.push(p.painted(Role::Faint, "    esc closes · up/down scrolls"));
             self.pane_window(rows, room)
         } else if self.help {
             let help = help_lines(&self.cfg, w);

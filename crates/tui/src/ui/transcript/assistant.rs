@@ -6,8 +6,9 @@ use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
 use letibot_ui::card;
-use letibot_ui::style::Role;
+use letibot_ui::painter::Sgr;
 use letibot_ui::text::without_control_lines;
+use rano::style::Role;
 
 pub(crate) fn assistant_row_lines(
     it: &SnapshotItem,
@@ -133,7 +134,7 @@ pub(crate) fn assistant_row_lines(
         line.push_str(" · no result");
         acted = true;
         out.push(trim_to(
-            &format!("{}{}", " ".repeat(ind), p.paint(Role::Attention, &line)),
+            &format!("{}{}", " ".repeat(ind), p.painted(Role::Attention, &line)),
             cfg.width,
         ));
         // The settled row's half of `ctrl-x`. A live turn shows the raw

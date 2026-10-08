@@ -116,7 +116,7 @@ impl TermPane {
         &mut self,
         cols: usize,
         room: usize,
-        palette: letibot_ui::style::Palette,
+        palette: rano::style::Palette,
     ) -> Vec<String> {
         letibot_ui::ansi::pane_rows(&mut self.screen, cols, room, palette)
     }
