@@ -35,7 +35,8 @@
 //! moved — that is opencode's `timeout` semantics, and a command the model did not
 //! ask to run longer than the default must not run forever. The timeout is set
 //! unless the model asks otherwise: `timeout_ms` raises it, `background: true`
-//! removes it.
+//! removes it. **The operator's own `!` line has no deadline at all** — see
+//! [`deadline_for`] for the measurement and the rule.
 //!
 //! ## The outcome is a variant, not a wording
 //!
@@ -73,13 +74,51 @@ const MAX_INLINE_LINES: usize = 400;
 /// **killed**, and the result says it timed out and how to ask for more. The model
 /// overrides it with `timeout_ms`; `background: true` runs with no deadline, and a
 /// person can move a running command to the background from the head, which also
-/// removes the deadline.
+/// removes the deadline. The operator's own run has none to begin with — see
+/// [`deadline_for`].
 ///
 /// opencode's own default is 120000 ms, and leticode is its parity port: a command
 /// that the model did not ask to run longer than the default must not run forever.
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 /// The longest a deadline may be asked for. Matches opencode's 600000 ms ceiling.
 const MAX_TIMEOUT_MS: u64 = 600_000;
+
+/// **What deadline this call gets — the one place the choice is made.**
+///
+/// Pure, and on purpose: which run may be killed by a clock is a fact about
+/// inputs, not about a process, and a test that waited 120 s to watch a kill
+/// would not be a test at all. The same discipline [`crate::exec::term::argv`]
+/// keeps — the choice asserted without a process starting.
+///
+/// Three facts go in, one answer comes out:
+///
+/// * **the model's foreground run** — `Some`, from `timeout_ms` when it asked
+///   and [`DEFAULT_TIMEOUT_MS`] when it did not, clamped to
+///   [`MAX_TIMEOUT_MS`]. The deadline exists for this case and only this one:
+///   a command the model did not ask to run longer must not run forever.
+/// * **`background: true`** — `None`. The model asked for exactly no deadline.
+/// * **the operator's own run** (`ctx.tty`) — `None`, whatever `timeout_ms`
+///   says. The deadline's whole reason is a run nobody is watching; the
+///   operator's `!` line is watched by the person who typed it, its output is
+///   on their screen, and their own acts — Ctrl+C, `!term`, closing the head —
+///   are its stop. Measured 2026-10-09: `! sudo apt install mc` sat at
+///   `Continue? [Y/n]` while its person read the package list, and was killed
+///   at 120 s with the install never run. A person spending a minute reading a
+///   question is using the feature, not exceeding a deadline. `timeout_ms` in
+///   an operator call would mean nothing today — the daemon mints the call as
+///   `{"command": …}` and nothing else — and it is ignored on purpose: a
+///   future head that grew a way to pass one would be re-arming the measured
+///   bug by hand.
+fn deadline_for(asked_ms: Option<u64>, background: bool, operator: bool) -> Option<Duration> {
+    if background || operator {
+        return None;
+    }
+    Some(Duration::from_millis(
+        asked_ms
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .clamp(1, MAX_TIMEOUT_MS),
+    ))
+}
 
 impl Tool for Bash {
     fn schema(&self) -> ToolSchema {
@@ -282,11 +321,13 @@ impl Tool for Bash {
 
         // The foreground deadline **is** the kill point, matching opencode: a
         // command that outlives `timeout_ms` is killed, not left running.
-        let timeout = Duration::from_millis(
-            args.get("timeout_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(DEFAULT_TIMEOUT_MS)
-                .clamp(1, MAX_TIMEOUT_MS),
+        // [`deadline_for`] is the one place the choice is made; the third fact
+        // it takes is the operator's own run, the same `ctx.tty` the pty and
+        // the shell already key on — one flag because it is one fact.
+        let timeout = deadline_for(
+            args.get("timeout_ms").and_then(|v| v.as_u64()),
+            background,
+            ctx.tty,
         );
 
         let cwd = match ctx.backend.workdir(cwd) {
@@ -356,9 +397,11 @@ impl Tool for Bash {
         // that loop is still ended, by the run's own cgroup and by a thread that is not
         // the run's. See [`crate::exec::host::Deadlines`].
         //
-        // A backgrounded run has no deadline at all — `background: true` is the model
-        // asking for exactly that — so nothing is armed for it.
-        if !background {
+        // A run with no deadline has nothing armed for it: `background: true`
+        // (the model asking for exactly that) and the operator's own run (a
+        // person's command, whose stop is their own act) both come back `None`
+        // from [`deadline_for`].
+        if let Some(timeout) = timeout {
             host.arm_deadline(&id, timeout);
         }
 
@@ -572,33 +615,60 @@ impl Tool for Bash {
             // timeout rendered as an error, which is F5 with the sign flipped. Both paths
             // render the same sentence, because they are the same fact.
             JobState::Killed { by } if by == crate::exec::DEADLINE_KILL => {
+                // `Some` by construction: the watchdog settles `DEADLINE_KILL`
+                // only for a deadline it was armed with, and nothing arms one
+                // when [`deadline_for`] said `None` — the `unwrap_or` is for
+                // the type, not a case.
                 let reaped = host.kill_job(&id);
                 let mut inv = Invocation::timed_out(format!(
                     "{body}\n\n[the command `{id}` was killed after {:.0}s — it outlived \
                      its deadline]\n  command: {command}\n\nIt did not fail; it was \
                      stopped. To run it longer, call `bash` again with a larger \
                      `timeout_ms`, or `background: true` to run it with no deadline.",
-                    timeout.as_secs_f32()
+                    timeout.map(|t| t.as_secs_f32()).unwrap_or(0.0)
                 ));
                 if let Err(e) = &reaped {
                     inv = inv.with_note(format!("the kill did not complete: {e}"));
                 }
                 inv
             }
-            JobState::Running => {
-                let reaped = host.kill_job(&id);
-                let mut inv = Invocation::timed_out(format!(
-                    "{body}\n\n[the command `{id}` was killed after {:.0}s — it outlived \
-                     its deadline]\n  command: {command}\n\nIt did not fail; it was \
-                     stopped. To run it longer, call `bash` again with a larger \
-                     `timeout_ms`, or `background: true` to run it with no deadline.",
-                    timeout.as_secs_f32()
-                ));
-                if let Err(e) = &reaped {
-                    inv = inv.with_note(format!("the kill did not complete: {e}"));
+            JobState::Running => match timeout {
+                Some(timeout) => {
+                    let reaped = host.kill_job(&id);
+                    let mut inv = Invocation::timed_out(format!(
+                        "{body}\n\n[the command `{id}` was killed after {:.0}s — it outlived \
+                         its deadline]\n  command: {command}\n\nIt did not fail; it was \
+                         stopped. To run it longer, call `bash` again with a larger \
+                         `timeout_ms`, or `background: true` to run it with no deadline.",
+                        timeout.as_secs_f32()
+                    ));
+                    if let Err(e) = &reaped {
+                        inv = inv.with_note(format!("the kill did not complete: {e}"));
+                    }
+                    inv
                 }
-                inv
-            }
+                // **No deadline was armed, so this is not a timeout and the run
+                // is NOT stopped.** `Running` with no deadline arrives one way:
+                // the wait ended without the run ending — a promotion the host
+                // refused, or a wait that errored — and both are facts about
+                // this daemon's machinery, not about the command. Killing here
+                // would be the measured bug by another door: the person's `!`
+                // run ended by a clock nobody armed for it. The run is the
+                // operator's own, still going; its stop is their act — Ctrl+C
+                // at their console, `!term`, closing the head — or `job_kill`
+                // by id, and saying so with the id is the one honest answer
+                // this call can return.
+                None => Invocation::failed(
+                    format!("`{id}` is still running"),
+                    format!(
+                        "{body}\n\n[the wait for `{id}` ended while it was still running \
+                         — no deadline applies to it, so it was NOT stopped]\n  \
+                         command: {command}\n\nIt is the operator's own run: their console has its \
+                         output, their own acts are its stop. `job_output` with \
+                         job=\"{id}\" reads what it has written so far; `job_kill` ends it.",
+                    ),
+                ),
+            },
             JobState::NotScoped => Invocation::failed(
                 format!("`{id}` could not join its scope, so the command was NOT run"),
                 format!(
@@ -738,6 +808,10 @@ struct Told {
 /// Wait, emitting progress that is a measurement of work rather than a heartbeat,
 /// and honour a head's Ctrl+B by promoting the command mid-flight.
 ///
+/// `timeout` is [`Option`]: `None` is no deadline, and the loop then has no
+/// clock to break on — it ends only on the run's own state, a promotion, or a
+/// wait that errored. That is the operator's own run; see [`deadline_for`].
+///
 /// **And ask, once a beat, whether this run is waiting for an answer.** That is the
 /// operator's `!` line and nothing else — see [`OperatorRun`] — and it is here because
 /// this loop is the only thing that has the three facts the question needs at once: the
@@ -746,7 +820,7 @@ fn wait_with_progress(
     ctx: &mut InvokeCtx<'_>,
     host: &dyn ProcessHost,
     id: &crate::exec::JobId,
-    timeout: Duration,
+    timeout: Option<Duration>,
 ) -> Foreground {
     let started = std::time::Instant::now();
     let step = Duration::from_millis(500);
@@ -770,11 +844,12 @@ fn wait_with_progress(
                 Err(_) => Foreground::State(JobState::Running),
             };
         }
-        let left = timeout.saturating_sub(started.elapsed());
-        if left.is_zero() {
+        let left = timeout.map(|t| t.saturating_sub(started.elapsed()));
+        if left == Some(Duration::ZERO) {
             break;
         }
-        match host.wait_job(id, step.min(left)) {
+        let tick = left.map_or(step, |l| step.min(l));
+        match host.wait_job(id, tick) {
             Ok(Waited::Happened { state: Some(s), .. }) => return Foreground::State(s),
             Ok(_) => {}
             Err(_) => break,
@@ -989,6 +1064,46 @@ mod tests {
         assert!(capped);
         // No partial line: whatever survived is whole.
         assert!(text.lines().any(|l| l == kept.lines().next().unwrap()));
+    }
+
+    #[test]
+    fn a_models_run_gets_the_default_and_what_it_asked_for() {
+        assert_eq!(
+            deadline_for(None, false, false),
+            Some(Duration::from_millis(DEFAULT_TIMEOUT_MS))
+        );
+        assert_eq!(
+            deadline_for(Some(30_000), false, false),
+            Some(Duration::from_secs(30))
+        );
+    }
+
+    #[test]
+    fn an_asked_deadline_is_clamped_to_one_ms_and_the_ceiling() {
+        assert_eq!(
+            deadline_for(Some(0), false, false),
+            Some(Duration::from_millis(1))
+        );
+        assert_eq!(
+            deadline_for(Some(u64::MAX), false, false),
+            Some(Duration::from_millis(600_000))
+        );
+    }
+
+    #[test]
+    fn a_background_run_has_no_deadline() {
+        assert_eq!(deadline_for(None, true, false), None);
+    }
+
+    #[test]
+    fn the_operators_own_run_has_no_deadline_whatever_the_call_says() {
+        // The measured case: the daemon mints the operator's call with
+        // `command` and nothing else, so `asked_ms` is `None` — and the run
+        // died at its silent default anyway.
+        assert_eq!(deadline_for(None, false, true), None);
+        // A `timeout_ms` no head can even pass today is still not a deadline:
+        // the person's run is the person's. See `deadline_for` for the rule.
+        assert_eq!(deadline_for(Some(5_000), false, true), None);
     }
 
     #[test]
