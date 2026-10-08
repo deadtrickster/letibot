@@ -2,7 +2,7 @@
 //! lines, under the visibility, folds and budgets the frame was asked for.
 
 use crate::app::*;
-use crate::ui::render::{RenderConfig, trim_to, visible_width, wrap};
+use crate::ui::render::{RenderConfig, trim_to, wrap};
 use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
@@ -21,19 +21,6 @@ pub(crate) fn card_cfg(cfg: &RenderConfig, fold: Fold) -> card::CardConfig {
         },
         budget: card::Budget::GENERIC,
         show_id: false,
-    }
-}
-
-/// A left half and a right half of one row, with the gap between them.
-///
-/// Falls back to the left half alone when both do not fit, because the left half
-/// is the one that says what is happening.
-pub(crate) fn split_row(left: &str, right: &str, w: usize) -> String {
-    let (lw, rw) = (visible_width(left), visible_width(right));
-    if lw + rw + 2 <= w {
-        format!("{left}{}{right}", " ".repeat(w - lw - rw))
-    } else {
-        trim_to(left, w)
     }
 }
 

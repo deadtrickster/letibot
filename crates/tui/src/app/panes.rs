@@ -279,23 +279,7 @@ impl App {
     /// same list, and a settled row the reader has stopped caring about must not push a running
     /// one off the bottom of the pane.
     pub(crate) fn job_stops(&self) -> Vec<JobStop> {
-        let mut out = Vec::with_capacity(self.jobs.len() + 1);
-        for (i, j) in self.jobs.iter().enumerate() {
-            if j.running {
-                out.push(JobStop::Job(i));
-            }
-        }
-        if self.jobs.iter().any(|j| !j.running) {
-            out.push(JobStop::Finished);
-            if self.jobs_finished_open {
-                for (i, j) in self.jobs.iter().enumerate() {
-                    if !j.running {
-                        out.push(JobStop::Job(i));
-                    }
-                }
-            }
-        }
-        out
+        self.jobs_view().stops()
     }
 
     /// **The pane row the job stop at the cursor was DRAWN on**, read out of
@@ -519,14 +503,9 @@ pub(crate) enum SubStop {
 
 /// **One row of the jobs pane** — the ONE enumeration the arrows, Enter, the drawn `▸` and the
 /// scroll all read, exactly as [`SubStop`] is for the subagents pane. See [`App::job_stops`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JobStop {
-    /// A job in [`App::jobs`], by index.
-    Job(usize),
-    /// **The `finished` group row.** The settled jobs live under it, collapsed by default;
-    /// Enter unfolds them.
-    Finished,
-}
+/// rano's, because the pane that draws the rows is rano's and the keys must walk the list it
+/// drew: `Job(i)` is a job in [`App::jobs`] by index, `Finished` the folded group row.
+pub(crate) use rano::agent::jobs::JobStop;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SubOut {

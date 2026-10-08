@@ -292,13 +292,55 @@ pub fn rows(lines: &[Line], p: Palette) -> Vec<String> {
 /// the reasoning — is that register opened once at the start, its spans closing back to it,
 /// and a reset at the end: the shape this head's `dim(cfg, …)` around a `Painter::inside`
 /// line always wrote. Under [`Palette::None`] it is the text and nothing else.
+///
+/// **A run of reversed spans is one reverse** — the highlighted row of a picker or a pane,
+/// which this head always drew as `colour(REVERSE, row)`: the inverse opened once, the
+/// spans inside it written in their own look with a plain reset, and one reset at the end
+/// of the run. rano patches the highlight into each span, which is the same cells; this is
+/// the bytes the head's frames (and its tests) have always carried.
+///
+/// That includes what the convention does after a coloured span inside the run: its plain
+/// reset ends the inverse too, so the subagents pane's highlighted row is inverse up to its
+/// state mark and not after it. That is letibot's row as it was, kept here on purpose and
+/// named as the defect it is: fixing it is a change to what the row shows, and this move
+/// changes nothing a person sees.
 pub fn row(l: &Line, p: Palette) -> String {
     let open = l.style.look(p).sgr();
-    if open.is_empty() {
-        l.to_ansi_inside(p)
-    } else {
-        format!("{open}{}{}", l.to_ansi_inside(p), sgr::RESET)
+    if !open.is_empty() {
+        return format!("{open}{}{}", l.to_ansi_inside(p), sgr::RESET);
     }
+    let reversed =
+        |sp: &rano::render::Span| sp.style.look(p).attrs.contains(rano::style::Attrs::REVERSE);
+    if !l.spans.iter().any(reversed) {
+        return l.to_ansi_inside(p);
+    }
+    let mut out = String::new();
+    let mut i = 0;
+    while i < l.spans.len() {
+        if !reversed(&l.spans[i]) {
+            out.push_str(&Line::new(vec![l.spans[i].clone()]).to_ansi_inside(p));
+            i += 1;
+            continue;
+        }
+        out.push_str(&p.reverse_look().sgr());
+        while i < l.spans.len() && reversed(&l.spans[i]) {
+            let sp = &l.spans[i];
+            let mut look = sp.style.look(p);
+            look.attrs = look.attrs.without(rano::style::Attrs::REVERSE);
+            let seq = look.sgr();
+            let text = Line::new(vec![rano::render::Span::raw(sp.content.clone())]).plain();
+            if seq.is_empty() {
+                out.push_str(&text);
+            } else {
+                out.push_str(&seq);
+                out.push_str(&text);
+                out.push_str(sgr::RESET);
+            }
+            i += 1;
+        }
+        out.push_str(sgr::RESET);
+    }
+    out
 }
 
 /// [`row`] for each of `lines`.
