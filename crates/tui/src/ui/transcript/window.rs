@@ -839,6 +839,23 @@ impl App {
             // and falls back to a full rebuild. Correct, just not incremental, and
             // it is the honest trade for not lexing a 160 MB session to draw its
             // last 40 rows.
+            // **This turn's assistant row, announced and not yet filled, holds back every row
+            // after it.** Its text is on the screen already — it streamed into the live pane —
+            // and it moves into the transcript only when the row's BODY lands. A row announced
+            // after it (the operator's message the daemon took at the step boundary) drawn now
+            // would sit ABOVE the reply it follows, and then be pushed under it when the body
+            // landed: *"it can go above the most recent piece of reply and then get reordered to
+            // the bottom. very strange feeling"* (2026-10-08). So the walk waits here; the message
+            // keeps its `queued` echo under the live pane until then, and everything lands in
+            // order, once. Only rows of the turn in flight: a body that never comes for an old
+            // row must not freeze the transcript, and once the turn ends this does not apply.
+            } else if *hist_upto < items.len()
+                && *hist_upto >= *hist_floor
+                && items[*hist_upto].kind == "assistant"
+                && items[*hist_upto].item.is_none()
+                && in_flight.contains(&items[*hist_upto].item_id)
+            {
+                break;
             } else if *hist_upto < items.len() && *hist_upto >= *hist_floor {
                 // Where the walk stands before this row, so a later "from row
                 // k on" can come back to exactly here. Recorded for every row,
