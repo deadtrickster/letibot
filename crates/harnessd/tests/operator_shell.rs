@@ -574,8 +574,8 @@ fn item_payloads(snap: &letibot_sessionlog::Snapshot) -> Vec<String> {
 ///   `/proc` — the process's state and not its words — and which is what raises the card;
 /// * the card reaches a head as `PromptRequested`, **naming the command the operator typed**;
 /// * the head's `PromptAnswer` is delivered on the socket reader's thread — it cannot go
-///   through the command queue, because the worker is blocked inside the very command that is
-///   asking — and the daemon writes it into the pipe;
+///   through the command queue, because the run's own thread is blocked inside the very
+///   command that is asking — and the daemon writes it into the pipe;
 /// * **the command reads it and finishes**, with the answer in its own output, which is the
 ///   assertion the whole branch exists for;
 /// * and the two rows the `!` feature already appends still land, with the program's last

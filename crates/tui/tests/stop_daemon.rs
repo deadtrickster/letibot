@@ -521,9 +521,10 @@ fn a_successful_stop_says_nothing_on_the_way_out() {
 ///
 /// `registry.close()` runs on the daemon's **connection thread**, the instant the `Stop` is
 /// taken. The **worker** running the operator's command is a different thread, is inside
-/// that command, and has not ended. On a live daemon, 2026-10-06: the `Bye` arrives **519 µs**
+/// that command, and has not ended. On a live daemon, 2026-10-06 — when the run still held
+/// the worker: the `Bye` arrives **519 µs**
 /// after the stop goes out, the daemon's process is still in `/proc` at that moment, and it
-/// stays there for as long as the run holds the worker.
+/// stays there for as long as the run does.
 ///
 /// # What is asserted now, and the half that must not regress
 ///

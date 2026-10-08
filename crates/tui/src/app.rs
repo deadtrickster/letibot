@@ -4311,10 +4311,11 @@ impl App {
         // goodbye is the daemon going"*, and that is true of every `Bye` **but the one a
         // stop produces**. That one is not the daemon going: it is published by
         // `registry.close()` on the **connection thread**, the moment the request is
-        // taken, and the worker that is running the operator's command has not ended yet.
-        // MEASURED on a live daemon, 2026-10-06: the `Bye` arrives **519 µs** after the
+        // taken, and the thread running the operator's command has not ended yet.
+        // MEASURED on a live daemon, 2026-10-06 — when the run still held the worker: the
+        // `Bye` arrives **519 µs** after the
         // stop goes out, the daemon's process is still in `/proc` at that moment, and it
-        // stays there for as long as the run holds the worker.
+        // stays there for as long as the run does.
         //
         // So a head that left on it reported a stop that had not happened. The operator's
         // words: *"it reports the server exited within a second — while `harnessd` is in
@@ -29771,7 +29772,8 @@ mod tests {
                         another user, so `/proc` refuses for it. If it is waiting — `sudo` \
                         reaching `apt`'s `Continue? [Y/n]` is the case this was measured on — \
                         the way in is `!send <line>`, which needs no card. Until the command ends \
-                        it holds this daemon's worker, so nothing else of yours runs either.";
+                        it keeps a thread of its own; the rest of the daemon runs on, and another \
+                        `!` line of yours waits for this one rather than overlapping it.";
         let mut a = App::new(plain_cfg(120));
         a.apply(ServerFrame::Event(env(
             1,

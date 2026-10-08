@@ -623,7 +623,7 @@ impl Job {
     }
 
     /// **The way in to this job's stdin.** Cloned out rather than lent, because the
-    /// reader is on another thread: the daemon's own worker is blocked inside the very
+    /// reader is on another thread: the run's own thread is blocked inside the very
     /// call that started this job, so an answer arrives from a thread that does not hold
     /// the `Arc<Job>`. See [`Stdin`].
     pub fn stdin(&self) -> Stdin {

@@ -21,11 +21,13 @@
 //!
 //! # Why the state is here and not in the harness
 //!
-//! **The session worker is blocked inside the very command that is asking.** `run_operator_shell`
-//! calls `invoke_operator`, which waits on the job — so by the time a card is up, the thread
-//! that owns the exec host is inside the wait and cannot be asked anything. The server has to
-//! reach the input without it, and this is the object it reaches: created by the harness at
-//! open (it is the half that has the handle), handed to the registry
+//! **The run's own thread is blocked inside the very command that is asking.** `invoke_operator`
+//! waits on the job — so by the time a card is up, the thread that owns the exec host is inside
+//! the wait and cannot be asked anything. That thread used to BE the session worker (a `!` run
+//! held it for as long as the command did, which is why this state could not live there either);
+//! it now has a thread of its own — see `crate::bangrun` — and the worker stays free. The server
+//! still has to reach the input without the run's thread, and this is the object it reaches:
+//! created by the harness at open (it is the half that has the handle), handed to the registry
 //! ([`Registry::set_prompt`](letibot_sessionlog::Registry::set_prompt)) keyed by the session,
 //! and driven from two threads at once.
 //!
@@ -38,8 +40,9 @@
 //!
 //! # The reports, and which thread each comes from
 //!
-//! * [`Prompts::opened`] and [`Prompts::ended`] come from the **worker**, on the tool's own
-//!   thread, around the wait. `opened` is what makes the manual way in work when no card is
+//! * [`Prompts::opened`] and [`Prompts::ended`] come from the **run's own thread** (see
+//!   `crate::bangrun` — a `!` run no longer holds the worker), on the tool's own thread, around
+//!   the wait. `opened` is what makes the manual way in work when no card is
 //!   ever raised; `ended` is what takes a card down, so nobody types an answer into a program
 //!   that has already exited.
 //! * [`Prompts::asking`] comes from the same thread, once per question, when
@@ -213,8 +216,9 @@ impl Prompts {
     /// *Something*. The operator's report — `! sudo apt install mc`, *"after entering the
     /// sudo password, the command appears queued and the daemon hangs"* — is exactly this
     /// state with nothing said about it: `apt` waits at `Continue? [Y/n]` as root, where
-    /// `/proc/<pid>/fd/0` is `EACCES` for the daemon, so no card can be raised and the run
-    /// holds the daemon's one worker until its deadline. The person has no way to learn that
+    /// `/proc/<pid>/fd/0` is `EACCES` for the daemon, so no card can be raised — and, in the
+    /// days when a `!` run held the worker (see `crate::bangrun`), it held that one worker
+    /// until its deadline. The person has no way to learn that
     /// the command is waiting at all.
     ///
     /// So the daemon says the one thing that is true and the one thing that helps: it cannot
@@ -261,7 +265,8 @@ impl Prompts {
         // **The two facts, in two sentences.** The first clause is the whole of what differs:
         // a run that has been quiet may be waiting, and a run that is still writing is either
         // working or blocked with something drawing. Everything after it — that `/proc` refuses,
-        // that `!send` is the way in, that the worker is held — is true of both and is said once.
+        // that `!send` is the way in, that the run keeps its thread until it ends — is true of
+        // both and is said once.
         let lead = if quiet {
             format!(
                 "`{command}` has been quiet for a beat and this daemon cannot tell whether it is \
@@ -285,8 +290,9 @@ impl Prompts {
                 "{lead}: one of its processes belongs to another user, so `/proc` refuses for \
                  it.{working} If it is waiting — `sudo` reaching `apt`'s `Continue? [Y/n]` is the \
                  case this was measured on — the way in is `!send <line>`, which needs no card. \
-                 Until the command ends it holds this daemon's worker, so nothing else of yours \
-                 runs either."
+                 Until the command ends it keeps a thread of its own; the rest of the daemon \
+                 runs on, and another `!` line of yours waits for this one rather than \
+                 overlapping it."
             ),
 
             compaction: None,

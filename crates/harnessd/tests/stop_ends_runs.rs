@@ -44,7 +44,7 @@ use letibot_sessionlog::protocol::{Caps, ServerFrame};
 /// How long a live daemon may take to start, open a session and reach its worker.
 const PATIENCE: Duration = Duration::from_secs(90);
 
-/// **How long a stop may take when a run holds the worker.**
+/// **How long a stop may take while the operator's run is in flight.**
 ///
 /// Far below the run's own deadline — which is the whole point, since *it stopped when the
 /// command's two minutes expired* is the state this exists to remove — and far above the

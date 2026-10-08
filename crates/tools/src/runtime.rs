@@ -1564,7 +1564,17 @@ pub struct ToolRuntime {
     pub registry: Registry,
     pub backend: Box<dyn ExecBackend>,
     pub spiller: Spiller,
-    pub gate: Box<dyn Gate>,
+    /// **Behind a mutex because the runtime is shared, and the gate is the one field
+    /// that mutates in place.** Every other field is either read-only after open
+    /// (`registry`, `backend`, `spiller`) or already synchronised (`files`), so two
+    /// threads can invoke through one runtime — which is what the operator's own run
+    /// and a turn running at the same time now do. The gate cannot follow that rule
+    /// by aliasing alone: [`Gate::admit`] takes `&mut self`, and an operator decision
+    /// can hold it for minutes. So the mutex is *the gate's*, held only across the
+    /// decision, and the ungated path — [`ToolRuntime::invoke_operator`], the door's
+    /// calls and the operator's `!` line — never takes it at all: there is nobody
+    /// left to ask, so there is nothing here to wait behind.
+    pub gate: std::sync::Mutex<Box<dyn Gate>>,
     pub limits: Limits,
     /// Session-scoped, and on the runtime rather than on a tool because
     /// read-before-write is a fact about the *session*, not about `edit`.
@@ -1588,7 +1598,7 @@ impl ToolRuntime {
             spiller: Spiller::unset(),
             // Fail closed by default: a runtime nobody configured refuses every
             // non-read call rather than allowing it.
-            gate: Box::new(NoBoundary),
+            gate: std::sync::Mutex::new(Box::new(NoBoundary) as Box<dyn Gate>),
             limits: Limits::default(),
             files: crate::files::FileLedger::new(),
             operator_waiting: None,
@@ -1630,7 +1640,7 @@ impl ToolRuntime {
     }
 
     pub fn with_gate(mut self, gate: Box<dyn Gate>) -> Self {
-        self.gate = gate;
+        self.gate = std::sync::Mutex::new(gate);
         self
     }
 
@@ -1711,8 +1721,14 @@ impl ToolRuntime {
     }
 
     /// Run one call the model proposed.
+    ///
+    /// `&self`, and that is the design and not a convenience: a turn holds this
+    /// method for as long as its longest tool call, and the operator's own run now
+    /// goes through the same runtime on its own thread at the same time. Everything
+    /// shared is either read-only after open or synchronised; the gate — the one
+    /// `&mut` user — sits behind its own mutex (see the field).
     pub fn invoke(
-        &mut self,
+        &self,
         turn_id: &str,
         call: &ToolCall,
         sink: &mut dyn ToolEventSink,
@@ -1721,6 +1737,13 @@ impl ToolRuntime {
     }
 
     /// **Run one call the OPERATOR made**, which the admission has already answered.
+    ///
+    /// **`&self`, and that is load-bearing**: the operator's own run runs on its own
+    /// thread now — it must, because it holds that thread for as long as the command
+    /// does — and a turn may be invoking through this same runtime while it goes.
+    /// Nothing on this path needs exclusivity: the gate is never consulted, so the one
+    /// field that mutates in place is never touched. See [`ToolRuntime::invoke`] for
+    /// the gated half of the same sentence.
     ///
     /// R31. The gate is not consulted, and that is the whole of the difference: an
     /// operator's call has already been through the door — admitted against the allowlist,
@@ -1736,7 +1759,7 @@ impl ToolRuntime {
     /// *this* program would have returned, so the corpus row and the model's next prompt are
     /// about one tool rather than two.
     pub fn invoke_operator(
-        &mut self,
+        &self,
         turn_id: &str,
         call: &ToolCall,
         sink: &mut dyn ToolEventSink,
@@ -1746,7 +1769,7 @@ impl ToolRuntime {
 
     /// The body of both, with the gate the one thing that varies.
     fn run(
-        &mut self,
+        &self,
         turn_id: &str,
         call: &ToolCall,
         sink: &mut dyn ToolEventSink,
@@ -1840,7 +1863,17 @@ impl ToolRuntime {
                 target_exists,
                 scripts: &scripts,
             };
-            if let GateDecision::Refuse { outcome, tell } = self.gate.admit(&gate_call) {
+            // **The lock is the gate's, and it is held across the decision on purpose.**
+            // `admit` may wait minutes for a person; that is exactly the serialisation
+            // wanted — a `/mode` typed while a card is up must not move the gate out
+            // from under the decision being made. The ungated path never reaches this
+            // line, so an operator's own run and a turn's tool call do not queue on it.
+            if let GateDecision::Refuse { outcome, tell } = self
+                .gate
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .admit(&gate_call)
+            {
                 let r =
                     ToolResult::new(call.id.clone(), call.name.clone(), outcome).with_payload(tell);
                 sink.emit(finished_event(turn_id, &r));
@@ -1928,7 +1961,12 @@ impl ToolRuntime {
                 if !gated {
                     continue;
                 }
-                match self.gate.grant_view(&path, &schema.name) {
+                match self
+                    .gate
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .grant_view(&path, &schema.name)
+                {
                     ViewGrant::Refused(why) => {
                         invocation.notes.push(format!(
                             "`{}` was NOT granted into this session's view: {why}",

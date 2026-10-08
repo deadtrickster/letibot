@@ -206,6 +206,11 @@ pub struct Sessions<'a> {
     nag_due: HashMap<String, Instant>,
     /// When to next look for a tool call nothing will answer. See `arm_sweep`.
     sweep_at: Option<Instant>,
+    /// **The operator's run, per session**: whether one is in flight on its own thread,
+    /// and the lines queued behind it. See [`crate::bangrun::State`] — this map only holds
+    /// the handle; the harness gets a clone of the same `Arc`, because the round boundary's
+    /// pickup reads the same fact mid-turn.
+    bangs: HashMap<String, Arc<crate::bangrun::State>>,
     /// The plan notice each session was last NAGGED with.
     ///
     /// **This is what makes it once per idle period rather than every minute.** A check that
@@ -298,6 +303,7 @@ impl<'a> Sessions<'a> {
             fabric_seen: HashMap::new(),
             nag_due: HashMap::new(),
             sweep_at: None,
+            bangs: HashMap::new(),
             nagged: HashMap::new(),
         };
         let (tool, cond) = sessions.seat_tool(&id);
@@ -313,6 +319,14 @@ impl<'a> Sessions<'a> {
         // writes would only be read on the lazy path a head's switch reaches, and the
         // one resume everybody types would go on ignoring it.
         harness.restore_provider_choice();
+        // The first session's operator-run state, same rule as the lazy path below:
+        // one `Arc` in the map, its clone in the harness.
+        let bang = sessions
+            .bangs
+            .entry(id.clone())
+            .or_insert_with(crate::bangrun::State::new)
+            .clone();
+        harness.set_bang_state(bang);
         sessions.open.insert(id.clone(), harness);
         sessions.declare_flowy_monitor(&id, cond);
         // **AND THE DAEMON'S OWN FIRST SESSION ARMS ITS CLOCK TOO.** This constructor inserts into
@@ -994,6 +1008,16 @@ impl<'a> Sessions<'a> {
             // wrote is read here, so a session this daemon did not start running
             // still comes back on its own model rather than the CLI default.
             h.restore_provider_choice();
+            // **The operator's run state is born with the harness** — one `Arc`, held by
+            // this map and cloned into the harness, so the dispatch arm (here) and the
+            // round boundary's pickup (in the harness) answer "is a run going?" from one
+            // place. See `crate::bangrun`.
+            let bang = self
+                .bangs
+                .entry(session_id.to_string())
+                .or_insert_with(crate::bangrun::State::new)
+                .clone();
+            h.set_bang_state(bang);
             self.open.insert(session_id.to_string(), h);
             self.declare_flowy_monitor(session_id, cond);
         }
@@ -1819,6 +1843,114 @@ impl<'a> Sessions<'a> {
         }
     }
 
+    // ---------------------------------------------------------------------------
+    // The operator's own run, off the worker. See `crate::bangrun` for the shape;
+    // these are the worker's hands on the state it owns.
+    // ---------------------------------------------------------------------------
+
+    /// The serialization state for `session_id`'s operator runs — created with the
+    /// harness (both open paths attach the same `Arc` to it), so a session this map
+    /// holds always has one.
+    fn bang_state(&self, session_id: &str) -> Option<Arc<crate::bangrun::State>> {
+        self.bangs.get(session_id).cloned()
+    }
+
+    /// Whether an operator run for this session is in flight on its own thread.
+    fn bang_run_in_flight(&self, session_id: &str) -> bool {
+        self.bang_state(session_id).is_some_and(|s| s.in_flight())
+    }
+
+    /// Park a line typed while a run was in flight; it starts when that run settles.
+    /// Only called after [`Self::bang_run_in_flight`] answered true, so the state is
+    /// there to park into — and both run on the worker's thread, so nothing can move
+    /// between the two reads.
+    fn queue_bang_line(&self, session_id: &str, line: String, who: String) {
+        if let Some(s) = self.bang_state(session_id) {
+            s.queue(line, who);
+        }
+    }
+
+    /// **The run settled** — clear the flag first, then take what waited with
+    /// [`Self::pop_queued_bang_line`], one line per settle.
+    fn clear_bang_in_flight(&self, session_id: &str) {
+        if let Some(s) = self.bang_state(session_id) {
+            s.end();
+        }
+    }
+
+    /// The next line that waited for the run in flight, in submission order.
+    fn pop_queued_bang_line(&self, session_id: &str) -> Option<(String, String)> {
+        self.bang_state(session_id).and_then(|s| s.pop_pending())
+    }
+
+    /// **Hand the operator's run to a thread of its own.**
+    ///
+    /// Mints the call (the `bang-<n>` id is this session's counter, incremented HERE,
+    /// in submission order — a queued line started later must not take an earlier
+    /// number), marks the run in flight BEFORE the thread exists — so two lines cannot
+    /// race the spawn — and spawns it. `Err` only when the thread could not be started
+    /// at all; the flag is undone first, because a run that never started must not
+    /// block every line behind it.
+    fn start_operator_run(&mut self, session_id: &str, line: &str, who: &str) -> Result<(), String> {
+        let state = self
+            .bang_state(session_id)
+            .ok_or_else(|| "no operator-run state for this session".to_string())?;
+        let hub = self
+            .registry
+            .get(session_id)
+            .ok_or_else(|| "no hub for this session".to_string())?;
+        let (call_id, call, runtime) = {
+            let h = self
+                .open
+                .get_mut(session_id)
+                .ok_or_else(|| format!("session {session_id} is not open"))?;
+            let (call_id, call) = h.prepare_operator_shell(line)?;
+            (call_id, call, h.runtime_handle())
+        };
+        state.start();
+        if let Err(why) = crate::bangrun::spawn_run(
+            session_id.to_string(),
+            call_id,
+            call,
+            line.to_string(),
+            who.to_string(),
+            runtime,
+            hub,
+        ) {
+            state.end();
+            return Err(why);
+        }
+        Ok(())
+    }
+
+    /// **The old arm, kept for the case that cannot hand off**: the thread could not be
+    /// started, so the run happens here, on the worker, exactly as it always did — the
+    /// rows, then the turn its rows are for. This is the behaviour whose cost the whole
+    /// change exists to end; it survives only as the fallback that keeps the operator's
+    /// line when a spawn fails.
+    fn run_operator_shell_here(&mut self, session_id: &str, line: &str, who: &str) -> Outcome {
+        let ran = match self.open.get_mut(session_id) {
+            Some(h) => h.run_operator_shell(line, who),
+            None => Err(format!("session {session_id} is not open")),
+        };
+        if let Err(e) = ran {
+            return Outcome::Failed(e);
+        }
+        // **And the turn its rows are for** — the same sending half the settle arm runs,
+        // because the operator asked for their command's result to reach the model.
+        let out = match self.open.get_mut(session_id) {
+            Some(h) => h.run_after_operator_shell(),
+            None => return Outcome::Failed(format!("session {session_id} is not open")),
+        };
+        self.publish_title(session_id);
+        let hub = self.registry.get(session_id);
+        let out = self.after_turn(session_id, &hub, out);
+        match out {
+            Ok(reply) => Outcome::Replied(Box::new(reply)),
+            Err(e) => Outcome::Failed(e.to_string()),
+        }
+    }
+
     /// Run one command against its session.
     pub fn dispatch(&mut self, session_id: &str, cmd: &QueuedCommand) -> Outcome {
         let hub = self.registry.get(session_id);
@@ -2190,18 +2322,86 @@ impl<'a> Sessions<'a> {
             }
             // **The operator's shell line, run by this daemon and recorded as two rows**
             // (`! ls .` → the operator's own `User` row + a `bash` `ToolResult` with
-            // `origin: Operator`). Between turns it runs here; mid-turn the round
-            // boundary takes it (`apply_queued_head_run`), which is the door's own
-            // timing and for its own reason.
+            // `origin: Operator`). Between turns it runs on a thread of its own (see
+            // `crate::bangrun`) — a run that held THIS worker held every other session's
+            // work with it, which is the defect this arm exists to end. Mid-turn the round
+            // boundary takes it (`apply_queued_head_run`), which is the door's own timing
+            // and for its own reason: a turn already running reads the rows at its next
+            // round, and that pickup stays synchronous.
             CommandKind::OperatorShell { line, who } => {
-                let line = line.clone();
-                let who = who.clone();
-                let ran = match self.open.get_mut(session_id) {
-                    Some(h) => h.run_operator_shell(&line, &who),
+                let (line, who) = (line.clone(), who.clone());
+                if !self.open.contains_key(session_id) {
+                    return Outcome::Failed(format!("session {session_id} is not open"));
+                }
+                // **One operator run per session at a time** — `Prompts` holds ONE input
+                // handle, so a second concurrent run would steal the first's card and
+                // `!send`. A line typed while one is in flight waits HERE, on worker-owned
+                // state (nothing else touches this map), and starts when the in-flight one
+                // settles. The worker does not wait with it: that is the whole point.
+                if self.bang_run_in_flight(session_id) {
+                    self.queue_bang_line(session_id, line, who);
+                    return Outcome::HandedOn;
+                }
+                match self.start_operator_run(session_id, &line, &who) {
+                    Ok(()) => Outcome::HandedOn,
+                    // **The thread could not be started.** The command is not refused for
+                    // that: it runs HERE, synchronously, exactly as this arm always did —
+                    // the old behaviour, with the reason on the log rather than a silent
+                    // loss of the operator's line.
+                    Err(why) => {
+                        eprintln!(
+                            "  {session_id} · ! run on the worker instead of its own thread: {why}"
+                        );
+                        self.run_operator_shell_here(session_id, &line, &who)
+                    }
+                }
+            }
+            // **What the operator's run produced, back from its own thread.** The rows and
+            // the turn are appended HERE, by the worker — one writer of the transcript —
+            // exactly as they always were; only the wait moved off this thread. See
+            // `crate::bangrun` for the handoff's shape.
+            CommandKind::OperatorShellResult {
+                line,
+                who,
+                call_id,
+                outcome,
+                payload,
+                spill,
+            } => {
+                let (line, who, call_id) = (line.clone(), who.clone(), call_id.clone());
+                let settled = match self.open.get_mut(session_id) {
+                    Some(h) => h.settle_operator_shell(
+                        &line,
+                        &who,
+                        &call_id,
+                        outcome.clone(),
+                        payload.clone(),
+                        spill.as_ref().map(|s| (s.full_bytes, s.hash.clone())),
+                    ),
                     None => Err(format!("session {session_id} is not open")),
                 };
-                if let Err(e) = ran {
+                if let Err(e) = settled {
                     return Outcome::Failed(e);
+                }
+                // **The run is over, so the next queued line starts now** — not when some
+                // later command happens to come through. One per settle: the one started
+                // here settles in its own turn, and drains the next.
+                self.clear_bang_in_flight(session_id);
+                let next = self.pop_queued_bang_line(session_id);
+                if let Some((next_line, next_who)) = next {
+                    if let Err(why) = self.start_operator_run(session_id, &next_line, &next_who) {
+                        eprintln!(
+                            "  {session_id} · ! run on the worker instead of its own thread: {why}"
+                        );
+                        // Same fallback as the dispatch arm above, and for the same
+                        // reason: a queued line is not lost because a thread could not
+                        // be started. It runs here, between turns, where it would have
+                        // waited anyway.
+                        let ran = self.run_operator_shell_here(session_id, &next_line, &next_who);
+                        if let Outcome::Failed(e) = ran {
+                            return Outcome::Failed(e);
+                        }
+                    }
                 }
                 // **And the turn its rows are for** — the operator's correction, in their
                 // words: *"my commands should start a turn and should be printed to me"*.

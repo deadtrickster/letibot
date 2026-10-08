@@ -229,6 +229,45 @@ pub enum CommandKind {
         /// door's rows name the actor the same way.
         who: String,
     },
+    /// **What the operator's own shell line produced — back from the run's own thread.**
+    ///
+    /// [`CommandKind::OperatorShell`] no longer runs on the worker: it is handed to a thread
+    /// of its own (`harnessd`'s `bangrun`), because a run that holds the worker holds every
+    /// other session's work with it — the operator's report, in their words: *"while a run of
+    /// theirs is in flight, nothing else runs. another `!` line only queues."* That thread
+    /// waits on the command and hands THIS back when it ends, and the worker — which stayed
+    /// free the whole time — appends the two rows and starts the turn.
+    ///
+    /// It is a variant beside [`CommandKind::OperatorResult`] rather than that variant reused,
+    /// and the reason is the door's own rule: `OperatorResult` appends only what an ADMITTED
+    /// call produced (`take_operator_call` refuses a call id with no admission behind it), and
+    /// a `!` line has no admission by design — *"no gate, no adjudication row, no
+    /// `OperatorCallAllowed`"*. Faking one to reuse the arm would put the operator's own rows
+    /// under machinery built to refuse them; carrying the same fields under an honest name
+    /// does not.
+    ///
+    /// **It is never taken mid-turn.** The round-boundary picker (`try_head_run_command`)
+    /// deliberately does not match it: the run is already over, so there is nothing left to
+    /// wait out, and the rows can land at the next between-turns pass — where the turn they
+    /// are for starts.
+    OperatorShellResult {
+        /// The line as submitted, verbatim — the `User` row's text.
+        line: String,
+        /// Who asked, as [`CommandKind::OperatorShell`] carried it. Becomes the `who` in
+        /// `CallOrigin::Operator` and the identity the daemon's own log names.
+        who: String,
+        /// The call id the worker minted (`bang-<n>`), so the row is the one the run was
+        /// started for and no other.
+        call_id: String,
+        outcome: letibot_transcript::ToolOutcome,
+        /// What the model will read — already rendered and capped by the runtime's own
+        /// spill policy, exactly as the synchronous path's `result.render()` was.
+        payload: String,
+        /// **The spill half, when there was one.** The note the worker writes names what
+        /// was produced and where the rest went; these are its two numbers, carried rather
+        /// than recomputed — a second implementation of the cap is a second answer.
+        spill: Option<ShellSpill>,
+    },
     /// A slash command for the daemon: `flowy …`, `models …`.
     Slash {
         line: String,
@@ -270,6 +309,19 @@ pub enum CommandKind {
         req_id: String,
         reply: Reply,
     },
+}
+
+/// **The spill half of a finished operator run**, as the size note needs it.
+///
+/// Two numbers, carried rather than recomputed: [`crate::protocol`] does not know what a
+/// spill store is and must not learn, and the worker that writes the note needs exactly
+/// these — how much the command produced in full, and the hash that locates the rest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellSpill {
+    /// What the command produced in full, before the inline cap.
+    pub full_bytes: usize,
+    /// The locator, as `read_spill hash=…` spells it.
+    pub hash: String,
 }
 
 /// What a head sent back, and the two things it can be.
@@ -372,6 +424,7 @@ impl CommandKind {
             CommandKind::OperatorCall { .. } => "operator-call",
             CommandKind::OperatorResult { .. } => "operator-result",
             CommandKind::OperatorShell { .. } => "operator-shell",
+            CommandKind::OperatorShellResult { .. } => "operator-shell-result",
             CommandKind::WithdrawPrompts => "take-back",
             CommandKind::SetOperatorTodos { .. } => "operator todos",
             CommandKind::Promote => "promote",
@@ -1308,6 +1361,14 @@ impl Hub {
                 (CommandKind::OperatorShell { line, .. }, false) => {
                     format!("the operator's own shell line `{line}` queued for this session to run")
                 }
+                // **Never submitted by a head** — no frame produces this kind. It is the
+                // daemon's own finished work coming back (`Hub::submit_daemon`), which does
+                // not pass through here; if it ever did, the announcement says what it is
+                // rather than refusing, because the rows are the record and a refusal would
+                // lose them.
+                (CommandKind::OperatorShellResult { call_id, .. }, _) => {
+                    format!("the operator's shell run `{call_id}` finished")
+                }
             };
 
             let verb = kind.verb();
@@ -1383,6 +1444,62 @@ impl Hub {
             bell.ring(&id);
         }
         frame
+    }
+
+    /// **A command the daemon enqueues without a head behind it** — the one caller today
+    /// is the operator's finished shell run coming back from its own thread.
+    ///
+    /// [`Hub::submit`] is the door for commands and it checks exactly what a command from
+    /// outside needs checked: that the submitter is an attached head, that a stale seq is
+    /// answered by name, that a reply frame goes back. None of that applies here. The
+    /// submitter is not a head and must not be made to look like one — it is the worker's
+    /// own delegate returning finished work to the queue the worker drains — no head is
+    /// waiting for a reply (the line was answered `Accepted` when it was submitted, and the
+    /// rows are how the result reaches anybody), and there is no seq question to answer:
+    /// the run already happened.
+    ///
+    /// **No `CommandIssued` announcement.** The act was announced when the line was
+    /// submitted; this is that same act completing, and its record is the two rows and the
+    /// `operator_shell_ran` note the worker appends on it. Announcing the completion as a
+    /// second command would be one fact in two places.
+    ///
+    /// The bell **is** rung, with [`crate::registry::Ring::Command`] — the same ring a head's
+    /// submit uses — so an idle worker picks this up at once and `Bell::next_any`'s ordering
+    /// holds: a head that pressed enter while the run was in flight is served before it,
+    /// because a command outranks a wake and this is a command.
+    ///
+    /// `false` for a closed hub: the daemon is going away, the queue is being drained by
+    /// nobody, and a result handed to it would be lost either way. The caller says so on its
+    /// own log rather than pretending the rows landed.
+    pub fn submit_daemon(
+        &self,
+        identity: impl Into<String>,
+        client_request_id: impl Into<String>,
+        kind: CommandKind,
+    ) -> bool {
+        let ring = {
+            let mut g = self.lock();
+            if g.closed {
+                return false;
+            }
+            // Read before the push: the seq is the log's head at the moment the result
+            // was queued, which is what `at_seq` means on every other command.
+            let at_seq = g.log.head_seq();
+            g.commands.push_back(QueuedCommand {
+                head_id: DAEMON_SUBMITTER.to_string(),
+                identity: identity.into(),
+                client_request_id: client_request_id.into(),
+                at_seq,
+                kind,
+            });
+            self.cv.notify_all();
+            g.bell.clone().map(|b| (b, g.log.session_id().to_string()))
+        };
+        // Outside the lock, for the reason `submit` rings outside it.
+        if let Some((bell, id)) = ring {
+            bell.ring(&id);
+        }
+        true
     }
 
     /// This session, as a row in a picker. One lock, one instant.
