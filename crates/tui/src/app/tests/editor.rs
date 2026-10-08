@@ -435,3 +435,107 @@ fn the_crossing_chord_is_in_help() {
     assert!(help.contains("ctrl-]"), "{help}");
     assert!(help.contains("alt-s"), "{help}");
 }
+
+/// **The acceptance suite's session, as the daemon would log it** — the operator's question,
+/// the `edit` of [`change`] with the assistant row that made it, and a closing sentence — one
+/// `Envelope` per line, the shape `letibot-tui --replay` reads.
+fn acceptance_session() -> String {
+    use letibot_sessionlog::event::{Envelope, SessionEvent};
+    let t = "s#1";
+    let item = |id: &str, item: TranscriptItem| SessionEvent::TranscriptContent {
+        item_id: id.into(),
+        item: Box::new(item),
+    };
+    let events = vec![
+        testing::appended("s.1", "user"),
+        item(
+            "s.1",
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![UserPart::Text {
+                    text: "please fix line eleven".into(),
+                }],
+            },
+        ),
+        testing::turn_started(t),
+        testing::progress(t),
+        testing::proposed_on(t, "c1", "edit", FILE),
+        SessionEvent::ToolStarted {
+            turn_id: t.into(),
+            call_id: "c1".into(),
+            name: "edit".into(),
+            access: "write".into(),
+        },
+        // The row that made the call, before the call's result — the daemon's order.
+        testing::appended("s.2", "assistant"),
+        item(
+            "s.2",
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![letibot_transcript::ToolCall {
+                    id: "c1".into(),
+                    name: "edit".into(),
+                    arguments: format!(r#"{{"path":"{FILE}"}}"#),
+                }],
+                truncated: false,
+            },
+        ),
+        SessionEvent::ToolFinished {
+            turn_id: t.into(),
+            call_id: "c1".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload_digest: "fnv1a:0000000000000000".into(),
+            inline_bytes: 4,
+            full_bytes: 4,
+            spill: None,
+            repairs: 0,
+            edit: Some(change()),
+        },
+        testing::appended("s.3", "tool_result"),
+        item("s.3", row("s.3", "c1", "edit", Some(change())).1),
+        testing::delta(t, "Line eleven is fixed."),
+        testing::appended("s.4", "assistant"),
+        item(
+            "s.4",
+            TranscriptItem::Assistant {
+                text: "Line eleven is fixed.".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        ),
+        testing::turn_finished(t),
+    ];
+    events
+        .into_iter()
+        .enumerate()
+        .map(|(i, event)| {
+            let env = Envelope {
+                session_id: "acceptance".into(),
+                seq: i as u64 + 1,
+                ts: 0,
+                event,
+            };
+            serde_json::to_string(&env).unwrap() + "\n"
+        })
+        .collect()
+}
+
+/// **The acceptance suite replays this file, and it is generated, not hand-written**, so a
+/// change to the protocol shows up here as a failing test rather than as a fixture the head
+/// silently stops reading. `LETIBOT_BLESS=1` writes it again.
+#[test]
+fn the_acceptance_fixture_is_this_session() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/acceptance/fixtures/edit.jsonl");
+    let want = acceptance_session();
+    if std::env::var_os("LETIBOT_BLESS").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &want).unwrap();
+    }
+    let got = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        got == want,
+        "{} is stale: run `LETIBOT_BLESS=1 cargo test -p letibot-tui the_acceptance_fixture`",
+        path.display()
+    );
+}

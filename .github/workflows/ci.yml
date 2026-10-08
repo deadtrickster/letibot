@@ -275,6 +275,15 @@ jobs:
       - name: Release build
         run: cargo build --release --bins
 
+      # **The head in a real terminal**: tmux is the emulator, `capture-pane` the screen.
+      # Specs drive the release binary with the keys and mouse reports a terminal sends and
+      # read back what a person would see — the part of the TUI no unit test reaches (key
+      # decoding, the frame, focus crossing into and out of the editor pane).
+      - name: Acceptance (the head driven in tmux)
+        run: |
+          command -v tmux >/dev/null || sudo apt-get install -y tmux
+          LETIBOT_TUI="$PWD/target/release/letibot-tui" tests/acceptance/run.sh
+
       # **The binaries are the deliverable, so something runs them.** `--version` is
       # the cheapest thing that proves a binary came up — it needs no socket, no model
       # and no store — and it is the same command `install.sh` uses to check an

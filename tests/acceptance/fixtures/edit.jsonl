@@ -1,0 +1,15 @@
+{"session_id":"acceptance","seq":1,"ts":0,"event":"transcript_appended","item_id":"s.1","kind":"user","ledger_head":"beef"}
+{"session_id":"acceptance","seq":2,"ts":0,"event":"transcript_content","item_id":"s.1","item":{"type":"user","parts":[{"kind":"text","text":"please fix line eleven"}],"speaker":"operator"}}
+{"session_id":"acceptance","seq":3,"ts":0,"event":"turn_started","turn_id":"s#1","model":"qwen3-next-80b","ledger_head":"0000","began_ms":null}
+{"session_id":"acceptance","seq":4,"ts":0,"event":"prompt_progress","turn_id":"s#1","total":1000,"cache":900,"processed":950,"time_ms":40}
+{"session_id":"acceptance","seq":5,"ts":0,"event":"tool_call_proposed","turn_id":"s#1","call_id":"c1","name":"edit","args_digest":"fnv1a:0000000000000000","target":"notes.txt"}
+{"session_id":"acceptance","seq":6,"ts":0,"event":"tool_started","turn_id":"s#1","call_id":"c1","name":"edit","access":"write"}
+{"session_id":"acceptance","seq":7,"ts":0,"event":"transcript_appended","item_id":"s.2","kind":"assistant","ledger_head":"beef"}
+{"session_id":"acceptance","seq":8,"ts":0,"event":"transcript_content","item_id":"s.2","item":{"type":"assistant","text":"","tool_calls":[{"id":"c1","name":"edit","arguments":"{\"path\":\"notes.txt\"}"}]}}
+{"session_id":"acceptance","seq":9,"ts":0,"event":"tool_finished","turn_id":"s#1","call_id":"c1","outcome":{"outcome":"ok"},"payload_digest":"fnv1a:0000000000000000","inline_bytes":4,"full_bytes":4,"spill":null,"repairs":0,"edit":{"path":"notes.txt","created":false,"before_start":9,"after_start":9,"before_lines":30,"after_lines":30,"truncated":false,"before":"line 9\nline 10\nold 11\nline 12","after":"line 9\nline 10\nline 11\nline 12"}}
+{"session_id":"acceptance","seq":10,"ts":0,"event":"transcript_appended","item_id":"s.3","kind":"tool_result","ledger_head":"beef"}
+{"session_id":"acceptance","seq":11,"ts":0,"event":"transcript_content","item_id":"s.3","item":{"type":"tool_result","call_id":"c1","name":"edit","outcome":{"outcome":"ok"},"payload":"done","edit":{"path":"notes.txt","created":false,"before_start":9,"after_start":9,"before_lines":30,"after_lines":30,"truncated":false,"before":"line 9\nline 10\nold 11\nline 12","after":"line 9\nline 10\nline 11\nline 12"},"origin":null,"media":null}}
+{"session_id":"acceptance","seq":12,"ts":0,"event":"delta","turn_id":"s#1","target":"text","text":"Line eleven is fixed."}
+{"session_id":"acceptance","seq":13,"ts":0,"event":"transcript_appended","item_id":"s.4","kind":"assistant","ledger_head":"beef"}
+{"session_id":"acceptance","seq":14,"ts":0,"event":"transcript_content","item_id":"s.4","item":{"type":"assistant","text":"Line eleven is fixed."}}
+{"session_id":"acceptance","seq":15,"ts":0,"event":"turn_finished","turn_id":"s#1","finish_reason":"eos","usage":{"prompt_tokens":1000,"cached_tokens":900,"predicted_tokens":42},"timings":{"prompt_ms":40.0,"predicted_ms":900.0,"wall_ms":950}}

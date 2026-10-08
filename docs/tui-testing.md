@@ -8,6 +8,25 @@ box — used it to settle a bug that no amount of reading would have: **two tmux
 sessions, the same binary, byte-identical input, one variable changed.** Its
 `TODO.md` records the result, and the shape is the reusable part.
 
+## The acceptance suite: this method, codified
+
+`tests/acceptance/` is the method below turned into specs that run in CI, in Playwright's
+shape: a driver (`lib.sh`) that starts the head in a private tmux server, acts with the keys
+and SGR mouse reports a terminal sends (`press C-]`, `click "Edited notes.txt"`), locates by
+on-screen text, and waits for the screen instead of sleeping (`wait_for`, `wait_gone`,
+`settle`). A spec reads as steps; a failed step prints the screen it saw.
+
+```bash
+cargo build -p letibot-tui --bin letibot-tui && tests/acceptance/run.sh
+LETIBOT_TUI=target/release/letibot-tui tests/acceptance/run.sh editor-pane
+```
+
+Its sessions are replays, so they need no daemon or model, and its fixtures are
+**generated** by a unit test from the protocol's own types (`LETIBOT_BLESS=1` rewrites them),
+so a protocol change fails a test instead of leaving a fixture the head no longer reads.
+`--replay` reads input through the same routed path as a live session, so a spec reaches
+everything the keyboard and mouse reach there, the editor pane included.
+
 ## The mechanism
 
 ```bash
