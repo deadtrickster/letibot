@@ -10,10 +10,10 @@ use rano::agent::outcome::Outcome;
 #[cfg(test)]
 use rano::style::Role;
 
-/// The subject helpers the rows share with rano's widgets: one copy of each rule.
-pub(crate) use rano::agent::text::ellipsise_left;
+/// The subject helpers the rows share with rano's widgets — one copy of each rule, rano's —
+/// named here for the tests that pin them.
 #[cfg(test)]
-pub(crate) use rano::agent::text::{header_names_the_file, shorten_subject};
+pub(crate) use rano::agent::text::{ellipsise_left, header_names_the_file, shorten_subject};
 
 /// The pane's word for how a job came to be in the background — the three causes
 /// `Backgrounding` names, as a person reads them. The distinction is the one the

@@ -65,6 +65,7 @@ impl App {
     ///
     /// A settled job's redirect is not counted: the row is about what is running now, and a
     /// finished job's output is readable wherever it went.
+    #[cfg(test)]
     pub(crate) fn jobs_line(&self) -> Option<String> {
         self.jobs_view().running_line()
     }

@@ -21,33 +21,6 @@ pub(crate) fn colour(cfg: &RenderConfig, code: &str, s: &str) -> String {
 /// `1;35`, the same way `sgr::BOLD_ITALIC` composes exactly the pairs that recur — because
 /// two escapes reset once and read the same as the composed ones in every terminal this row
 /// has been drawn on.
-pub(crate) fn git_paint(cfg: &RenderConfig, role: crate::gitfield::GitRole, s: &str) -> String {
-    use crate::gitfield::GitRole as R;
-    match role {
-        R::BranchClean => colour(cfg, sgr::GREEN, s),
-        R::BranchDirty => colour(cfg, sgr::YELLOW, s),
-        R::Behind | R::Ahead => colour(cfg, sgr::CYAN, s),
-        R::Stash => colour(cfg, sgr::MAGENTA, s),
-        R::Action => {
-            if cfg.color {
-                format!("{}{}{s}{}", sgr::BOLD, sgr::MAGENTA, sgr::RESET)
-            } else {
-                s.to_string()
-            }
-        }
-        R::Conflict => {
-            if cfg.color {
-                format!("{}{}{s}{}", sgr::BOLD, sgr::RED, sgr::RESET)
-            } else {
-                s.to_string()
-            }
-        }
-        R::Staged => colour(cfg, sgr::GREEN, s),
-        R::Unstaged => colour(cfg, sgr::YELLOW, s),
-        R::Untracked => colour(cfg, sgr::DIM, s),
-    }
-}
-
 /// The first sentence of a refusal's reasoning, capped.
 ///
 /// Layer A's `basis` is written for the model: it names every construct it could

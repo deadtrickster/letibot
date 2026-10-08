@@ -5,6 +5,7 @@ use crate::app::*;
 use crate::ui::render::{sgr, trim_to, visible_width, wrap};
 use crate::ui::*;
 use letibot_ui::painter::Sgr;
+use rano::agent::composer::{BoxBottom, BoxTop};
 use rano::style::Role;
 
 impl App {
@@ -468,58 +469,34 @@ impl App {
     /// **The composer box's top edge**, carrying what this session has running: its live
     /// subagents and its background jobs.
     pub(crate) fn box_top(&self, w: usize) -> String {
-        let mut facts: Vec<String> = Vec::new();
-        // **The number is the rows the pane draws, and not a second rule about them.**
-        // This counted `state == "running"`, which is narrower than the predicate the
-        // pane's own active group is built from ([`SubagentState::is_finished`]): a child
-        // in `opening` was drawn as a live row and left out of the number, so the footer
-        // and the pane could disagree about the same list. Both now read the one
-        // lifecycle predicate — alive from the spawn until the completion, which is what
-        // the operator asked for in their own words: *"an agent is alive from spawn until
-        // it has finished"*.
-        let running = self.subagents.iter().filter(|s| !s.is_finished()).count();
-        if running > 0 {
-            facts.push(format!(
-                "{running} subagent{} running",
-                if running == 1 { "" } else { "s" }
-            ));
-        }
-        if let Some(jobs) = self.jobs_line() {
-            facts.push(jobs);
-        }
-        let top = if facts.is_empty() {
-            String::new()
-        } else {
-            self.cfg
-                .palette()
-                .painted(Role::Pending, &facts.join(" · "))
+        // **The number is the rows the pane draws, and not a second rule about them**: the one
+        // lifecycle predicate ([`SubagentState::is_finished`]) the pane's own active group is
+        // built from — *"an agent is alive from spawn until it has finished"*.
+        let top = BoxTop {
+            subagents_running: self.subagents.iter().filter(|s| !s.is_finished()).count(),
+            jobs_running: self.jobs.iter().filter(|j| j.running).count(),
+            jobs_to_a_file: self
+                .jobs
+                .iter()
+                .filter(|j| j.running && j.redirect.is_some())
+                .count(),
         };
-        self.box_edge(w, '╭', '╮', "", &top)
+        crate::ui::rows::edge_row(&top.line(w), self.cfg.palette())
     }
 
     /// **The composer box's bottom edge**, carrying the alarm, where the reader is in the
     /// conversation, and the visibility rung.
     pub(crate) fn box_bottom(&self, w: usize) -> String {
-        let mut right: Vec<String> = Vec::new();
-        if self.alarmed() {
-            right.push(self.cfg.palette().painted(Role::Attention, "⚠"));
-        }
-        // **The viewport's state, where the reader's eye already crosses** (R36). It is
-        // drawn **only when it is holding**, because following is the ordinary state and
-        // owes the reader nothing — a marker that is always on is furniture. What it
-        // buys is the reader who would otherwise scroll to find out whether they are
-        // pinned, which is the affordance failing rather than working.
-        if let Some(state) = self.scroll_state() {
-            right.push(self.cfg.palette().painted(Role::Pending, state));
-        }
-        // **And the rung, when it is the one that hides things** (R37). Same rule as
-        // `holding`: drawn only when it is news, because a marker that is always on is
-        // furniture. What it buys is the reader who switched and then forgot — the rows
-        // that are missing are named by the mode rather than by a placeholder on each.
-        if let Some(rung) = self.rung_state() {
-            right.push(self.cfg.palette().painted(Role::Attention, &rung));
-        }
-        self.box_edge(w, '╰', '╯', "", &right.join(" · "))
+        // The alarm, then the viewport's state **only when it is holding** (R36 — following is
+        // the ordinary state and owes the reader nothing), then the rung **when it is the one
+        // that hides things** (R37): each drawn only when it is news, because a marker that is
+        // always on is furniture.
+        let bottom = BoxBottom {
+            alarmed: self.alarmed(),
+            holding: self.scroll_state().is_some(),
+            rung: self.rung_state(),
+        };
+        crate::ui::rows::edge_row(&bottom.line(w), self.cfg.palette())
     }
 
     /// **What fills the screen above the cards**: the terminal pane, an open output or pane,

@@ -874,13 +874,22 @@ impl Editor {
     /// they are the entire mechanism by which anybody learns that a second press does
     /// something different.
     pub fn hint(&self, now_ms: u64, palette: Palette) -> String {
+        match self.hint_text(now_ms) {
+            Some(s) => palette.painted(Role::Attention, s),
+            None => String::new(),
+        }
+    }
+
+    /// [`Editor::hint`]'s words, unpainted, for a widget that paints them itself (the hint
+    /// bar is `rano::agent::hint_bar`, and it draws them in the attention register).
+    pub fn hint_text(&self, now_ms: u64) -> Option<&'static str> {
         if self.esc_taps.armed(now_ms, INTERRUPT_WINDOW_MS) {
-            return palette.painted(Role::Attention, "esc again to interrupt");
+            return Some("esc again to interrupt");
         }
         if self.ctrlc_taps.armed(now_ms, QUIT_WINDOW_MS) {
-            return palette.painted(Role::Attention, "ctrl+c again to exit");
+            return Some("ctrl+c again to exit");
         }
-        String::new()
+        None
     }
 }
 

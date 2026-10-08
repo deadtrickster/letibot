@@ -1,13 +1,9 @@
 //! **The header**: the session, the model, the context, the clock.
 
 use crate::app::*;
-use crate::ui::render::{dur_human, trim_to, visible_width};
 use crate::ui::*;
 use letibot_sessionlog::registry::SessionBrief;
-use letibot_ui::painter::Sgr;
-use letibot_ui::progress;
-use letibot_ui::text::without_control_lines;
-use rano::style::Role;
+use rano::agent::header::{Context, GitMark, Header};
 
 impl App {
     /// The session header: which session, what it is talking to, and how big it
@@ -51,12 +47,14 @@ impl App {
     /// a path is recognisable from its end, and a token count is not recoverable
     /// from anywhere else on the screen.
     pub(crate) fn header_line(&self, w: usize) -> String {
-        let p = self.cfg.palette();
-        let name = self.session_label(&self.session_id);
+        crate::ui::render::row(&self.header_view().line(w), self.cfg.palette())
+    }
 
-        // Most valuable first: which of several sessions this is, then how big the
-        // prompt has got, then how much of it the cache saved.
-        let mut right: Vec<String> = Vec::new();
+    /// **The header's facts, in rano's words** — `rano::agent::header` lays them out (most
+    /// valuable first, dropped from the end until the name fits; the name, the parent and the
+    /// workspace in one quiet register; the repository's segments in their own colours).
+    pub(crate) fn header_view(&self) -> Header {
+        let name = self.session_label(&self.session_id);
         // Shown for one session too. It used to be gated on `len() > 1`, and the
         // effect was that the *only* case with no session identity anywhere on the
         // screen — one untitled session, whose name is therefore an opaque id — was
@@ -78,7 +76,7 @@ impl App {
             .position(|s| s.session_id == root)
             .map(|i| i + 1)
             .unwrap_or(0);
-        right.push(format!("{at}/{}", roots.len().max(1)));
+        let position = (at, roots.len());
         // What this session is talking to: the daemon's own word from `Hello`, or
         // — before that has arrived — the model the running turn named. It lived
         // on the composer's top border, the one row the eye crosses on every
@@ -127,9 +125,7 @@ impl App {
                 }
             }
         };
-        if !model.is_empty() {
-            right.push(model);
-        }
+
         // Live prefill numbers win over the last turn's: while a turn is running,
         // "how big is this prompt" is a question about the prompt being sent. The
         // third element says whether the cache fraction is a measurement: a live
@@ -145,32 +141,24 @@ impl App {
             };
         // **The meter.** Beside the token count, because that is where the
         // question "what is this costing me" is already being asked.
-        if self.spent_seen {
-            right.push(format!("${:.4}", self.spent_micros as f64 / 1_000_000.0));
-        }
-        if let Some((total, cached, cache_measured)) = usage {
-            right.push(format!("{} ctx", progress::thousands(total)));
-            // A percentage nobody measured is refused, the rule the rate beside it
-            // is held to: a row that carries the size but not the fraction shows
-            // the size and says nothing about the cache.
-            if cache_measured {
-                right.push(format!(
-                    "{:.0}% cached",
-                    cached as f64 * 100.0 / total as f64
-                ));
-            }
-        }
+        let spent_micros = self.spent_seen.then_some(self.spent_micros);
+        // A percentage nobody measured is refused, the rule the rate beside it is held to: a
+        // row that carries the size but not the fraction shows the size and says nothing about
+        // the cache.
+        let context = usage.map(|(tokens, cached, cache_measured)| Context {
+            tokens,
+            cached,
+            cache_measured,
+        });
         // The last turn's speed and duration, measured when it ended. A rate nobody
         // measured is refused, the rule the footer's rate was held to when it lived
         // there: a turn that decoded nothing has no `predicted_ms`, and `0 tok/s`
         // would be a number nobody took. Dropped first on a narrow screen — the
         // context numbers are the ones this header exists for.
+        let (mut tok_per_s, mut duration_ms, mut out_tokens) = (None, None, None);
         if let (Some(u), Some(tm)) = (self.usage, self.last_timings) {
             if tm.predicted_ms > 0.0 {
-                right.push(format!(
-                    "{:.0} tok/s",
-                    u.predicted_tokens as f64 * 1000.0 / tm.predicted_ms
-                ));
+                tok_per_s = Some(u.predicted_tokens as f64 * 1000.0 / tm.predicted_ms);
             }
             // **WHILE A TURN RUNS THE DURATION IS THE TURN'S, and only the duration.**
             //
@@ -201,105 +189,65 @@ impl App {
                 .filter(|_| self.turn_busy())
                 .map(|t| t.started_ms)
                 .filter(|started| *started > 0);
-            match running_since {
-                Some(started) => right.push(dur_human(self.now_ms.saturating_sub(started))),
-                None if tm.wall_ms > 0 => right.push(dur_human(tm.wall_ms)),
-                None => {}
-            }
+            duration_ms = match running_since {
+                Some(started) => Some(self.now_ms.saturating_sub(started)),
+                None if tm.wall_ms > 0 => Some(tm.wall_ms),
+                None => None,
+            };
             // And how much the answer was — the last of the turn's numbers, and
             // the reason an ordinary ending leaves the body with no footer line
             // at all.
-            if u.predicted_tokens > 0 {
-                right.push(format!("{} out", progress::thousands(u.predicted_tokens)));
-            }
+            out_tokens = (u.predicted_tokens > 0).then_some(u.predicted_tokens);
         }
-        // Drop from the end until it leaves room for the name.
-        let name_cols = visible_width(&name) + 2;
-        while right.len() > 1 && name_cols + right.join(" · ").chars().count() + 2 > w {
-            right.pop();
+        use crate::gitfield::GitRole as R;
+        Header {
+            // **One label, and only for a subagent: `subagent of <parent>`**, named from the
+            // daemon's own list (`parent_session_id`) and only then: a session whose brief this
+            // head does not hold draws no label rather than a guess.
+            subagent_of: self
+                .parent_session()
+                .map(|parent| self.session_label(&parent)),
+            name,
+            workspace: if self.wiring.workspace.is_empty() {
+                String::new()
+            } else {
+                tilde(&self.wiring.workspace)
+            },
+            // **The workspace's repository, in gitstatus's own segments** — drawn from the pieces
+            // the READER rendered (`refresh_git` applies the format; a paint never formats). An
+            // unreadable repository is no pieces, and draws nothing rather than a blank that
+            // reads like a clean tree.
+            git: self
+                .git
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(|(text, role)| {
+                    (
+                        text.clone(),
+                        match role {
+                            R::BranchClean => GitMark::BranchClean,
+                            R::BranchDirty => GitMark::BranchDirty,
+                            R::Behind => GitMark::Behind,
+                            R::Ahead => GitMark::Ahead,
+                            R::Stash => GitMark::Stash,
+                            R::Action => GitMark::Action,
+                            R::Conflict => GitMark::Conflict,
+                            R::Staged => GitMark::Staged,
+                            R::Unstaged => GitMark::Unstaged,
+                            R::Untracked => GitMark::Untracked,
+                        },
+                    )
+                })
+                .collect(),
+            position,
+            model,
+            spent_micros,
+            context,
+            tok_per_s,
+            duration_ms,
+            out_tokens,
         }
-        let tail = right.join(" · ");
-        let tail_cols = if tail.is_empty() {
-            0
-        } else {
-            tail.chars().count() + 2
-        };
-
-        // **The header is FACTS, and neither half of it is a sentence** (R51 item 10).
-        //
-        // The name used to open with `▌` in the user-accent register, and that glyph is how both
-        // heads say *a person said this* — so on the row the reader crosses on every return to the
-        // field, the session's own name read as somebody's message. The operator: *"the project
-        // directory and session name are pinned in the first row with the same blue bar we use for
-        // my messages. very confusing. just make both gray and remove the bar."*
-        //
-        // **Deleted, not recoloured**: a grey bar is still a bar and still makes the claim. And
-        // the name loses `Strong` as well as the bar — one quiet register for the header, because
-        // the two things on it are the same kind of fact (which session, and where) and a reader
-        // sounding out which half is emphasised learns nothing from either.
-        //
-        // Note the departure this settles: leticl recorded the register as *its* choice against
-        // letibot (`4110e7b`), and the operator is now asking for it here too.
-        let mut left = String::new();
-        left.push_str(&p.painted(Role::Faint, &without_control_lines(&name)));
-        let mut left_cols = visible_width(&name);
-        // **One label, and only for a subagent: `subagent of <parent>`.** This head can be
-        // switched into a child session, and then the row that names the session named only
-        // the child — so a screen showing somebody else's conversation looked like a screen
-        // showing one's own, which is the whole of the operator's ask: *"when I \"Enter\"
-        // Subagent it is like completely switching session with just one piece of info - a
-        // Label that it is a subagent"*. It sits here, on the row that already names the
-        // session, in the same faint register as the workspace and the branch — one fact of
-        // the same kind, added to the same field, and **nothing else anywhere on the
-        // screen**; the session's own tree of children is where it was, under `ctrl-g`.
-        //
-        // The parent is named from the daemon's own list (`parent_session_id`), and only
-        // then: a session whose brief this head does not hold draws no label rather than a
-        // guess about which session spawned it.
-        if let Some(parent) = self.parent_session() {
-            let of = format!("  subagent of {}", self.session_label(&parent));
-            left.push_str(&p.painted(Role::Faint, &without_control_lines(&of)));
-            left_cols += visible_width(&of);
-        }
-        // The workspace fills whatever is left, shortened from its *left*: the end
-        // of a path is the part that identifies it.
-        if !self.wiring.workspace.is_empty() {
-            let path = tilde(&self.wiring.workspace);
-            let room = w.saturating_sub(left_cols + tail_cols + 2);
-            if room >= 8 {
-                let shown = ellipsise_left(&path, room);
-                left.push_str(&p.painted(Role::Faint, &format!("  {shown}")));
-                left_cols += 2 + visible_width(&shown);
-            }
-            // **The workspace's repository, in gitstatus's own segments and colours** — the
-            // operator's port of leticl's field, beside the path it is a fact about. Drawn
-            // from the pieces the READER rendered (`refresh_git` applies the format; a paint
-            // never formats), fitted here where the width is: the branch is the floor and the
-            // marks fall off the right, so a narrow screen loses `?4` and not the branch. The
-            // segments carry their own styles — a green branch, a yellow `!`, a red `~` — and
-            // the parens are the row's own faint, so the field still reads as one thing.
-            // An unreadable repository draws NOTHING rather than a blank that reads like a
-            // clean tree (`gitfield`'s own rule).
-            if let Some(pieces) = self.git.as_deref() {
-                let room = w.saturating_sub(left_cols + tail_cols + 4);
-                let fit = crate::gitfield::git_fit(pieces, room);
-                if !fit.is_empty() {
-                    left.push_str(&p.painted(Role::Faint, " ("));
-                    let mut cols = 3usize;
-                    for (text, role) in fit {
-                        cols += visible_width(text);
-                        left.push_str(&git_paint(&self.cfg, *role, text));
-                    }
-                    left.push_str(&p.painted(Role::Faint, ")"));
-                    left_cols += cols;
-                }
-            }
-        }
-        let pad = w.saturating_sub(left_cols + tail.chars().count());
-        trim_to(
-            &format!("{left}{}{}", " ".repeat(pad), p.painted(Role::Faint, &tail)),
-            w,
-        )
     }
 }
 
@@ -310,15 +258,7 @@ impl App {
 /// which is what it said before this row replaced the read-only one. The header
 /// has one slot and wants the name: `glm-5.3-flash`, or the provider pair, which
 /// is worth its width because it is also how you can tell you are being billed.
-pub(crate) fn header_model(value: &str) -> String {
-    match value
-        .strip_prefix("local (")
-        .and_then(|v| v.strip_suffix(')'))
-    {
-        Some(alias) => alias.to_string(),
-        None => value.to_string(),
-    }
-}
+pub(crate) use rano::agent::header::header_model;
 
 impl App {
     /// **What the terminal's window title says**: the session's name and the folder, so a

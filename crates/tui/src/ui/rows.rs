@@ -63,6 +63,37 @@ pub fn row(l: &Line, p: Palette) -> String {
     spans_to_ansi(&l.spans, Some(l), p)
 }
 
+/// **A box edge with its legend inlaid** — `rano::agent::composer`'s edges, written as this
+/// head's `box_edge` wrote them: the whole edge one faint run, the legend's pieces inside it in
+/// their own looks closed by plain resets (so the ` · ` between two pieces is the terminal's
+/// own weight), and the faint opened again once, after the legend, for the frame's last
+/// glyphs. rano's line is the faint register with the legend over it — the same cells but for
+/// those separators — and this is the one shape in the head that spells it this way.
+pub fn edge_row(l: &Line, p: Palette) -> String {
+    let open = l.style.look(p).sgr();
+    if open.is_empty() {
+        return row(l, p);
+    }
+    let last_styled = l.spans.iter().rposition(|s| !s.style.look(p).is_plain());
+    let mut out = open.clone();
+    for (i, sp) in l.spans.iter().enumerate() {
+        let seq = sp.style.look(p).sgr();
+        let text = Line::raw(sp.content.clone()).plain();
+        if seq.is_empty() {
+            if last_styled.is_some_and(|k| i == k + 1) {
+                out.push_str(&open);
+            }
+            out.push_str(&text);
+        } else {
+            out.push_str(&seq);
+            out.push_str(&text);
+            out.push_str(RESET);
+        }
+    }
+    out.push_str(RESET);
+    out
+}
+
 /// [`row`] for each of `lines`.
 pub fn row_strings(lines: &[Line], p: Palette) -> Vec<String> {
     lines.iter().map(|l| row(l, p)).collect()
@@ -196,6 +227,26 @@ mod tests {
             row(&l, Palette::Colour),
             "\x1b[2m▾\x1b[0m\x1b[2m Ran \x1b[0m"
         );
+    }
+
+    /// letibot's composer edge: one faint run, the legend inside it, the faint re-opened
+    /// once after the legend.
+    #[test]
+    fn an_edge_reopens_its_faint_once_after_the_legend() {
+        let mut l = Line::new(vec![
+            Span::raw("╰── "),
+            Span::role("⚠", Role::Attention),
+            Span::raw(" · "),
+            Span::role("holding", Role::Pending),
+            Span::raw(" ─"),
+            Span::raw("╯"),
+        ]);
+        l.style = Style::of(Role::Faint);
+        assert_eq!(
+            edge_row(&l, Palette::Colour),
+            "\x1b[2m╰── \x1b[1;33m⚠\x1b[0m · \x1b[33mholding\x1b[0m\x1b[2m ─╯\x1b[0m"
+        );
+        assert_eq!(edge_row(&l, Palette::None), "╰── ⚠ · holding ─╯");
     }
 
     /// A highlighted row is one inverse; a register line closes back to its register.

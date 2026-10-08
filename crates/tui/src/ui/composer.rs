@@ -1,10 +1,10 @@
 //! **The composer**: the box the person types in, and the completion lines over it.
 
 use crate::app::*;
-use crate::ui::render::{trim_to, visible_width};
-use crate::ui::*;
+use crate::ui::render::{row, trim_to};
 use letibot_ui::editor::Editor;
 use letibot_ui::painter::Sgr;
+use rano::agent::composer::{Candidate, completions_line};
 use rano::style::Role;
 use rano::width::text as width;
 
@@ -17,38 +17,28 @@ impl App {
     /// and the composer block in `compose_screen`) — and Tab will say what went wrong when
     /// it is asked.
     pub(crate) fn completions_line(&mut self, w: usize) -> Option<String> {
-        // **One gate, and it is the slot's.** The `/` arm below used to spell the shape
-        // out itself, which is the second rule about one row the reservation cannot
-        // afford: it would be free to disagree with the height.
         if !self.completion_slot() {
             return None;
         }
-        // **The first character decides, and it is read without holding the borrow**:
-        // the `!` path needs `&mut self` for the candidate memo, and `editor.text()`
-        // hands back a `&str` borrowed from this same head.
         if self.editor.text().starts_with('!') {
             return self.shell_completions_line(w);
         }
-        // A `/` line with no whitespace in it, which is what the slot just said.
         let text = self.editor.text();
         let needle = text[1..].replace('_', "-");
-        let parts: Vec<String> = self
+        let items: Vec<Candidate> = self
             .command_names()
             .into_iter()
             .filter(|(name, _)| name.replace('_', "-").starts_with(&needle))
-            .map(|(name, hint)| {
-                if hint.is_empty() {
+            .map(|(name, hint)| Candidate {
+                text: if hint.is_empty() {
                     format!("/{name}")
                 } else {
                     format!("/{name} {hint}")
-                }
+                },
+                proposed: false,
             })
             .collect();
-        if parts.is_empty() {
-            return None;
-        }
-        let cfg = &self.cfg;
-        Some(dim(cfg, &trim_to(&format!("  {}", parts.join("  ·  ")), w)))
+        completions_line(&items, w).map(|l| row(&l, self.cfg.palette()))
     }
 
     /// **The live `!` completion row, with provenance.**
@@ -69,61 +59,45 @@ impl App {
         if !text.starts_with('!') {
             return None;
         }
-        // **Only as many candidates as fit on the row.** The line is trimmed to the
-        // width at the end anyway, so collecting every match and joining them into a
-        // string that is then thrown away is work for nothing — and it is not a small
-        // amount of it: measured at **10 ms a frame** on a session whose history holds
-        // two thousand commands that all match the prefix, because each one was cloned
-        // and the join built the whole of it. The cut is the one `trim_to` would make
-        // at the end, made here instead, and it is the same rule the `/` row keeps.
-        let mut parts: Vec<String> = Vec::new();
-        let mut used = 2usize; // the row's own leading indent
-        // **The file names a Tab found**, while the line is still the one they were found
-        // for: what a shell lists on a second Tab, shown at once because the row is here.
+        let p = self.cfg.palette();
+        let plain = |t: &String| Candidate {
+            text: t.clone(),
+            proposed: false,
+        };
+        // **The paths under the word being typed, when the reader has them for this line** —
+        // and then only those: a path is what the word is, and a history line beside it would
+        // be an answer to a different question.
         if let Some((line, names)) = &self.path_matches
             && *line == text
         {
-            for n in names {
-                if used >= w {
-                    break;
-                }
-                used += visible_width(n) + SEPARATOR_COLS;
-                parts.push(n.clone());
-            }
-            let cfg = &self.cfg;
-            return Some(dim(cfg, &trim_to(&format!("  {}", parts.join("  ·  ")), w)));
+            let items: Vec<Candidate> = names.iter().map(plain).collect();
+            return Some(
+                completions_line(&items, w)
+                    .map(|l| row(&l, p))
+                    .unwrap_or_default(),
+            );
         }
-        // The history's candidates, plain: a command this session ran is a fact.
-        for line in self
+        // The history's own lines first, then the model's proposals for this point of the
+        // conversation, each marked `~` so a reader can tell a suggestion from a recollection.
+        let mut items: Vec<Candidate> = self
             .shell_candidates()
             .iter()
             .filter(|l| l.starts_with(&text))
-        {
-            if used >= w {
-                break;
-            }
-            used += visible_width(line) + SEPARATOR_COLS;
-            parts.push(line.clone());
-        }
-        // The model's candidates, marked: a proposal is not a fact, and the mark
-        // is the provenance. Only the ones cached for this prefix at this
-        // position, so a suggestion about a conversation that moved is not drawn.
+            .map(plain)
+            .collect();
         let position = self.items.len() as u64;
         if let Some(lines) = self.shell_suggestions.get(&(text.to_string(), position)) {
-            for line in lines.iter().filter(|l| l.starts_with(&text)) {
-                if used >= w {
-                    break;
-                }
-                let marked = format!("~{line}");
-                used += visible_width(&marked) + SEPARATOR_COLS;
-                parts.push(marked);
-            }
+            items.extend(
+                lines
+                    .iter()
+                    .filter(|l| l.starts_with(&text))
+                    .map(|l| Candidate {
+                        text: l.clone(),
+                        proposed: true,
+                    }),
+            );
         }
-        if parts.is_empty() {
-            return None;
-        }
-        let cfg = &self.cfg;
-        Some(dim(cfg, &trim_to(&format!("  {}", parts.join("  ·  ")), w)))
+        completions_line(&items, w).map(|l| row(&l, p))
     }
 
     /// The composer's rows, and the caret's `(row, column)` within them.
@@ -189,54 +163,4 @@ impl App {
         let col = if boxed { ccol + 2 } else { ccol };
         (out, crow.saturating_sub(start), col)
     }
-
-    /// One edge of the box, with a legend inlaid at the left and one pinned to
-    /// the right.
-    ///
-    /// `╰────────── ⚠ · ⠹ Responding · 4.2s ─╯`. A legend rather than a
-    /// decoration **when there is something to say**: an edge with nothing to
-    /// say renders plain, because a row of attention paid for ever for a fact
-    /// read once is the mistake the composer's top border already made once.
-    /// The right legend yields room to the left one, yields itself by
-    /// truncation next, and is dropped before the border is allowed to wrap.
-    pub(crate) fn box_edge(
-        &self,
-        w: usize,
-        open: char,
-        close: char,
-        left: &str,
-        right: &str,
-    ) -> String {
-        let w = w.max(4);
-        let inner = w - 2;
-        // A legend may arrive already painted — the alarm is in the attention
-        // role, the turn's spinner in pending — and `Palette::paint` closes with
-        // a plain reset, which restores the *terminal default* and not the grey
-        // of the border it is inlaid into. So the border reopens itself on the
-        // far side of each legend. Same defect and same fix as
-        // `painter::Painter::inside`, one layer up: a reset is not a restore.
-        let reopen = self.cfg.palette().sgr(Role::Faint);
-        let mut left_text = String::new();
-        if !left.is_empty() && inner >= 10 {
-            left_text = format!("─ {}{reopen} ", trim_to(left, inner - 4));
-        }
-        let left_cols = visible_width(&left_text);
-        let mut right_text = String::new();
-        if !right.is_empty() && inner >= 10 {
-            let room = inner.saturating_sub(left_cols + 2);
-            if room >= 4 {
-                right_text = format!(" {}{reopen} ─", trim_to(right, room));
-            }
-        }
-        let fill = inner.saturating_sub(left_cols + visible_width(&right_text));
-        self.cfg.palette().painted(
-            Role::Faint,
-            &format!("{open}{left_text}{}{right_text}{close}", "─".repeat(fill)),
-        )
-    }
 }
-
-/// The columns the live row puts between two candidates — `  ·  `, as [`App::completions_line`]
-/// joins them. A constant because the fit arithmetic in `shell_completions_line` has to count
-/// what the join will actually spend, and a number written twice is a number that drifts.
-pub(crate) const SEPARATOR_COLS: usize = 5;
