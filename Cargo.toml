@@ -10,6 +10,8 @@ members = [
     "crates/dialect-glm",
     "crates/dialect-qwen",
     "crates/tokencore",
+    # The GGUF vocabulary, and the only crate that links llama.cpp (see its Cargo.toml).
+    "crates/llama",
     "crates/http",
     "crates/flowy",
     "crates/provider",
@@ -78,6 +80,7 @@ serde_json = "1"
 # reported with.
 toml = "0.8"
 letibot-vt = { path = "crates/vt" }
+letibot-llama = { path = "crates/llama" }
 letibot-transcript = { path = "crates/transcript" }
 letibot-dialect = { path = "crates/dialect" }
 letibot-dialect-glm = { path = "crates/dialect-glm" }
@@ -95,5 +98,5 @@ letibot-tui = { path = "crates/tui" }
 letibot-ui = { path = "crates/ui" }
 letibot-tools = { path = "crates/tools" }
 letibot-code = { path = "crates/code" }
-letibot-harnessd = { path = "crates/harnessd" }
+letibot-harnessd = { path = "crates/harnessd", default-features = false }
 letibot-opencode = { path = "crates/opencode" }

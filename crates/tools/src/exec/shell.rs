@@ -673,7 +673,7 @@ impl ShellSession {
                     // Already a group leader, which a forked child is not — so this is a
                     // failure we do not understand, and the shell still runs.
                 }
-                let _ = libc::ioctl(0, libc::TIOCSCTTY, 0);
+                let _ = libc::ioctl(0, libc::TIOCSCTTY as _, 0);
                 Ok(())
             });
         }
@@ -1060,8 +1060,11 @@ mod tests {
     #[test]
     fn the_working_directory_survives_between_two_lines() {
         let dir = tmp("cwd");
+        std::fs::create_dir_all(dir.join("sub")).expect("a subdirectory");
+        // The shell answers with the physical path, and on macOS the temp dir is a link
+        // (`/var` is `/private/var`), so the expectation is canonical too.
+        let dir = dir.canonicalize().expect("the directory exists");
         let sub = dir.join("sub");
-        std::fs::create_dir_all(&sub).expect("a subdirectory");
         let mut s = ShellSession::open(&config(&dir)).expect("a shell session");
         assert_eq!(
             s.cwd(),

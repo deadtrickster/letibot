@@ -61,6 +61,10 @@
 //!    unreadable as a root `apt` is, waiting on the terminal the daemon holds. The daemon says so, names
 //!    the way in, and **`!send` reaches it** — which is the whole of what a person was owed.
 
+// `PR_SET_DUMPABLE` is how these tests make a process this uid may not inspect, and it is
+// `<linux/prctl.h>`: there is no macOS spelling of the same shape.
+#![cfg(target_os = "linux")]
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -109,7 +113,7 @@ fn config(session: &str, socket: &Path) -> Config {
     cfg.seat = Seat::Leticode;
     cfg.allow_bash = true;
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = g.into();
+        cfg.vocab_gguf = Some(g.into());
     }
     cfg
 }

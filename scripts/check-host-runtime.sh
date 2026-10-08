@@ -97,7 +97,10 @@ run_install() {
     if [ -n "${1:-}" ]; then
         patched_dirs "$d/install.sh" "$1" || return 2
     fi
-    ( cd "$d" && env -i PATH="$work" HOME="$work" LETIBOT_INSTALL_DIR="$work/prefix" \
+    # `$PLAN_ENV` adds variables to the empty environment — LETIBOT_FROM_SOURCE and the
+    # llama pair, which decide which runtime libraries this run is checked for.
+    # shellcheck disable=SC2086
+    ( cd "$d" && env -i PATH="$work" HOME="$work" LETIBOT_INSTALL_DIR="$work/prefix" ${PLAN_ENV:-} \
         sh ./install.sh 2>&1 )
 }
 
@@ -251,6 +254,71 @@ fi
 # places, which is more patch than test. Case D covers the same failure from the
 # other side (nothing found ⇒ refuse), and the shipped file is covered end to end by
 # A, B and C.
+
+# ---------------------------------------------------------------- the build being installed
+#
+# The check asks for what THIS run installs. The release asset carries llama, so all three
+# (the cases above, which have no checkout and no LETIBOT_FROM_SOURCE). A source build with
+# no llama.cpp named is cloud-only and links SQLite and nothing else of the three; a source
+# build with one named links llama, so it needs all three again.
+
+# F. Cloud-only source build, on a host with only SQLite: not refused over libraries.
+write_fake_ldconfig libsqlite3.so.0
+out=$(PLAN_ENV="LETIBOT_FROM_SOURCE=1" run_install) && bad "case F: install.sh exited 0 with no curl"
+case "$out" in
+    *"missing libraries the binaries need at run time"*)
+        bad "case F: a cloud-only build was refused over llama's libraries. Output was: $out" ;;
+esac
+case "$out" in
+    *"no curl found"*) note "F: a cloud-only build needs only SQLite, and gets past the check" ;;
+    *) bad "case F: expected the run to reach the missing-curl refusal. Output was: $out" ;;
+esac
+
+# G. Cloud-only, and SQLite missing: refused, naming SQLite and ONLY SQLite.
+write_fake_ldconfig
+out=$(PLAN_ENV="LETIBOT_FROM_SOURCE=1" run_install) && bad "case G: exited 0 with no SQLite"
+case "$out" in
+    *"libsqlite3.so.0"*) ;;
+    *) bad "case G: libsqlite3.so.0 is missing and was not named. Output was: $out" ;;
+esac
+case "$out" in
+    *"libgomp"* | *"libstdc++"*) bad "case G: a cloud-only refusal names llama's libraries: $out" ;;
+esac
+note "G: a cloud-only build missing SQLite is refused for SQLite alone"
+
+# H. A source build that names a llama.cpp needs llama's libraries again.
+write_fake_ldconfig libsqlite3.so.0
+out=$(PLAN_ENV="LETIBOT_FROM_SOURCE=1 LETIBOT_LLAMA_DIR=/x LETIBOT_LLAMA_LIB=/x" run_install) &&
+    bad "case H: exited 0 with libgomp and libstdc++ missing"
+case "$out" in
+    *"libgomp.so.1"*) note "H: a local source build is checked for llama's libraries" ;;
+    *) bad "case H: a local build missing libgomp was not refused for it. Output was: $out" ;;
+esac
+
+# I. No glibc, and a source build: not refused for glibc — the binaries are built here.
+write_fake_ldconfig libsqlite3.so.0
+if out=$(PLAN_ENV="LETIBOT_FROM_SOURCE=1" run_install "$glibc_absent"); then
+    bad "case I: install.sh exited 0 with no curl"
+else
+    case "$?" in
+        2) bad "case I: the patch did not apply, so this case proved nothing" ;;
+    esac
+    case "$out" in
+        *"no glibc dynamic loader"*)
+            bad "case I: a source build was refused for glibc, which the musl refusal itself recommends" ;;
+        *"no curl found"*) note "I: on musl, the source build the refusal names is not refused itself" ;;
+        *) bad "case I: expected the run to reach the missing-curl refusal. Output was: $out" ;;
+    esac
+fi
+
+# A prebuilt refusal over llama's libraries names the cloud-only way out.
+write_fake_ldconfig libsqlite3.so.0
+out=$(run_install) || true
+case "$out" in
+    *"missing libraries the binaries need at run time"*"llama.cpp's"*"LETIBOT_FROM_SOURCE=1"*)
+        note "J: a prebuilt refusal over llama's libraries offers the cloud-only build" ;;
+    *) bad "case J: the library refusal does not offer the cloud-only build. Output was: $out" ;;
+esac
 
 [ "$fail" = 0 ] || exit 1
 echo "check-host-runtime: refuses by name, per library, distinguishes musl, does not false-positive"

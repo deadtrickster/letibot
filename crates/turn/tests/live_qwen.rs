@@ -116,7 +116,7 @@ fn vocab() -> std::sync::Arc<Vocab> {
             "no vocabulary GGUF at {path}. Set LETIBOT_VOCAB_GGUF; for a split model \
              pass the first shard."
         );
-        std::sync::Arc::new(Vocab::load(&p).expect("the vocabulary must load"))
+        std::sync::Arc::new(letibot_llama::load(&p).expect("the vocabulary must load"))
     }).clone()
 }
 

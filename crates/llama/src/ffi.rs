@@ -23,8 +23,6 @@ pub struct LlamaVocab {
 
 // `llama_token_attr`, as of the fork's include/llama.h. We only test membership,
 // never round-trip the value, so an added variant upstream is harmless here.
-pub const ATTR_CONTROL: u32 = 1 << 3;
-pub const ATTR_USER_DEFINED: u32 = 1 << 4;
 
 unsafe extern "C" {
     // --- the shim ---

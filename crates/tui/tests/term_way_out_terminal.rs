@@ -38,15 +38,15 @@ fn the_way_out_byte_reaches_the_reader_and_is_not_a_key() {
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
         )
     };
     assert_eq!(rc, 0, "a pty pair, so the byte has a terminal to come from");
     let saved0 = unsafe { libc::dup(0) };
     assert_eq!(unsafe { libc::dup2(slave, 0) }, 0, "stdin becomes the pty");
 
-    let term = letibot_tui::term::Terminal::enter().expect("a terminal to enter");
+    let term = letibot_tui::backend::terminal::Terminal::enter().expect("a terminal to enter");
 
     // The operator presses ctrl-\.
     let wrote = unsafe { libc::write(master, b"\x1c".as_ptr().cast(), 1) };

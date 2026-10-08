@@ -57,6 +57,10 @@
 //!    the beat and was never reported on. It is reported either way now, and the sentence says
 //!    which of the two facts it is.
 
+// `PR_SET_DUMPABLE` is how these tests make a process this uid may not inspect, and it is
+// `<linux/prctl.h>`: there is no macOS spelling of the same shape.
+#![cfg(target_os = "linux")]
+
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

@@ -40,7 +40,7 @@ fn vocab() -> std::sync::Arc<Vocab> {
         // unconditionally there rather than being a hint.
         let p = letibot_tokencore::apparatus::gguf_path();
         assert!(p.is_file(), "no vocabulary GGUF at {}", p.display());
-        std::sync::Arc::new(Vocab::load(&p).expect("the vocabulary must load"))
+        std::sync::Arc::new(letibot_llama::load(&p).expect("the vocabulary must load"))
     }).clone()
 }
 

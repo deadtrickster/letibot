@@ -80,6 +80,15 @@
 //! to send to the server over `SCM_RIGHTS`; the reader is then structurally a
 //! reader.
 //!
+//! ## Off Linux (macOS)
+//!
+//! There is no memfd, no seal and no `mremap`. The region is an unlinked file
+//! in the temp dir (volatile in the same way: no path, gone with its last fd);
+//! growth maps the grown file anew and unmaps the old range; the read-only fd
+//! is one opened `O_RDONLY` before the unlink. **The shrink seal is lost**:
+//! append-only is enforced by this API alone, not by the kernel, and the test
+//! that measures the seal runs on Linux only.
+//!
 //! # Lifecycle, and what a restart rebuilds from
 //!
 //! **The region is deliberately volatile.** A memfd is anonymous: it dies with
@@ -143,6 +152,10 @@ const _: () = assert!(size_of::<Header>() == HEADER_BYTES);
 /// anybody adds one without changing the test's allowlist on purpose.
 pub struct TokenRegion {
     fd: OwnedFd,
+    /// Off Linux: a read-only fd opened on the backing file before it was
+    /// unlinked, which [`TokenRegion::readonly_fd`] duplicates.
+    #[cfg(not(target_os = "linux"))]
+    ro: OwnedFd,
     /// Base of the mapping, header first. Moves on growth.
     base: *mut u8,
     /// Bytes currently mapped.
@@ -167,22 +180,28 @@ impl TokenRegion {
         let cname = std::ffi::CString::new(format!("letibot-tokens-{name}"))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "region name has a NUL"))?;
 
-        let raw: RawFd = unsafe {
-            libc::memfd_create(
-                cname.as_ptr(),
-                (libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) as libc::c_uint,
-            )
-        };
-        if raw < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        #[cfg(target_os = "linux")]
+        let fd = {
+            let raw: RawFd = unsafe {
+                libc::memfd_create(
+                    cname.as_ptr(),
+                    (libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) as libc::c_uint,
+                )
+            };
+            if raw < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let fd = unsafe { OwnedFd::from_raw_fd(raw) };
 
-        // Below every line of Rust in this crate: the kernel now refuses to
-        // shorten this file. Growth is unaffected.
-        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
+            // Below every line of Rust in this crate: the kernel now refuses to
+            // shorten this file. Growth is unaffected.
+            if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            fd
+        };
+        #[cfg(not(target_os = "linux"))]
+        let (fd, ro) = unlinked_file(&cname)?;
 
         let bytes = Self::bytes_for(INITIAL_CAPACITY_TOKENS);
         if unsafe { libc::ftruncate(fd.as_raw_fd(), bytes as libc::off_t) } < 0 {
@@ -207,6 +226,8 @@ impl TokenRegion {
         let capacity = (bytes - HEADER_BYTES) / size_of::<TokenId>();
         let region = TokenRegion {
             fd,
+            #[cfg(not(target_os = "linux"))]
+            ro,
             base,
             mapped: bytes,
             capacity,
@@ -310,6 +331,7 @@ impl TokenRegion {
         if unsafe { libc::ftruncate(self.fd.as_raw_fd(), bytes as libc::off_t) } < 0 {
             return Err(io::Error::last_os_error());
         }
+        #[cfg(target_os = "linux")]
         let base = unsafe {
             libc::mremap(
                 self.base as *mut libc::c_void,
@@ -318,9 +340,26 @@ impl TokenRegion {
                 libc::MREMAP_MAYMOVE,
             )
         };
+        // No `mremap` here: map the grown file anew, then drop the old mapping.
+        // The file is the shared state, so the new mapping sees every byte.
+        #[cfg(not(target_os = "linux"))]
+        let base = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                bytes,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                self.fd.as_raw_fd(),
+                0,
+            )
+        };
         if base == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
         }
+        #[cfg(not(target_os = "linux"))]
+        unsafe {
+            libc::munmap(self.base as *mut libc::c_void, self.mapped)
+        };
         self.base = base as *mut u8;
         self.mapped = bytes;
         self.capacity = (bytes - HEADER_BYTES) / size_of::<TokenId>();
@@ -358,6 +397,16 @@ impl TokenRegion {
     /// it genuinely read-only rather than merely intended to be: measured, a
     /// `MAP_SHARED | PROT_WRITE` mapping of the result fails `EACCES` and
     /// `ftruncate` fails `EINVAL`.
+    ///
+    /// Off Linux there is no `/proc`, and `/dev/fd/N` is a `dup` that keeps the
+    /// write access, so this duplicates the fd that was opened `O_RDONLY` on
+    /// the backing file before it was unlinked.
+    #[cfg(not(target_os = "linux"))]
+    pub fn readonly_fd(&self) -> io::Result<OwnedFd> {
+        self.ro.try_clone()
+    }
+
+    #[cfg(target_os = "linux")]
     pub fn readonly_fd(&self) -> io::Result<OwnedFd> {
         let path = std::ffi::CString::new(format!("/proc/self/fd/{}", self.fd.as_raw_fd()))
             .expect("no NUL in a /proc path");
@@ -372,6 +421,40 @@ impl TokenRegion {
     pub fn as_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
     }
+}
+
+/// The non-Linux stand-in for a memfd: a file in the temp dir, unlinked as soon
+/// as it is open, so it has no path and dies with its last fd exactly as a
+/// memfd does. (`shm_open` is not it: macOS lets an shm object be sized once,
+/// and the region grows.) Returns the read-write fd and a read-only one.
+#[cfg(not(target_os = "linux"))]
+fn unlinked_file(name: &std::ffi::CStr) -> io::Result<(OwnedFd, OwnedFd)> {
+    let name = name.to_string_lossy().replace('/', "_");
+    let template = std::env::temp_dir().join(format!("{name}.XXXXXX"));
+    let mut path = std::ffi::CString::new(template.into_os_string().into_encoded_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "temp dir has a NUL"))?
+        .into_bytes_with_nul();
+
+    let raw = unsafe { libc::mkstemp(path.as_mut_ptr() as *mut libc::c_char) };
+    if raw < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let ro = unsafe {
+        libc::open(
+            path.as_ptr() as *const libc::c_char,
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        )
+    };
+    let ro_err = io::Error::last_os_error();
+    unsafe { libc::unlink(path.as_ptr() as *const libc::c_char) };
+    if ro < 0 {
+        return Err(ro_err);
+    }
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((fd, unsafe { OwnedFd::from_raw_fd(ro) }))
 }
 
 impl Drop for TokenRegion {
@@ -399,6 +482,7 @@ mod tests {
     /// against this crate: the file backing a transcript cannot be shortened,
     /// by us or by anybody else holding the descriptor.
     #[test]
+    #[cfg(target_os = "linux")]
     fn the_kernel_refuses_to_shrink_the_region() {
         let mut r = TokenRegion::create("seal").unwrap();
         r.append(&[1, 2, 3], &[0; 32]).unwrap();

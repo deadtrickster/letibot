@@ -48,44 +48,51 @@
 use std::path::{Path, PathBuf};
 
 /// The directory the runtime files live in: `$XDG_RUNTIME_DIR/letibot`, else
-/// `/run/user/<uid>/letibot`.
+/// `/run/user/<uid>/letibot` on Linux and `<per-user temp dir>/letibot` on macOS.
 ///
-/// The shell spells the fallback `$(id -u)`, which forks; this reads the uid. Both
+/// The shell spells the Linux fallback `$(id -u)`, which forks; this reads the uid. Both
 /// land on the same directory, and the `letibot` subdirectory is what keeps these
 /// files out of whatever else the runtime dir holds — the shell's own reason for it.
+///
+/// **macOS has no `/run/user`** and no `XDG_RUNTIME_DIR`. Its per-user temp dir
+/// (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, the `$TMPDIR` a login shell gets) is the same
+/// kind of place — mode 0700, this user's alone — and it is asked of the system rather
+/// than read from `$TMPDIR`, so a daemon started without that variable lands in the same
+/// directory as the head looking for it. The shell asks `getconf DARWIN_USER_TEMP_DIR`.
 pub fn rundir() -> PathBuf {
     let base = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(d) if !d.is_empty() => PathBuf::from(d),
-        // `id -u` without the fork. A uid that does not fit u32 is not a thing.
-        _ => PathBuf::from(format!("/run/user/{}", uid())),
+        _ => fallback_runtime_base(),
     };
     base.join("letibot")
 }
 
-/// This process's uid. `libc::getuid` is not linked here, so read it from the kernel's
-/// own report rather than shelling out to `id`.
-///
-/// `/proc/self/status` carries `Uid:\t<real>\t<effective>\t<SUID>\t<FSUID>`, and the
-/// REAL uid is the first field. Falling back to 0 would put a non-root user's files in
-/// `/run/user/0`, which is both wrong and unreadable — so a failure here is worth
-/// noticing rather than papering over.
+#[cfg(not(target_os = "macos"))]
+fn fallback_runtime_base() -> PathBuf {
+    PathBuf::from(format!("/run/user/{}", uid()))
+}
+
+#[cfg(target_os = "macos")]
+fn fallback_runtime_base() -> PathBuf {
+    let mut buf = vec![0u8; 1024];
+    let n = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+        )
+    };
+    if n == 0 || n > buf.len() {
+        return std::env::temp_dir();
+    }
+    buf.truncate(n - 1);
+    PathBuf::from(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// This process's real uid.
 pub fn uid() -> u32 {
-    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-        for line in status.lines() {
-            if let Some(rest) = line.strip_prefix("Uid:") {
-                if let Some(real) = rest.split_whitespace().next() {
-                    if let Ok(n) = real.parse() {
-                        return n;
-                    }
-                }
-            }
-        }
-    }
-    // `SUDO_UID` is the other honest source when a process is running under sudo.
-    if let Some(n) = std::env::var("UID").ok().and_then(|v| v.parse().ok()) {
-        return n;
-    }
-    0
+    // SAFETY: getuid cannot fail.
+    unsafe { libc::getuid() }
 }
 
 /// **The key a workspace hashes to: the first twelve hex characters of its SHA-256.**
@@ -321,8 +328,95 @@ mod tests {
 /// inode is found by scanning `/proc/<pid>/fd`. Measured against a live daemon: the path
 /// is field index 7, the inode index 6, and the scan returned exactly the pid the record
 /// named.
+#[cfg(not(target_os = "macos"))]
 pub fn is_listening(socket: &Path) -> bool {
     inode_of(socket).is_some()
+}
+
+/// macOS has no `/proc/net/unix`, so the question is asked the way a head asks it: by
+/// connecting. A connection the daemon accepts and sees closed before its first frame is
+/// a `WireError::Eof`, which the server deliberately does not log.
+#[cfg(target_os = "macos")]
+pub fn is_listening(socket: &Path) -> bool {
+    listener_pid(socket).is_some()
+}
+
+/// **The pid that called `listen()` on this socket**, from `LOCAL_PEERPID` on a fresh
+/// connection — the daemon itself, never a child that merely inherited the descriptor,
+/// which is the ambiguity [`daemon_pid`]'s Linux half has to resolve by `argv[0]`.
+///
+/// **A connect needs the file, and a daemon can outlive it**: its own shutdown unlinks the
+/// socket while it goes on listening on the nameless inode (the bricked-session case
+/// `scripts/letibot`'s `live` is written about). So when there is nothing to connect to, the
+/// question goes to `lsof`, which still reports a listener by its bound path — what
+/// `/proc/net/unix` does on Linux, and what the shell's `socket_pids` asks.
+#[cfg(target_os = "macos")]
+fn listener_pid(socket: &Path) -> Option<u32> {
+    use std::os::unix::io::AsRawFd;
+    let Ok(s) = std::os::unix::net::UnixStream::connect(socket) else {
+        return lsof_listener(socket);
+    };
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            s.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            &mut pid as *mut _ as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    (rc == 0 && pid > 0).then_some(pid as u32)
+}
+
+/// The lowest pid `lsof` lists with a unix socket bound to exactly `socket`.
+#[cfg(target_os = "macos")]
+fn lsof_listener(socket: &Path) -> Option<u32> {
+    let out = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-nP", "-U", "-a", "-F", "pn"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    lsof_pids(&String::from_utf8_lossy(&out.stdout), socket)
+        .into_iter()
+        .min()
+}
+
+/// `lsof -F pn`: a `p<pid>` line opens each process, `n<name>` lines follow it.
+#[cfg(any(target_os = "macos", test))]
+fn lsof_pids(listing: &str, socket: &Path) -> Vec<u32> {
+    let want = socket.to_string_lossy();
+    let (mut pid, mut out) = (None, Vec::new());
+    for line in listing.lines() {
+        if let Some(p) = line.strip_prefix('p') {
+            pid = p.parse::<u32>().ok();
+        } else if line.strip_prefix('n') == Some(want.as_ref())
+            && let Some(p) = pid
+            && !out.contains(&p)
+        {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// `PROC_PIDTBSDINFO` for one pid: `(ppid, status)`, or `None` when it is gone.
+#[cfg(target_os = "macos")]
+fn bsdinfo(pid: u32) -> Option<(u32, u32)> {
+    let mut bi: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut bi as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    (got == size).then_some((bi.pbi_ppid, bi.pbi_status))
 }
 
 /// **Is this process actually running?** — and a zombie is not.
@@ -339,6 +433,12 @@ pub fn is_listening(socket: &Path) -> bool {
 ///
 /// Found by its own test: the first version used `is_dir` and reported a signalled child
 /// as `StillThere`, because the test had not reaped it yet.
+#[cfg(target_os = "macos")]
+pub fn is_running(pid: u32) -> bool {
+    matches!(bsdinfo(pid), Some((_, status)) if status != libc::SZOMB)
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn is_running(pid: u32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
@@ -357,6 +457,7 @@ pub fn is_running(pid: u32) -> bool {
 
 /// The socket inode from `/proc/net/unix`, or `None` when it is not listed — which is
 /// what "nothing is listening on this path" means.
+#[cfg(not(target_os = "macos"))]
 fn inode_of(socket: &Path) -> Option<String> {
     let want = socket.as_os_str().as_encoded_bytes();
     let table = std::fs::read("/proc/net/unix").ok()?;
@@ -394,6 +495,11 @@ fn inode_of(socket: &Path) -> Option<String> {
 /// anything, and it is the difference between stopping the daemon and stopping whatever
 /// happened to inherit its socket.
 pub fn daemon_pid(where_: &Where) -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    if let Some(pid) = listener_pid(&where_.socket) {
+        return Some(pid);
+    }
+    #[cfg(not(target_os = "macos"))]
     if let Some(inode) = inode_of(&where_.socket) {
         let want = format!("socket:[{inode}]");
         let mut holders: Vec<u32> = Vec::new();
@@ -442,7 +548,7 @@ pub fn daemon_pid(where_: &Where) -> Option<u32> {
 /// harnessd` — the first field is argv[0], and matching the basename avoids a path that
 /// merely contains the word.
 pub fn is_harnessd(pid: u32) -> bool {
-    let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+    let Some(raw) = argv_bytes(pid) else {
         return false;
     };
     let first = raw.split(|b| *b == 0).next().unwrap_or(&[]);
@@ -452,6 +558,34 @@ pub fn is_harnessd(pid: u32) -> bool {
         .and_then(|n| n.to_str())
         .map(|n| n == "harnessd")
         .unwrap_or(false)
+}
+
+/// The NUL-separated argument vector, `argv[0]` first: `/proc/<pid>/cmdline` on Linux.
+#[cfg(not(target_os = "macos"))]
+fn argv_bytes(pid: u32) -> Option<Vec<u8>> {
+    std::fs::read(format!("/proc/{pid}/cmdline")).ok()
+}
+
+/// The same from `sysctl(KERN_PROCARGS2)` on macOS: `argc`, the executable path and its
+/// padding, then the arguments — which is where this starts.
+#[cfg(target_os = "macos")]
+fn argv_bytes(pid: u32) -> Option<Vec<u8>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    let null = std::ptr::null_mut();
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, null, &mut size, null, 0) } != 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    let p = buf.as_mut_ptr() as *mut libc::c_void;
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, p, &mut size, null, 0) } != 0 {
+        return None;
+    }
+    buf.truncate(size);
+    let rest = buf.get(std::mem::size_of::<libc::c_int>()..)?;
+    let after_path = &rest[rest.iter().position(|b| *b == 0)?..];
+    let start = after_path.iter().position(|b| *b != 0)?;
+    Some(after_path[start..].to_vec())
 }
 
 /// **A socket file that something is listening on** — the shell's `live`.
@@ -2141,5 +2275,37 @@ mod target_tests {
                 path.display()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod listener_tests {
+    use super::*;
+
+    #[test]
+    fn lsof_field_output_names_the_holder_of_exactly_this_path() {
+        let listing =
+            "p100\nf3\nn/tmp/a.sock\nf4\nn->0x1a5e\np200\nn/tmp/a.sock.old\np300\nn/tmp/a.sock\n";
+        assert_eq!(lsof_pids(listing, Path::new("/tmp/a.sock")), vec![100, 300]);
+        assert!(lsof_pids(listing, Path::new("/tmp/b.sock")).is_empty());
+    }
+
+    /// The bricked-session case, on macOS: the daemon's file is gone and it is still
+    /// listening. A connect cannot see it; the answer has to come from the socket table.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_listener_whose_file_was_unlinked_is_still_listening() {
+        let dir = std::env::temp_dir().join(format!("letibot-unlinked-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("d.sock");
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert_eq!(listener_pid(&path), Some(std::process::id()), "by connect");
+        std::fs::remove_file(&path).unwrap();
+        assert!(is_listening(&path), "the nameless listener read as nobody");
+        assert_eq!(listener_pid(&path), Some(std::process::id()), "by lsof");
+        drop(listener);
+        assert!(!is_listening(&path));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

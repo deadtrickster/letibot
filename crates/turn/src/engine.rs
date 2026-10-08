@@ -377,6 +377,15 @@ impl TurnEngine {
         })
     }
 
+    /// The vocabulary this engine tokenizes with — a GGUF's, or the byte one.
+    ///
+    /// Borrowed from the `Arc` the engine owns (the enabling refactor: the
+    /// vocabulary became replaceable at runtime, so it is shared rather than
+    /// borrowed for the engine's whole life).
+    pub fn vocab(&self) -> &Vocab {
+        self.vocab.as_ref()
+    }
+
     pub fn spec(&self) -> &DialectSpec {
         &self.spec
     }
@@ -594,6 +603,18 @@ impl TurnEngine {
         sink: &mut dyn EventSink,
         steering: &mut dyn SteeringSource,
     ) -> Result<TurnOk, TurnFailure> {
+        // **The byte vocabulary's ids mean nothing to a llama-server.** They are this
+        // machine's record of a provider session (`Vocab::bytes`), and this path sends
+        // token ids as numbers — so a session on it is refused here, before anything is
+        // sent, whatever check above should already have stopped it.
+        if self.vocab.is_bytes() {
+            return Err(TurnFailure::Engine(EngineError::Tokenize(
+                "this session has no model vocabulary (it was opened for a cloud provider, \
+                 whose turns need none), and a local llama-server reads token ids: start a \
+                 daemon with --vocab <the served model's GGUF> to run on a local model"
+                    .into(),
+            )));
+        }
         session.turn_seq += 1;
         let turn_id = format!("{}#{}", session.transcript_id, session.turn_seq);
         let started = Instant::now();

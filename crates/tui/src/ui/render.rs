@@ -26,7 +26,7 @@ use letibot_ui::style::{Painter, Palette, Role};
 
 use rano::syntax::Stream;
 
-use crate::markdown::{Align, Block, IncrementalMarkdown, InlineStyle, Run};
+use crate::ui::markdown::{Align, Block, IncrementalMarkdown, InlineStyle, Run};
 
 /// Columns, wrapping and truncation come from `letibot-ui`.
 ///
@@ -112,6 +112,15 @@ pub struct RenderConfig {
     /// every span this module paints has to close the same way, and a parameter
     /// that is threaded by hand is a parameter one call site will be missing.
     pub base: Option<Role>,
+    /// **Hyperlinks (OSC 8) are on, and relative paths resolve against this** — the session's
+    /// workspace. `None` is a terminal that does not speak them, and every pipe, replay and
+    /// test: the output is then byte-for-byte what it always was.
+    pub links: Option<String>,
+    /// The terminal said its background is light (OSC 11): colour renders with
+    /// [`Palette::Light`].
+    pub light: bool,
+    /// Inline images (the kitty graphics protocol's Unicode placeholders) are on.
+    pub images: bool,
 }
 
 impl Default for RenderConfig {
@@ -121,8 +130,107 @@ impl Default for RenderConfig {
             color: true,
             budget: Budget::default(),
             base: None,
+            links: None,
+            light: false,
+            images: false,
         }
     }
+}
+
+/// **The images a reply's markdown names** — `![alt](target)` — as `(alt, target)`, in order,
+/// local targets only: a URL is a picture this head would have to fetch, and it does not reach
+/// the network.
+pub fn markdown_images(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("![") {
+        rest = &rest[at + 2..];
+        let Some(close) = rest.find("](") else { break };
+        // The alt text is one line; a `![` whose `](` is paragraphs away is not an image.
+        if rest[..close].contains('\n') {
+            continue;
+        }
+        let alt = rest[..close].trim().to_string();
+        rest = &rest[close + 2..];
+        let Some(end) = rest.find(')') else { break };
+        // `(path "title")`: the title is not part of the path.
+        let target = rest[..end].split(" \"").next().unwrap_or("").trim();
+        let target = target.trim_start_matches('<').trim_end_matches('>');
+        if !target.is_empty() && !target.contains("://") && !target.contains('\n') {
+            out.push((alt, target.to_string()));
+        }
+        rest = &rest[end + 1..];
+    }
+    out
+}
+
+/// **The pictures a reply's markdown named that the head has uploaded**: `(item, target)` →
+/// `(id, pixel width, pixel height)`. Filled by the head's upload pass, which reads the file;
+/// read by the renderer, which must not touch the disk while it draws a frame — so a reference
+/// the pass has not reached yet simply draws nothing until it has.
+type ReplyImages = std::collections::BTreeMap<(String, String), (u32, Option<u32>, Option<u32>)>;
+static REPLY_IMAGES: std::sync::Mutex<ReplyImages> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+pub fn remember_reply_image(item_id: &str, target: &str, image: (u32, Option<u32>, Option<u32>)) {
+    if let Ok(mut m) = REPLY_IMAGES.lock() {
+        m.insert((item_id.to_string(), target.to_string()), image);
+    }
+}
+
+pub fn reply_image(item_id: &str, target: &str) -> Option<(u32, Option<u32>, Option<u32>)> {
+    REPLY_IMAGES
+        .lock()
+        .ok()?
+        .get(&(item_id.to_string(), target.to_string()))
+        .copied()
+}
+
+/// **Where a reply's picture goes**: after the first rendered line, at or past `from`, that
+/// shows its reference — the markdown itself when it is drawn literally (a code block), else
+/// the bare target, else its alt text, which is what the markdown renderer leaves of an image.
+/// In that order: the operator's reply named the path in a sentence before the `![…]` line, and
+/// a search for the path alone hung the picture under the sentence. `None` when none of the
+/// three is on any line, and the caller puts it at the end.
+pub fn picture_anchor(lines: &[String], from: usize, alt: &str, target: &str) -> Option<usize> {
+    let plain = |l: &String| {
+        let mut t = String::with_capacity(l.len());
+        letibot_ui::width::for_each_cell(l, |c| t.push_str(c.text));
+        t
+    };
+    let reference = format!("]({target}");
+    let on = |needle: &str| {
+        lines
+            .iter()
+            .enumerate()
+            .skip(from)
+            .find(|(_, l)| plain(l).contains(needle))
+    };
+    on(&reference)
+        .or_else(|| on(target))
+        .or_else(|| {
+            (!alt.is_empty())
+                .then(|| {
+                    lines
+                        .iter()
+                        .enumerate()
+                        .skip(from)
+                        .find(|(_, l)| plain(l).contains(alt))
+                })
+                .flatten()
+        })
+        .map(|(i, _)| {
+            // **Out of the block it is in**: a reference drawn inside a code block's frame
+            // (`│` rows, closed by `└`) puts the picture under the frame, not inside it.
+            let mut at = i + 1;
+            while at < lines.len() && plain(&lines[at]).trim_start().starts_with('│') {
+                at += 1;
+            }
+            if at < lines.len() && plain(&lines[at]).trim_start().starts_with('└') {
+                at += 1;
+            }
+            at
+        })
 }
 
 impl RenderConfig {
@@ -132,7 +240,9 @@ impl RenderConfig {
     /// `--replay`, pipe-to-a-file and CI case, and it has to produce
     /// byte-identical output on every machine.
     pub fn palette(&self) -> Palette {
-        if self.color {
+        if self.color && self.light {
+            Palette::Light
+        } else if self.color {
             Palette::Colour
         } else {
             Palette::None
@@ -183,7 +293,7 @@ impl RenderConfig {
 /// Rust block. That is a frame's budget at fence sizes and it is why this is a
 /// `Stream` fed the *delta* rather than a fresh parse — the parse is incremental even
 /// though the walk is not. A fence long enough for the walk to matter would need the
-/// same window discipline `crate::markdown` uses for the conversation.
+/// same window discipline `crate::ui::markdown` uses for the conversation.
 struct CodePaint {
     /// `None` when the fence named no language, or one rano has no grammar for. The
     /// block is then drawn plain — a wrong colour is worse than none, because it invites
@@ -907,7 +1017,7 @@ impl BlockCache {
 /// that, and an escape nobody renders is noise in a log.
 pub fn paint_runs(runs: &[Run], p: Painter) -> String {
     if !p.palette().is_colour() {
-        return crate::markdown::runs_text(runs);
+        return crate::ui::markdown::runs_text(runs);
     }
     // Not `sgr::RESET`. Every run closes back to whatever block it is inside — see
     // `RenderConfig::base`.
@@ -978,7 +1088,7 @@ pub fn dur_human(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::markdown::lex;
+    use crate::ui::markdown::lex;
     use letibot_sessionlog::testing::MARKDOWN;
 
     fn cfg() -> RenderConfig {
@@ -987,6 +1097,9 @@ mod tests {
             color: false,
             budget: Budget::default(),
             base: None,
+            links: None,
+            light: false,
+            images: false,
         }
     }
 
@@ -1189,6 +1302,9 @@ mod tests {
             color: true,
             budget: Budget::default(),
             base: None,
+            links: None,
+            light: false,
+            images: false,
         };
         // The first frame parses; the next fifty must not.
         let mut cache = BlockCache::new();
@@ -1223,6 +1339,9 @@ mod tests {
             color: true,
             budget: Budget::default(),
             base: None,
+            links: None,
+            light: false,
+            images: false,
         };
         let lines = render_block(&block, &cfg);
         let plain: Vec<String> = lines
@@ -1299,6 +1418,9 @@ mod tests {
             color: false,
             budget: Budget::default(),
             base: None,
+            links: None,
+            light: false,
+            images: false,
         };
         let lines = cache.lines(&md, &cfg, 40);
         assert!(md.stable_count() > 0, "some of it must be frozen");
@@ -1321,7 +1443,7 @@ mod tables {
     //! *"table rendering is broken"* — a GFM table had no block of its own, so it
     //! lexed as a paragraph, joined with spaces and wrapped as prose.
     use super::*;
-    use crate::markdown::lex;
+    use crate::ui::markdown::lex;
 
     /// The table from the session that reported this, verbatim.
     const BOARD: &str = "| branch | commits | status |\n\
@@ -1348,7 +1470,9 @@ mod tables {
     /// A cell's plain text. The model holds runs; a test asserting on a table's
     /// contents means the text in it.
     fn cells(v: &[Vec<Run>]) -> Vec<String> {
-        v.iter().map(|c| crate::markdown::runs_text(c)).collect()
+        v.iter()
+            .map(|c| crate::ui::markdown::runs_text(c))
+            .collect()
     }
 
     #[test]
@@ -1540,7 +1664,7 @@ mod tables {
 #[cfg(test)]
 mod inline_render {
     use super::*;
-    use crate::markdown::lex;
+    use crate::ui::markdown::lex;
 
     fn cfg(width: usize) -> RenderConfig {
         RenderConfig {
@@ -1653,7 +1777,7 @@ done
     /// three kilobytes later. So this is the assertion at the level the operator saw it.
     #[test]
     fn a_real_message_renders_without_its_markers() {
-        const REAL: &str = include_str!("../tests/fixtures/streamed-message.md");
+        const REAL: &str = include_str!("../../tests/fixtures/streamed-message.md");
         let out: String = lex(REAL)
             .iter()
             .flat_map(|b| render_block(b, &cfg(200)))
@@ -1702,7 +1826,7 @@ done
 #[cfg(test)]
 mod a_fence_is_coloured_only_if_it_names_a_language {
     use super::*;
-    use crate::markdown::lex;
+    use crate::ui::markdown::lex;
 
     fn cfg() -> RenderConfig {
         RenderConfig {
@@ -1794,7 +1918,7 @@ mod a_fence_is_coloured_only_if_it_names_a_language {
 #[cfg(test)]
 mod code_fences_are_coloured_by_rano {
     use super::*;
-    use crate::markdown::lex;
+    use crate::ui::markdown::lex;
 
     fn cfg() -> RenderConfig {
         RenderConfig {
@@ -1970,5 +2094,37 @@ mod code_fences_are_coloured_by_rano {
         let out = painted("rust", "let s = r#\"one\ntwo\";\n");
         assert!(strip(&out).contains("one"), "{out:?}");
         assert!(strip(&out).contains("two"), "{out:?}");
+    }
+}
+
+#[cfg(test)]
+mod picture_tests {
+    use super::*;
+
+    #[test]
+    fn a_picture_goes_after_the_line_that_names_it() {
+        let lines: Vec<String> = ["Done.", "│ ![sun](/x/sun.png)", "more", "sun again"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(picture_anchor(&lines, 0, "sun", "/x/sun.png"), Some(2));
+        // Rendered markdown keeps only the alt text.
+        assert_eq!(picture_anchor(&lines, 2, "sun again", "/nope.png"), Some(4));
+        assert_eq!(picture_anchor(&lines, 0, "", "/nope.png"), None);
+        // The path named in a sentence first: the picture goes under the markdown, not there.
+        let named_twice: Vec<String> = ["Wrote /x/sun.png for you.", "![sun](/x/sun.png)", "end"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            picture_anchor(&named_twice, 0, "sun", "/x/sun.png"),
+            Some(2)
+        );
+        // Inside a frame: after the frame closes.
+        let framed: Vec<String> = ["┌─", "│ ![a](/p.png)", "│ more code", "└─", "after"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(picture_anchor(&framed, 0, "a", "/p.png"), Some(4));
     }
 }

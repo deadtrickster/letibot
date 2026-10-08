@@ -29,9 +29,14 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    // **Short**, because macOS caps a socket path at 104 bytes and its temp dir alone is
+    // about 50; the nanosecond clock in decimal and a long tag overflowed it (`path must be
+    // shorter than SUN_LEN`). The tag is for a human reading `ls`, so ten characters do.
     std::env::temp_dir().join(format!(
-        "letibot-oprun-{tag}-{}-{n}.sock",
-        std::process::id()
+        "lb-oprun-{:.10}-{}-{:x}.sock",
+        tag,
+        std::process::id(),
+        n as u32
     ))
 }
 

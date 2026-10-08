@@ -5,7 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-build = "build.rs"
 
 [dependencies]
 letibot-transcript.workspace = true
@@ -16,5 +15,3 @@ libc = "0.2"
 sha2 = "0.10"
 rusqlite = "0.40"
 
-[build-dependencies]
-cc = "1"

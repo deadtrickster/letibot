@@ -72,7 +72,7 @@ fn count() -> usize {
 /// so the rows are the shapes a real frame has to draw rather than a hand-made approximation.
 fn head() -> letibot_tui::app::App {
     use letibot_sessionlog::{Hub, ServerFrame, protocol, testing};
-    use letibot_tui::render::RenderConfig;
+    use letibot_tui::ui::render::RenderConfig;
 
     let hub = Hub::new("s");
     hub.publish(testing::turn_started("t1"));
@@ -151,7 +151,7 @@ fn a_frame_costs_no_allocation_per_unchanged_line() {
     );
 
     // ---- the terminal's diff --------------------------------------------------------------
-    use letibot_tui::term::paint_full;
+    use letibot_tui::backend::terminal::paint_full;
 
     let glass: Vec<String> = (0..40)
         .map(|i| format!("row {i} of a settled screen"))

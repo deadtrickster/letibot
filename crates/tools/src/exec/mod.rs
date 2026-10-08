@@ -66,7 +66,7 @@
 //! | module | what |
 //! |---|---|
 //! | [`confine`] | the namespaces: the mount view, the measured [`Boundary`], and the refusal when there is none |
-//! | [`scope`] | the cgroup tree, the three scopes, and [`Reaping`] |
+//! | [`scope`] | the cgroup tree (process groups on macOS), the three scopes, and [`Reaping`] |
 //! | [`jobs`] | one running command: its capture ring, its state, its denominator |
 //! | [`monitor`] | a condition watched ACROSS turns, keyed on a handle and never on a pattern (T24) |
 //! | [`host`] | [`host::ProcessHost`], the seam a firecode backend would also implement, and the host implementation |
@@ -80,6 +80,8 @@
 pub mod ask;
 pub mod confine;
 pub mod console;
+#[cfg(target_os = "macos")]
+pub mod darwin;
 pub mod host;
 pub mod jobs;
 pub mod monitor;
@@ -107,7 +109,12 @@ pub use monitor::{
 };
 pub use predicate::{Hazard, Predicate, Verdict, Witness};
 pub use pty::Pty;
-pub use scope::{Cgroup2, Migration, NoScopes, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree};
+#[cfg(target_os = "macos")]
+pub use scope::ProcessGroups;
+pub use scope::{
+    Cgroup2, HOST_KILL, Migration, NoScopes, Reaped, Reaping, ScopeId, ScopeKind, ScopeTree,
+    host_tree, live_members,
+};
 pub use shell::{ShellConfig, ShellError, ShellSession, Turn};
 pub use term::{TermConfig, TermError, TermSession, TermSink};
 pub use terminal::{Class, Refusal, wants_the_terminal};

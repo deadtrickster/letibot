@@ -55,12 +55,16 @@
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 
+use super::decode::{decode_prefix, legacy_bytes, paste_open};
 use crate::app::Key;
 
 pub struct Terminal {
     original: libc::termios,
     fd: i32,
     entered: bool,
+    /// The window title last written (see [`Terminal::set_title`]), so a frame that does
+    /// not change it writes nothing.
+    title: std::cell::RefCell<String>,
     /// The frame currently on the glass. [`Terminal::draw`] writes the difference
     /// against it and nothing else; see the note on flicker.
     shown: std::cell::RefCell<Vec<String>>,
@@ -107,6 +111,41 @@ pub struct Terminal {
     /// frame must erase everything before it paints.
     last_size: std::cell::Cell<(usize, usize)>,
     full: std::cell::Cell<bool>,
+    /// **What this terminal speaks beyond cells** — see [`crate::features`]. Decided once at
+    /// [`Terminal::enter`], and every mode it turns on there is turned off by [`restore`].
+    features: crate::backend::features::Features,
+    /// The progress state last written (OSC 9;4), so a tick that does not change it writes
+    /// nothing.
+    progress: std::cell::Cell<Progress>,
+}
+
+/// **The tab's progress bar** (OSC 9;4), as the head means it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Progress {
+    /// Nothing to show: the bar is removed.
+    #[default]
+    Idle,
+    /// The model is working — generating, or waiting on a call it made. No percentage exists,
+    /// so the bar is the terminal's indeterminate one.
+    Busy,
+    /// Something is waiting on the PERSON: a permission, a key, a password. Drawn in the
+    /// terminal's paused (warning) colour, so a tab that wants you looks different from a tab
+    /// that is working.
+    Waiting,
+    /// The last turn ended in an error.
+    Failed,
+}
+
+impl Progress {
+    /// The OSC 9;4 state and value for this.
+    fn osc(self) -> &'static [u8] {
+        match self {
+            Progress::Idle => b"\x1b]9;4;0\x07",
+            Progress::Busy => b"\x1b]9;4;3\x07",
+            Progress::Waiting => b"\x1b]9;4;4;100\x07",
+            Progress::Failed => b"\x1b]9;4;2;100\x07",
+        }
+    }
 }
 
 /// How much is read at once. Large enough that a paste is one or two reads
@@ -204,14 +243,36 @@ impl Terminal {
         // mouse tracking with SGR encoding, so the wheel scrolls the transcript.
         // The app acts on the wheel only — clicks and drags are decoded and
         // dropped, and selecting text stays the terminal's own Shift+drag.
-        let _ = out.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[2 q");
+        //
+        // And the window title is SAVED (`CSI 22;0 t`, xterm's title stack), because the head
+        // sets its own — the session's name, see `set_title` — and gives the terminal back
+        // the title it had. A terminal without the stack ignores the sequence.
+        let _ = out
+            .write_all(b"\x1b[22;0t\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[2 q");
+        // **The terminal's extras, each only where it is spoken** (see `crate::features`).
+        //
+        // `CSI > 1 u` pushes the kitty keyboard's "disambiguate" flag: Esc stops being the
+        // first byte of every arrow key, and Shift+Enter becomes a key at all. `?1004h` asks for
+        // focus reports, which is what lets a notification go only to a person who is not
+        // looking. `OSC 11 ; ?` asks the background colour once; the answer arrives as input
+        // and the decoder turns it into a key.
+        let features = crate::backend::features::Features::detect();
+        if features.keys {
+            let _ = out.write_all(b"\x1b[>1u");
+        }
+        if features.notify {
+            let _ = out.write_all(b"\x1b[?1004h");
+        }
+        if features.background {
+            let _ = out.write_all(b"\x1b]11;?\x1b\\");
+        }
         let _ = out.flush();
 
         // Restore before anything is printed, or the panic message is a staircase.
         let saved = original;
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            restore(fd, &saved);
+            restore(fd, &saved, features);
             prev(info);
         }));
 
@@ -219,6 +280,7 @@ impl Terminal {
             original,
             fd,
             entered: true,
+            title: std::cell::RefCell::new(String::new()),
             shown: std::cell::RefCell::new(Vec::new()),
             next: std::cell::RefCell::new(Vec::new()),
             cursor: std::cell::Cell::new(None),
@@ -233,7 +295,63 @@ impl Terminal {
             last_raw: std::cell::RefCell::new(Vec::new()),
             last_size: std::cell::Cell::new((0, 0)),
             full: std::cell::Cell::new(true),
+            features,
+            progress: std::cell::Cell::new(Progress::Idle),
         })
+    }
+
+    /// What this terminal was found to speak. See [`crate::features`].
+    pub fn features(&self) -> crate::backend::features::Features {
+        self.features
+    }
+
+    /// **The tab's progress bar**, written only when it changed and only where it is spoken.
+    /// A terminal that does not know OSC 9;4 may read OSC 9 as a NOTIFICATION (iTerm2 does), so
+    /// this writes nothing at all unless [`crate::backend::features::Features::progress`] is on.
+    pub fn set_progress(&self, p: Progress) {
+        if !self.features.progress || self.progress.get() == p {
+            return;
+        }
+        let mut out = std::io::stdout();
+        let _ = out.write_all(p.osc());
+        let _ = out.flush();
+        self.progress.set(p);
+    }
+
+    /// **A desktop notification** (OSC 9), where spoken. The text is stripped of control
+    /// characters — it carries a session's words, and an escape in it would be one the
+    /// terminal executes — and of `;`, which some terminals read as OSC 9's own separator.
+    pub fn notify(&self, text: &str) {
+        if !self.features.notify {
+            return;
+        }
+        let clean: String = window_title_text(text).replace(';', ",");
+        if clean.is_empty() {
+            return;
+        }
+        let mut out = std::io::stdout();
+        let _ = write!(out, "\x1b]9;{clean}\x07");
+        let _ = out.flush();
+    }
+
+    /// **Put text on the system clipboard** (OSC 52), where spoken. Base64 of the bytes as
+    /// they are: the clipboard is the operator's, and what they asked to copy is what lands.
+    pub fn copy(&self, text: &str) -> bool {
+        if !self.features.clipboard {
+            return false;
+        }
+        let mut out = std::io::stdout();
+        let _ = write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()));
+        let _ = out.flush();
+        true
+    }
+
+    /// **Write bytes that are not part of the frame** — an inline image's upload — outside the
+    /// diffing encoder, which only knows rows of text.
+    pub fn write_raw(&self, bytes: &[u8]) {
+        let mut out = std::io::stdout();
+        let _ = out.write_all(bytes);
+        let _ = out.flush();
     }
 
     /// Columns and rows, or a sane default when `TIOCGWINSZ` says nothing.
@@ -305,7 +423,15 @@ impl Terminal {
     /// `_ => i += 1` fallthrough and vanishes — so it can never arrive as a [`Key`] and can only
     /// be found here, on the raw stream, before anything is forwarded. See `App::pane_keys`.
     pub fn raw_keys(&self) -> Vec<u8> {
-        self.last_raw.borrow().clone()
+        // **Under the kitty keyboard the raw stream is in a spelling the pane's program never
+        // asked for** — Ctrl-C arrives as `CSI 99;5u`, and the pane's own way out, `ctrl-\`,
+        // as `CSI 92;5u`. So it is put back into the legacy bytes first: the program reads
+        // what a terminal without the protocol would have sent it.
+        if self.features.keys {
+            legacy_bytes(&self.last_raw.borrow())
+        } else {
+            self.last_raw.borrow().clone()
+        }
     }
 
     /// Paint the **difference** between this frame and the one on the glass.
@@ -327,6 +453,25 @@ impl Terminal {
     /// 2. **A frame equal to the last one writes zero bytes.** An idle head is
     ///    silent on its output, not merely cheap.
     ///
+    /// **The window title** — the session's name, so a tab says which conversation it is
+    /// rather than the name of the program (`leticode`), which every tab shares.
+    ///
+    /// Written as OSC 2 and only when it changed. Every control character is dropped
+    /// first: the text is a session title, which anyone with the socket can set, and an
+    /// escape inside it would be one the terminal executes (the tree's own hostile-title
+    /// tests carry `ESC ] 0 ; pwned`). Capped, because a title bar has no use for a
+    /// paragraph.
+    pub fn set_title(&self, title: &str) {
+        let clean: String = window_title_text(title);
+        if *self.title.borrow() == clean {
+            return;
+        }
+        let mut out = std::io::stdout();
+        let _ = write!(out, "\x1b]2;{clean}\x07");
+        let _ = out.flush();
+        *self.title.borrow_mut() = clean;
+    }
+
     /// A resize is a full repaint, once, because every row moved.
     pub fn draw(&self, lines: &[String]) {
         self.draw_with_cursor(lines, None)
@@ -497,7 +642,7 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         if self.entered {
-            restore(self.fd, &self.original);
+            restore(self.fd, &self.original, self.features);
         }
         // After the restore, so the line lands on a terminal that is out of raw
         // mode and off the alternate screen — a report printed before it scrolls
@@ -625,6 +770,7 @@ impl Terminal {
             original: unsafe { std::mem::zeroed() },
             fd: -1,
             entered: false,
+            title: std::cell::RefCell::new(String::new()),
             shown: std::cell::RefCell::new(Vec::new()),
             next: std::cell::RefCell::new(Vec::new()),
             cursor: std::cell::Cell::new(None),
@@ -637,457 +783,57 @@ impl Terminal {
             last_raw: std::cell::RefCell::new(Vec::new()),
             last_size: std::cell::Cell::new((80, 24)),
             full: std::cell::Cell::new(true),
+            features: crate::backend::features::Features::default(),
+            progress: std::cell::Cell::new(Progress::Idle),
         }
     }
 }
 
-fn restore(fd: i32, original: &libc::termios) {
+/// A title's text with every control character removed and its length capped — what
+/// [`Terminal::set_title`] writes. Separate so it can be tested without a terminal.
+pub fn window_title_text(title: &str) -> String {
+    title
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(120)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn restore(fd: i32, original: &libc::termios, features: crate::backend::features::Features) {
     unsafe { libc::tcsetattr(fd, libc::TCSANOW, original) };
     let mut out = std::io::stdout();
+    // The extras first, each only where `enter` turned it on: the kitty keyboard popped,
+    // focus reports off, the progress bar removed.
+    if features.keys {
+        let _ = out.write_all(b"\x1b[<u");
+    }
+    if features.notify {
+        let _ = out.write_all(b"\x1b[?1004l");
+    }
+    if features.progress {
+        let _ = out.write_all(Progress::Idle.osc());
+    }
     // Every mode `enter` turned on, off again, in the reverse order: end any open
     // synchronised update, mouse tracking off, bracketed paste off, the cursor
     // shape back to whatever the operator's terminal had, then show it and leave
     // the alternate screen.
-    let _ =
-        out.write_all(b"\x1b[?2026l\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l");
+    // Last, the window title `enter` saved (`CSI 23;0 t`): the shell's own, back.
+    let _ = out.write_all(
+        b"\x1b[?2026l\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l\x1b[23;0t",
+    );
     let _ = out.flush();
 }
 
-/// Is a bracketed paste open at the end of `b`?
-///
-/// The signal that says "keep reading": a paste's terminator is the only precise
-/// evidence that more bytes are on their way, and without it a 40 KB paste is
-/// decided by a 100 ms timeout in the middle of somebody's stack trace.
-fn paste_open(b: &[u8]) -> bool {
-    let start = rfind(b, PASTE_START);
-    let end = rfind(b, PASTE_END);
-    match (start, end) {
-        (Some(s), Some(e)) => s > e,
-        (Some(_), None) => true,
-        _ => false,
-    }
-}
-
-const PASTE_START: &[u8] = b"\x1b[200~";
-const PASTE_END: &[u8] = b"\x1b[201~";
-
-fn rfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.len() > hay.len() {
-        return None;
-    }
-    (0..=hay.len() - needle.len())
-        .rev()
-        .find(|&i| &hay[i..i + needle.len()] == needle)
-}
-
-/// Decode a read buffer into keys.
-///
-/// Convenience over [`decode_prefix`] for a caller with a complete buffer — a
-/// test, or a `--replay` script. Anything trailing and incomplete is decoded as
-/// best it can be, which is what "this is all there is" means.
-pub fn decode(b: &[u8]) -> Vec<Key> {
-    decode_prefix(b, true).0
-}
-
-/// Decode as much of `b` as is unambiguously complete, and say how many bytes
-/// that was.
-///
-/// The returned count is the contract: everything past it is an **incomplete
-/// tail** — a UTF-8 sequence cut in half, a CSI whose final byte has not
-/// arrived, a bracketed paste still open — and the caller carries it into the
-/// next read. The old decoder had no such notion, so a read that ended
-/// mid-character failed `from_utf8` and the arm dropped the bytes without a
-/// word. A person pasting an error message into an agent is not an edge case.
-///
-/// `force` decodes the tail anyway, for the last read of a stream and for the
-/// ceiling at [`MAX_PENDING`].
-pub fn decode_prefix(b: &[u8], force: bool) -> (Vec<Key>, usize) {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < b.len() {
-        // Bracketed paste, first: everything inside it is content, including
-        // bytes that would otherwise be keys. This is what stops a pasted
-        // newline from submitting the prompt.
-        if b[i..].starts_with(PASTE_START) {
-            let body = i + PASTE_START.len();
-            match find(&b[body..], PASTE_END) {
-                Some(k) => {
-                    out.push(Key::Paste(
-                        String::from_utf8_lossy(&b[body..body + k]).into_owned(),
-                    ));
-                    i = body + k + PASTE_END.len();
-                    continue;
-                }
-                None if force => {
-                    out.push(Key::Paste(String::from_utf8_lossy(&b[body..]).into_owned()));
-                    return (out, b.len());
-                }
-                None => return (out, i),
-            }
-        }
-        let c = b[i];
-        match c {
-            0x1b => match escape(&b[i..], force) {
-                Step::Emit(k, n) => {
-                    if let Some(k) = k {
-                        out.push(k);
-                    }
-                    i += n;
-                }
-                Step::Incomplete => return (out, i),
-            },
-            0x03 => {
-                out.push(Key::CtrlC);
-                i += 1;
-            }
-            0x04 => {
-                out.push(Key::Eof);
-                i += 1;
-            }
-            // Readline's motion keys, which are muscle memory in every shell.
-            0x01 => {
-                out.push(Key::Home);
-                i += 1;
-            }
-            0x02 => {
-                out.push(Key::Left);
-                i += 1;
-            }
-            0x05 => {
-                out.push(Key::End);
-                i += 1;
-            }
-            0x06 => {
-                out.push(Key::Right);
-                i += 1;
-            }
-            0x0b => {
-                out.push(Key::KillToEnd);
-                i += 1;
-            }
-            0x15 => {
-                out.push(Key::KillToStart);
-                i += 1;
-            }
-            0x17 => {
-                out.push(Key::KillWordBack);
-                i += 1;
-            }
-            0x19 => {
-                out.push(Key::Yank);
-                i += 1;
-            }
-            // Ctrl+Z and Ctrl+_ both undo. Raw mode means Ctrl+Z is not a suspend
-            // here, and a composer with no undo is what makes a kill frightening.
-            0x1a | 0x1f => {
-                out.push(Key::Undo);
-                i += 1;
-            }
-            // The two folds and a redraw. Control keys rather than plain letters
-            // because every printable character has to remain typeable — a head
-            // whose `r` means "collapse" cannot be used to ask a question.
-            0x12 => {
-                out.push(Key::CtrlR);
-                i += 1;
-            }
-            0x14 => {
-                out.push(Key::CtrlT);
-                i += 1;
-            }
-            // Ctrl+X: the raw form of a tool call. `x` for the XML-ish markup it
-            // shows; the argument for this byte rather than a nicer one is in
-            // `App::key`. Not a tty control character, and readline uses it only as
-            // a prefix, so nothing downstream is waiting for a second byte.
-            0x18 => {
-                out.push(Key::CtrlX);
-                i += 1;
-            }
-            0x0c => {
-                out.push(Key::CtrlL);
-                i += 1;
-            }
-            // The session list. Ctrl+S is normally XOFF and would freeze a
-            // terminal; `cfmakeraw` clears `IXON`, so nothing here is listening for
-            // it and the byte reaches this decoder.
-            0x13 => {
-                out.push(Key::CtrlS);
-                i += 1;
-            }
-            // **Hold the view** (R56). Ctrl+P is the print byte and nothing in a raw
-            // terminal listens for it, and *pause* is what the key is for: while it is
-            // held the head writes nothing, so a mouse selection survives a streaming
-            // turn. The todos pane gave this byte up when it moved to `ctrl-t` — see the
-            // `0x16` arm below for the whole rework.
-            0x10 => {
-                out.push(Key::CtrlP);
-                i += 1;
-            }
-            // **The payload window**: open or close the newest long tool result (it was
-            // `ctrl-t` until R56 moved it here). `0x16` had no arm before, so it reached
-            // the `_ => i += 1` fallthrough and was eaten silently — free in the strongest
-            // sense. It carries no tty meaning a raw terminal is waiting for (`VEOL`/`VLNEXT`
-            // are the literal-next byte `0x16` only under `IEXTEN`, which `cfmakeraw`
-            // clears), and `v` for *view* is the mnemonic the window was missing.
-            0x16 => {
-                out.push(Key::CtrlV);
-                i += 1;
-            }
-            // The subagent tree. Ctrl+G is BEL; in raw mode nothing rings on it and
-            // the byte reaches this decoder like any other.
-            0x07 => {
-                out.push(Key::CtrlG);
-                i += 1;
-            }
-            // Background the running command. Ctrl+O — B is the readline left-arrow
-            // and is muscle memory — so the chord is the next free control byte.
-            0x0f => {
-                out.push(Key::CtrlO);
-                i += 1;
-            }
-            // The background-jobs pane. Ctrl+Q is XON, dead the same way Ctrl+S's
-            // XOFF would be — and fixed the same way: `cfmakeraw` clears IXON, so
-            // nothing is listening for flow control and the byte arrives like any
-            // other. J would have been the mnemonic; it is line-feed.
-            0x11 => {
-                out.push(Key::CtrlQ);
-                i += 1;
-            }
-            // **Retire every note. Ctrl+N, and `N` is the whole mnemonic** (R22).
-            //
-            // Free on this side and free in the strongest sense: this byte had NO arm
-            // before, so it reached the `_ => i += 1` fallthrough and was eaten silently —
-            // a key that does nothing rather than a key bound to nothing. `0x1c`-`0x1e` are
-            // the only bytes left in this table with no arm, and none of the three has a
-            // mnemonic worth having (`0x16`, the fourth, became `ctrl-v` in R56).
-            //
-            // **Not a tty control character**, so nothing upstream is listening for it: it
-            // is not `IXON`/`IXOFF` (`ctrl-s`/`ctrl-q` are, and `cfmakeraw` clears them),
-            // and it is not one of the six chords the hint bar already lists. leticl checked
-            // the other half of this — the operator's own multiplexer, `tmux list-keys -T
-            // root`, 75 bindings and not one bare `C-n` — because a chord can be eaten
-            // before a head ever sees it.
-            0x0e => {
-                out.push(Key::CtrlN);
-                i += 1;
-            }
-            // Tab: the composer's slash-command completion. A plain 0x09 used to
-            // fall through the `c >= 0x20` arm and vanish — a byte the head eats
-            // silently is a key nobody can learn.
-            0x09 => {
-                out.push(Key::Tab);
-                i += 1;
-            }
-            b'\r' | b'\n' => {
-                out.push(Key::Enter);
-                i += 1;
-            }
-            0x7f | 0x08 => {
-                out.push(Key::Backspace);
-                i += 1;
-            }
-            c if c >= 0x20 => {
-                let len = utf8_len(c);
-                if i + len > b.len() {
-                    // The read ended mid-character. This is the byte-losing bug:
-                    // hold it, do not decode it.
-                    return (out, if force { b.len() } else { i });
-                }
-                match std::str::from_utf8(&b[i..i + len]) {
-                    Ok(t) => out.extend(t.chars().map(Key::Char)),
-                    // Not UTF-8 at all. Skipping one byte resynchronises without
-                    // stalling the stream on it forever.
-                    Err(_) => {
-                        i += 1;
-                        continue;
-                    }
-                }
-                i += len;
-            }
-            _ => i += 1,
-        }
-    }
-    (out, b.len())
-}
-
-enum Step {
-    /// A key — or nothing, for a sequence recognised and deliberately ignored —
-    /// and how many bytes it took.
-    Emit(Option<Key>, usize),
-    /// The sequence has not finished arriving.
-    Incomplete,
-}
-
-/// Decode one escape sequence at the head of `b`, which starts with `0x1b`.
-fn escape(b: &[u8], force: bool) -> Step {
-    if b.len() == 1 {
-        // A lone ESC is Esc. It is genuinely ambiguous — every arrow key starts
-        // this way — and it is resolved in favour of the key a person pressed on
-        // purpose, because Esc twice is how the composer interrupts a turn and a
-        // held Esc is one that does not arrive.
-        return Step::Emit(Some(Key::Esc), 1);
-    }
-    match b[1] {
-        // Two of them. Esc twice is how the composer interrupts a turn, and at a
-        // 100 ms read they usually arrive in the same buffer — consuming both as
-        // one Alt+Esc would eat the interrupt.
-        0x1b => Step::Emit(Some(Key::Esc), 1),
-        b'[' => csi(b, force),
-        // SS3: the application-cursor-mode arrows, which is what a terminal sends
-        // after `smkx`.
-        b'O' => {
-            if b.len() < 3 {
-                return if force {
-                    Step::Emit(Some(Key::Esc), 1)
-                } else {
-                    Step::Incomplete
-                };
-            }
-            let k = match b[2] {
-                b'A' => Some(Key::Up),
-                b'B' => Some(Key::Down),
-                b'C' => Some(Key::Right),
-                b'D' => Some(Key::Left),
-                b'H' => Some(Key::Home),
-                b'F' => Some(Key::End),
-                _ => None,
-            };
-            Step::Emit(k, 3)
-        }
-        // Alt+Enter: a newline that does not submit. A terminal cannot report
-        // Shift+Enter at all without the kitty protocol, so this is the one that
-        // has to work.
-        b'\r' | b'\n' => Step::Emit(Some(Key::SoftEnter), 2),
-        b'b' => Step::Emit(Some(Key::WordLeft), 2),
-        b'f' => Step::Emit(Some(Key::WordRight), 2),
-        // grok-build's note, worth having: in many terminals Ctrl+Shift+Z arrives
-        // byte-identical to Ctrl+Z, so redo needs a second binding.
-        b'z' => Step::Emit(Some(Key::Redo), 2),
-        0x7f => Step::Emit(Some(Key::KillWordBack), 2),
-        // Any other Alt+key is swallowed rather than typed, so Alt+j does not
-        // insert a `j`.
-        _ => Step::Emit(None, 2),
-    }
-}
-
-/// Decode one CSI sequence: `ESC [`, parameters, intermediates, a final byte.
-fn csi(b: &[u8], force: bool) -> Step {
-    let mut i = 2;
-    while i < b.len() && (0x30..=0x3f).contains(&b[i]) {
-        i += 1;
-    }
-    let params_end = i;
-    while i < b.len() && (0x20..=0x2f).contains(&b[i]) {
-        i += 1;
-    }
-    if i >= b.len() {
-        // The final byte has not arrived. Holding is the whole point: decoding
-        // `\x1b[` as an Esc and a `[` is how half an arrow key becomes typed
-        // punctuation in the middle of a prompt.
-        return if force {
-            Step::Emit(Some(Key::Esc), 1)
-        } else {
-            Step::Incomplete
-        };
-    }
-    let fin = b[i];
-    let n = i + 1;
-    let params = &b[2..params_end];
-    // `1;5` — the modifier is the second parameter, and 5 is Ctrl. Ctrl+arrow is
-    // the word motion every editor binds it to.
-    let ctrl = params.split(|c| *c == b';').nth(1) == Some(&b"5"[..]);
-    let k = match fin {
-        b'A' => Some(Key::Up),
-        b'B' => Some(Key::Down),
-        b'C' => Some(if ctrl { Key::WordRight } else { Key::Right }),
-        b'D' => Some(if ctrl { Key::WordLeft } else { Key::Left }),
-        b'H' => Some(Key::Home),
-        b'F' => Some(Key::End),
-        b'~' => match params.split(|c| *c == b';').next().unwrap_or(b"") {
-            b"1" | b"7" => Some(Key::Home),
-            b"3" => Some(Key::Delete),
-            b"4" | b"8" => Some(Key::End),
-            b"5" => Some(Key::PageUp),
-            b"6" => Some(Key::PageDown),
-            _ => None,
-        },
-        b'M' | b'm' => {
-            // SGR mouse (`?1006`): `ESC [ < b ; x ; y M` on press, `m` on release.
-            // The wheel is button 64 (up) and 65 (down). A **left-button press**
-            // (button 0) is a click, and an open picker takes it: the row under
-            // the pointer becomes the selected row, and Enter still does the
-            // switching — select and confirm stay two acts, because a gesture
-            // that commits on press is how a misclick switches somebody's
-            // conversation. Every other report — releases, drags, motion, other
-            // buttons — is decoded and dropped, because a report the head does
-            // not act on must never become typed punctuation, and selecting
-            // text stays the terminal's own Shift+drag, which mouse tracking
-            // does not take away. Coordinates are 1-based on the wire and
-            // 0-based here.
-            let mut fields = params
-                .strip_prefix(b"<".as_slice())
-                .unwrap_or(params)
-                .split(|c| *c == b';');
-            let btn = fields
-                .next()
-                .and_then(|f| std::str::from_utf8(f).ok())
-                .and_then(|f| f.parse::<u8>().ok())
-                .unwrap_or(0);
-            let coord = |f: Option<&[u8]>| -> u16 {
-                f.and_then(|f| std::str::from_utf8(f).ok())
-                    .and_then(|f| f.parse::<u16>().ok())
-                    .unwrap_or(1)
-                    .saturating_sub(1)
-            };
-            let (x, y) = (coord(fields.next()), coord(fields.next()));
-            match (fin, btn) {
-                (b'M', 64) => Some(Key::WheelUp),
-                (b'M', 65) => Some(Key::WheelDown),
-                (b'M', 0) => Some(Key::Click { x, y }),
-                _ => None,
-            }
-        }
-        _ => None,
-    };
-    Step::Emit(k, n)
-}
-
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.len() > hay.len() {
-        return None;
-    }
-    (0..=hay.len() - needle.len()).find(|&i| &hay[i..i + needle.len()] == needle)
-}
-
-fn utf8_len(b: u8) -> usize {
-    match b {
-        0x00..=0x7f => 1,
-        0xc0..=0xdf => 2,
-        0xe0..=0xef => 3,
-        _ => 4,
-    }
+/// Standard base64 — the tree's one spelling of it (`letibot_transcript::media`), for OSC 52.
+pub fn base64(bytes: &[u8]) -> String {
+    letibot_transcript::media::encode_base64(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn arrows_and_control_keys_decode() {
-        assert_eq!(decode(b"\x1b[A"), vec![Key::Up]);
-        assert_eq!(decode(b"\x1b[B"), vec![Key::Down]);
-        assert_eq!(decode(b"\x03"), vec![Key::CtrlC]);
-        assert_eq!(decode(b"\r"), vec![Key::Enter]);
-        assert_eq!(decode(b"\x7f"), vec![Key::Backspace]);
-        assert_eq!(decode(b"\x1b"), vec![Key::Esc]);
-        assert_eq!(decode(b"\x18"), vec![Key::CtrlX]);
-        // **R22's chord, and it is a NEW arm rather than an old one.** `0x0e` had no arm in
-        // this decoder before `ctrl-n`, so it fell to the `_ => i += 1` fallthrough and was
-        // eaten — a key that did nothing rather than a key bound to nothing. That is also
-        // why it was free: nothing in this head, and nothing downstream of it, was waiting
-        // for the byte. Asserted here rather than only through `App::key`, because what this
-        // guards is a byte that vanishes before any handler can see it.
-        assert_eq!(decode(b"\x0e"), vec![Key::CtrlN]);
-    }
 
     #[test]
     fn an_unchanged_frame_writes_nothing_at_all() {
@@ -1321,153 +1067,11 @@ mod tests {
     }
 
     #[test]
-    fn a_read_that_ends_mid_utf8_loses_nothing() {
-        // The bug, as an assertion. `term::keys` used to read 64 bytes and hand
-        // them to `from_utf8`; a read that split a character failed the whole
-        // decode and the arm returned nothing, silently. Pasting a stack trace
-        // with an arrow or a box-drawing character in it lost bytes.
-        let whole = "héllo → wörld ⣿".as_bytes();
-        for cut in 1..whole.len() {
-            let (a, b) = whole.split_at(cut);
-            let (mut keys, used) = decode_prefix(a, false);
-            // Whatever was not decodable is carried, never dropped.
-            let mut rest = a[used..].to_vec();
-            rest.extend_from_slice(b);
-            keys.extend(decode_prefix(&rest, true).0);
-            let text: String = keys
-                .iter()
-                .map(|k| match k {
-                    Key::Char(c) => *c,
-                    other => panic!("{other:?}"),
-                })
-                .collect();
-            assert_eq!(text, "héllo → wörld ⣿", "split at {cut}");
-        }
-    }
-
-    #[test]
-    fn an_escape_sequence_split_across_two_reads_is_one_key_not_typed_punctuation() {
-        // A lone ESC is the one deliberate exception: it is genuinely ambiguous,
-        // and it is resolved in favour of the key a person pressed on purpose,
-        // because Esc twice is the composer's interrupt and an Esc that waits for
-        // a disambiguating read is an Esc that arrives a frame late.
-        assert_eq!(decode_prefix(b"\x1b", false), (vec![Key::Esc], 1));
-        assert_eq!(decode(b"\x1b\x1b"), vec![Key::Esc, Key::Esc]);
-
-        let whole = b"\x1b[1;5C";
-        for cut in 2..whole.len() {
-            let (keys, used) = decode_prefix(&whole[..cut], false);
-            assert!(keys.is_empty(), "cut {cut}: {keys:?}");
-            assert_eq!(used, 0, "the partial sequence must be carried, not eaten");
-        }
-        assert_eq!(decode(whole), vec![Key::WordRight]);
-    }
-
-    #[test]
-    fn the_wheel_arrives_as_sgr_mouse_and_every_other_report_is_dropped() {
-        assert_eq!(decode(b"\x1b[<64;10;5M"), vec![Key::WheelUp]);
-        assert_eq!(decode(b"\x1b[<65;10;5M"), vec![Key::WheelDown]);
-        // A left-button press is a click, on 0-based coordinates; drags,
-        // motion and releases are decoded and dropped: a report the head does
-        // not act on must never become typed punctuation.
-        assert_eq!(decode(b"\x1b[<0;3;4M"), vec![Key::Click { x: 2, y: 3 }]);
-        assert_eq!(decode(b"\x1b[<32;3;4M"), Vec::<Key>::new());
-        assert_eq!(decode(b"\x1b[<0;3;4m"), Vec::<Key>::new());
-        // A report cut mid-sequence is carried, not eaten.
-        let whole = b"\x1b[<65;1;1M";
-        for cut in 2..whole.len() {
-            let (keys, used) = decode_prefix(&whole[..cut], false);
-            assert!(keys.is_empty(), "cut {cut}: {keys:?}");
-            assert_eq!(used, 0, "the partial report must be carried, not eaten");
-        }
-        assert_eq!(decode(whole), vec![Key::WheelDown]);
-    }
-
-    #[test]
-    fn a_bracketed_paste_is_one_key_and_its_newlines_do_not_submit() {
-        let mut b = b"\x1b[200~".to_vec();
-        b.extend_from_slice(b"line one\nline two\nline three");
-        b.extend_from_slice(b"\x1b[201~");
-        assert_eq!(
-            decode(&b),
-            vec![Key::Paste("line one\nline two\nline three".into())]
-        );
-        // …and while the terminator has not arrived, nothing is consumed: the
-        // read loop is still waiting for the rest of the paste.
-        let open = &b[..b.len() - 3];
-        assert!(paste_open(open));
-        assert_eq!(decode_prefix(open, false), (Vec::new(), 0));
-    }
-
-    #[test]
-    fn the_keys_a_composer_needs_all_decode() {
-        for (bytes, want) in [
-            (&b"\x1b[C"[..], Key::Right),
-            (b"\x1b[D", Key::Left),
-            (b"\x1bOC", Key::Right),
-            (b"\x1b[H", Key::Home),
-            (b"\x1b[3~", Key::Delete),
-            (b"\x1b[5~", Key::PageUp),
-            (b"\x1b[6~", Key::PageDown),
-            (b"\x1b[1;5D", Key::WordLeft),
-            (b"\x1b\r", Key::SoftEnter),
-            (b"\x1bb", Key::WordLeft),
-            (b"\x01", Key::Home),
-            (b"\x09", Key::Tab),
-            (b"\x05", Key::End),
-            (b"\x0b", Key::KillToEnd),
-            (b"\x15", Key::KillToStart),
-            (b"\x17", Key::KillWordBack),
-            (b"\x19", Key::Yank),
-            (b"\x1a", Key::Undo),
-            (b"\x04", Key::Eof),
-        ] {
-            assert_eq!(decode(bytes), vec![want.clone()], "{bytes:?}");
-        }
-    }
-
-    #[test]
-    fn a_multibyte_paste_survives() {
-        assert_eq!(
-            decode("héllo".as_bytes()),
-            vec![
-                Key::Char('h'),
-                Key::Char('é'),
-                Key::Char('l'),
-                Key::Char('l'),
-                Key::Char('o')
-            ]
-        );
-    }
-
-    /// **`ctrl-\` decodes to nothing at all, and that is what makes it the pane's way out.**
-    ///
-    /// The pane's exit must be a key **the program never receives**, or a program can trap it.
-    /// This byte is one of the three this decoder has no arm for, so it can never arrive at
-    /// [`App::key`] as a `Key` — which is why the interception lives on the raw stream
-    /// ([`Terminal::raw_keys`]) and not on the key path, and why the way out cannot be
-    /// something a program could also be given.
-    ///
-    /// **The letters around it are two keys**, which is the other half: the byte is *eaten*,
-    /// not turned into a `Key::Char` or an `Esc`, so a head that forwarded keys would forward
-    /// `ab` and `cd` with nothing between them and no way out at all.
-    #[test]
-    fn the_way_out_byte_decodes_to_nothing_and_cannot_hide_in_anything() {
-        assert!(decode(&[0x1c]).is_empty(), "ctrl-\\ is not a `Key`");
-        assert_eq!(
-            decode(b"ab\x1ccd"),
-            vec![
-                Key::Char('a'),
-                Key::Char('b'),
-                Key::Char('c'),
-                Key::Char('d')
-            ],
-            "the byte is eaten, and the letters around it are two keys"
-        );
-        // It cannot be part of a character (it is below 0x20, so no UTF-8 sequence contains
-        // it) and it cannot be the final byte of a CSI sequence (those are 0x40-0x7e), so a
-        // raw scan for it is exact and not a guess about where a sequence ends.
-        assert!(0x1c < 0x20);
-        assert!(!(0x40..=0x7e).contains(&0x1c));
+    fn base64_is_the_standard_padded_alphabet() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64("ключ".as_bytes()), "0LrQu9GO0Yc=");
     }
 }

@@ -1,0 +1,93 @@
+//! **Events about the transcript**: a row appended, and its content arriving.
+
+use super::*;
+use letibot_sessionlog::event::SessionEvent;
+use letibot_sessionlog::view::{CallState, SnapshotItem};
+
+impl App {
+    /// **The transcript**: a row appended, and its content arriving. One family of
+    /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
+    pub(crate) fn on_transcript_event(&mut self, e: SessionEvent, ts: u64) -> Disposition {
+        match e {
+            SessionEvent::TranscriptAppended {
+                item_id,
+                kind,
+                ledger_head,
+            } => {
+                // A tool-result row hands one live card over to the transcript.
+                // Positional, not by id: the engine invokes a round's calls in
+                // order and appends their rows in the same order, and the ids
+                // repeat every round so there is nothing to match on. The duration,
+                // the edit pair and the decision are carried across here because
+                // they are facts the live card had that the row does not.
+                let mut carried: Option<u64> = None;
+                let mut carried_edit: Option<letibot_sessionlog::event::ToolEdit> = None;
+                let mut carried_decision: Option<letibot_sessionlog::view::SettledDecision> = None;
+                if let Some(t) = self.turn.as_mut() {
+                    t.appended.push(item_id.clone());
+                    t.turn_rows.push(item_id.clone());
+                    if kind == "tool_result" {
+                        let c = t.calls.get(t.settled_calls);
+                        carried = c
+                            .filter(|c| c.started_ms > 0 && c.ended_ms > c.started_ms)
+                            .map(|c| c.ended_ms - c.started_ms);
+                        // The pair rides across with the duration: same card, same
+                        // moment, same positional match.
+                        carried_edit = c.and_then(|c| match &c.state {
+                            CallState::Finished { edit: Some(e), .. } => Some(e.clone()),
+                            _ => None,
+                        });
+                        // The approval rides across too: the decision is a fact
+                        // about this call, and the row that outlives the card is
+                        // where it has to keep being shown.
+                        carried_decision = c.and_then(|c| c.decision.clone());
+                        t.settled_calls += 1;
+                    }
+                }
+                if let Some(ms) = carried {
+                    self.call_ms.insert(item_id.clone(), ms);
+                }
+                if let Some(e) = carried_edit {
+                    self.call_edits.insert(item_id.clone(), e);
+                }
+                if let Some(d) = carried_decision {
+                    self.call_decisions.insert(item_id.clone(), d);
+                }
+                // **A user row is drawn from the moment it is announced.** The body
+                // follows on its own channel and, behind a running turn, the reply
+                // streams in the meantime — so without this the prompt is invisible
+                // while the answer to it is already on the screen, and the echo
+                // underneath goes on saying `queued` about words that have landed.
+                // See `App::bound_prompts` for why this is a guess and what keeps it
+                // honest.
+                if kind == "user" {
+                    self.bind_echo(&item_id);
+                }
+                self.items.push(SnapshotItem {
+                    item_id,
+                    kind,
+                    ledger_head,
+                    // When it happened, from the log's own clock. A head reading a
+                    // recorded session must show the same times as the one that
+                    // watched it, so this is never `now`.
+                    ts,
+                    item: None,
+                });
+                // A row landed, so the transcript moved and everything derived from it
+                // — the `!` candidates and the model's suggestions — is stale. The next
+                // Tab for the same prefix is a fresh ask.
+                self.the_rows_moved();
+                Disposition::Rendered
+            }
+            // The body for a row already announced. Before this existed, a head
+            // that was attached when the row landed had no route to the content at
+            // all and rendered `[kind id — content not loaded]` for the rest of the
+            // session — including for the operator's own prompt.
+            SessionEvent::TranscriptContent { item_id, item } => {
+                self.record_item(&item_id, *item);
+                Disposition::Rendered
+            }
+            _ => unreachable!("on_transcript_event was handed an event it does not handle"),
+        }
+    }
+}

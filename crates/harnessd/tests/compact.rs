@@ -51,7 +51,7 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = g.into();
+        cfg.vocab_gguf = Some(g.into());
     }
     cfg
 }
@@ -203,7 +203,7 @@ fn a_session_without_a_store_refuses_to_fork_by_name() {
     cfg.dialect = WANTED;
     cfg.store = None;
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = g.into();
+        cfg.vocab_gguf = Some(g.into());
     }
     cfg.session_id = "compact-no-store".into();
     let parts = load_parts(&cfg);

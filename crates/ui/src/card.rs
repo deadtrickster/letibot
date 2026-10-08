@@ -338,7 +338,7 @@ impl Phase {
 ///
 /// The defaults are grok-build's shipped numbers (see the module header). They
 /// are values on a struct rather than constants in the middle of a function for
-/// the same reason `letibot_tui::render::Budget` is: a bound nobody can change
+/// the same reason `letibot_tui::ui::render::Budget` is: a bound nobody can change
 /// is a bound nobody can measure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Budget {

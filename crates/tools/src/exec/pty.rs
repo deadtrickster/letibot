@@ -206,8 +206,14 @@ impl Pty {
         // `ptsname_r` rather than `ptsname`: the latter returns a pointer into a
         // static buffer, and a static that two sessions on one daemon race for is a
         // name that occasionally belongs to somebody else's terminal.
+        // macOS has no `ptsname_r` in libc; `TIOCPTYGNAME` is what it is built on,
+        // and it fills a caller's 128-byte buffer the same way.
         let mut name = [0 as libc::c_char; 128];
-        if unsafe { libc::ptsname_r(master_fd, name.as_mut_ptr(), name.len()) } != 0 {
+        #[cfg(target_os = "macos")]
+        let rc = unsafe { libc::ioctl(master_fd, libc::TIOCPTYGNAME as _, name.as_mut_ptr()) };
+        #[cfg(not(target_os = "macos"))]
+        let rc = unsafe { libc::ptsname_r(master_fd, name.as_mut_ptr(), name.len()) };
+        if rc != 0 {
             return Err(io::Error::last_os_error());
         }
         let path = unsafe { CStr::from_ptr(name.as_ptr()) };
@@ -354,6 +360,49 @@ impl Pty {
     pub fn into_master(self) -> File {
         self.master
     }
+
+    /// **macOS: a hold on the run's last words**, taken before [`Pty::into_master`].
+    ///
+    /// XNU discards whatever is still unread in a pty the moment its last slave closes,
+    /// where Linux keeps it readable until the master drains it — MEASURED 2026-10-07: a
+    /// child that writes `done` and exits, read after the parent's slave is gone, gives
+    /// `EOF` and nothing, five out of five; with a slave held, `done` every time. So a
+    /// quick command's tail raced the drain thread and could be lost. The guard is a
+    /// second slave handle (and a master one, to count what is pending); the job's waiter
+    /// releases it after the child is reaped, once the drain has emptied the buffer.
+    #[cfg(target_os = "macos")]
+    pub fn tail_guard(&self) -> io::Result<TailGuard> {
+        Ok(TailGuard {
+            slave: self.slave.try_clone()?,
+            master: self.master.try_clone()?,
+        })
+    }
+}
+
+/// See [`Pty::tail_guard`]. Dropping it without [`TailGuard::release`] just closes the
+/// handles, so a waiter that panics cannot leave a slave open for ever.
+#[cfg(target_os = "macos")]
+pub struct TailGuard {
+    slave: File,
+    master: File,
+}
+
+#[cfg(target_os = "macos")]
+impl TailGuard {
+    /// Wait — bounded — until the master has nothing pending (`FIONREAD` is 0, so the
+    /// drain has taken every byte), then let the slave go.
+    pub fn release(self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let mut pending: libc::c_int = 0;
+            let rc = unsafe { libc::ioctl(self.master.as_raw_fd(), libc::FIONREAD, &mut pending) };
+            if rc != 0 || pending == 0 || std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        drop(self.slave);
+    }
 }
 
 impl std::fmt::Debug for Pty {
@@ -398,7 +447,7 @@ pub fn controlling_terminal(cmd: &mut std::process::Command, fd: std::os::fd::Ra
                 // Already a group leader, which a forked child is not — so this is a
                 // failure we do not understand, and the command still runs.
             }
-            let _ = libc::ioctl(fd, libc::TIOCSCTTY, 0);
+            let _ = libc::ioctl(fd, libc::TIOCSCTTY as _, 0);
             Ok(())
         });
     }
@@ -431,6 +480,11 @@ mod tests {
         std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(script)
+            // The shell-behaviour variables a parallel test plants process-wide (see
+            // `host`'s BASH_ENV test) are not this test's subject; macOS's `/bin/sh` is
+            // bash and would trace every line into the capture.
+            .env_remove("SHELLOPTS")
+            .env_remove("BASH_ENV")
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr)
@@ -459,6 +513,7 @@ mod tests {
     fn a_stdio_copy_the_parent_keeps_alive_hides_the_childs_exit() {
         let p = Pty::open().expect("a pty on this box");
         let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.env_remove("SHELLOPTS").env_remove("BASH_ENV");
         cmd.arg("-c")
             .arg("echo done")
             .stdin(Stdio::null())
@@ -526,6 +581,8 @@ mod tests {
         let mut child = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg("test -t 1 && echo yes || echo no")
+            .env_remove("SHELLOPTS")
+            .env_remove("BASH_ENV")
             .stdin(Stdio::null())
             .stdout(p.stdio().unwrap())
             .stderr(p.stdio().unwrap())
@@ -562,6 +619,8 @@ mod tests {
         let piped = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(script)
+            .env_remove("SHELLOPTS")
+            .env_remove("BASH_ENV")
             .stdin(Stdio::null())
             .output()
             .expect("sh starts");
@@ -608,6 +667,9 @@ mod tests {
     /// the job settle. A pty whose parent keeps the slave would leave every operator
     /// command `Running` until its deadline.
     #[test]
+    // macOS discards a pty's unread bytes when its last slave closes, so reading only after
+    // the exit cannot see them there — `Pty::tail_guard` is the mechanism, tested below.
+    #[cfg(not(target_os = "macos"))]
     fn the_master_reports_the_child_leaving_once_the_parents_own_slave_is_dropped() {
         let p = Pty::open().expect("a pty on this box");
         let child = run_on(p.stdio().unwrap(), p.stdio().unwrap(), "echo done");
@@ -619,11 +681,32 @@ mod tests {
         assert_eq!(read_to_close(master), "done\n");
     }
 
+    /// The macOS half of the test above: with the guard held across the exit, a drain that
+    /// starts late still gets every byte, and the master reports the end once it is released.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_tail_guard_keeps_a_quick_commands_output_until_it_is_read() {
+        for _ in 0..20 {
+            let p = Pty::open().expect("a pty on this box");
+            let child = run_on(p.stdio().unwrap(), p.stdio().unwrap(), "echo done");
+            let guard = p.tail_guard().expect("a guard");
+            let master = p.into_master();
+            let mut child = child;
+            let _ = child.wait();
+            // The child is gone and nothing has read yet: the case that lost `done`.
+            let reader = std::thread::spawn(move || read_to_close(master));
+            guard.release();
+            assert_eq!(reader.join().unwrap(), "done\n");
+        }
+    }
+
     /// Spawn `script` with **all three** descriptors on the pty, and with
     /// [`controlling_terminal`] called or not — the two halves of one question.
     fn run_three(pty: &Pty, script: &str, controlling: bool) -> std::process::Child {
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c").arg(script);
+        // As in `run_on`: not this test's subject, and bash would trace into the capture.
+        cmd.env_remove("SHELLOPTS").env_remove("BASH_ENV");
         cmd.stdin(pty.stdio().unwrap())
             .stdout(pty.stdio().unwrap())
             .stderr(pty.stdio().unwrap());
@@ -648,6 +731,7 @@ mod tests {
     /// in the same test so a green run cannot be a `readlink` that answered `same` for
     /// another reason.
     #[test]
+    #[cfg(target_os = "linux")] // the check reads `/proc/self/fd/0` and expects `/dev/pts/N`
     fn the_childs_terminal_is_its_controlling_terminal() {
         const ASK: &str = "exec 9</dev/tty 2>/dev/null || { echo no-ctty; exit 0; }; \
                            a=$(ps -o tty= -p $$ 2>/dev/null); \
@@ -750,6 +834,7 @@ mod tests {
     /// opened in the same test: its slave's name must differ from the first one's. That is
     /// the property the reader depends on, asserted rather than assumed.
     #[test]
+    #[cfg(target_os = "linux")] // the check reads `/proc/self/fd/0` and expects `/dev/pts/N`
     fn the_slave_path_names_the_device_the_child_is_on() {
         let p = Pty::open().expect("a pty on this box");
         let other = Pty::open().expect("a second pty");

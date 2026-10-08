@@ -320,7 +320,10 @@ pub struct Config {
     /// and this is the "must".
     pub auto_compact: bool,
     /// The GGUF the vocabulary is read from. For a split model, the first shard.
-    pub vocab_gguf: PathBuf,
+    ///
+    /// `None` is a daemon for a cloud provider: its ledger uses the byte vocabulary
+    /// (`letibot_tokencore::Vocab::bytes`), and a local model cannot be selected on it.
+    pub vocab_gguf: Option<PathBuf>,
     /// The root every read-only tool is confined to.
     pub workspace: PathBuf,
     pub socket: PathBuf,
@@ -1303,10 +1306,10 @@ impl Config {
             dialect: Dialect::Qwen,
             model: "qwen-3.8-flash-next".into(),
             endpoint: Endpoint::new("127.0.0.1", 8080),
-            vocab_gguf: PathBuf::from(
-                "/home/dead/models/qwen3.8-flash-next/\
-                 Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf",
-            ),
+            // **No default GGUF.** This was the development box's own path, which on any
+            // other machine is a file that is not there; a provider needs none, and a
+            // local model is named by `--vocab` (the launcher always passes one).
+            vocab_gguf: None,
             workspace: workspace.into(),
             socket: letibot_sessionlog::server::default_socket_path(),
             store: None,
@@ -1695,7 +1698,10 @@ impl Config {
         out.push(row("endpoint", self.endpoint.authority(), "--endpoint", ""));
         out.push(row(
             "vocab",
-            self.vocab_gguf.display().to_string(),
+            match &self.vocab_gguf {
+                Some(p) => p.display().to_string(),
+                None => "none — the byte vocabulary, for a cloud provider".to_string(),
+            },
             "--vocab",
             "",
         ));

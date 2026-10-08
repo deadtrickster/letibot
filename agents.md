@@ -23,7 +23,8 @@ Workspace crates, roughly bottom-up:
 | crate | is |
 |---|---|
 | transcript | the item model (user/assistant/tool rows) |
-| tokencore | tokenisers, llama.cpp FFI |
+| tokencore | the vocabulary (a backend trait, plus the byte vocabulary), ledger, token region, store — pure Rust |
+| llama | the GGUF vocabulary backend: llama.cpp FFI, the C shim; the only crate linking llama.cpp, behind harnessd's `local` feature |
 | dialect, dialect-glm, dialect-qwen | prompt templates per model family (jinja in `template/`) |
 | http, provider | model endpoints |
 | websearch, webfetch | tool backends; webfetch is the curl-subprocess reader-mode fetcher |
@@ -100,8 +101,8 @@ Use `letibot_tokencore::apparatus`:
 ```rust
 let Some(_) = letibot_tokencore::apparatus::present_gguf() else { return };
 let Some(_) = letibot_tokencore::apparatus::present(
-    "a cgroup v2 tree",
-    letibot_tools::Cgroup2::probe().is_ok(),
+    "a process-lifetime tree (cgroup v2; process groups on macOS)",
+    letibot_tools::host_tree().is_ok(),
 ) else { return };
 ```
 

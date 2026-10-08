@@ -180,7 +180,7 @@ fn the_dialect_comes_from_what_the_target_says_it_renders() {
     let got = local_switch_decision(
         &letibot_turn::http::Endpoint::new("127.0.0.1", port),
         &model("local.glm", port, None),
-        std::path::Path::new(OWN_GGUF),
+        Some(std::path::Path::new(OWN_GGUF)),
     )
     .expect("other weights with a matching template switch");
     match got {
@@ -206,7 +206,7 @@ fn same_weights_by_basename_switch_the_address_only() {
     let got = local_switch_decision(
         &letibot_turn::http::Endpoint::new("127.0.0.1", port),
         &model("dense78", port, None),
-        std::path::Path::new(OWN_GGUF),
+        Some(std::path::Path::new(OWN_GGUF)),
     )
     .expect("same weights switch");
     assert_eq!(got, LocalSwitch::SameWeights);
@@ -222,7 +222,7 @@ fn same_vocab_asserts_the_weights_and_skips_the_probe() {
     let got = local_switch_decision(
         &letibot_turn::http::Endpoint::new("127.0.0.1", 9),
         &m,
-        std::path::Path::new(OWN_GGUF),
+        Some(std::path::Path::new(OWN_GGUF)),
     )
     .expect("the operator's assertion is an answer");
     assert_eq!(got, LocalSwitch::SameWeights);
@@ -238,7 +238,7 @@ fn a_template_no_dialect_drives_is_refused_by_name() {
     let why = local_switch_decision(
         &letibot_turn::http::Endpoint::new("127.0.0.1", port),
         &model("local.other", port, None),
-        std::path::Path::new(OWN_GGUF),
+        Some(std::path::Path::new(OWN_GGUF)),
     )
     .expect_err("an alien template cannot be driven");
     assert!(
@@ -256,7 +256,7 @@ fn an_asserted_dialect_answers_a_template_nobody_matches() {
     let got = local_switch_decision(
         &letibot_turn::http::Endpoint::new("127.0.0.1", port),
         &model("local.glm", port, Some("glm")),
-        std::path::Path::new(OWN_GGUF),
+        Some(std::path::Path::new(OWN_GGUF)),
     )
     .expect("the assertion is the operator's answer");
     assert!(
@@ -280,7 +280,7 @@ fn an_assertion_that_contradicts_the_served_template_is_refused() {
     let why = local_switch_decision(
         &letibot_turn::http::Endpoint::new("127.0.0.1", port),
         &model("local.glm", port, Some("qwen")),
-        std::path::Path::new(OWN_GGUF),
+        Some(std::path::Path::new(OWN_GGUF)),
     )
     .expect_err("a contradiction is not a switch");
     assert!(
@@ -299,7 +299,7 @@ fn an_unreadable_dialect_assertion_is_refused_with_its_value() {
     let why = local_switch_decision(
         &letibot_turn::http::Endpoint::new("127.0.0.1", port),
         &model("local.glm", port, Some("gpt")),
-        std::path::Path::new(OWN_GGUF),
+        Some(std::path::Path::new(OWN_GGUF)),
     )
     .expect_err("an unknown dialect name is a refusal");
     assert!(
@@ -316,7 +316,7 @@ fn a_target_without_a_template_needs_the_asserted_dialect() {
     let why = local_switch_decision(
         &letibot_turn::http::Endpoint::new("127.0.0.1", port),
         &model("local.glm", port, None),
-        std::path::Path::new(OWN_GGUF),
+        Some(std::path::Path::new(OWN_GGUF)),
     )
     .expect_err("no template and no assertion is not a switch");
     assert!(
@@ -332,12 +332,110 @@ fn a_silent_endpoint_is_refused_by_name() {
     let why = local_switch_decision(
         &letibot_turn::http::Endpoint::new("127.0.0.1", 9),
         &model("dead.port", 9, None),
-        std::path::Path::new(OWN_GGUF),
+        Some(std::path::Path::new(OWN_GGUF)),
     )
     .expect_err("nothing answering is not a switch");
     assert!(
         why.contains("did not answer /props") && why.contains("same_vocab = true"),
         "the refusal names the endpoint's silence and the key that answers it: {why}"
+    );
+}
+
+// --- the byte-vocabulary daemon: `None`, the arm the merge added ----------
+
+/// **A daemon with no vocabulary of its own still switches — to the weights
+/// the target itself reports.** main made the vocabulary optional (a box with
+/// only an API key), and the merge's rule is that NOTHING can be `SameWeights`
+/// there: the target's weights differ from a vocabulary that does not exist.
+/// So the decision is not main's blanket refusal — it is the ordinary
+/// cross-weights switch, with the GGUF taken from the target's own `/props`.
+#[test]
+fn no_vocabulary_of_its_own_switches_to_the_targets_reported_weights() {
+    let port = props_stub(
+        Some("/m/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf"),
+        Some(&glm_template()),
+    );
+    let got = local_switch_decision(
+        &letibot_turn::http::Endpoint::new("127.0.0.1", port),
+        &model("local.glm", port, None),
+        None,
+    )
+    .expect("a byte-vocabulary daemon can still take the switch");
+    match got {
+        LocalSwitch::OtherWeights { dialect, gguf, .. } => {
+            assert_eq!(dialect, Dialect::Glm);
+            assert_eq!(
+                gguf,
+                PathBuf::from("/m/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf"),
+                "the weights are the ones the TARGET reported — there are none here \
+                 to compare against, and none were invented"
+            );
+        }
+        other => panic!("no vocabulary of this daemon's own means no SameWeights: {other:?}"),
+    }
+}
+
+/// **Not even `same_vocab = true` can make weights the same as none** — the
+/// assertion short-circuits only where there is a vocabulary to be the same
+/// as, so the probe still runs and the switch still lands on the target's own
+/// reported weights rather than on the operator's word about weights this
+/// daemon does not have.
+#[test]
+fn same_vocab_cannot_assert_weights_a_byte_daemon_does_not_have() {
+    let mut m = model("local.glm", 0, None);
+    m.profile.unknown.push("same_vocab".to_string());
+    let port = props_stub(
+        Some("/m/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf"),
+        Some(&glm_template()),
+    );
+    m.url = format!("http://127.0.0.1:{port}");
+    let got = local_switch_decision(
+        &letibot_turn::http::Endpoint::new("127.0.0.1", port),
+        &m,
+        None,
+    )
+    .expect("the probe decides, and it has an answer");
+    assert!(
+        matches!(got, LocalSwitch::OtherWeights { .. }),
+        "the assertion cannot be honoured against no vocabulary: {got:?}"
+    );
+}
+
+/// **A refusal under `None` names the GGUF the target reported** — the one
+/// weights this switch could ever have seated. The stub answers a model_path
+/// and a template this tree drives no dialect for, so the refusal fires after
+/// the weights were known; the sentence must carry them.
+#[test]
+fn no_vocabulary_refusals_name_the_targets_reported_gguf() {
+    let alien = "{# a template this tree ships no dialect for #}\n";
+    let port = props_stub(Some("/m/other.gguf"), Some(alien));
+    let why = local_switch_decision(
+        &letibot_turn::http::Endpoint::new("127.0.0.1", port),
+        &model("local.other", port, None),
+        None,
+    )
+    .expect_err("an alien template cannot be driven from any daemon");
+    assert!(
+        why.contains("/m/other.gguf") && why.contains("no vocabulary of its own"),
+        "the refusal says what is true and names the reported GGUF: {why}"
+    );
+}
+
+/// **And a target that names no model at all is refused with both absences** —
+/// no weights here to keep, none reported there to load — rather than with
+/// main's `same_vocab` remedy, which has no vocabulary to assert against.
+#[test]
+fn no_vocabulary_and_no_model_path_names_both_absences() {
+    let port = props_stub(None, Some(&glm_template()));
+    let why = local_switch_decision(
+        &letibot_turn::http::Endpoint::new("127.0.0.1", port),
+        &model("proxy", port, None),
+        None,
+    )
+    .expect_err("neither side can name the weights");
+    assert!(
+        why.contains("named no model_path") && why.contains("no vocabulary of its own"),
+        "{why}"
     );
 }
 
@@ -374,8 +472,13 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.http_retries = 0;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
+    // The daemon's own vocabulary, named as a daemon would name it: main made
+    // `vocab_gguf` optional and `for_this_box` no longer carries this box's
+    // default, so the test states the GGUF its own gate (`present_gguf`, at
+    // each test) checked for — the qwen one the harness must tokenize with.
+    cfg.vocab_gguf = Some(apparatus::gguf_path());
     if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = g.into();
+        cfg.vocab_gguf = Some(g.into());
     }
     cfg
 }
@@ -502,7 +605,7 @@ fn local_glm_from_a_qwen_daemon_switches_weights_dialect_and_comes_back() {
     let mut cfg = config(&path, "switch-live-glm");
     // The daemon's own weights are the qwen ones — the exact session the
     // operator asked to make usable.
-    cfg.vocab_gguf = qwen;
+    cfg.vocab_gguf = Some(qwen);
     let parts = Parts::load(&cfg).expect("the qwen vocabulary must load");
     let hub = Hub::new("switch-live-glm");
     let mut h = Harness::open(&parts, cfg, hub).expect("the session must open");
@@ -617,7 +720,7 @@ fn a_qwen_template_on_other_weights_derives_the_qwen_dialect() {
     let got = local_switch_decision(
         &letibot_turn::http::Endpoint::new("127.0.0.1", port),
         &model("dense78b", port, None),
-        std::path::Path::new(OWN_GGUF),
+        Some(std::path::Path::new(OWN_GGUF)),
     )
     .expect("a qwen template is as derivable as a glm one");
     assert!(

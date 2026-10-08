@@ -46,9 +46,9 @@ use letibot_sessionlog::server::default_socket_path;
 use letibot_sessionlog::{SessionBrief, testing};
 
 use crate::app::App;
+use crate::backend::terminal::Terminal;
 use crate::driver::Link;
-use crate::render::{Budget, RenderConfig};
-use crate::term::Terminal;
+use crate::ui::render::{Budget, RenderConfig};
 
 struct Args {
     socket: std::path::PathBuf,
@@ -339,6 +339,7 @@ fn replay(args: &Args, cfg: RenderConfig) {
             }
         }
         Ok(term) => {
+            app.set_features(term.features());
             // Paced, so the demo shows the streaming behaviour rather than the
             // finished document.
             for env in envelopes {
@@ -348,6 +349,7 @@ fn replay(args: &Args, cfg: RenderConfig) {
                     term.invalidate();
                 }
                 let frame = app.screen(w, h);
+                outside_the_frame(&term, &mut app);
                 term.draw_with_cursor(&frame, app.cursor());
                 for k in term.keys() {
                     if app.key(k).is_some() {
@@ -374,6 +376,7 @@ fn replay(args: &Args, cfg: RenderConfig) {
                     term.invalidate();
                 }
                 let frame = app.screen(w, h);
+                outside_the_frame(&term, &mut app);
                 term.draw_with_cursor(&frame, app.cursor());
                 for k in term.keys() {
                     app.key(k);
@@ -627,9 +630,11 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     )?;
 
     if let Some(t) = &term {
+        app.set_features(t.features());
         app.begin_attach_at(now_ms());
         let (w, h) = t.size();
         let frame = app.screen(w, h);
+        outside_the_frame(t, &mut app);
         t.draw_with_cursor(&frame, app.cursor());
     }
 
@@ -678,6 +683,7 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
                         app.clock(now_ms());
                         let (w, h) = t.size();
                         let frame = app.screen(w, h);
+                        outside_the_frame(t, &mut app);
                         t.draw_with_cursor(&frame, app.cursor());
                         if Instant::now() >= deadline {
                             return Err(format!(
@@ -746,6 +752,9 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
                     term.invalidate();
                 }
                 link.tick(&mut app, size, &keys, &raw, &mut draw);
+                // The window title, after the tick: `draw` holds the terminal while `tick` holds
+                // the app, so it is read here — once a tick, written only when it changed.
+                outside_the_frame(&term, &mut app);
                 // **Getting back is this loop's job, because the socket is this
                 // layer's.** The head knows *that* the link is down and how long it
                 // has been; only here is there a socket path to open and a `Link` to
@@ -887,5 +896,23 @@ mod probe_tests {
         peer.join().unwrap();
         assert_eq!(code, 1, "the launcher must not start a second daemon here");
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// **Everything the head writes to the terminal that is not the frame**: the window title, the
+/// tab's progress bar, a desktop notification, a clipboard copy. Once a tick, after the tick —
+/// the app decides what each should be, and the terminal writes only what changed and only
+/// what it speaks (see `crate::features`).
+fn outside_the_frame(term: &Terminal, app: &mut App) {
+    term.set_title(&app.window_title());
+    term.set_progress(app.progress());
+    if let Some(n) = app.take_notification() {
+        term.notify(&n);
+    }
+    if let Some(text) = app.take_clipboard() {
+        term.copy(&text);
+    }
+    for upload in app.take_image_uploads() {
+        term.write_raw(&upload);
     }
 }

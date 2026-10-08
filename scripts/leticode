@@ -20,6 +20,16 @@
 # rule (2026-09-14): "when i do leticode, --bash must be a default". What it may
 # run without asking is the preapproved list (harnessd's `preapproved`
 # disclosure; ~/.config/letibot/permission.json). `--no-bash` seats no shell.
+# **The name this wrapper was invoked by, for the sentences that hand back a command.**
+#
+# `letibot` execs itself as the daemon launcher, so inside that script `$0` is
+# `letibot` — and a fix line built from it told an operator who ran `leticode --glm` to
+# run `letibot --stop && letibot`, which is a **coder** daemon on the **default** model:
+# a different seat and a different model than the two words they typed. MEASURED
+# 2026-10-07. Nothing else in that script can know which wrapper was used, because the
+# role travels as an environment variable and the flag is consumed before it could be
+# read back.
+export LETIBOT_INVOKED_AS=leticode
 export LETIBOT_ROLE=leticode
 : "${LETIBOT_BASH:=1}"
 export LETIBOT_BASH

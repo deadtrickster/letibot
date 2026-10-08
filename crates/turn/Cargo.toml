@@ -27,5 +27,6 @@ default = []
 glm = ["dep:letibot-dialect-glm"]
 
 [dev-dependencies]
+letibot-llama.workspace = true
 letibot-turn = { path = ".", features = ["glm"] }
 letibot-dialect-glm.workspace = true
