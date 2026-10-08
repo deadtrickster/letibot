@@ -110,9 +110,14 @@ fn config() -> Option<Config> {
         let (h, p) = url.rsplit_once(':').expect("HOST:PORT");
         cfg.endpoint = Endpoint::new(h, p.parse().expect("port"));
     }
-    if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = Some(g.into());
-    }
+    // `Config::for_this_box` carries no vocabulary default any more (a daemon on
+    // the byte vocabulary needs none), so a harness built here is handed one: the
+    // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
+    // same path this file's `present_gguf` gate consults.
+    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(letibot_tokencore::apparatus::present_gguf);
     // **The dialect follows the model, and that is what makes the escape hatch
     // work.** `serving::expect`'s panic tells an operator whose box serves another
     // model to point these tests elsewhere with LETIBOT_COMPLETION_URL,
@@ -351,13 +356,13 @@ fn a_head_prompts_over_the_socket_and_sees_the_turn() {
     let pump_thread = std::thread::spawn(move || pump(reader, tx));
 
     // The **head** goes on the other thread and the worker stays here, which is the
-    // opposite of `harnessd`'s arrangement. Not a preference: `ToolRuntime` holds a
-    // `Box<dyn Gate>`, and `Gate` — alone among `Tool`, `ExecBackend`, `InlineBudget`
-    // and `SpillStore` — is declared without `Send + Sync`, so a `Harness` cannot be
-    // moved onto a thread at all. The daemon does not care today (its worker runs on
-    // the main thread), and §13.2's multi-head daemon will. Recorded here rather than
-    // fixed, because `Gate` is the seam W11 is supposed to absorb and constraining it
-    // from a test is not this strand's call.
+    // opposite of `harnessd`'s arrangement. Not a preference: this test predates the
+    // change that made `ToolRuntime`'s gate shareable (`Mutex<Box<dyn Gate>>`, commit
+    // 229555b) — before it, `Gate` alone among `Tool`, `ExecBackend`, `InlineBudget`
+    // and `SpillStore` was declared without `Send + Sync`, so a `Harness` could not be
+    // moved onto a thread at all. It can now (the bangrun threads hold an `Arc` of the
+    // runtime), and this arrangement is simply the shape that lets the worker own the
+    // harness while a head pumps its own socket.
     let registry_for_head = registry.clone();
     let head = std::thread::spawn(move || {
         client

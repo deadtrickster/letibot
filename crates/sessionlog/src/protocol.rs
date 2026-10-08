@@ -451,11 +451,12 @@ use crate::view::Snapshot;
 /// # Why the answer is a frame and not a command
 ///
 /// Both are the [`ClientFrame::Secret`]/[`ClientFrame::TermInput`] rule, for the sharpest
-/// version of the reason those two give: **the session worker is BLOCKED inside the very
-/// command that is asking.** `run_operator_shell` calls `invoke_operator`, which waits on
-/// the job — so an answer queued behind that turn would be drained by the thread waiting
-/// for it, which is never. The answer is delivered on the socket reader's thread, the way
-/// every other in-flight half is, and the daemon writes it into the pipe.
+/// version of the reason those two give: **the thread that waits on the job can never drain a
+/// queue.** The run's own thread is inside `invoke_operator`'s wait — a `!` run has had a
+/// thread of its own since this path stopped holding the daemon's worker — and the worker,
+/// which serves every session, may be inside another session's turn anyway. An answer queued
+/// behind either would be drained by neither; it is delivered on the socket reader's thread,
+/// the way every other in-flight half is, and the daemon writes it into the pipe.
 ///
 /// **And a password still does not travel here.** [`ClientFrame::PromptAnswer`] carries a
 /// line and [`ClientFrame::Secret`] carries a secret, and the two are separate variants on

@@ -109,7 +109,7 @@ fn an_answer_to_a_card_reaches_the_runs_stdin_addressed_to_the_card() {
         .expect("the answer is written");
 
     // The driver got the line, with the request id — and NOTHING was queued: this frame is
-    // never a command, because the worker is blocked inside the very command that asked.
+    // never a command, because the run's own thread is blocked inside the very command that asked.
     let sent = wait_for_sent(&driver, 1);
     assert_eq!(
         sent,

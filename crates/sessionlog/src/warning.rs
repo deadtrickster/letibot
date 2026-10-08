@@ -170,7 +170,9 @@ pub const TABLE: &[(&str, Class)] = &[
     // **The daemon cannot tell whether the operator's own run is waiting for a line.** One of
     // its processes belongs to another user — `! sudo apt install mc`, where `apt` waits at
     // `Continue? [Y/n]` as root and `/proc/<pid>/fd/0` is `EACCES` for the daemon — so no card
-    // can be raised and the run holds the worker until its deadline. A **Failure** by the rule
+    // can be raised and nothing says the command is waiting. (In the days when a `!` run held
+    // the daemon's one worker, it held it until its deadline; the run has a thread of its own
+    // now, and this sentence is still the only word about it.) A **Failure** by the rule
     // above and not a routine note: it is a check that did not happen, and the sentence's whole
     // job is *look at this* — the way in is `!send`. Deleting it puts the operator back in front
     // of a command that says nothing and never ends, which is the report it was written for.

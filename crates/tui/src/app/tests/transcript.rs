@@ -1493,7 +1493,8 @@ fn the_sentence_for_a_run_the_daemon_may_not_look_at_is_drawn() {
                         another user, so `/proc` refuses for it. If it is waiting — `sudo` \
                         reaching `apt`'s `Continue? [Y/n]` is the case this was measured on — \
                         the way in is `!send <line>`, which needs no card. Until the command ends \
-                        it holds this daemon's worker, so nothing else of yours runs either.";
+                        it keeps a thread of its own; the rest of the daemon runs on, and another \
+                        `!` line of yours waits for this one rather than overlapping it.";
     let mut a = App::new(plain_cfg(120));
     a.apply(ServerFrame::Event(env(
         1,

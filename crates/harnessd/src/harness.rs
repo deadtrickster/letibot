@@ -1210,7 +1210,15 @@ pub struct Harness {
     mode_source: String,
     engine: TurnEngine,
     session: Session,
-    runtime: ToolRuntime,
+    /// **Shared, because the operator's run does not run on this harness's thread.**
+    ///
+    /// A `!` line is handed to a thread of its own (see `crate::bangrun`) and that thread
+    /// invokes through THIS runtime — one exec host per session is a fact (`job_list`, a
+    /// promotion, the run ender at shutdown all name jobs in it), so a second runtime would
+    /// be a second list of the same jobs. Everything the runtime holds is either read-only
+    /// after open or synchronised; the gate, the one field that mutates in place, sits
+    /// behind its own mutex for exactly this reason — see `ToolRuntime::gate`.
+    runtime: std::sync::Arc<ToolRuntime>,
     hub: Arc<Hub>,
     store: Option<Store>,
     /// **The corpus sink, kept beside the gate's own copy** — R24 part two, decision 2.
@@ -1269,6 +1277,15 @@ pub struct Harness {
     /// has run. The `call_id` of each is `bang-<n>`, minted here because — unlike the
     /// door — no head chooses one: the head sends the line and the daemon owns the run.
     bang_seq: u64,
+
+    /// **The worker's serialization state for this session's operator runs** — whether
+    /// one is in flight on its own thread, and the lines parked behind it. Attached by
+    /// `Sessions` at open ([`Self::set_bang_state`]) as a clone of the same `Arc` the
+    /// dispatch arm reads, so the round boundary's pickup (`apply_queued_head_run`)
+    /// and the worker's settle arm answer ONE question — *is a run going?* — from one
+    /// place. `None` only in a harness no `Sessions` built (the tests that drive one
+    /// directly), where the pickup keeps its old synchronous timing.
+    bang: Option<std::sync::Arc<crate::bangrun::State>>,
 
     /// Who said what, so the gate's adjudicator can see what authorised an action.
     /// Fed at every append, because the provenance is only knowable there.
@@ -2929,8 +2946,8 @@ impl Harness {
             // here because **this is the half that has the pipe**: the exec host was built
             // a few lines above, and the write end of the operator's stdin came out of the
             // job the tool spawned. The server's reader thread is the half that needs it,
-            // and it cannot ask the worker — the worker is blocked inside the very command
-            // that is asking.
+            // and it cannot ask the run — the run's own thread (see `crate::bangrun`) is
+            // blocked inside the very command that is asking.
             //
             // Keyed by session: a pipe belongs to one session's run, and a `!send` in one
             // session must never write into another's command.
@@ -3521,7 +3538,7 @@ impl Harness {
             cfg,
             engine,
             session,
-            runtime,
+            runtime: std::sync::Arc::new(runtime),
             hub,
             store,
             corpus: corpus_sink,
@@ -3538,6 +3555,9 @@ impl Harness {
             open_notes: notes,
             new_title: None,
             bang_seq: 0,
+            // Attached by `Sessions` right after open — see the field. `None` until
+            // then is unreachable in a daemon, and harmless in a bare-harness test.
+            bang: None,
             trail,
             todos: todo_board,
             todos_version: 0,
@@ -3925,7 +3945,44 @@ impl Harness {
     /// vocabulary for *a person ran this call* and the row every head already draws with the
     /// tool-output treatment. The output is NOT speech: it is a program's bytes, reported, and
     /// giving it a `Speaker` would be pretending a shell spoke.
+    ///
+    /// # Why this synchronous composition still exists beside the split one
+    ///
+    /// [`Sessions::dispatch`] hands a between-turns `!` line to its own thread (see
+    /// `crate::bangrun`) — a run that held the worker held every other session's work with it.
+    /// Two paths still run the whole thing HERE, on the calling thread, and both are deliberate:
+    /// the round boundary's pickup (`apply_queued_head_run`), whose whole point is that a turn
+    /// already running reads the rows at its next round; and every caller that has no worker to
+    /// hand back to — `letibot-m1`, and the tests that drive a harness directly. The pieces are
+    /// shared with the split path ([`Self::prepare_operator_shell`],
+    /// [`Self::settle_operator_shell`]), so there is one minting of the call id, one note, one
+    /// row shape, whichever thread runs them.
     pub fn run_operator_shell(&mut self, line: &str, who: &str) -> Result<(), String> {
+        let (call_id, call) = self.prepare_operator_shell(line)?;
+        // The runtime's own events go to a null sink, exactly as the door's do: the
+        // transcript row is the durable record and every head draws *it*. What the
+        // tool emits here is a `ToolStarted`/`ToolProgress` pair for a call no head
+        // proposed — and for a command the operator is watching the composer over.
+        let mut quiet = letibot_tools::events::NullToolSink;
+        // `turn_id` empty on purpose, as the door's runs are: this call belongs to no
+        // turn, and a head that saw a turn id would draw the row inside a turn that
+        // did not propose it.
+        let result = self.runtime.invoke_operator("", &call, &mut quiet);
+        // The pieces, not the type: [`Self::settle_operator_shell`] takes what the split
+        // path carries over the hub, and this path hands it the same shape.
+        let spill = result.spill.as_ref().map(|s| (s.full_bytes, s.hash.clone()));
+        let outcome = result.outcome.clone();
+        self.settle_operator_shell(line, who, &call_id, outcome, result.render(), spill)
+    }
+
+    /// **Mint the operator's own call: the `bang-<n>` id and the `bash` call it names.**
+    ///
+    /// The half of [`Self::run_operator_shell`] that needs the harness — the sequence counter
+    /// (`bang_seq`) is this session's, so the id is minted HERE, on the worker, before the run
+    /// is handed anywhere. What comes back is everything a thread that is not this one needs to
+    /// run the command: a [`ToolCall`] whose payload is the line minus its bang, already
+    /// validated by [`letibot_sessionlog::operator_shell_command`].
+    pub fn prepare_operator_shell(&mut self, line: &str) -> Result<(String, ToolCall), String> {
         let command = letibot_sessionlog::operator_shell_command(line)
             .ok_or_else(|| format!("`{line}` is not a `!` command — nothing was run"))?
             .to_string();
@@ -3936,25 +3993,48 @@ impl Harness {
             name: "bash".to_string(),
             arguments: serde_json::json!({ "command": command }).to_string(),
         };
-        // The runtime's own events go to a null sink, exactly as the door's do: the
-        // transcript row is the durable record and every head draws *it*. What the
-        // tool emits here is a `ToolStarted`/`ToolProgress` pair for a call no head
-        // proposed — and for a command the operator is watching the composer over.
-        let mut quiet = letibot_tools::events::NullToolSink;
-        // `turn_id` empty on purpose, as the door's runs are: this call belongs to no
-        // turn, and a head that saw a turn id would draw the row inside a turn that
-        // did not propose it.
-        let result = self.runtime.invoke_operator("", &call, &mut quiet);
-        let payload = result.render();
+        Ok((call_id, call))
+    }
+
+    /// **Append what the operator's run produced: the note and the two rows, one append.**
+    ///
+    /// The half of [`Self::run_operator_shell`] that needs the harness again after the run —
+    /// which is why it runs on the worker even when the run did not: the transcript has one
+    /// writer, and this is it. Everything here is byte-for-byte what the synchronous path
+    /// always did, in the same order: the size note first (so the disclosure is on the log
+    /// before the rows that carry the bytes), then the `User` row with the typed line verbatim,
+    /// then the `bash` `ToolResult` with `origin: CallOrigin::Operator`.
+    ///
+    /// It takes the run's pieces rather than a [`letibot_tools::ToolResult`] because the
+    /// split path's result crosses a thread as [`CommandKind::OperatorShellResult`] —
+    /// already rendered and already carrying its spill numbers, so the worker never needs
+    /// the type back. The synchronous path renders at its own call site; both arrive here
+    /// identical.
+    pub fn settle_operator_shell(
+        &mut self,
+        line: &str,
+        who: &str,
+        call_id: &str,
+        outcome: letibot_transcript::ToolOutcome,
+        payload: String,
+        spill: Option<(usize, String)>,
+    ) -> Result<(), String> {
+        // The command as the note names it: the line minus its bang, by the same validator
+        // the frame and [`Self::prepare_operator_shell`] used. The `None` arm is not a
+        // silent default — it is the caller's own claim carried through: a line settled
+        // without a bang was still run as written, and the note says so rather than
+        // inventing a command nobody typed.
+        let command = letibot_sessionlog::operator_shell_command(line)
+            .map(str::to_string)
+            .unwrap_or_else(|| line.to_string());
         // **What the model will read** — the same disclosure the door's note makes,
         // for the same reason: the price is on the screen while the operator can still
         // do something about it, rather than at the next compaction.
         let read = payload.len();
-        let spilled = match &result.spill {
-            Some(s) => format!(
-                "; {} byte(s) were produced and the rest went to the spill store \
-                 (`read_spill hash={}`)",
-                s.full_bytes, s.hash
+        let spilled = match &spill {
+            Some((full_bytes, hash)) => format!(
+                "; {full_bytes} byte(s) were produced and the rest went to the spill store \
+                 (`read_spill hash={hash}`)"
             ),
             None => String::new(),
         };
@@ -3976,9 +4056,9 @@ impl Harness {
                 }],
             },
             TranscriptItem::ToolResult {
-                call_id,
+                call_id: call_id.to_string(),
                 name: "bash".to_string(),
-                outcome: result.outcome.clone(),
+                outcome,
                 payload,
                 edit: None,
                 origin: Some(letibot_transcript::CallOrigin::Operator {
@@ -3988,6 +4068,39 @@ impl Harness {
             },
         ];
         self.append_imported(&rows).map_err(|e| e.to_string())
+    }
+
+    /// **The runtime as a shareable handle**, for the thread that runs the operator's
+    /// command. One exec host per session is a fact — `job_list`, a promotion and the
+    /// run ender at shutdown all name jobs in this one — so the run goes through THIS
+    /// runtime rather than a second one, and the clone is the whole of the handover.
+    pub fn runtime_handle(&self) -> std::sync::Arc<ToolRuntime> {
+        self.runtime.clone()
+    }
+
+    /// **Attach the worker's serialization state** — the same `Arc` the dispatch arm
+    /// holds, so both places that could start an operator run read one fact. Called by
+    /// `Sessions` at open, once per harness; a second call would replace the state and
+    /// orphan any run in flight, which is why it is a setter rather than an argument:
+    /// the harness can be built before the map that owns the state exists.
+    pub fn set_bang_state(&mut self, state: std::sync::Arc<crate::bangrun::State>) {
+        self.bang = Some(state);
+    }
+
+    /// Whether an operator run for this session is in flight on its own thread. The
+    /// mid-turn pickup's question; `false` when no state was attached, which keeps the
+    /// bare-harness callers on the synchronous path they always had.
+    fn bang_in_flight(&self) -> bool {
+        self.bang.as_ref().is_some_and(|s| s.in_flight())
+    }
+
+    /// Park a `!` line typed mid-turn while a run is in flight: it starts when that
+    /// run settles, on the worker, between turns. Only called when [`Self::bang_in_flight`]
+    /// answered true, so the state is there to park into.
+    fn park_bang_line(&self, line: String, who: String) {
+        if let Some(s) = &self.bang {
+            s.queue(line, who);
+        }
     }
 
     /// **The turn the operator's own `!` line starts** — the sending half.
@@ -4229,7 +4342,18 @@ impl Harness {
     /// Whether the guard model currently gets a turn. Read off the gate, never off
     /// the config that asked for it.
     pub fn supervising(&self) -> bool {
-        self.runtime.gate.supervising()
+        self.gate().supervising()
+    }
+
+    /// The gate, locked. See `ToolRuntime::gate` for why it is behind one: the runtime
+    /// is shared with the operator's run thread, and the gate is the one field that
+    /// mutates in place. Held across a decision by the caller that makes one; these
+    /// reads and moves are momentary.
+    fn gate(&self) -> std::sync::MutexGuard<'_, Box<dyn letibot_tools::Gate>> {
+        self.runtime
+            .gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// Point this session's guard at `endpoint`, build it and attach it.
@@ -4395,8 +4519,7 @@ impl Harness {
         self.cfg.oracle = Some(endpoint.clone());
         let advisor = model_adjudicator(&self.cfg, "`/supervise`", Some(self.hub.clone()))
             .map_err(|e| e.to_string())?;
-        self.runtime
-            .gate
+        self.gate()
             .attach_advisor(std::sync::Arc::from(advisor))?;
         Ok(format!(
             "guard model at {} for this session. To make it the default, put it in \
@@ -4474,7 +4597,7 @@ impl Harness {
                         unconfined `allow-all` cannot be confirmed against it"
                 .into());
         }
-        let dropped = self.runtime.gate.set_mode(mode)?;
+        let dropped = self.gate().set_mode(mode)?;
         let mut said = format!("this session is at `{}` from the next call", mode.name);
         if vouched {
             // Said here rather than only in the confirmation the head showed: the
@@ -4496,7 +4619,7 @@ impl Harness {
                 self.cfg.mode.name
             ));
         }
-        if mode.decider == letibot_tools::mode::Decider::Model && !self.runtime.gate.supervising() {
+        if mode.decider == letibot_tools::mode::Decider::Model && !self.gate().supervising() {
             // The check above holds an oracle to be present at this point, so an
             // error here is a real one and not the ordinary "no `--oracle`".
             self.set_supervision(true)?;
@@ -4508,7 +4631,10 @@ impl Harness {
         // this session no longer holds. See `HarnessTaskRunner::point`.
         *self.point_cell.lock().unwrap_or_else(|e| e.into_inner()) = mode;
         self.mode_source = "/mode, this session".into();
-        self.wiring.adjudicator = self.runtime.gate.describe();
+        // Bound first: the guard is held while `describe` runs, and the assignment
+        // writes a field of the same struct the guard borrows through.
+        let adjudicator = self.gate().describe();
+        self.wiring.adjudicator = adjudicator;
         self.publish_settings();
         Ok(said)
     }
@@ -4521,7 +4647,7 @@ impl Harness {
             &self.cfg.session_id,
             self.cfg.settings(
                 &self.mode_source,
-                self.runtime.gate.supervising(),
+                self.gate().supervising(),
                 &self.door_tools(),
             ),
         );
@@ -4573,7 +4699,7 @@ impl Harness {
         // `--oracle` is the ordinary case, not the exceptional one: nobody types
         // daemon flags. If an address is known from anywhere, use it rather than
         // refusing and sending the operator to restart a daemon.
-        if on && !self.runtime.gate.supervising() {
+        if on && !self.gate().supervising() {
             let known = self.cfg.oracle.clone().or_else(|| {
                 letibot_provider::gatekeeper(None)
                     .endpoint
@@ -4584,11 +4710,12 @@ impl Harness {
                 self.attach_oracle(ep)?;
             }
         }
-        let said = self.runtime.gate.set_supervision(on)?;
+        let said = self.gate().set_supervision(on)?;
         // The banner is read after this, and a disclosure that still said
         // `--adjudicator head` about a supervised session would be the constant-banner
         // defect `GateWiring` exists to prevent.
-        self.wiring.adjudicator = self.runtime.gate.describe();
+        let adjudicator = self.gate().describe();
+        self.wiring.adjudicator = adjudicator;
         self.publish_settings();
         Ok(said)
     }
@@ -7954,8 +8081,21 @@ impl Harness {
             // not a door call and has no admission to note, so the two kinds are
             // separated before the door's own bookkeeping starts rather than
             // threaded through it with an `if`.
+            //
+            // **Unless a run of its own kind is already in flight.** One operator run
+            // per session is the rule (one input handle; see `crate::bangrun`), and a
+            // line typed mid-turn while a between-turns run waits on its thread would
+            // overlap it if this ran it here. It parks instead — worker-owned state,
+            // drained by the settle arm when the in-flight run hands back — and the
+            // turn goes on, which is what the operator watching both wanted: neither
+            // their command nor the turn is lost, and neither runs on top of the
+            // other. When NOTHING is in flight this keeps its old timing exactly.
             if let CommandKind::OperatorShell { line, who } = &cmd.kind {
                 let (line, who) = (line.clone(), who.clone());
+                if self.bang_in_flight() {
+                    self.park_bang_line(line, who);
+                    continue;
+                }
                 if let Err(e) = self.run_operator_shell(&line, &who) {
                     // Said, not swallowed: the run had no caller to answer, so the
                     // log is the only place the failure can land (the door's arm

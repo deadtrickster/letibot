@@ -50,9 +50,14 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.http_retries = 0;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
-    if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = Some(g.into());
-    }
+    // `Config::for_this_box` carries no vocabulary default any more (a daemon on
+    // the byte vocabulary needs none), so a harness built here is handed one: the
+    // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
+    // same path this file's `present_gguf` gate consults.
+    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(letibot_tokencore::apparatus::present_gguf);
     cfg
 }
 
@@ -202,9 +207,14 @@ fn a_session_without_a_store_refuses_to_fork_by_name() {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = WANTED;
     cfg.store = None;
-    if let Ok(g) = std::env::var("LETIBOT_VOCAB_GGUF") {
-        cfg.vocab_gguf = Some(g.into());
-    }
+    // `Config::for_this_box` carries no vocabulary default any more (a daemon on
+    // the byte vocabulary needs none), so a harness built here is handed one: the
+    // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
+    // same path this file's `present_gguf` gate consults.
+    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(letibot_tokencore::apparatus::present_gguf);
     cfg.session_id = "compact-no-store".into();
     let parts = load_parts(&cfg);
     let mut h = opened(&cfg, &parts);

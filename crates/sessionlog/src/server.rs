@@ -685,10 +685,12 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             }
             // **The operator answered a command that asked them something.**
             //
-            // Off the queue, and this is the sharpest case of it in the file: the session
-            // worker is **blocked inside the very command that is asking** (`run_operator_shell`
-            // is waiting on the job), so a line queued behind that turn would be drained by the
-            // thread waiting for it — which is never. See `PROTOCOL_VERSION` 33.
+            // Off the queue, and this is the sharpest case of it in the file: the run's own
+            // thread is **blocked inside the very command that is asking** (it waits on the
+            // job; a `!` run has had a thread of its own since this path stopped holding the
+            // daemon's worker), and the worker — which serves every session — may be inside
+            // another session's turn. A line queued behind either would be drained by neither.
+            // See `PROTOCOL_VERSION` 33.
             Ok(ClientFrame::PromptAnswer { req_id, line }) => {
                 let session = seat.hub.session_id().to_string();
                 match registry.prompt(&session) {
@@ -1510,7 +1512,8 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
             }) => {
                 // Two halves: the flag the `bash` wait loop honours mid-turn, and the
                 // queued command that announces the between-turns case. The flag has
-                // to be set here — the worker is blocked inside the wait it would
+                // to be set here — the waiter (a turn's bash wait, or the operator's
+                // own run on its thread) is blocked inside the wait it would
                 // otherwise be asked to deliver this to.
                 seat.hub.request_promote_from(&seat.head_id);
                 let f = seat.hub.submit(

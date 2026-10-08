@@ -99,8 +99,9 @@ impl App {
         //
         // **The frame is published before the process ends, and by a thread that is not the
         // one being waited for.** `registry.close()` runs on the connection thread the
-        // instant the `Stop` is taken; the **worker** that is running the operator's command
-        // is a different thread, is inside that command, and has not ended. Measured on a
+        // instant the `Stop` is taken; the run's own thread is inside that command and has
+        // not ended (`agent/run-off-worker`: it used to be the WORKER that was in there).
+        // Measured on a
         // live daemon, 2026-10-06: `Bye` at 519 µs, the process still in `/proc`, and it
         // stayed there for the rest of the run. So the `Bye` is evidence that the request
         // was **read**, which is a real and useful fact — and it is not evidence about the

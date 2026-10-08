@@ -44,7 +44,7 @@ use letibot_sessionlog::protocol::{Caps, ServerFrame};
 /// How long a live daemon may take to start, open a session and reach its worker.
 const PATIENCE: Duration = Duration::from_secs(90);
 
-/// **How long a stop may take when a run holds the worker.**
+/// **How long a stop may take while the operator's run is in flight.**
 ///
 /// Far below the run's own deadline — which is the whole point, since *it stopped when the
 /// command's two minutes expired* is the state this exists to remove — and far above the
@@ -95,6 +95,18 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));
+    // **A real daemon needs a vocabulary, and `--vocab` is how it is handed one.** Main made
+    // that optional — a daemon on the byte vocabulary needs none — and this test's daemon is
+    // a local-model one, so it exited with `no vocabulary` until this line existed. The
+    // question is the same one the test's own `present_gguf` gate asks, so it is asked the
+    // same way: the operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF.
+    if let Some(gguf) = std::env::var("LETIBOT_VOCAB_GGUF")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(letibot_tokencore::apparatus::present_gguf)
+    {
+        cmd.arg("--vocab").arg(gguf);
+    }
     cmd.spawn().expect("harnessd starts")
 }
 
