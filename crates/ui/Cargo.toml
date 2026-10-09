@@ -49,7 +49,7 @@ repository.workspace = true
 # keeps deleting. Used through `crate::text`, which is the forward.
 
 [dependencies]
-rano = { git = "https://github.com/deadtrickster/rano", tag = "v0.8.0" }
+rano = { git = "https://github.com/deadtrickster/rano", tag = "v0.8.1" }
 letibot-transcript.workspace = true
 # **The third edge, and it is the same argument as the first two.**
 #
