@@ -45,7 +45,7 @@ impl App {
                     role: s.role.clone(),
                     model: s.model.clone(),
                     generating: s.generating,
-                    answer: s.answer.clone(),
+                    answer: s.answer.as_deref().map(one_plain_line),
                 })
                 .collect(),
             finished_open: self.subagents_finished_open,

@@ -51,7 +51,6 @@ impl App {
             laid: None,
             room: 0,
         });
-        self.redraw = true;
     }
 
     /// **The popup's rows at `width`**: the whole file as a diff against itself before the
@@ -140,7 +139,11 @@ impl App {
             // land in the composer underneath, unseen.
             _ => {}
         }
-        self.redraw = true;
+        // **No `self.redraw`.** That flag is a full repaint — `ESC[2J` and every row again — and
+        // the frame is built and diffed on every tick anyway, so a scroll costs exactly the rows
+        // it moved. Setting it here erased the whole screen on every wheel notch: the operator,
+        // 2026-10-09, *"if i scroll here back and forth very fast, the very bottom keymap starts
+        // to flicker"*.
         ControlFlow::Break(None)
     }
 }

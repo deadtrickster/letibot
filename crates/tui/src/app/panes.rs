@@ -2,6 +2,7 @@
 //! folding the tree, and a job's output paged.
 
 use super::*;
+use letibot_sessionlog::StoredEnd;
 use letibot_sessionlog::registry::short_id;
 
 impl App {
@@ -195,13 +196,17 @@ impl App {
                 None => rows.push(SubagentState {
                     session_id: b.session_id.clone(),
                     // **Only what the daemon actually said.** `running` is the list's own
-                    // "a turn is generating in this session at this instant"; anything
-                    // else is a state nobody has told this head, and an empty word draws
-                    // as unknown rather than as `done`.
-                    state: if b.status.running {
-                        "running".into()
-                    } else {
-                        String::new()
+                    // "a turn is generating in this session at this instant"; past that, the
+                    // stored conversation's last row (`stored_end`): an answer is a child
+                    // that finished, and a turn cut off in a session the daemon no longer
+                    // holds is one that stopped. Anything else — a live child between
+                    // rounds, parked on its own job — is a state nobody has told this head,
+                    // and an empty word draws as unknown rather than as `done`.
+                    state: match (&b.stored_end, b.status.running, b.live) {
+                        (_, true, _) => "running".into(),
+                        (Some(StoredEnd::Answered { .. }), false, _) => "done".into(),
+                        (Some(StoredEnd::MidTurn), false, false) => "stopped mid-turn".into(),
+                        _ => String::new(),
                     },
                     generating: b.status.running,
                     prompt: String::new(),
@@ -217,7 +222,12 @@ impl App {
                     },
                     role: String::new(),
                     model: b.status.model.clone(),
-                    answer: None,
+                    answer: match &b.stored_end {
+                        Some(StoredEnd::Answered { first_line }) if !b.status.running => {
+                            Some(first_line.clone())
+                        }
+                        _ => None,
+                    },
                     spawned_ms: b.created_ms,
                 }),
             }

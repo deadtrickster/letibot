@@ -449,6 +449,14 @@ impl App {
         if self.editor_focused() {
             self.cursor = self.edit_pane.as_ref().and_then(|p| p.caret);
         }
+        // **And while the diff popup is open there is none.** The keys are the popup's, so a
+        // caret in the composer marks a field nobody is typing in — and it is a VISIBLE cursor
+        // the terminal moves through every row a scroll rewrites: the operator, 2026-10-09,
+        // *"my green caret starts to appear literally everywhere, including prompt box
+        // borders"*. Hidden, the frame is rows and nothing walks across them.
+        if self.diff_popup.is_some() && self.term.is_none() {
+            self.cursor = None;
+        }
         // **The gutter and the trim, in ONE pass and in place.**
         //
         // This was `out.into_iter().map(…).collect()`, and it cost two allocations per line per
