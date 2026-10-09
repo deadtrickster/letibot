@@ -581,6 +581,96 @@ impl App {
         self.link.is_down()
     }
 
+    /// **Is this head holding everything it would send — the daemon speaks an OLDER protocol
+    /// and nobody has said "attach anyway" for it?**
+    ///
+    /// The daemon (since the acceptance change) seats whatever version arrives and states its
+    /// own in the `Hello`, so *"connect, look around and make informed decision"* lands here:
+    /// the connection is up, the conversation is readable and scrollable, and the one thing the
+    /// head withholds is its own writes. **"Look around" is the default; "decide" is a key** —
+    /// [`App::attach_anyway`], the `ctrl-^` chord spelled on the resident line and in every
+    /// refusal.
+    ///
+    /// # Why OLDER is the locked direction and NEWER is not
+    ///
+    /// The asymmetry is [`letibot_sessionlog::protocol_skew`]'s, and it is the load-bearing
+    /// part: a NEWER daemon's unknown frames are a *reading* problem this head already survives
+    /// (`App::unreadable` counts them, the line is kept, nothing is lost but what the frame
+    /// said), so there is nothing to withhold. An OLDER daemon is a *writing* problem — the
+    /// first `ClientFrame` it has no arm for fails its deserialiser, and its read loop answers
+    /// with a `Bye` and closes the socket. **A head that sent as usual would be spending the
+    /// session on the first command the two do not share**, which is exactly the quiet-until-fatal
+    /// case the sentence exists for. Holding sends is what makes the attach safe by default;
+    /// the override is the person's, spelled and deliberate.
+    ///
+    /// The comparison is against [`App::daemon_seat`], not a boolean — see
+    /// [`App::skew_override_for`] for why an override belongs to the daemon it was given on.
+    pub(crate) fn skew_locked(&self) -> bool {
+        self.daemon_protocol
+            .is_some_and(|d| d < letibot_sessionlog::protocol::PROTOCOL_VERSION)
+            && self
+                .daemon_seat
+                .is_some_and(|seat| self.skew_override_for != Some(seat))
+    }
+
+    /// [`letibot_sessionlog::protocol_skew`]'s sentence for the daemon this head is seated
+    /// with — the informed sentence, verbatim, or `None` when the builds match. Every refusal
+    /// and the resident line draw from here so the argument cannot be said two ways.
+    pub(crate) fn skew_sentence(&self) -> Option<String> {
+        self.daemon_protocol.and_then(|d| {
+            letibot_sessionlog::protocol_skew(d, letibot_sessionlog::protocol::PROTOCOL_VERSION)
+        })
+    }
+
+    /// **`ctrl-^` — "attach anyway, I know what this is."** The other half of the ruling: a
+    /// head that only knew how to refuse would have kept the closed door and moved it one
+    /// screen down.
+    ///
+    /// **Nothing is re-sent.** The override does not reach back for whatever was refused while
+    /// locked — a refused line was held in the composer, not queued, and re-sending a person's
+    /// words after they have moved on is an act nobody asked for. What it does send are the
+    /// reads the seating itself owes ([`App::refetch_session_facts`] and the `TermStatus` ask),
+    /// which the lock skipped on arrival: those are the head's own obligations, not the
+    /// operator's, and lifting the lock is the moment they come due.
+    ///
+    /// **Silent when nothing is locked**, by the rule a chord is only named where it acts: the
+    /// chord is spelled on the lock line and in the refusals, never in the hint bar, so a
+    /// press that finds no lock has no promise to keep.
+    pub(crate) fn attach_anyway(&mut self) {
+        if !self.skew_locked() {
+            return;
+        }
+        self.skew_override_for = self.daemon_seat;
+        self.queued.push(Action::TermStatus);
+        self.refetch_session_facts();
+        let older = self
+            .daemon_protocol
+            .unwrap_or(letibot_sessionlog::protocol::PROTOCOL_VERSION);
+        self.say(&format!(
+            "attached anyway — this head now sends to a daemon speaking protocol {older} \n             against its own {}. The first frame the two do not share still ends the \
+             connection, with a `Bye` naming both builds; restarting the daemon is the fix.",
+            letibot_sessionlog::protocol::PROTOCOL_VERSION
+        ));
+        self.redraw = true;
+    }
+
+    /// A command the operator (or a key, or a frame) produced did not leave, because this
+    /// head is holding its sends against an older daemon. [`App::refused_while_detached`]'s
+    /// shape, once per batch, for the same reason: one sentence, not one per action.
+    ///
+    /// The sentence is [`App::skew_sentence`]'s — the informed one — with the act and the
+    /// chord appended, because the reader here is a person who just pressed a key and needs
+    /// to know both why nothing left and what to do about it.
+    pub(crate) fn refused_while_locked(&mut self) {
+        if let Some(said) = self.skew_sentence() {
+            self.say(&format!(
+                "{said} Nothing was sent — this attach is read-only by default, and \
+                 {ATTACH_ANYWAY_CHORD} attaches anyway.",
+            ));
+        }
+        self.redraw = true;
+    }
+
     /// **Leave the pane without ending it** — the `ctrl-\` act. See [`TermPane`].
     ///
     /// The rectangle goes and the conversation comes back; **nothing is sent**, so the program

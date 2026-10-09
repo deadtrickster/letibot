@@ -8,6 +8,21 @@ impl App {
     /// What a submitted line means: a command, an answer to an open decision, or
     /// a prompt.
     pub(crate) fn submit(&mut self, text: String) -> Option<Action> {
+        // **A read-only attach refuses to send, says the informed sentence, and holds the
+        // line** — before anything parses it, because nothing that parses can leave: the
+        // gate is not about what the line *is* but about what sending *anything* costs
+        // against a daemon that may not know the frame. This is the "decide" the ruling
+        // leaves to the person, and the decision is armed, not presumed — the sentence is
+        // [`App::skew_sentence`]'s and the chord that lifts the lock is spelled in it.
+        //
+        // Held in the composer rather than dropped, for the same reason the detached
+        // paths below hold it: the line is the person's, and a head that threw it away
+        // would be charging them a sentence for the privilege of typing it.
+        if self.skew_locked() {
+            self.set_composer(&text);
+            self.refused_while_locked();
+            return None;
+        }
         // **A pasted block is not a command, and this is checked before anything parses it.**
         // The composer is one line; the only way a newline gets here is a paste, and a paste
         // whose first line starts with `!` used to become one `!` command whose newlines the

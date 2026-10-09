@@ -361,25 +361,65 @@ fn a_reattaching_head_is_never_re_asked_a_settled_question() {
     server.shutdown();
 }
 
+/// **A differing protocol version is SERVED, not refused** — the reversal of the gate this
+/// file used to pin.
+///
+/// The operator lost a 17-day-old daemon to a bare `Bye` while a *newer* head stood there
+/// unable to read the conversation its warm KV cost minutes to rebuild, and ruled: *"so
+/// ideally it would be like - connect, look around and make informed decision"*. Both
+/// directions are asserted, because the ruling is not about one of them: a head from the
+/// future (`+99`) and a head from the past (the operator's own case — a head speaking 22
+/// against this daemon's 36) are both seated, and the `Hello` each gets states **this
+/// daemon's** version, which is the fact the head's own informed decision is made from.
+/// The daemon's loudness for a skew is its stderr record at the attach, and the louder
+/// guard — the `Bye` naming both builds when a frame genuinely cannot be read — is the
+/// read loop's, unchanged and further down this file.
+///
+/// "Serves" is asserted, not implied: a read the oldest head and the newest daemon share
+/// (`ListSessions`, protocol 2) is asked on the skewed connection and answered on it.
 #[test]
-fn a_version_mismatch_is_refused_out_loud() {
+fn a_version_mismatch_is_served_not_refused() {
     let (_hub, server) = start("version");
-    let stream = std::os::unix::net::UnixStream::connect(server.path()).unwrap();
-    let mut w = FrameWriter::new(stream.try_clone().unwrap());
-    w.write(&ClientFrame::Attach {
-        protocol_version: PROTOCOL_VERSION + 99,
-        session_id: "s".into(),
-        since_seq: 0,
-        kind: "tui".into(),
-        identity: "old".into(),
-        caps: Caps::default(),
-    })
-    .unwrap();
-    let mut r = FrameReader::new(stream);
-    let f: ServerFrame = r.read().unwrap();
-    match f {
-        ServerFrame::Bye { reason } => assert!(reason.contains("protocol version"), "{reason}"),
-        other => panic!("expected a refusal, got {other:?}"),
+    for (label, version) in [
+        ("newer", PROTOCOL_VERSION + 99),
+        ("older", PROTOCOL_VERSION.saturating_sub(14)),
+    ] {
+        let stream = std::os::unix::net::UnixStream::connect(server.path()).unwrap();
+        let mut w = FrameWriter::new(stream.try_clone().unwrap());
+        w.write(&ClientFrame::Attach {
+            protocol_version: version,
+            session_id: "s".into(),
+            since_seq: 0,
+            kind: "tui".into(),
+            identity: "late".into(),
+            caps: Caps::default(),
+        })
+        .unwrap();
+        let mut r = FrameReader::new(stream);
+        let f: ServerFrame = r.read().unwrap();
+        let ServerFrame::Hello {
+            protocol_version: said,
+            ..
+        } = &f
+        else {
+            panic!("{label}: expected to be seated, got {f:?}");
+        };
+        assert_eq!(
+            *said, PROTOCOL_VERSION,
+            "{label}: the Hello states this daemon's own version, whatever the head claimed"
+        );
+        w.write(&ClientFrame::ListSessions).unwrap();
+        let mut saw_list = false;
+        for _ in 0..4 {
+            if let ServerFrame::Sessions { .. } = r.read().unwrap() {
+                saw_list = true;
+                break;
+            }
+        }
+        assert!(saw_list, "{label}: the skewed attach must answer a read");
+        w.write(&ClientFrame::Detach).unwrap();
+        drop(w);
+        drop(r);
     }
     server.shutdown();
 }

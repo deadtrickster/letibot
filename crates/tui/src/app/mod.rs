@@ -1263,6 +1263,21 @@ pub struct App {
     /// the kernel declines to name a peer on some platforms, and `Some(DaemonSeat { pid: None,
     /// .. })` is that case rather than this one.
     pub(crate) daemon_seat: Option<DaemonSeat>,
+    /// **The seat an operator has already said "attach anyway" for.**
+    ///
+    /// The informed decision in *"connect, look around and make informed decision"* is the
+    /// person's, not the head's: a head that only knew how to refuse would have implemented
+    /// half the ruling. This is the other half's memory — set by [`App::attach_anyway`]
+    /// (the `ctrl-^` chord), compared against [`App::daemon_seat`] by [`App::skew_locked`].
+    ///
+    /// **A seat, not a boolean, and that is the whole rule.** The override lasts for the
+    /// daemon it was given on: a switch produces a second `Hello` from the same process and
+    /// must not re-lock a head the operator has already unlocked, while a *replaced* daemon
+    /// — different pid, or the same pid speaking a different protocol — is a new party the
+    /// head has not been told about, and the lock returns until it is lifted again. An
+    /// override that outlived the daemon it judged would be a standing decision made by
+    /// nobody.
+    pub(crate) skew_override_for: Option<DaemonSeat>,
     /// **The daemon connection, as far as this head can tell.** See [`Link`].
     ///
     /// Kept on the head rather than in the driver because it is a fact the *screen*
@@ -1621,6 +1636,7 @@ impl App {
             link: Link::Attached,
             daemon_protocol: None,
             daemon_seat: None,
+            skew_override_for: None,
             attach_started_ms: 0,
             cursor: None,
             bulk: None,
