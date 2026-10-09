@@ -90,6 +90,19 @@ pub struct Canned {
     handle: Option<JoinHandle<()>>,
 }
 
+/// **What the server answers ONE request with** — the SSE frames of a turn, or
+/// an HTTP error status carrying a body verbatim.
+///
+/// The status half exists for the refusals a provider answers an over-long
+/// prompt with: they are bytes on the wire, so replaying them is the same test
+/// with the model replaced by the case we care about (this file's own argument,
+/// one door along). The body is kept exactly as measured — a matcher under test
+/// is only as narrow as its fixtures are real.
+pub enum Reply {
+    Frames(Vec<Frame>),
+    Status { code: u16, body: String },
+}
+
 impl Canned {
     pub fn serve(frames: Vec<Frame>, requests: usize) -> Canned {
         Canned::serve_each(vec![frames], requests)
@@ -98,6 +111,12 @@ impl Canned {
     /// A different frame list per request, cycling if there are fewer lists than
     /// requests.
     pub fn serve_each(scripts: Vec<Vec<Frame>>, requests: usize) -> Canned {
+        Canned::serve_replies(scripts.into_iter().map(Reply::Frames).collect(), requests)
+    }
+
+    /// A different REPLY per request — frames for the turns that answer, a
+    /// status for the ones the provider refuses.
+    pub fn serve_replies(scripts: Vec<Reply>, requests: usize) -> Canned {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
         let addr = listener.local_addr().unwrap();
         let handle = std::thread::spawn(move || {
@@ -130,7 +149,7 @@ impl Drop for Canned {
     }
 }
 
-fn answer(mut stream: TcpStream, frames: &[Frame]) -> std::io::Result<()> {
+fn answer(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut content_length = 0usize;
     loop {
@@ -149,6 +168,39 @@ fn answer(mut stream: TcpStream, frames: &[Frame]) -> std::io::Result<()> {
     let mut body = vec![0u8; content_length];
     reader.read_exact(&mut body)?;
 
+    // **A refusal is a whole response, not a frame list**: a status line, the
+    // body with a length, and nothing after it. Content-length framing (not
+    // chunked) because there is exactly one body and the client reads to the
+    // length and closes.
+    let Reply::Status {
+        code,
+        body: payload,
+    } = reply
+    else {
+        return answer_frames(stream, reply);
+    };
+    let reason = match code {
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        _ => "Status",
+    };
+    write!(
+        stream,
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        payload.len()
+    )?;
+    stream.write_all(payload.as_bytes())?;
+    stream.flush()
+}
+
+fn answer_frames(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
+    let Reply::Frames(frames) = reply else {
+        unreachable!("the caller routes status replies to `answer`");
+    };
     stream.write_all(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
           Transfer-Encoding: chunked\r\n\r\n",

@@ -7923,6 +7923,89 @@ impl Harness {
                     )?;
                     continue;
                 }
+                Err(f @ TurnFailure::Http(_)) => {
+                    // **A context-length refusal IS the wall, and this is where it
+                    // becomes one.** The provider owns the window and it has just
+                    // said the prompt does not fit; every recovery `Sessions` has
+                    // — the forced compaction and the continuation after it — is
+                    // gated on `HarnessError::ContextWall`, so leaving the refusal
+                    // a backend error leaves all of it unreachable. MEASURED
+                    // 2026-10-09, session `s-1789919514688401228`: thirty
+                    // consecutive 400s from `deepseek/deepseek-flash`
+                    // (1,048,624 / 1,049,070 / 1,049,191 tokens against its
+                    // 1,048,576), the first on a `monitor` wake and the last on a
+                    // `todo check`, and not one compaction between them.
+                    //
+                    // The numbers stay honest about whose they are: the ERROR
+                    // carries this box's own ledger and planning window (what it
+                    // knows, in the units it decides in), and the WARNING names the
+                    // provider's two alongside them — never a blend. A window this
+                    // box never learned reads as zero in the error and is named as
+                    // unconfigured in the warning, because inventing one here would
+                    // point the operator at a wall nobody measured.
+                    if let TurnFailure::Http(letibot_turn::HttpError::Status { body, .. }) = &f
+                        && let Some(refusal) = context_length_refusal(body)
+                    {
+                        let resident = self.session.ledger.len() as u64;
+                        let window = self
+                            .cfg
+                            .planning_window()
+                            .or(self.cfg.context_window)
+                            .unwrap_or(0);
+                        let (r, w, h) = (
+                            self.cfg.shown_tokens(resident),
+                            self.cfg.shown_tokens(window),
+                            self.cfg.shown_tokens(self.cfg.headroom()),
+                        );
+                        let theirs = match (refusal.requested, refusal.limit) {
+                            (Some(req), Some(lim)) => format!(
+                                " The provider's own count: {req} tokens against a {lim} \
+                                 window."
+                            ),
+                            (Some(req), None) => {
+                                format!(
+                                    " The provider's own count: {req} tokens; it did \
+                                     not name its window."
+                                )
+                            }
+                            (None, Some(lim)) => format!(
+                                " The provider named a {lim}-token window but not this \
+                                 prompt's size."
+                            ),
+                            (None, None) => String::new(),
+                        };
+                        let no_window = if self.cfg.context_window.is_none() {
+                            " This box has no --context-window set, so its own checks \
+                                 could not have seen this coming; the provider's refusal \
+                                 is the first measurement of this session's wall."
+                        } else {
+                            ""
+                        };
+                        self.hub.publish(SessionEvent::Warning {
+                            code: "context_wall".into(),
+                            detail: format!(
+                                "stopping this turn after {round} round(s): the PROVIDER \
+                                 refused the prompt for length. This box's ledger says {r} \
+                                 of {w} tokens resident with {h} reserved for the next \
+                                 round.{theirs}{no_window} Everything already produced is \
+                                 committed, and the session compacts before the next turn \
+                                 — this is the wall, not a failure of the work.",
+                            ),
+                            compaction: None,
+                        });
+                        eprintln!(
+                            "  {}: context wall: the provider refused the prompt for \
+                             length after {round} round(s) at {resident} of {window} tokens",
+                            self.cfg.session_id
+                        );
+                        return Err(HarnessError::ContextWall {
+                            rounds: round,
+                            resident,
+                            window,
+                        });
+                    }
+                    return Err(f.into());
+                }
                 Err(e) => return Err(e.into()),
             };
 
@@ -9399,6 +9482,111 @@ fn retry_host(provider: Option<&dyn letibot_backend::MessagesBackend>, local: &E
         None => local.authority(),
         Some(p) => p.authority(),
     }
+}
+
+/// **What a context-length refusal told us**, in the provider's own numbers.
+///
+/// `requested` and `limit` are the two numbers the body names — the prompt size it
+/// refused and the window it refused against — either of which a body may carry only
+/// one of. They are the PROVIDER's counts, not this box's ledger, and a caller that
+/// wants to compare them with its own must say which is which rather than silently
+/// pairing them (the same rule `Config::ledger_scale` exists for).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ContextLengthRefusal {
+    requested: Option<u64>,
+    limit: Option<u64>,
+}
+
+/// **Is this HTTP failure the context wall, spoken by the thing that owns it?**
+///
+/// A provider refuses an over-long prompt with a STATUS, not with a wall event —
+/// `HttpError::Status` renders as `http {code}: {body}` and lands as a backend error,
+/// so every recovery gated on `HarnessError::ContextWall` (`after_turn`'s
+/// `out.is_ok() || wall`) reads false and no door reacts. MEASURED 2026-10-09,
+/// session `s-1789919514688401228` on `deepseek/deepseek-flash`: thirty consecutive
+/// 400s, the first attributed to `monitor`, the last to `todo check`, none recovered.
+///
+/// The two measured shapes, verbatim, because a matcher is only as narrow as its
+/// fixtures:
+///
+/// * **llama.cpp**, JSON with a type field — the structured signal, preferred:
+///
+///   ```text
+///   {"error":{"code":400,"message":"request (1504198 tokens) exceeds the available context size (262144 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":1504198,"n_ctx":262144}}
+///   ```
+///
+/// * **an OpenAI-shaped provider**, plain text naming a context length —
+///   `error.code` is absent and the numbers live in the sentence:
+///
+///   ```text
+///   This model's maximum context length is 1048576 tokens. However, you requested 1463497 tokens (1463497 in the messages, 0 in the completion). Please reduce the length of the messages or completion. (request_id: 8a448ce7-fabf-4ffa-b350-16e6ddeed6ac)
+///   ```
+///
+/// The rule this implements, and the reason it is ONE function rather than a `contains`
+/// at the call site: parse the body as JSON first and read FIELDS
+/// (`error.type = "exceed_context_size_error"`, with `n_prompt_tokens`/`n_ctx`; or
+/// `error.code = "context_length_exceeded"`, with the numbers parsed out of
+/// `error.message`); only a body that is not JSON at all falls back to the text shape,
+/// matched by its two anchors (`maximum context length is` and `However, you requested`)
+/// and NOT by a bare substring the operator has ruled against (*"prompt-text matching
+/// is an overfit"*). Anything else — a 400 about invalid tokens, a 500 about a slot —
+/// is a backend error and stays one: if this cannot parse, it does not guess.
+fn context_length_refusal(body: &str) -> Option<ContextLengthRefusal> {
+    // The structured half: a JSON error object with a field that NAMES the
+    // context as the complaint. Both fields are read independently — an
+    // OpenAI-shaped body carries `type: "invalid_request_error"` AND
+    // `code: "context_length_exceeded"` TOGETHER, so `type` cannot be the
+    // only gate or the specific field never gets its say.
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        let err = v.get("error")?;
+        let ty = err.get("type").and_then(|t| t.as_str());
+        let code = err.get("code").and_then(|c| c.as_str());
+        return match () {
+            // llama.cpp: the type field IS the refusal; the numbers are fields.
+            _ if ty == Some("exceed_context_size_error") => Some(ContextLengthRefusal {
+                requested: err.get("n_prompt_tokens").and_then(|n| n.as_u64()),
+                limit: err.get("n_ctx").and_then(|n| n.as_u64()),
+            }),
+            // OpenAI-shaped: the code field is the refusal; the numbers are in
+            // the message, spelled the same way as the plain-text body below.
+            _ if code == Some("context_length_exceeded") => {
+                let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("");
+                Some(openai_context_numbers(msg)?)
+            }
+            // JSON, but about something else — `invalid_request_error` on bad
+            // tokens, a quota, a model name. A backend error, not the wall.
+            _ => None,
+        };
+    }
+    // The text half: not JSON at all (the measured deepseek body), so the sentence
+    // is the only carrier. Both anchors must be present — either alone is a phrase a
+    // body about something else could contain.
+    openai_context_numbers(body)
+}
+
+/// The two numbers out of an OpenAI-shaped refusal sentence, or `None` when the
+/// anchors are absent. Kept private to [`context_length_refusal`] so the text shape
+/// has one spelling and one place to be narrow.
+fn openai_context_numbers(body: &str) -> Option<ContextLengthRefusal> {
+    let limit = number_after(body, "maximum context length is")?;
+    let requested = number_after(body, "you requested")?;
+    Some(ContextLengthRefusal {
+        requested: Some(requested),
+        limit: Some(limit),
+    })
+}
+
+/// The digits immediately after `anchor`, skipping spaces — `is 1048576 tokens`,
+/// `requested 1463497 tokens`. `None` when the anchor is absent or names no number,
+/// because a number this box did not read is a number it must not invent.
+fn number_after(body: &str, anchor: &str) -> Option<u64> {
+    let at = body.find(anchor)? + anchor.len();
+    let digits: String = body[at..]
+        .chars()
+        .skip_while(|c| c.is_whitespace())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
 }
 
 /// **Whether a silence notice applies at all, and about which host.**
@@ -15528,7 +15716,8 @@ mod endpoint_retry {
     //! restart for when model http endpoint doesnt answer or answers with error
     //! codes except unauthenticated"*.
     use super::{
-        MAX_HTTP_RETRIES, SilenceWatch, http_retry_after, retry_host, silence_host, silence_notice,
+        ContextLengthRefusal, MAX_HTTP_RETRIES, SilenceWatch, context_length_refusal,
+        http_retry_after, retry_host, silence_host, silence_notice,
     };
     use letibot_turn::{Endpoint, HttpError};
 
@@ -15795,6 +15984,102 @@ mod endpoint_retry {
     /// The override half is the one worth pinning: the answer comes from the backend, so
     /// it follows whatever URL that backend was built with — a proxy or a rented host is
     /// named as itself, not as the preset it replaced.
+    /// **The wall as the provider speaks it, recognised.** One test per measured
+    /// body, verbatim, because the matcher is only as narrow as its fixtures —
+    /// and one per way a body must NOT be read as the wall, because a matcher too
+    /// wide sends a session through a compaction it did not need on top of a
+    /// failure it did not deserve.
+    #[test]
+    fn the_two_measured_refusal_bodies_are_recognised_with_their_numbers() {
+        // llama.cpp, JSON, the numbers as fields — the structured half.
+        let llama = context_length_refusal(
+            "{\"error\":{\"code\":400,\"message\":\"request (1504198 tokens) exceeds the available \
+             context size (262144 tokens), try increasing it\",\"type\":\"exceed_context_size_error\",\
+             \"n_prompt_tokens\":1504198,\"n_ctx\":262144}}",
+        )
+        .expect("the llama.cpp shape is the wall");
+        assert_eq!(
+            llama,
+            ContextLengthRefusal {
+                requested: Some(1_504_198),
+                limit: Some(262_144),
+            }
+        );
+        // An OpenAI-shaped provider, plain text, the numbers in the sentence —
+        // deepseek's own words on 2026-10-09, request id and all.
+        let openai = context_length_refusal(
+            "This model's maximum context length is 1048576 tokens. However, you requested \
+             1463497 tokens (1463497 in the messages, 0 in the completion). Please reduce the \
+             length of the messages or completion. (request_id: \
+             8a448ce7-fabf-4ffa-b350-16e6ddeed6ac)",
+        )
+        .expect("the OpenAI sentence shape is the wall");
+        assert_eq!(
+            openai,
+            ContextLengthRefusal {
+                requested: Some(1_463_497),
+                limit: Some(1_048_576),
+            }
+        );
+        // And the same refusal as JSON — OpenAI's own envelope, `code` instead
+        // of `type`, the message carrying the numbers.
+        let openai_json = context_length_refusal(
+            "{\"error\":{\"message\":\"This model's maximum context length is 1048576 tokens. \
+             However, you requested 1463497 tokens.\",\"type\":\"invalid_request_error\",\
+             \"code\":\"context_length_exceeded\"}}",
+        )
+        .expect("the JSON spelling of the same refusal is the wall");
+        assert_eq!(
+            openai_json,
+            ContextLengthRefusal {
+                requested: Some(1_463_497),
+                limit: Some(1_048_576),
+            }
+        );
+    }
+
+    #[test]
+    fn a_body_that_is_not_a_context_refusal_is_not_the_wall() {
+        // A 400 about the TOKENS, not the length — measured in the same log.
+        assert!(
+            context_length_refusal(
+                "{\"error\":{\"code\":400,\"message\":\"Prompt contains invalid tokens\",\
+                 \"type\":\"invalid_request_error\"}}"
+            )
+            .is_none(),
+            "an invalid_request_error about tokens is a backend error"
+        );
+        // llama.cpp's JSON with a DIFFERENT type — the structured field is the
+        // signal, not the JSON shape.
+        assert!(
+            context_length_refusal(
+                "{\"error\":{\"code\":400,\"message\":\"no such model\",\"type\":\"model_error\"}}"
+            )
+            .is_none(),
+            "JSON about something else stays a backend error"
+        );
+        // The OpenAI sentence with one anchor missing: either alone is a phrase
+        // a body about something else could contain, so neither alone is the
+        // wall.
+        assert!(
+            context_length_refusal("maximum context length is 4096 tokens, which you may raise")
+                .is_none(),
+            "a limit without a refusal of THIS prompt is documentation, not the wall"
+        );
+        assert!(
+            context_length_refusal("you requested 1463497 tokens of quota, and the quota is spent")
+                .is_none(),
+            "a request size without the context anchor is a quota complaint"
+        );
+        // And the old local failure — `500 Context size has been exceeded`,
+        // plain text with neither anchor — stays what it was: unparseable,
+        // therefore not guessed at.
+        assert!(
+            context_length_refusal("Context size has been exceeded").is_none(),
+            "a body this cannot parse is not guessed at"
+        );
+    }
+
     #[test]
     fn a_retry_names_the_host_that_was_contacted_and_not_the_local_one() {
         use letibot_backend::{BackendCaps, BackendError, Completion, MessagesBackend, StreamFlow};
