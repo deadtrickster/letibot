@@ -2704,3 +2704,96 @@ fn scrolling_to_the_top_leaves_a_full_screen_rather_than_a_blank_one() {
         screen.join("\n")
     );
 }
+
+/// **A park far up, on a stream that keeps arriving: the wheel still gets you back.**
+///
+/// The operator, 2026-10-09: *"there is scrolling problem - i restarted pg-noop scrolled up
+/// and couldnt scroll back with mouse - stuck at 190 lines lol. Esc worked"* — and the
+/// narrowing: *"to trigger conversation must be scrolled up far enough that is the point"*.
+/// The wedged session (s-1789919514688401228, resumed at t2 with 1447 rows and 1.85M
+/// tokens) is far over [`SELF_WALK_LIMIT`], so this fixture takes the tail path the way
+/// `walk_limit = 1` always does in this file, parks by wheel until the banner counts 190
+/// lines, and then wheels down **while the automatic turns keep appending rows** — the
+/// session's monitor woke in a loop that ran to 121 rounds, two rows a notch is that pace.
+///
+/// **Why the shallow tests could not see it.** Two mechanisms, and depth is what
+/// exposes both. In tail mode every arriving row invalidates the rendered history
+/// wholesale (a tail walk leaves no marks to rewind to), so a notch landing between an
+/// arrival and the next frame finds the span table EMPTY: `held_line` falls back to a
+/// stale `view_top`, `span_at_line` answers `None`, and the notch moves **nothing**.
+/// Measured on this fixture before the fix: thirty-two notches down and the window never
+/// moved a line — parked 191 up, ended 319 up — because the stream grew underneath a
+/// reader the wheel could no longer move at all. And with the spans live, three lines a
+/// notch is still outrun by two arriving rows: the notch moves, the count grows, and at
+/// 190 lines up the walk needs sixty-four clean notches it never gets. `esc` worked
+/// because it clears the anchor outright and never asks the spans anything.
+///
+/// **What gets the reader back is a notch that renders before it steps** —
+/// [`App::render_held`], the mirror of `fill_backward` — **and, against a stream that is
+/// still arriving, a RUN of notches** that gathers speed: several notches inside one read
+/// — one flick of the wheel — double their step, so the bottom is reachable in a bounded
+/// number of them however fast it recedes. A still transcript is walked three lines a
+/// notch, every notch (the tests around this pin that); the first notch of a run is three
+/// lines either way, so one stroke is never the tail — the reconciliation October 9th
+/// drew is untouched.
+#[test]
+fn a_deep_park_on_a_living_stream_is_reachable_from_the_wheel() {
+    let mut a = app();
+    a.walk_limit = 1;
+    let mut seq = 0u64;
+    let mut rows = |a: &mut App, n: u64| {
+        for _ in 0..n {
+            seq += 2;
+            a.apply(ServerFrame::Event(env(
+                seq - 1,
+                testing::appended(&format!("s.{seq}"), "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                seq,
+                testing::content(&format!("s.{seq}"), "a line of conversation"),
+            )));
+        }
+    };
+    rows(&mut a, 400);
+    a.screen(80, 24);
+    assert!(
+        a.hist_floor > 0,
+        "the tail path was not taken, so this is not the park"
+    );
+
+    // Park the way the operator did: wheel up until the banner counts 190 lines below.
+    while a.scroll < 190 {
+        a.key(Key::WheelUp);
+        a.screen(80, 24);
+    }
+    let parked = a.scroll;
+    assert!(
+        parked >= 190,
+        "the wheel-up walk never got 190 lines up: {parked}"
+    );
+
+    // **The stream keeps arriving while the reader wheels down** — two rows a notch,
+    // the monitor's round pace. A flick is several notches inside one read, so the
+    // driver hands one tick a burst of them; four a burst, a fifth of a second between
+    // bursts, eight bursts — bounded, or this fails rather than loops.
+    let mut notches = 0usize;
+    for _ in 0..8 {
+        for _ in 0..4 {
+            rows(&mut a, 2);
+            a.key(Key::WheelDown);
+            a.screen(80, 24);
+            notches += 1;
+        }
+        a.clock(a.now_ms + 200);
+        if a.following() {
+            break;
+        }
+    }
+    assert!(
+        a.following(),
+        "{notches} notches down in eight flicks never reached the tail of a stream that \
+             kept growing — parked {parked} lines up, ended {} lines up. `esc` should not be \
+             the only way back from a deep park",
+        a.scroll
+    );
+}

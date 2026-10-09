@@ -226,6 +226,11 @@ impl App {
                     // wrapping, and a notch that moves one wrapped row reads as
                     // nothing happened.
                     Key::WheelUp => (true, 3),
+                    // Three lines a notch here too — the card, the panes and the windows
+                    // page by it below, and their paging is not the transcript's walk.
+                    // The wheel's own down path replaces `by` at the foot of this arm,
+                    // after every screen that could take the notch has passed: see
+                    // [`App::wheel_down_notch`].
                     _ => (false, 3),
                 };
                 // **An open card takes them while its own content has somewhere to go**
@@ -318,10 +323,26 @@ impl App {
                     // twin, and a RUN of notches still returns the reader to the bottom, which
                     // answers October's need without the one-notch jump.
                     //
+                    // **And 2026-10-09's second report is why the run has to gather speed.**
+                    // A three-line walk needs sixty-four clean notches from 190 lines up, and
+                    // a stream that keeps arriving — the wedged session was in a loop of
+                    // automatic turns — recedes faster than the walk advances: the notch moved
+                    // every time and the count still grew. The run is the reader's own gesture,
+                    // so that is what accelerates; see [`App::wheel_down_notch`].
+                    //
                     // The deliberate act keeps its own meaning and is not folded in here: Esc
                     // while parked — *"Esc while parked in the scrollback means \"follow the
                     // stream again\""* — and the parked `↓` below still clear the anchor in one
                     // press, and they are the keys the banner names for it.
+                    //
+                    // **And the wheel's notch is sized HERE, at the walk itself** — not in the
+                    // `(up, by)` match above, which the card, the panes and the windows share:
+                    // their paging stays three lines a notch. Only the transcript's walk can
+                    // gather speed, and only the run of notches the reader spent on it counts.
+                    let by = match k {
+                        Key::WheelDown => self.wheel_down_notch(),
+                        _ => by,
+                    };
                     self.hold(by as isize);
                 }
                 return ControlFlow::Break(None);
