@@ -205,6 +205,16 @@ fn answer_frames(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
           Transfer-Encoding: chunked\r\n\r\n",
     )?;
+    stream.write_all(&sse_body(frames))?;
+    stream.flush()
+}
+
+/// **The chunked SSE body a frame list becomes** — one implementation of the wire shape
+/// and of the decoded-token counter, so a caller that has to write its own response (a
+/// stub that holds a request open, one that reads the request before answering) does not
+/// fork them. `answer_frames` is the ordinary caller and is these bytes plus the head.
+pub fn sse_body(frames: &[Frame]) -> Vec<u8> {
+    let mut out = Vec::new();
     let mut decoded = 0u64;
     for frame in frames {
         if matches!(frame, Frame::Token { .. } | Frame::Suppressed) {
@@ -216,11 +226,10 @@ fn answer_frames(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
             continue;
         }
         let payload = format!("data: {}\n\n", frame.to_json(decoded));
-        write!(stream, "{:x}\r\n", payload.len())?;
-        stream.write_all(payload.as_bytes())?;
-        stream.write_all(b"\r\n")?;
-        stream.flush()?;
+        out.extend_from_slice(format!("{:x}\r\n", payload.len()).as_bytes());
+        out.extend_from_slice(payload.as_bytes());
+        out.extend_from_slice(b"\r\n");
     }
-    stream.write_all(b"0\r\n\r\n")?;
-    stream.flush()
+    out.extend_from_slice(b"0\r\n\r\n");
+    out
 }

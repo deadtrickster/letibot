@@ -1163,12 +1163,12 @@ impl SteeringSource for HubSteering {
                     // the next round boundary rather than as an interruption: a child told to
                     // change course should finish the call it is in and change, not abandon it.
                     //
-                    // **The parent is NAMED in the text, and the trail cannot do it.** `say`
-                    // takes a speaker kind, not an identity, so *which* parent spoke survives
-                    // nowhere else — and the operator's whole point was addressability: a
-                    // correction from a named parent is actionable in a way the same sentence
-                    // from nowhere is not.
-                    let said = format!("message from your parent session `{from}`: {text}");
+                    // **And the words are [`parent_message_text`]'s**, which is the same text
+                    // the between-turns door hands the child (`serve_child`'s
+                    // `ChildCommand::Hear`): a child that could tell which door its parent's
+                    // correction came through would be reading the machinery instead of the
+                    // message.
+                    let said = parent_message_text(&from, &text);
                     if let Some(t) = &self.trail {
                         t.say(Speaker::Agent, &said, Some(Instant::now()));
                     }
@@ -5026,13 +5026,30 @@ impl Harness {
     /// only place that records them as such: see [`TrailMirror`] for why the speaker
     /// cannot be recovered from the transcript afterwards.
     pub fn submit(&mut self, text: &str) -> Result<Reply, HarnessError> {
+        self.submit_spoken(Speaker::Operator, text)
+    }
+
+    /// **One turn, with the speaker given** — the operator's own words through
+    /// [`Harness::submit`], a parent's correction through
+    /// [`Harness::submit_a_parents_message`].
+    ///
+    /// The speaker is not decoration. [`AuthorisationTrail`] is where a turn's authority is
+    /// decided and [`Speaker::Agent`] never authorises on its own, so a row that says the wrong
+    /// speaker is a row that grants the wrong thing — which is why the parent's message has a
+    /// door of its own rather than a flag on this one. The two speaker vocabularies are matched
+    /// inline here for the same reason `TrailMirror::seed` matches them inline: the one place
+    /// they meet is the one place a reader has to look for the mapping.
+    fn submit_spoken(&mut self, speaker: Speaker, text: &str) -> Result<Reply, HarnessError> {
         self.trail.begin_turn();
-        self.trail
-            .say(Speaker::Operator, text, Some(Instant::now()));
+        self.trail.say(speaker, text, Some(Instant::now()));
         self.submit_item(TranscriptItem::User {
-            // **The one door the operator's own words come through**, and it says so on the
-            // row — the same speaker the trail records one line up (R42).
-            speaker: letibot_transcript::Speaker::Operator,
+            // The same speaker the trail records, one line up (R42).
+            speaker: match speaker {
+                Speaker::Operator => letibot_transcript::Speaker::Operator,
+                // A session talking to itself, a tool's row, a parent's message: none of
+                // them is the operator's words, and none may be drawn as them.
+                Speaker::Agent | Speaker::Tool => letibot_transcript::Speaker::Agent,
+            },
             parts: vec![UserPart::Text { text: text.into() }],
         })
     }
@@ -6760,12 +6777,46 @@ impl Harness {
     /// failure first, the todo nag, the turn clock — and collapsing the two now
     /// would rewire the daemon's own path for a fix that is not about it.
     pub fn submit_as_a_normal_session(&mut self, prompt: &str) -> Result<Reply, HarnessError> {
+        self.submit_spoken_as_a_normal_session(Speaker::Operator, prompt)
+    }
+
+    /// **A parent's message to a child BETWEEN turns — the turn it makes, spoken as the
+    /// parent's.**
+    ///
+    /// The operator's ruling, verbatim: *"fix task_message - it should enqueue"*. Until this
+    /// existed, a message could only enter a turn that was already running (`HubSteering`'s
+    /// `Message` arm), and the parent's tool refused to send one to a child that was not —
+    /// because *"nothing drains a child's queue between turns"*, so a queued message would
+    /// have been accepted and heard by nobody. A child between turns is now reached: the
+    /// message is queued, the child's own serving thread is woken (`Hub::wake_its_own_reader`),
+    /// and this is the turn that reads it.
+    ///
+    /// **Why this is not [`Harness::submit`]**: the speaker. The words are recorded as the
+    /// parent's — [`parent_message_text`], naming which parent — so they cannot authorise the
+    /// act they race, cannot coalesce with the operator's own text, and cannot be taken back.
+    /// That is the same rule the mid-turn door follows, and the same text: a child cannot tell
+    /// which state it was in when its parent spoke.
+    pub fn submit_a_parents_message(
+        &mut self,
+        from: &str,
+        text: &str,
+    ) -> Result<Reply, HarnessError> {
+        self.submit_spoken_as_a_normal_session(Speaker::Agent, &parent_message_text(from, text))
+    }
+
+    /// **The turn and its tail, with the speaker given** — the body both doors above share, so
+    /// the wall recovery cannot be had by one of them and not the other.
+    fn submit_spoken_as_a_normal_session(
+        &mut self,
+        speaker: Speaker,
+        text: &str,
+    ) -> Result<Reply, HarnessError> {
         // Before the send, the same pre-turn check `Sessions::run_prompt` makes: a
         // parked child taking a later prompt is the resumed-session case (its last
         // turn may have filled the window with nothing behind it to check), and a
         // fresh child's bare prefix fails `should_compact` and costs one comparison.
         self.compact_if_at_the_wall();
-        let mut out = self.submit(prompt);
+        let mut out = self.submit_spoken(speaker, text);
         // **A wall that compacted is not the end of the prompt** — `after_turn`'s
         // own rule, and the loop shape is deliberately the same: compact, MEASURE
         // the room (never read it off `auto_compact` — the no-progress guard turns
@@ -10902,6 +10953,23 @@ impl Drop for AnswerOnce<'_> {
     }
 }
 
+/// **A parent's correction, in the words the child hears** — one function, because two doors
+/// deliver it and a child that could tell which door it came through would be reading the
+/// machinery instead of the message.
+///
+/// The two doors are the two states a child can be in: a **running** turn takes it at its next
+/// round boundary ([`HubSteering`]'s `Message` arm, as a `SteeringMessage::normal`), and a child
+/// **between turns** has a turn started for it (`serve_child`'s [`ChildCommand::Hear`]). Same
+/// text, same `Speaker::Agent` row, same trail line.
+///
+/// **The parent is NAMED, and nothing else can name it.** `AuthorisationTrail::say` takes a
+/// speaker KIND, not an identity, so *which* parent spoke survives nowhere else — and the
+/// operator's whole point was addressability: a correction from a named parent is actionable in
+/// a way the same sentence from nowhere is not.
+pub fn parent_message_text(from: &str, text: &str) -> String {
+    format!("message from your parent session `{from}`: {text}")
+}
+
 /// **What a child does with a command that reached its queue between turns.**
 ///
 /// A free function so the decision can be read and tested without a model, a hub or a socket —
@@ -10913,6 +10981,11 @@ enum ChildCommand {
     /// another agent. its 'sub' is a way to inherit something and be managable. so mid turn, post
     /// turn whatever"*.
     Answer,
+    /// **Hear it: a parent's message, and there is no turn to steer it into.** The child's own
+    /// turn is STARTED for it — see [`ChildCommand::Hear`]'s arm in [`serve_child`] and
+    /// [`Harness::submit_a_parents_message`] — because the operator's ruling is that a message
+    /// which is queued must be heard: *"fix task_message - it should enqueue"*.
+    Hear,
     /// **Leave, and stop this session's children on the way out.** See [`ChildCommand::Stop`].
     Leave(&'static str),
     /// **A stop, and a stop walks the subtree downward.** See the supervision invariant on
@@ -10932,11 +11005,15 @@ fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
         // own still computing. Saying *nothing is running to interrupt* was true of the session
         // and false of its subtree, which is the whole of what a supervision tree is for.
         K::Interrupt { .. } => ChildCommand::Stop,
-        // A message's contract is a turn IN FLIGHT — the parent's own `task_message` refuses to
-        // send one to a child that is not running — so one here is the race that refusal names.
-        // Answering it as a prompt would answer, in the parent's name, something the parent
-        // deliberately did not send.
-        K::Message { .. } => ChildCommand::Leave("a message steers a turn in flight"),
+        // **A message is a turn when there is no turn to steer.** Until 2026-10 this arm LEFT
+        // the message here, because the parent's `task_message` refused to send one to a child
+        // that was not running — so a message in this queue could only be the race that refusal
+        // names. The operator's ruling makes the between-turns case the ordinary one: *"fix
+        // task_message - it should enqueue"*, and the queue a message lands on is this one.
+        // What must NOT change is who is speaking: answering it as a prompt would put the
+        // parent's words in the operator's mouth and let them authorise — which is why this is
+        // a variant of its own rather than `Answer`.
+        K::Message { .. } => ChildCommand::Hear,
         // The rest is a session's own machinery — a compaction, a re-seat, a mode, the operator's
         // door — and a child inherits all of it from its parent rather than owning a copy.
         _ => ChildCommand::Leave("a door a child does not own"),
@@ -11083,6 +11160,39 @@ fn serve_child(sub: &mut Harness, hub: &Hub, sub_id: &str) {
                         detail: format!(
                             "{sub_id} was asked something after its task and the turn \
                              failed: {e}. The child is still here and can be asked again."
+                        ),
+                        compaction: None,
+                    });
+                }
+            }
+            // **A parent's message, and there is no turn to steer it into — so one is started.**
+            // This is the between-turns half of the operator's ruling (*"fix task_message - it
+            // should enqueue"*): the message was put on this queue by the parent's
+            // `task_message`, the parent's wake reached this thread, and the turn that reads it
+            // is the child's own. `submit_a_parents_message` is the same seam the prompt above
+            // takes — a child near the wall compacts on this turn exactly as on any other — and
+            // it is NOT `submit_as_a_normal_session`: the words are recorded as the parent's
+            // (`Speaker::Agent`), naming which parent, so they can neither authorise an act nor
+            // be read as something the operator typed. The mid-turn door
+            // (`HubSteering::try_next`) speaks the same text through
+            // [`parent_message_text`], so a child cannot tell which state it was in.
+            ChildCommand::Hear => {
+                let (from, text) = match &kind {
+                    letibot_sessionlog::CommandKind::Message { from, text } => {
+                        (from.clone(), text.clone())
+                    }
+                    _ => unreachable!("`child_command` hears a Message and nothing else"),
+                };
+                if let Err(e) = sub.submit_a_parents_message(&from, &text) {
+                    // The same report the prompt's failure gets, and for the same reason: a
+                    // child has no worker to publish a `turn_failed`, so the sentence goes on
+                    // the child's own log, which its parent and the operator both read.
+                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                        code: "turn_failed".into(),
+                        detail: format!(
+                            "{sub_id} was sent a message from `{from}` and the turn that would \
+                             have read it failed: {e}. The message is spent — ask again, or read \
+                             the child with `task_result`."
                         ),
                         compaction: None,
                     });
@@ -11730,6 +11840,20 @@ struct ForeignWeights {
 }
 
 impl HarnessTaskRunner {
+    /// **This session's slot for one handle**, if it started one under that name. `None` is a
+    /// handle this runner never minted — the same answer `collect` gives as `Unknown`.
+    ///
+    /// A helper rather than a fourth copy of the lookup: `send` reads `has_exited` off it (a
+    /// thread that has ended takes no wake) and `collect` reads the status.
+    fn slot(&self, handle: &str) -> Option<Arc<TaskSlot>> {
+        self.slots
+            .lock()
+            .expect("task slots")
+            .iter()
+            .find(|(h, _)| h == handle)
+            .map(|(_, s)| s.clone())
+    }
+
     /// **Load and seat another model's tokenizer for a child** — the spawn half of
     /// [`LocalSwitch::OtherWeights`].
     ///
@@ -12188,14 +12312,43 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     /// its next round boundary, recorded as an agent's, instead of something the operator is
     /// supposed to have typed.
     ///
-    /// **REFUSED BY NAME WHEN THE CHILD IS NOT RUNNING, and that is a measurement rather than
-    /// caution.** A message rides the same queue as every other command, so a submission against
-    /// a child whose turn has ended answers `Accepted` and then sits there: nothing drains a
-    /// child's queue between turns, so the parent would be told it had corrected a child that
-    /// never hears a word of it. The operator met the other end of this: *"message was queued
-    /// when you stopped and it didnt restart you"*. So the live turn is the precondition, and it
-    /// is checked rather than assumed — the race it cannot close (the turn ending between this
-    /// check and the drain) is named on the child's log by the worker's own arm.
+    /// **REFUSED BY NAME WHEN THE CHILD'S THREAD IS GONE, and the answer says WHICH delivery the
+    /// parent got.** What this door used to do was refuse anything that was not a running turn,
+    /// and its reason was a measurement rather than caution: a message rides the same queue as
+    /// every other command, so a submission against a child whose turn had ended answered
+    /// `Accepted` and then sat there, because *nothing drains a child's queue between turns* —
+    /// the parent would have been told it had corrected a child that never heard a word of it.
+    /// The operator met the other end of this: *"message was queued when you stopped and it didnt
+    /// restart you"*, and then ruled on it: *"fix task_message - it should enqueue"*.
+    ///
+    /// **What changed is the sentence in the middle, and it changed by being made false rather
+    /// than by being deleted.** A child's queue now HAS a between-turns reader: the message is
+    /// put on it, and [`Hub::wake_its_own_reader`] wakes the thread that owns the child — the
+    /// same door a subagent's settlement takes through `Sessions::wake` — whose own loop answers
+    /// it by running the turn ([`serve_child`]'s `ChildCommand::Hear`, which submits through
+    /// [`Harness::submit_a_parents_message`]). So there are two deliveries and they are not the
+    /// same sentence:
+    ///
+    ///   * **the child's turn is running** — it hears the message at its next round boundary,
+    ///     as an agent's utterance, and keeps working;
+    ///   * **the child is between turns** — a turn is STARTED for it, and the message is what
+    ///     that turn is about.
+    ///
+    /// **The order is the race handling: durable first, wake second.** The message is on the
+    /// queue before the wake is sent, so a wake that is missed, or a turn that ends in the window
+    /// between the state read below and the child's next look at its queue, still finds work
+    /// waiting — the message is never `Accepted` into a queue that nothing will look at. The
+    /// window is genuinely narrow and genuinely there (the child can end its turn between the
+    /// read and the drain) and it is CLOSED by the wake rather than named and left: whichever of
+    /// the two states the child was in, the queue entry and the wake are both delivered.
+    ///
+    /// **The two failures stay failures, by name.** A handle the registry does not hold is the
+    /// refusal it always was. A child whose own thread has ENDED is refused too, because a thread
+    /// that has ended takes no wake — [`TaskSlot::has_exited`] is the same fact `stop_all` reads
+    /// before submitting an interrupt nothing would answer — and that check happens BEFORE the
+    /// submit, so "nothing was sent" is true when it is said. The one residual window is a hub
+    /// that closes between the submit and the wake: then the message really is on a queue with no
+    /// reader, and the answer says exactly that instead of claiming a delivery.
     fn send(&self, handle: &str, text: &str) -> Result<String, String> {
         let Some(hub) = self.registry.get(handle) else {
             return Err(format!(
@@ -12203,16 +12356,21 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                  with no argument lists the ones there are."
             ));
         };
-        // **The live turn is the precondition.** See this function's docstring: a message to a
-        // child between turns is `Accepted` by the hub and read by nobody.
-        if !hub.status().running {
+        // **A thread that has ended takes no wake, and a message nobody reads is the lie this
+        // door exists not to tell.** Checked before the submit, because after it the message is
+        // on a queue and "nothing was sent" would be false.
+        if self.slot(handle).is_some_and(|s| s.has_exited()) {
             return Err(format!(
-                "`{handle}` is not running a turn, so there is nothing to steer: a message is \
-                 delivered INTO the turn it is meant to correct, and a subagent between turns \
-                 would never hear one. Read it with `task_result` instead, or start a new \
-                 subagent with the correction in its prompt. Nothing was sent."
+                "`{handle}`'s own thread has ended, so nothing would read a message queued for \
+                 it: a subagent between turns is reached by starting a turn for it, and this one \
+                 has no thread left to start. Nothing was sent. `task_result` reads what it \
+                 answered, and a new subagent is how to say something more."
             ));
         }
+        // **Which of the two deliveries this is, read before the submit.** Both are real and
+        // they are told apart by the child's state at the moment the parent spoke — a running
+        // turn hears it at its next round boundary, a child between turns has a turn started.
+        let running = hub.status().running;
         let f = hub.submit(
             letibot_sessionlog::hub::DAEMON_SUBMITTER,
             &format!(
@@ -12226,11 +12384,55 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             },
         );
         match &f {
-            letibot_sessionlog::ServerFrame::Accepted { .. } => Ok(format!(
-                "`{handle}` was told, as `{}`: it hears this at its next round boundary and \
-                 keeps working.",
-                self.base.session_id
-            )),
+            letibot_sessionlog::ServerFrame::Accepted { .. } => {
+                // **Durable first, wake second.** `submit` put the message on the child's
+                // queue and did the two things a queued command does: it notified this hub's
+                // own condvar — which is what a PARKED child's reader is blocked on — and it
+                // rang the BELL, which is the daemon's worker. The bell is the wrong reader for
+                // a child (the worker cannot run its turn, and `Sessions::dispatch` hands a
+                // message back to the thread that can), so the wake below is sent as well, and
+                // for the two things the queue alone cannot say:
+                //
+                //   * **whether the session is still there.** `Hub::submit` does not refuse a
+                //     command on a closed hub — it queues it into a queue nothing will drain —
+                //     so this return value is the only liveness answer this door has, and a
+                //     `false` here is a message that will NOT be heard.
+                //   * **the belt for a reader that is not parked on that condvar.** If the
+                //     child's turn ends in the window between the state read above and its next
+                //     look at its queue, the queue entry is what it finds and the wake is what
+                //     makes it look; a wake that finds nothing settled runs no turn at all
+                //     (`Harness::wake` answers `Ok(None)`).
+                let woken = hub.wake_its_own_reader();
+                // **`false` is not a delivery.** It means the hub is closed — `Hub::submit` does
+                // not check that (it queues into a queue nothing will drain), so this return
+                // value is the only liveness answer this door has. No turn will be STARTED for
+                // the message: a child between turns has no reader left (`take_own_work`
+                // answers `Closed` and its thread leaves), and a turn already running could
+                // still take it at its next round boundary through its own steering poll — but
+                // nothing after it will, which is not a correction a parent may rely on and not
+                // one this door will claim.
+                if !woken {
+                    return Err(format!(
+                        "`task_message` reached `{handle}`'s queue and then its session went \
+                         away: the hub is closed, so no turn will be started for it. Do not read \
+                         this as a correction delivered — `task_result` reads what the child \
+                         answered."
+                    ));
+                }
+                if running {
+                    return Ok(format!(
+                        "`{handle}` was told, as `{}`: its turn is running, so it hears this at \
+                         its next round boundary and keeps working.",
+                        self.base.session_id
+                    ));
+                }
+                Ok(format!(
+                    "`{handle}` was told, as `{}`: it was between turns, so the message is on \
+                     its queue and a turn has been started for it — it hears this now, and its \
+                     answer is what `task_result` reads.",
+                    self.base.session_id
+                ))
+            }
             // The same rule `kill` follows, and for the same reason: a tool may not report a
             // state change the daemon refused.
             other => Err(format!(
@@ -12245,13 +12447,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         handle: &str,
         timeout: std::time::Duration,
     ) -> letibot_tools::builtins::task::TaskStatus {
-        let slot = self
-            .slots
-            .lock()
-            .expect("task slots")
-            .iter()
-            .find(|(h, _)| h == handle)
-            .map(|(_, s)| s.clone());
+        let slot = self.slot(handle);
         let Some(slot) = slot else {
             return letibot_tools::builtins::task::TaskStatus::Unknown;
         };
@@ -16188,8 +16384,8 @@ mod tests {
         );
     }
 
-    /// **A prompt is answered, a stop is a STOP for the whole subtree, and everything else a
-    /// child inherits is left, and named.**
+    /// **A prompt is answered, a parent's message is HEARD, a stop is a STOP for the whole
+    /// subtree, and everything else a child inherits is left, and named.**
     ///
     /// The operator's ruling is what makes the first arm right — *"subagent is just another
     /// agent… mid turn, post turn whatever"* — and the other arms are what keeps this door from
@@ -16199,6 +16395,14 @@ mod tests {
     /// *"nothing is running to interrupt"*, which was true of the session and false of its
     /// subtree: a child between turns, with children of its own still computing, was told
     /// nothing and left them running. See the supervision invariant on [`HarnessTaskRunner`].
+    ///
+    /// **The message arm was the second correction** — the operator's ruling, verbatim: *"fix
+    /// task_message - it should enqueue"*. It used to `Leave` a message here on the grounds
+    /// that *"a message steers a turn in flight"*, which was true of the door it was written
+    /// for and false of a child whose queue is drained between turns: the parent was told
+    /// *nothing drains a child's queue between turns*, and what was actually missing was a
+    /// meaning for the entry that arrived. It has one now — a turn of its own, spoken as the
+    /// parent's (see [`Harness::submit_a_parents_message`]).
     #[test]
     fn a_child_answers_a_prompt_and_leaves_the_machinery_its_parent_owns() {
         use letibot_sessionlog::CommandKind as K;
@@ -16210,30 +16414,32 @@ mod tests {
             "the operator asking a child something is a turn, not a no-op"
         );
         assert_eq!(
+            child_command(&K::Message {
+                from: "s-parent".into(),
+                text: "change of plan".into(),
+            }),
+            ChildCommand::Hear,
+            "a parent's message is heard: the child's own turn reads it"
+        );
+        assert_eq!(
             child_command(&K::Interrupt {
                 reason: "esc".into()
             }),
             ChildCommand::Stop,
             "an interrupt IS this child's stop between turns — its children go first, then it does"
         );
-        for (kind, why) in [
-            (
-                K::Message {
-                    from: "s-parent".into(),
-                    text: "change of plan".into(),
-                },
-                "a message steers a turn in flight",
-            ),
-            (K::Compact, "a door a child does not own"),
-            (
-                K::Mode {
-                    name: "allow-all".into(),
-                    consented: true,
-                },
-                "a door a child does not own",
-            ),
+        for kind in [
+            K::Compact,
+            K::Mode {
+                name: "allow-all".into(),
+                consented: true,
+            },
         ] {
-            assert_eq!(child_command(&kind), ChildCommand::Leave(why), "{kind:?}");
+            assert_eq!(
+                child_command(&kind),
+                ChildCommand::Leave("a door a child does not own"),
+                "{kind:?}"
+            );
         }
     }
 

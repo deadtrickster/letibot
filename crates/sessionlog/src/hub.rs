@@ -1583,8 +1583,19 @@ impl Hub {
     /// own thread is a lie. So a command that belongs to the session's own reader is put back
     /// here and that reader is woken: the same door as [`Hub::wake_its_own_reader`], with the
     /// work attached.
+    ///
+    /// **Exactly two kinds, and they are the two the daemon may submit at all** — the
+    /// `DAEMON_SUBMITTER` arm of [`Hub::submit`] admits an `Interrupt` and a relayed `Message`
+    /// and nothing else, so this door is as wide as that one and no wider. The message half
+    /// arrived with the between-turns fix: since a queued message is a turn the CHILD's own
+    /// thread runs, a worker that won one would be the second writer this tree keeps closing —
+    /// and its *"the turn it was meant to steer had ended, so nothing will deliver it"*
+    /// sentence would be false, because the child's reader is right there and will run it.
     pub fn give_back_to_its_own_reader(&self, cmd: QueuedCommand) -> bool {
-        if !matches!(cmd.kind, CommandKind::Interrupt { .. }) {
+        if !matches!(
+            cmd.kind,
+            CommandKind::Interrupt { .. } | CommandKind::Message { .. }
+        ) {
             return false;
         }
         self.hand_to_its_own_reader_with(Some(cmd))
@@ -2005,7 +2016,31 @@ mod tests {
         }
         assert!(quiet(&r), "and still nothing for the daemon's worker");
 
-        // Only a STOP goes back: a prompt is work the daemon CAN serve, by opening the
+        // **And a parent's message, which is the second half of the same fact.** A message
+        // for a child is no longer *"a turn in flight or nothing"*: the child's own reader
+        // starts a turn for it, so the worker running this arm's sentence instead would be
+        // both the second writer and a lie. Same door, same reader.
+        let message = QueuedCommand {
+            head_id: DAEMON_SUBMITTER.to_string(),
+            identity: "s-parent".into(),
+            client_request_id: "task_message-1".into(),
+            at_seq: hub.head_seq(),
+            kind: CommandKind::Message {
+                from: "s-parent".into(),
+                text: "stop and report what you have".into(),
+            },
+        };
+        assert!(hub.give_back_to_its_own_reader(message));
+        match hub.take_own_work() {
+            OwnWork::Command(c) => assert!(
+                matches!(c.kind, CommandKind::Message { .. }),
+                "the message is back in front of the session's own reader: {c:?}"
+            ),
+            other => panic!("expected the message back, got {other:?}"),
+        }
+        assert!(quiet(&r), "and still nothing for the daemon's worker");
+
+        // Only those two go back: a prompt is work the daemon CAN serve, by opening the
         // session, and putting one back would take a head's own words away from it.
         let prompt = QueuedCommand {
             head_id: "h1".into(),
