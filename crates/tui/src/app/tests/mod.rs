@@ -1326,6 +1326,7 @@ mod attention;
 mod commands;
 mod composer;
 mod decisions;
+mod detected;
 mod editor;
 mod jobs;
 mod misc;

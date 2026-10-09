@@ -185,6 +185,59 @@ pub(crate) fn edit_diff(
     }
 }
 
+/// **The rows a change DETECTED after a command draws** — the panel a real edit gets, for the
+/// verb `rano::agent` will not draw one for.
+///
+/// `rano` draws an [`EditDiff`] only when the verb is an edit (`Verb::is_an_edit`), and that
+/// gate is right for the HEADER: a shell command's verb is `Ran`, and rendering it as `Edited`
+/// would be exactly the lie `crates/tools/src/detect.rs` refuses to tell. It is wrong for the
+/// BODY. The pair is on the row so that the change can be *read* — the note says *"the diff
+/// beside it"* — and a row that holds both sides and draws neither is a promise with nothing
+/// behind it. That is the operator's report in their own words: *"right, but i didnt see the
+/// diff"*, about a `python3` heredoc whose edit the harness had detected correctly.
+///
+/// So the head draws the panel itself, through the same renderer ([`edit_diff`]) and under the
+/// same rule rano uses for a real edit's: [`EditDiff::rows_under`] the target, so the path line
+/// is dropped where the header already names the file; the first eight rows while the row is
+/// folded and all of them when it is open; and the count of what is left, because an elision
+/// without its denominator is a silent cut.
+///
+/// **The fold is asked even when the row is folded**, and that is the point rather than an
+/// oversight: the operator's row was folded, and a diff that appears only once you unfold a
+/// row you did not know held one is the same no diff. A real edit's panel is drawn folded too.
+pub(crate) fn detected_diff_rows(
+    e: &letibot_transcript::ToolEditExcerpt,
+    target: &str,
+    width: usize,
+    cfg: &RenderConfig,
+    diff_split: bool,
+    fold: Fold,
+) -> Vec<String> {
+    let d = edit_diff(e, width, cfg, diff_split);
+    let rows = d.rows_under(target);
+    let keep = if fold.is_open() {
+        rows.len()
+    } else {
+        8.min(rows.len())
+    };
+    let hidden = rows.len() - keep;
+    let mut out: Vec<String> = row_strings(&rows[..keep], cfg.palette())
+        .into_iter()
+        // The two columns rano's own `indent(l, 2)` puts in front of a real edit's rows.
+        .map(|l| format!("  {l}"))
+        .collect();
+    if hidden > 0 {
+        out.extend(row_strings(
+            &[rano::agent::text::one(
+                format!("  … +{hidden} diff rows · /t unfolds it"),
+                rano::style::Role::Faint,
+            )],
+            cfg.palette(),
+        ));
+    }
+    out
+}
+
 /// **A settled decision, in rano's words** — who decided, how, and the two reasons a decision
 /// carries (the decider's basis, and the guard model's advice when one was asked).
 pub(crate) fn settled_decision(d: &letibot_sessionlog::view::SettledDecision) -> SettledDecision {
@@ -286,6 +339,7 @@ pub(crate) fn call_card(
     // §4.1: `ToolCallProposed` carries a bounded display target beside the digest — the
     // path, the pattern, the command line — so a call that is still running says `Running
     // "cargo test --workspace"` rather than `Running bash`. Empty is rendered as nothing.
+    let verb = rano::agent::card::Verb::of(&c.name);
     let call = ToolCall {
         name: c.name.clone(),
         call_id: c.call_id.clone(),
@@ -295,12 +349,28 @@ pub(crate) fn call_card(
         // body by two and the turn block steps the card in by the activity indent after
         // it has rendered, so the panels are built for the width the row will have.
         diff: edit
-            .filter(|_| rano::agent::card::Verb::of(&c.name).is_an_edit())
+            .filter(|_| verb.is_an_edit())
             .map(|e| edit_diff(e, ToolCall::diff_width(cfg.width), cfg, diff_split)),
         decision: c.decision.as_ref().map(settled_decision),
         fold: fold.into(),
     };
-    row_strings(&call.lines(cfg.width), cfg.palette())
+    let mut out = row_strings(&call.lines(cfg.width), cfg.palette());
+    // **The same panel the settled row draws, for the same reason** — a change DETECTED after
+    // a command, on a call whose verb is `Ran`. The card is on screen until the row's body
+    // lands, and a diff that appeared only when the card settled would be the hand-over
+    // flickering: one frame with the change and one without, for one call. See
+    // [`detected_diff_rows`].
+    if let Some(e) = edit.filter(|_| !verb.is_an_edit()) {
+        out.extend(detected_diff_rows(
+            e,
+            &c.target,
+            ToolCall::diff_width(cfg.width),
+            cfg,
+            diff_split,
+            fold,
+        ));
+    }
+    out
 }
 
 /// Why it ended that way, when there is a why. Goes in the body, where it wraps.

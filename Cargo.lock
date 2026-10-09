@@ -761,6 +761,8 @@ name = "letibot-tui"
 version = "0.3.0"
 dependencies = [
  "letibot-sessionlog",
+ "letibot-tokencore",
+ "letibot-tools",
  "letibot-transcript",
  "letibot-ui",
  "letibot-vt",

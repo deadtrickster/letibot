@@ -36,6 +36,21 @@ libc = "0.2"
 # key *means* stays here, in `app::key_of`.
 rano = { git = "https://github.com/deadtrickster/rano", tag = "v0.8.1" }
 
+[dev-dependencies]
+# **The real tool runtime, for the one test that has to drive one.** A change detected
+# after a command is produced by `bash` and by nothing else, so a test that hand-built the
+# excerpt would be asserting about a fixture rather than about the feature: it is the tool
+# half of this that decides what the head is handed, and the defect this crate was missing
+# lived exactly in the seam between them. See `app::tests::detected`.
+letibot-tools = { workspace = true, features = ["testing"] }
+# The apparatus machinery: a test that needs a process-lifetime tree SKIPS loudly rather
+# than failing where the box has none, and `LETIBOT_REQUIRE_APPARATUS=1` refuses the skip.
+letibot-tokencore.workspace = true
+# The tool runtime's events, lifted into §4.5's enum by the one object that knows both —
+# the daemon's own mapping, so the test feeds the head what the daemon feeds it rather
+# than a second copy of that mapping written in a test.
+letibot-sessionlog = { workspace = true, features = ["tools"] }
+
 [[bin]]
 name = "letibot-tui"
 path = "src/bin/letibot-tui.rs"
