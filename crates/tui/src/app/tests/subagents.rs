@@ -161,6 +161,78 @@ fn a_fresh_head_rebuilds_the_subagent_rows_and_the_count_from_the_session_list()
     assert!(screen.contains("state unknown"), "{screen}");
 }
 
+/// **After a daemon restart the pane says how each child ended, from the store** — and in
+/// words, not markdown.
+///
+/// The operator's pane, 2026-10-09: 195 finished children, most of them `[?] state unknown`,
+/// every title `**bold**` with its asterisks. The `Subagent` event that said `done` lived on
+/// the parent's in-memory log and went with the daemon; the store still has each child's
+/// conversation, and its last row is the answer — or is not.
+#[test]
+fn a_rebuilt_child_says_how_its_stored_conversation_ended() {
+    use letibot_sessionlog::StoredEnd;
+    let child = |id: &str, title: &str, live: bool, end: Option<StoredEnd>| {
+        let mut b = brief(id, title, false);
+        b.parent_session_id = Some("s".into());
+        b.live = live;
+        b.stored_end = end;
+        b
+    };
+    let family = vec![
+        brief("s", "parent", false),
+        child(
+            "s-sub-answered",
+            "**Fix the pane.** The `[?]` rows",
+            false,
+            Some(StoredEnd::Answered {
+                first_line: "Done. **Report:**".into(),
+            }),
+        ),
+        child(
+            "s-sub-cut",
+            "cut off by a restart",
+            false,
+            Some(StoredEnd::MidTurn),
+        ),
+        child(
+            "s-sub-parked",
+            "parked on its own job",
+            true,
+            Some(StoredEnd::MidTurn),
+        ),
+    ];
+    let mut a = app();
+    a.apply(hello("s", family, Hub::new("s").snapshot()));
+    a.key(Key::CtrlG);
+    a.key(Key::Enter);
+    let screen = a.screen(120, 30).join("\n");
+    assert!(screen.contains("finished (3)"), "{screen}");
+    assert!(
+        screen.contains("[x] Fix the pane. The [?] rows"),
+        "an answered child is done, and its title is words:\n{screen}"
+    );
+    assert!(
+        screen.contains("done · Done. Report:"),
+        "the answer is the subtitle, in words:\n{screen}"
+    );
+    assert!(
+        screen.contains("stopped mid-turn"),
+        "a child cut off in a session the daemon no longer holds says so:\n{screen}"
+    );
+    // A live child between rounds is not called stopped: its last row is a result because
+    // it is waiting on something, and the list's `running: false` is not an ending.
+    let parked = screen
+        .lines()
+        .skip_while(|l| !l.contains("parked on its own job"))
+        .nth(1)
+        .unwrap_or_default();
+    assert!(parked.contains("state unknown"), "{parked}\n{screen}");
+    assert!(
+        !screen.contains("**"),
+        "markdown markers in the pane:\n{screen}"
+    );
+}
+
 /// **THE ONE THAT IS RUNNING IS AT THE TOP OF THE PANE, NOT BELOW THE FOLD.**
 ///
 /// The operator, 2026-10-06: *"i went to subagents panel and dont see it here"* — a subagent

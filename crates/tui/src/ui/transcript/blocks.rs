@@ -51,13 +51,42 @@ pub(crate) fn session_text_cols(ts: u64, cfg: &RenderConfig) -> usize {
 /// **One function because a row and the pane it points at must not disagree.** The notice looks
 /// the task up *by handle*; a second spelling of this rule over there is exactly the drift that
 /// would have them say different things about one child.
+///
+/// **And as words, not markdown.** A brief is written in markdown — `**Fix the pane.** The
+/// operator's ask…` — and a row is one plain line, so the markers drew as asterisks and
+/// backticks across every row of the operator's pane. See [`one_plain_line`].
 pub(crate) fn subagent_asked(s: &SubagentState) -> String {
     if s.task.is_empty() {
-        s.prompt.clone()
+        one_plain_line(&s.prompt)
     } else {
-        s.task.split_whitespace().collect::<Vec<_>>().join(" ")
+        one_plain_line(&s.task)
     }
 }
+
+/// **Markdown, as one line of its words**: whitespace collapsed, the inline markers gone.
+///
+/// Through rano's own lexer, so `**bold**`, `` `code` `` and `[a link](…)` read here the way
+/// they read in the transcript, less the styling a one-line row has no room for. Only the head of
+/// the text is lexed — [`PLAIN_LINE_MAX`] characters, more than any row is wide — because the pane
+/// draws every child on every frame, and a brief can be pages long.
+pub(crate) fn one_plain_line(text: &str) -> String {
+    let collapsed: String = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(PLAIN_LINE_MAX)
+        .collect();
+    rano::markdown::lex(&collapsed)
+        .iter()
+        .map(rano::markdown::Block::title)
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// How much of a text [`one_plain_line`] reads: wider than any terminal row.
+pub(crate) const PLAIN_LINE_MAX: usize = 512;
 
 /// **The daemon's completion notices, folded to one line per settlement.**
 ///

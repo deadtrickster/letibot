@@ -256,8 +256,9 @@ enum RingWait {
 /// was made, and what it is talking to.
 ///
 /// Sent to a head in `Hello` and in `Sessions`, which is what a session picker is
-/// drawn from. `#[serde(default)]` nowhere: a field that is absent and a field that
-/// is empty must not look the same, the same rule the rest of the protocol keeps.
+/// drawn from. `#[serde(default)]` nowhere but `stored_end`: a field that is absent and a
+/// field that is empty must not look the same, the same rule the rest of the protocol
+/// keeps — and `stored_end` is the one field where they are the same fact.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionBrief {
     pub session_id: String,
@@ -296,6 +297,38 @@ pub struct SessionBrief {
     pub context_tokens: Option<u64>,
     /// The last turn's cached tokens, for the cache %. `None` with `context_tokens`.
     pub context_cached: Option<u64>,
+    /// **How the stored conversation's last turn ended**, read off its last row, or `None`
+    /// for a session with no rows (or none this daemon could read).
+    ///
+    /// The one fact about a settled child that survives the daemon: the `Subagent` event that
+    /// said `done` lives on the parent's in-memory log, and after a restart a head rebuilding
+    /// the subagents pane from this list had nothing to say about any child but *state
+    /// unknown* — the operator's pane, 2026-10-09, was a wall of `[?]`.
+    ///
+    /// **The one `#[serde(default)]` on this struct, and why it may be.** The rule above is that
+    /// absent and empty must not look the same; here they ARE the same fact — `None` is *the
+    /// daemon has not told this head how the conversation ended*, and a daemon too old to say
+    /// has not told it. So it is an added defaulted field, which the protocol's own notes say
+    /// needs no version bump: a head and a daemon on either side of this change still attach.
+    #[serde(default)]
+    pub stored_end: Option<StoredEnd>,
+}
+
+/// **How a stored conversation's last turn ended**, as its last row tells it.
+///
+/// Two words and no third, because the row can only say these: an answer with no call after
+/// it is a turn that finished, and anything else — a call with no result, a result with no
+/// answer, a prompt nobody answered — is a turn that was still going when the rows stopped.
+/// Whether that turn is still going NOW is not this fact's to say: a live session's
+/// `status.running` is the measurement of now, and a child parked on its own job is alive
+/// with a result as its last row.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StoredEnd {
+    /// The last row is an answer: its first line, as the pane's subtitle.
+    Answered { first_line: String },
+    /// The last row is anything else: the turn was cut, or is still in flight.
+    MidTurn,
 }
 
 /// What a session is attached to. The daemon's own command line, which is the only
@@ -352,6 +385,14 @@ pub struct StoredBrief {
     pub context_tokens: Option<u64>,
     /// The last turn's cached tokens, for the cache %. `None` with `context_tokens`.
     pub context_cached: Option<u64>,
+    /// **How the stored conversation's last turn ended**, read off its last row, or `None`
+    /// for a session with no rows (or none this daemon could read).
+    ///
+    /// The one fact about a settled child that survives the daemon: the `Subagent` event that
+    /// said `done` lives on the parent's in-memory log, and after a restart a head rebuilding
+    /// the subagents pane from this list had nothing to say about any child but *state
+    /// unknown* — the operator's pane, 2026-10-09, was a wall of `[?]`.
+    pub stored_end: Option<StoredEnd>,
 }
 
 /// Where a registry can find sessions it is not already holding.
@@ -1302,6 +1343,7 @@ impl Registry {
                     // same fact either way.
                     context_tokens: on_disk.and_then(|d| d.context_tokens),
                     context_cached: on_disk.and_then(|d| d.context_cached),
+                    stored_end: on_disk.and_then(|d| d.stored_end.clone()),
                 }
             })
             .collect();
@@ -1325,6 +1367,7 @@ impl Registry {
                 parent_session_id: d.parent_session_id,
                 context_tokens: d.context_tokens,
                 context_cached: d.context_cached,
+                stored_end: d.stored_end,
             });
         }
         out
@@ -1919,5 +1962,44 @@ mod tests {
         r.next_command().unwrap();
         assert_eq!(r.default_id(), "s-b");
         let _ = a;
+    }
+}
+
+#[cfg(test)]
+mod stored_end_wire {
+    use super::*;
+
+    /// **A brief from a daemon that predates `stored_end` still decodes**, as `None` — which
+    /// is why the field needed no protocol bump.
+    #[test]
+    fn a_brief_without_stored_end_decodes_as_not_told() {
+        let b = SessionBrief {
+            session_id: "s".into(),
+            title: String::new(),
+            created_ms: 0,
+            status: SessionStatus::default(),
+            wiring: SessionWiring::default(),
+            live: false,
+            stored_items: 0,
+            parent_session_id: None,
+            context_tokens: None,
+            context_cached: None,
+            stored_end: Some(StoredEnd::Answered {
+                first_line: "done".into(),
+            }),
+        };
+        let mut v = serde_json::to_value(&b).unwrap();
+        assert_eq!(
+            serde_json::from_value::<SessionBrief>(v.clone()).unwrap(),
+            b,
+            "round trip"
+        );
+        v.as_object_mut().unwrap().remove("stored_end");
+        assert_eq!(
+            serde_json::from_value::<SessionBrief>(v)
+                .unwrap()
+                .stored_end,
+            None
+        );
     }
 }

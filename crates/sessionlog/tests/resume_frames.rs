@@ -98,6 +98,7 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
             parent_session_id: None,
             context_tokens: Some(44_700),
             context_cached: Some(40_000),
+            stored_end: None,
         },
         StoredBrief {
             session_id: "s-old".into(),
@@ -108,6 +109,7 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
             parent_session_id: None,
             context_tokens: Some(12_000),
             context_cached: None,
+            stored_end: None,
         },
     ]))));
     let h = serve_registry(r.clone(), socket_path(tag)).expect("bind");

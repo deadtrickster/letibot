@@ -3091,6 +3091,7 @@ impl SessionSource for StoreSessions {
                 parent_session_id: s.parent_session_id,
                 context_tokens: s.context_tokens,
                 context_cached: s.context_cached,
+                stored_end: s.last_item.as_ref().map(stored_end),
                 wiring: SessionWiring {
                     // The session's own model and workspace, from its row. The
                     // dialect and endpoint are this daemon's — they are not stored
@@ -3102,6 +3103,63 @@ impl SessionSource for StoreSessions {
                 },
             })
             .collect()
+    }
+}
+
+/// **How a stored conversation's last turn ended**, from its last row.
+///
+/// An answer with no calls is a finished turn, and its first non-empty line is what the
+/// subagents pane shows under the row. Everything else — calls the answer made, a result
+/// waiting for the next round, a prompt nobody answered, an answer cut short — is a turn
+/// that was still going when the rows stopped.
+fn stored_end(last: &letibot_transcript::TranscriptItem) -> letibot_sessionlog::StoredEnd {
+    use letibot_sessionlog::StoredEnd;
+    match last {
+        letibot_transcript::TranscriptItem::Assistant {
+            text,
+            tool_calls,
+            truncated: false,
+        } if tool_calls.is_empty() => match text.lines().map(str::trim).find(|l| !l.is_empty()) {
+            Some(line) => StoredEnd::Answered {
+                first_line: line.to_string(),
+            },
+            None => StoredEnd::MidTurn,
+        },
+        _ => StoredEnd::MidTurn,
+    }
+}
+
+#[cfg(test)]
+mod stored_end_rule {
+    use super::stored_end;
+    use letibot_sessionlog::StoredEnd;
+    use letibot_transcript::TranscriptItem;
+
+    fn answer(text: &str, calls: usize, truncated: bool) -> TranscriptItem {
+        TranscriptItem::Assistant {
+            text: text.into(),
+            tool_calls: (0..calls)
+                .map(|i| letibot_transcript::ToolCall {
+                    id: format!("c{i}"),
+                    name: "bash".into(),
+                    arguments: "{}".into(),
+                })
+                .collect(),
+            truncated,
+        }
+    }
+
+    #[test]
+    fn only_a_whole_answer_with_no_calls_is_a_finished_turn() {
+        assert_eq!(
+            stored_end(&answer("\n  Done. Report follows.\nmore", 0, false)),
+            StoredEnd::Answered {
+                first_line: "Done. Report follows.".into()
+            }
+        );
+        assert_eq!(stored_end(&answer("calling", 1, false)), StoredEnd::MidTurn);
+        assert_eq!(stored_end(&answer("cut", 0, true)), StoredEnd::MidTurn);
+        assert_eq!(stored_end(&answer("  \n", 0, false)), StoredEnd::MidTurn);
     }
 }
 

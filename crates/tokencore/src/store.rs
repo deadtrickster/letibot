@@ -814,7 +814,7 @@ pub struct SessionRecord {
 /// three things that are computed rather than stored — the transcript id, the row
 /// count and the last activity — because every caller that lists sessions needs all
 /// three and would otherwise write the same three subqueries slightly differently.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StoredSession {
     pub id: String,
     /// `None` when nobody has named it. Distinct from `Some("")`, which
@@ -841,6 +841,14 @@ pub struct StoredSession {
     /// nothing ran in. Never `Option`: "never used" is a time, not an absence, and
     /// an `Option` here would make every caller invent the same fallback.
     pub last_activity_ms: i64,
+    /// **The current transcript's last row**, or `None` for a session with no rows.
+    ///
+    /// What a list can say about how a session's last turn ended without loading the
+    /// transcript: an answer with no calls after it is a finished turn, anything else is
+    /// a turn that was still going when the rows stopped. The subagents pane reads it for
+    /// a child its head did not watch end — after a daemon restart, every one of them.
+    /// `None` too for a row this build cannot parse, which is a fact it has not got.
+    pub last_item: Option<TranscriptItem>,
     /// The last turn's prompt tokens, or `None` before a turn has finished (or on
     /// a row that predates the column). A head that attaches after a restart shows
     /// the context from this rather than waiting for a turn.
@@ -2367,7 +2375,12 @@ impl Store {
                     s.context_cached,
                     s.context_ledger,
                     s.provider_choice,
-                    s.context_window
+                    s.context_window,
+                    (SELECT i.item_json FROM transcript_item i
+                      WHERE i.transcript_id = (SELECT t.id FROM transcript t
+                          WHERE t.session_id = s.id
+                          ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
+                      ORDER BY i.seq DESC LIMIT 1)
                FROM session s",
         )?;
         let mut out: Vec<StoredSession> = stmt
@@ -2392,6 +2405,9 @@ impl Store {
                     context_ledger: r.get::<_, Option<i64>>(14)?.map(|v| v as u64),
                     provider_choice: r.get(15)?,
                     context_window: r.get::<_, Option<i64>>(16)?.map(|v| v as u64),
+                    last_item: r
+                        .get::<_, Option<String>>(17)?
+                        .and_then(|j| serde_json::from_str(&j).ok()),
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -3233,6 +3249,40 @@ mod tests {
         .unwrap();
         s.put_transcript("tr-1", "sess-1", &prefix_id).unwrap();
         ("tr-1".into(), prefix_id)
+    }
+
+    /// **A listed session carries its current transcript's last row** — what the subagents
+    /// pane reads to say how a child it did not watch ended.
+    #[test]
+    fn a_listed_session_carries_its_last_row() {
+        let s = store();
+        let (tr, _) = seeded(&s);
+        assert_eq!(
+            s.list_sessions().unwrap()[0].last_item,
+            None,
+            "no rows, no last row"
+        );
+        let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+        let answer = TranscriptItem::Assistant {
+            text: "the answer".into(),
+            tool_calls: vec![],
+            truncated: false,
+        };
+        let items = [
+            TranscriptItem::User {
+                speaker: Default::default(),
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: "the question".into(),
+                }],
+            },
+            answer.clone(),
+        ];
+        for (seq, item) in items.iter().enumerate() {
+            let toks = vec![10 + seq as u32];
+            let row = ledger.append(&format!("it-{seq}"), &toks).unwrap().clone();
+            s.append_item(&tr, seq as u32, item, &row, &toks).unwrap();
+        }
+        assert_eq!(s.list_sessions().unwrap()[0].last_item, Some(answer));
     }
 
     /// **R19.2b: one row, by ordinal, without loading the transcript it is in.**
