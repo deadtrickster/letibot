@@ -32,8 +32,9 @@
 //! Injecting into history invalidates everything after the injection:
 //! `docs/compaction.md` §2/§3 measure it at 144.6 s to re-prefill 150k tokens
 //! against 0.8 s for a cache hit. So the cached prefix is never touched
-//! mid-session on a local model, and the read happens at exactly the moments
-//! the head of the prompt is being built anyway:
+//! mid-session, and the read happens at exactly the moments the head of the
+//! prompt is being built anyway — which are one schedule, because a reseat or
+//! a compaction IS a re-open of that same head:
 //!
 //! * **Session open** — `Config::compose_system_with_notes`, before message 0
 //!   is written.
@@ -42,14 +43,13 @@
 //!   `/reingest`, which fork through the same seam) lands an edit to
 //!   `AGENTS.md` in the new base's message 0. A compaction is a cold prefill
 //!   by construction; changing the head there costs nothing extra.
-//! * **Mid-session, provider sessions only** — `Harness::submit_item`
-//!   re-reads the files and, when the assembled section differs from what
-//!   the model was last given, appends it as a `System { origin: Update }`
-//!   item. The operator's ruling, 2026-10-08: *"we cant touch prefix for
-//!   local models only, for remote we can"* — a provider session has no
-//!   local KV cache to protect, and the item is in the ledger, so what the
-//!   transcript holds and what the model read are the same bytes. A local
-//!   session gets nothing here and waits for the next base rebuild.
+//!
+//! A per-turn delivery on provider sessions was added on 2026-10-08 and
+//! removed the next day on the operator's ruling — *"look at the original
+//! ask - session open, which covers reseats, compaction"* — after a note
+//! arrived wearing a dialect's `<system-update>` envelope mid-conversation.
+//! The same schedule serves every session; nothing re-reads the files between
+//! these two moments.
 //!
 //! # The size rule
 //!
