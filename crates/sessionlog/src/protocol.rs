@@ -1181,6 +1181,25 @@ pub struct JobEntry {
     /// One line, already shortened by the daemon. Never empty: the daemon has the
     /// process table, so there is no "not in this head's window" case here.
     pub command: String,
+    /// **The name the caller gave this job**, or empty when nobody said one.
+    ///
+    /// `j57` is a counter: a person watching the pane cannot tell which running job is the
+    /// release build and which is the fold's tests, and a name is what makes a row ring a
+    /// bell. The name is the **agent's own stated intent** — `bash(slug: "release-build")` —
+    /// and **never a parse of the command line**, so empty is the honest answer for every
+    /// job nobody named: a slug derived from `W=…; cd /tmp && cargo test …` would be the
+    /// machine inventing an intent, and the command is already on the row beside it.
+    ///
+    /// **Empty and not absent, and no `PROTOCOL_VERSION` bump** — the case
+    /// [`JobEntry::never_ran`] and [`JobEntry::redirect`] below already are, and the
+    /// argument is theirs: an added, defaulted field on an existing struct. A head built
+    /// before it ignores the key and draws exactly the row it drew before; a head built
+    /// after it reading an older daemon sees `""` and draws that same row, because an id
+    /// with no name is what it was given. Nothing here is a word an older peer cannot
+    /// DECODE, which is the one thing the bumps in this file are for (see 36, 37 and 38:
+    /// a new variant, which takes the whole frame down).
+    #[serde(default)]
+    pub slug: String,
     /// `asked`, `promoted`, `promoted by NAME`.
     pub how: String,
     /// The process's own word — `exited 0`, `killed by job_kill`, `running`.
@@ -2885,6 +2904,52 @@ mod tests {
         assert!(json.contains(r#""current":"s-1""#), "{json}");
         assert!(json.contains(r#""created":null"#), "{json}");
         assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
+    }
+
+    /// **A job's name rides the `Jobs` frame, and a row written without one still reads.**
+    ///
+    /// Two facts, and the second is the one that decides whether this needs a
+    /// `PROTOCOL_VERSION` bump (it does not — see [`JobEntry::slug`]): the name has a key of
+    /// its own on the wire, and a daemon too old to send one produces exactly the row it
+    /// always produced. The head draws what it is given, so *"an id with no name"* has to be
+    /// spelled one way — empty — and not as a row that fails to parse.
+    #[test]
+    fn a_jobs_frame_carries_the_name_and_a_row_without_one_still_reads() {
+        let f = ServerFrame::Jobs {
+            session_id: "s-1".into(),
+            jobs: vec![JobEntry {
+                id: "j65".into(),
+                command: "cargo build --release".into(),
+                slug: "release-build".into(),
+                how: "asked".into(),
+                state: "running".into(),
+                running: true,
+                never_ran: false,
+                redirect: None,
+                produced: 12_288,
+                elapsed_ms: 2_000,
+            }],
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(
+            json.contains(r#""slug":"release-build""#),
+            "the key is the contract two heads agree about: {json}"
+        );
+        assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
+
+        // **The older daemon's row: the same frame with no `slug` key at all.** It reads as
+        // empty — *nobody named this* — which is the row a head drew before the field existed,
+        // and the reason this is additive rather than a bump.
+        let old = json.replace(r#","slug":"release-build""#, "");
+        assert!(!old.contains("slug"), "the field was not removed: {old}");
+        let ServerFrame::Jobs { jobs, .. } =
+            serde_json::from_str::<ServerFrame>(&old).expect("a row with no slug reads")
+        else {
+            panic!("a jobs frame")
+        };
+        assert_eq!(jobs[0].slug, "");
+        assert_eq!(jobs[0].id, "j65");
+        assert_eq!(jobs[0].command, "cargo build --release");
     }
 
     #[test]

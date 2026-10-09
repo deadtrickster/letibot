@@ -1187,6 +1187,8 @@ mod tests {
     fn spawn_a_short_job(host: &HostProcesses, secs: &str) -> JobId {
         host.spawn(&SpawnRequest {
             command: format!("sleep {secs}"),
+            // Nobody named this run: the watcher's own fixture.
+            slug: None,
             cwd: "/".into(),
             scope: ScopeKind::Session,
             scope_name: None,

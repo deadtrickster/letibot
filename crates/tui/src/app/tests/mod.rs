@@ -1181,11 +1181,28 @@ fn placeholders(screen: &[String]) -> usize {
     screen.iter().filter(|l| l.contains('\u{10EEEE}')).count()
 }
 
+/// **The same row, with the name the caller stated.** The slug is the agent's own intent and
+/// arrives on the wire beside the command; nothing derives one.
+fn named_job(
+    id: &str,
+    slug: &str,
+    command: &str,
+    running: bool,
+) -> letibot_sessionlog::protocol::JobEntry {
+    letibot_sessionlog::protocol::JobEntry {
+        slug: slug.into(),
+        ..daemon_job(id, command, running)
+    }
+}
+
 /// The daemon's answer to `ListJobs`, which is the only way a row gets here.
 fn daemon_job(id: &str, command: &str, running: bool) -> letibot_sessionlog::protocol::JobEntry {
     letibot_sessionlog::protocol::JobEntry {
         id: id.into(),
         command: command.into(),
+        // **Unnamed by default**, which is the row every one of these tests was written
+        // against; `named_job` is the one that states a name.
+        slug: String::new(),
         how: "asked".into(),
         state: if running {
             "running".into()

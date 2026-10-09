@@ -71,6 +71,19 @@ pub struct Protected {
 pub struct SpawnRequest {
     /// The command text, exactly as the model wrote it.
     pub command: String,
+    /// **The name the caller gave this work**, or `None` when nobody said one.
+    ///
+    /// The agent's own stated intent for the run — `bash(…, slug: "release-build")` —
+    /// and **never a parse of the command line**. A slug derived from
+    /// `W=…; cd /tmp && cargo test …` would be the machine inventing an intent, which is
+    /// the defect this tree refuses everywhere else; the command is already on the row,
+    /// so a guessed name earns nothing. `None` and not an empty string: *nobody named
+    /// this* is a fact, and the tool that reads the argument renders a blank one the
+    /// same way ([`crate::builtins::bash`]).
+    ///
+    /// The host makes it unique within the session at the spawn and never moves it
+    /// afterwards; see [`Job::slug`].
+    pub slug: Option<String>,
     /// Relative to the backend root.
     pub cwd: String,
     /// Which scope owns the process's lifetime.
@@ -141,6 +154,13 @@ pub enum Waited {
 pub struct JobView {
     pub id: JobId,
     pub command: String,
+    /// **The name the caller gave this job**, or `None` when nobody said one — the
+    /// stated intent, never a derivation from the command (see [`Job::slug`]).
+    ///
+    /// On the view because this is what a listing draws and what a tool resolves a
+    /// name back to a handle with: a person reading the pane and a model writing
+    /// `job_output` both need the same string, and neither may have to rebuild it.
+    pub slug: Option<String>,
     /// The job's own cgroup: what `job_kill` ends.
     pub scope: ScopeId,
     /// The scope that reaps it if nobody does: the turn, the session, or a named
@@ -160,6 +180,30 @@ pub struct JobView {
     pub ran_for: Option<Duration>,
     pub produced: u64,
     pub since_last_output: Option<Duration>,
+}
+
+impl JobView {
+    /// **What this job is called**: `release-build · j65`, or just `j65` when nobody named
+    /// it.
+    ///
+    /// One rule, on the view, because three readers need the same string — the daemon's
+    /// `/job` listing, the `JobEntry` a head draws, and a tool's own refusal when a name
+    /// matches nothing. Three spellings of it would be three answers to *which job is
+    /// this*, which is the question a name exists to answer.
+    ///
+    /// The name is flattened here as it is everywhere else text becomes a row: a name is
+    /// one line however it was typed. It is **not** re-cut to a width — the tool that takes
+    /// a name caps it at its source ([`crate::builtins::bash`]), so a name is short by
+    /// construction and a second cut would only be a second opinion.
+    pub fn label(&self) -> String {
+        match self.slug.as_deref() {
+            Some(s) if !s.trim().is_empty() => {
+                let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+                format!("{} · {}", flat, self.id.0)
+            }
+            _ => self.id.0.clone(),
+        }
+    }
 }
 
 /// One job moved from one scope's ownership to another's, with the measurement
@@ -639,6 +683,16 @@ pub struct HostProcesses {
     session: Mutex<Option<ScopeId>>,
     turn: Mutex<Option<ScopeId>>,
     jobs: Mutex<Vec<Arc<Job>>>,
+    /// **Every slug this host has handed out**, so the next one is unique.
+    ///
+    /// A record of its own rather than a scan of `jobs`, because a spawn builds its
+    /// `Arc<Job>` — and therefore decides its slug — some way before it pushes it, and
+    /// two spawns can be in flight at once (the operator's own `!` run has a thread of
+    /// its own). A scan would let both choose the same free name. A name is claimed
+    /// once and never released: a slug that two jobs answer to, one of them settled,
+    /// would make resolving it a guess, and a name that moved when a job settled would
+    /// not identify anything.
+    claimed_slugs: Mutex<Vec<String>>,
     /// **The deadlines, and the thread that enforces them.** See [`Deadlines`].
     deadlines: Arc<Deadlines>,
     reaps: Mutex<Vec<Reaping>>,
@@ -755,6 +809,7 @@ impl HostProcesses {
             session: Mutex::new(None),
             turn: Mutex::new(None),
             jobs: Mutex::new(Vec::new()),
+            claimed_slugs: Mutex::new(Vec::new()),
             reaps: Mutex::new(Vec::new()),
             promotions: Mutex::new(Vec::new()),
             pinned_path: std::env::var("PATH").unwrap_or_else(|_| {
@@ -949,12 +1004,33 @@ impl HostProcesses {
             .cloned()
     }
 
+    /// **The slug this spawn takes, made unique against every name this session has
+    /// handed out.**
+    ///
+    /// `release-build`, then `release-build-2`, `release-build-3` … until one is free.
+    /// See the field for why this is a record of its own rather than a scan of `jobs`,
+    /// and why a name is never released. The caller's spelling is otherwise untouched:
+    /// nothing here derives anything from the command, and a request that named nothing
+    /// gets nothing.
+    fn claim_slug(&self, asked: &str) -> String {
+        let mut claimed = self.claimed_slugs.lock().unwrap_or_else(|e| e.into_inner());
+        let mut name = asked.to_string();
+        let mut n = 2u32;
+        while claimed.iter().any(|c| c == &name) {
+            name = format!("{asked}-{n}");
+            n += 1;
+        }
+        claimed.push(name.clone());
+        name
+    }
+
     fn view(job: &Job) -> JobView {
         let cap = job.capture.lock().expect("capture");
         let life = job.lifetime();
         JobView {
             id: job.id.clone(),
             command: job.command.clone(),
+            slug: job.slug.clone(),
             scope: life.scope,
             owner: life.owner,
             cwd: job.cwd.clone(),
@@ -1306,6 +1382,12 @@ impl ProcessHost for HostProcesses {
         let job = Arc::new(Job::new(
             id.clone(),
             req.command.clone(),
+            // **The name, decided here and never again.** The claim is made at the point
+            // where this spawn can no longer be refused for a reason that leaves no job
+            // behind, so a failed `mkdir` does not consume a name — and the name is fixed
+            // on the record, so a listing an hour later reads the same string it read at
+            // the spawn.
+            req.slug.as_deref().map(|s| self.claim_slug(s)),
             Lifetime {
                 scope: cgroup,
                 owner: parent.clone(),
@@ -2083,6 +2165,8 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         let e = h
             .spawn(&SpawnRequest {
                 command: "true".into(),
+                // Nobody named this run: the substrate's own test, not an agent's work.
+                slug: None,
                 cwd: ".".into(),
                 scope: ScopeKind::Turn,
                 scope_name: None,
@@ -2094,6 +2178,68 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
             .unwrap_err();
         assert!(format!("{e}").contains("no cgroup v2 here"), "{e}");
         assert!(format!("{e}").contains("nothing would reap it"), "{e}");
+    }
+
+    /// **A name is unique within the session, and it never moves.**
+    ///
+    /// Two jobs the caller named `tests` are two jobs: the second is `tests-2`. The
+    /// alternative — both answering to `tests` — would make resolving a name a guess, and a
+    /// name two jobs answer to is worse than the id it was meant to replace. A settled job
+    /// keeps its name too: the name has to identify one job for as long as the session can
+    /// still be asked about it.
+    ///
+    /// **And a request that named nothing gets nothing.** No derivation, no fallback word —
+    /// the command is already on the row, so a guessed name earns nothing and costs the
+    /// truth.
+    #[test]
+    fn a_slug_is_made_unique_within_the_session_and_never_invented() {
+        // **The cgroup is apparatus** — the same skip the two tests below make, for the same
+        // reason: a container with no delegatable cgroup v2 subtree is a fact about the
+        // machine and not a failure of this claim.
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
+        ) else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("letibot-slug-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let h = HostProcesses::new(&root).expect("this box has a cgroup v2 tree");
+        let spawn = |slug: Option<&str>| {
+            h.spawn(&SpawnRequest {
+                command: "true".into(),
+                slug: slug.map(|s| s.to_string()),
+                cwd: "/".into(),
+                scope: ScopeKind::Session,
+                scope_name: None,
+                background: true,
+                env: vec![],
+                tty: false,
+            })
+            .expect("a cgroup v2 tree was measured above")
+        };
+        let slug_of = |id: &JobId| h.job(id).expect("a job this host just made").slug;
+
+        let first = spawn(Some("tests"));
+        // Settled before the next one is named: a name that came free when its job ended
+        // would point at two jobs the moment a reader looked the first one up again.
+        let _ = h.wait_job(&first, Duration::from_secs(30));
+        let second = spawn(Some("tests"));
+        let third = spawn(Some("tests"));
+        let unnamed = spawn(None);
+
+        assert_eq!(slug_of(&first).as_deref(), Some("tests"));
+        assert_eq!(slug_of(&second).as_deref(), Some("tests-2"));
+        assert_eq!(slug_of(&third).as_deref(), Some("tests-3"));
+        assert_ne!(first, second, "two jobs, two handles");
+        assert_eq!(
+            slug_of(&unnamed),
+            None,
+            "nobody named this run, so it has no name — not `tests-4` and not a guess"
+        );
+        // **Stable for the job's life**: nothing above moved a name that was already taken.
+        assert_eq!(slug_of(&first).as_deref(), Some("tests"));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -2128,6 +2274,8 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
                 // Both printf and the `${var-}` expansion are builtins, so the
                 // assertion does not depend on anything outside the pinned PATH.
                 command: "printf 'be=%s\\n' \"${BASH_ENV-}\"; printf 'path=%s\\n' \"$PATH\"".into(),
+                // Nobody named this run: the substrate's own test.
+                slug: None,
                 cwd: "/".into(),
                 scope: ScopeKind::Turn,
                 scope_name: None,
@@ -2231,6 +2379,8 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         let spawn = |tty: bool| {
             h.spawn(&SpawnRequest {
                 command: command.into(),
+                // Nobody named this run: the substrate's own test.
+                slug: None,
                 cwd: "/".into(),
                 scope: ScopeKind::Turn,
                 scope_name: None,

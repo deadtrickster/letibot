@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::exec::{JobId, ProcessHost, ScopeId, ScopeKind, Waited};
+use crate::exec::{JobId, JobView, ProcessHost, ScopeId, ScopeKind, Waited};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
@@ -73,18 +73,115 @@ pub(crate) fn unknown_job(host: &dyn ProcessHost, asked: &str) -> Invocation {
         for j in &jobs {
             s.push_str(&format!(
                 "  {} — {} — {}\n",
-                j.id,
+                j.label(),
                 j.state.word(),
                 clip(&j.command, 80)
             ));
         }
         s
     };
-    let names: Vec<String> = jobs.iter().map(|j| j.id.0.clone()).collect();
+    // **Both handles, because both are accepted.** A model that wrote a name it nearly
+    // remembered should be told the name, and a model that wrote an id should be told the
+    // id; the nearest is the nearest of either.
+    let names: Vec<String> = jobs
+        .iter()
+        .flat_map(|j| [j.id.0.clone(), j.slug.clone().unwrap_or_default()])
+        .filter(|n| !n.is_empty())
+        .collect();
     if let Some(n) = nearest(asked, &names) {
         body.push_str(&format!("\nthe nearest to `{asked}` is `{n}`.\n"));
     }
     Invocation::failed(format!("no job called `{asked}`"), body)
+}
+
+/// **Which job the caller meant**, over the daemon's table rather than over the host.
+///
+/// Pure, so the two rules that matter are assertable without a cgroup tree and a spawned
+/// job: **the id wins**, and **a name that fits more than one job is not a name**.
+enum Picked {
+    /// Exactly one job, by its index in the table: the id the caller wrote, or the one job
+    /// carrying that name.
+    One(usize),
+    /// Nothing in the table has that id and nothing carries that name.
+    Unknown,
+    /// The name fits more than one job, so it does not identify one.
+    Ambiguous(Vec<JobId>),
+}
+
+fn pick_job(jobs: &[JobView], asked: &str) -> Picked {
+    // An empty argument is not a name and not an id: the caller asked for nothing.
+    if asked.trim().is_empty() {
+        return Picked::Unknown;
+    }
+    // **The id first, and it always wins.** It is the handle the daemon mints, and a job
+    // whose *name* happens to be another job's id must not steal the call.
+    if let Some(i) = jobs.iter().position(|j| j.id.0 == asked) {
+        return Picked::One(i);
+    }
+    let named: Vec<JobId> = jobs
+        .iter()
+        .filter(|j| j.slug.as_deref() == Some(asked))
+        .map(|j| j.id.clone())
+        .collect();
+    match named.len() {
+        0 => Picked::Unknown,
+        1 => Picked::One(
+            jobs.iter()
+                .position(|j| j.id == named[0])
+                .expect("the id came from this table"),
+        ),
+        _ => Picked::Ambiguous(named),
+    }
+}
+
+/// **A job, from what the caller wrote: the id the daemon mints, or the name the agent
+/// stated when it backgrounded the work.**
+///
+/// `job_output`, `job_kill` and `job_wait` take either. A person reads `release-build` off a
+/// row, a model reads it out of the `bash` result it was just handed, and neither should have
+/// to go and find the id: the name is the agent's own word for what it was doing, and it is on
+/// the row beside the id precisely so that it can be used. The match is exact and never fuzzy —
+/// a near miss is guessed at only in the refusal, where guessing costs nothing.
+fn resolve_job(host: &dyn ProcessHost, asked: &str) -> Result<JobView, Invocation> {
+    let jobs = host.jobs();
+    match pick_job(&jobs, asked) {
+        Picked::One(i) => Ok(jobs[i].clone()),
+        Picked::Unknown => Err(unknown_job(host, asked)),
+        Picked::Ambiguous(ids) => Err(ambiguous_job(host, asked, &ids)),
+    }
+}
+
+/// The refusal for a name that fits more than one job.
+///
+/// **The daemon makes a name unique within the session, so this is the belt to that brace** —
+/// and it stays because a host that is not this daemon (a guest, a test double, a future one)
+/// can still hand out two. Guessing which was meant would act on a job the caller did not
+/// name, which is the one thing a handle exists to prevent; the ids are listed so the next
+/// call can say which.
+fn ambiguous_job(host: &dyn ProcessHost, asked: &str, ids: &[JobId]) -> Invocation {
+    let jobs = host.jobs();
+    let lines: String = ids
+        .iter()
+        .filter_map(|id| jobs.iter().find(|j| &j.id == id))
+        .map(|j| {
+            format!(
+                "  {} — {} — {}\n",
+                j.label(),
+                j.state.word(),
+                clip(&j.command, 80)
+            )
+        })
+        .collect();
+    Invocation::failed(
+        format!(
+            "`{asked}` is the name of {} jobs, so it does not name one",
+            ids.len()
+        ),
+        format!(
+            "{lines}\nNothing was done. Use the id — the name was meant to save looking it \
+             up, and a name that fits two jobs cannot do that.\n"
+        ),
+    )
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -242,7 +339,11 @@ impl Tool for JobList {
             body.push_str(&format!(
                 "\n{}  [{}]\n  command: {}\n  scope:   {} — {}\n  pid:     {}\n  \
                  elapsed: {}\n  output:  {} bytes{}\n",
-                j.id,
+                // **The name beside the id**, the same rule `/job` and the pane's entry
+                // follow ([`JobView::label`]): the listing is where a model goes to find
+                // the handle it will pass to `job_output`, and the name it stated is a
+                // handle now.
+                j.label(),
                 j.state.word(),
                 clip(&j.command, 160),
                 j.owner,
@@ -386,7 +487,7 @@ impl Tool for JobOutput {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "job": {"type": "string", "description": "The job id, as `bash` or `job_list` reported it."},
+                    "job": {"type": "string", "description": "The job to read: its id (`j65`) or the name the agent stated when it backgrounded the work (`release-build`)."},
                     "offset": {"type": "integer", "description": "Absolute byte offset to start at. Defaults to the beginning of what is still retained."},
                     "limit": {"type": "integer", "description": "How many bytes to return."}
                 },
@@ -407,10 +508,13 @@ impl Tool for JobOutput {
                  them.",
             );
         };
-        let jid = JobId(id.to_string());
-        let Some(view) = host.job(&jid) else {
-            return unknown_job(host, id);
+        // **The id or the name the agent stated.** See [`resolve_job`]: the id wins, and a
+        // name that fits two jobs is refused rather than guessed at.
+        let view = match resolve_job(host, id) {
+            Ok(v) => v,
+            Err(inv) => return inv,
         };
+        let jid = view.id.clone();
         let from = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
         let limit = args
             .get("limit")
@@ -526,7 +630,7 @@ impl Tool for JobWait {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "job": {"type": "string", "description": "Wait for this job to leave the running state."},
+                    "job": {"type": "string", "description": "Wait for this job to leave the running state: its id (`j65`) or the name the agent stated (`release-build`)."},
                     "scope": {"type": "string", "description": "Wait for this scope's cgroup to empty: `turn`, `session`, or an explicit scope's name."},
                     "timeout_ms": {"type": "integer", "description": "How long to wait before returning with the thing still running."}
                 }
@@ -577,10 +681,11 @@ fn wait_on_job(
     id: &str,
     timeout: Duration,
 ) -> Invocation {
-    let jid = JobId(id.to_string());
-    let Some(before) = host.job(&jid) else {
-        return unknown_job(host, id);
+    let before = match resolve_job(host, id) {
+        Ok(v) => v,
+        Err(inv) => return inv,
     };
+    let jid = before.id.clone();
     // Presence, before absence. A job that already finished is not a wait that
     // succeeded; it is a wait there was nothing to do, and saying so keeps the two
     // apart.
@@ -617,7 +722,11 @@ fn wait_on_job(
     // long as they were asked to, and `with_completion_delivered` unwired — a
     // harness with no watcher, a backend that cannot start processes — leaves
     // every wait behaving exactly as it did before this existed.
-    if ctx.completion_delivered(id) {
+    // **R23 is keyed on the ID, so the name has to be resolved before it is asked.** The
+    // daemon watches jobs by the handle it minted; a caller that wrote the agent's name would
+    // otherwise be told *nobody is watching this* and block for the whole deadline on a job
+    // whose answer was already in flight — the exact defect the paragraph below describes.
+    if ctx.completion_delivered(&jid.0) {
         return Invocation::ok(format!(
             "nothing to wait for: `{id}`'s completion reaches you on its own when it \
              ends — the daemon is already watching it and will hand you the result \
@@ -874,7 +983,7 @@ impl Tool for JobKill {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "job": {"type": "string", "description": "The job id to stop."},
+                    "job": {"type": "string", "description": "The job to stop: its id (`j65`) or the name the agent stated (`release-build`)."},
                     "scope": {"type": "string", "description": "Kill everything in this scope: `turn`, `session`, or an explicit scope's name."}
                 }
             }),
@@ -911,12 +1020,13 @@ impl Tool for JobKill {
         let mut asked_for: Option<String> = None;
         let reaping = match (job, scope) {
             (Some(id), _) => {
-                let jid = JobId(id.to_string());
-                let Some(view) = host.job(&jid) else {
-                    return unknown_job(host, id);
+                // **The id or the name the agent stated** — see [`resolve_job`].
+                let view = match resolve_job(host, id) {
+                    Ok(v) => v,
+                    Err(inv) => return inv,
                 };
                 asked_for = Some(view.command.clone());
-                host.kill_job(&jid)
+                host.kill_job(&view.id)
             }
             (None, Some(name)) => {
                 let Some(sid) = resolve_scope(host, name) else {
@@ -1094,6 +1204,102 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **A job, as the table holds it** — every field a resolver does not read filled with
+    /// something obvious, so a test says which facts it is about.
+    fn view(id: &str, slug: Option<&str>) -> JobView {
+        let scope = || ScopeId {
+            kind: ScopeKind::Session,
+            name: "s".into(),
+            path: std::path::PathBuf::from("/sys/fs/cgroup/x"),
+        };
+        JobView {
+            id: JobId(id.into()),
+            command: "cargo test".into(),
+            slug: slug.map(|s| s.to_string()),
+            scope: scope(),
+            owner: scope(),
+            cwd: "/".into(),
+            pid: 1,
+            background: Some(letibot_transcript::Backgrounding::Asked),
+            state: crate::exec::JobState::Running,
+            elapsed: Duration::from_secs(1),
+            ran_for: None,
+            produced: 0,
+            since_last_output: None,
+        }
+    }
+
+    /// **A job is addressable by its id or by the name the agent stated, and the id wins.**
+    ///
+    /// `job_output`, `job_kill` and `job_wait` all resolve through [`pick_job`], which is pure
+    /// for exactly this reason: the rule is about the table and nothing else, so it is
+    /// assertable without a cgroup tree, a host and a spawned job.
+    ///
+    /// **And nothing is a prefix or a guess.** The match is on the whole string: `release` is
+    /// not a way to say `release-build`, because a fuzzy match on a handle is the defect
+    /// [`unknown_job`] confines to a refusal, where being wrong costs nothing.
+    #[test]
+    fn a_job_resolves_by_its_id_or_by_the_name_the_agent_stated() {
+        let table = vec![
+            view("j1", Some("release-build")),
+            view("j2", None),
+            // **A name that collides with another job's id.** The id is the handle the daemon
+            // mints, so it wins: a job whose name happens to be `j1` must not steal a call
+            // for `j1`.
+            view("j3", Some("j1")),
+        ];
+        let one = |asked: &str| match pick_job(&table, asked) {
+            Picked::One(i) => table[i].id.0.clone(),
+            Picked::Unknown => panic!("`{asked}` resolved to nothing"),
+            Picked::Ambiguous(_) => panic!("`{asked}` was ambiguous"),
+        };
+        assert_eq!(one("j1"), "j1", "the id is the handle");
+        assert_eq!(one("release-build"), "j1", "and the name is the agent's");
+        assert_eq!(one("j2"), "j2", "a job nobody named is still addressable");
+        assert_eq!(
+            one("j3"),
+            "j3",
+            "by its own id, not by the id its name collides with"
+        );
+
+        for asked in ["release", "build", "release-build-2", "j"] {
+            assert!(
+                matches!(pick_job(&table, asked), Picked::Unknown),
+                "`{asked}` was resolved by something other than the whole string"
+            );
+        }
+        // An empty call names nothing. In particular it must not match the wire's spelling of
+        // *nobody named this*, which is the empty string.
+        assert!(matches!(pick_job(&table, ""), Picked::Unknown));
+        assert!(matches!(pick_job(&table, "   "), Picked::Unknown));
+        assert!(matches!(
+            pick_job(&[view("j9", Some(""))], ""),
+            Picked::Unknown
+        ));
+    }
+
+    /// **A name that fits two jobs is refused, not guessed at.**
+    ///
+    /// The daemon makes a name unique within the session ([`crate::exec::HostProcesses`]), so
+    /// this cannot happen through it — and the rule stays, because a host that is not this
+    /// daemon (a guest, a test double, a future one) can hand out two, and acting on whichever
+    /// sorted first would be acting on a job the caller did not name.
+    #[test]
+    fn a_name_that_fits_two_jobs_is_refused_rather_than_guessed() {
+        let table = vec![view("j1", Some("tests")), view("j2", Some("tests"))];
+        match pick_job(&table, "tests") {
+            Picked::Ambiguous(ids) => assert_eq!(
+                ids,
+                vec![JobId("j1".into()), JobId("j2".into())],
+                "both are named, so the caller can say which it meant"
+            ),
+            _ => panic!("a name two jobs answer to resolved to one of them"),
+        }
+        // The way out the refusal names is still unambiguous.
+        assert!(matches!(pick_job(&table, "j1"), Picked::One(0)));
+        assert!(matches!(pick_job(&table, "j2"), Picked::One(1)));
     }
 
     /// **The default is the ACTIVE jobs, and the count of what it hid is stated** — the operator's

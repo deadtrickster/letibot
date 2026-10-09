@@ -121,6 +121,8 @@ fn a_host_with_no_confinement_refuses_every_spawn_and_starts_nothing() {
     let e = host
         .spawn(&SpawnRequest {
             command: "echo this must not run".into(),
+            // Nobody named this run: the substrate's own test.
+            slug: None,
             cwd: ".".into(),
             scope: ScopeKind::Turn,
             scope_name: None,
@@ -165,6 +167,8 @@ fn a_bash_call_on_a_refusing_boundary_says_nothing_ran_and_is_not_a_denial() {
     let e = host
         .spawn(&SpawnRequest {
             command: "true".into(),
+            // Nobody named this run: the substrate's own test.
+            slug: None,
             cwd: ".".into(),
             scope: ScopeKind::Turn,
             scope_name: None,
@@ -797,6 +801,8 @@ fn a_forwarded_agent_socket_is_in_the_view_at_a_fixed_path_and_the_key_is_not() 
                  cat {}/id_rsa 2>&1; true",
                 keydir.display()
             ),
+            // Nobody named this run: the substrate's own test.
+            slug: None,
             cwd: ".".into(),
             scope: ScopeKind::Turn,
             scope_name: None,
@@ -918,6 +924,8 @@ fn the_environment_is_cleared_so_a_token_is_absent_rather_than_filtered() {
             command: "echo path=${PATH:+set}; echo token=${LETIBOT_TEST_FAKE_TOKEN:-absent}; \
                       echo declared=${LETIBOT_DECLARED:-absent}"
                 .into(),
+            // Nobody named this run: the substrate's own test.
+            slug: None,
             cwd: ".".into(),
             scope: ScopeKind::Turn,
             scope_name: None,

@@ -100,6 +100,8 @@ fn a_vm_backend_reads_writes_lists_runs_and_lands_its_work() {
     let id = host
         .spawn(&SpawnRequest {
             command: "echo job-ran; id -un; exit 0".into(),
+            // Nobody named this run: the substrate's own test.
+            slug: None,
             cwd: String::new(),
             scope: ScopeKind::Session,
             scope_name: None,

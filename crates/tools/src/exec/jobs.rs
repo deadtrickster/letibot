@@ -564,6 +564,22 @@ pub struct Job {
     /// What the model asked for, verbatim. Never re-rendered from argv: a command
     /// echoed back in a different spelling is a command the model did not write.
     pub command: String,
+    /// **The name the caller gave this work**, or `None` when nobody said one.
+    ///
+    /// `j57` is a counter: a person watching the pane cannot tell which running job is
+    /// the release build and which is the fold's tests, and a name is what makes a row
+    /// ring a bell. The name is the **agent's own stated intent** —
+    /// `bash(command = …, background: true, slug: "release-build")` — and never a parse
+    /// of the command line: a slug derived from `W=…; cd /tmp && cargo test …` is the
+    /// machine inventing an intent, which is the defect this tree refuses everywhere
+    /// else. **Absent is the honest answer when nobody said one**; the command is
+    /// already on the row, so a guessed slug earns nothing and costs the truth.
+    ///
+    /// **Unique within the session and fixed for the job's life.**
+    /// [`super::host::ProcessHost::spawn`] takes the name the caller asked for and
+    /// appends `-2`, `-3` … until it is free; nothing moves it afterwards, because a
+    /// name that moves while the job runs is worse than none.
+    pub slug: Option<String>,
     /// This job's **own** cgroup, which is what `job_kill` ends, and the scope
     /// that owns its lifetime — the turn, the session, or a named explicit
     /// scope. The distinction is the one a reader needs: `scope` is
@@ -601,6 +617,7 @@ impl Job {
     pub fn new(
         id: JobId,
         command: String,
+        slug: Option<String>,
         lifetime: Lifetime,
         cwd: String,
         pid: u32,
@@ -610,6 +627,7 @@ impl Job {
         Job {
             id,
             command,
+            slug,
             lifetime: Mutex::new(lifetime),
             cwd,
             started: SystemTime::now(),

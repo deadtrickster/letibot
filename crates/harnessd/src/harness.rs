@@ -6066,30 +6066,40 @@ impl Harness {
         host.jobs()
             .iter()
             .filter(|j| Self::worth_listing(j))
-            .map(|j| letibot_sessionlog::protocol::JobEntry {
-                id: j.id.0.clone(),
-                command: Self::one_line(&j.command, 120),
-                how: j
-                    .background
-                    .as_ref()
-                    .map(|b| b.phrasing())
-                    .unwrap_or_default(),
-                state: j.state.word(),
-                running: j.state.is_running(),
-                never_ran: j.state.never_ran(),
-                // **Read out of the COMMAND, not out of what has been captured** (R41). Nothing
-                // has to run to know it, and the answer does not change while the job does — so a
-                // reader learns which of their running jobs cannot be watched before they open
-                // the pane, rather than by finding an empty window and guessing why.
-                redirect: letibot_tools::builtins::output_redirect_path(&j.command),
-                produced: j.produced,
-                elapsed_ms: j
-                    .ran_for
-                    .unwrap_or(j.elapsed)
-                    .as_millis()
-                    .min(u64::MAX as u128) as u64,
-            })
+            .map(Self::job_entry)
             .collect()
+    }
+
+    /// **One job as the wire carries it.** Pure, so the row can be asserted without a host:
+    /// what this exists to pin is the name, and the honest emptiness of a job nobody named.
+    fn job_entry(j: &letibot_tools::exec::JobView) -> letibot_sessionlog::protocol::JobEntry {
+        letibot_sessionlog::protocol::JobEntry {
+            id: j.id.0.clone(),
+            command: Self::one_line(&j.command, 120),
+            // **The name the caller stated, or nothing.** Never derived here either: this is
+            // the daemon's listing, and a name it invented would be the same defect one
+            // layer up from the tool.
+            slug: j.slug.clone().unwrap_or_default(),
+            how: j
+                .background
+                .as_ref()
+                .map(|b| b.phrasing())
+                .unwrap_or_default(),
+            state: j.state.word(),
+            running: j.state.is_running(),
+            never_ran: j.state.never_ran(),
+            // **Read out of the COMMAND, not out of what has been captured** (R41). Nothing
+            // has to run to know it, and the answer does not change while the job does — so a
+            // reader learns which of their running jobs cannot be watched before they open
+            // the pane, rather than by finding an empty window and guessing why.
+            redirect: letibot_tools::builtins::output_redirect_path(&j.command),
+            produced: j.produced,
+            elapsed_ms: j
+                .ran_for
+                .unwrap_or(j.elapsed)
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+        }
     }
 
     /// Push the job table to the registry, where a head's `ListJobs` is answered
@@ -6099,6 +6109,33 @@ impl Harness {
     pub fn publish_jobs(&self) {
         self.session_registry
             .set_jobs(&self.cfg.session_id, self.job_entries());
+    }
+
+    /// **One job, as `/job` draws it** — `release-build · j65  running  4096 bytes  cargo test`,
+    /// and `j65  running  …` for a job nobody named.
+    ///
+    /// One function so the listing and the pane's own rows cannot spell a name two ways, and
+    /// so the row is assertable without a host. The id is always drawn — it is the handle
+    /// `job_output` and `/job ID` take — and a name goes in front of it, which is where a
+    /// reader's eye lands first.
+    fn job_row(j: &letibot_tools::exec::JobView) -> String {
+        format!(
+            "  {}  {}  {} bytes  {}",
+            Self::job_name(j),
+            j.state.word(),
+            j.produced,
+            Self::one_line(&j.command, 60)
+        )
+    }
+
+    /// **What a job is called on a row**: `release-build · j65`, or just `j65` when nobody
+    /// named it.
+    ///
+    /// The rule itself is [`letibot_tools::exec::JobView::label`] — one spelling for the
+    /// daemon's listing, the `JobEntry` a head draws and a tool's own refusal — and the id
+    /// is never dropped: a job with no name draws exactly what it drew before this existed.
+    fn job_name(j: &letibot_tools::exec::JobView) -> String {
+        j.label()
     }
 
     pub fn job_lines(&self) -> Vec<String> {
@@ -6129,13 +6166,7 @@ impl Harness {
         let mut out = vec![format!("{} job(s) this session has started.", jobs.len())];
         out.push(String::new());
         for j in &jobs {
-            out.push(format!(
-                "  {}  {}  {} bytes  {}",
-                j.id.0,
-                j.state.word(),
-                j.produced,
-                Self::one_line(&j.command, 60)
-            ));
+            out.push(Self::job_row(j));
         }
         out.push(String::new());
         // The ones left out are counted, not hidden: a filtered listing that does
@@ -15640,6 +15671,8 @@ mod tests {
             let id = host
                 .spawn(&SpawnRequest {
                     command: command.to_string(),
+                    // Nobody named this run: the test's own fixture.
+                    slug: None,
                     cwd: "/".into(),
                     scope: ScopeKind::Session,
                     scope_name: None,
@@ -16543,6 +16576,8 @@ mod tests {
         let job = |background, state| JobView {
             id: JobId("j1".into()),
             command: "grep -n x y".into(),
+            // Nobody named this one — which is the premise of every case below.
+            slug: None,
             scope: scope(),
             owner: scope(),
             cwd: "/".into(),
@@ -16607,6 +16642,107 @@ mod tests {
         // Internal runs of whitespace collapse, so the width asked for is the
         // width drawn.
         assert_eq!(Harness::one_line("ls   -la\t-h", 60), "ls -la -h");
+    }
+
+    /// **A named job draws its name beside its id, and an unnamed one draws what it drew
+    /// before.**
+    ///
+    /// `j57` is a counter: the operator, watching the pane, could not tell which running job
+    /// was the release build and which was the fold's tests — *"do we want to give jobs
+    /// slugs? j57 doesnt ringe the bell for me"*. The name is the agent's own stated intent,
+    /// so the row has to carry it and the absence of one has to be exactly the old row.
+    #[test]
+    fn a_named_job_draws_its_name_beside_its_id_and_an_unnamed_one_does_not() {
+        use letibot_tools::exec::{JobId, JobState, JobView, ScopeId, ScopeKind};
+        let scope = || ScopeId {
+            kind: ScopeKind::Session,
+            name: "s".into(),
+            path: std::path::PathBuf::from("/sys/fs/cgroup/x"),
+        };
+        let view = |slug: Option<&str>| JobView {
+            id: JobId("j65".into()),
+            command: "cargo build --release".into(),
+            slug: slug.map(|s| s.to_string()),
+            scope: scope(),
+            owner: scope(),
+            cwd: "/".into(),
+            pid: 1,
+            background: Some(letibot_transcript::Backgrounding::Asked),
+            state: JobState::Running,
+            elapsed: std::time::Duration::from_secs(2),
+            ran_for: None,
+            produced: 12_288,
+            since_last_output: None,
+        };
+
+        let named = Harness::job_row(&view(Some("release-build")));
+        assert_eq!(
+            named,
+            "  release-build · j65  running  12288 bytes  cargo build --release"
+        );
+        // **The name is flattened like everything else on the row** — a name is one line
+        // however it was typed, and the listing is a listing.
+        assert_eq!(
+            Harness::job_name(&view(Some("release\nbuild"))),
+            "release build · j65",
+            "a row that draws as two"
+        );
+        // **No name, no decoration**: byte-for-byte what this listing printed before slugs
+        // existed, because that is what "absent" has to mean.
+        let unnamed = Harness::job_row(&view(None));
+        assert_eq!(
+            unnamed,
+            "  j65  running  12288 bytes  cargo build --release"
+        );
+        assert!(
+            !unnamed.contains('·'),
+            "a separator with nothing before it: {unnamed:?}"
+        );
+        // And an empty string is the same claim as no name, for the same reason the wire
+        // spells absence as empty: *nobody named this* is one fact with one rendering.
+        assert_eq!(Harness::job_name(&view(Some(""))), "j65");
+    }
+
+    /// **The name reaches the wire, and a job nobody named sends an empty one.**
+    ///
+    /// The head draws `JobEntry`, so this is the half that makes the pane possible at all;
+    /// the empty half is the one an older daemon's row takes, and it must be the row that
+    /// existed before the field did.
+    #[test]
+    fn a_job_entry_carries_the_name_it_was_given_and_nothing_when_it_was_not() {
+        use letibot_tools::exec::{JobId, JobState, JobView, ScopeId, ScopeKind};
+        let scope = || ScopeId {
+            kind: ScopeKind::Session,
+            name: "s".into(),
+            path: std::path::PathBuf::from("/sys/fs/cgroup/x"),
+        };
+        let view = |slug: Option<&str>| JobView {
+            id: JobId("j65".into()),
+            command: "cargo test -p letibot-tools".into(),
+            slug: slug.map(|s| s.to_string()),
+            scope: scope(),
+            owner: scope(),
+            cwd: "/".into(),
+            pid: 1,
+            background: Some(letibot_transcript::Backgrounding::Asked),
+            state: JobState::Running,
+            elapsed: std::time::Duration::from_secs(2),
+            ran_for: None,
+            produced: 0,
+            since_last_output: None,
+        };
+
+        assert_eq!(
+            Harness::job_entry(&view(Some("fold-tests"))).slug,
+            "fold-tests"
+        );
+        assert_eq!(Harness::job_entry(&view(None)).slug, "");
+        assert_eq!(Harness::job_entry(&view(Some(""))).slug, "");
+        // The command is untouched by any of it: the name is not the command's doing.
+        assert_eq!(
+            Harness::job_entry(&view(Some("fold-tests"))).command,
+            "cargo test -p letibot-tools"
+        );
     }
 
     /// **The url is written the way it is curled.** A scheme and the chat-completions

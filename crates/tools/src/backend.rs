@@ -678,6 +678,8 @@ impl ExecBackend for HostBackend {
         let id = host
             .spawn(&SpawnRequest {
                 command: joined,
+                // The backend's own smoke run, named by nobody.
+                slug: None,
                 cwd,
                 scope: ScopeKind::Turn,
                 scope_name: None,
