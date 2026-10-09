@@ -833,3 +833,47 @@ fn ctrl_bracket_with_nothing_changed_points_at_ctrl_e() {
         a.notice
     );
 }
+
+/// **The pane is framed in the head's own look, not nano's** — the operator, 2026-10-09: *"we
+/// still have rano header on top, the ranos keymap with white backgrounds for each key, it just
+/// feels alien"*. No `rano 0.x` title row and no two-row function bar: the file in the top edge,
+/// rano's keys faint in the bottom one, the diff popup's frame.
+#[test]
+fn the_editor_pane_wears_the_heads_frame_not_nanos() {
+    let ws = workspace("frame");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    a.key(Key::CtrlBracket);
+    settle(&mut a);
+    a.route(vec![key(KeyCode::Esc, Mods::NONE)]);
+    settle(&mut a);
+    let screen = a.screen(100, 40);
+    let flat = screen.join("\n");
+    assert!(!flat.contains("rano 0."), "rano's title row: {flat}");
+    assert!(!flat.contains("C-q Exit"), "nano's function bar: {flat}");
+    let top = screen
+        .iter()
+        .find(|l| l.contains('╭') && l.contains("notes.txt"))
+        .unwrap_or_else(|| panic!("no top edge naming the file: {flat}"));
+    assert!(!top.contains("modified"), "{top}");
+    assert!(
+        screen
+            .iter()
+            .any(|l| l.contains('╰') && l.contains("write out")),
+        "rano's keys in the bottom edge: {flat}"
+    );
+    // The text is inside the frame, and the cursor's place is still said.
+    assert!(flat.contains("line 11"), "{flat}");
+    assert!(flat.contains("Ln 11"), "{flat}");
+    // Typing into the file says so in the edge.
+    route_text(&mut a, "z");
+    settle(&mut a);
+    let screen = a.screen(100, 40);
+    assert!(
+        screen
+            .iter()
+            .any(|l| l.contains('╭') && l.contains("notes.txt") && l.contains("modified")),
+        "{}",
+        screen.join("\n")
+    );
+}

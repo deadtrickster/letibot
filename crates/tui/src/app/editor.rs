@@ -132,6 +132,11 @@ impl EditorPane {
         #[cfg(test)]
         let config = rano::config::Config::default();
         let mut ed = Rano::new(rano::buffer::Buffer::new(), config);
+        // **No nano chrome**: the head frames the pane in its own look — the file in the top edge,
+        // rano's keys in the bottom one (`App::editor_rows`) — so rano draws only the text and its
+        // status row. The operator, 2026-10-09: *"we still have rano header on top, the ranos
+        // keymap with white backgrounds for each key, it just feels alien"*.
+        ed.set_chrome(rano::editor::Chrome::BARE);
         let mut keys = Keymap::new("letibot");
         keys.bind(CROSS, TO_COMPOSER);
         keys.bind(CLOSE, "exit");
@@ -536,7 +541,7 @@ impl App {
     /// **No workspace is the directory this head runs in** — a `--replay` has no session to
     /// name one, and the pane already opens a relative row against it, so a send names the
     /// place the same way instead of as `/private/var/folders/…/notes.txt:11`.
-    fn workspace_relative(&self, p: &Path) -> String {
+    pub(crate) fn workspace_relative(&self, p: &Path) -> String {
         let ws = &self.wiring.workspace;
         let root = if ws.is_empty() {
             std::env::current_dir().ok()

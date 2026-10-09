@@ -636,8 +636,7 @@ impl App {
         // conversation's own branch below fills it, so a click is never measured against rows
         // a pane is covering.
         let (x, y) = (Self::gutter(self.term_cols), usize::from(has_header));
-        let cell = |n: usize| n.min(u16::MAX as usize) as u16;
-        self.edit_area = rano::editor::Area::new(cell(x), cell(y), cell(w), cell(room));
+        self.edit_area = crate::ui::editor::editor_inner(x, y, w, room).into();
         self.file_rows.clear();
         if self.pane_open() {
             // **The pane takes the conversation's rectangle and gives it back.**
