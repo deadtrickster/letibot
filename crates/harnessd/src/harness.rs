@@ -1259,19 +1259,6 @@ pub struct Harness {
     /// store, and never read in that case — compaction is refused before the id
     /// would be used.
     prefix_id: String,
-    /// **The standing-notes section the model was last given**, markers included,
-    /// by whatever means: message 0 at open, a fork's message 0 after a base
-    /// rebuild, or a `System { origin: Update }` item mid-session on a provider
-    /// session.
-    ///
-    /// Read back off the prompt (`standing_notes::carried`) at every adoption
-    /// rather than remembered beside it, so it cannot drift from what
-    /// [`Harness::prefix`] actually holds — a resumed session's prompt is the
-    /// stored one, and its notes are whatever that prompt carries, not what a
-    /// fresh compose would put there. `None` is a session with no standing notes
-    /// in its prompt at all, which on a provider session makes the first turn
-    /// after this feature lands append them once — correct, not a regression.
-    standing: Option<String>,
     /// How many ledger rows have reached the store.
     persisted: usize,
     system_updates: u64,
@@ -3605,7 +3592,6 @@ impl Harness {
             store,
             corpus: corpus_sink,
             transcript_id,
-            standing: crate::standing_notes::carried(&prefix.system).map(str::to_string),
             prefix,
             prefix_id,
             persisted,
@@ -6781,9 +6767,9 @@ impl Harness {
         // A compaction is a cold prefill by construction (the fork replaces the
         // history), so moving the head here costs nothing extra; and when the files
         // have NOT changed, the swap is a no-op, `next == self.prefix` below, and
-        // the fork keeps the seated prefix without a new row. A local session gets
-        // the same re-read at the same moments — this is not the per-turn path,
-        // which is provider-only and lives in `submit_item`.
+        // the fork keeps the seated prefix without a new row. This and open are
+        // the whole schedule — a reseat or a compaction is a re-open of the
+        // same head — and it is the same for every session.
         let notes = crate::standing_notes::section(
             &self.cfg.workspace,
             &crate::standing_notes::global_dir(),
@@ -7050,9 +7036,6 @@ impl Harness {
             // transcript would make every later turn build the wrong bytes.
             self.prefix = next;
             self.prefix_id = next_id;
-            // Same rule as `adopt_reseat`: the tracker follows whatever the new
-            // message 0 actually carries.
-            self.standing = crate::standing_notes::carried(&self.prefix.system).map(str::to_string);
             Ok(ReseatReport {
                 fork,
                 summary_turn: outcome,
@@ -7337,11 +7320,6 @@ impl Harness {
         let after = tool_names(&prefix.tools_json);
         self.prefix = prefix;
         self.prefix_id = id;
-        // What the model was last given is what the new message 0 carries, read
-        // back off it — see the field. The per-turn check in `submit_item`
-        // compares against this, so a fork that adopted fresher notes must not
-        // still be compared against the old ones.
-        self.standing = crate::standing_notes::carried(&self.prefix.system).map(str::to_string);
         (
             after.difference(&before).cloned().collect(),
             before.difference(&after).cloned().collect(),
@@ -7576,92 +7554,13 @@ impl Harness {
     }
 
     fn submit_item(&mut self, item: TranscriptItem) -> Result<Reply, HarnessError> {
-        // **Standing notes, re-read once per turn — provider sessions only.** The
-        // operator's ruling, 2026-10-08: *"we cant touch prefix for local models
-        // only, for remote we can"*. A local session is excluded by the guard in
-        // `standing_notes_update` and gets the section at open and at every base
-        // rebuild, never here — appending per turn on a local box is resident
-        // tokens competing with the KV cache, and the two-moment rule is the
-        // cheaper one. A provider session has no local cache to protect, so an
-        // edit to `AGENTS.md` lands on the NEXT TURN rather than at the next
-        // compaction, riding as its own item in front of the words that prompted
-        // the turn — one turn, not one generation for the update and another for
-        // the prompt.
-        let items: Vec<TranscriptItem> = match self.standing_notes_update() {
-            Some(note) => vec![note, item],
-            None => vec![item],
-        };
+        let items = [item];
         let mut sink = CapturingSink::new(self.hub.clone());
         self.session.append_items(&self.engine, &items, &mut sink)?;
         self.reconcile(&mut sink, &items);
         self.persist()?;
         self.name_from_first_message();
         self.run_rounds()
-    }
-
-    /// The mid-session standing-notes re-read, as `submit_item` runs it: the
-    /// computation behind [`Harness::pending_standing_notes_update`], behind the
-    /// provider guard that is the operator's ruling (*"we cant touch prefix for
-    /// local models only, for remote we can"*). Kept as its own line so the rule
-    /// reads as a rule and not as a clause of the mechanism: a local session's
-    /// notes move at open and at every base rebuild, never here.
-    fn standing_notes_update(&mut self) -> Option<TranscriptItem> {
-        if self.provider.is_none() {
-            return None;
-        }
-        self.pending_standing_notes_update()
-    }
-
-    /// **A standing-notes change on disk, as the item that would deliver it** —
-    /// or `None` when the files assemble to what the model was last given.
-    ///
-    /// The computation half of the per-turn re-read, public for the same reason
-    /// [`Harness::reseat_target`] is: building a provider backend offline is an
-    /// environment question (whose key resolves, which preset exists), so the
-    /// mechanism is drivable without one and the GUARD — provider sessions only
-    /// — stays a one-line rule at the call site, mirroring `compact_inner`'s own
-    /// `remote = self.provider.is_some()`.
-    ///
-    /// Returns the `System { origin: Update }` item when the files on disk
-    /// assemble to something different from what the model was last given
-    /// ([`Harness::standing`]) — including a removal, which is announced as
-    /// itself rather than left to be inferred from a section that stopped
-    /// applying — and records the new value as given. Nothing is rewritten: the
-    /// item is appended, in the ledger, rendered by the dialect, so what the
-    /// transcript holds and what the model read are the same bytes. That is the
-    /// whole answer to the skew question a mid-session re-read raises, and the
-    /// tree already had the shape — the fabric block refreshes after a
-    /// compaction through the same `origin: Update` form.
-    ///
-    /// Called with no provider attached, which is what an offline driver has, it
-    /// behaves exactly as it will on a remote session — the guard is not in here.
-    pub fn pending_standing_notes_update(&mut self) -> Option<TranscriptItem> {
-        let fresh = crate::standing_notes::section(
-            &self.cfg.workspace,
-            &crate::standing_notes::global_dir(),
-            self.engine.vocab(),
-        );
-        if fresh.as_deref() == self.standing.as_deref() {
-            return None;
-        }
-        let text = match &fresh {
-            Some(s) => format!(
-                "The standing notes changed on disk since the prompt was composed. The \
-                 section below is the current one; it replaces the standing-notes section \
-                 of the system prompt above.\n\n{s}"
-            ),
-            None => "The standing notes were removed from disk; the standing-notes \
-                     section of the system prompt above no longer applies."
-                .into(),
-        };
-        self.standing = fresh;
-        self.system_updates += 1;
-        Some(
-            self.cfg
-                .dialect
-                .wiring(self.cfg.effort.as_deref())
-                .system_update(self.system_updates, &text),
-        )
     }
 
     /// Give an unnamed session a name, **once**, from the message that opened it.
