@@ -227,6 +227,14 @@ pub const TABLE: &[(&str, Class)] = &[
     // next wake finds it (the session is not stuck), but a notice the child was owed did not
     // reach it, which is exactly what the wake exists to prevent.
     ("wake_failed", Class::Failure),
+    // **A child was due its idle plan-check and the turn that carries it failed.** The
+    // sibling of `wake_failed` above, and a failure by the same argument: the session is not
+    // stuck — the check is spent rather than lost, and it comes back when the plan moves or
+    // somebody speaks to the child — but the model was owed the one sentence that says its
+    // plan is unfinished and did not get it, and a child has no worker to report that the way
+    // a session the daemon holds does. It goes on the child's own log, which its parent and
+    // the operator both read. See `harness::serve_child_under`'s `OwnWork::TimedOut` arm.
+    ("todo_check_failed", Class::Failure),
     ("promote_idle", Class::Routine),
     // **A promote routed, not answered here.** The operator's Ctrl+O arrived while
     // their own run is in flight on the bang thread, so the worker — free, by the
@@ -632,15 +640,23 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 89 codes, of which **9** are the reader's own input refused.
+    /// **The census, pinned.** 90 codes, of which **9** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_32_routine_9_refused_and_48_failures() {
+    fn the_table_is_32_routine_9_refused_and_49_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
+        // **90, not the 89 the last census was taken at.** One arrival, and it moves the red
+        // register: `todo_check_failed` is a CHILD that was due its idle plan-check and whose
+        // turn failed. A Failure by `wake_failed`'s own ruling three rows up — the session is
+        // not stuck (the check is spent rather than lost, and it comes back when the plan
+        // moves or somebody speaks), but a sentence the model was owed did not reach it, and
+        // a child has no worker to say so the way a session the daemon holds does. See
+        // `harness::serve_child_under`'s `OwnWork::TimedOut` arm.
+        //
         // **89, not the 88 the last census was taken at.** One arrival: `promote_in_flight`
         // is the sentence said when a head's Ctrl+O arrives while the operator's own run is
         // in flight on the bang thread — the worker is free by that thread's design, so the
@@ -734,12 +750,12 @@ mod the_register_census {
         //     and not a routine note: it is a check that did not happen, and the sentence's job is
         //     *look at this*, because the alternative is a command that says nothing and never
         //     ends.
-        assert_eq!(TABLE.len(), 89, "the table's size");
+        assert_eq!(TABLE.len(), 90, "the table's size");
         assert_eq!(count(Class::Routine), 32);
         assert_eq!(count(Class::Refused), 9, "the nine in READER_INPUT");
-        assert_eq!(count(Class::Failure), 48);
+        assert_eq!(count(Class::Failure), 49);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 48 of 85 and the middle is 8**, which is why the third register is a
+        // register is 49 of 90 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

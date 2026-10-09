@@ -1,108 +1,97 @@
-merge queue: a failed review is restartable — the person's verb, and the queue's own bounded retry
+harnessd: a child is a session, so it gets the idle plan-check — the clock lives on the thread that owns the harness
 
-The operator's report, verbatim: *"so merge queue has 4 failed items, we need a
-way to restart them"*.
+The operator's ruling, verbatim: *"well childs being just a session should get nags"*.
+On `main` a child got **no nag at all** — not a weak one, an absent one. The
+`agent/child-todos` merge had just made a parent's `todo_write target=` land on its
+child's board, in the child's store row and on the child's pane, and left those rows
+*unaskable*: `Sessions::rearm_todo_nag` reads `Sessions::open`, a child is **adopted
+into the registry** rather than opened, so the idle clock was never armed for one and
+a parent's row sat there until somebody happened to type into the child. That is now
+load-bearing rather than tidy: the merge-queue design drives a subagent to completion
+*"by nagging them via messages"*, and the nag is the driving half of that sentence.
 
-Four gatekeeper reviews had sat for hours on `glm-coding/glm-5.3`, whose
-provider answers `http 429: Weekly/Monthly Limit Exhausted. Your limit will
-reset at 2026-10-12 15:01:48`; the daemon that spawned them predated this tree's
-re-point of `~/.config/letibot/leticode.toml` and predated the work that makes a
-429 take the round again elsewhere. A quota is weather, and weather is not the
-defect. The defect is that **a review whose attempt failed had no way to be
-attempted again**, so four entries were stuck behind a transient condition with
-nothing in the queue able to say *try that one again now*.
+**Three halves, and the one thing not done.** **ARM** where the rows are visible —
+`ParentTodos::upsert_child` already persisted and published; it now also calls
+`hub.wake_its_own_reader()`, because a publish is not a wake (`Hub::publish` ends in
+`cv.notify_all()`, the parked reader's predicate finds no command and no wake, and it
+sleeps on with a new row and no clock armed). **DELIVER** by waking the thread that
+owns the child's harness — `serve_child` is that thread, so the clock is held *there*
+and `Hub::take_own_work_until(deadline)` gained `OwnWork::TimedOut`, the timed sibling
+of the wake that landed tonight in `2c15158`. **A worker never drives a child's turn**:
+co-locating the clock with the only executor is what makes that impossible rather than
+merely forbidden, and what it costs the worker's wait is nothing — a child's deadline
+never enters `Sessions::next_nag_at`, and a child with nothing armed passes `None` and
+keeps the old indefinite wait. **One policy, not two copies**: `TodoNagClock` holds
+only *when* and *what was last said* (schedule); what may be asked about is still
+`nag_should_arm` / `the_check_may_ask_about`, the window is still `TODO_NAG_AFTER`, and
+the text is still `Harness::nag_notice`, so a plan whose only open row is postponed is
+silent on a child for exactly the reason it is silent on a root.
 
-**A failed attempt was recorded where a judgement goes, and that is what made it
-terminal.** `Harness::review_outcome` mapped a gatekeeper child whose turn died
-(a `429`, a spawn that could not happen), or which answered with no readable
-`verdict:` block, to `decision: "failed"` / `"unreadable"` / `"could_not_start"`
-— written into `merge_review.decision` with `answered_ms` set.
-`mergequeue::review_gate` reads any word outside the gatekeeper's closed set as
-a **Refusal**, so a failure parked the entry `Failed` on the evidence *"the
-reviewer's verdict on `x` is `failed`, which is not one of accept, reject,
-needs_human"*: a judgement nobody made, on a row a person reads. And because
-`answered_ms` was set, `Harness::serve_reviews` — which filters on
-`answered_ms.is_none()` — never started another one. So the four are not *may
-land* and not *may not*; they were entries behind weather with a row that said
-somebody had judged them.
+**The merge with `main` left one door with no clock at all, and it was not the one the
+WIP was written against.** `serve_child`'s `ChildCommand::Hear` arm — a parent's
+`task_message` between turns starting the child's turn — arrived from `2c15158`, after
+this branch was written, so the auto-merge produced an arm that runs a turn and touches
+neither half of the clock. A message is a speaker and its turn is a turn: it now calls
+`nag.prompt_arrived()` (the parent may have said a new plan, so the once-per-saying must
+not outlive the saying) and `rearm_the_idle_check(..., true)`, exactly as the prompt arm
+beside it does. Without that, a child told something whose turn then moved its own board
+would not be re-armed until some *later* wake happened to notice the version.
 
-**What the store actually held for the four**, checked before this was written:
-four rows in `merge_queue` (three `failed`, one `conflict`) and four in
-`merge_review`, and all four reviews had `answered_ms` set with real closed-set
-words — `needs_human`, `reject`, `accept`, `needs_human`. So for *these* four no
-failure had been recorded as a verdict; their four children
-(`…-1791569790219{697204,823991,878554,927325}`, 70/129/108/252 rows) had
-walked the 429 ladder and then answered. The path above is live in the code all
-the same, and it is the one this closes.
+**MEASURED, and it changed the test: one parent write cannot prove the wake.** The
+preserved WIP's `child_nag.rs` passed. It passed with `hub.wake_its_own_reader()`
+deleted from `ParentTodos::upsert_child` — because the fixture spawns the child's
+serving thread and the write follows it, so the write usually beats the thread to its
+park and `serve_child_under`'s own entry re-arm answers the test. With a 500 ms park
+first, the same one-write test failed exactly as it should. So the test now writes
+**twice**: the first row is the ruling (a parent's row nags a parked child, with nobody
+typing into it), and the second write — issued after the first check has been seen, when
+the entry arm is spent and the reader is provably back in `take_own_work_until` — is the
+one that can only be answered by the parent's wake. Verified both ways: green as
+committed, and red with the wake removed (one `[todo check]` on the child's log instead
+of two, the second `wait_for` timing out).
 
-**The attempt is its own fact (schema v20).** `merge_review` gains `attempts`,
-`failed_ms` and `failure`; `ReviewRecord` carries the same three. `decision`
-stays NULL for a failed attempt, and `answered_ms` stays NULL with it — which is
-what lets the queue ask again at all. A verdict clears the failure; a restart
-clears all three.
+**And one read order in the WIP was a silently lost nag.** `serve_child_under` read the
+rows and *then* the board version; a parent's write landing between the two armed the
+clock from the OLD rows and then found the version already moved, so the wake re-armed
+nothing and the nag was gone for good. The version is the wider read and now goes first:
+version-then-rows arms from the old rows, sees the move, and re-arms from the rows the
+write just left. Same two facts, no window.
 
-**One policy, read by both halves.** `mergequeue::review_retry(review, now_ms)`
-answers `Due | Wait { in_ms } | Exhausted` from the row and the clock, and
-`MAX_REVIEW_ATTEMPTS = 3` with a wait that doubles from `REVIEW_RETRY_BASE_MS =
-30_000` is `http_retry_after`'s SHAPE — a small number, a wait that grows, and
-then a report — rather than a second policy invented here. Its numbers are its
-own and say why: one beat of the HTTP ladder is a retry inside a turn, and one
-beat of this is a whole reviewer, a child session and a turn of its own. The
-queue's pass rings under it, and **`Harness::serve_reviews` spawns under it** —
-that second reader is load-bearing, because a failed child's own settlement
-wakes its parent, so without it the host would re-spawn once per wake and the
-bound would be a bound on nothing. Three attempts and then the entry parks
-`Failed` with the failure on its row; no loop spends a model turn per beat.
+**And the WIP's `due_now` was a nag that quietly went away — found by the WIP's OWN unit
+test, which had never been run.** It read `self.due.take()`, so the deadline was spent
+*whatever the answer*: a session armed for `t+60`, asked at `t+1` because some OTHER
+session's nag (or the sweep) came due, answered "not yet" — and lost its clock, because
+`next_nag_at` no longer had a deadline to hand the worker and nothing ever asked again.
+The old `HashMap` had this right by filtering on `at <= now` *before* `nag_due.remove`;
+that order is now kept where the state lives, and a session that is not due keeps its
+deadline. `the_boundary_is_due_and_a_delivery_disarms_either_way` fails on the `take`
+and passes on the fix — which is the whole argument for the WIP's three clock unit tests
+existing at all.
 
-**And a failed entry says so where a person looks.** The failure is put on the
-entry's row FIRST, because the pane hard-truncates that line: `http 429:
-Weekly/Monthly Limit Exhausted. Your limit will reset at …` opens it, and the
-queue's own words follow. Two things in the head had to move for that to be
-readable at all, and neither is in rano: the review half said *the reviewer has
-been asked and has not answered* over an attempt that had already died, and now
-says `no verdict` (the wire's `MergeReview` gains `failure`, defaulted, so no
-`PROTOCOL_VERSION` bump — it stays 37); and the row draws
-`registry::short_id` rather than a forty-character `s-…-sub-…`, which had been
-eating the whole line and truncating the reason off the end. `Enter` on the row
-still wraps the evidence whole.
+**Also fixed in the WIP's own source, and in the shape of the tree rather than by
+hand.** `child_todos.rs:104` discarded `Option::insert`'s return — the row it replaced
+dropped on the floor, and a `must_use` warning nobody had read. And the delivery's
+failure path publishes `todo_check_failed`, which the tree's own census refuses to let
+exist unclassified: it has a `Class::Failure` row beside `wake_failed`, for the same
+argument — the session is not stuck, but a sentence the model was owed did not reach it
+— and `warning::the_register_census` moves with it to 32 routine / 9 refused / 49
+failures, 90 codes.
 
-**The person's act, in two spellings and one function.** `/queue restart
-ENTRY-ID` and `r` on a parked row in the queue pane both send `Action::Slash {
-line: "queue restart …" }`, so the key and the typed verb cannot drift — and it
-rides the existing `ClientFrame::Slash`, which is the tree's own door for *a
-daemon act with feedback on the session log*. No new frame, no protocol bump.
-`Store::restart_review` is one transaction: the entry back to `waiting` and its
-review row back to *nobody has answered*, with the entry's `UPDATE` guarded
-`WHERE state IN ('failed','conflict','stale')` so the ROW arbitrates and a
-second press moves nothing.
+**`child_nag.rs` is 505 lines that had never compiled once, and the compile errors were
+all in the test** — a claim about how much of the design was ever checked rather than
+merely written. Fixed by writing toward the tree's real API rather than the sketch's:
+the trait is `letibot_tools::builtins::todo::ChildTodos` (there is no inherent
+`ParentTodos::upsert_child`), `std::env::temp_dir`, `fetch_add(1, Ordering)`,
+`canned.endpoint.clone()` (`Canned` implements `Drop`, so no field of it can be moved
+out), and the serving thread gets its own copy of the child's id because it outlives the
+frame that named it.
 
-**A restart re-attempts the same entry and never a second reviewer beside a live
-one.** `mergequeue::restartable` refuses an attempt in flight (`answered_ms`
-NULL and `failed_ms` NULL: asked for, neither answered nor failed) and refuses
-an entry that is not parked, each by name. That is why the operator pressing it
-twice is safe: the first ask leaves the row outstanding, so the second is the
-in-flight case and says so. It announces the move as the queue's own
-`MergeEntryMoved` — a restart IS an entry move — published after the rows are
-written, `move_to`'s own order.
+What the test proves end to end: a real `Harness` opened the way
+`HarnessTaskRunner::run_to_completion` opens one, its first turn run, then parked in
+`serve_child_under` on its own thread; the parent's write through the real
+`ParentTodos`; the child's OWN log holding `[todo check]` as `Speaker::Agent`, naming
+the parent by id; once per plan and not on a metronome; and the second write earning a
+second check because the plan moved.
 
-**The model a restarted review gets is the model a fresh review gets.** A restart
-re-spawns through the ordinary subagent door, so it resolves `[roles.gatekeeper]
-model` → `leticode.toml`'s `subagent_model` → the parent's model as the file
-stands NOW. That is exactly what makes it a restart here rather than a second
-attempt at the same wall: the four were on `glm-coding/glm-5.3` and the file has
-since been re-pointed at deepseek. Nothing about the restart names a model, and
-nothing should — a model pinned into a restart would be a restart onto the model
-that just failed.
-
-Tests: `mergequeue::restart::{a_restart_re_attempts_exactly_one_review,
-a_second_restart_does_not_double_spawn,
-a_live_review_cannot_be_restarted_into_a_duplicate,
-a_review_that_cannot_be_asked_parks_with_the_failure_on_the_row,
-the_review_retry_is_bounded_and_doubles, the_failure_leads_the_row_it_is_written_on}`;
-`harness::gatekeeper_reviews::a_failed_attempt_is_not_recorded_as_a_verdict` and
-`a_readable_answer_still_writes_the_verdict`;
-`store::tests::{a_failed_attempt_is_its_own_row_and_a_restart_clears_it,
-a_v19_store_gains_the_attempt_columns}`; `slash::the_queue_sub_verb_is_the_restart_and_nothing_else`;
-and the pane's own `a_failed_review_says_so_on_the_panes_row`,
-`the_row_draws_the_short_id_so_the_reason_fits` and
-`the_restart_key_sends_the_verb_for_the_row_under_the_cursor`.
+    cargo test -p letibot-harnessd --test child_nag
+    test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out

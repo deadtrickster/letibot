@@ -241,12 +241,25 @@ impl TodoNagClock {
         self.due
     }
 
-    /// **Whether the check is due as of `now`, disarming it either way.** The disarm is
-    /// before the turn that answers it, not after: a delivery that left the old deadline
-    /// in place would fire again immediately.
+    /// **Whether the check is due as of `now`, spending the deadline when it is.** The disarm is
+    /// before the turn that answers it, not after: a delivery that left the old deadline in
+    /// place would fire again immediately.
+    ///
+    /// **And a session that is NOT due keeps its deadline.** `deliver_due_nags` walks the whole
+    /// map whenever ANY session (or the sweep) comes due, so a `take` here would spend the clock
+    /// of every session that was not yet due — armed at `t+60`, asked at `t+1`, and then never
+    /// asked again, because `next_nag_at` no longer has a deadline to hand the worker. That is
+    /// the one shape this must not have: a nag that was armed and then quietly went away. The
+    /// old `HashMap` got this right by filtering before it removed (`at <= now`, and only then
+    /// `nag_due.remove`), and this is that order, kept where the state now lives.
     pub fn due_now(&mut self, now: Instant) -> bool {
-        let due = self.due.take();
-        due.is_some_and(|at| at <= now)
+        match self.due {
+            Some(at) if at <= now => {
+                self.due = None;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// **The deadline arrived and is being answered** — `serve_child`'s half of the

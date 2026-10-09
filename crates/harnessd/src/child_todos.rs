@@ -101,7 +101,10 @@ impl ChildBoards {
                 Some(s) => s,
                 None => match Store::open(path) {
                     Ok(s) => {
-                        cell.insert(s);
+                        // `Option::insert` hands back the `&mut Store` it just placed
+                        // there. The next line takes that borrow again, so the returned
+                        // one is dropped here deliberately rather than by accident.
+                        let _ = cell.insert(s);
                         cell.as_ref().expect("just inserted")
                     }
                     Err(e) => {

@@ -11238,16 +11238,23 @@ pub fn serve_child_under(
     mut nag: crate::sessions::TodoNagClock,
 ) {
     use letibot_sessionlog::hub::OwnWork;
+    // **The board's version is how this loop sees a write that ran no turn.** A parent's
+    // `todo_write target=` moves the board from the PARENT's thread and wakes this reader;
+    // the version is what tells that wake apart from a settlement that found nothing
+    // (`Harness::wake`'s `Ok(None)`), because only one of them should re-arm the clock.
+    //
+    // **Read BEFORE the rows it describes, and that order is load-bearing.** A parent's
+    // write lands between these two lines in the worst case, and the two orders fail
+    // differently: rows-then-version arms from the OLD rows and then finds the version
+    // already moved, so the wake re-arms nothing and the nag is lost for good — while
+    // version-then-rows arms from the old rows, sees the version move, and re-arms from
+    // the rows the write just left. The version is the wider read, so it goes first.
+    let mut board_version = sub.todo_board_version();
     // **The first turn just ended on this thread, so the clock starts from its end** — the
     // same arm `Sessions::after_turn` makes for a session the daemon holds, at the same
     // moment relative to the turn. A child that finished its task with an unfinished plan
     // is exactly a session whose last turn left work open.
     nag.rearm(&sub.todo_list(), std::time::Instant::now());
-    // **The board's version is how this loop sees a write that ran no turn.** A parent's
-    // `todo_write target=` moves the board from the PARENT's thread and wakes this reader;
-    // the version is what tells that wake apart from a settlement that found nothing
-    // (`Harness::wake`'s `Ok(None)`), because only one of them should re-arm the clock.
-    let mut board_version = sub.todo_board_version();
     loop {
         let kind = match hub.take_own_work_until(nag.due_at()) {
             // The hub closed: the daemon is going away, or this session was reaped.
@@ -11369,6 +11376,15 @@ pub fn serve_child_under(
                     }
                     _ => unreachable!("`child_command` hears a Message and nothing else"),
                 };
+                // **A message is a speaker too, and the clock's own two rules are the
+                // `Answer` arm's** — this arm was added to `main` by the between-turns
+                // message fix, after this branch was written, so the merge left it with no
+                // clock handling at all and the two doors below would otherwise disagree
+                // about the same event. A parent that speaks may have said a new plan (the
+                // once-per-saying must not outlive the saying), and the turn it starts is a
+                // turn: it can move the child's own board, which is the version
+                // `rearm_the_idle_check` is watching.
+                nag.prompt_arrived();
                 if let Err(e) = sub.submit_a_parents_message(&from, &text) {
                     // The same report the prompt's failure gets, and for the same reason: a
                     // child has no worker to publish a `turn_failed`, so the sentence goes on
@@ -11383,6 +11399,9 @@ pub fn serve_child_under(
                         compaction: None,
                     });
                 }
+                // A message is a turn whether it succeeded or failed, exactly as the prompt
+                // above is — `after_turn` runs for both on the daemon.
+                rearm_the_idle_check(sub, &mut nag, &mut board_version, true);
             }
             // **The children first, then this session.** Stopping is a tree's downward edge — see
             // the supervision invariant on [`HarnessTaskRunner`] — and this is where a child that
