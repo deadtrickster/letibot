@@ -23,11 +23,20 @@ cp "$T/bin/harnessd" "$T/bin/letibot-tui"
 chmod +x "$T/bin/harnessd" "$T/bin/letibot-tui"
 
 fails=0
+# **The launcher's liveness reader has to be on the PATH this harness gives it.** It is
+# `ss` on Linux (`/usr/bin`) and `lsof` on macOS (`/usr/sbin`, and nowhere else) — so a
+# harness PATH of `/usr/bin:/bin` leaves a Mac's launcher unable to see ANY socket: `live`
+# is false, every case takes the start-a-daemon branch, and nothing that depends on a
+# listening daemon can be tested at all. MEASURED by CI's own macos job, 2026-10-09, on the
+# protocol-skew cases below: four failures that were the harness's PATH and not the
+# launcher.
+RUN_PATH="/usr/bin:/bin"
+for d in /usr/sbin /sbin; do [ -d "$d" ] && RUN_PATH="$RUN_PATH:$d"; done
 # run NAME PROVIDERS_TOML [ARGS...] -- the launcher's combined output for one case.
 run() {
   local toml="$1"; shift
   printf '%s' "$toml" > "$T/home/.config/letibot/providers.toml"
-  (cd "$T/ws" && env -i PATH="/usr/bin:/bin" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
+  (cd "$T/ws" && env -i PATH="$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
     LETIBOT_BIN="$T/bin" LETIBOT_ENDPOINT= "$(command -v bash)" "$LAUNCHER" "$@" 2>&1 </dev/null)
 }
 expect() { # expect NAME OUTPUT PATTERN -- the output must match
@@ -113,17 +122,35 @@ time.sleep(120)' "$SOCK_P" &
   _listener=$!
   sleep 0.3
 
-  out="$(run "$DEFAULT_ONLY")"
-  expect "a daemon speaking another protocol is refused, not attached to" "$out" "does not speak this build's protocol"
-  expect "  ...and the sentence names the way out" "$out" "letibot --stop"
-  expect "  ...and says nothing is lost" "$out" "on disk"
-  refuse "  ...and no head is handed to it" "$out" "THE HEAD RAN"
+  # **Can this box show the launcher a listening socket at all?** The same reader the
+  # launcher uses, asked here first, so that a harness which cannot answer that question
+  # SKIPS LOUDLY rather than reporting four failures about the launcher. A check that did
+  # not run must not look like one that did — the same rule the GGUF-gated tests keep.
+  listens() { # listens SOCKET-PATH
+    if [ "$(uname -s)" = Darwin ]; then
+      lsof -nP -U 2>/dev/null | grep -qF "$1"
+    else
+      ss -lxH 2>/dev/null | grep -qF "$1"
+    fi
+  }
+  if ! listens "$SOCK_P"; then
+    echo "skip the protocol-skew cases: nothing here reports a listening socket"
+    echo "     (ss on Linux, lsof on macOS) so the launcher cannot be shown one either."
+    echo "     NOTHING WAS CHECKED — this is a fact about the harness, not a pass."
+    kill "$_listener" 2>/dev/null || true
+  else
+    out="$(run "$DEFAULT_ONLY")"
+    expect "a daemon speaking another protocol is refused, not attached to" "$out" "does not speak this build's protocol"
+    expect "  ...and the sentence names the way out" "$out" "letibot --stop"
+    expect "  ...and says nothing is lost" "$out" "on disk"
+    refuse "  ...and no head is handed to it" "$out" "THE HEAD RAN"
 
-  out="$(run "$DEFAULT_ONLY" --attach)"
-  expect "--attach refuses in the same words" "$out" "does not speak this build's protocol"
-  refuse "  ...and does not claim to have attached" "$out" "attached to harnessd"
+    out="$(run "$DEFAULT_ONLY" --attach)"
+    expect "--attach refuses in the same words" "$out" "does not speak this build's protocol"
+    refuse "  ...and does not claim to have attached" "$out" "attached to harnessd"
 
-  kill "$_listener" 2>/dev/null || true
+    kill "$_listener" 2>/dev/null || true
+  fi
 else
   echo "skip the protocol-skew cases: no python3 to listen on a unix socket"
 fi
