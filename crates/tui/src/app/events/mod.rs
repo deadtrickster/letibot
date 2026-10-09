@@ -514,7 +514,8 @@ impl App {
             | SessionEvent::CommandIssued { .. }) => self.on_session_event(e),
             e @ (SessionEvent::TodosUpdated { .. }
             | SessionEvent::MergeEntryAdded { .. }
-            | SessionEvent::MergeEntryMoved { .. }) => self.on_todo_event(e),
+            | SessionEvent::MergeEntryMoved { .. }
+            | SessionEvent::MergeEntryRemoved { .. }) => self.on_todo_event(e),
             e @ (SessionEvent::Subagent { .. }
             | SessionEvent::JobSettled { .. }
             | SessionEvent::JobOutput { .. }) => self.on_child_event(e, ts),

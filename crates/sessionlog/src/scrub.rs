@@ -156,7 +156,11 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         // is drawn from. Scrubbing it would put a head's picture of the queue back at an
         // earlier state forever.
         | SessionEvent::MergeEntryAdded { .. }
-        | SessionEvent::MergeEntryMoved { .. } => false,
+        | SessionEvent::MergeEntryMoved { .. }
+        // Durable for the same reason, and the same read: a head replaying the backlog keeps
+        // the latest state for each entry it was told about, and a removal is the latest state
+        // — *not in the queue* — for the one it names.
+        | SessionEvent::MergeEntryRemoved { .. } => false,
     }
 }
 

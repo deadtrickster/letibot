@@ -455,6 +455,16 @@ CREATE TABLE IF NOT EXISTS job (
 -- than in a session row because the reviewer reads it: the gatekeeper's protocol is
 -- brief-first, so an entry that cannot carry its ask is an entry nobody can review against
 -- anything. Empty means nobody recorded one.
+--
+-- **`vetoed` is a WORD, not a column, and it costs no migration.** The operator's ask is
+-- *"i want to be able to approve / veto / delete"*, and the veto needs a state a person's
+-- decision can be read in: a rejection by a person is not a gate's failure and must not
+-- draw as one. `state` is `TEXT NOT NULL` with no `CHECK` — the closed set is
+-- `MergeState`'s, parsed on read (`merge_entry_from_raw`) so a word this build does not
+-- know is a named refusal rather than a silent misread — so the seventh word travels in
+-- the same column as the six. What DOES have to move for it is the wire: see
+-- `letibot_sessionlog::event::MergeState` and `PROTOCOL_VERSION` 38, because a head that
+-- cannot decode the word loses the whole frame it arrives in.
 CREATE TABLE IF NOT EXISTS merge_queue (
     id          TEXT PRIMARY KEY,
     session_id  TEXT NOT NULL,
@@ -1066,26 +1076,46 @@ pub enum MergeState {
     /// that says `waiting` while its job is dead is a lie the pane would draw. It is
     /// listed with its reason and waits for a re-enqueue rather than a silent retry.
     Stale,
+    /// **A PERSON rejected it** — the operator's verdict, not a gatekeeper's.
+    ///
+    /// The operator's ask, in their words: *"i want to be able to approve / veto / delete"*.
+    /// A refusal by a reviewer and a rejection by the operator are two different facts and
+    /// the pane must not draw them the same way: `Failed` is *the gate or the reviewer said
+    /// no*, and this is *somebody decided*, which is why it is a state of its own rather
+    /// than a `Failed` with a sentence on it. A veto is never red (the operator's ask:
+    /// *"a vetoed entry must not draw as red"*) — nothing about the branch is broken; it
+    /// was judged, by the one seat whose judgement ends the question.
+    ///
+    /// **It is terminal, and it is not `Failed`'s terminal.** The queue never takes it (its
+    /// scheduling only ever looks at `Waiting`), so no gatekeeper is asked again and no gate
+    /// runs. The way back is a person's, one state over: `mergequeue::approve` reverses the
+    /// decision it was made by, and `mergequeue::remove_merge_entry` forgets the entry.
+    Vetoed,
 }
 
 impl MergeState {
     /// **Every state, in the order the life runs** — the one list.
-    pub const ALL: [MergeState; 6] = [
+    pub const ALL: [MergeState; 7] = [
         MergeState::Waiting,
         MergeState::Taken,
         MergeState::Landed,
         MergeState::Failed,
         MergeState::Conflict,
         MergeState::Stale,
+        MergeState::Vetoed,
     ];
 
-    /// A state the queue will never leave: `Landed` is merged and cleaned up, and
-    /// `Failed`/`Conflict`/`Stale` are parked with their reason for a person to answer.
-    /// Only `Waiting` and `Taken` still move.
+    /// A state the queue will never leave on its own: `Landed` is merged and cleaned up,
+    /// and `Failed`/`Conflict`/`Stale`/`Vetoed` are parked with their reason for a person to
+    /// answer. Only `Waiting` and `Taken` still move.
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            MergeState::Landed | MergeState::Failed | MergeState::Conflict | MergeState::Stale
+            MergeState::Landed
+                | MergeState::Failed
+                | MergeState::Conflict
+                | MergeState::Stale
+                | MergeState::Vetoed
         )
     }
 
@@ -1102,6 +1132,7 @@ impl MergeState {
             MergeState::Failed => "failed",
             MergeState::Conflict => "conflict",
             MergeState::Stale => "stale",
+            MergeState::Vetoed => "vetoed",
         }
     }
 }
@@ -3056,7 +3087,7 @@ impl Store {
         let tx = self.conn.unchecked_transaction()?;
         let moved = tx.execute(
             "UPDATE merge_queue SET state = 'waiting', evidence = ?2, updated_ms = ?3
-              WHERE id = ?1 AND state IN ('failed', 'conflict', 'stale')",
+              WHERE id = ?1 AND state IN ('failed', 'conflict', 'stale', 'vetoed')",
             params![entry_id, evidence, now_ms as i64],
         )?;
         if moved == 1 {
@@ -3070,6 +3101,139 @@ impl Store {
         }
         tx.commit()?;
         Ok(moved == 1)
+    }
+
+    /// **The person's verdict REPLACES the review's** — the entry back in the queue with an
+    /// accepting verdict on it, in one transaction.
+    ///
+    /// The operator's ask, in their words: *"i want to be able to approve / veto / delete"*.
+    /// A review can be `needs_human` or a refusal, and the person who reads the branch may
+    /// disagree with it; this is where they say so. What it is NOT is a way past the gate: the
+    /// entry goes back to `waiting`, and the queue then does what it does with a waiting entry
+    /// whose verdict accepts — rebase at the tip, run the gate, land. An approval overrides a
+    /// JUDGEMENT; it never touches the landing machinery. `mergequeue::approve` is the only
+    /// caller and holds the rule; what is here is the two writes.
+    ///
+    /// **The verdict row is the arbiter, and it has to be.** Every other conditional write in
+    /// this table keys on the entry's state changing, which is what makes a second press move
+    /// nothing ([`Store::restart_review`], [`Store::veto_entry`]). An approval's post-state is
+    /// `waiting`, which is also a pre-state — the entry a person approves may be one nobody has
+    /// asked about yet — so the state cannot be the guard. The row that CHANGES is the verdict,
+    /// so the guard is there: a verdict that already accepts is not overwritten, the upsert
+    /// changes nothing, and a second press is refused rather than reported as done. The entry's
+    /// own move is conditional too, and it is the second half of the same transaction: an entry
+    /// the daemon has claimed (`taken`) or that has `landed` is not moved, and the verdict
+    /// written for it is rolled back with it.
+    ///
+    /// **The decider is recorded on the review row**: `session_id` becomes `by` — the session
+    /// the verb came from — because the pane draws that field as *attach to it to read the
+    /// argument*, and after an approval the argument that matters is the person's, in their own
+    /// session. `asked_ms` is `now_ms` for a row that did not exist: there was no ask, and the
+    /// moment somebody decided is the only true stamp the column can carry.
+    ///
+    /// **What the old verdict was is not here but on the entry's `evidence`**, in the row's own
+    /// words — `mergequeue::approve` composes that sentence, for the reason `restart` does: a
+    /// person who presses the verb on the wrong entry has to be able to see that they did.
+    pub fn approve_entry(
+        &self,
+        entry: &MergeEntry,
+        by: &str,
+        evidence: &str,
+        now_ms: u64,
+    ) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        let ruled = tx.execute(
+            "INSERT INTO merge_review
+                 (entry_id, session_id, branch, base_sha, asked_ms, answered_ms, decision,
+                  attempts, failed_ms, failure, reasons_json, files_json, commands_json)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?5, 'accept', 0, NULL, '', '[]', '[]', '[]')
+               ON CONFLICT(entry_id) DO UPDATE SET
+                 session_id = ?2, answered_ms = ?5, decision = 'accept', attempts = 0,
+                 failed_ms = NULL, failure = '', reasons_json = '[]', files_json = '[]',
+                 commands_json = '[]'
+                 WHERE merge_review.decision IS NULL OR merge_review.decision <> 'accept'",
+            params![entry.id, by, entry.branch, entry.base_sha, now_ms as i64],
+        )?;
+        // Nothing written and nothing to roll back — the drop of `tx` is the rollback, and the
+        // early return is what keeps the entry's move from happening on its own.
+        if ruled != 1 {
+            return Ok(false);
+        }
+        let moved = tx.execute(
+            "UPDATE merge_queue SET state = 'waiting', evidence = ?2, updated_ms = ?3
+              WHERE id = ?1 AND state IN ('waiting', 'failed', 'conflict', 'stale', 'vetoed')",
+            params![entry.id, evidence, now_ms as i64],
+        )?;
+        if moved != 1 {
+            // The entry moved under us between the read and the write — the daemon claimed it,
+            // or it landed. The verdict written a statement ago goes with it: a verdict for an
+            // entry that did not move is a verdict nobody asked for.
+            return Ok(false);
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// **The person's rejection** — the entry parked in `vetoed`, with their own words on it.
+    ///
+    /// The other half of *"i want to be able to approve / veto / delete"*, and the half that
+    /// must never read as a machine's: the state word says a person decided, the `evidence`
+    /// says who and in what words, and **the review row is not touched at all**. That last part
+    /// is the design rather than an omission — the reviewer's verdict is a fact about the
+    /// branch that the person overrode, and overwriting it with a person's word would put a
+    /// human decision in the column the pane reads as *the reviewer's* and lose the judgement
+    /// that was overridden.
+    ///
+    /// **Conditional on the entry being movable, and the post-state is excluded**, which is
+    /// what makes a second press move nothing: `vetoed` is not in the list, so the second
+    /// `UPDATE` matches no row and answers `false` — the row is the arbiter, not the caller's
+    /// memory of what it just did ([`Store::restart_review`]'s shape, one state over).
+    /// `taken` and `landed` are excluded for the reason every person's verb excludes them: a
+    /// veto written over an entry the daemon is mid-merge on would be overwritten by the
+    /// landing, and a landed entry is merged.
+    pub fn veto_entry(&self, entry_id: &str, evidence: &str, now_ms: u64) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE merge_queue SET state = 'vetoed', evidence = ?2, updated_ms = ?3
+              WHERE id = ?1 AND state IN ('waiting', 'failed', 'conflict', 'stale')",
+            params![entry_id, evidence, now_ms as i64],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// **Drop one entry from the queue** — the row and its review, in one transaction.
+    ///
+    /// The third of the person's three verbs. The branch and the worktree are untouched: the
+    /// queue forgets the entry, and what happens to the tree is not the queue's business any
+    /// more (`mergequeue::remove` says so in the sentence it answers with). The review row goes
+    /// with the entry — a verdict about an entry the queue no longer holds is a row nothing
+    /// reads, and leaving it would make [`Store::reviews`] a table that grows with rows no
+    /// entry can be joined against.
+    ///
+    /// **Conditional on the entry being movable.** `taken` is excluded because a gatekeeper or
+    /// a daemon mid-merge writing to a row that is gone is the second-writer shape this whole
+    /// queue is written to refuse; `landed` is excluded because a landed row is the queue's
+    /// record that main moved and the base its dependents rebase onto (`mergequeue::effective_base`),
+    /// so deleting one would silently change what a pending dependent rebases onto. The
+    /// decision and its sentences are `mergequeue::removable`'s; what is here is the write.
+    ///
+    /// A second press finds no row and answers `false`: the id that resolved a moment ago does
+    /// not resolve now, and the caller says exactly that rather than reporting a deletion twice.
+    pub fn remove_merge_entry(&self, entry_id: &str) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        let gone = tx.execute(
+            "DELETE FROM merge_queue
+              WHERE id = ?1 AND state IN ('waiting', 'failed', 'conflict', 'stale', 'vetoed')",
+            params![entry_id],
+        )?;
+        if gone != 1 {
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM merge_review WHERE entry_id = ?1",
+            params![entry_id],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// **Every review, oldest ask first** — the whole table, which is what the queue's pass
@@ -4336,6 +4500,263 @@ mod tests {
             9_000,
             "and it did not restamp the live attempt's ask"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **An approval writes the verdict the queue reads, and the second press writes
+    /// nothing.**
+    ///
+    /// The operator's ask, in their words: *"i want to be able to approve / veto / delete"*.
+    /// The verdict row is the arbiter here rather than the entry's state — the post-state
+    /// (`waiting`) is also a pre-state, because the entry a person approves may be one nobody
+    /// has asked about — so this asserts the two halves of that: the row is written, and the
+    /// same press twice writes it once.
+    #[test]
+    fn an_approval_writes_the_verdict_and_a_second_press_writes_nothing() {
+        let dir = std::env::temp_dir().join(format!("letibot-approve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let s = Store::open(&path).expect("a store");
+        let entry = |id: &str, state: MergeState| MergeEntry {
+            id: id.into(),
+            session_id: "s-child".into(),
+            branch: format!("agent/{id}"),
+            base_sha: "abc".into(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state,
+            brief: "do the work".into(),
+            evidence: "landing the branch lands nothing".into(),
+            created_ms: 1,
+            updated_ms: 1,
+            worktree: Some("/wt".into()),
+            landed_sha: None,
+        };
+        let failed = entry("m-1", MergeState::Failed);
+        s.put_merge_entry(&failed).expect("the entry");
+        // The verdict the person is overriding, with the reasons and the files it was based
+        // on: what an approval replaces, and what must not survive into the new verdict.
+        s.put_review(&ReviewRecord {
+            entry_id: "m-1".into(),
+            session_id: "s-reviewer".into(),
+            branch: failed.branch.clone(),
+            base_sha: failed.base_sha.clone(),
+            asked_ms: 1_000,
+            answered_ms: Some(1_500),
+            decision: Some("reject".into()),
+            attempts: 0,
+            failed_ms: None,
+            failure: String::new(),
+            reasons: vec!["the branch is 0 commits over its base".into()],
+            files: vec!["crates/widget.rs".into()],
+            commands: vec!["git diff base...branch".into()],
+        })
+        .expect("the reviewer's verdict");
+
+        assert!(
+            s.approve_entry(&failed, "s-operator", "approved by the operator", 9_000)
+                .expect("the approval")
+        );
+        let back = s.merge_entry("m-1").unwrap().unwrap();
+        assert_eq!(back.state, MergeState::Waiting, "back in the queue");
+        assert_eq!(back.evidence, "approved by the operator");
+        let ruled = s.merge_review("m-1").unwrap().unwrap();
+        assert_eq!(
+            ruled.decision.as_deref(),
+            Some("accept"),
+            "the verdict the queue reads"
+        );
+        assert_eq!(ruled.answered_ms, Some(9_000));
+        assert_eq!(
+            ruled.session_id, "s-operator",
+            "the decider is on the row, where the pane says *attach to read the argument*"
+        );
+        assert_eq!(ruled.attempts, 0);
+        assert!(ruled.failure.is_empty());
+        assert!(
+            ruled.reasons.is_empty() && ruled.files.is_empty(),
+            "the verdict is the person's now, not the reviewer's: {ruled:?}"
+        );
+
+        // **The second press moves nothing**, and it does not restamp the verdict either.
+        assert!(
+            !s.approve_entry(&failed, "s-operator", "approved again", 9_001)
+                .unwrap(),
+            "a verdict that already accepts is not overwritten"
+        );
+        assert_eq!(
+            s.merge_entry("m-1").unwrap().unwrap().evidence,
+            "approved by the operator"
+        );
+        assert_eq!(
+            s.merge_review("m-1").unwrap().unwrap().answered_ms,
+            Some(9_000)
+        );
+
+        // **An entry nobody has asked about gets the row the approval needs** — the upsert's
+        // insert half, and the reason `asked_ms` is the moment somebody decided.
+        let unreviewed = entry("m-2", MergeState::Waiting);
+        s.put_merge_entry(&unreviewed).expect("the entry");
+        assert!(s.merge_review("m-2").unwrap().is_none(), "nobody has asked");
+        assert!(
+            s.approve_entry(&unreviewed, "s-operator", "approved by the operator", 9_100)
+                .expect("the approval")
+        );
+        let written = s.merge_review("m-2").unwrap().unwrap();
+        assert_eq!(written.decision.as_deref(), Some("accept"));
+        assert_eq!(written.asked_ms, 9_100);
+        assert_eq!(
+            written.branch, "agent/m-2",
+            "the row carries the entry's own branch"
+        );
+
+        // **An entry the queue has taken is not moved, and the verdict goes with it.** The
+        // daemon is mid-merge on a `taken` row, and a verdict written under it would be a
+        // second writer on a row the landing is about to overwrite.
+        let taken = entry("m-3", MergeState::Taken);
+        s.put_merge_entry(&taken).expect("the entry");
+        assert!(
+            !s.approve_entry(&taken, "s-operator", "approved by the operator", 9_200)
+                .unwrap()
+        );
+        assert_eq!(
+            s.merge_entry("m-3").unwrap().unwrap().state,
+            MergeState::Taken
+        );
+        assert!(
+            s.merge_review("m-3").unwrap().is_none(),
+            "the verdict written for an entry that did not move was rolled back with it"
+        );
+        // And a landed entry is refused the same way.
+        let landed = entry("m-4", MergeState::Landed);
+        s.put_merge_entry(&landed).expect("the entry");
+        assert!(
+            !s.approve_entry(&landed, "s-operator", "approved by the operator", 9_300)
+                .unwrap()
+        );
+        // **And an id the queue has never held writes nothing at all.**
+        assert!(
+            !s.approve_entry(
+                &entry("m-nope", MergeState::Waiting),
+                "s-operator",
+                "x",
+                9_400
+            )
+            .unwrap()
+        );
+        assert!(s.merge_review("m-nope").unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A veto parks the row as a person's decision; a remove forgets the entry and its
+    /// review.**
+    ///
+    /// The two acts whose post-state is not a pre-state, so the entry row is the arbiter and
+    /// the second press moves nothing. The veto must not touch the review — the judgement it
+    /// overrode is a fact about the branch, and the pane reads that column as the reviewer's —
+    /// and the removal must take the review row with the entry rather than leaving a verdict
+    /// nothing can be joined against.
+    #[test]
+    fn a_veto_parks_the_row_and_a_remove_forgets_it() {
+        let dir = std::env::temp_dir().join(format!("letibot-veto-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let s = Store::open(&path).expect("a store");
+        let entry = |id: &str, state: MergeState| MergeEntry {
+            id: id.into(),
+            session_id: "s-child".into(),
+            branch: format!("agent/{id}"),
+            base_sha: "abc".into(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state,
+            brief: "do the work".into(),
+            evidence: "landing the branch lands nothing".into(),
+            created_ms: 1,
+            updated_ms: 1,
+            worktree: Some("/wt".into()),
+            landed_sha: None,
+        };
+        let review = |id: &str| ReviewRecord {
+            entry_id: id.into(),
+            session_id: "s-reviewer".into(),
+            branch: format!("agent/{id}"),
+            base_sha: "abc".into(),
+            asked_ms: 1_000,
+            answered_ms: Some(1_500),
+            decision: Some("reject".into()),
+            attempts: 0,
+            failed_ms: None,
+            failure: String::new(),
+            reasons: vec!["the branch is 0 commits over its base".into()],
+            files: vec![],
+            commands: vec![],
+        };
+        let waiting = entry("m-1", MergeState::Waiting);
+        s.put_merge_entry(&waiting).expect("the entry");
+        s.put_review(&review("m-1")).expect("the verdict");
+
+        assert!(
+            s.veto_entry("m-1", "vetoed by the operator: it lands nothing", 9_000)
+                .expect("the veto")
+        );
+        let parked = s.merge_entry("m-1").unwrap().unwrap();
+        assert_eq!(
+            parked.state,
+            MergeState::Vetoed,
+            "parked as a person's decision"
+        );
+        assert_eq!(parked.evidence, "vetoed by the operator: it lands nothing");
+        assert_eq!(
+            s.merge_review("m-1").unwrap().unwrap(),
+            review("m-1"),
+            "the veto does not touch the reviewer's verdict"
+        );
+        // **The second press moves nothing** — `vetoed` is not a state a veto leaves.
+        assert!(!s.veto_entry("m-1", "vetoed again", 9_001).unwrap());
+        assert_eq!(
+            s.merge_entry("m-1").unwrap().unwrap().evidence,
+            "vetoed by the operator: it lands nothing"
+        );
+
+        // **A taken entry is not vetoed and a landed one is not removed** — the daemon is
+        // mid-merge on the first and the second is merged, branch deleted and all.
+        let taken = entry("m-2", MergeState::Taken);
+        s.put_merge_entry(&taken).expect("the entry");
+        assert!(
+            !s.veto_entry("m-2", "vetoed by the operator", 9_100)
+                .unwrap()
+        );
+        assert!(!s.remove_merge_entry("m-2").unwrap());
+        assert_eq!(
+            s.merge_entry("m-2").unwrap().unwrap().state,
+            MergeState::Taken
+        );
+        let landed = entry("m-3", MergeState::Landed);
+        s.put_merge_entry(&landed).expect("the entry");
+        assert!(
+            !s.veto_entry("m-3", "vetoed by the operator", 9_200)
+                .unwrap()
+        );
+        assert!(!s.remove_merge_entry("m-3").unwrap());
+        assert_eq!(
+            s.merge_entry("m-3").unwrap().unwrap().state,
+            MergeState::Landed
+        );
+
+        // **And the remove forgets the entry and its review together.**
+        assert!(s.remove_merge_entry("m-1").unwrap());
+        assert!(s.merge_entry("m-1").unwrap().is_none());
+        assert!(s.merge_review("m-1").unwrap().is_none());
+        assert!(
+            s.merge_entries().unwrap().len() == 2,
+            "only the two parked rows are left"
+        );
+        // A second press finds no row, and an id that never existed finds none either.
+        assert!(!s.remove_merge_entry("m-1").unwrap());
+        assert!(!s.remove_merge_entry("m-nope").unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

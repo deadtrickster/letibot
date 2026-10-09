@@ -424,28 +424,40 @@ impl<'a> Sessions<'a> {
                 ok: false,
             },
             Slash::Gate(verb) => crate::slash::gate(self.base.store.as_deref(), &verb),
-            // **The merge queue's one human act.** It goes through the session's own harness
-            // because that is the half that can announce the move on every head's log: a restart
-            // is an entry going from `Failed` back to `Waiting`, and the pane may be open in a
-            // session that is not the one the entry came from.
+            // **The merge queue's person-verbs.** They go through the session's own harness
+            // because that is the half that can announce the move on every head's log — an entry
+            // moving is the pane's business, and the pane may be open in a session that is not the
+            // one the entry came from — and, for a veto, because it is the half that owns the
+            // `task_message` door the child is reached through.
             //
             // A refusal is a `SlashReply` with `ok: false`, which the worker publishes as
-            // `slash_refused` — the same door every other verb's "no" comes through, so a
-            // restart that could not happen says so where the operator is already looking.
-            Slash::Queue(crate::slash::QueueVerb::Restart { entry }) => {
-                match self.open.get_mut(session_id) {
-                    Some(h) => match h.restart_review(&entry) {
-                        Ok(line) => SlashReply {
-                            lines: vec![line],
-                            ok: true,
-                        },
-                        Err(why) => SlashReply {
-                            lines: vec![why],
-                            ok: false,
-                        },
-                    },
-                    None => SlashReply {
+            // `slash_refused` — the same door every other verb's "no" comes through, so a verb
+            // that could not happen says so where the operator is already looking.
+            Slash::Queue(verb) => {
+                use crate::slash::QueueVerb;
+                let Some(h) = self.open.get_mut(session_id) else {
+                    return SlashReply {
                         lines: vec![format!("session {session_id} is not open")],
+                        ok: false,
+                    };
+                };
+                // **`session_id` is passed to `approve` and not to the others**, because it is the
+                // one act that writes a decider onto a row: the review's `session_id` becomes the
+                // session the person decided in, and the pane draws that field as *attach to it to
+                // read the argument*.
+                let said = match verb {
+                    QueueVerb::Restart { entry } => h.restart_review(&entry),
+                    QueueVerb::Approve { entry } => h.approve_review(&entry, session_id),
+                    QueueVerb::Veto { entry, why } => h.veto_review(&entry, &why),
+                    QueueVerb::Rm { entry } => h.remove_merge_entry(&entry),
+                };
+                match said {
+                    Ok(line) => SlashReply {
+                        lines: vec![line],
+                        ok: true,
+                    },
+                    Err(why) => SlashReply {
+                        lines: vec![why],
                         ok: false,
                     },
                 }
