@@ -182,14 +182,24 @@ pub fn read_only_tools(
 /// empty one. The read-only roles name `todo_write`, so any registry they are
 /// resolved against has to include it — this is the one registration that makes
 /// those roles resolvable, and the one the harness and the test harness share.
+///
+/// `children` is the daemon-side half of the tool's `target` argument — the way a
+/// parent reaches a CHILD session's board ([`builtins::todo::ChildTodos`]). It is an
+/// `Option` because a test registry has no daemon behind it; the real harness always
+/// passes one, and a `target` call without it is refused by name.
 pub fn with_session_tools(
     mut reg: Registry,
     board: std::sync::Arc<builtins::todo::TodoBoard>,
+    children: Option<std::sync::Arc<dyn builtins::todo::ChildTodos>>,
     task_runner: std::sync::Arc<dyn builtins::task::TaskRunner>,
     skills: std::sync::Arc<builtins::skill::SkillRegistry>,
     lsp: std::sync::Arc<builtins::lsp::LspConfig>,
 ) -> Result<Registry, RegisterError> {
-    reg.register(Box::new(builtins::todo::TodoWriteTool::new(board)))?;
+    let todo = match children {
+        Some(children) => builtins::todo::TodoWriteTool::with_children(board, children),
+        None => builtins::todo::TodoWriteTool::new(board),
+    };
+    reg.register(Box::new(todo))?;
     reg.register(Box::new(builtins::skill::SkillTool::new(skills)))?;
     reg.register(Box::new(builtins::lsp::LspTool::new(lsp)))?;
     reg.register(Box::new(builtins::task::TaskTool::new(task_runner.clone())))?;
@@ -318,6 +328,7 @@ mod tests {
         let reg = with_session_tools(
             reg,
             std::sync::Arc::new(builtins::todo::TodoBoard::new(Vec::new())),
+            None,
             std::sync::Arc::new(builtins::task::NoTaskRunner),
             std::sync::Arc::new(builtins::skill::SkillRegistry::default()),
             std::sync::Arc::new(builtins::lsp::LspConfig::default()),

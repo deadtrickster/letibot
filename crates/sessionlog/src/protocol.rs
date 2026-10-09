@@ -522,10 +522,26 @@ use crate::view::Snapshot;
 /// all read. Setting a row aside and lifting it again are the operator's own acts
 /// (`/todo postpone|resume N`), so `todo_write` still takes the three words it took before.
 ///
+/// # 37: a row a PARENT session wrote on a child's board
+///
+/// [`crate::event::TodoBy`] grows `Parent(String)` — the third author, the operator's own spelling
+/// for it: *"yes - i want parent agents to be able to create todos for subagents. throught tree
+/// author - (Parent <session-id-of-parent>)"*. **No frame is added — the write itself never crosses
+/// the wire** (a parent's `todo_write` names a child by `target`, and the child's board lives in the
+/// same daemon) — **and the number still has to move**, by the same rule 36 wrote for
+/// `TodoStatus::Postponed`: `serde` has no catch-all on this enum, the author travels inside
+/// [`crate::SessionEvent::TodosUpdated`] and [`ServerFrame::Todos`], and a version-36 head cannot
+/// DECODE `"by":"Parent s-…"` — the failure takes every row in the frame down with it,
+/// mid-session. Both sides refuse the mismatch by name at ATTACH instead.
+///
+/// The variant carries the FULL session id, not a short form: a child reading its own board has to
+/// be able to tell what it decided from what it was told, and by whom. 35 stays skipped — it is
+/// reserved for `agent/agent-refresh` and this steps OVER it the way 36 did.
+///
 /// **35 is skipped rather than spent.** It was reserved for `agent/agent-refresh` — a head
 /// re-seating itself asks the status read — and that branch has not landed, so the count steps
 /// over 35 here the way it steps over 4 for `session-resume`.
-pub const PROTOCOL_VERSION: u32 = 36;
+pub const PROTOCOL_VERSION: u32 = 37;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -2545,17 +2561,21 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 36,
-            "the match above was last reconciled with the frame list at 36 — bumped for \
-             `TodoStatus::Postponed`, a NEW VARIANT on an existing enum: **no frame is added and \
-             the number still has to move**, because a version-34 head cannot DECODE the word and \
-             the failure takes the whole `TodosUpdated`/`Todos` frame down with it (the \
-             version-25 argument, at the level of a field rather than of a variant). The operator \
-             can set a row ASIDE — it persists, the model still sees it marked, and the idle \
-             check stops asking — so the four words the store spells are four words a head has to \
-             be able to read. 35 is skipped rather than spent: it was reserved for \
-             `agent/agent-refresh` — a head that re-seats itself asks what its session's \
-             pane is running — and that branch has not landed. 34 was \
+            PROTOCOL_VERSION, 37,
+            "the match above was last reconciled with the frame list at 37 — bumped for \
+             `TodoBy::Parent`, a NEW VARIANT on an existing enum: **no frame is added — the parent's \
+             write is daemon-internal, nothing new crosses the wire as a frame — and the number \
+             still has to move**, because a version-36 head cannot DECODE `\"by\":\"Parent s-…\"` \
+             and the failure takes the whole `TodosUpdated`/`Todos` frame down with it (the \
+             version-36 argument, at the level of a variant again). A parent session may now write \
+             its child's board, and the rows carry the author the operator named — `Parent <full \
+             session id>` — so a child can tell what it decided from what it was told. 35 is \
+             skipped rather than spent: it was reserved for `agent/agent-refresh` — a head that \
+             re-seats itself asks what its session's pane is running — and that branch has not \
+             landed. 36 was `TodoStatus::Postponed`, the same argument one enum over: \
+             the operator can set a row ASIDE — it persists, the model still sees it marked, and \
+             the idle check stops asking — so the four words the store spells are four words a \
+             head has to be able to read. 34 was \
              `TermStatus`, one NEW client frame and one NEW server frame (a version-33 daemon \
              would fail to parse the first, a version-33 head would fail to decode the second \
              mid-session): `ctrl-\\` now DETACHES — it sends nothing at all — and `!term close` \
@@ -2863,6 +2883,43 @@ mod tests {
         assert!(json.contains(r#""status":"completed""#), "{json}");
         assert!(json.contains(r#""status":"in_progress""#), "{json}");
         assert!(json.contains(r#""status":"postponed""#), "{json}");
+        assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
+    }
+
+    /// **A parent's row carries its author as the operator's own string, and nothing else in the
+    /// frame moves.** The third author's wire spelling is `"by":"Parent <full session id>"` —
+    /// the ruling's own words — beside `"model"` and `"operator"`, asserted on the literal bytes
+    /// for the same reason every other wire test here asserts its own: this is the one fact two
+    /// independently built heads have to agree about, and a rename is a wire change that must fail
+    /// a test rather than quietly change a spelling.
+    #[test]
+    fn a_parents_row_carries_the_authors_own_string_on_the_wire() {
+        let f = ServerFrame::Todos {
+            session_id: "s-child".into(),
+            todos: vec![
+                crate::event::TodoEntry {
+                    content: "mine, the child's own".into(),
+                    status: crate::event::TodoStatus::InProgress,
+                    by: crate::event::TodoBy::Model,
+                    when: None,
+                },
+                crate::event::TodoEntry {
+                    content: "told by the parent".into(),
+                    status: crate::event::TodoStatus::Pending,
+                    by: crate::event::TodoBy::parent_of("s-1789462738453908838"),
+                    when: None,
+                },
+            ],
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(
+            json.contains(r#""by":"Parent s-1789462738453908838""#),
+            "the author is the operator's string, in full: {json}"
+        );
+        assert!(
+            json.contains(r#""by":"model""#),
+            "and the other words are unchanged: {json}"
+        );
         assert_eq!(f, serde_json::from_str::<ServerFrame>(&json).unwrap());
     }
 

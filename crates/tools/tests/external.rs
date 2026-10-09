@@ -87,6 +87,7 @@ fn registering_these_does_not_move_an_existing_sessions_prompt() {
         ))
         .unwrap(),
         std::sync::Arc::new(letibot_tools::builtins::todo::TodoBoard::new(Vec::new())),
+        None,
         std::sync::Arc::new(letibot_tools::builtins::task::NoTaskRunner),
         std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::default()),
         std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default()),
@@ -103,6 +104,7 @@ fn registering_these_does_not_move_an_existing_sessions_prompt() {
             ))
             .unwrap(),
             std::sync::Arc::new(letibot_tools::builtins::todo::TodoBoard::new(Vec::new())),
+            None,
             std::sync::Arc::new(letibot_tools::builtins::task::NoTaskRunner),
             std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::default()),
             std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default()),

@@ -1432,8 +1432,21 @@ pub enum TodoCondition {
 }
 
 /// Who authored a todo. See `TodoItem::by`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// Three authors, and the third is a STRING: the operator's ruling — *"yes - i want parent
+/// agents to be able to create todos for subagents. throught tree author - (Parent
+/// <session-id-of-parent>)"* — names the author as `Parent <session-id>`, the FULL session id and
+/// not a short form or a display name, because a child reading its own board has to be able to
+/// tell what it decided from what it was told and by whom.
+///
+/// **Serialised as one bare string, and that is deliberate.** `by` reads in `sqlite3` as
+/// `"model"` and `"operator"` today, and the parent's rows sit beside those as
+/// `"Parent s-…"` — a `#[serde(rename_all)]` tuple variant would spell `{"parent": "…"}`
+/// instead, putting an object where every other author is a word. Custom impls on purpose, in
+/// both places that own a copy of this vocabulary (here and `letibot_sessionlog::event::TodoBy`):
+/// an unknown word is refused NAMING the word, the house rule, rather than read as the model's
+/// (`TodoItem::by`'s `#[serde(default)]` still covers a list that predates the field entirely).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TodoBy {
     /// The model wrote it with the `todo` tool.
     #[default]
@@ -1442,6 +1455,51 @@ pub enum TodoBy {
     /// tool — the model can mark the operator's item done, and the nag in `harness.rs` picks it up
     /// like any other, because it reads the board and the board no longer cares who wrote a row.
     Operator,
+    /// **A PARENT session wrote it on a CHILD's board** — the string is the author exactly as the
+    /// operator specified it, `Parent <full parent session id>`, built by [`TodoBy::parent_of`]
+    /// and never taken from a tool call: the daemon knows which session is calling, so it stamps
+    /// the author itself and a model cannot claim another one.
+    ///
+    /// Same board, same statuses, same nag as the other authors. What differs is the WRITE: a
+    /// parent's `todo_write` with a `target` is an UPSERT scoped to this authorship (rows matched
+    /// by exact text), never the whole-list replace the model's own half takes — see
+    /// `TodoBoard::upsert_parent`.
+    Parent(String),
+}
+
+impl TodoBy {
+    /// The author string for a parent's row: `Parent <session-id>`, verbatim and in full.
+    pub fn parent_of(session_id: &str) -> TodoBy {
+        TodoBy::Parent(format!("Parent {session_id}"))
+    }
+}
+
+impl serde::Serialize for TodoBy {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            TodoBy::Model => s.serialize_str("model"),
+            TodoBy::Operator => s.serialize_str("operator"),
+            // The variant CARRIES the author string, so the wire form is the string itself.
+            TodoBy::Parent(author) => s.serialize_str(author),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TodoBy {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<TodoBy, D::Error> {
+        let word = String::deserialize(d)?;
+        match word.as_str() {
+            "model" => Ok(TodoBy::Model),
+            "operator" => Ok(TodoBy::Operator),
+            // `Parent …` is the one open spelling, and the prefix is the author's own marker:
+            // anything else is a word this reader does not know, refused by name rather than
+            // read as the model's the way a catch-all would.
+            other if other.starts_with("Parent ") => Ok(TodoBy::Parent(other.to_string())),
+            other => Err(serde::de::Error::custom(format!(
+                "`{other}` is not a todo author: model, operator, or `Parent <session-id>`"
+            ))),
+        }
+    }
 }
 
 /// A todo's state. Serde as the lower-case words, so a stored list reads the
@@ -4393,6 +4451,59 @@ mod tests {
         };
         s.put_todos("sess-1", &[lifted.clone()]).unwrap();
         assert_eq!(s.todos("sess-1").unwrap(), vec![lifted]);
+    }
+
+    /// **A parent's row round trips with the operator's own spelling for its author.**
+    ///
+    /// The ruling names the author string exactly — *"throught tree author - (Parent
+    /// <session-id-of-parent>)"* — and the store is where that string has to survive, because a
+    /// resumed child rebuilds its board from here and a child that could not tell `Parent s-…`
+    /// from `model` could not tell what it decided from what it was told. The raw JSON is asserted
+    /// for the same reason the postponed test asserts its own word: `"by":"Parent s-…"` beside
+    /// `"by":"model"` is the whole of the third author as a `sqlite3` reader sees it.
+    ///
+    /// And the refusal is asserted on the word: an author this reader does not know is an error
+    /// naming the word, not a silent `model` — the same rule every other vocabulary in this tree
+    /// keeps.
+    #[test]
+    fn a_parents_row_round_trips_with_the_authors_own_string() {
+        let s = store();
+        let _seeded = seeded(&s);
+        let told = TodoItem {
+            content: "land the parity row".into(),
+            status: TodoStatus::Pending,
+            by: TodoBy::parent_of("s-1789462738453908838"),
+            when: None,
+        };
+        s.put_todos("sess-1", &[told.clone()]).unwrap();
+        assert_eq!(s.todos("sess-1").unwrap(), vec![told]);
+
+        let raw: String = s
+            .conn
+            .query_row(
+                "SELECT todos_json FROM todo WHERE session_id = ?1",
+                params!["sess-1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            raw.contains(r#""by":"Parent s-1789462738453908838""#),
+            "the author is the operator's string, in full, beside the other two words: {raw}"
+        );
+
+        // **An unknown author is refused by name.** Not read back as the model's — a list whose
+        // `by` this reader cannot parse is a list it says so about, taking nothing with it. (The
+        // `at line … column …` tail is serde_json's own and not part of the sentence.)
+        let bad = r#"[{"content":"x","status":"pending","by":"the cat"}]"#;
+        let err = serde_json::from_str::<Vec<TodoItem>>(bad)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with(
+                "`the cat` is not a todo author: model, operator, or `Parent <session-id>`"
+            ),
+            "the refusal names the word it did not understand: {err}"
+        );
     }
 
     #[test]

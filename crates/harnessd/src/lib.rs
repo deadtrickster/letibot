@@ -89,6 +89,7 @@ pub mod answers;
 pub mod backfill;
 pub mod bangrun;
 pub mod calibrate;
+pub mod child_todos;
 pub mod cli;
 pub mod config;
 pub mod corpus;

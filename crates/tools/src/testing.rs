@@ -498,6 +498,7 @@ fn build_ext(
     let mut registry = crate::with_session_tools(
         registry,
         Arc::new(crate::builtins::todo::TodoBoard::new(Vec::new())),
+        None,
         Arc::new(crate::builtins::task::NoTaskRunner),
         Arc::new(crate::builtins::skill::SkillRegistry::default()),
         Arc::new(crate::builtins::lsp::LspConfig::default()),
