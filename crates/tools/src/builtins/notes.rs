@@ -31,6 +31,36 @@
 //! dangerous rather than useful. "May be outdated" is much stronger with the
 //! age beside it, so the mtime rides along wherever the caveat does.
 //!
+//! # The abstract — the one line the index shows for a note
+//!
+//! The injected block is verbatim up to a budget and an index above it, and the
+//! first line of each note's index entry is its **abstract**: the first *proper*
+//! sentence of the note's prose, or the author's own line when the file carries
+//! one (`<!-- abstract: … -->` at the top, above the text).
+//!
+//! Both halves live here rather than in the reader, for one reason: this tool is
+//! what tells an author what the index will say, and a report computed by a
+//! second implementation is a report that can disagree with the index it
+//! describes. The reader (`letibot_harnessd::standing_notes`) imports
+//! [`abstract_of`], [`first_sentence`] and [`sort_newest_first`] for exactly that
+//! reason — the derivation, the cap and the order are stated once, here, and used
+//! by both.
+//!
+//! `add`, `append` and `replace` take an optional `abstract`. Supplied, it is
+//! written into the note as the marker line; supplied to `append`, it replaces
+//! the one that was there. Absent, nothing is written and the reader derives the
+//! abstract — the derivation is deterministic, so a note carrying a copy of it
+//! would be a note that can drift from the text under it, and the duplication is
+//! what an author would see first.
+//!
+//! # The search door
+//!
+//! `search` answers a query with paths, line numbers and the matching lines —
+//! local, no model, no network, and deliberately useful *without* the index being
+//! any good: the index names a note and its headings, and the note whose abstract
+//! is a poor summary of what it holds is still findable by its own words. That is
+//! the case the door exists for.
+//!
 //! # The seam
 //!
 //! `letibot-tools` cannot know where the workspace or the config dir are, so
@@ -93,12 +123,12 @@ struct Source {
 }
 
 impl Source {
-    /// The `*.md` files this source contributes, sorted by name — the same
-    /// order the reader's glob produces, so the tool's listing and the
-    /// injected block agree about what follows what. A single-file source
-    /// (`AGENTS.md`) contributes its file only when the file is there: the
-    /// reader skips an absent `AGENTS.md`, and a listing that named it would
-    /// be a note that does not exist.
+    /// The `*.md` files this source contributes, **newest first** — the same
+    /// order the reader assembles in ([`sort_newest_first`]), so the tool's
+    /// listing and the injected block agree about what follows what. A
+    /// single-file source (`AGENTS.md`) contributes its file only when the file
+    /// is there: the reader skips an absent `AGENTS.md`, and a listing that
+    /// named it would be a note that does not exist.
     fn notes(&self) -> Vec<PathBuf> {
         if let Some(f) = &self.file {
             return if f.is_file() {
@@ -114,25 +144,30 @@ impl Source {
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "md"))
             .collect();
-        paths.sort();
+        sort_newest_first(&mut paths);
         paths
     }
 }
 
-/// The three sources, in the reader's order: box-wide, the workspace's
-/// `AGENTS.md`, then the project's notes.
+/// **The three sources, in the reader's order — a rule, not a preference.**
+///
+/// `AGENTS.md`, then the box-wide notes, then the project's: the order the
+/// section is assembled in, and therefore the order that decides what arrives
+/// whole and what arrives as an index (see `letibot_harnessd::standing_notes`,
+/// where that rule is written down in full). `list` says it reports the notes
+/// "in prompt order", and this is what makes that sentence true.
 fn sources(scope: &dyn NotesScope) -> Vec<Source> {
     let ws = scope.workspace();
     vec![
         Source {
-            dir: scope.global_dir(),
-            file: None,
-            label: "box-wide (the operator's)",
-        },
-        Source {
             dir: ws.clone(),
             file: Some(ws.join("AGENTS.md")),
             label: "workspace instructions (the operator's)",
+        },
+        Source {
+            dir: scope.global_dir(),
+            file: None,
+            label: "box-wide (the operator's)",
         },
         Source {
             dir: ws.join(".letibot").join("notes"),
@@ -140,6 +175,23 @@ fn sources(scope: &dyn NotesScope) -> Vec<Source> {
             label: "project notes (written with this tool, and by the operator)",
         },
     ]
+}
+
+/// **Newest first, ties by name** — the order the reader assembles each notes
+/// directory in, and the order `list` reports, so the two cannot disagree about
+/// what follows what. It lives beside the writer because the reader imports it;
+/// a second sort one crate over is a sort that drifts.
+///
+/// A file whose mtime cannot be read sorts last, by name: an unreadable clock is
+/// not a reason to drop a note out of the listing, and it is not a reason to put
+/// it first either.
+///
+/// A sort and not `readdir`'s order, on the same principle the reader states: a
+/// listing that varied with directory order is a listing whose consumer misses
+/// its prefix cache for no reason.
+pub fn sort_newest_first(paths: &mut [PathBuf]) {
+    let mtime = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    paths.sort_by(|a, b| mtime(b).cmp(&mtime(a)).then_with(|| a.cmp(b)));
 }
 
 /// A note NAME as this tool accepts it: a file stem, no path in it. `.md` is
@@ -195,6 +247,21 @@ fn age_of(meta: &std::fs::Metadata) -> String {
     }
 }
 
+/// One line of a note, cut at a length a `search` answer can carry — the cap
+/// `grep`'s `clip` keeps, and for the same reason: a minified note is one line
+/// of forty kilobytes, and printing it whole turns a match into a page.
+fn clip(line: &str) -> String {
+    const CAP: usize = 400;
+    if line.chars().count() <= CAP {
+        return line.trim_end().to_string();
+    }
+    let head: String = line.chars().take(CAP).collect();
+    format!(
+        "{head}… (+{} more characters on this line)",
+        line.chars().count() - CAP
+    )
+}
+
 /// The short line every read of a note carries. Why it exists: a note is a
 /// record of what was true when someone wrote it, and without this line a
 /// stale note reads as a current fact — the one failure a notes feature must
@@ -213,6 +280,202 @@ const WHEN_READ: &str = "The harness reads notes into the prompt at session open
                          base rebuild (a compaction counts), and every turn on a provider \
                          session.";
 
+/// The marker line an author's abstract rides on, at the top of a note:
+///
+/// ```text
+/// <!-- abstract: one line saying what this note is about -->
+///
+/// the note's own text follows
+/// ```
+///
+/// An HTML comment rather than a heading or front matter, for the reason that
+/// decides it: the same file is injected VERBATIM when it is under the budget,
+/// so a marker that rendered as markdown would put a line the author did not
+/// write into the text the model reads. This one renders as nothing.
+pub const ABSTRACT_MARKER: &str = "<!-- abstract:";
+
+/// How long an abstract may be in the index, in characters.
+///
+/// A cap is not decoration: an abstract is one line of a block that has to fit a
+/// budget, and the note that most needs one is the longest one. 240 characters is
+/// a sentence and a half of this tree's prose — enough to say what a note is
+/// about, short enough that two hundred of them are still an index. Over it the
+/// abstract is cut at a character boundary and says so with an ellipsis.
+pub const ABSTRACT_CHARS: usize = 240;
+
+/// How many matching lines one `search` prints before it stops and says how
+/// many it did not.
+///
+/// A cap and not a budget: the corpus is the operator's own notes and a common
+/// word can match a thousand lines, and an answer that floods the turn is an
+/// answer the model has to spend a turn reading around. Past the cap the reply
+/// names the count it left out, so the caller can narrow rather than guess.
+const MAX_SEARCH_LINES: usize = 200;
+
+/// A note's abstract: the line the index shows for it, and where that line came
+/// from.
+pub struct Abstract {
+    /// The line itself — one line, capped at [`ABSTRACT_CHARS`].
+    pub text: String,
+    /// `true` for the author's own marker line, `false` for the note's first
+    /// proper sentence. The index says which: an abstract the harness derived is
+    /// the harness's reading of the note, and a reader that cannot tell it from
+    /// the author's is a reader taking a guess for a statement.
+    pub written: bool,
+}
+
+/// The abstract the index shows for a note: the author's marker line when the
+/// file carries one, the first proper sentence of its prose otherwise. `None`
+/// only for a file with no prose at all — one that is nothing but headings.
+pub fn abstract_of(text: &str) -> Option<Abstract> {
+    if let Some(written) = written_abstract(text) {
+        return Some(Abstract {
+            text: cap(&written),
+            written: true,
+        });
+    }
+    first_sentence(text).map(|text| Abstract {
+        text,
+        written: false,
+    })
+}
+
+/// The first **proper** sentence of a note's prose, capped at [`ABSTRACT_CHARS`]
+/// — `None` when the text holds no prose at all (only headings, blank lines or
+/// the abstract marker).
+///
+/// Proper, because the first version of this rule counted every period, and it
+/// was measured cutting a lead inside `exit 101 in 2.` (the period of `2.7 s`)
+/// and inside a path (`merge_review.attempts, .`). A period ends a sentence only
+/// when whitespace or the end of the text follows it, which is the same
+/// statement as *never a period inside a number or a filename*: `2.7`,
+/// `merge_review.attempts` and `notes.md` all continue with a character.
+///
+/// A text with no sentence end in it is its own first sentence, and the cap is
+/// what makes that a line rather than the whole note.
+pub fn first_sentence(text: &str) -> Option<String> {
+    let prose = prose_lines(text);
+    if prose.is_empty() {
+        return None;
+    }
+    let joined = prose.join(" ");
+    let end = joined
+        .char_indices()
+        .find(|(i, c)| *c == '.' && ends_a_sentence(&joined, *i))
+        .map(|(i, _)| i + 1)
+        .unwrap_or(joined.len());
+    Some(cap(joined[..end].trim_end()))
+}
+
+/// Whether the period at byte `at` ends a sentence.
+///
+/// The whole rule is this one test, in the three spellings it has to hold in: a
+/// period followed by whitespace or by the end of the text ends a sentence, and
+/// a period inside a number (`2.7`) or inside a filename (`merge_review.attempts`,
+/// `notes.md`) is followed by neither, so it does not. The one case it does not
+/// catch is a filename that a LINE BREAK put a space after — `crates/x.rs` at the
+/// end of a line, joined to the next with a space — which cannot be told from a
+/// sentence end without guessing at tokens; the join is the caller's, and the
+/// limitation is stated rather than defended against.
+fn ends_a_sentence(text: &str, at: usize) -> bool {
+    match text[at + 1..].chars().next() {
+        None => true,
+        Some(c) => c.is_whitespace(),
+    }
+}
+
+/// The author's abstract, as the marker line carries it — `None` when the file
+/// has no marker, or has one with nothing after it.
+fn written_abstract(text: &str) -> Option<String> {
+    text.lines()
+        .find_map(|l| l.trim().strip_prefix(ABSTRACT_MARKER))
+        .map(|rest| rest.trim().trim_end_matches("-->").trim().to_string())
+        .filter(|a| !a.is_empty())
+}
+
+/// The note's own text with its marker line taken out — what an `append` grows,
+/// and what keeps a rewrite from leaving two abstracts in one file.
+fn without_abstract(text: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut dropped = false;
+    for line in text.lines() {
+        if !dropped && line.trim().starts_with(ABSTRACT_MARKER) {
+            dropped = true;
+            continue;
+        }
+        kept.push(line);
+    }
+    kept.join("\n").trim().to_string()
+}
+
+/// The file's bytes: the abstract line when there is one to carry, then the
+/// body — the marker never doubled, and never added when there is none.
+fn with_abstract(abstract_line: Option<&str>, body: &str) -> String {
+    match abstract_line {
+        Some(a) => format!("{ABSTRACT_MARKER} {a} -->\n\n{body}"),
+        None => body.to_string(),
+    }
+}
+
+/// One line, from whatever the caller passed: an abstract is the index's line,
+/// so its newlines and runs of spaces are flattened rather than refused — the
+/// note's own text is where a paragraph belongs.
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A note's prose, line by line: a heading, a blank line and the abstract marker
+/// carry none, and a list marker is stripped so a bullet's words are prose rather
+/// than `- `.
+fn prose_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with(ABSTRACT_MARKER))
+        .map(strip_list_marker)
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// A list marker off the front of a line — `- `, `* `, `+ `, `1. `, `2) `, or a
+/// bare `1.` — so the abstract of a bulleted note is the bullet's own words, and
+/// a numbered list's `1.` is never mistaken for a first sentence.
+///
+/// The space after the marker is required: `2.7 s` is a number, not item two.
+fn strip_list_marker(line: &str) -> String {
+    if let Some(rest) = line
+        .strip_prefix("- ")
+        .or_else(|| line.strip_prefix("* "))
+        .or_else(|| line.strip_prefix("+ "))
+    {
+        return rest.trim_start().to_string();
+    }
+    let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if !digits.is_empty() {
+        let after = &line[digits.len()..];
+        if let Some(rest) = after
+            .strip_prefix(". ")
+            .or_else(|| after.strip_prefix(") "))
+        {
+            return rest.trim_start().to_string();
+        }
+        if after == "." || after == ")" {
+            return String::new();
+        }
+    }
+    line.to_string()
+}
+
+/// Cut to [`ABSTRACT_CHARS`] at a character boundary, with an explicit ellipsis —
+/// an abstract that simply stops reads as a fact about the note.
+fn cap(s: &str) -> String {
+    if s.chars().count() <= ABSTRACT_CHARS {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(ABSTRACT_CHARS - 1).collect();
+    out.push('…');
+    out
+}
+
 impl Tool for NotesTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
@@ -220,7 +483,10 @@ impl Tool for NotesTool {
             "The standing notes the harness reads into the system prompt and re-reads after \
              every compaction. `action`: `list` (every note, with path, size and when last \
              written), `read` (one note's text — give `name` for a project note or `path` as \
-             `list` reported it), `add` (create one), `append` (add to one that exists), \
+             `list` reported it), `search` (a `query`, answered with the paths, line numbers \
+             and matching lines of every note that holds it — local and case-insensitive, \
+             and the door to use when the index in the prompt is not enough to tell you \
+             which note you want), `add` (create one), `append` (add to one that exists), \
              `replace` (rewrite one that exists, reporting what it replaced). Writes go to \
              the workspace's `.letibot/notes/` only, by bare `name` — `AGENTS.md` and the \
              box-wide notes are the operator's. Write down what is worth keeping: something \
@@ -229,9 +495,11 @@ impl Tool for NotesTool {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list", "read", "add", "append", "replace"]},
+                    "action": {"type": "string", "enum": ["list", "read", "search", "add", "append", "replace"]},
                     "name": {"type": "string", "description": "A note's name — the file stem, no path. For `add`/`append`/`replace` it is where the note lives; for `read` it resolves in the project notes first."},
                     "path": {"type": "string", "description": "For `read`: a note's path exactly as `list` reported it, when what you have is a path rather than a name."},
+                    "query": {"type": "string", "description": "For `search`: what to look for, matched case-insensitively against every line of every note."},
+                    "abstract": {"type": "string", "description": "For `add`/`append`/`replace`: one line saying what the note is about, shown first in the index the harness builds for a note that is too long to inject whole. Written into the note above its text; newlines are flattened to spaces. Without it the harness derives the note's first sentence."},
                     "text": {"type": "string", "description": "For `add`/`append`/`replace`: the note's text — for `replace`, the whole new text."}
                 },
                 "required": ["action"]
@@ -240,12 +508,12 @@ impl Tool for NotesTool {
         )
     }
 
-    /// `list` and `read` only ever read, and a read that reaches the gate is
-    /// a question the operator is asked about a fact. Narrowing only, per the
-    /// trait: the schema's `Write` stands for every verb that writes.
+    /// `list`, `read` and `search` only ever read, and a read that reaches the
+    /// gate is a question the operator is asked about a fact. Narrowing only, per
+    /// the trait: the schema's `Write` stands for every verb that writes.
     fn access_for(&self, args: &Value) -> Option<Access> {
         match args.get("action").and_then(|v| v.as_str()) {
-            Some("list") | Some("read") => Some(Access::Read),
+            Some("list") | Some("read") | Some("search") => Some(Access::Read),
             _ => None,
         }
     }
@@ -254,7 +522,7 @@ impl Tool for NotesTool {
         let Some(action) = args.get("action").and_then(|v| v.as_str()) else {
             return Invocation::failed(
                 "notes needs an action",
-                "call `notes` with `action` = \"list\", \"read\", \"add\", \"append\" or \
+                "call `notes` with `action` = \"list\", \"read\", \"search\", \"add\", \"append\" or \
                  \"replace\".",
             );
         };
@@ -264,10 +532,11 @@ impl Tool for NotesTool {
                 args.get("path").and_then(|v| v.as_str()),
                 args.get("name").and_then(|v| v.as_str()),
             ),
+            "search" => self.search(args.get("query").and_then(|v| v.as_str())),
             "add" | "append" | "replace" => self.write(ctx, action, args),
             other => Invocation::failed(
                 format!("unknown notes action `{other}`"),
-                "call `notes` with `action` = \"list\", \"read\", \"add\", \"append\" or \
+                "call `notes` with `action` = \"list\", \"read\", \"search\", \"add\", \"append\" or \
                  \"replace\".",
             ),
         }
@@ -415,6 +684,114 @@ impl NotesTool {
         }
     }
 
+    /// **The search door: every note's own lines, by the words in them.**
+    ///
+    /// The case it exists for is the index being poor. The index names a note,
+    /// its headings and one line of it; a note whose abstract is a weak summary
+    /// of what it holds is still findable by its own words, and this is a local
+    /// substring match over the whole corpus — no model, no network, and no
+    /// dependence on the digest having been any good. That last part is the
+    /// point: the door has to work when the thing it is a door to does not.
+    ///
+    /// It answers in `grep`'s register, because that is the register a reader
+    /// already knows how to act on: the path, then the matching lines with their
+    /// numbers, so a line can be cited — or read around with `read`'s `ranges` —
+    /// without a second search. Case-insensitive, because this is a recall act
+    /// and not a syntax one.
+    ///
+    /// A query that matches nothing is an **abstention**, the same outcome
+    /// `grep` gives an empty search: the corpus was searched completely, so "no
+    /// note holds this" is an answer — and the body lists the notes there are,
+    /// which is the one thing a caller can act on next.
+    fn search(&self, query: Option<&str>) -> Invocation {
+        let Some(query) = query.map(str::trim).filter(|q| !q.is_empty()) else {
+            return Invocation::failed(
+                "notes search needs a query",
+                "call `notes` with `action` = \"search\" and `query` set to the words to look \
+                 for. It is matched case-insensitively against every line of every note the \
+                 harness reads.",
+            );
+        };
+        let needle = query.to_lowercase();
+        let all: Vec<PathBuf> = sources(self.scope.as_ref())
+            .iter()
+            .flat_map(|s| s.notes())
+            .collect();
+        let mut out = String::new();
+        let mut found = 0usize;
+        let mut printed = 0usize;
+        let mut notes_hit = 0usize;
+        for path in &all {
+            // A note that cannot be read is not a note that does not match: the
+            // corpus this answers over is the one that could be read, and the
+            // count of what was searched is what the answer is worth.
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            let hits: Vec<(usize, &str)> = text
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| l.to_lowercase().contains(&needle))
+                .map(|(i, l)| (i + 1, l))
+                .collect();
+            if hits.is_empty() {
+                continue;
+            }
+            notes_hit += 1;
+            out.push_str(&format!("\n### {}\n", path.display()));
+            for (n, line) in hits {
+                found += 1;
+                if printed < MAX_SEARCH_LINES {
+                    printed += 1;
+                    out.push_str(&format!("  {n}: {}\n", clip(line)));
+                }
+            }
+        }
+        if found == 0 {
+            let mut tell = format!(
+                "no line of any note matches `{query}` — the search is case-insensitive and \
+                 line-by-line, over the whole of every note the harness reads, and {} note(s) \
+                 were read. The notes that exist:\n",
+                all.len()
+            );
+            if all.is_empty() {
+                tell.push_str("(none — no source has a note right now)\n");
+            }
+            for p in &all {
+                let (size, age) = std::fs::metadata(p)
+                    .map(|m| (super::human(m.len()), age_of(&m)))
+                    .unwrap_or_else(|_| ("?".into(), "at an unknown time".into()));
+                tell.push_str(&format!(
+                    "- {} — {}, last written {}\n",
+                    p.display(),
+                    size,
+                    age
+                ));
+            }
+            tell.push_str(
+                "\nA note records what was true when it was written and may be outdated — \
+                 check the tree before relying on one as a fact about now.\n",
+            );
+            return Invocation::abstained(format!("`{query}` is in no note"), tell);
+        }
+        let mut answer = format!(
+            "{found} line(s) in {notes_hit} note(s) match `{query}` (case-insensitive, every \
+             note the harness reads):\n{out}"
+        );
+        if found > printed {
+            answer.push_str(&format!(
+                "\n… {} more matching line(s) not shown; narrow the query to see them.\n",
+                found - printed
+            ));
+        }
+        answer.push_str(
+            "\nA note records what was true when it was written and may be outdated — check \
+             the tree before relying on one as a fact about now. `read` a path with a range for \
+             the lines around a match.\n",
+        );
+        Invocation::ok(answer)
+    }
+
     /// `add`, `append`, `replace` — the three write verbs, each refusing the
     /// case it must not do silently: `add` will not overwrite, `append` and
     /// `replace` will not create, and `replace` says what it threw away.
@@ -463,6 +840,11 @@ impl NotesTool {
         let dir = self.scope.workspace().join(".letibot").join("notes");
         let target = dir.join(format!("{stem}.md"));
         let existing = std::fs::read_to_string(&target).ok();
+        // The abstract is the author's to set, and it is the one part of a note
+        // the text cannot be asked for: absent, nothing is written and the
+        // harness derives the note's first sentence ([`abstract_of`]). Supplied,
+        // it goes in as the marker line above the text.
+        let asked = args.get("abstract").and_then(|v| v.as_str()).map(one_line);
         let (before, after, said) = match (action, &existing) {
             ("add", Some(_)) => {
                 let meta = std::fs::metadata(&target).ok();
@@ -484,7 +866,7 @@ impl NotesTool {
             }
             ("add", None) => (
                 String::new(),
-                format!("{}\n", text.trim_end()),
+                format!("{}\n", with_abstract(asked.as_deref(), text.trim_end())),
                 format!("created `{}`", target.display()),
             ),
             (_, None) => {
@@ -534,10 +916,20 @@ impl NotesTool {
                 );
             }
             ("append", Some(old)) => {
-                let mut grown = old.trim_end().to_string();
-                grown.push_str("\n\n");
-                grown.push_str(text.trim());
-                grown.push('\n');
+                // The marker is not text to grow: it is lifted out, the note is
+                // grown, and the abstract — the new one, or the one that was
+                // there — goes back on top. An `append` that asked for no new
+                // abstract keeps the old one rather than silently dropping the
+                // line the index leads with.
+                let was = written_abstract(old);
+                let kept = asked.as_deref().or(was.as_deref());
+                let old_body = without_abstract(old);
+                let body = if old_body.is_empty() {
+                    text.trim().to_string()
+                } else {
+                    format!("{old_body}\n\n{}", text.trim())
+                };
+                let grown = with_abstract(kept, &body);
                 let said = format!(
                     "appended {} to `{}`: {} → {}",
                     super::human(text.trim().len() as u64),
@@ -545,7 +937,7 @@ impl NotesTool {
                     super::human(old.len() as u64),
                     super::human(grown.len() as u64),
                 );
-                (old.clone(), grown, said)
+                (old.clone(), format!("{grown}\n"), said)
             }
             ("replace", Some(old)) => {
                 let said = format!(
@@ -556,7 +948,11 @@ impl NotesTool {
                     old.lines().count(),
                     old.lines().next().unwrap_or_default(),
                 );
-                (old.clone(), format!("{}\n", text.trim_end()), said)
+                (
+                    old.clone(),
+                    format!("{}\n", with_abstract(asked.as_deref(), text.trim_end())),
+                    said,
+                )
             }
             _ => unreachable!("the match on action is total above"),
         };
@@ -573,8 +969,26 @@ impl NotesTool {
             );
         }
         let mut inv = Invocation::ok(format!(
-            "{said}: {}.\n\n{WHEN_READ}\n",
-            super::human(after.len() as u64)
+            "{said}: {}.\n{}\n\n{WHEN_READ}\n",
+            super::human(after.len() as u64),
+            // **What the index will lead with**, said at the moment the author
+            // can still change it: their own line, the note's first sentence, or
+            // the fact that there is no prose to take one from. It is computed
+            // by the reader's own function, so it cannot describe an index the
+            // reader would not build.
+            match abstract_of(&after) {
+                Some(a) if a.written => {
+                    format!("The index will show your abstract: {}", a.text)
+                }
+                Some(a) => format!(
+                    "The index will show the note's first sentence: {} — pass `abstract` to \
+                     choose that line yourself.",
+                    a.text
+                ),
+                None => "The note has no prose for the index to summarise; pass `abstract` to \
+                         say what it is about."
+                    .to_string(),
+            }
         ));
         // The digests and the span before the strings move into the pair — a
         // diff card whose digest disagrees with its own before-side is worse
@@ -661,31 +1075,6 @@ fn write_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::testing::writable_harness;
-
-    /// **The listing carries every source, in the reader's order, with the
-    /// age and the one-line caveat.**
-    #[test]
-    fn list_reports_every_source_in_the_readers_order() {
-        let mut h = writable_harness();
-        let (ws, global) = h.notes_dirs();
-        std::fs::create_dir_all(&global).expect("global dir");
-        std::fs::write(global.join("g.md"), "global note\n").expect("fixture");
-        std::fs::write(ws.join("AGENTS.md"), "# Rules\n").expect("fixture");
-        std::fs::create_dir_all(ws.join(".letibot/notes")).expect("project dir");
-        std::fs::write(ws.join(".letibot/notes/p.md"), "project note\n").expect("fixture");
-        let r = h.call("notes", r#"{"action":"list"}"#);
-        assert!(r.is_grounded(), "{}", r.render());
-        let said = r.render();
-        let pos = |needle: &str| said.find(needle).expect(needle);
-        assert!(
-            pos("g.md") < pos("AGENTS.md") && pos("AGENTS.md") < pos("p.md"),
-            "box-wide, then workspace instructions, then project: {said}"
-        );
-        assert!(
-            said.contains("last written") && said.contains("may be outdated"),
-            "the age and the caveat ride the listing: {said}"
-        );
-    }
 
     /// **`read` carries the historical line and the age, above the body — the
     /// operator's ask verbatim.**
@@ -996,6 +1385,276 @@ mod tests {
             "and says the disk is untouched: {}",
             r.render()
         );
+    }
+
+    /// **The listing carries every source, in the prompt's own order, with the
+    /// age and the one-line caveat — and within a directory, newest first.**
+    ///
+    /// The order is the reader's rule (`letibot_harnessd::standing_notes`):
+    /// `AGENTS.md`, then the box-wide notes, then the project's, each directory
+    /// newest first. `list` claims to report them "in prompt order", and a
+    /// listing in another order is a listing that makes that sentence false.
+    #[test]
+    fn list_reports_every_source_in_the_readers_order() {
+        let mut h = writable_harness();
+        let (ws, global) = h.notes_dirs();
+        std::fs::create_dir_all(&global).expect("global dir");
+        std::fs::write(global.join("g.md"), "global note\n").expect("fixture");
+        std::fs::write(ws.join("AGENTS.md"), "# Rules\n").expect("fixture");
+        std::fs::create_dir_all(ws.join(".letibot/notes")).expect("project dir");
+        std::fs::write(ws.join(".letibot/notes/older.md"), "project older\n").expect("fixture");
+        std::fs::write(ws.join(".letibot/notes/newer.md"), "project newer\n").expect("fixture");
+        set_mtime(&ws.join(".letibot/notes/older.md"), 1_000);
+        set_mtime(&ws.join(".letibot/notes/newer.md"), 2_000);
+        let r = h.call("notes", r#"{"action":"list"}"#);
+        assert!(r.is_grounded(), "{}", r.render());
+        let said = r.render();
+        let pos = |needle: &str| said.find(needle).expect(needle);
+        assert!(
+            pos("AGENTS.md") < pos("g.md")
+                && pos("g.md") < pos("newer.md")
+                && pos("newer.md") < pos("older.md"),
+            "AGENTS.md, then box-wide, then the project's newest first: {said}"
+        );
+        assert!(
+            said.contains("last written") && said.contains("may be outdated"),
+            "the age and the caveat ride the listing: {said}"
+        );
+    }
+
+    /// **`search` answers with paths, line numbers and the matching lines —
+    /// case-insensitively, and over the box-wide notes too.**
+    ///
+    /// The box-wide dir is the half of the corpus no `read` of the session's
+    /// own tree can reach, and it is the half an index built from the wrong
+    /// assumption would leave out.
+    #[test]
+    fn search_answers_with_paths_line_numbers_and_lines() {
+        let mut h = writable_harness();
+        let (ws, global) = h.notes_dirs();
+        std::fs::create_dir_all(&global).expect("global dir");
+        std::fs::write(
+            global.join("box.md"),
+            "the box-wide rule\nand a second line about the budget\n",
+        )
+        .expect("fixture");
+        std::fs::create_dir_all(ws.join(".letibot/notes")).expect("project dir");
+        std::fs::write(
+            ws.join(".letibot/notes/ledger.md"),
+            "the ledger counts tokens\n\nnothing else here\n",
+        )
+        .expect("fixture");
+
+        let r = h.call("notes", r#"{"action":"search","query":"tokens"}"#);
+        assert!(r.is_grounded(), "{}", r.render());
+        let said = r.render();
+        assert!(
+            said.contains("ledger.md") && said.contains("1: the ledger counts tokens"),
+            "the path, the line number and the line: {said}"
+        );
+
+        // Case-insensitive, and the other source is answered under its own path.
+        let r = h.call("notes", r#"{"action":"search","query":"BUDGET"}"#);
+        assert!(r.is_grounded(), "{}", r.render());
+        let said = r.render();
+        assert!(
+            said.contains("box.md") && said.contains("2: and a second line about the budget"),
+            "the box-wide note is in the corpus: {said}"
+        );
+        assert!(
+            said.contains("may be outdated"),
+            "a hit carries the same caveat a read does: {said}"
+        );
+    }
+
+    /// **A search that matches nothing abstains, and lists the notes there
+    /// are** — clause 1 in the tool that most needs it, since a miss here is
+    /// the caller's only evidence about a corpus it cannot see.
+    #[test]
+    fn a_search_that_matches_nothing_abstains_with_the_corpus() {
+        let mut h = writable_harness();
+        let (_ws, global) = h.notes_dirs();
+        std::fs::create_dir_all(&global).expect("global dir");
+        std::fs::write(global.join("box.md"), "the box-wide rule\n").expect("fixture");
+        let r = h.call("notes", r#"{"action":"search","query":"quokka_sentinel"}"#);
+        assert!(!r.is_grounded());
+        let said = r.render();
+        assert_eq!(
+            crate::result::Envelope::classify(&said),
+            Some("NO_RESULT"),
+            "a complete search that found nothing abstains rather than failing: {said}"
+        );
+        assert!(
+            said.contains("no line of any note matches")
+                && said.contains("box.md")
+                && said.contains("may be outdated"),
+            "the miss says what it searched and what there is: {said}"
+        );
+        // An empty query is not a search of the corpus; it is a caller that has
+        // not said what to look for, and that is a failure rather than an
+        // abstention about content.
+        let r = h.call("notes", r#"{"action":"search","query":"   "}"#);
+        assert!(!r.is_grounded());
+        assert!(r.render().contains("needs a query"), "{}", r.render());
+    }
+
+    /// **The author's abstract is written into the note and leads the index;
+    /// without one the harness derives the note's first sentence.**
+    #[test]
+    fn an_abstract_is_the_authors_line_or_the_notes_first_sentence() {
+        let mut h = writable_harness();
+        let (ws, _global) = h.notes_dirs();
+        let r = h.call(
+            "notes",
+            r#"{"action":"add","name":"pins","abstract":"the rano pin is absent on this box","text":"Build from outside the repo.\nThe second line is detail."}"#,
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+        let wrote = std::fs::read_to_string(ws.join(".letibot/notes/pins.md")).expect("on disk");
+        assert_eq!(
+            wrote,
+            concat!(
+                "<!-- abstract: the rano pin is absent on this box -->\n\n",
+                "Build from outside the repo.\n",
+                "The second line is detail.\n"
+            ),
+            "the marker line, then the text: {wrote}"
+        );
+        assert!(
+            r.render()
+                .contains("your abstract: the rano pin is absent on this box"),
+            "the write says what the index will lead with: {}",
+            r.render()
+        );
+
+        // No abstract asked for: nothing is written into the note, and the
+        // report derives the same line the reader will derive.
+        let r = h.call(
+            "notes",
+            r#"{"action":"add","name":"derived","text":"First proper sentence here. Second one."}"#,
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+        assert_eq!(
+            std::fs::read_to_string(ws.join(".letibot/notes/derived.md")).unwrap(),
+            "First proper sentence here. Second one.\n",
+            "nothing is added to the author's text"
+        );
+        assert!(
+            r.render()
+                .contains("first sentence: First proper sentence here."),
+            "the derivation is the reader's own: {}",
+            r.render()
+        );
+
+        // An append keeps the abstract that was there, and one that asks for a
+        // new one replaces it rather than leaving two.
+        let r = h.call(
+            "notes",
+            r#"{"action":"append","name":"pins","text":"- and a bullet"}"#,
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+        let grew = std::fs::read_to_string(ws.join(".letibot/notes/pins.md")).unwrap();
+        assert_eq!(
+            grew.matches("<!-- abstract:").count(),
+            1,
+            "one marker, never two: {grew}"
+        );
+        assert!(
+            grew.contains("the rano pin is absent on this box") && grew.contains("- and a bullet"),
+            "the kept abstract and the new text: {grew}"
+        );
+        let r = h.call(
+            "notes",
+            r#"{"action":"append","name":"pins","abstract":"now about pins and bullets","text":"more"}"#,
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+        let regrew = std::fs::read_to_string(ws.join(".letibot/notes/pins.md")).unwrap();
+        assert_eq!(regrew.matches("<!-- abstract:").count(), 1, "{regrew}");
+        assert!(
+            regrew.starts_with("<!-- abstract: now about pins and bullets -->")
+                && !regrew.contains("the rano pin is absent"),
+            "the new abstract replaced the old one: {regrew}"
+        );
+    }
+
+    /// **The derivation, spelled out**: a period ends a sentence only when
+    /// whitespace or the end of the text follows it, so `2.7 s`, a path and a
+    /// numbered list are not sentence ends.
+    #[test]
+    fn the_derived_abstract_stops_at_a_proper_sentence_end() {
+        for (text, want) in [
+            (
+                "It exits 101 in 2.7 s. Then it stops.",
+                "It exits 101 in 2.7 s.",
+            ),
+            (
+                "See merge_review.attempts, .5 of the rows. Then read it.",
+                "See merge_review.attempts, .5 of the rows.",
+            ),
+            (
+                "Read crates/x.md for the shape. Then edit it.",
+                "Read crates/x.md for the shape.",
+            ),
+            (
+                "1. first thing\n2. second thing",
+                "first thing second thing",
+            ),
+            (
+                "no period anywhere in this line",
+                "no period anywhere in this line",
+            ),
+        ] {
+            assert_eq!(
+                first_sentence(text).as_deref(),
+                Some(want),
+                "the first proper sentence of {text:?}"
+            );
+        }
+        // A sentence longer than the cap is cut at a character boundary and says
+        // so — never silently, and never mid-character.
+        let long = format!("{} tail", "word ".repeat(80));
+        let cut = first_sentence(&long).expect("a sentence");
+        assert_eq!(cut.chars().count(), ABSTRACT_CHARS);
+        assert!(cut.ends_with('…'), "{cut}");
+    }
+
+    /// **`search` is a read verb: it narrows below the gate like `list` and
+    /// `read`, and a seat with no write keeps it.**
+    #[test]
+    fn search_narrows_to_a_read_like_the_other_read_verbs() {
+        let scope: Arc<dyn NotesScope> = Arc::new(FixtureScope {
+            workspace: std::env::temp_dir(),
+            global: std::env::temp_dir(),
+        });
+        let tool = NotesTool::new(scope);
+        assert_eq!(
+            tool.access_for(&serde_json::json!({"action": "search", "query": "x"})),
+            Some(Access::Read)
+        );
+        assert_eq!(
+            tool.access_for(&serde_json::json!({"action": "replace", "name": "x", "text": "y"})),
+            None,
+            "the write verbs keep the schema's class"
+        );
+    }
+
+    /// A file's mtime, **stated rather than waited for**: "newest first" is a
+    /// rule these tests assert, and a sleep would make the assertion depend on
+    /// the clock's resolution instead.
+    fn set_mtime(path: &Path, secs: i64) {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("no NUL in a path");
+        let times = [
+            libc::timespec {
+                tv_sec: secs,
+                tv_nsec: 0,
+            },
+            libc::timespec {
+                tv_sec: secs,
+                tv_nsec: 0,
+            },
+        ];
+        let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), 0) };
+        assert_eq!(rc, 0, "utimensat on {}", path.display());
     }
 
     struct FixtureScope {

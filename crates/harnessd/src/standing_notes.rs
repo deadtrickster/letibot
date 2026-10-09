@@ -13,13 +13,27 @@
 //! since the `notes` tool, the project's `.letibot/notes/`, which sessions
 //! write too. The envelope says which is which, because authorship that
 //! cannot be told apart is how a note the model wrote comes to read as an
-//! instruction the operator gave. Three sources, in order of increasing
-//! proximity to the task:
+//! instruction the operator gave.
 //!
-//! 1. `<config dir>/notes/*.md` — standing notes for the whole box, beside
+//! # The order, which is a rule
+//!
+//! Three sources, in the order the block carries them — and the order is a rule
+//! and not a preference, because a file spends the budget by being whole (see
+//! "The size rule" below), so the order decides what arrives whole:
+//!
+//! 1. `<workspace>/AGENTS.md` — this project's instructions.
+//! 2. `<config dir>/notes/*.md` — standing notes for the whole box, beside
 //!    `providers.toml` and `prompts.toml`.
-//! 2. `<workspace>/AGENTS.md` — this project's instructions.
 //! 3. `<workspace>/.letibot/notes/*.md` — this project's notes.
+//!
+//! `AGENTS.md` first, because a rule that arrives as an index is a rule the
+//! model has to fetch before it can follow it. Within a directory: **newest
+//! first**, ties by name — a note written this session is the note about what is
+//! happening now, and the file most likely to be worth its whole text. The sort
+//! is [`letibot_tools::builtins::notes::sort_newest_first`], shared with the
+//! `notes` tool's `list`, which claims to report the notes in prompt order; and
+//! it is a sort rather than `readdir`'s order, because a block that varied with
+//! directory order is a block that misses the prefix cache for no reason.
 //!
 //! The word "notes" is already spent in this crate: `Harness::open_notes` is
 //! the resume side's observations about a session it did not resume, and the
@@ -51,18 +65,73 @@
 //! The same schedule serves every session; nothing re-reads the files between
 //! these two moments.
 //!
-//! # The size rule
+//! # The size rule, per file
 //!
-//! The assembled block is measured **in tokens with the session's own
-//! counter** (`Vocab::tokenize_text` — the same encoder the ledger counts
-//! with), not by a bytes-to-tokens estimate. At or under
-//! [`NOTES_BUDGET_TOKENS`] the files are injected VERBATIM, headings and all;
-//! over it, each file becomes a digest: its path, every heading with the
-//! line range it spans, and the first sentence or two under it — enough for
-//! the model to `read` the exact span for the rest. Deterministic, no model
-//! call, no failure mode. If the counter itself refuses, the block is
-//! treated as over budget: the digest is bounded by construction and the
-//! verbatim form is not.
+//! The assembled block is measured **in tokens with the session's own counter**
+//! (`Vocab::tokenize_text` — the same encoder the ledger counts with), not by a
+//! bytes-to-tokens estimate. Each file, in the order above, is injected VERBATIM
+//! — headings and all — when it fits what is left of [`NOTES_BUDGET_TOKENS`];
+//! when it does not, that file alone becomes an index: its path, its abstract,
+//! every heading with the line range it spans and the first sentence under it —
+//! enough for the model to `read` the exact span for the rest.
+//!
+//! **Per file, and that is the point.** Measuring the whole assembly at once and
+//! digesting everything when it failed made a ten-line note pay for a
+//! four-hundred-line one; now the small note is whole and only the large one is
+//! indexed. The order above is what decides which is which, so it is stated
+//! rather than left to whatever the filesystem answered. The index a file falls
+//! back to is counted against the budget too — the budget bounds the section,
+//! not the verbatim part of it — and an indexed file says on its own heading that
+//! it is indexed.
+//!
+//! Deterministic, no model call, no failure mode. If the counter itself refuses a
+//! file's text, that file is indexed rather than admitted on a guess: the index is
+//! bounded by construction and the verbatim form is not.
+//!
+//! # The abstract, and a note with no headings
+//!
+//! Each note's index entry opens with its **abstract**: the author's own line
+//! when the file carries one (the `notes` tool's `abstract` argument writes it),
+//! and the first *proper* sentence of the note's prose otherwise. Both live in
+//! [`letibot_tools::builtins::notes`], where the writer is — one derivation, so
+//! the tool's report of what the index will say cannot disagree with the index.
+//!
+//! **Proper** is the whole of it: a period ends a sentence only when whitespace
+//! or the end of the text follows it, so a lead never ends inside `exit 101 in
+//! 2.7 s` or inside `merge_review.attempts` — the two cuts this rule was measured
+//! making. A sentence longer than `ABSTRACT_CHARS` is cut at a character boundary
+//! and says so with an ellipsis.
+//!
+//! A note with **no headings** is indexed by its paragraphs: every
+//! blank-line-separated block gets its own line range and its own first sentence.
+//! Before this, such a note over the budget arrived as one truncated line — a
+//! note the model could neither recognise nor address, which is the one thing an
+//! index must not be.
+//!
+//! # The offering half, which is not here
+//!
+//! The index is passive: it says what the notes are, and the model has to think
+//! to look. The other half — a hint that a note *bears on what you are doing
+//! now*, with a score, over this corpus — is deliberately not built here. Where
+//! it would attach, and what it must not do:
+//!
+//! * **The corpus** is [`gather`]'s output: the same files, in the same order,
+//!   read once. A scoring pass wants that list and nothing else, which is why it
+//!   is public.
+//! * **The delivery is a transcript row, never the prefix.** This module's whole
+//!   schedule exists because injecting into history invalidates everything after
+//!   it — `docs/compaction.md` §2/§3 measure 144.6 s to re-prefill 150k tokens
+//!   against 0.8 s for a cache hit. A hint is OFFERED, not asserted: it goes in
+//!   the way `Harness::wake` and `Harness::nag_turn` already let the harness talk
+//!   to itself — `Harness::submit_item(TranscriptItem::User { speaker:
+//!   Speaker::Agent, .. })`, a row after the prefix, which costs one turn and no
+//!   cache.
+//! * **Never a `read`.** A hint that silently spends the model's context on a
+//!   note is the injected-material failure `docs/memory.md` §5 measures; the
+//!   model decides whether to open what was offered.
+//! * **Nothing here may be re-read mid-session.** A score computed at session
+//!   open is stale by the second turn and there is no seam to refresh it through;
+//!   a hint belongs to the turn it is offered in.
 //!
 //! # The envelope
 //!
@@ -84,6 +153,12 @@
 use std::path::{Path, PathBuf};
 
 use letibot_tokencore::Vocab;
+// **The writer's conventions, used by the reader.** The abstract's marker, its
+// derivation and the order a notes directory is assembled in live with the
+// `notes` tool, which reports to an author what the index will say: a second
+// implementation here would be a report that can disagree with the index it
+// describes. The reader imports them rather than restating them.
+use letibot_tools::builtins::notes::{abstract_of, first_sentence, sort_newest_first};
 
 /// How many tokens of standing notes are injected verbatim.
 ///
@@ -94,17 +169,17 @@ use letibot_tokencore::Vocab;
 /// `clamp(2_000, 15_000, usable / 4)` floor (opencode's own, re-derived in
 /// our units in `docs/compaction.md` §6). 2,000 tokens is roughly 8 KB of
 /// markdown — a real `AGENTS.md` fits verbatim, and a corpus that does not
-/// gets the digest with line references. Raise it with a measurement, not a
+/// gets the index with line references. Raise it with a measurement, not a
 /// feeling.
 pub const NOTES_BUDGET_TOKENS: usize = 2_000;
 
-/// How many headings one file may contribute to a digest.
+/// How many headings one file may contribute to its index.
 ///
-/// The digest is bounded by construction only if this exists: a file of
-/// ten thousand headings would otherwise produce a ten-thousand-row digest
+/// The index is bounded by construction only if this exists: a file of
+/// ten thousand headings would otherwise produce a ten-thousand-row index
 /// and the budget would have moved rather than been enforced. Past the cap
 /// the file says so and stops.
-const MAX_DIGEST_HEADINGS: usize = 200;
+const MAX_INDEX_HEADINGS: usize = 200;
 
 const BEGIN: &str = "[standing-notes-begin]";
 const END: &str = "[standing-notes-end]";
@@ -119,37 +194,57 @@ pub fn global_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("notes"))
 }
 
-/// Read every source that exists, in order.
+/// Read every source that exists, in the order the section carries them.
 ///
-/// Later sources sit closer to the task in the block. Within a directory the
-/// `*.md` glob is sorted by name so the block is a function of the files
-/// alone — a prompt that varied with directory order is a prompt that misses
-/// the prefix cache for no reason. A source that is absent, unreadable or
-/// not valid UTF-8 contributes nothing; a note the operator cannot write as
-/// UTF-8 is not a note.
-fn gather(workspace: &Path, global: &Path) -> Vec<(PathBuf, String)> {
+/// **The order is a rule, and this is where it lives.** A file spends the budget
+/// by being whole, so the order decides what arrives whole and what arrives as an
+/// index — and the first source is the one that has to arrive whole, because a
+/// rule the model has to fetch before it can follow it is a rule it may not
+/// follow:
+///
+/// 1. `<workspace>/AGENTS.md` — the operator's instructions for this project.
+/// 2. `<global>/*.md` — the box-wide notes.
+/// 3. `<workspace>/.letibot/notes/*.md` — this project's notes.
+///
+/// Within a directory: **newest first**, ties by name
+/// ([`letibot_tools::builtins::notes::sort_newest_first`], the same sort the
+/// `notes` tool's `list` reports them in, so the two cannot disagree about what
+/// follows what). Newest first because a note written this session is the note
+/// about what is happening now — and a sort rather than `readdir`'s order, so the
+/// block is a function of the files alone: a prompt that varied with directory
+/// order is a prompt that misses the prefix cache for no reason.
+///
+/// Public because the offering half (see the module doc) wants exactly this list
+/// — the corpus, in this order, read once. A source that is absent, unreadable or
+/// not valid UTF-8 contributes nothing; a note the operator cannot write as UTF-8
+/// is not a note.
+pub fn gather(workspace: &Path, global: &Path) -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
-    let md_in = |dir: &Path, out: &mut Vec<(PathBuf, String)>| {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        let mut paths: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "md"))
-            .collect();
-        paths.sort();
-        for p in paths {
-            if let Ok(text) = std::fs::read_to_string(&p) {
-                out.push((p, text));
-            }
-        }
-    };
-    md_in(global, &mut out);
-    if let Ok(text) = std::fs::read_to_string(workspace.join("AGENTS.md")) {
-        out.push((workspace.join("AGENTS.md"), text));
+    let agents = workspace.join("AGENTS.md");
+    if let Ok(text) = std::fs::read_to_string(&agents) {
+        out.push((agents, text));
     }
-    md_in(&workspace.join(".letibot").join("notes"), &mut out);
+    out.extend(md_in(global));
+    out.extend(md_in(&workspace.join(".letibot").join("notes")));
     out
+}
+
+/// Every `*.md` file in `dir`, newest first, read. A directory that is absent or
+/// unreadable is no files rather than an error, and so is a file that is not
+/// valid UTF-8.
+fn md_in(dir: &Path) -> Vec<(PathBuf, String)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "md"))
+        .collect();
+    sort_newest_first(&mut paths);
+    paths
+        .into_iter()
+        .filter_map(|p| std::fs::read_to_string(&p).ok().map(|text| (p, text)))
+        .collect()
 }
 
 /// The assembled standing-notes section, or `None` when no source exists.
@@ -162,16 +257,6 @@ pub fn section(workspace: &Path, global: &Path, vocab: &Vocab) -> Option<String>
     if files.is_empty() {
         return None;
     }
-    let verbatim = verbatim_block(&files);
-    // The session's own counter, not an estimate: the ledger is counted with
-    // this encoder and a budget in another encoder's tokens is not a budget.
-    // A refusal (no encoder can read this text) falls to the digest, which is
-    // bounded by construction.
-    let fits = vocab
-        .tokenize_text(&verbatim)
-        .map(|t| t.len() <= NOTES_BUDGET_TOKENS)
-        .unwrap_or(false);
-    let body = if fits { verbatim } else { digest_block(&files) };
     Some(format!(
         "{BEGIN}\nThe block below is standing notes, read from markdown files on disk by \
          the harness: the operator's standing material — AGENTS.md and the box-wide \
@@ -181,103 +266,158 @@ pub fn section(workspace: &Path, global: &Path, vocab: &Vocab) -> Option<String>
          update — as the one in force. A note is historical: it records what was \
          true or intended when it was written and may be outdated, so follow its \
          instructions but check the tree before taking an observation in it as a \
-         fact about now.\n\n{body}\n{END}"
+         fact about now. A file whose heading says `indexed` did not fit the budget: \
+         what follows it is an index — line ranges a `read` can fetch — and not its \
+         text.\n\n{}\n{END}",
+        body(&files, vocab)
     ))
 }
 
-/// Every file whole, under its path as a heading.
-fn verbatim_block(files: &[(PathBuf, String)]) -> String {
-    files
-        .iter()
-        .map(|(p, text)| format!("### {}\n{}", p.display(), text.trim_end()))
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-/// Every file as a path, per-heading line ranges, and the first sentence or
-/// two under each heading — the references a `read` needs to fetch the rest.
-fn digest_block(files: &[(PathBuf, String)]) -> String {
+/// The body: each file whole if it fits what is left of the budget, indexed if it
+/// does not — decided **per file**, in [`gather`]'s order.
+///
+/// The join between two entries is not counted. The budget is what the operator's
+/// material costs; the two bytes that separate two files are the harness's own
+/// glue, like the envelope's sentence.
+fn body(files: &[(PathBuf, String)], vocab: &Vocab) -> String {
     let mut out = String::new();
-    for (p, text) in files {
-        let lines: Vec<&str> = text.lines().collect();
-        out.push_str(&format!(
-            "### {} — {} line(s), over the {}-token notes budget, so headings and line \
-             ranges only. `read` this path with a range for the full text.\n",
-            p.display(),
-            lines.len(),
-            NOTES_BUDGET_TOKENS
-        ));
-        let mut headings = 0usize;
-        for (i, line) in lines.iter().enumerate() {
-            let rest = line.trim_start();
-            if !rest.starts_with('#') {
-                continue;
+    let mut used = 0usize;
+    for (path, text) in files {
+        let whole = format!("### {}\n{}", path.display(), text.trim_end());
+        // The session's own counter, not an estimate: the ledger is counted with
+        // this encoder and a budget in another encoder's tokens is not a budget.
+        match tokens(vocab, &whole) {
+            Some(n) if used + n <= NOTES_BUDGET_TOKENS => {
+                used += n;
+                push(&mut out, &whole);
             }
-            headings += 1;
-            if headings > MAX_DIGEST_HEADINGS {
-                out.push_str(&format!(
-                    "  … {} more heading(s) not listed\n",
-                    lines[i..]
-                        .iter()
-                        .filter(|l| l.trim_start().starts_with('#'))
-                        .count()
-                        - 1
-                ));
-                break;
+            // Either it does not fit, or the counter refused the text outright —
+            // in which case the index is what this file gets, because the index is
+            // bounded by construction and the verbatim form is not.
+            _ => {
+                let index = index_entry(path, text);
+                used += tokens(vocab, &index).unwrap_or(0);
+                push(&mut out, &index);
             }
-            // The range this heading spans: its own line to the line before
-            // the next heading, or the end of the file.
-            let end = lines[i + 1..]
-                .iter()
-                .position(|l| l.trim_start().starts_with('#'))
-                .map(|n| i + n)
-                .unwrap_or(lines.len() - 1);
-            let lead = sentences(&lines[i + 1..=end]);
-            out.push_str(&format!(
-                "  {}-{}  {}{}\n",
-                i + 1,
-                end + 1,
-                rest,
-                lead.map(|s| format!(" — {s}")).unwrap_or_default()
-            ));
-        }
-        if headings == 0 {
-            out.push_str("  (no headings; the first lines follow)\n");
-            let lead = sentences(&lines).unwrap_or_default();
-            out.push_str(&format!(
-                "  1-{}  {}\n",
-                lines.len(),
-                lead.chars().take(200).collect::<String>()
-            ));
         }
     }
-    out.trim_end().to_string()
+    out
 }
 
-/// The first one or two sentences of a span: enough to recognise, short
-/// enough that a digest stays a digest. Empty spans contribute nothing.
-fn sentences<'a>(lines: &[&'a str]) -> Option<String> {
-    let text: String = lines
-        .iter()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .collect::<Vec<_>>()
-        .join(" ");
-    if text.is_empty() {
-        return None;
+fn push(out: &mut String, entry: &str) {
+    if !out.is_empty() {
+        out.push_str("\n\n");
     }
-    let mut count = 0;
-    let mut cut = text.len();
-    for (i, c) in text.char_indices() {
-        if c == '.' {
-            count += 1;
-            if count == 2 {
-                cut = i + 1;
-                break;
+    out.push_str(entry);
+}
+
+/// How many tokens the session's own counter makes of `text` — `None` when the
+/// counter refuses it, which is a fact about the text and not a zero.
+fn tokens(vocab: &Vocab, text: &str) -> Option<usize> {
+    vocab.tokenize_text(text).ok().map(|t| t.len())
+}
+
+/// One file as an index: its path, its abstract, and then every heading with the
+/// line range it spans and the first sentence under it — or, for a note with no
+/// headings at all, every paragraph the same way. The references a `read` needs
+/// to fetch the rest.
+fn index_entry(path: &Path, text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = format!(
+        "### {} — {} line(s), indexed: over what is left of the {}-token notes budget, so \
+         headings and line ranges only. `read` this path with a range for the full text.\n",
+        path.display(),
+        lines.len(),
+        NOTES_BUDGET_TOKENS
+    );
+    // The abstract, first, because it is the one line that says whether the rest
+    // is worth fetching — and named as derived when it is, so a reader never
+    // takes the harness's reading of a note for the author's own summary.
+    if let Some(abstract_) = abstract_of(text) {
+        out.push_str(&format!(
+            "  abstract{}: {}\n",
+            if abstract_.written { "" } else { " (derived)" },
+            abstract_.text
+        ));
+    }
+    let headings: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.trim_start().starts_with('#'))
+        .map(|(i, _)| i)
+        .collect();
+    if headings.is_empty() {
+        // **A note with no headings is indexed by its paragraphs, never collapsed
+        // to one line.** Squashing the whole note into a single truncated line —
+        // which is what stood here — gives the model neither something it can
+        // recognise nor a range it can `read`.
+        for (first, last, lead) in paragraphs(&lines) {
+            // A block with no prose in it — the abstract marker standing alone,
+            // which is how the `notes` tool writes one — is not a paragraph and
+            // says nothing as a row: the abstract above is already its content.
+            let Some(lead) = lead else { continue };
+            out.push_str(&format!("  {first}-{last}  para — {lead}\n"));
+        }
+        return out;
+    }
+    for (shown, &i) in headings.iter().enumerate() {
+        if shown == MAX_INDEX_HEADINGS {
+            out.push_str(&format!(
+                "  … {} more heading(s) not listed\n",
+                headings.len() - shown
+            ));
+            break;
+        }
+        // The range this heading spans: its own line to the line before the next
+        // heading, or the end of the file.
+        let end = headings
+            .iter()
+            .copied()
+            .find(|h| *h > i)
+            .map(|h| h - 1)
+            .unwrap_or(lines.len() - 1);
+        let lead = first_sentence(&lines[i + 1..=end].join("\n"));
+        out.push_str(&format!(
+            "  {}-{}  {}{}\n",
+            i + 1,
+            end + 1,
+            lines[i].trim_start(),
+            lead.map(|s| format!(" — {s}")).unwrap_or_default()
+        ));
+    }
+    out
+}
+
+/// The blank-line-separated blocks of a headingless note: `(first line, last
+/// line, first sentence)`, 1-based and inclusive, in file order.
+///
+/// The ranges are the file's real line numbers, so a range a reader is given can
+/// be handed straight to `read` — including a block that contains the abstract
+/// marker, which carries no prose of its own but is a line like any other.
+fn paragraphs(lines: &[&str]) -> Vec<(usize, usize, Option<String>)> {
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim().is_empty() {
+            if let Some(first) = start.take() {
+                out.push(paragraph(lines, first, i - 1));
             }
+        } else if start.is_none() {
+            start = Some(i);
         }
     }
-    Some(text.chars().take(text[..cut].chars().count()).collect())
+    if let Some(first) = start {
+        out.push(paragraph(lines, first, lines.len() - 1));
+    }
+    out
+}
+
+fn paragraph(lines: &[&str], first: usize, last: usize) -> (usize, usize, Option<String>) {
+    (
+        first + 1,
+        last + 1,
+        first_sentence(&lines[first..=last].join("\n")),
+    )
 }
 
 /// Swap the standing-notes section inside a composed system prompt.
@@ -336,249 +476,11 @@ pub fn carried(system: &str) -> Option<&str> {
     Some(&system[a..b])
 }
 
+/// **The census, in its own file** — the shape `harness/queue_e2e.rs` has, and for
+/// the same reason: these tests read this module's private rules (`gather`'s
+/// order, `body`'s per-file budget, `index_entry`'s shape), and a module whose
+/// rules are private can only be tested from inside it. The integration half —
+/// the re-read at a base rebuild, against a real harness — is
+/// `crates/harnessd/tests/standing_notes.rs`.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The byte vocabulary: one token per byte, no GGUF, no FFI — the same
-    /// counter a provider session counts with, so the budget arithmetic in
-    /// these tests is exact rather than proportional.
-    fn vocab() -> Vocab {
-        Vocab::bytes([], [])
-    }
-
-    fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!(
-            "letibot-standing-{}-{}-{name}",
-            std::process::id(),
-            line!()
-        ));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).expect("temp dir");
-        d
-    }
-
-    fn write(path: &Path, text: &str) {
-        if let Some(p) = path.parent() {
-            std::fs::create_dir_all(p).expect("parent");
-        }
-        std::fs::write(path, text).expect("fixture");
-    }
-
-    /// **Under the budget the files are whole, each under its path.**
-    #[test]
-    fn under_the_budget_the_files_are_injected_verbatim() {
-        let ws = dir("verbatim");
-        write(
-            &ws.join("AGENTS.md"),
-            "# Rules\n\nBuild with `cargo test -p`, never `--workspace`.\n",
-        );
-        let s = section(&ws, &dir("none"), &vocab()).expect("a section");
-        assert!(s.contains(BEGIN) && s.contains(END), "{s}");
-        assert!(
-            s.contains(&format!("### {}/AGENTS.md", ws.display())),
-            "the path is the heading: {s}"
-        );
-        assert!(
-            s.contains("Build with `cargo test -p`, never `--workspace`."),
-            "the file's own text, whole: {s}"
-        );
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
-    /// **Over the budget it is a digest with line references, not the text.**
-    #[test]
-    fn over_the_budget_it_is_a_digest_with_line_references() {
-        let ws = dir("digest");
-        let body: String = "filler sentence that exists only to spend the budget. ".repeat(80);
-        let file = format!(
-            "# Title\n\nFirst sentence under the title. Second sentence, rarely needed.\n\n## Deep\n\n{body}\n"
-        );
-        write(&ws.join("AGENTS.md"), &file);
-        assert!(file.len() > NOTES_BUDGET_TOKENS, "the fixture must exceed");
-        let s = section(&ws, &dir("none"), &vocab()).expect("a section");
-        assert!(
-            s.contains("digest with line references")
-                || s.contains("headings and line ranges only"),
-            "the digest says what it is: {s}"
-        );
-        // The deep body is absent — that is the whole point of the rule.
-        assert!(!s.contains(&body), "the digest carries no filler body");
-        // The references a `read` needs: heading, span, first sentences.
-        // The title spans lines 1-4 (its own line to the line before the next
-        // heading) and Deep spans 5-7 to the end of the file.
-        assert!(s.contains("1-4  # Title"), "{s}");
-        assert!(s.contains("First sentence under the title."), "{s}");
-        assert!(
-            s.contains("5-7  ## Deep"),
-            "the Deep heading's span is addressed: {s}"
-        );
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
-    /// **A source that is absent contributes nothing — never a heading, never
-    /// an error.**
-    #[test]
-    fn a_missing_source_contributes_nothing() {
-        let empty = dir("empty");
-        assert!(
-            section(&empty, &dir("none"), &vocab()).is_none(),
-            "no sources is no section"
-        );
-        let ws = dir("one");
-        write(&ws.join("AGENTS.md"), "only file\n");
-        let s = section(&ws, &dir("none"), &vocab()).expect("a section");
-        assert_eq!(s.matches("### ").count(), 1, "one file, one heading: {s}");
-        assert!(
-            !s.contains("notes]"),
-            "no empty heading for the absent dirs"
-        );
-        let _ = std::fs::remove_dir_all(&ws);
-        let _ = std::fs::remove_dir_all(&empty);
-    }
-
-    /// **The order is global, then AGENTS.md, then the project's notes; and
-    /// within a directory it is the sorted glob, not the directory's order.**
-    #[test]
-    fn the_sources_keep_their_order_and_sort_within_a_directory() {
-        let ws = dir("order");
-        let global = dir("global");
-        write(&global.join("z-first-written.md"), "global\n");
-        write(&ws.join("AGENTS.md"), "agents\n");
-        write(&ws.join(".letibot/notes/b.md"), "project b\n");
-        write(&ws.join(".letibot/notes/a.md"), "project a\n");
-        let s = section(&ws, &global, &vocab()).expect("a section");
-        let pos = |needle: &str| s.find(needle).expect(needle);
-        assert!(
-            pos("global\n") < pos("agents\n")
-                && pos("agents\n") < pos("project a\n")
-                && pos("project a\n") < pos("project b\n"),
-            "global, then the project file, then the project's notes sorted: {s}"
-        );
-        let _ = std::fs::remove_dir_all(&ws);
-        let _ = std::fs::remove_dir_all(&global);
-    }
-
-    /// **The same files assemble to the same section — twice.**
-    #[test]
-    fn the_same_files_assemble_to_the_same_section() {
-        let ws = dir("same");
-        write(&ws.join("AGENTS.md"), "# One\n\ntext\n");
-        let a = section(&ws, &dir("none"), &vocab());
-        let b = section(&ws, &dir("none"), &vocab());
-        assert_eq!(a, b);
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
-    /// **The budget's edge: at it verbatim, one over it a digest.**
-    #[test]
-    fn the_budget_edge_is_exact() {
-        let ws = dir("edge");
-        let path = ws.join("AGENTS.md");
-        // One byte = one token under the byte vocabulary, and the budget is
-        // decided on the assembled BODY (the path heading plus the files) —
-        // the envelope is the harness's own fixed sentence, not the operator's
-        // material, and budgeting it would spend the operator's allowance on
-        // our wording. Build the file so the body sits exactly on the budget.
-        let overhead = format!("### {}\n", path.display()).len();
-        let file = "a".repeat(NOTES_BUDGET_TOKENS - overhead);
-        write(&path, &file);
-        let s = section(&ws, &dir("none"), &vocab()).unwrap();
-        assert!(s.contains(&file), "exactly at the budget: verbatim");
-        write(&path, &format!("{file}a"));
-        let over = section(&ws, &dir("none"), &vocab()).unwrap();
-        assert!(
-            over.contains("headings and line ranges only"),
-            "one token over: {over}"
-        );
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
-    /// **`replace` swaps the section and leaves the rest byte for byte.**
-    #[test]
-    fn replace_swaps_only_the_section() {
-        let ws = dir("replace");
-        write(&ws.join("AGENTS.md"), "first\n");
-        let one = section(&ws, &dir("none"), &vocab()).unwrap();
-        // A composed prompt as `with_fabric` leaves it: sections, notes, then
-        // a fabric block appended after.
-        let composed = format!("sections\n\n{one}\n\nfabric block");
-        write(&ws.join("AGENTS.md"), "second\n");
-        let two = section(&ws, &dir("none"), &vocab()).unwrap();
-        let swapped = replace(&composed, Some(&two));
-        assert!(swapped.contains("second"), "{swapped}");
-        assert!(!swapped.contains("first"), "{swapped}");
-        assert!(
-            swapped.starts_with("sections\n") && swapped.ends_with("fabric block"),
-            "everything outside the markers is carried through: {swapped}"
-        );
-        assert_eq!(carried(&swapped), Some(two.as_str()));
-        // Removing: no doubled blank line where the section was, mid-prompt or
-        // at the end — a removal from the end takes its glue with it.
-        let removed = replace(&swapped, None);
-        assert_eq!(removed, "sections\n\nfabric block");
-        assert_eq!(
-            replace(&format!("plain\n\n{one}"), None),
-            "plain",
-            "a removal from the end leaves no tail of blank lines"
-        );
-        // Idempotent on a prompt that never had one.
-        assert_eq!(replace("plain", None), "plain");
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
-    /// **`carried` reads the section back off a composed prompt.**
-    #[test]
-    fn carried_reads_the_section_off_a_composed_prompt() {
-        let ws = dir("carried");
-        write(&ws.join("AGENTS.md"), "text\n");
-        let s = section(&ws, &dir("none"), &vocab()).unwrap();
-        assert_eq!(carried(&format!("before\n\n{s}\nafter")), Some(s.as_str()));
-        assert_eq!(carried("no section here"), None);
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
-    /// **The envelope says whose notes these are, and that they are
-    /// historical.**
-    ///
-    /// The operator's ruling, 2026-10-09: *"The read tool should carry a short
-    /// note - 'it is a historical note, might be outdated'"* — and the injected
-    /// block is the highest-traffic read of all, delivered at session open and
-    /// every base rebuild whether or not the tool is ever called. The envelope
-    /// also had to change for a second reason: the project's `.letibot/notes/`
-    /// is now writable by sessions through the `notes` tool, so a blanket "the
-    /// operator maintains these" stopped being true. The authorship split is
-    /// by directory — the tell that keeps a note the model wrote from reading
-    /// as an instruction the operator gave — and the caveat says what a note
-    /// is: a record of what was true when written, not a fact about now.
-    #[test]
-    fn the_envelope_splits_authorship_and_carries_the_historical_caveat() {
-        let ws = dir("envelope");
-        write(
-            &ws.join(".letibot/notes/session-find.md"),
-            "a session wrote this\n",
-        );
-        let s = section(&ws, &dir("none"), &vocab()).unwrap();
-        assert!(
-            s.contains("the operator's standing material"),
-            "whose AGENTS.md and box-wide notes are: {s}"
-        );
-        assert!(
-            s.contains(".letibot/notes/`"),
-            "the project notes are named as their own source, written by the tool: {s}"
-        );
-        assert!(
-            s.contains("not text from this conversation"),
-            "the structural distinguishability sentence survives: {s}"
-        );
-        assert!(
-            s.contains("historical") && s.contains("may be outdated"),
-            "the caveat, in the operator's own words: {s}"
-        );
-        assert!(
-            s.contains("one in force"),
-            "the which-copy-is-current rule survives: {s}"
-        );
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-}
+mod tests;

@@ -25,7 +25,7 @@
 //! | [`jobs`] | an unknown job id comes back with the jobs there are and the nearest; an unknown scope with the scopes there are and the three kinds |
 //! | [`external`] | a tool whose infrastructure is not attached names what is missing, what would attach it, and what still works here — and returns `NotRun`, because nothing ran |
 //! | [`intent`] | a completion with nothing measured behind it is reported as *claimed*, with the counts and what would settle it; an unmounted board, a headless `ask_user_question` and a lost row-claim each name what is missing rather than defaulting |
-//! | [`notes`] | an unknown name comes back with every note that exists and the near misses; a write that would overwrite, create or escape the notes directory is refused with the fact it refused about |
+//! | [`notes`] | an unknown name comes back with every note that exists and the near misses; a search that matches nothing abstains with the corpus in the same body; a write that would overwrite, create or escape the notes directory is refused with the fact it refused about |
 //!
 //! The shared shape: a miss produces **more** output than a hit, not less, and
 //! every one of those extra bytes is something the model can act on without
