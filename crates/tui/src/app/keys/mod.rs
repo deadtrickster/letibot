@@ -188,6 +188,31 @@ impl App {
         if let ControlFlow::Break(r) = self.key_jobs_pane(&k) {
             return r;
         }
+        // **A click on a count label opens the pane its count names** — the operator's ask:
+        // *"make so that when i click on running subagents or jobs count labels i get to
+        // respective panes"*. The labels sit on the composer's top edge, pinned right, and
+        // the act is exactly the chord's: the subagents label runs `ctrl-g`'s toggle, the
+        // jobs label `ctrl-q`'s — which asks the daemon for the table, so the pane the click
+        // opens has rows to draw and not just a frame.
+        //
+        // **Placed after every card, pane and overlay above** — the whole screen between
+        // the labels and the top owns its own clicks first, and a click that reaches here
+        // is one nothing else claimed. The target itself comes from the last frame's record
+        // ([`App::box_top_hits`]), which exists only for a frame that drew the edge with a
+        // non-zero count: a label that is not on the screen is not a button, and a click
+        // against any other frame — an edge cut by the fit, a head with nothing in flight —
+        // has no target to hit.
+        if let Key::Click { x, y } = k
+            && let Some(label) = self.box_top_label_at(x, y)
+        {
+            match label {
+                CountLabel::Subagents => {
+                    self.toggle_subagents();
+                    return None;
+                }
+                CountLabel::Jobs => return self.toggle_jobs(),
+            }
+        }
         // **Up with an empty composer recalls the queued line.**
         //
         // The echo above the composer is the operator's own words, held only

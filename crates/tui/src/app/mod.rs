@@ -36,6 +36,51 @@ use rano::agent::card;
 use crate::ui::render::{RenderConfig, visible_width};
 use crate::ui::*;
 
+/// **Which count label on the composer's top edge a click landed on** — the click's
+/// answer, and the act it runs: the subagents label does `ctrl-g`'s, the jobs label
+/// `ctrl-q`'s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CountLabel {
+    Subagents,
+    Jobs,
+}
+
+/// **The count labels' columns in the composer's top edge, as rano's own line drew them**
+/// — each label's first column and width **in the row's own columns**, the gutter not yet
+/// added. `None` for a label this frame did not draw: a zero count, or an edge too narrow
+/// for rano, whose truncation eats the jobs label first (it sits to the right). Taken off
+/// the line rano returned rather than rebuilt from the counts, because the line is the
+/// thing on the screen — rano pins the labels right and cuts them when the edge is
+/// narrow, and both of those move a target that arithmetic over the counts would
+/// misplace.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct BoxTopLabels {
+    pub(crate) subagents: Option<(usize, usize)>,
+    pub(crate) jobs: Option<(usize, usize)>,
+}
+
+/// **The composer's top edge as a click target**: the screen row the last frame drew it
+/// on, and each label's first column and width in TERMINAL coordinates — the gutter
+/// added, because a click's `x` is in terminal cells.
+///
+/// Recorded by the frame that drew the edge ([`App::compose_screen`]) and left `None` by
+/// every frame that did not, for the reason every other click record in this head is
+/// recorded rather than derived (see [`App::todos_stop_rows`]): the labels are pinned
+/// right, so their columns move with the terminal's width and with rano's truncation of
+/// the edge, and the edge itself is drawn only while a count is non-zero — a label that
+/// is not on the screen is not a target, and a click that arrives against a frame that
+/// never drew the edge has nothing to hit. See [`App::box_top_label_at`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BoxTopHits {
+    /// The screen row the edge sat on, counting the header when the frame drew one.
+    pub(crate) row: usize,
+    /// The `N subagent(s) running` label, when the frame drew one.
+    pub(crate) subagents: Option<(usize, usize)>,
+    /// The `N job(s) running · M to a file` label — the tail included, because it is that
+    /// fact's own second half and names no pane of its own.
+    pub(crate) jobs: Option<(usize, usize)>,
+}
+
 /// The head.
 pub struct App {
     pub cfg: RenderConfig,
@@ -776,6 +821,12 @@ pub struct App {
     /// the same trick the session picker's header arithmetic does, one card
     /// lower.
     pub(crate) mode_first_row: usize,
+    /// **The count labels on the composer's top edge, as the last frame drew them** —
+    /// [`BoxTopHits`] for the shape, `None` whenever the frame drew no edge, cut it, or
+    /// the head was never drawn at all. The labels are the composer's own affordance:
+    /// they count what this session has in flight, and a click on one opens the pane its
+    /// count names — exactly the act the label's chord has always done.
+    pub(crate) box_top_hits: Option<BoxTopHits>,
     /// The todos pane, a screen like the picker: the session's plan (what the
     /// model last wrote through `todo_write`) and the repo's own queue
     /// (`TODO.md`, read-only here — an agent's plan and the operator's queue are
@@ -1509,6 +1560,7 @@ impl App {
             pick_unseeded: false,
             mode_rows_drawn: 0,
             mode_first_row: 0,
+            box_top_hits: None,
             todos_pane: false,
             subagents_pane: false,
             jobs_pane: false,

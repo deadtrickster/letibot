@@ -691,12 +691,9 @@ impl App {
                 }
                 None
             }
-            "jobs" => {
-                self.jobs_pane = !self.jobs_pane;
-                self.pane_scroll = 0;
-                self.redraw = true;
-                self.jobs_pane.then_some(Action::ListJobs)
-            }
+            // **`/jobs` is `toggle_jobs`'s other spelling** — the same function the chord
+            // and a click on the count label run, so the three cannot drift.
+            "jobs" => self.toggle_jobs(),
             // **The merge queue**, and it is not this session's: there is one `main` and one
             // queue, so the pane asks for the whole thing and the daemon answers with it.
             "queue" => {

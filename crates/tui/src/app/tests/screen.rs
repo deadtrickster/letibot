@@ -369,3 +369,296 @@ fn esc_leaves_the_setting_alone() {
         "esc changed the setting it was moving a cursor over"
     );
 }
+
+// -- the count labels on the composer's top edge, as click targets ------------------
+//
+// The operator's ask: *"make so that when i click on running subagents or jobs count
+// labels i get to respective panes"*. Every test here draws a frame FIRST and aims the
+// click at the columns that frame recorded, because the whole feature is that the target
+// is where the draw put it — a click measured against coordinates a test worked out for
+// itself would pass while the operator clicked the border.
+
+/// **A click on the subagents label opens the subagents pane** — `ctrl-g`'s act under the
+/// pointer, aimed at the label the frame drew and not at a column the test computed.
+#[test]
+fn a_click_on_the_subagents_label_opens_the_subagents_pane() {
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: "running".into(),
+            prompt: "summarize ~/bin/letibot".into(),
+            role: "coder".into(),
+            task: String::new(),
+            model: String::new(),
+            answer: None,
+        },
+    )));
+    let screen = a.screen(100, 24);
+    let hits = a
+        .box_top_hits
+        .expect("the frame drew the composer's top edge");
+    let (col, w) = hits
+        .subagents
+        .expect("one subagent is running, so its label is drawn");
+    // The frame the click is measured against really does carry the label on that row —
+    // the record and the glass agree, or the click below proves nothing.
+    let row = screen
+        .get(hits.row)
+        .expect("the recorded edge row is in the frame");
+    assert!(row.contains("1 subagent running"), "edge row: {row:?}");
+
+    a.key(Key::Click {
+        x: (col + w / 2) as u16,
+        y: hits.row as u16,
+    });
+    assert!(
+        a.subagents_pane,
+        "the click opened the pane its count names"
+    );
+    let screen = a.screen(100, 24).join("\n");
+    assert!(screen.contains("summarize ~/bin/letibot"), "{screen}");
+}
+
+/// **A click on the jobs label opens the jobs pane AND asks for its rows** — exactly the
+/// chord's act, not just the flag: `ctrl-q` returns `ListJobs` because the pane it opens
+/// needs the daemon's table to draw, and a click that only flipped the flag would open an
+/// empty pane.
+#[test]
+fn a_click_on_the_jobs_label_opens_the_jobs_pane_and_asks_for_its_table() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Jobs {
+        session_id: "s".into(),
+        jobs: vec![letibot_sessionlog::protocol::JobEntry {
+            id: "j1".into(),
+            command: "cargo build".into(),
+            how: "asked".into(),
+            state: "running".into(),
+            running: true,
+            never_ran: false,
+            redirect: None,
+            produced: 0,
+            elapsed_ms: 10,
+        }],
+    });
+    let screen = a.screen(100, 24);
+    let hits = a
+        .box_top_hits
+        .expect("the frame drew the composer's top edge");
+    let (col, w) = hits
+        .jobs
+        .expect("one job is running, so its label is drawn");
+    let row = screen
+        .get(hits.row)
+        .expect("the recorded edge row is in the frame");
+    assert!(row.contains("1 job running"), "edge row: {row:?}");
+
+    assert_eq!(
+        a.key(Key::Click {
+            x: (col + w / 2) as u16,
+            y: hits.row as u16,
+        }),
+        Some(Action::ListJobs),
+        "the click ran the chord's act, table and all"
+    );
+    assert!(a.jobs_pane, "the click opened the pane its count names");
+}
+
+/// **A click one column outside a label opens nothing.** The labels are targets because
+/// the frame drew them there; the edge around them is furniture, and a click on it is a
+/// click nobody claimed — it must not reach a pane by rounding, luck or the gutter.
+#[test]
+fn a_click_one_column_off_the_labels_opens_nothing() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    // Attached first, then the spawn: a `Hello` replaces the whole view, so a live event
+    // applied before it would be folded into nothing and the label would never draw.
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: "running".into(),
+            prompt: "watched spawn".into(),
+            role: "coder".into(),
+            task: String::new(),
+            model: String::new(),
+            answer: None,
+        },
+    )));
+    a.apply(ServerFrame::Jobs {
+        session_id: "s".into(),
+        jobs: vec![letibot_sessionlog::protocol::JobEntry {
+            id: "j1".into(),
+            command: "cargo build".into(),
+            how: "asked".into(),
+            state: "running".into(),
+            running: true,
+            never_ran: false,
+            redirect: None,
+            produced: 0,
+            elapsed_ms: 10,
+        }],
+    });
+    a.screen(100, 24);
+    let hits = a
+        .box_top_hits
+        .expect("the frame drew the composer's top edge");
+    let (sub_col, _) = hits.subagents.expect("both labels are drawn");
+    let (job_col, job_w) = hits.jobs.expect("both labels are drawn");
+    // One column before the leftmost label and one after the rightmost: the fill of the
+    // edge, on the labels' own row.
+    for x in [sub_col.saturating_sub(1), job_col + job_w] {
+        assert_eq!(
+            a.key(Key::Click {
+                x: x as u16,
+                y: hits.row as u16
+            }),
+            None,
+            "a click off every label acted"
+        );
+    }
+    assert!(!a.subagents_pane && !a.jobs_pane, "some pane opened anyway");
+}
+
+/// **A head with nothing in flight draws the edge but no label, and no click along it
+/// opens anything.** The counts are drawn only while they are true, so the click's target
+/// is absent with them — the same frame, the same row, nothing to claim the pointer.
+#[test]
+fn a_head_with_nothing_running_has_no_label_to_click() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.screen(100, 24);
+    let hits = a
+        .box_top_hits
+        .expect("the edge itself is drawn — only its labels are absent");
+    assert_eq!(hits.subagents, None, "a zero count drew a subagents target");
+    assert_eq!(hits.jobs, None, "a zero count drew a jobs target");
+    // And behaviourally: a sweep of the edge row opens neither pane.
+    for x in (0..100u16).step_by(7) {
+        assert_eq!(
+            a.key(Key::Click {
+                x,
+                y: hits.row as u16
+            }),
+            None,
+            "a click on a label-less edge opened something"
+        );
+    }
+    assert!(!a.subagents_pane && !a.jobs_pane);
+}
+
+/// **A truncated edge keeps only the labels it actually drew.** The edge truncates from
+/// the right, and the jobs label sits right of the subagents one — so a narrow terminal
+/// loses the jobs target while the subagents one survives, because the record is read off
+/// rano's drawn line and not rebuilt from the counts. This is the case arithmetic over
+/// `subagents_running`/`jobs_running` gets wrong in the dangerous direction: a target for
+/// a label the frame cut is a click nobody can see land.
+#[test]
+fn a_narrow_edge_keeps_only_the_labels_it_drew() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: "running".into(),
+            prompt: "watched spawn".into(),
+            role: "coder".into(),
+            task: String::new(),
+            model: String::new(),
+            answer: None,
+        },
+    )));
+    a.apply(ServerFrame::Jobs {
+        session_id: "s".into(),
+        jobs: vec![letibot_sessionlog::protocol::JobEntry {
+            id: "j1".into(),
+            command: "cargo build".into(),
+            how: "asked".into(),
+            state: "running".into(),
+            running: true,
+            never_ran: false,
+            redirect: None,
+            produced: 0,
+            elapsed_ms: 10,
+        }],
+    });
+    // 30 columns: no gutter, and an edge too narrow for both facts — the drawn line cuts
+    // the jobs fact and keeps the subagents one.
+    let screen = a.screen(30, 24);
+    let hits = a
+        .box_top_hits
+        .expect("a narrow terminal still draws the edge");
+    let row = screen
+        .get(hits.row)
+        .expect("the recorded edge row is in the frame");
+    assert!(row.contains("1 subagent running"), "edge row: {row:?}");
+    assert!(
+        hits.subagents.is_some(),
+        "the label the frame drew whole has no target"
+    );
+    assert!(
+        hits.jobs.is_none(),
+        "a target exists for a label the edge truncated away"
+    );
+}
+
+/// **A click while the pane is open runs the chord's act there too** — the chord
+/// TOGGLES, and the click is its spelling, not a one-way "open". The arm sits after the
+/// pane handlers in the dispatch, so the panes that do claim clicks keep them; the
+/// subagents pane claims none, and its label answers the pointer exactly as `ctrl-g`
+/// would.
+#[test]
+fn a_click_on_the_label_of_an_open_pane_toggles_it_closed() {
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::Subagent {
+            subagent_id: "s-sub-1".into(),
+            state: "running".into(),
+            prompt: "summarize ~/bin/letibot".into(),
+            role: "coder".into(),
+            task: String::new(),
+            model: String::new(),
+            answer: None,
+        },
+    )));
+    a.key(Key::CtrlG);
+    assert!(a.subagents_pane);
+    // The pane covers the conversation, not the composer: the edge and its label are
+    // still drawn, and still recorded.
+    let screen = a.screen(100, 24);
+    let hits = a
+        .box_top_hits
+        .expect("the pane leaves the composer its edge");
+    let (col, w) = hits
+        .subagents
+        .expect("the count is still true, so still drawn");
+    assert!(screen.get(hits.row).unwrap().contains("1 subagent running"));
+    a.key(Key::Click {
+        x: (col + w / 2) as u16,
+        y: hits.row as u16,
+    });
+    assert!(
+        !a.subagents_pane,
+        "the click ran the chord's toggle, not just its open"
+    );
+}
