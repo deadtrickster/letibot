@@ -6157,6 +6157,16 @@ impl Harness {
         let Some(text) = self.nag_notice() else {
             return Ok(None);
         };
+        // **The wall is checked BEFORE the send — `submit_as_a_normal_session`'s
+        // pre-flight, from the same function.** Insurance, not the load-bearing
+        // fix: a refused nag is still classified as the wall (see the `Http` arm
+        // in `run_rounds`) and recovered by the door that answers a refusal, so
+        // this exists to spare the round-trip the daemon's own numbers can
+        // predict — a nag is the cheapest turn the session takes, and the most
+        // pointless one to spend on a prompt already known not to fit. MEASURED
+        // 2026-10-09: the LAST of the thirty refusals on `s-1789919514688401228`
+        // was attributed to `todo check` — this door.
+        self.compact_if_at_the_wall();
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
         self.submit_item(TranscriptItem::User {
@@ -6261,6 +6271,16 @@ impl Harness {
             return Ok(None);
         }
         let text = notices.join("\n\n");
+        // **The wall is checked BEFORE the send — `nag_turn`'s pre-flight, the
+        // same function.** MEASURED 2026-10-09: the FIRST of the thirty
+        // consecutive provider refusals on `s-1789919514688401228` was
+        // attributed to `monitor` — this door — so the insurance is not
+        // theoretical. As with the nag, this is not the load-bearing fix: a
+        // refused wake is classified as the wall and recovered by `after_turn`
+        // (`Sessions::wake` calls it), and this pre-flight is what spares the
+        // refused round-trip when the daemon's own ledger already says the next
+        // turn will not fit.
+        self.compact_if_at_the_wall();
         // The harness talking to itself, not the operator. A firing — or a job's end —
         // must never be able to authorise the action it reports on.
         self.trail.begin_turn();

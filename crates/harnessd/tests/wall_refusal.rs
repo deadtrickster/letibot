@@ -566,3 +566,205 @@ fn a_non_context_400_stays_a_backend_error() {
         "no compaction ran behind a non-context refusal: {warnings:#?}"
     );
 }
+
+/// **The two automatic doors take the pre-turn check** — Repair 3.
+///
+/// `nag_turn` (the plan check — the LAST of the thirty refusals was attributed
+/// to `todo check`) and `wake` (a monitor firing — the FIRST was attributed to
+/// `monitor`) both start a turn, and both used to go straight to
+/// `submit_item`. The pre-flight is insurance rather than the load-bearing fix
+/// — a refused nag or wake is classified as the wall and recovered by
+/// `after_turn` like any other turn — but it spares the round-trip the
+/// daemon's own numbers can predict, and this is the assertion that it runs:
+/// at the wall with `auto_compact` on, the door compacts BEFORE the turn it
+/// was going to send.
+///
+/// The fixture both door tests stand on: a session whose store carries the
+/// todo rows the door under test will speak about (seeded BEFORE the harness
+/// opens, because the board is restored at open — the resume's own rule), a
+/// window of 32768, and the parts. The test then points `cfg.endpoint` at its
+/// own canned server, opens the harness, and wedges it with one submit whose
+/// ten reads cross the wall — a bare harness returns the wall with nothing
+/// tidied, which is the state every door then meets.
+fn a_session_at_the_wall(tag: &str, todos: &[TodoItem]) -> (TempDir, Config, Parts) {
+    let dir = TempDir::new(tag);
+    let path = dir.path().join("sessions.db");
+    let session_id = format!("{tag}-test");
+    {
+        let s = Store::open(&path).expect("seeding");
+        s.put_session(&SessionRecord {
+            id: session_id.clone(),
+            title: None,
+            model_id: "m".into(),
+            dialect_sha: "sha".into(),
+            workspace_root: "/tmp".into(),
+            owner: "dead".into(),
+            role: None,
+            approvers: vec![],
+            parent_session_id: None,
+        })
+        .expect("the session row");
+        if !todos.is_empty() {
+            s.put_todos(&session_id, todos).expect("the todo rows");
+        }
+    }
+    let mut cfg = config(&path, &session_id);
+    cfg.context_window = Some(32768);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    (dir, cfg, parts)
+}
+
+#[test]
+fn the_nag_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let (dir, mut cfg, parts) = a_session_at_the_wall(
+        "harnessd-nag-wall",
+        &[TodoItem {
+            content: "finish the migration".into(),
+            status: TodoStatus::InProgress,
+            by: TodoBy::Model,
+            when: None,
+        }],
+    );
+    let rel = write_the_big_file(&dir);
+
+    let vocab = &parts.vocab;
+    let half = a_plain_answer_turn(
+        vocab,
+        "summarising",
+        "the operator asked for a file; it was read ten times; the work continues",
+        30,
+    );
+    let half2 = a_plain_answer_turn(
+        vocab,
+        "summarising",
+        "the earlier history: the same file, read again; nothing else happened",
+        30,
+    );
+    let nag_answer = a_plain_answer_turn(vocab, "checking", "the plan is on track", 30);
+    let spare = a_plain_answer_turn(vocab, "checking", "the plan is on track", 30);
+    let scripts = vec![
+        Reply::Frames(a_turn_of_ten_reads(vocab, &rel)),
+        Reply::Frames(half),
+        Reply::Frames(half2),
+        Reply::Frames(nag_answer),
+        Reply::Frames(spare),
+    ];
+    let serv = canned::Canned::serve_replies(scripts, 5);
+    cfg.endpoint = serv.endpoint.clone();
+    let hub = Hub::new(&cfg.session_id);
+    let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session opens");
+
+    // The wedge: round-loop wall after the ten reads, nothing tidied (a bare
+    // harness has no tail) — the state the door then meets.
+    let out = h.submit("read big.txt and fill the context");
+    assert!(matches!(out, Err(HarnessError::ContextWall { .. })));
+
+    // The door: the plan is unfinished, so the nag has something to say — and
+    // THIS is the assertion, that it says it on a compacted base.
+    let out = h.nag_turn().expect("the nag turn runs");
+    assert!(
+        out.is_some(),
+        "the plan was unfinished, so a turn was spent"
+    );
+
+    let warnings = warnings_of(&hub);
+    let compacting = at(&warnings, "auto_compact", "compacting now");
+    let compacted = at(&warnings, "compacted", "tokens");
+    assert!(compacting < compacted);
+    // The nag's own turn STARTED after the fork landed: a TurnStarted later
+    // than the report is the door's turn on the summary, not on the wall.
+    let events: Vec<SessionEvent> = hub.retained().iter().map(|e| e.event.clone()).collect();
+    let last_started = events
+        .iter()
+        .rposition(|e| matches!(e, SessionEvent::TurnStarted { .. }))
+        .expect("the nag ran a turn");
+    assert!(
+        compacted < last_started,
+        "the door compacts BEFORE it sends: compacted at {compacted}, its turn at {last_started}"
+    );
+    assert_eq!(
+        h.transcript_id(),
+        format!("{}#t1", cfg.session_id),
+        "the nag's turn ran on the compaction's base"
+    );
+}
+
+#[test]
+fn the_wake_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    // A todo row conditioned on a job handle nothing knows: **absence is the
+    // condition** (`TodoCondition::Job`'s own rule), so the row is due the
+    // moment the wake looks — the cheapest honest way to give a wake something
+    // to say.
+    let (dir, mut cfg, parts) = a_session_at_the_wall(
+        "harnessd-wake-wall",
+        &[TodoItem {
+            content: "ship the pane".into(),
+            status: TodoStatus::InProgress,
+            by: TodoBy::Model,
+            when: Some(TodoCondition::Job {
+                handle: "j-nothing".into(),
+            }),
+        }],
+    );
+    let rel = write_the_big_file(&dir);
+
+    let vocab = &parts.vocab;
+    let half = a_plain_answer_turn(
+        vocab,
+        "summarising",
+        "the operator asked for a file; it was read ten times; the work continues",
+        30,
+    );
+    let half2 = a_plain_answer_turn(
+        vocab,
+        "summarising",
+        "the earlier history: the same file, read again; nothing else happened",
+        30,
+    );
+    let wake_answer = a_plain_answer_turn(vocab, "waking", "the condition is met", 30);
+    let spare = a_plain_answer_turn(vocab, "waking", "the condition is met", 30);
+    let scripts = vec![
+        Reply::Frames(a_turn_of_ten_reads(vocab, &rel)),
+        Reply::Frames(half),
+        Reply::Frames(half2),
+        Reply::Frames(wake_answer),
+        Reply::Frames(spare),
+    ];
+    let serv = canned::Canned::serve_replies(scripts, 5);
+    cfg.endpoint = serv.endpoint.clone();
+    let hub = Hub::new(&cfg.session_id);
+    let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session opens");
+
+    // The wedge, then the door — same shape as the nag's.
+
+    let out = h.submit("read big.txt and fill the context");
+    assert!(matches!(out, Err(HarnessError::ContextWall { .. })));
+
+    let out = h.wake().expect("the wake runs");
+    assert!(out.is_some(), "a due row was waiting, so a turn was spent");
+
+    let warnings = warnings_of(&hub);
+    let compacting = at(&warnings, "auto_compact", "compacting now");
+    let compacted = at(&warnings, "compacted", "tokens");
+    assert!(compacting < compacted);
+    let events: Vec<SessionEvent> = hub.retained().iter().map(|e| e.event.clone()).collect();
+    let last_started = events
+        .iter()
+        .rposition(|e| matches!(e, SessionEvent::TurnStarted { .. }))
+        .expect("the wake ran a turn");
+    assert!(
+        compacted < last_started,
+        "the door compacts BEFORE it sends: compacted at {compacted}, its turn at {last_started}"
+    );
+    assert_eq!(
+        h.transcript_id(),
+        format!("{}#t1", cfg.session_id),
+        "the wake's turn ran on the compaction's base"
+    );
+}
