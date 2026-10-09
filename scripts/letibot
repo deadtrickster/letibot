@@ -168,7 +168,36 @@ pid_started() { # pid_started PID
     [ -n "$l" ] && LC_ALL=C date -j -f '%a %b %e %T %Y' "$l" +%s 2>/dev/null
     return 0
   fi
-  stat -c %Y "/proc/$1" 2>/dev/null || true
+  # **The PROCESS's start time, and not the mtime of its /proc directory.** This read
+  # `stat -c %Y "/proc/$1"` until 2026-10-09, and a procfs DIRECTORY's mtime is not a
+  # process's start: it moves whenever an entry appears or disappears under it, which a
+  # long-lived daemon does all day. MEASURED that evening on the operator's box — pid
+  # 2076966, up since 09-21 07:16 by every honest reader (`ps -o lstart=`, and `btime`
+  # from /proc/stat plus the process's own `starttime`), was read as **10-08 21:20**:
+  # seventeen days late. The conclusion it fed (`it is not running what is on disk`)
+  # happened to be right that time, so nothing looked broken — but the evidence printed
+  # beside it was false, and the same error runs the other way: a stale daemon that has
+  # not touched its directory since it started reads as freshly started, `bt` is not
+  # greater than `dt`, and `daemon_stale_line` says NOTHING at all about a daemon that
+  # is not running what is on disk.
+  #
+  # The kernel's answer is field 22 of `/proc/<pid>/stat` — clock ticks since boot —
+  # added to `btime` from `/proc/stat`. **Field 2 is the program name in parentheses and
+  # may contain spaces and parentheses**, so the fields are counted from after the LAST
+  # `)` rather than by splitting the whole line: after `)^ `, field 22 is field 20.
+  local bt rest st hz
+  bt="$(awk '/^btime/{print $2; exit}' /proc/stat 2>/dev/null)"
+  case "$bt" in '' | *[!0-9]*) return 0 ;; esac
+  rest="$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null)" || return 0
+  [ -n "$rest" ] || return 0
+  st="$(printf '%s\n' "$rest" | awk '{print $20}')"
+  case "$st" in '' | *[!0-9]*) return 0 ;; esac
+  # `getconf` is the honest reader for a clock tick; 100 is Linux's own value on every
+  # architecture this project runs on, and a wrong divisor would be a start time off by
+  # a few minutes rather than a wrong day.
+  hz="$(getconf CLK_TCK 2>/dev/null || echo 100)"
+  case "$hz" in '' | *[!0-9]* | 0) hz=100 ;; esac
+  echo $(( bt + st / hz ))
 }
 file_mtime() { # file_mtime PATH
   if [ "$HOST_OS" = Darwin ]; then stat -f %m "$1" 2>/dev/null || true; else stat -c %Y "$1" 2>/dev/null || true; fi
@@ -1278,11 +1307,18 @@ daemon_line() {
 # by hand. Nobody should have to do that once, never mind three times.
 #
 # **Both facts are already in this script**: `BIN` is the binary this launcher would
-# start, and `daemon_pid` names the one that is live. `/proc/<pid>`'s own mtime IS the
-# process start time — checked against `/proc/<pid>/stat` field 22 (starttime in clock
-# ticks, converted through `/proc/uptime`) and the two agree to 0.0s — so the whole
-# comparison is one `stat` and no interpreter fork, on a path that runs before
-# anything is on the screen.
+# start, and `daemon_pid` names the one that is live. The process's start time comes from
+# `/proc/<pid>/stat` field 22 — starttime in clock ticks since boot, added to `btime` from
+# `/proc/stat`, which `pid_started` reads — so the whole comparison is a couple of reads
+# and no interpreter fork, on a path that runs before anything is on the screen.
+#
+# **The sentence that used to stand here said `/proc/<pid>`'s own mtime IS the process
+# start time, "checked against field 22 … the two agree to 0.0s", and it was FALSE.**
+# They agree for a process that has just started and drift for one that lives — MEASURED
+# 2026-10-09: pid 2076966, up since 09-21 07:16 by `ps`, `/proc/stat` and field 22 alike,
+# had a `/proc/<pid>` mtime of **10-08 21:20**. The check that "confirmed" it must have
+# been run against a young process, which is the only kind it can ever be right about.
+# See `pid_started` for the reader and for why the error runs both ways.
 #
 # **A line, not a restart, and not a refusal.** A restart drops an in-flight turn and
 # that is the operator's call every time; the defect is not that a daemon is old, it is
@@ -1501,17 +1537,24 @@ SESSIONS_EOF
     retarget "${2:-}"
     if live_detached; then refuse_detached; fi
     if live; then
+      # **The protocol question, asked here too** — the same one the plain run asks below,
+      # for the same reason and with the same cost. This arm's comment used to say the head
+      # reports the skew itself and that this would be "the same refusal"; it is the same
+      # REFUSAL and not the same SENTENCE. The head prints the bare
+      # `protocol version 36, this daemon speaks 22` and nothing about `--stop`, the socket,
+      # or the fact that every transcript is on disk — which is the whole of what someone
+      # staring at that line needs. Measured 2026-10-09.
+      if up; then :; else version_skew_or_continue; fi
       echo "letibot: attached to $(daemon_line)" >&2
       stale="$(daemon_stale_line)"
       [ -n "$stale" ] && echo "letibot: ! $stale" >&2
       warn_swallowed_flags
       exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}"
     fi
-    # **No probe here, deliberately.** This path starts nothing, so there is nothing
-    # to guard: a daemon that is there reports its own skew through the head's own
-    # error (it is the same refusal this would have printed), and a daemon that is
-    # not is the message below. Probing would be a head process to re-ask a question
-    # `live` just answered.
+    # **No probe here when nothing is listening, and that is still right.** This path
+    # starts nothing, so there is nothing to guard: a daemon that is not there is the
+    # message below. Probing would be a head process to re-ask a question `live` just
+    # answered. (When one IS listening, the probe above runs — see the note there.)
     echo "letibot: no harnessd for $WORKSPACE - run \`letibot\` there to start one" >&2
     echo "         (letibot --daemons lists the folders that have one)" >&2
     exit 1 ;;
@@ -1764,6 +1807,22 @@ if ! live; then
   exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}"
 fi
 
+# **And ask it the protocol question BEFORE a head is handed to it.** Everything above
+# this line is the cheap check — is anything listening — and until 2026-10-09 that was the
+# whole of this path's evidence. `version_skew_or_continue` then ran only in the branch
+# that is about to START a daemon, so an already-listening daemon from an older build was
+# handed a head anyway: the launcher printed `attached to …`, the head was refused at its
+# first frame, and the person was left at a bare `protocol version 36, this daemon speaks
+# 22` with a live session they could no longer open. MEASURED 2026-10-09 on a daemon up
+# since 09-21, whose warm KV is minutes to rebuild.
+#
+# `up` is the same conversation `--probe` runs, and it is the CHEAP one — 0.02 s measured
+# on a 1397-row session against 0.14 s for a whole head — so the argument that kept it off
+# this path ("four times too expensive", see `up`) does not weigh against a refusal that
+# costs somebody their session. A refusal for any OTHER reason falls through untouched:
+# `version_skew_or_continue` matches on the protocol sentence alone, and the head still
+# gets its chance to report whatever is actually wrong.
+if up; then :; else version_skew_or_continue; fi
 # A daemon is already up. Ask it, rather than restarting it: a restart would cost
 # every other session on this box to open one, and one of them may be mid-turn.
 echo "letibot: attached to $(daemon_line)" >&2
