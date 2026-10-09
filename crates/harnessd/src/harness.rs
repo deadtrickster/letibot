@@ -920,6 +920,80 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
     s
 }
 
+/// **What a gatekeeper child's state says about its review**, or `None` while it is still at it.
+///
+/// Pure, so the mapping is asserted without a child: an answer that parses is its verdict; an
+/// answer that does not is `unreadable`, with the parse error as its reason; a child that failed
+/// is `failed`, with why. Neither of the last two is one of the decision words, so the queue
+/// refuses them by name (`mergequeue::review_gate`) and the entry parks with the reason on it
+/// rather than waiting for a verdict that will not come.
+#[derive(Debug, PartialEq, Eq)]
+struct ReviewOutcome {
+    decision: String,
+    reasons: Vec<String>,
+    files: Vec<String>,
+    commands: Vec<String>,
+}
+
+fn review_outcome(
+    req: &letibot_tools::gatekeeper::ReviewRequest,
+    status: letibot_tools::builtins::task::TaskStatus,
+) -> Option<ReviewOutcome> {
+    use letibot_tools::builtins::task::TaskStatus;
+    match status {
+        TaskStatus::Done { answer } => Some(
+            match letibot_tools::gatekeeper::parse_verdict(req, &answer) {
+                Ok(v) => ReviewOutcome {
+                    decision: v.decision.as_str().to_string(),
+                    reasons: v.reasons,
+                    files: v.looked_at.files,
+                    commands: v.looked_at.commands,
+                },
+                Err(why) => ReviewOutcome {
+                    decision: "unreadable".into(),
+                    reasons: vec![why],
+                    files: Vec::new(),
+                    commands: Vec::new(),
+                },
+            },
+        ),
+        TaskStatus::Failed { why } => Some(ReviewOutcome {
+            decision: "failed".into(),
+            reasons: vec![why],
+            files: Vec::new(),
+            commands: Vec::new(),
+        }),
+        TaskStatus::Running { .. } | TaskStatus::Unknown => None,
+    }
+}
+
+/// **A gatekeeper's verdict, onto the queue's review row** — the row the queue reads on its
+/// next pass (`mergequeue::review_gate`). The ask's own `asked_ms` is kept; a write that fails is
+/// said on stderr, and the row stays outstanding, so the next ring starts the review again.
+fn write_verdict(
+    store: &Store,
+    row: &letibot_tokencore::store::ReviewRecord,
+    decision: &str,
+    reasons: Vec<String>,
+    files: Vec<String>,
+    commands: Vec<String>,
+) {
+    let rec = letibot_tokencore::store::ReviewRecord {
+        answered_ms: Some((crate::config::now_ns() / 1_000_000) as u64),
+        decision: Some(decision.to_string()),
+        reasons,
+        files,
+        commands,
+        ..row.clone()
+    };
+    if let Err(e) = store.put_review(&rec) {
+        eprintln!(
+            "  merge queue: the verdict on `{}` was not written: {e}",
+            row.entry_id
+        );
+    }
+}
+
 /// **The same sentence for a subagent, and the same rule behind it.**
 ///
 /// A subagent settles through the job channel because it *is* one — the operator's
@@ -1371,6 +1445,14 @@ pub struct Harness {
     /// only from the tool registry and the watcher set, so an interrupt had nothing to reach
     /// its children with — which is the defect, measured, that this exists for.
     subagents: Arc<dyn letibot_tools::builtins::task::TaskRunner>,
+    /// **The merge-queue reviews this session is hosting** — `(entry id, child handle, the
+    /// request)` for each gatekeeper child it started and has not yet heard back from. See
+    /// [`Harness::serve_reviews`].
+    reviewing: Vec<(String, String, letibot_tools::gatekeeper::ReviewRequest)>,
+    /// **Every gatekeeper child this session has started**, answered or not: a settlement
+    /// naming one is the review's, not news for this session's model, and is dropped from the
+    /// notices (`Harness::wake`).
+    gatekeepers: std::collections::HashSet<String>,
     /// The cloud provider the turns go to, when the session has one. `None` is
     /// the local server through the engine's own `/completion` path — **unless**
     /// [`Harness::key_wanted`] is set, which is a provider with no key yet.
@@ -3651,6 +3733,8 @@ impl Harness {
             // The same `Arc` the tool registry has, cloned before it was moved in — see the
             // field: an interrupt has to be able to stop this session's children.
             subagents: subagent_runner,
+            reviewing: Vec::new(),
+            gatekeepers: Default::default(),
             provider,
             key_wanted,
             // Filled on the first switch away from local, never at open: a session
@@ -6217,6 +6301,93 @@ impl Harness {
         stop_children_first(Some(&self.subagents), &self.hub)
     }
 
+    /// **The merge queue's reviews this session hosts: start a gatekeeper for each one that has
+    /// none, and write the verdict of each one that has answered.**
+    ///
+    /// The queue's door (`mergequeue::GatekeeperDoor`) writes a request row naming this session
+    /// as its host and rings it; this is the host's half. A gatekeeper is a **subagent** of this
+    /// session, seated `gatekeeper` (read-only, `bash` for `git diff`), given the review brief and
+    /// nothing else — so its asks come up this tree to its head like any child's, which is what a
+    /// reviewer the daemon owned alone could not have.
+    ///
+    /// Called at the top of every wake, which is what both of its triggers are: the queue's ring,
+    /// and the child's own settlement (a child's end wakes its parent). Idempotent — a row with a
+    /// gatekeeper already working is left alone — so the queue may ring as often as it likes.
+    /// After a daemon restart the children are gone and the rows are not, and the next ring
+    /// starts a new gatekeeper for each.
+    pub fn serve_reviews(&mut self) {
+        use letibot_tools::builtins::task::TaskStatus;
+        let me = self.hub.session_id();
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let rows: Vec<letibot_tokencore::store::ReviewRecord> = store
+            .reviews()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.answered_ms.is_none() && r.session_id == me)
+            .collect();
+        // **Start the ones nobody is reviewing.**
+        for row in &rows {
+            if self.reviewing.iter().any(|(e, _, _)| *e == row.entry_id) {
+                continue;
+            }
+            let Ok(Some(entry)) = store.merge_entry(&row.entry_id) else {
+                continue;
+            };
+            let req = letibot_tools::gatekeeper::ReviewRequest {
+                brief: entry.brief.clone(),
+                branch: entry.branch.clone(),
+                base_sha: entry.base_sha.clone(),
+            };
+            let spec = letibot_tools::builtins::task::TaskSpec {
+                role: "gatekeeper".into(),
+                ..Default::default()
+            };
+            match self
+                .subagents
+                .start(&letibot_tools::gatekeeper::review_prompt(&req), &spec)
+            {
+                Ok(handle) => {
+                    self.gatekeepers.insert(handle.clone());
+                    self.reviewing.push((row.entry_id.clone(), handle, req));
+                }
+                Err(why) => {
+                    // **A gatekeeper that could not start is a verdict the queue can show**: the
+                    // entry parks with the reason rather than waiting for a reviewer that never
+                    // came. `could_not_start` is not one of the decision words, so the queue
+                    // refuses it by name (`review_gate`).
+                    write_verdict(
+                        store,
+                        row,
+                        "could_not_start",
+                        vec![why],
+                        Vec::new(),
+                        Vec::new(),
+                    );
+                }
+            }
+        }
+        // **And write what has come back.**
+        let mut still = Vec::with_capacity(self.reviewing.len());
+        for (entry_id, handle, req) in std::mem::take(&mut self.reviewing) {
+            let Some(row) = rows.iter().find(|r| r.entry_id == entry_id) else {
+                // Answered elsewhere, or the entry left the queue: nothing to write.
+                continue;
+            };
+            let status = self.subagents.collect(&handle, std::time::Duration::ZERO);
+            // A handle this runner no longer knows is a child that is gone: dropped, so the next
+            // ring starts a new gatekeeper for the row that is still waiting.
+            let gone = status == TaskStatus::Unknown;
+            match review_outcome(&req, status) {
+                Some(o) => write_verdict(store, row, &o.decision, o.reasons, o.files, o.commands),
+                None if !gone => still.push((entry_id, handle, req)),
+                None => {}
+            }
+        }
+        self.reviewing = still;
+    }
+
     /// **Something fired while nothing was running.** T24's wake, from the worker —
     /// and, since R7, **the same door a background job's completion comes through.**
     ///
@@ -6237,6 +6408,10 @@ impl Harness {
     /// and the early return that used to sit on `self.monitors` is what would have
     /// made R7 silently monitor-only.
     pub fn wake(&mut self) -> Result<Option<Reply>, HarnessError> {
+        // **The merge queue's reviews first**, and they are never a turn of this session: a
+        // gatekeeper started, or a verdict written, is the queue's business. See
+        // [`Harness::serve_reviews`].
+        self.serve_reviews();
         // **Two kinds of thing arrive between turns, and they share one turn.**
         //
         // A monitor that fired, and a background job that ended. Both are the machine's
@@ -6268,11 +6443,15 @@ impl Harness {
         // that still arrives here from below is a settlement whose own session stopped
         // before it could be drained ([`JobWatchers::stop`]) — and `completion_notices`
         // is given this session's id so that it is not read as this session's own.
-        let done = self
+        let mut done = self
             .job_watch
             .as_ref()
             .map(|w| w.take_completions())
             .unwrap_or_default();
+        // **A gatekeeper's settlement is the review's, not this session's news.** The verdict
+        // went onto the queue's row above; telling this session's model that "a subagent you
+        // started has finished" would be a turn about a child it never started.
+        done.retain(|c| !self.gatekeepers.contains(&c.job));
         // The sentences, and which kind gets which — [`completion_notices`], which is where that
         // decision lives so that it can be asserted without a live session.
         notices.extend(completion_notices(done, &self.hub.session_id()));
@@ -13023,7 +13202,7 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     // Always a door for a root session, seat or no seat: without one the tool
     // says so and names `/flowy login`. That is what lets a seat arrive while
     // the session is open. A subagent hears through its parent.
-    if cfg.parent_session_id.is_none() && seat != Seat::Runner {
+    if cfg.parent_session_id.is_none() && !matches!(seat, Seat::Runner | Seat::Gatekeeper) {
         r.tools.push("flowy".into());
     }
     // **`web_search` is seated only when something is behind it**, and a subagent
@@ -13033,14 +13212,14 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     // bytes in the stable prefix, so seating it unconditionally would re-prefill
     // every stored conversation on this box to add a tool that refuses. A session
     // started without `--web-search` is byte-identical to yesterday's.
-    if cfg.web_search.is_some() && seat != Seat::Runner {
+    if cfg.web_search.is_some() && !matches!(seat, Seat::Runner | Seat::Gatekeeper) {
         r.tools.push("web_search".into());
         r.max_tools += 1;
     }
     // **`web_fetch` seats on the same rule as `web_search`**: only when
     // something is behind it, so a session started without `--web-fetch` is
     // byte-identical to one from before the flag existed.
-    if cfg.web_fetch && seat != Seat::Runner {
+    if cfg.web_fetch && !matches!(seat, Seat::Runner | Seat::Gatekeeper) {
         r.tools.push("web_fetch".into());
         r.max_tools += 1;
     }
@@ -13062,6 +13241,15 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
         }
         Seat::Runner => {
             let mut r = roles::m2_runner();
+            if !cfg.allow_bash {
+                r.tools.retain(|t| t != "bash");
+            }
+            r
+        }
+        // **The reviewer**: read-only by construction, `bash` only behind the daemon's flag —
+        // without it the gatekeeper reads the files and cannot diff, and says so in its verdict.
+        Seat::Gatekeeper => {
+            let mut r = roles::gatekeeper();
             if !cfg.allow_bash {
                 r.tools.retain(|t| t != "bash");
             }
@@ -16788,4 +16976,82 @@ pub fn abandoned_calls(items: &[TranscriptItem]) -> Vec<(String, String)> {
         .into_iter()
         .filter(|(id, _)| !answered.iter().any(|a| a == id))
         .collect()
+}
+
+#[cfg(test)]
+mod gatekeeper_reviews {
+    //! **The host's half of a merge-queue review** — what a gatekeeper child's state turns into
+    //! on the queue's row (`review_outcome`), the seat it runs in, and the mark a head hides it
+    //! by. The spawn itself is `HarnessTaskRunner::start` with the seat named, which is every
+    //! child's path; what is new is asserted here.
+    use super::*;
+    use letibot_tools::builtins::task::TaskStatus;
+    use letibot_tools::gatekeeper::ReviewRequest;
+
+    fn req() -> ReviewRequest {
+        ReviewRequest {
+            brief: "make the reader keep the last record".into(),
+            branch: "agent/reader".into(),
+            base_sha: "abc123".into(),
+        }
+    }
+
+    #[test]
+    fn a_gatekeepers_answer_becomes_the_rows_verdict() {
+        let ok = review_outcome(
+            &req(),
+            TaskStatus::Done {
+                answer: "Read the diff.\n\nverdict: accept\nreasons: - the test covers it\n\
+                         files: src/reader.rs\ncommands: git diff abc123...agent/reader"
+                    .into(),
+            },
+        )
+        .expect("settled");
+        assert_eq!(ok.decision, "accept");
+        assert_eq!(ok.reasons, vec!["the test covers it".to_string()]);
+        assert_eq!(ok.files, vec!["src/reader.rs".to_string()]);
+
+        // An answer with no verdict in it is refused by name, not waited on for ever.
+        let unreadable = review_outcome(
+            &req(),
+            TaskStatus::Done {
+                answer: "looks fine to me".into(),
+            },
+        )
+        .expect("settled");
+        assert_eq!(unreadable.decision, "unreadable");
+        assert!(unreadable.reasons[0].contains("verdict"), "{unreadable:?}");
+
+        let failed = review_outcome(
+            &req(),
+            TaskStatus::Failed {
+                why: "the model went away".into(),
+            },
+        )
+        .expect("settled");
+        assert_eq!(failed.decision, "failed");
+
+        assert_eq!(
+            review_outcome(&req(), TaskStatus::Running { note: None }),
+            None
+        );
+        assert_eq!(review_outcome(&req(), TaskStatus::Unknown), None);
+    }
+
+    #[test]
+    fn the_gatekeeper_is_a_seat_and_the_head_can_tell_its_child_apart() {
+        assert_eq!(Seat::parse("gatekeeper").unwrap(), Seat::Gatekeeper);
+        assert_eq!(Seat::Gatekeeper.as_str(), "gatekeeper");
+        assert!(
+            !Seat::Gatekeeper.needs_writable_backend(),
+            "a reviewer writes nothing"
+        );
+        // The child's title is cut from the brief's first line, and the head hides a child whose
+        // title begins with the mark — so the brief must begin with it, word for word.
+        assert!(
+            letibot_tools::gatekeeper::review_prompt(&req())
+                .starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX),
+            "the review brief no longer begins with the head's mark"
+        );
+    }
 }

@@ -835,17 +835,26 @@ impl MergeQueueDaemon {
                         branch: entry.branch.clone(),
                         base_sha: entry.base_sha.clone(),
                     };
-                    if let Err(e) = letibot_tools::gatekeeper::wake(&entry.id, req, &*self.reviewer)
-                    {
-                        // **A wake that failed is on the row.** An entry waiting for a verdict
-                        // nobody was asked for waits for ever, and a queue that said nothing
-                        // would be the same silence as an empty one.
-                        self.move_to(
-                            entry,
-                            MergeState::Waiting,
-                            format!("the gatekeeper could not be asked: {e}"),
-                            None,
-                        )?;
+                    match letibot_tools::gatekeeper::wake(&entry.id, req, &*self.reviewer) {
+                        // **Said on the row, once**: the queue pane shows an entry being reviewed,
+                        // and under which session, instead of one that looks stuck. Written only
+                        // when it changes, since every pass asks again.
+                        Ok(said) => {
+                            if entry.evidence != said {
+                                self.move_to(entry, MergeState::Waiting, said, None)?;
+                            }
+                        }
+                        Err(e) => {
+                            // **A wake that failed is on the row.** An entry waiting for a verdict
+                            // nobody was asked for waits for ever, and a queue that said nothing
+                            // would be the same silence as an empty one.
+                            self.move_to(
+                                entry,
+                                MergeState::Waiting,
+                                format!("the gatekeeper could not be asked: {e}"),
+                                None,
+                            )?;
+                        }
                     }
                 }
                 ReviewGate::Refused(verdict) => {
@@ -1125,93 +1134,126 @@ pub fn spawn_for(
     }
 }
 
-/// **The daemon's half of a wake** — write the request into the session store, then ring the
-/// reviewer's bell.
+/// **The daemon's half of a wake: a gatekeeper SUBAGENT, under the session the branch came from.**
 ///
-/// The two acts are the whole of what a wake is on this side, and both are deliberate:
+/// The operator, 2026-10-09: *"looks like there is no gatekeeper agent that does reviews"* —
+/// entries had sat in the queue for ten hours and more — and then *"or - subagent"*. A reviewer
+/// the daemon owned by itself could not be opened: the gatekeeper seats `bash`, and a session
+/// with an exec tool must have somebody to rule on its commands, which a daemon-owned session
+/// has not. A **subagent** has: its asks go up its tree to the root's head
+/// (`SubagentAdjudicator`). So the review runs as a child of the root of the session that
+/// enqueued the entry, and a reviewer's `git diff` card lands where the work was asked for.
 ///
-/// * **The write is what makes the ask durable.** The reviewer's session reads the request when
-///   it is woken, so a daemon that restarted between the write and the bell — or between the
-///   bell and the reviewer's turn — comes back to a request that is still there, and its next
-///   pass rings the bell again. A request held in the queue's memory would be a review nobody
-///   could answer after a restart.
-/// * **The ring is what starts the turn.** `Bell::ring_wake` is the same door the job watcher
-///   and the monitors use, and `Sessions::wake` answers it for a session the daemon holds — so
-///   the reviewer is served by the worker that serves every other session rather than by a
-///   second mechanism invented here.
+/// What this door does is the queue thread's share, and it is two acts:
 ///
-/// **The row is written only when there is not one.** `asked_ms` is *when the reviewer was
-/// FIRST asked*, and a queue that re-wrote it every second would lose that — and the re-ask is
-/// cheap precisely because it is only a ring.
-pub struct SessionReviewer {
-    /// The session store, opened on the queue's own thread. Its own connection to the same
-    /// file, for the reason the queue's is one: a `rusqlite::Connection` is `Send` and not
-    /// `Sync`, and this struct travels into the merge-queue thread.
+/// * **The request row, naming its HOST** — the root session that will run the gatekeeper.
+///   Durable for the reason it always was: a daemon that restarts between the ask and the verdict
+///   comes back to a row still waiting, and the next pass rings for it again. The host session
+///   spawns the child when it is woken (`Harness::serve_reviews`) and writes the verdict onto
+///   the same row when the child answers.
+/// * **The ring** at the host. A host the daemon does not hold is **resumed** from the store
+///   first — the operator's ruling — so an entry whose session closed hours ago is still
+///   reviewed; its approvals then wait as cards until somebody opens that session, and the row
+///   says which one.
+pub struct GatekeeperDoor {
+    /// The session store, opened on the queue's own thread (a `Connection` is `Send`, not
+    /// `Sync`, and this struct travels into the merge-queue thread).
     store: Store,
-    /// The daemon's bell, which is what `Sessions::wake` is blocked on.
+    /// The daemon's bell, which is what the host's turn is started by.
     bell: Arc<letibot_sessionlog::registry::Bell>,
-    /// **The daemon's sessions**, so the door can tell *a reviewer was woken* from *there is
-    /// no reviewer here*. Ringing a bell at a session nobody holds is a wake that answers
-    /// `Ignored` and looks exactly like a wake that worked, which is the class of silence this
-    /// module refuses everywhere else.
+    /// The daemon's sessions: whether the host is live, and how to resume it when it is not.
     registry: Arc<letibot_sessionlog::registry::Registry>,
-    /// The reviewer's session, which the daemon would open under this name.
-    session_id: String,
 }
 
-impl SessionReviewer {
+impl GatekeeperDoor {
     pub fn new(
         store: Store,
         bell: Arc<letibot_sessionlog::registry::Bell>,
         registry: Arc<letibot_sessionlog::registry::Registry>,
-        session_id: String,
     ) -> Self {
         Self {
             store,
             bell,
             registry,
-            session_id,
         }
+    }
+
+    /// **The root of the tree `session` is in**, walking the stored parents — a branch is
+    /// usually finished by a subagent, and the reviewer is a child of the ROOT, the session a
+    /// person attaches to. Bounded, so a cycle written by a bug ends rather than spins.
+    fn root_of(&self, session: &str) -> String {
+        let mut cur = session.to_string();
+        for _ in 0..32 {
+            let parent = self
+                .store
+                .session(&cur)
+                .ok()
+                .flatten()
+                .and_then(|s| s.parent_session_id);
+            match parent {
+                Some(p) if !p.is_empty() => cur = p,
+                _ => break,
+            }
+        }
+        cur
     }
 }
 
-impl letibot_tools::gatekeeper::Reviewer for SessionReviewer {
+impl letibot_tools::gatekeeper::Reviewer for GatekeeperDoor {
     fn wake(
         &self,
         entry_id: &str,
         req: &letibot_tools::gatekeeper::ReviewRequest,
     ) -> Result<String, String> {
-        // **A reviewer that is not there is refused BY NAME, before the request is written.**
-        //
-        // This is the honest state of this build — see `cli.rs`, where the door is wired and
-        // the reviewer's session is not created — and the refusal is what keeps it honest: a
-        // bell rung at a session nobody holds answers `Ignored`, which from the queue's side is
-        // indistinguishable from a reviewer that was woken and is thinking. The entry's row
-        // then says *the gatekeeper could not be asked*, which is a fact a person can act on,
-        // instead of an ask that appears to be in flight for ever.
-        if self.registry.get(&self.session_id).is_none() {
-            return Err(format!(
-                "there is no `{}` session in this daemon, so nothing was asked about \
-                 `{entry_id}` (branch `{}`, base `{}`). The queue holds entries until a reviewer \
-                 answers them, and a reviewer needs a session the daemon serves — see \
-                 `cli.rs` for why that session is not opened yet.",
-                self.session_id, req.branch, req.base_sha
-            ));
+        let entry = self
+            .store
+            .merge_entry(entry_id)
+            .map_err(|e| format!("the entry `{entry_id}` could not be read: {e}"))?
+            .ok_or_else(|| format!("the entry `{entry_id}` is not in the queue's table"))?;
+        let host = self.root_of(&entry.session_id);
+        // **A host the daemon does not hold is resumed**, the way a head's `ResumeSession` is —
+        // its stored wiring, its title — and the worker opens it on the ring `create` makes.
+        if self.registry.get(&host).is_none() {
+            match self.registry.resumable(&host) {
+                Some(brief) => {
+                    self.registry
+                        .create(&host, &brief.title, brief.wiring)
+                        .map_err(|e| {
+                            format!(
+                                "the session `{host}` that `{entry_id}` came from could not be \
+                                 resumed to review it under: {e}"
+                            )
+                        })?;
+                }
+                None => {
+                    return Err(format!(
+                        "the session `{host}` that `{entry_id}` (branch `{}`) came from is in \
+                         neither this daemon nor the store, so there is no session to run its \
+                         gatekeeper under. The branch does not land without a verdict.",
+                        req.branch
+                    ));
+                }
+            }
         }
         let existing = self
             .store
             .merge_review(entry_id)
             .map_err(|e| format!("the review row for `{entry_id}` could not be read: {e}"))?;
-        if existing.is_none() {
+        // **Written when there is none, or when it names another host** — `asked_ms` is when the
+        // review was FIRST asked for, and a queue that re-wrote it every pass would lose that.
+        if existing.as_ref().is_none_or(|r| r.session_id != host) {
             self.store
                 .put_review(&letibot_tokencore::store::ReviewRecord {
                     entry_id: entry_id.to_string(),
-                    session_id: self.session_id.clone(),
+                    session_id: host.clone(),
                     branch: req.branch.clone(),
                     base_sha: req.base_sha.clone(),
-                    asked_ms: (crate::config::now_ns() / 1_000_000) as u64,
+                    asked_ms: existing
+                        .as_ref()
+                        .map(|r| r.asked_ms)
+                        .unwrap_or_else(|| (crate::config::now_ns() / 1_000_000) as u64),
                     // **No verdict, and that is the row's whole meaning**: the review is
-                    // outstanding. The verdict write fills these in.
+                    // outstanding. The host writes the verdict when its gatekeeper answers.
                     answered_ms: None,
                     decision: None,
                     reasons: Vec::new(),
@@ -1220,21 +1262,17 @@ impl letibot_tools::gatekeeper::Reviewer for SessionReviewer {
                 })
                 .map_err(|e| format!("the request for `{entry_id}` could not be written: {e}"))?;
         }
-        // **The ring, and a closed bell is said rather than swallowed.** A daemon that is
-        // shutting down has a closed bell, and an ask that could not start a turn is an ask
-        // that did not happen — which the queue reports rather than reading as a wake.
         if self.bell.is_closed() {
             return Err(format!(
-                "the daemon's bell is closed (it is shutting down), so the gatekeeper was not \
-                 woken about `{entry_id}`. The request is on the row; the next daemon rings for \
-                 it."
+                "the daemon's bell is closed (it is shutting down), so `{host}` was not woken to \
+                 review `{entry_id}`. The request is on the row; the next daemon rings for it."
             ));
         }
-        self.bell.ring_wake(&self.session_id);
+        self.bell.ring_wake(&host);
         Ok(format!(
-            "asked the gatekeeper (`{}`) about `{}` at base `{}`; the verdict lands on the \
-             entry's row and nothing lands without it.",
-            self.session_id, req.branch, req.base_sha
+            "a gatekeeper reviews `{}` at base `{}` as a subagent of `{host}`; the verdict lands \
+             on the entry's row and nothing lands without it. Its approvals ask in `{host}`.",
+            req.branch, req.base_sha
         ))
     }
 }
@@ -2870,5 +2908,184 @@ mod tests {
             .output()
             .expect("git");
         String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+}
+
+#[cfg(test)]
+mod gatekeeper_door {
+    //! **The queue's door to a gatekeeper subagent** — the operator, 2026-10-09: *"looks like
+    //! there is no gatekeeper agent that does reviews … or - subagent"*, with entries ten hours
+    //! old waiting on a reviewer nobody could start. The door's half is the row naming the HOST
+    //! (the root of the session that enqueued the entry), the host resumed when it is not live,
+    //! and the ring; the host's half is `Harness::serve_reviews`.
+    use super::*;
+    use letibot_sessionlog::registry::{
+        Registry as SessionRegistry, SessionSource, SessionWiring, StoredBrief, Work, WorkOrIdle,
+    };
+    use letibot_tokencore::store::{MergePriority, SessionRecord};
+    use letibot_tools::gatekeeper::{ReviewRequest, Reviewer};
+    use std::sync::Mutex;
+
+    /// The store's sessions, as the daemon's own source answers them.
+    struct Disk(Mutex<Vec<StoredBrief>>);
+    impl SessionSource for Disk {
+        fn list(&self) -> Vec<StoredBrief> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    fn session(store: &Store, id: &str, parent: Option<&str>) {
+        store
+            .put_session(&SessionRecord {
+                id: id.into(),
+                title: Some(format!("title of {id}")),
+                model_id: "m".into(),
+                dialect_sha: "sha".into(),
+                workspace_root: "/w".into(),
+                owner: "dead".into(),
+                role: None,
+                approvers: vec![],
+                parent_session_id: parent.map(str::to_string),
+            })
+            .unwrap();
+    }
+
+    fn brief(id: &str) -> StoredBrief {
+        StoredBrief {
+            session_id: id.into(),
+            title: format!("title of {id}"),
+            items: 3,
+            last_activity_ms: 1,
+            wiring: SessionWiring::default(),
+            parent_session_id: None,
+            context_tokens: None,
+            context_cached: None,
+            stored_end: None,
+        }
+    }
+
+    fn wakes(registry: &SessionRegistry) -> Vec<String> {
+        let mut out = Vec::new();
+        loop {
+            match registry.next_work_until(Some(std::time::Instant::now())) {
+                WorkOrIdle::Work(Work::Woken(id)) => out.push(format!("woken {id}")),
+                WorkOrIdle::Work(Work::Open(id)) => out.push(format!("open {id}")),
+                WorkOrIdle::Work(_) => {}
+                WorkOrIdle::Idle | WorkOrIdle::Closed => return out,
+            }
+        }
+    }
+
+    #[test]
+    fn a_review_is_hosted_by_the_root_resumed_and_rung() {
+        let dir = std::env::temp_dir().join(format!("letibot-gk-door-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.db");
+        let store = Store::open(&path).unwrap();
+        // A root, and the child of it that finished the branch.
+        session(&store, "s-root", None);
+        session(&store, "s-child", Some("s-root"));
+        store
+            .put_merge_entry(&MergeEntry {
+                id: "e1".into(),
+                session_id: "s-child".into(),
+                branch: "agent/x".into(),
+                base_sha: "abc".into(),
+                priority: MergePriority::Subagent,
+                needs: vec![],
+                state: MergeState::Waiting,
+                brief: "make it work".into(),
+                evidence: String::new(),
+                created_ms: 1,
+                updated_ms: 1,
+                worktree: None,
+                landed_sha: None,
+            })
+            .unwrap();
+        let registry = SessionRegistry::new();
+        registry.set_source(Arc::new(Disk(Mutex::new(vec![brief("s-root")]))));
+        let door = GatekeeperDoor::new(
+            Store::open(&path).unwrap(),
+            registry.bell().clone(),
+            registry.clone(),
+        );
+        let req = ReviewRequest {
+            brief: "make it work".into(),
+            branch: "agent/x".into(),
+            base_sha: "abc".into(),
+        };
+
+        let said = door.wake("e1", &req).expect("asked");
+        assert!(said.contains("s-root"), "the row names its host: {said}");
+        // The host was not live, so it was resumed — and then rung.
+        assert!(registry.get("s-root").is_some(), "the root was resumed");
+        assert_eq!(wakes(&registry), vec!["open s-root", "woken s-root"]);
+        let row = store.merge_review("e1").unwrap().expect("a request row");
+        assert_eq!(
+            row.session_id, "s-root",
+            "hosted by the ROOT, not the child"
+        );
+        assert!(row.answered_ms.is_none(), "outstanding");
+
+        // Asked again on the next pass: the same row, the first `asked_ms`, and only a ring.
+        let first = row.asked_ms;
+        door.wake("e1", &req).expect("asked again");
+        assert_eq!(store.merge_review("e1").unwrap().unwrap().asked_ms, first);
+        assert_eq!(wakes(&registry), vec!["woken s-root"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_entry_whose_session_is_nowhere_is_refused_by_name() {
+        let dir = std::env::temp_dir().join(format!("letibot-gk-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.db");
+        let store = Store::open(&path).unwrap();
+        let mut e = super::tests_entry_for_door("e2", "s-vanished");
+        e.brief = "x".into();
+        store.put_merge_entry(&e).unwrap();
+        let registry = SessionRegistry::new();
+        let door = GatekeeperDoor::new(
+            Store::open(&path).unwrap(),
+            registry.bell().clone(),
+            registry.clone(),
+        );
+        let why = door
+            .wake(
+                "e2",
+                &ReviewRequest {
+                    brief: "x".into(),
+                    branch: e.branch.clone(),
+                    base_sha: e.base_sha.clone(),
+                },
+            )
+            .expect_err("nothing to host it");
+        assert!(why.contains("s-vanished"), "{why}");
+        assert!(
+            store.merge_review("e2").unwrap().is_none(),
+            "nothing was asked"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+fn tests_entry_for_door(id: &str, session: &str) -> MergeEntry {
+    MergeEntry {
+        id: id.into(),
+        session_id: session.into(),
+        branch: format!("agent/{id}"),
+        base_sha: "abc".into(),
+        priority: letibot_tokencore::store::MergePriority::Subagent,
+        needs: vec![],
+        state: MergeState::Waiting,
+        brief: String::new(),
+        evidence: String::new(),
+        created_ms: 1,
+        updated_ms: 1,
+        worktree: None,
+        landed_sha: None,
     }
 }

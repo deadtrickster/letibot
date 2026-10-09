@@ -97,6 +97,12 @@ pub enum Seat {
     /// backend at `/` and leaves gating to the permission ruleset and the mode,
     /// rather than confining to the project like `coder` and `runner`.
     Leticode,
+    /// **The merge queue's reviewer** ([`letibot_tools::runtime::roles::gatekeeper`]): `read`,
+    /// `grep`, `glob`, `read_spill`, and — behind [`Config::allow_bash`], like the runner's —
+    /// `bash` for `git diff` and `git log`. Nothing that can author code, and never a seat a
+    /// person picks: the daemon starts it as a hidden child of the session whose branch it
+    /// judges (`mergequeue::GatekeeperDoor`).
+    Gatekeeper,
 }
 
 impl Seat {
@@ -108,6 +114,7 @@ impl Seat {
             Seat::Coder => "coder",
             Seat::Runner => "runner",
             Seat::Leticode => "leticode",
+            Seat::Gatekeeper => "gatekeeper",
         }
     }
 
@@ -122,9 +129,10 @@ impl Seat {
             "coder" => Ok(Seat::Coder),
             "runner" => Ok(Seat::Runner),
             "leticode" | "opencode" => Ok(Seat::Leticode),
+            "gatekeeper" => Ok(Seat::Gatekeeper),
             other => Err(format!(
                 "unknown role `{other}`; this build has orchestrator, planner, \
-                 researcher, coder, runner, leticode"
+                 researcher, coder, runner, leticode, gatekeeper"
             )),
         }
     }
@@ -156,7 +164,7 @@ impl Seat {
         //
         // It does NOT seat `bash`. That is still behind `--bash` for both seats, so
         // the capability arrives because somebody typed it.
-        matches!(self, Seat::Runner | Seat::Coder)
+        matches!(self, Seat::Runner | Seat::Coder | Seat::Gatekeeper)
     }
 
     /// The read-only grants this seat needs to be useful, beyond the project.

@@ -20,6 +20,16 @@ impl App {
                 model,
                 answer,
             } => {
+                // **The merge queue's reviewer is not one of this session's subagents.** The
+                // daemon starts it under this session so its approvals have a head to reach, but
+                // nobody here asked for it: it stays out of the pane and the count, and the queue
+                // pane is where its verdict shows. The operator, 2026-10-09: *"it shouldnt be
+                // visible in "normal" agents count"*.
+                if role == "gatekeeper" {
+                    self.subagents.retain(|s| s.session_id != subagent_id);
+                    self.redraw = true;
+                    return Disposition::Filtered;
+                }
                 // **The event's own word for the instant**: it publishes `running` when the
                 // child's harness comes up and `opening` before that, so `running` is the one
                 // state it names in which a turn is generating. See

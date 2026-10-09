@@ -153,6 +153,13 @@ impl App {
             if b.parent_session_id.as_deref() != Some(self.session_id.as_str()) {
                 continue;
             }
+            // The merge queue's reviewer, rebuilt from the list — which carries no role, so it is
+            // known by the brief its title was cut from. See `on_child_event`.
+            if b.title
+                .starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX)
+            {
+                continue;
+            }
             match known.iter().find(|k| k.session_id == b.session_id) {
                 // Watched: the event's own row, which knows more than the list does about
                 // everything except whether a turn is generating in it right now.

@@ -109,3 +109,10 @@ pub use lift::{LogSink, from_turn_event};
 
 #[cfg(feature = "tools")]
 pub use lift_tools::{ToolLogSink, from_tool_event};
+
+/// **How a merge-queue gatekeeper's session title begins** — the first words of its brief
+/// (`letibot_tools::gatekeeper::review_prompt`, asserted equal in `harnessd`), which a child's
+/// title is cut from. A head reads it to keep the reviewer out of the subagents it counts: the
+/// gatekeeper is the queue's, not a child the operator started. The role is the better mark and
+/// a live `Subagent` event carries it; a row rebuilt from the session list has only the title.
+pub const GATEKEEPER_TITLE_PREFIX: &str = "You are the gatekeeper.";
