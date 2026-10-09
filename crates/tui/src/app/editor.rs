@@ -225,9 +225,65 @@ impl App {
         } else if let Some(f) = self.newest_change() {
             self.open_in_editor(&f);
         } else {
-            self.say("no edit or write in this conversation to open");
+            self.say(
+                "no edit or write in this conversation to open — ctrl-e on an empty prompt \
+                 opens the editor on any file",
+            );
         }
         None
+    }
+
+    /// **Whether `ctrl-e` is the editor right now**: the prompt is empty and the conversation
+    /// is what is in front of the operator — no card asking for an answer, no pane or listing
+    /// over the conversation (each of those reads `End` as its own key). The editor pane being
+    /// open does not count against it: `ctrl-e` goes back into it.
+    pub(crate) fn ctrl_e_opens_editor(&self) -> bool {
+        self.editor.text().is_empty()
+            && self.mode_confirm.is_none()
+            && self.todo_draft.is_none()
+            && self.secret.is_none()
+            && self.term_ask.is_none()
+            && self.prompt.is_none()
+            && self.key_ask.is_none()
+            && self.diff_popup.is_none()
+            && self.payload_sel.is_none()
+            && !self.pane_open()
+            && self.slash_out.is_none()
+            && !self.help
+            && !self.stats
+            && !self.picker
+            && !self.todos_pane
+            && !self.config_pane
+            && self.sub_out.is_none()
+            && self.job_out.is_none()
+            && self.queue_open.is_none()
+            && !self.queue_pane
+            && !self.subagents_pane
+            && !self.jobs_pane
+    }
+
+    /// **`ctrl-e` on an empty prompt: the editor, on any file.**
+    ///
+    /// Back into the pane when it is open, with whatever it holds. Otherwise rano opens with
+    /// its own `Open:` prompt up (its `open-file`, F8), so the next thing typed is a path —
+    /// relative to the directory the head runs in, as rano reads one. Nothing has to have
+    /// changed first, which is what `ctrl-]` needs.
+    pub(crate) fn open_editor(&mut self) {
+        let area = self.edit_area;
+        let fresh = self.edit_pane.is_none();
+        let pane = self.edit_pane.get_or_insert_with(EditorPane::new);
+        if !area.is_empty() {
+            pane.set_area(area);
+        }
+        // Asked the way a person asks: F8 is rano's `open-file`, in its global map, and a key is
+        // the one door into rano's commands its API keeps public.
+        if fresh {
+            let _ = pane
+                .ed
+                .handle_key(KeyEvent::plain(rano::term::KeyCode::F(8)));
+        }
+        pane.focused = true;
+        pane.dirty = true;
     }
 
     /// **The newest file this conversation changed**, for `ctrl-]`: the live turn's finished

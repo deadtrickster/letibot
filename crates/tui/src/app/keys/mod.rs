@@ -98,6 +98,17 @@ impl App {
             self.attach_anyway();
             return None;
         }
+        // **`ctrl-e`, settled once, here.** The editor on an empty prompt with nothing in front
+        // of it; `End` in every other place, before any card or pane sees the key — so a
+        // handler that reads `End` cannot be reached by the editor chord by mistake.
+        let k = match k {
+            Key::CtrlE if self.ctrl_e_opens_editor() => {
+                self.open_editor();
+                return None;
+            }
+            Key::CtrlE => Key::End,
+            k => k,
+        };
         if let ControlFlow::Break(r) = self.key_mode_confirm(&k) {
             return r;
         }
@@ -1108,6 +1119,14 @@ pub enum Key {
     /// `/notes restore` brings it back. A head that can silently drop a warning is a head whose
     /// warnings cannot be trusted to be complete.
     CtrlN,
+    /// **Ctrl+E — the editor, on an empty prompt; end-of-line otherwise.**
+    ///
+    /// The operator, 2026-10-09: *"ctrl-e which brings me to the editor"*, and then *"let it
+    /// work only on empty prompt"* — so readline's end-of-line keeps the key wherever there is
+    /// a line to be at the end of. Decoded as its own key and settled at the top of
+    /// [`App::key`]: the editor ([`App::open_editor`]) when [`App::ctrl_e_opens_editor`], and
+    /// [`Key::End`] everywhere else, so every handler below that reads `End` reads it still.
+    CtrlE,
     /// **Ctrl+`]` — between the conversation and the editor pane.**
     ///
     /// From the composer it opens rano on the newest file this conversation changed, or goes
@@ -1162,7 +1181,7 @@ impl Key {
             Key::WordLeft => E::WordLeft,
             Key::WordRight => E::WordRight,
             Key::Home => E::Home,
-            Key::End => E::End,
+            Key::End | Key::CtrlE => E::End,
             Key::KillToEnd => E::KillToEnd,
             Key::KillToStart => E::KillToStart,
             Key::KillWordBack => E::KillWordBack,

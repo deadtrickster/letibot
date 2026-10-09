@@ -116,6 +116,11 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
             "ctrl-x",
             "show the raw <function=…> text of tool calls, as the model wrote it",
         ),
+        (
+            "ctrl-e",
+            "on an empty prompt: the editor (rano), asking for a file to open — ctrl-] comes \
+             back to the prompt, ctrl-q closes it. With text typed it is end-of-line",
+        ),
         ("ctrl-l", "repaint the screen"),
         (
             "ctrl-n",

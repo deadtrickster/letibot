@@ -721,3 +721,77 @@ fn scrolling_the_popup_repaints_only_the_popup_and_shows_no_caret() {
             .join("\n-----\n")
     );
 }
+
+/// **`ctrl-e` on an empty prompt is the editor, with nothing changed to open it on** — the
+/// operator, 2026-10-09: *"how i just open a file?"*, then *"ctrl-e which brings me to the
+/// editor … let it work only on empty prompt"*. rano opens with its own `Open:` prompt up, so
+/// the next thing typed is a path; `ctrl-]` comes back as from any pane.
+#[test]
+fn ctrl_e_on_an_empty_prompt_opens_the_editor_asking_for_a_file() {
+    let ws = workspace("ctrle");
+    let mut a = app();
+    a.session_id = "s".into();
+    a.screen(100, 30);
+    assert_eq!(a.key(Key::CtrlE), None);
+    let pane = a.edit_pane.as_ref().expect("ctrl-e opened the editor");
+    assert!(pane.focused, "and gave it the keyboard");
+    let screen = a.screen(100, 30).join("\n");
+    assert!(screen.contains("Open:"), "rano asks for a file: {screen}");
+    // The path typed goes to rano's prompt, and Enter opens it.
+    let path = ws.0.join(FILE).display().to_string();
+    assert!(route_text(&mut a, &path).is_empty(), "rano took the path");
+    a.route(vec![key(KeyCode::Enter, Mods::NONE)]);
+    settle(&mut a);
+    let screen = a.screen(100, 30).join("\n");
+    assert!(screen.contains("line 11"), "the file is open: {screen}");
+    assert!(
+        a.editor.text().is_empty(),
+        "nothing leaked into the composer"
+    );
+    // And back to the composer, with the pane kept.
+    a.route(vec![ctrl(']')]);
+    assert!(!a.editor_focused());
+    assert!(a.edit_pane.is_some());
+    // A second ctrl-e on the empty prompt goes back into the pane, not into a second one.
+    a.key(Key::CtrlE);
+    assert!(a.editor_focused());
+    let screen = a.screen(100, 30).join("\n");
+    assert!(
+        screen.contains("line 11"),
+        "the same pane, the same file: {screen}"
+    );
+}
+
+/// **With text in the prompt, `ctrl-e` is end-of-line, as it always was.** And inside a pane
+/// that reads `End` — the result window — it is still `End`.
+#[test]
+fn ctrl_e_with_text_in_the_prompt_is_end_of_line() {
+    let mut a = app();
+    a.session_id = "s".into();
+    typed(&mut a, "hello world");
+    a.key(Key::Home);
+    a.key(Key::CtrlE);
+    assert!(
+        a.edit_pane.is_none(),
+        "ctrl-e opened the editor over a typed prompt"
+    );
+    a.key(Key::Char('!'));
+    assert_eq!(
+        a.editor.text(),
+        "hello world!",
+        "ctrl-e did not go to the end"
+    );
+}
+
+/// **`ctrl-]` with nothing changed says where the editor is**, rather than dead-ending.
+#[test]
+fn ctrl_bracket_with_nothing_changed_points_at_ctrl_e() {
+    let mut a = app();
+    a.session_id = "s".into();
+    a.key(Key::CtrlBracket);
+    assert!(
+        a.notice.as_deref().is_some_and(|n| n.contains("ctrl-e")),
+        "{:?}",
+        a.notice
+    );
+}

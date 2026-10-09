@@ -91,7 +91,8 @@ fn ctrl(c: char) -> Option<Key> {
         // Readline's motion and kill keys, which are muscle memory in every shell.
         'a' => Key::Home,
         'b' => Key::Left,
-        'e' => Key::End,
+        // Not `End` outright: on an empty prompt it is the editor. See `Key::CtrlE`.
+        'e' => Key::CtrlE,
         'f' => Key::Right,
         'k' => Key::KillToEnd,
         'u' => Key::KillToStart,
@@ -180,7 +181,7 @@ mod tests {
             (0x02, Some(Key::Left)),
             (0x03, Some(Key::CtrlC)),
             (0x04, Some(Key::Eof)),
-            (0x05, Some(Key::End)),
+            (0x05, Some(Key::CtrlE)),
             (0x06, Some(Key::Right)),
             (0x07, Some(Key::CtrlG)),
             (0x08, Some(Key::Backspace)),
@@ -322,7 +323,9 @@ mod tests {
             (b"\x1bb", Key::WordLeft),
             (b"\x01", Key::Home),
             (b"\x09", Key::Tab),
-            (b"\x05", Key::End),
+            // Its own key now: end-of-line in the composer, the editor on an empty prompt. The
+            // composer still reads it as `End` (see `Key::CtrlE`).
+            (b"\x05", Key::CtrlE),
             (b"\x0b", Key::KillToEnd),
             (b"\x15", Key::KillToStart),
             (b"\x17", Key::KillWordBack),
