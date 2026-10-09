@@ -1658,6 +1658,28 @@ impl Store {
         self.path.as_deref()
     }
 
+    /// **How long a connection waits for the write lock before giving up** — MEASURED, not chosen.
+    ///
+    /// Five seconds was the right number when a box held a "third connection": the doc above
+    /// says WAL plus this timeout is what made a third harmless. On 2026-10-10 the same box
+    /// held **478 sessions across 48 projects in one 2.1 GB store, ~11 daemons and dozens of
+    /// connections** wanting the single write lock SQLite allows — and five seconds stopped
+    /// being enough. Four CHILDREN of one session died mid-work on
+    /// `store: row N (…#t0.N): sqlite: database is locked`, and one of them was the child sent
+    /// to fix exactly this; the same sentence appears for the queue (*"the queue could not be
+    /// served"*) and for a live session's own row.
+    ///
+    /// A transcript append that waits twenty seconds and then succeeds is strictly better than
+    /// one that fails and takes the turn with it: this timeout is what BOUNDS the wait, and the
+    /// alternative to waiting is losing the work.
+    ///
+    /// **This is the stopgap, not the answer.** The structural fix is the shared store splitting
+    /// the transcript tables out per session, leaving the queue, the corpus and the session index
+    /// in the one file; and the retry discipline for the writes that cannot simply wait is its own
+    /// change (`ed07d98` is its first half). Neither is a reason to leave children dying in the
+    /// meantime.
+    pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
     fn from_connection(conn: Connection, path: Option<std::path::PathBuf>) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         // The region is volatile by design, so this file is the only copy of the
@@ -1670,7 +1692,7 @@ impl Store {
         // answers a head's list and writes a title — so a rename landing during a
         // turn's `append_item` must wait a moment rather than come back as
         // SQLITE_BUSY on a database that is working exactly as intended.
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.busy_timeout(Self::BUSY_TIMEOUT)?;
         let store = Store { conn, path };
         store.migrate()?;
         Ok(store)
