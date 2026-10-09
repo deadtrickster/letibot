@@ -338,6 +338,19 @@ pub struct MergeReview {
     /// `accept`, `reject` or `needs_human`, or `None` for a review that has not answered.
     #[serde(default)]
     pub decision: Option<String>,
+    /// **The last attempt's failure, verbatim, or empty** — an added, defaulted field, so no
+    /// `PROTOCOL_VERSION` bump: an older head reads past it and draws what it drew before.
+    ///
+    /// **It is not a `decision` and it must not be read as one.** A reviewer whose turn failed
+    /// reached no judgement, so `decision` is `None`; without this field the head had only
+    /// `decision: None` to go on and drew *the reviewer has been asked and has not answered*
+    /// over an attempt that had already died — the failure was invisible on the pane unless
+    /// somebody opened the store. The entry's own `evidence` carries the same sentence (that is
+    /// where the row a person scans reads it); this is the field that lets the head say *no
+    /// verdict* rather than *still waiting*, which is the difference the restart is a decision
+    /// about.
+    #[serde(default)]
+    pub failure: String,
     /// The reviewer's reasons, in its own words.
     #[serde(default)]
     pub reasons: Vec<String>,

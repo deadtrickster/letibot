@@ -549,6 +549,10 @@ pub fn wire_review(
     rec: &letibot_tokencore::store::ReviewRecord,
 ) -> letibot_sessionlog::event::MergeReview {
     letibot_sessionlog::event::MergeReview {
+        // **The attempt's failure, which is not a verdict.** The head draws `no verdict` rather
+        // than `asked and has not answered` when this is set — see the field's own doc — which
+        // is what makes a dead attempt legible on the pane without opening the store.
+        failure: rec.failure.clone(),
         entry_id: rec.entry_id.clone(),
         session_id: rec.session_id.clone(),
         branch: rec.branch.clone(),
@@ -669,6 +673,12 @@ pub enum StepOutcome {
     /// verdict's own words on it and the worktree stays, which is the same shape a failed gate
     /// takes and for the same reason: the tree is where the reason is.
     Refused,
+    /// **The reviewer could not be asked and the queue's attempts are spent.** The row is
+    /// `Failed` with the failure's own words on it — the provider's, verbatim, so the row says
+    /// *429* rather than *failed* — and the worktree stays. Not [`Self::Refused`]: nobody judged
+    /// this branch, and a person reading the queue must not be able to mistake one for the
+    /// other. [`restart`] is what moves it from here.
+    ReviewGaveUp,
 }
 
 /// **The entry's review, as the queue's gate reads it** — the three states a decision can be
@@ -768,6 +778,281 @@ pub fn next_takeable(
         })
         .min_by_key(|(_, e)| (e.priority.rank(), e.created_ms, e.id.clone()))
         .map(|(i, _)| i)
+}
+
+// ===== One failure, two questions: may the queue ask again, and may a person =====
+
+/// **How many attempts an entry's review gets before the queue stops asking.**
+///
+/// The operator's report, verbatim: *"so merge queue has 4 failed items, we need a way to
+/// restart them"* — and the half of that which must not need a person is the ordinary case,
+/// where the reviewer's turn failed for a reason that has already gone away. So the queue asks
+/// again, and this is the ceiling on that: three attempts, which is `http_retries`' discipline
+/// (a small number, a wait that grows, and then a stop) rather than a second policy invented
+/// here.
+///
+/// **It is deliberately not `MAX_HTTP_RETRIES`.** That ladder is the *turn's*, and one beat of
+/// it is a retry inside one model call; this one is a whole reviewer, a child session and a
+/// turn of its own per attempt, so the same number would mean something three orders of
+/// magnitude larger. What is borrowed is the SHAPE — bounded, doubling, and then a report —
+/// which is the thing the operator asked for.
+pub const MAX_REVIEW_ATTEMPTS: u32 = 3;
+
+/// **The wait after the first failed attempt, in ms; it doubles per attempt.**
+///
+/// Thirty seconds and then a minute: about ninety seconds of trying before the entry parks
+/// with the failure on its row. Long enough that a provider hiccup, a child that lost its
+/// first byte or a spawn that raced the registry is over by the second attempt, and short
+/// enough that a reviewer which cannot be started at all is *reported* rather than waited on —
+/// the direction [`review_gate`] and `http_retry_after` both fail in.
+pub const REVIEW_RETRY_BASE_MS: u64 = 30_000;
+
+/// **Whether an entry's review may be attempted again, and when** — one answer, read by both
+/// halves of the review: the queue's pass (which rings the host) and the host itself (which
+/// starts the child).
+///
+/// One function rather than two rules, because the two halves are the same decision one hop
+/// apart, and the failure mode of a second rule is the one this defect already produced: the
+/// queue rings, the host spawns, and neither of them is the place the *bound* lives. It is a
+/// pure function of the review row and the clock, so it is asserted without a daemon, a child
+/// or a provider.
+///
+/// The three answers, and what each is for:
+///
+/// * **`Due`** — nobody has asked, or an attempt is IN FLIGHT. The second is not a retry and
+///   must not be read as one: the queue's re-ask on every pass is the recovery for a daemon
+///   that came up between the request row and the bell (`GatekeeperDoor::wake`), and it is
+///   cheap by construction because the door writes the row only when there is not one and a
+///   ring at a host with nothing new answers `Ok(None)`.
+/// * **`Wait`** — the last attempt FAILED and the backoff has not elapsed. Nothing is asked
+///   and nothing is spawned; the entry says so on its row.
+/// * **`Exhausted`** — the attempts are used up. The queue parks the entry with the failure
+///   on it and stops; only a person starts it again ([`restart`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewRetry {
+    /// An attempt may be made now.
+    Due,
+    /// The last attempt failed and the wait has this much left.
+    Wait { in_ms: u64 },
+    /// The attempts are used up: a person has to restart it.
+    Exhausted,
+}
+
+/// See [`ReviewRetry`] — the decision, as one pure function of the review row and the clock.
+pub fn review_retry(
+    review: Option<&letibot_tokencore::store::ReviewRecord>,
+    now_ms: u64,
+) -> ReviewRetry {
+    let Some(rec) = review else {
+        return ReviewRetry::Due;
+    };
+    // **No failure on the row: nobody has asked, or an attempt is in flight.** Both mean *ask*,
+    // and the second is why this is not simply *`failed_ms` is set*: an outstanding review is
+    // re-asked every pass on purpose.
+    let Some(failed_ms) = rec.failed_ms else {
+        return ReviewRetry::Due;
+    };
+    if rec.attempts >= MAX_REVIEW_ATTEMPTS {
+        return ReviewRetry::Exhausted;
+    }
+    // `1 << attempt`, `http_retry_after`'s own shape: the first wait is the base, the second is
+    // twice it. `saturating_sub(1)` because `attempts` is *how many failed*, so one failure
+    // means the first rung — and the shift is capped so a row written by something that counted
+    // differently cannot ask for a wait no clock can hold.
+    let wait = REVIEW_RETRY_BASE_MS << rec.attempts.saturating_sub(1).min(6);
+    let elapsed = now_ms.saturating_sub(failed_ms);
+    if elapsed >= wait {
+        ReviewRetry::Due
+    } else {
+        ReviewRetry::Wait {
+            in_ms: wait - elapsed,
+        }
+    }
+}
+
+/// **Whether one entry's review may be restarted, and the sentence for either answer** — the
+/// person's act, as one pure function of the two rows.
+///
+/// The operator's ask is *"we need a way to restart them"*, and the two refusals below are the
+/// whole of what keeps that from becoming a second writer:
+///
+/// * **An attempt in flight is refused.** `decision: None` with no `failed_ms` is *the reviewer
+///   is working on it right now*, and a restart there would put a second gatekeeper beside a
+///   live one on the same entry — two children, two verdicts, one row. That is the shape this
+///   tree refuses everywhere, and the refusal names the wait rather than the entry.
+/// * **An entry that is not parked is refused.** `waiting` and `taken` are the queue working;
+///   `landed` is done. Restarting one of those would be the operator reaching past the queue's
+///   own scheduling to re-ask for something already asked.
+///
+/// **Safe to ask for twice, and that is not this function's doing** — the second ask finds the
+/// entry `waiting` (the first ask moved it) and gets the second refusal. The rule is stated
+/// here and the arbiter is the row, in `Store::restart_review`'s conditional `UPDATE`.
+pub fn restartable(
+    entry: &MergeEntry,
+    review: Option<&letibot_tokencore::store::ReviewRecord>,
+) -> Result<(), String> {
+    if let Some(rec) = review {
+        if rec.answered_ms.is_none() && rec.failed_ms.is_none() {
+            return Err(format!(
+                "a gatekeeper is working on `{}` right now — the review has been asked for and \
+                 has neither answered nor failed. A second reviewer beside a live one would be a \
+                 second writer on one entry's verdict, so nothing was restarted. Wait for it; if \
+                 its attempt dies, the entry comes back here with the failure on its row.",
+                entry.branch
+            ));
+        }
+    }
+    if !matches!(
+        entry.state,
+        MergeState::Failed | MergeState::Conflict | MergeState::Stale
+    ) {
+        return Err(format!(
+            "`{}` is `{}` — nothing to restart. Only a parked entry (failed, conflict, stale) \
+             is restarted by hand; a waiting one is what the queue's own retry is for.",
+            entry.branch,
+            entry.state.as_str()
+        ));
+    }
+    Ok(())
+}
+
+/// **Restart one entry's review** — the person's act, performed, and the sentence it answers
+/// with.
+///
+/// The whole of the act is [`Store::restart_review`]'s two writes: the entry back to `waiting`
+/// and its review row back to *nobody has answered*. What is here is the DECISION
+/// ([`restartable`]), the sentence that names what was there, and the announcement — so the
+/// verb that calls it holds no rule of its own and a test can drive the act without a socket.
+///
+/// **`events` is how every head hears**, and it is the queue's own event rather than a new one:
+/// a restart IS an entry move, and a head that folded `MergeEntryMoved` needs no second
+/// vocabulary to learn that a parked entry is being tried again. It is published AFTER the
+/// rows are written, `move_to`'s own order and for its reason.
+///
+/// **What the sentence names**, because the brief's whole point is that the restart is a
+/// decision about something legible: the branch and id it is re-attempting, and the verdict or
+/// the failure that was on the row — so a person who presses it on the wrong entry can see
+/// that they did.
+pub fn restart(
+    store: &Store,
+    entry_id: &str,
+    now_ms: u64,
+    events: &dyn Fn(letibot_sessionlog::SessionEvent),
+) -> Result<String, String> {
+    let entry = store
+        .merge_entry(entry_id)
+        .map_err(|e| format!("the entry `{entry_id}` could not be read: {e}"))?
+        .ok_or_else(|| {
+            format!(
+                "there is no entry `{entry_id}` in the queue — `/queue` lists what is there, and \
+                 the pane's rows carry their ids."
+            )
+        })?;
+    let review = store
+        .merge_review(entry_id)
+        .map_err(|e| format!("the review of `{entry_id}` could not be read: {e}"))?;
+    restartable(&entry, review.as_ref())?;
+
+    // **What is being re-attempted, in the row's own words.** A verdict and a failed attempt are
+    // two different things to name, and naming the wrong one would send a person looking for a
+    // judgement nobody made.
+    let was = match review.as_ref() {
+        Some(r) if r.decision.is_some() => format!(
+            "the verdict on it was `{}`",
+            r.decision.as_deref().unwrap_or_default()
+        ),
+        Some(r) if !r.failure.is_empty() => format!(
+            "{} attempt(s) failed — {}",
+            r.attempts,
+            first_line(&r.failure)
+        ),
+        _ => format!("it was `{}` with no verdict on it", entry.state.as_str()),
+    };
+    let evidence = format!("restarted by the operator: {was}. A gatekeeper is being asked again.");
+    if !store
+        .restart_review(entry_id, &evidence, now_ms)
+        .map_err(|e| format!("the restart of `{entry_id}` could not be written: {e}"))?
+    {
+        // The row moved under us between the read and the write — a second press, or the queue's
+        // own pass parking it somewhere else. Refused rather than reported as done, because a
+        // restart that did not happen and a restart that did are the two facts a person acts on.
+        let now = store
+            .merge_entry(entry_id)
+            .ok()
+            .flatten()
+            .map(|e| e.state.as_str().to_string())
+            .unwrap_or_else(|| "gone".into());
+        return Err(format!(
+            "nothing was restarted: `{entry_id}` is `{now}` and a restart only moves a parked \
+             entry. If you have just asked once, this is the second ask and the first one is \
+             already in flight."
+        ));
+    }
+    events(letibot_sessionlog::SessionEvent::MergeEntryMoved {
+        id: entry_id.to_string(),
+        state: crate::mergequeue::wire_state(MergeState::Waiting),
+        evidence: evidence.clone(),
+    });
+    Ok(format!(
+        "restarted `{}` (`{entry_id}`): {was}. The queue asks its gatekeeper again — the entry \
+         is back to `waiting`, and it does not land until a verdict accepts it and the gate is \
+         green.",
+        entry.branch
+    ))
+}
+
+/// The first line of a multi-line failure, for a sentence that has to fit on a row.
+///
+/// A gate's failure and a provider's refusal are both blocks of text; the overlay wraps the
+/// whole of one, and a sentence ABOUT it names only where it starts. `clean_line` in the pane
+/// joins the rest anyway, so nothing is lost by taking the first line here and nothing is
+/// gained by carrying four kilobytes into a sentence whose subject is *which* failure it was.
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or_default().trim().to_string()
+}
+
+/// **What an entry's row says between two attempts** — the failure's own words FIRST, then the
+/// queue's.
+///
+/// The order is the whole of it. The pane draws an entry's reason on a line it hard-truncates at
+/// the pane's width, and a sentence that opened with *the gatekeeper's attempt failed* would use
+/// the room a person needs for `http 429: Weekly/Monthly Limit Exhausted. Your limit will reset
+/// at …`. So the provider's sentence goes first and the queue's explanation after it, which is
+/// also the order a reader wants them in: what happened, then what is being done about it. The
+/// overlay (`Enter` on the row) wraps the whole thing rather than eliding it, so nothing is lost
+/// to the row's width.
+pub fn review_failed_evidence(
+    review: Option<&letibot_tokencore::store::ReviewRecord>,
+    in_ms: u64,
+) -> String {
+    let failure = review
+        .map(|r| r.failure.trim())
+        .filter(|f| !f.is_empty())
+        .unwrap_or("the gatekeeper's attempt failed");
+    let secs = in_ms.div_ceil(1000).max(1);
+    format!("{failure} — the gatekeeper's attempt failed; the queue asks again in {secs}s")
+}
+
+/// **What an entry's row says when the attempts are spent** — the same order, and the verb.
+///
+/// [`review_failed_evidence`]'s sibling, and the last sentence is why this is a function: a
+/// person reading a parked entry has to be able to find the thing that moves it. The short id is
+/// the one the pane draws (`registry::short_id`), so the verb in the sentence is a verb on the id
+/// the reader can see rather than on one forty characters long.
+pub fn review_exhausted_evidence(
+    entry: &MergeEntry,
+    review: Option<&letibot_tokencore::store::ReviewRecord>,
+) -> String {
+    let attempts = review.map(|r| r.attempts).unwrap_or(0);
+    let failure = review
+        .map(|r| r.failure.trim())
+        .filter(|f| !f.is_empty())
+        .unwrap_or("the gatekeeper could not be asked");
+    format!(
+        "{failure} — the gatekeeper's attempt failed {attempts} times and the queue has stopped \
+         asking. Nothing judged this branch. `/queue restart {}` asks again.",
+        letibot_sessionlog::registry::short_id(&entry.id)
+    )
 }
 
 /// **The daemon thread's half of the merge queue** — the thing that takes the next entry and
@@ -937,6 +1222,9 @@ impl MergeQueueDaemon {
     /// written on every move, so a daemon that dies mid-pass comes back to a queue that says
     /// what happened.
     pub fn step(&self) -> Result<StepOutcome, letibot_tokencore::store::StoreError> {
+        // **The clock the review's backoff reads**, taken once for the pass so two entries in one
+        // pass cannot be measured against two different nows.
+        let now_ms = (crate::config::now_ns() / 1_000_000) as u64;
         let entries = self.store.merge_entries()?;
         // **This daemon's entries only** — see [`Self::serves`]. The rest are another daemon's,
         // and asking, resuming or landing them from here would race it.
@@ -962,35 +1250,62 @@ impl MergeQueueDaemon {
             let review = reviews.iter().find(|r| r.entry_id == entry.id);
             match review_gate(entry, review) {
                 ReviewGate::Accepted => {}
-                ReviewGate::Awaiting => {
-                    asked = true;
-                    let req = letibot_tools::gatekeeper::ReviewRequest {
-                        brief: entry.brief.clone(),
-                        branch: entry.branch.clone(),
-                        base_sha: entry.base_sha.clone(),
-                    };
-                    match letibot_tools::gatekeeper::wake(&entry.id, req, &*self.reviewer) {
-                        // **Said on the row, once**: the queue pane shows an entry being reviewed,
-                        // and under which session, instead of one that looks stuck. Written only
-                        // when it changes, since every pass asks again.
-                        Ok(said) => {
-                            if entry.evidence != said {
-                                self.move_to(entry, MergeState::Waiting, said, None)?;
+                // **`Awaiting` is two different facts, and [`review_retry`] is what tells them
+                // apart.** *Nobody has asked, or an attempt is in flight* — ask, which is also
+                // the recovery for a daemon that came up between the request row and the bell.
+                // *The last attempt failed* — the queue asks again, but only after the backoff,
+                // and only while the attempts last; and when they do not, the entry parks with
+                // the failure on its row rather than waiting for a reviewer that never came.
+                ReviewGate::Awaiting => match review_retry(review, now_ms) {
+                    ReviewRetry::Due => {
+                        asked = true;
+                        let req = letibot_tools::gatekeeper::ReviewRequest {
+                            brief: entry.brief.clone(),
+                            branch: entry.branch.clone(),
+                            base_sha: entry.base_sha.clone(),
+                        };
+                        match letibot_tools::gatekeeper::wake(&entry.id, req, &*self.reviewer) {
+                            // **Said on the row, once**: the queue pane shows an entry being
+                            // reviewed, and under which session, instead of one that looks stuck.
+                            // Written only when it changes, since every pass asks again.
+                            Ok(said) => {
+                                if entry.evidence != said {
+                                    self.move_to(entry, MergeState::Waiting, said, None)?;
+                                }
+                            }
+                            Err(e) => {
+                                // **A wake that failed is on the row.** An entry waiting for a
+                                // verdict nobody was asked for waits for ever, and a queue that
+                                // said nothing would be the same silence as an empty one.
+                                self.move_to(
+                                    entry,
+                                    MergeState::Waiting,
+                                    format!("the gatekeeper could not be asked: {e}"),
+                                    None,
+                                )?;
                             }
                         }
-                        Err(e) => {
-                            // **A wake that failed is on the row.** An entry waiting for a verdict
-                            // nobody was asked for waits for ever, and a queue that said nothing
-                            // would be the same silence as an empty one.
-                            self.move_to(
-                                entry,
-                                MergeState::Waiting,
-                                format!("the gatekeeper could not be asked: {e}"),
-                                None,
-                            )?;
+                    }
+                    // **The failure is on the row while the queue waits to try again**, which is
+                    // the whole reason a person can see it: *waiting for a reviewer* and *waiting
+                    // for a reviewer whose last attempt died* look identical from the state word
+                    // alone, and the second is the one somebody may have to act on.
+                    ReviewRetry::Wait { in_ms } => {
+                        let said = review_failed_evidence(review, in_ms);
+                        if entry.evidence != said {
+                            self.move_to(entry, MergeState::Waiting, said, None)?;
                         }
                     }
-                }
+                    // **The attempts are spent: park it, with the failure's own words.** A
+                    // reviewer that cannot be asked is not a refusal, so this is not
+                    // [`Self::Refused`] — but it is the same shape of stopping, and the worktree
+                    // stays for the same reason: the tree is where the reason is.
+                    ReviewRetry::Exhausted => {
+                        let said = review_exhausted_evidence(entry, review);
+                        self.move_to(entry, MergeState::Failed, said, None)?;
+                        return Ok(StepOutcome::ReviewGaveUp);
+                    }
+                },
                 ReviewGate::Refused(verdict) => {
                     // **Parked, with the verdict on the row.** `Failed` is the queue's word for
                     // *this did not land and the tree is where the reason is*, and a refused
@@ -1209,6 +1524,12 @@ impl MergeQueueDaemon {
                          verdict on its row, and the worktree stays"
                     );
                 }
+                StepOutcome::ReviewGaveUp => {
+                    eprintln!(
+                        "  merge queue: the gatekeeper could not be asked — the entry is `failed` \
+                         with the failure on its row, and `/queue restart ID` asks again"
+                    );
+                }
             }
         }
     }
@@ -1414,6 +1735,13 @@ impl letibot_tools::gatekeeper::Reviewer for GatekeeperDoor {
                     // outstanding. The host writes the verdict when its gatekeeper answers.
                     answered_ms: None,
                     decision: None,
+                    // **No failed attempt either, and this is the line the restart reads.** A
+                    // request row written here is *an attempt is in flight* — the state
+                    // `review_retry` calls `Due` and `restartable` refuses to interrupt — and
+                    // it stays that way until the host writes a verdict or a failure onto it.
+                    attempts: 0,
+                    failed_ms: None,
+                    failure: String::new(),
                     reasons: Vec::new(),
                     files: Vec::new(),
                     commands: Vec::new(),
@@ -1453,7 +1781,12 @@ mod tests {
 
     /// A `MergeEntry` for the tests, with the fields the test does not care about set to
     /// defaults.
-    fn entry(id: &str, priority: MergePriority, state: MergeState, created_ms: u64) -> MergeEntry {
+    pub(super) fn entry(
+        id: &str,
+        priority: MergePriority,
+        state: MergeState,
+        created_ms: u64,
+    ) -> MergeEntry {
         MergeEntry {
             id: id.into(),
             session_id: "s".into(),
@@ -1871,14 +2204,14 @@ mod tests {
     /// **The store at `path`, opened** — the daemon's connection and the test's are two
     /// connections to one file, which is the shape `jobwatch`'s recorder test uses and the only
     /// one that proves a row is on disk rather than in the connection that wrote it.
-    fn store_at(path: &Path) -> Store {
+    pub(super) fn store_at(path: &Path) -> Store {
         Store::open(path).expect("a store")
     }
 
     /// **Enqueue one entry through its own connection** — the enqueuer's half: open the file,
     /// write the row, close. The daemon then opens its own and the test opens a third to read,
     /// so nothing asserted below is a value a shared connection kept in hand.
-    fn enqueue(path: &Path, entry: &MergeEntry) {
+    pub(super) fn enqueue(path: &Path, entry: &MergeEntry) {
         store_at(path)
             .put_merge_entry(entry)
             .expect("the entry row");
@@ -1904,6 +2237,9 @@ mod tests {
                 asked_ms: 1,
                 answered_ms: Some(2),
                 decision: Some("accept".into()),
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
                 reasons: vec!["the artifact does what the brief asked".into()],
                 files: vec!["crates/harnessd/src/mergequeue.rs".into()],
                 commands: vec!["git diff base...branch".into()],
@@ -1915,11 +2251,11 @@ mod tests {
     /// the wake, in the queue's own tests. The production door writes a row and rings a bell;
     /// what these tests are about is *whether* the queue asked and what it did with the answer.
     #[derive(Default)]
-    struct RecordingReviewer {
-        asked: std::sync::Mutex<Vec<(String, String)>>,
+    pub(super) struct RecordingReviewer {
+        pub(super) asked: std::sync::Mutex<Vec<(String, String)>>,
         /// The sentence the door answers with. `None` is the production door's refusal, which
         /// is the state a daemon with no reviewer session is in.
-        says: Option<String>,
+        pub(super) says: Option<String>,
     }
 
     impl letibot_tools::gatekeeper::Reviewer for RecordingReviewer {
@@ -1952,15 +2288,15 @@ mod tests {
     /// queue's own tests. The production one broadcasts to every session's log; what these tests
     /// are about is *what* the queue says and *in what order* relative to the row.
     #[derive(Clone, Default)]
-    struct RecordingEvents(Arc<std::sync::Mutex<Vec<letibot_sessionlog::SessionEvent>>>);
+    pub(super) struct RecordingEvents(Arc<std::sync::Mutex<Vec<letibot_sessionlog::SessionEvent>>>);
 
     impl RecordingEvents {
-        fn sink(&self) -> Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send> {
+        pub(super) fn sink(&self) -> Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send> {
             let me = self.clone();
             Box::new(move |e| me.0.lock().unwrap().push(e))
         }
 
-        fn moves(&self) -> Vec<(String, letibot_sessionlog::event::MergeState, String)> {
+        pub(super) fn moves(&self) -> Vec<(String, letibot_sessionlog::event::MergeState, String)> {
             self.0
                 .lock()
                 .unwrap()
@@ -1978,7 +2314,7 @@ mod tests {
     }
 
     /// A sink that drops everything, for the tests that are not about the events.
-    fn quiet_events() -> Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send> {
+    pub(super) fn quiet_events() -> Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send> {
         Box::new(|_| {})
     }
 
@@ -2482,6 +2818,9 @@ mod tests {
                 asked_ms: 1,
                 answered_ms: Some(2),
                 decision: Some("reject".into()),
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
                 reasons: vec!["the brief asked for X and the change does Y".into()],
                 files: vec!["crates/x.rs".into()],
                 commands: vec!["git diff base...feature".into()],
@@ -2562,6 +2901,9 @@ mod tests {
                 asked_ms: 1,
                 answered_ms: Some(2),
                 decision: Some("needs_human".into()),
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
                 reasons: vec!["the spec is ambiguous".into()],
                 files: vec![],
                 commands: vec![],
@@ -2594,6 +2936,9 @@ mod tests {
             asked_ms: 1,
             answered_ms: decision.map(|_| 2),
             decision: decision.map(|d| d.to_string()),
+            attempts: 0,
+            failed_ms: None,
+            failure: String::new(),
             reasons: vec![],
             files: vec![],
             commands: vec![],
@@ -2795,6 +3140,9 @@ mod tests {
                 asked_ms: 1,
                 answered_ms: Some(2),
                 decision: Some("reject".into()),
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
                 reasons: vec!["it does not do what the brief asked".into()],
                 files: vec![],
                 commands: vec![],
@@ -3542,6 +3890,539 @@ mod gatekeeper_door {
             "nothing was asked"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// **A failed review, and the two ways it is attempted again** — the operator, verbatim: *"so
+/// merge queue has 4 failed items, we need a way to restart them"*.
+///
+/// Its own module rather than a section of `tests`, because these are about the two doors onto a
+/// review that failed — the queue's own bounded retry, and the person's `restart` — and the
+/// fixtures they need (a store on disk, an entry, a door that records what it was asked) are the
+/// queue's own, borrowed from `tests` rather than copied.
+#[cfg(test)]
+mod restart {
+    use super::tests::{
+        RecordingEvents, RecordingReviewer, enqueue, entry, quiet_events, store_at,
+    };
+    use super::*;
+    use letibot_tokencore::store::MergePriority;
+
+    // ===== A failed review, and the two ways it is attempted again =====
+
+    /// **The bound, as a ladder** — `http_retry_after`'s discipline, asserted without a daemon,
+    /// a child or a provider. Three attempts, doubling from thirty seconds, and then a stop.
+    #[test]
+    fn the_review_retry_is_bounded_and_doubles() {
+        let row = |attempts: u32, failed_ms: Option<u64>| letibot_tokencore::store::ReviewRecord {
+            entry_id: "m-1".into(),
+            session_id: "s-host".into(),
+            branch: "b".into(),
+            base_sha: "base".into(),
+            asked_ms: 0,
+            answered_ms: None,
+            decision: None,
+            attempts,
+            failed_ms,
+            failure: "http 429: Weekly/Monthly Limit Exhausted".into(),
+            reasons: vec![],
+            files: vec![],
+            commands: vec![],
+        };
+        let t = 1_000_000;
+        // Nobody has asked, and an attempt in flight: both are DUE. The second is the queue's
+        // re-ask on every pass — the recovery for a daemon that came up between the request row
+        // and the bell — and it must not be read as a retry.
+        assert_eq!(review_retry(None, t), ReviewRetry::Due);
+        assert_eq!(review_retry(Some(&row(0, None)), t), ReviewRetry::Due);
+        // One failure: thirty seconds, and the wait is counted down rather than repeated.
+        assert_eq!(
+            review_retry(Some(&row(1, Some(t))), t),
+            ReviewRetry::Wait {
+                in_ms: REVIEW_RETRY_BASE_MS
+            }
+        );
+        assert_eq!(
+            review_retry(Some(&row(1, Some(t))), t + 10_000),
+            ReviewRetry::Wait {
+                in_ms: REVIEW_RETRY_BASE_MS - 10_000
+            }
+        );
+        assert_eq!(
+            review_retry(Some(&row(1, Some(t))), t + 30_000),
+            ReviewRetry::Due
+        );
+        // The second failure doubles it, which is the shape borrowed from `http_retry_after`.
+        assert_eq!(
+            review_retry(Some(&row(2, Some(t))), t),
+            ReviewRetry::Wait {
+                in_ms: REVIEW_RETRY_BASE_MS * 2
+            }
+        );
+        // **And it STOPS.** The attempts are spent whatever the clock says, which is the half
+        // that makes this a bound rather than a loop: an entry behind a weekly quota must be
+        // reported, not asked about once a beat for ever.
+        for elapsed in [0, 1_000_000, u64::MAX / 2] {
+            assert_eq!(
+                review_retry(Some(&row(MAX_REVIEW_ATTEMPTS, Some(t))), t + elapsed),
+                ReviewRetry::Exhausted,
+                "after {MAX_REVIEW_ATTEMPTS} failures the queue stops asking"
+            );
+        }
+    }
+
+    /// A store with one entry in it, and the entry's id.
+    fn parked(name: &str, state: MergeState) -> (PathBuf, PathBuf, String) {
+        let root =
+            std::env::temp_dir().join(format!("letibot-mq-restart-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let db = root.join("sessions.db");
+        let mut e = entry("m-1", MergePriority::Subagent, state, 1_000);
+        e.brief = "do the work".into();
+        e.evidence = "the gate is red".into();
+        enqueue(&db, &e);
+        (root, db, e.id)
+    }
+
+    /// **A restart re-attempts exactly ONE review, and it names what it re-attempted.**
+    ///
+    /// The operator's ask, in their words: *"so merge queue has 4 failed items, we need a way to
+    /// restart them"*. The entry is parked with a verdict on it — which is what the four are —
+    /// and the restart puts it back to `Waiting` with its review cleared, so the queue's next
+    /// pass asks once and takes nothing.
+    #[test]
+    fn a_restart_re_attempts_exactly_one_review() {
+        let (root, db, id) = parked("once", MergeState::Failed);
+        // The verdict that parked it, written by the reviewer's own half.
+        store_at(&db)
+            .put_review(&letibot_tokencore::store::ReviewRecord {
+                entry_id: id.clone(),
+                session_id: "s-host".into(),
+                branch: "b-m-1".into(),
+                base_sha: "base".into(),
+                asked_ms: 1,
+                answered_ms: Some(2),
+                decision: Some("needs_human".into()),
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
+                reasons: vec!["the spec is ambiguous".into()],
+                files: vec![],
+                commands: vec![],
+            })
+            .expect("the verdict row");
+
+        let events = RecordingEvents::default();
+        let said = restart(&store_at(&db), &id, 5_000, &events.sink()).expect("the restart");
+        // **What it names**, because the restart is a decision about something legible: the
+        // branch, the entry, and the verdict that was on the row.
+        assert!(said.contains("b-m-1"), "{said}");
+        assert!(said.contains(&id), "{said}");
+        assert!(said.contains("needs_human"), "{said}");
+
+        let store = store_at(&db);
+        let back = store.merge_entry(&id).expect("reads").expect("the entry");
+        assert_eq!(
+            back.state,
+            MergeState::Waiting,
+            "the parked entry is back in the queue"
+        );
+        assert!(
+            back.evidence.contains("restarted by the operator"),
+            "the row says who moved it: {:?}",
+            back.evidence
+        );
+        let review = store.merge_review(&id).expect("reads").expect("the review");
+        assert!(
+            review.decision.is_none() && review.answered_ms.is_none(),
+            "the verdict is cleared: the review is outstanding again, not judged twice"
+        );
+        assert_eq!(review.asked_ms, 5_000, "and the ask is restamped");
+        // **The move is announced**, so a head that folded the queue's events sees it.
+        assert_eq!(
+            events.moves(),
+            vec![(
+                id.clone(),
+                letibot_sessionlog::event::MergeState::Waiting,
+                back.evidence.clone()
+            )],
+            "one move, and it is the restart"
+        );
+
+        // **And the queue asks ONCE.** One pass, one wake, and nothing taken — the entry is
+        // `Waiting` with no verdict, which is exactly where it was before it was reviewed.
+        let door = Arc::new(RecordingReviewer {
+            says: Some("asked".into()),
+            ..Default::default()
+        });
+        struct Shared(Arc<RecordingReviewer>);
+        impl letibot_tools::gatekeeper::Reviewer for Shared {
+            fn wake(
+                &self,
+                entry_id: &str,
+                req: &letibot_tools::gatekeeper::ReviewRequest,
+            ) -> Result<String, String> {
+                self.0.wake(entry_id, req)
+            }
+        }
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(|_| Ok(())),
+            Box::new(Shared(door.clone())),
+            quiet_events(),
+        );
+        assert_eq!(
+            daemon.step().expect("the pass"),
+            StepOutcome::AwaitingReview
+        );
+        assert_eq!(
+            *door.asked.lock().unwrap(),
+            vec![(id.clone(), "b-m-1".to_string())],
+            "exactly one review was asked for, and about this entry's branch"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A second ask does not double-spawn, and it says why** — in BOTH shapes the operator will
+    /// actually press it in. The arbiter is the row rather than the caller's memory of what it
+    /// just did, and the two refusals are the two different things a second press can be.
+    #[test]
+    fn a_second_restart_does_not_double_spawn() {
+        // **Shape one: the entry has a review row on it** — which is every entry that has been
+        // reviewed at all, and therefore all four of the operator's. The first ask clears the row
+        // to *outstanding*, so the second press is refused as the live attempt it now is.
+        let (root, db, id) = parked("twice", MergeState::Failed);
+        store_at(&db)
+            .put_review(&letibot_tokencore::store::ReviewRecord {
+                entry_id: id.clone(),
+                session_id: "s-host".into(),
+                branch: "b-m-1".into(),
+                base_sha: "base".into(),
+                asked_ms: 1,
+                answered_ms: Some(2),
+                decision: Some("needs_human".into()),
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
+                reasons: vec![],
+                files: vec![],
+                commands: vec![],
+            })
+            .expect("the verdict row");
+        let store = store_at(&db);
+        let events = RecordingEvents::default();
+        assert!(
+            restart(&store, &id, 5_000, &events.sink()).is_ok(),
+            "the first ask"
+        );
+        let again = restart(&store, &id, 5_001, &events.sink()).expect_err("the second ask");
+        assert!(
+            again.contains("a gatekeeper is working on") && again.contains("b-m-1"),
+            "the second ask is refused by name: {again}"
+        );
+        // **One attempt, and it is the first one's**: the row is the same row, still outstanding,
+        // still on the first ask's clock.
+        let review = store.merge_review(&id).expect("reads").expect("the review");
+        assert_eq!(
+            review.asked_ms, 5_000,
+            "the second ask did not restamp the ask, so it did not start a second attempt"
+        );
+        assert_eq!(
+            events.moves().len(),
+            1,
+            "and only one move was announced, so no head is told about a restart that did not \
+             happen"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // **Shape two: the entry has no review row at all** — an entry that was parked by the
+        // gate rather than by a reviewer, or one whose session was never reachable. The first ask
+        // moves it to `waiting`; the second is refused by the STATE, which is the other honest
+        // answer to *you already did that*.
+        let (root, db, id) = parked("twice-norow", MergeState::Failed);
+        let store = store_at(&db);
+        assert!(
+            restart(&store, &id, 5_000, &|_| {}).is_ok(),
+            "the first ask"
+        );
+        let again = restart(&store, &id, 5_001, &|_| {}).expect_err("the second ask");
+        assert!(
+            again.contains("nothing to restart") && again.contains("waiting"),
+            "the second ask names the state it found: {again}"
+        );
+        assert!(
+            store.merge_review(&id).expect("reads").is_none(),
+            "and it wrote no review row for an entry nobody had asked about"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A live review cannot be restarted into a duplicate.** A reviewer is working on the
+    /// entry — the row is outstanding and has neither answered nor failed — and a restart there
+    /// would put a second gatekeeper beside a live one on one entry's verdict.
+    ///
+    /// The state is a real one and not a contrived one: a daemon that died mid-gate leaves the
+    /// entry `Stale` (`recover`) while its review is still outstanding, which is precisely the
+    /// row a person is most likely to press the key on.
+    #[test]
+    fn a_live_review_cannot_be_restarted_into_a_duplicate() {
+        let (root, db, id) = parked("live", MergeState::Stale);
+        store_at(&db)
+            .put_review(&letibot_tokencore::store::ReviewRecord {
+                entry_id: id.clone(),
+                session_id: "s-host".into(),
+                branch: "b-m-1".into(),
+                base_sha: "base".into(),
+                asked_ms: 1,
+                // Outstanding: asked for, no verdict, no failure. An attempt in flight.
+                answered_ms: None,
+                decision: None,
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
+                reasons: vec![],
+                files: vec![],
+                commands: vec![],
+            })
+            .expect("the request row");
+
+        let events = RecordingEvents::default();
+        let why = restart(&store_at(&db), &id, 5_000, &events.sink()).expect_err("a refusal");
+        assert!(
+            why.contains("a gatekeeper is working on") && why.contains("b-m-1"),
+            "the refusal names the live attempt: {why}"
+        );
+        // **And the entry was parked, so the ONLY thing that could have stopped this is the
+        // live attempt.** A refusal that came from the state guard would leave this test green
+        // about the wrong rule.
+        assert!(restartable(&back_borrowed(&db, &id), None).is_ok());
+        assert!(
+            events.moves().is_empty(),
+            "nothing moved, so no head is told an entry moved"
+        );
+        // **And the row is untouched** — the live attempt keeps its request, which is what stops
+        // a second reviewer being started beside it.
+        let review = store_at(&db)
+            .merge_review(&id)
+            .expect("reads")
+            .expect("the review");
+        assert_eq!(review.asked_ms, 1, "the live attempt's ask is untouched");
+        let back = store_at(&db)
+            .merge_entry(&id)
+            .expect("reads")
+            .expect("the entry");
+        assert_eq!(
+            back.state,
+            MergeState::Stale,
+            "and the entry is where it was"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The entry, read back — for the one assertion that has to say *this refusal came from the
+    /// live attempt and not from the state*.
+    fn back_borrowed(db: &Path, id: &str) -> MergeEntry {
+        store_at(db)
+            .merge_entry(id)
+            .expect("reads")
+            .expect("the entry")
+    }
+
+    /// **A restart on a reviewer that cannot answer surfaces the failure rather than hanging
+    /// silently** — the operator's four entries, as a rule.
+    ///
+    /// The whole life of one: the first attempt fails, the entry waits with the failure ON ITS
+    /// ROW and says when the queue will try again; the queue tries again; the attempts run out
+    /// and the entry PARKS with the failure's own words — and nothing judged the branch, so the
+    /// row does not read as a verdict. Then a person restarts it, and it is asked again.
+    #[test]
+    fn a_review_that_cannot_be_asked_parks_with_the_failure_on_the_row() {
+        let (root, db, id) = parked("no-quota", MergeState::Waiting);
+        let quota = "http 429: Weekly/Monthly Limit Exhausted. Your limit will reset at \
+                     2026-10-12 15:01:48";
+        let door = Arc::new(RecordingReviewer {
+            says: Some("asked".into()),
+            ..Default::default()
+        });
+        struct Shared(Arc<RecordingReviewer>);
+        impl letibot_tools::gatekeeper::Reviewer for Shared {
+            fn wake(
+                &self,
+                entry_id: &str,
+                req: &letibot_tools::gatekeeper::ReviewRequest,
+            ) -> Result<String, String> {
+                self.0.wake(entry_id, req)
+            }
+        }
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(|_| Ok(())),
+            Box::new(Shared(door.clone())),
+            quiet_events(),
+        );
+        // The first attempt: the queue asks, and the reviewer's attempt dies on the quota.
+        assert_eq!(
+            daemon.step().expect("the pass"),
+            StepOutcome::AwaitingReview
+        );
+        // **The request row the production door writes**, then the failure the HOST writes when
+        // its gatekeeper's turn dies. Two writers, one row, exactly as in the daemon.
+        store_at(&db)
+            .put_review(&letibot_tokencore::store::ReviewRecord {
+                entry_id: id.clone(),
+                session_id: "s-host".into(),
+                branch: "b-m-1".into(),
+                base_sha: "base".into(),
+                asked_ms: 1,
+                answered_ms: None,
+                decision: None,
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
+                reasons: vec![],
+                files: vec![],
+                commands: vec![],
+            })
+            .expect("the request row");
+        let now = (crate::config::now_ns() / 1_000_000) as u64;
+        let failure = |attempts: u32, failed_ms: u64| {
+            let mut rec = store_at(&db).merge_review(&id).unwrap().unwrap();
+            rec.attempts = attempts;
+            rec.failed_ms = Some(failed_ms);
+            rec.failure = quota.to_string();
+            rec.answered_ms = None;
+            rec.decision = None;
+            store_at(&db).put_review(&rec).expect("the failure row");
+        };
+        failure(1, now);
+
+        // **Between two attempts the failure is on the row, in the provider's own words**, and
+        // the row says when the queue will try again. This is the half that makes the entry
+        // legible without opening the store — the operator's *"invisible as failures"*.
+        assert_eq!(
+            daemon.step().expect("the pass"),
+            StepOutcome::Idle,
+            "a failed attempt inside its backoff is not re-asked"
+        );
+        assert_eq!(
+            door.asked.lock().unwrap().len(),
+            1,
+            "the backoff is what stops the queue asking once a pass"
+        );
+        let waiting = store_at(&db).merge_entry(&id).unwrap().unwrap();
+        assert_eq!(waiting.state, MergeState::Waiting);
+        assert!(
+            waiting
+                .evidence
+                .starts_with("http 429: Weekly/Monthly Limit Exhausted"),
+            "the row LEADS with the failure, because the pane truncates it: {:?}",
+            waiting.evidence
+        );
+        assert!(
+            waiting.evidence.contains("asks again in"),
+            "and says what is being done about it: {:?}",
+            waiting.evidence
+        );
+
+        // The backoff elapses and the queue tries again — no person needed.
+        failure(2, now.saturating_sub(REVIEW_RETRY_BASE_MS * 4));
+        assert_eq!(
+            daemon.step().expect("the pass"),
+            StepOutcome::AwaitingReview
+        );
+        assert_eq!(door.asked.lock().unwrap().len(), 2, "the queue tried again");
+
+        // **The attempts run out, and the entry PARKS with the failure on its row.**
+        failure(
+            MAX_REVIEW_ATTEMPTS,
+            now.saturating_sub(REVIEW_RETRY_BASE_MS * 4),
+        );
+        assert_eq!(daemon.step().expect("the pass"), StepOutcome::ReviewGaveUp);
+        assert_eq!(
+            door.asked.lock().unwrap().len(),
+            2,
+            "a spent reviewer is not asked a third time"
+        );
+        let parked = store_at(&db).merge_entry(&id).unwrap().unwrap();
+        assert_eq!(parked.state, MergeState::Failed, "the row is parked");
+        assert!(
+            parked
+                .evidence
+                .contains("http 429: Weekly/Monthly Limit Exhausted"),
+            "the quota sentence is on the row: {:?}",
+            parked.evidence
+        );
+        assert!(
+            parked.evidence.contains("Nothing judged this branch"),
+            "and it does not read as a verdict: {:?}",
+            parked.evidence
+        );
+        assert!(
+            parked.evidence.contains("/queue restart"),
+            "and the verb that moves it is on the row: {:?}",
+            parked.evidence
+        );
+        // **`decision` is still NULL**, which is the constraint this whole change turns on: a
+        // failure must not be recorded as something a reader could take for a judgement.
+        let rec = store_at(&db).merge_review(&id).unwrap().unwrap();
+        assert!(
+            rec.decision.is_none(),
+            "a reviewer that could not be asked reached no judgement: {:?}",
+            rec.decision
+        );
+
+        // **And a person can start it again** — which is the whole of the ask, and it is the
+        // same retry the queue runs by itself rather than a second mechanism.
+        let said = restart(&store_at(&db), &id, now, &|_| {}).expect("the restart");
+        assert!(said.contains("attempt(s) failed"), "{said}");
+        let back = store_at(&db).merge_entry(&id).unwrap().unwrap();
+        assert_eq!(back.state, MergeState::Waiting, "restarted");
+        let rec = store_at(&db).merge_review(&id).unwrap().unwrap();
+        assert_eq!(rec.attempts, 0, "the bound is reset by the restart");
+        assert_eq!(rec.failure, "", "and so is the failure");
+        assert_eq!(
+            daemon.step().expect("the pass"),
+            StepOutcome::AwaitingReview,
+            "and the queue asks again"
+        );
+        assert_eq!(door.asked.lock().unwrap().len(), 3);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **The failure's own words lead the row, and the queue's explanation follows.** Asserted
+    /// directly, because the order is the whole of what makes the failure readable: the pane
+    /// hard-truncates this line at its width, so a sentence that opened with *the gatekeeper's
+    /// attempt failed* would use the room `http 429` needs.
+    #[test]
+    fn the_failure_leads_the_row_it_is_written_on() {
+        let quota = "http 429: Weekly/Monthly Limit Exhausted. Your limit will reset at \
+                     2026-10-12 15:01:48";
+        let rec = letibot_tokencore::store::ReviewRecord {
+            entry_id: "m-1".into(),
+            session_id: "s-host".into(),
+            branch: "b".into(),
+            base_sha: "base".into(),
+            asked_ms: 1,
+            answered_ms: None,
+            decision: None,
+            attempts: 1,
+            failed_ms: Some(2),
+            failure: quota.into(),
+            reasons: vec![],
+            files: vec![],
+            commands: vec![],
+        };
+        let waiting = review_failed_evidence(Some(&rec), 30_000);
+        assert!(waiting.starts_with("http 429"), "{waiting}");
+        assert!(waiting.contains("asks again in 30s"), "{waiting}");
+        let e = entry("m-1", MergePriority::Subagent, MergeState::Waiting, 1);
+        let parked = review_exhausted_evidence(&e, Some(&rec));
+        assert!(parked.starts_with("http 429"), "{parked}");
+        assert!(parked.contains("failed 1 times"), "{parked}");
+        assert!(parked.contains("/queue restart"), "{parked}");
     }
 }
 

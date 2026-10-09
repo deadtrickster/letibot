@@ -27,7 +27,16 @@ impl App {
                 .merge
                 .iter()
                 .map(|e| QueueEntry {
-                    id: e.id.clone(),
+                    // **The SHORT id, because the line under the row is where the reason goes.**
+                    // The full id of a `task_start` entry is forty-odd columns of
+                    // `s-…-sub-…`, and rano draws this row as `{id}{review}{evidence}`
+                    // truncated at the pane's width — so a full id spent the whole line on
+                    // itself and the failure a person needed to read was cut off the end. The
+                    // tail is the part that differs (`registry::short_id` is the same spelling
+                    // the subagents pane uses), the overlay still prints the id in full, and
+                    // Enter looks the entry up by the row's own `merge` entry rather than by
+                    // this string.
+                    id: letibot_sessionlog::registry::short_id(&e.id),
                     branch: e.branch.clone(),
                     state: merge_state_word(e.state).to_string(),
                     // **The state word is the daemon's**, and the mark is this head's reading of
@@ -43,9 +52,17 @@ impl App {
                     // are different facts — see [`App::review_of`].
                     review: match self.review_of(&e.id) {
                         None => ReviewState::NotAsked,
-                        Some(r) => match &r.decision {
-                            None => ReviewState::Asked,
-                            Some(d) => ReviewState::Decided(d.clone()),
+                        // **`asked and has not answered` is the wrong sentence for an attempt
+                        // that has already died.** The operator's report is that the four
+                        // entries were invisible as failures; the half of that which is the
+                        // head's is here — a review with no verdict and a failure on it said
+                        // *the reviewer has been asked and has not answered*, which reads as
+                        // *still working*. `no verdict` is the true word, and the entry's own
+                        // evidence (drawn after it on the same row) carries the reason.
+                        Some(r) => match (&r.decision, r.failure.is_empty()) {
+                            (None, false) => ReviewState::Decided("no verdict".into()),
+                            (None, true) => ReviewState::Asked,
+                            (Some(d), _) => ReviewState::Decided(d.clone()),
                         },
                     },
                     evidence: e.evidence.clone(),
