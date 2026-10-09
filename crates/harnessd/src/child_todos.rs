@@ -101,7 +101,10 @@ impl ChildBoards {
                 Some(s) => s,
                 None => match Store::open(path) {
                     Ok(s) => {
-                        cell.insert(s);
+                        // `Option::insert` hands back the `&mut Store` it just placed
+                        // there. The next line takes that borrow again, so the returned
+                        // one is dropped here deliberately rather than by accident.
+                        let _ = cell.insert(s);
                         cell.as_ref().expect("just inserted")
                     }
                     Err(e) => {
@@ -254,6 +257,22 @@ impl ChildTodos for ParentTodos {
                         .map(crate::harness::Harness::todo_entry)
                         .collect(),
                 });
+                // **AND THE CHILD'S OWN READER IS WOKEN**, because the child is a session and a
+                // session's board move arms its idle plan-check — the operator's ruling:
+                // *"childs being just a session should get nags"*. A parked child is blocked
+                // in `Hub::take_own_work_until`, and a publish alone does not open that door:
+                // the condvar wakes, the take's predicate finds no command and no wake, and
+                // the reader sleeps on with a new row on its board and no clock armed. The
+                // wake carries no reason — it never does — and needs none: the child's loop
+                // looks (`Harness::wake`, usually finding nothing settled), then sees the
+                // board's version move and re-arms from THIS write, which is the same anchor
+                // `SetOperatorTodos` gives a session the daemon holds.
+                //
+                // The rows are nag-worthy by construction: `the_check_may_ask_about` filters
+                // by status and never by author, so what the parent wrote is asked about
+                // exactly as what the model wrote — and what the operator postponed is not
+                // asked about here either.
+                hub.wake_its_own_reader();
             }
         }
         Ok(board.snapshot())

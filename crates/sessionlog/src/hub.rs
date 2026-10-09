@@ -533,6 +533,13 @@ pub enum OwnWork {
     Wake,
     /// The hub is closed and the queue is empty: this reader is done.
     Closed,
+    /// **The deadline the reader itself handed [`Hub::take_own_work_until`] arrived before any
+    /// work did.** Not work and not a wake: a clock the reader asked to be told about, which is
+    /// how a subagent's serving thread (`harness::serve_child`) delivers its idle plan-check on
+    /// the thread that owns the harness — the only thread that may drive it. Work still wins:
+    /// a command or wake that arrives first is returned first, exactly as the bell keeps work
+    /// ahead of wakes for a session the daemon holds.
+    TimedOut,
 }
 
 /// One session's log, view, heads and command queue.
@@ -1530,6 +1537,22 @@ impl Hub {
     /// submitted and a wake the daemon handed up — see [`Hub::wake_its_own_reader`] and
     /// [`Hub::give_back_to_its_own_reader`].
     pub fn take_own_work(&self) -> OwnWork {
+        self.take_own_work_until(None)
+    }
+
+    /// **`take_own_work` with a clock attached** — give up at `deadline` and say so, for the
+    /// reader that has something time-based to do between commands.
+    ///
+    /// That reader is a subagent's serving thread: a child is a session, so it gets the idle
+    /// plan-check (*"childs being just a session should get nags"*), and the check must run on
+    /// the thread that owns the harness — a worker that tried to run it directly would be a
+    /// second writer. `None` is the old indefinite wait, byte for byte, so a child with nothing
+    /// armed costs the same sleep it always had.
+    ///
+    /// The condvar is `wait_timeout`, recomputed per pass, because a timed wait can return
+    /// without being notified; the loop re-checks work first so a command arriving at the
+    /// deadline's moment is answered before the clock is.
+    pub fn take_own_work_until(&self, deadline: Option<std::time::Instant>) -> OwnWork {
         let mut g = self.lock();
         loop {
             // **A command first**, because a command has a head behind it (or a parent's
@@ -1545,7 +1568,19 @@ impl Hub {
             if g.closed {
                 return OwnWork::Closed;
             }
-            g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+            let Some(at) = deadline else {
+                g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                continue;
+            };
+            let now = std::time::Instant::now();
+            if now >= at {
+                return OwnWork::TimedOut;
+            }
+            let (guard, _) = self
+                .cv
+                .wait_timeout(g, at - now)
+                .unwrap_or_else(|e| e.into_inner());
+            g = guard;
         }
     }
 

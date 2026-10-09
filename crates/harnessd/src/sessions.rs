@@ -157,6 +157,125 @@ fn nag_should_arm(todos: &[TodoItem], nagged: Option<&str>) -> bool {
     }
 }
 
+/// **One session's idle plan-check clock: the deadline, and the notice that disarmed it.**
+///
+/// The operator's ruling that put a child on this clock too, verbatim: *"childs being just a
+/// session should get nags"*. A session the daemon holds runs its clock here in `Sessions`
+/// (`nags`, armed by [`Sessions::rearm_todo_nag`], delivered by `Sessions::deliver_due_nags`);
+/// a subagent's harness lives on the thread its parent spawned it on, so ITS clock is the same
+/// type held by `harness::serve_child`, armed and delivered on that thread. **The decision is
+/// not duplicated with it**: what may be asked about is `nag_should_arm`'s one answer, the
+/// window is [`TODO_NAG_AFTER`], and the text is `Harness::nag_notice`'s — the clock holds
+/// only when and what-was-said, which is schedule, not policy.
+///
+/// `window` is a field and not the constant read directly, for the same reason `deadline.rs`
+/// injects its due times: a test that waited a real minute would not be a test, so the clock
+/// takes the window at construction and the production constructors — both of them — pass
+/// [`TODO_NAG_AFTER`].
+pub struct TodoNagClock {
+    /// How long after the last turn or board move the check comes due.
+    window: Duration,
+    /// When the check comes due, or `None` for a session with nothing to check — which is
+    /// the common case, and the one that keeps the waiter's sleep unbounded (the worker's
+    /// `next_nag_at` returns NIL; a child's `take_own_work_until` gets `None`).
+    due: Option<Instant>,
+    /// **The plan notice this session was last nagged with** — the anti-metronome half.
+    ///
+    /// This is what makes it once per idle period rather than every minute. A check that
+    /// was sent and not acted on must not be sent again — the model has been told, and
+    /// telling it the same unchanged list again is the nagging the operator called overkill.
+    /// So a re-arm compares the plan against what was last sent: unchanged means silence,
+    /// and any change at all (an item added, one closed, one started) is a new thing to say.
+    nagged: Option<String>,
+}
+
+impl TodoNagClock {
+    /// The production clock: the window every session gets, whoever serves it.
+    /// `pub` for `serve_child_under`'s signature, which a test drives — the constructor
+    /// a caller should reach for is this one, `with_window` is the tests' door.
+    pub fn new() -> Self {
+        Self::with_window(TODO_NAG_AFTER)
+    }
+
+    /// A clock with a different window — the tests' door, and only theirs: driving the
+    /// schedule has to be possible without sleeping through the window it pins.
+    pub fn with_window(window: Duration) -> Self {
+        TodoNagClock {
+            window,
+            due: None,
+            nagged: None,
+        }
+    }
+
+    /// **Start (or stand down) the check, as of `now`** — the body of
+    /// [`Sessions::rearm_todo_nag`], and of `serve_child`'s re-arm, so the two owners
+    /// cannot drift. Armed only when the plan is unfinished AND different from the one
+    /// last sent; both halves are `nag_should_arm`'s, taken together.
+    pub fn rearm(&mut self, todos: &[TodoItem], now: Instant) {
+        self.due = if nag_should_arm(todos, self.nagged.as_deref()) {
+            Some(now + self.window)
+        } else {
+            None
+        };
+    }
+
+    /// **The operator has spoken: a new idle period, and the check may be made again.**
+    /// [`Sessions::note_operator_prompt`]'s half — *"but certainly not after my message"*
+    /// has this as its complement: whatever they said may have changed what the plan
+    /// should be, so the once-per-saying is earned back rather than spent for ever.
+    pub fn prompt_arrived(&mut self) {
+        self.nagged = None;
+    }
+
+    /// **Record the notice a delivery just sent** — before the outcome is known, which
+    /// is deliberate: a check whose turn failed still counts as said, or the same
+    /// notice would come back every window, which is the metronome at a slower rate.
+    pub fn said(&mut self, notice: Option<String>) {
+        self.nagged = notice;
+    }
+
+    /// **The deadline for whoever waits on this clock** — the worker's blocking wait for
+    /// a session it holds, a child's serving thread for its own. `None` when nothing is
+    /// armed, so nothing spins on behalf of a session with no check pending.
+    pub fn due_at(&self) -> Option<Instant> {
+        self.due
+    }
+
+    /// **Whether the check is due as of `now`, spending the deadline when it is.** The disarm is
+    /// before the turn that answers it, not after: a delivery that left the old deadline in
+    /// place would fire again immediately.
+    ///
+    /// **And a session that is NOT due keeps its deadline.** `deliver_due_nags` walks the whole
+    /// map whenever ANY session (or the sweep) comes due, so a `take` here would spend the clock
+    /// of every session that was not yet due — armed at `t+60`, asked at `t+1`, and then never
+    /// asked again, because `next_nag_at` no longer has a deadline to hand the worker. That is
+    /// the one shape this must not have: a nag that was armed and then quietly went away. The
+    /// old `HashMap` got this right by filtering before it removed (`at <= now`, and only then
+    /// `nag_due.remove`), and this is that order, kept where the state now lives.
+    pub fn due_now(&mut self, now: Instant) -> bool {
+        match self.due {
+            Some(at) if at <= now => {
+                self.due = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// **The deadline arrived and is being answered** — `serve_child`'s half of the
+    /// disarm `due_now` performs for the worker, which learns the same fact from
+    /// `OwnWork::TimedOut` instead.
+    pub fn fired(&mut self) {
+        self.due = None;
+    }
+}
+
+impl Default for TodoNagClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// What the worker did with one command.
 pub enum Outcome {
     Replied(Box<Reply>),
@@ -201,9 +320,11 @@ pub struct Sessions<'a> {
     /// The fabric block each root session last saw, so a refresh after a
     /// compaction is a system update only when something changed.
     fabric_seen: HashMap<String, String>,
-    /// When each session's idle plan-check comes due, or absent for a session with
-    /// nothing to check. See [`Sessions::rearm_todo_nag`].
-    nag_due: HashMap<String, Instant>,
+    /// **Each session's idle plan-check clock** — the deadline when one is armed,
+    /// absent for a session with nothing to check. See [`Sessions::rearm_todo_nag`]
+    /// and [`TodoNagClock`] (the one clock, shared with the thread that serves a
+    /// subagent).
+    nags: HashMap<String, TodoNagClock>,
     /// When to next look for a tool call nothing will answer. See `arm_sweep`.
     sweep_at: Option<Instant>,
     /// **The operator's run, per session**: whether one is in flight on its own thread,
@@ -211,14 +332,6 @@ pub struct Sessions<'a> {
     /// the handle; the harness gets a clone of the same `Arc`, because the round boundary's
     /// pickup reads the same fact mid-turn.
     bangs: HashMap<String, Arc<crate::bangrun::State>>,
-    /// The plan notice each session was last NAGGED with.
-    ///
-    /// **This is what makes it once per idle period rather than every minute.** A check that
-    /// was sent and not acted on must not be sent again — the model has been told, and telling
-    /// it the same unchanged list again is the nagging the operator called overkill. So a
-    /// re-arm compares the plan against what was last sent: unchanged means silence, and any
-    /// change at all (an item added, one closed, one started) is a new thing to say.
-    nagged: HashMap<String, String>,
     /// **The refused door's rate limit, per session** — set when a compaction
     /// FORCED by a context-length refusal completed and the session is still at
     /// the wall. One summary turn per daemon lifetime is the budget for a
@@ -308,10 +421,9 @@ impl<'a> Sessions<'a> {
             slots: HashMap::new(),
             seated: HashMap::new(),
             fabric_seen: HashMap::new(),
-            nag_due: HashMap::new(),
+            nags: HashMap::new(),
             sweep_at: None,
             bangs: HashMap::new(),
-            nagged: HashMap::new(),
             wall_gave_up: std::collections::HashSet::new(),
         };
         let (tool, cond) = sessions.seat_tool(&id);
@@ -1324,13 +1436,10 @@ impl<'a> Sessions<'a> {
             .get(session_id)
             .map(|h| h.todo_list())
             .unwrap_or_default();
-        if nag_should_arm(&rows, self.nagged.get(session_id).map(String::as_str)) {
-            self.nag_due
-                .insert(session_id.to_string(), Instant::now() + TODO_NAG_AFTER);
-        } else {
-            // nothing to check, or the same thing we already said
-            self.nag_due.remove(session_id);
-        }
+        self.nags
+            .entry(session_id.to_string())
+            .or_default()
+            .rearm(&rows, Instant::now());
     }
 
     /// The operator has spoken to SESSION: a new idle period, and the check may be made again.
@@ -1342,7 +1451,9 @@ impl<'a> Sessions<'a> {
     /// should be. Without this the session would be checked once ever, and a plan re-written by
     /// the operator's own instruction would never be checked at all.
     pub fn note_operator_prompt(&mut self, session_id: &str) {
-        self.nagged.remove(session_id);
+        if let Some(clock) = self.nags.get_mut(session_id) {
+            clock.prompt_arrived();
+        }
     }
 
     /// When the next check comes due, for the worker's blocking wait.
@@ -1358,7 +1469,8 @@ impl<'a> Sessions<'a> {
     /// which is exactly when nothing else is due. Armed after every turn (see `arm_sweep`), so a
     /// turn that ends with a call nobody answered is looked at a moment later.
     pub fn next_nag_at(&self) -> Option<Instant> {
-        match (self.nag_due.values().min().copied(), self.sweep_at) {
+        let nags = self.nags.values().filter_map(|c| c.due_at()).min();
+        match (nags, self.sweep_at) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (Some(a), None) => Some(a),
             (None, b) => b,
@@ -1410,16 +1522,12 @@ impl<'a> Sessions<'a> {
     pub fn deliver_due_nags(&mut self) -> usize {
         let now = Instant::now();
         let due: Vec<String> = self
-            .nag_due
-            .iter()
-            .filter(|(_, at)| **at <= now)
-            .map(|(id, _)| id.clone())
+            .nags
+            .iter_mut()
+            .filter_map(|(id, clock)| clock.due_now(now).then(|| id.clone()))
             .collect();
         let mut ran = 0;
         for session_id in due {
-            // Disarmed BEFORE the turn: `after_turn` re-arms from the turn's own end, so a
-            // delivery that left the old deadline in place would fire again immediately.
-            self.nag_due.remove(&session_id);
             let hub = self.registry.get(&session_id);
             let Some(harness) = self.open.get_mut(&session_id) else {
                 continue;
@@ -1431,8 +1539,8 @@ impl<'a> Sessions<'a> {
                 Ok(None) => continue,
                 Err(e) => Err(e),
             };
-            if let Some(text) = notice {
-                self.nagged.insert(session_id.clone(), text);
+            if let Some(clock) = self.nags.get_mut(&session_id) {
+                clock.said(notice);
             }
             self.publish_title(&session_id);
             let out = self.after_turn(&session_id, &hub, out);
@@ -3483,6 +3591,114 @@ mod idle_nag {
             !notice.contains("more open"),
             "and must not count it among what is open either: {notice}"
         );
+    }
+
+    /// **The clock itself, pinned at the boundary with the time injected** — because a test
+    /// that waited a real minute would not be a test, and because the clock is the half a
+    /// child now shares (`serve_child_under`), so its boundaries are worth asserting where
+    /// they live rather than through a daemon or a spawned thread.
+    ///
+    /// The instants are arbitrary fixed points; the window is injected, so the arithmetic is
+    /// exact and not slept through.
+    #[test]
+    fn the_clock_arms_at_the_window_and_stands_down_when_nothing_is_askable() {
+        use std::time::{Duration, Instant};
+
+        let t0 = Instant::now();
+        let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+        assert!(
+            clock.due_at().is_none(),
+            "a fresh clock is armed for nothing — the waiter's sleep stays unbounded"
+        );
+
+        // An open plan arms at now + window — the boundary is exact, not "about a minute".
+        clock.rearm(&[row("open", TodoStatus::Pending)], t0);
+        assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(60)));
+
+        // **And stands down for a plan with nothing to ask about** — the operator's
+        // postponed row is the case the rule exists for, so it is the case pinned here.
+        clock.rearm(&[row("later", TodoStatus::Postponed)], t0);
+        assert!(
+            clock.due_at().is_none(),
+            "a postponed-only plan arms nothing: the operator's `[p]` stays theirs"
+        );
+    }
+
+    /// **The anti-metronome, through the clock**: a delivered check spends the plan it
+    /// named, and only a plan that MOVED earns a fresh one. This is the schedule the
+    /// operator asked for rather than the per-turn nudge they called overkill.
+    #[test]
+    fn a_said_check_disarms_until_the_plan_moves_or_somebody_speaks() {
+        use std::time::{Duration, Instant};
+
+        let t0 = Instant::now();
+        let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+        let plan = [row("open", TodoStatus::Pending)];
+        clock.rearm(&plan, t0);
+        let said = super::unfinished_plan(&super::the_plan_as_checked(&plan)).expect("open work");
+
+        // Delivered: the notice is recorded and the deadline is spent.
+        assert!(clock.due_now(t0 + Duration::from_secs(60)));
+        clock.said(Some(said.clone()));
+        clock.rearm(&plan, t0 + Duration::from_secs(60));
+        assert!(
+            clock.due_at().is_none(),
+            "the same plan, already said, arms nothing — silence, not a slower metronome"
+        );
+
+        // **A plan that moved is a new thing to say** — one row closed, one added: either.
+        let moved = [row("open", TodoStatus::InProgress)];
+        clock.rearm(&moved, t0 + Duration::from_secs(120));
+        assert_eq!(
+            clock.due_at(),
+            Some(t0 + Duration::from_secs(180)),
+            "the anchor is the moment of the re-arm, not the old deadline"
+        );
+
+        // **And a speaker earns the check back** — `note_operator_prompt`'s rule, which a
+        // parent steering a child now exercises too (`serve_child_under`'s prompt arm).
+        clock.said(Some(said.clone()));
+        clock.rearm(&plan, t0 + Duration::from_secs(180));
+        assert!(clock.due_at().is_none(), "spent again");
+        clock.prompt_arrived();
+        clock.rearm(&plan, t0 + Duration::from_secs(240));
+        assert!(
+            clock.due_at().is_some(),
+            "whoever prompts the session — operator or parent — earns the check back"
+        );
+    }
+
+    /// **`due_now` at the boundary, and the disarm in both arms of it.** The deadline's
+    /// own instant is due; a hair before is not; and a `due_now` that answered false has
+    /// still SPENT nothing (the deadline stands), while one that answered true has spent
+    /// it — which is the difference between a check that fires once and one that fires
+    /// every idle pass after it.
+    #[test]
+    fn the_boundary_is_due_and_a_delivery_disarms_either_way() {
+        use std::time::{Duration, Instant};
+
+        let t0 = Instant::now();
+        let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+        clock.rearm(&[row("open", TodoStatus::Pending)], t0);
+        let due = t0 + Duration::from_secs(60);
+
+        assert!(
+            !clock.due_now(due - Duration::from_millis(1)),
+            "a hair before the deadline is not due"
+        );
+        assert_eq!(
+            clock.due_at(),
+            Some(due),
+            "a `due_now` that said no spent nothing — the deadline stands"
+        );
+        assert!(clock.due_now(due), "the deadline's own instant is due");
+        assert!(clock.due_at().is_none(), "and the delivery disarmed it");
+
+        // `fired` is `serve_child_under`'s half of the same disarm, told by
+        // `OwnWork::TimedOut` instead of a return value.
+        clock.rearm(&[row("open", TodoStatus::Pending)], t0);
+        clock.fired();
+        assert!(clock.due_at().is_none());
     }
 }
 
