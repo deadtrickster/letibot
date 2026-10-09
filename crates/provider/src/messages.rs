@@ -971,6 +971,91 @@ mod pairing_tests {
         assert_eq!(m.len(), 4, "system + three, nothing added: {m:?}");
     }
 
+    /// **The question exchange's shape, and the measurement that fixes the order of its
+    /// rows.**
+    ///
+    /// An answered `ask_user_question` leaves THREE rows: the result (which carries
+    /// `CallOrigin::Operator`, because the answer is the person's act), then the question as
+    /// the session's own `User` row, then the answer as the operator's. That is not the `!`
+    /// line's order — the person's row first, then the result — and the difference is
+    /// measured here: `!` has no proposing assistant row above it, and this call does.
+    ///
+    /// `pair_tool_calls` closes its answering window on any non-`tool` row, so a `User` row
+    /// between the proposal and the result makes the model read *"no result was recorded for
+    /// this call"* beside the real one — and, because the row carries its own author, the
+    /// real result arrives a second time as an unattached user turn. Asserted on the messages
+    /// rather than on a count, because the failure is readable and wrong rather than missing.
+    #[test]
+    fn the_question_exchange_pairs_only_when_the_result_follows_its_call() {
+        let asked = TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
+            parts: vec![UserPart::Text {
+                text: "asked: which database?".into(),
+            }],
+        };
+        let answered = TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![UserPart::Text {
+                text: "sqlite".into(),
+            }],
+        };
+
+        // **As the session writes it.** The result answers the call, and the two rows about
+        // the person follow it.
+        let m = convert(
+            "sys",
+            &[
+                user("go"),
+                calls(&["q-1"]),
+                ran_by_the_operator("q-1", "chose option 1: sqlite"),
+                asked.clone(),
+                answered.clone(),
+            ],
+            false,
+        );
+        assert_paired(&m);
+        let result = m
+            .iter()
+            .find(|r| r["tool_call_id"] == "q-1")
+            .expect("the result answers the call the model proposed");
+        assert_eq!(result["role"], "tool");
+        assert!(
+            result["content"].as_str().unwrap().contains("chose option 1"),
+            "the answer the model reads is the result's payload: {result}"
+        );
+        assert!(
+            !m.iter().any(|r| r["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("no result was recorded"))),
+            "the call was reported unanswered beside its own answer: {m:?}"
+        );
+        assert!(
+            m.iter().any(|r| r["role"] == "user" && r["content"] == "sqlite"),
+            "the person's own words must reach the model as a turn of theirs: {m:?}"
+        );
+
+        // **And the control: the order the `!` line uses is wrong HERE.** The same three rows
+        // with the person's half first is what this test exists to keep out of the transcript,
+        // and it is a real defect rather than a stylistic one — the call reads as unanswered.
+        let wrong = convert(
+            "sys",
+            &[
+                user("go"),
+                calls(&["q-1"]),
+                asked,
+                answered,
+                ran_by_the_operator("q-1", "chose option 1: sqlite"),
+            ],
+            false,
+        );
+        assert!(
+            wrong.iter().any(|r| r["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("no result was recorded"))),
+            "the control must actually reproduce the defect it is the control for: {wrong:?}"
+        );
+    }
+
     /// Every id an assistant message opens is answered by the time the next
     /// non-tool message starts. This is the provider's own rule, asserted over
     /// whatever `messages` produced.

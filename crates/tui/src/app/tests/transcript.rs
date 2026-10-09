@@ -2296,6 +2296,117 @@ fn the_operators_own_act_is_drawn_at_every_rung() {
     }
 }
 
+/// **The three rows an answered question leaves on the log**, in the order the session writes
+/// them — the call's result as the person's act, the question as the session's, and the answer
+/// as the operator's own words.
+///
+/// Written from the shapes `Harness::settle_asked` produces, so the drawing these tests are
+/// about is the drawing the daemon's own rows get.
+fn asked_rows(a: &mut App, seq: u64, id: &str, payload: &str) {
+    a.apply(ServerFrame::Event(env(
+        seq,
+        testing::appended(id, "tool_result"),
+    )));
+    a.record_item(
+        id,
+        TranscriptItem::ToolResult {
+            call_id: format!("{id}c"),
+            name: "ask_user_question".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: payload.into(),
+            edit: None,
+            origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
+            media: None,
+        },
+    );
+    for (n, speaker, text) in [
+        (
+            1u64,
+            letibot_transcript::Speaker::Agent,
+            "asked: which database should the migration target?\n\
+             options offered: postgres | sqlite",
+        ),
+        (
+            2u64,
+            letibot_transcript::Speaker::Operator,
+            "sqlite\nonly for the CUDA box",
+        ),
+    ] {
+        let item_id = format!("{id}u{n}");
+        a.apply(ServerFrame::Event(env(
+            seq + n,
+            testing::appended(&item_id, "user"),
+        )));
+        a.record_item(
+            &item_id,
+            TranscriptItem::User {
+                speaker,
+                parts: vec![UserPart::Text {
+                    text: text.to_string(),
+                }],
+            },
+        );
+    }
+}
+
+/// **An answered question leaves something on the screen, at every rung.**
+///
+/// The operator's report, verbatim: *"by the way i dont see my answer to the selector"*. The
+/// selector is a live overlay — `DecisionRequested` opens it and `DecisionAnswered` closes it —
+/// so once the card goes, the only thing that can hold the exchange is the transcript. The
+/// answer used to be a tool payload and nothing else, and at `read-edits` — the operator's own
+/// profile, whose rung is the bottom of the ladder — the tool rows are not drawn at all.
+///
+/// So all three rows are drawn at every rung: the question as a `User` row of the session's (a
+/// `User` row is the conversation and is kept everywhere), the answer as the operator's own,
+/// and the result because `origin: CallOrigin::Operator` is the mark that says a person acted —
+/// which [`the_operators_own_act_is_drawn_at_every_rung`] already holds for the `!` line, and
+/// which this pins for the other way a person acts.
+#[test]
+fn an_answered_question_is_on_the_screen_at_every_rung() {
+    // Long enough to fold: the row shows a line or two and counts the rest, so the last line of
+    // the payload is the one that must NOT be on the screen.
+    let body: String = (0..60).map(|i| format!("line {i}\n")).collect();
+    let mut sets: Vec<(String, Visibility)> = Verbosity::ALL
+        .into_iter()
+        .map(|r| {
+            let vis = Visibility::of(Profile::parse(r.as_str()).expect("a rung is a profile"));
+            assert_eq!(vis.rung(), r, "the premise: `{}` is that rung", r.as_str());
+            (r.as_str().to_string(), vis)
+        })
+        .collect();
+    // **And the profile the operator is actually on**, which is not a rung: `read-edits` is
+    // `conversation`'s set with the `edits` switch turned up, so its rung is the bottom one.
+    let read_edits = Visibility::of(Profile::READ_EDITS);
+    assert_eq!(read_edits.rung(), Verbosity::Conversation, "the premise");
+    sets.push(("read-edits".to_string(), read_edits));
+
+    for (name, vis) in sets {
+        let mut a = app();
+        a.visibility = vis;
+        a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        asked_rows(&mut a, 2, "q1", &body);
+
+        let screen = a.screen(100, 40).join("\n");
+        assert!(
+            screen.contains("which database should the migration target?"),
+            "the question is hidden at `{name}`:\n{screen}"
+        );
+        assert!(
+            screen.contains("sqlite") && screen.contains("only for the CUDA box"),
+            "the operator's answer is hidden at `{name}`:\n{screen}"
+        );
+        assert!(
+            screen.contains("+59 lines"),
+            "the result of the person's answer is hidden at `{name}`:\n{screen}"
+        );
+        assert!(
+            !screen.contains("line 59"),
+            "the payload was dumped whole at `{name}` — kept is not unfolded:\n{screen}"
+        );
+    }
+}
+
 /// **The control that makes the ruling mean *who acted* and not *tool rows are drawn*.**
 ///
 /// A `ToolResult` the MODEL proposed — `origin: None`, which is also every row written before
