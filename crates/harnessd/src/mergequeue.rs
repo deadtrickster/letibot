@@ -2764,14 +2764,22 @@ pub fn spawn_for(
 /// What this door does is the queue thread's share, and it is two acts:
 ///
 /// * **The request row, naming its HOST** — the root session that will run the gatekeeper.
-///   Durable for the reason it always was: a daemon that restarts between the ask and the verdict
-///   comes back to a row still waiting, and the next pass rings for it again. The host session
-///   spawns the child when it is woken (`Harness::serve_reviews`) and writes the verdict onto
-///   the same row when the child answers.
-/// * **The ring** at the host. A host the daemon does not hold is **resumed** from the store
-///   first — the operator's ruling — so an entry whose session closed hours ago is still
-///   reviewed; its approvals then wait as cards until somebody opens that session, and the row
-///   says which one.
+///   Durable for the reason it always was, and it is now the whole of the mechanism: a daemon
+///   that restarts between the ask and the verdict comes back to a row still waiting. The host
+///   session serves it (`Harness::serve_reviews`) and writes the verdict onto the same row when
+///   the child answers.
+/// * **The ring** at the host — the fast path, and only that. A host the daemon does not hold is
+///   **resumed** from the store first — the operator's ruling — so an entry whose session closed
+///   hours ago is still reviewed; its approvals then wait as cards until somebody opens that
+///   session, and the row says which one.
+///
+/// **The ring is not what an owed review depends on, and MEASURED, 2026-10-10, that was the
+/// defect.** A ring is a bell and a bell is per-daemon: a mover asking for a review hosted by a
+/// session in ANOTHER daemon rings a bell nobody is standing at, and a daemon that restarts
+/// between the ask and the wake has nothing left to ring at all — the ring is in memory and the
+/// row is not (*"restarted pg-noop and nothing moves"*). So the store is the mechanism and the
+/// ring is the latency: `Sessions::serve_reviews` reads the `Due` rows on the daemon's own clock
+/// and serves the ones whose host it holds, which needs nothing to reach anything.
 pub struct GatekeeperDoor {
     /// The session store, opened on the queue's own thread (a `Connection` is `Send`, not
     /// `Sync`, and this struct travels into the merge-queue thread).
@@ -5084,7 +5092,8 @@ mod gatekeeper_door {
     //! there is no gatekeeper agent that does reviews … or - subagent"*, with entries ten hours
     //! old waiting on a reviewer nobody could start. The door's half is the row naming the HOST
     //! (the root of the session that enqueued the entry), the host resumed when it is not live,
-    //! and the ring; the host's half is `Harness::serve_reviews`.
+    //! and the ring; the host's half is `Harness::serve_reviews`, reached by that ring when the
+    //! host is here and by `Sessions::serve_reviews`' own clock when it is not.
     use super::*;
     use letibot_sessionlog::registry::{
         Registry as SessionRegistry, SessionSource, SessionWiring, StoredBrief, Work, WorkOrIdle,

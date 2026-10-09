@@ -102,6 +102,25 @@ pub(crate) const WALL_CONTINUES: usize = 3;
 /// with something else is not idle.
 const TODO_NAG_AFTER: Duration = Duration::from_secs(60);
 
+/// **How often this daemon reads the store for the merge-queue reviews its sessions are owed.**
+///
+/// The queue's ring ([`crate::mergequeue::GatekeeperDoor`]) is the fast path, and it only reaches
+/// a host *this* daemon holds: a ring is a bell, and a bell is per-daemon. So the two cases the
+/// ring cannot cover are exactly the ones the store has to, and both were measured on 2026-10-10:
+///
+/// * **A review asked for a session in another daemon.** The mover rings its own bell, the host
+///   hears nothing, and ten rows sat `Due` and unspawned.
+/// * **A daemon restarted between the ask and the wake.** The ring is in memory and the row is
+///   not: *"restarted pg-noop and nothing moves"*.
+///
+/// The store is the only shared medium, and the only way to notice a row somebody else wrote is to
+/// read it — so this is a clock, and it is the honest name for one. Thirty seconds is under the
+/// review's own first retry rung ([`crate::mergequeue::REVIEW_RETRY_BASE_MS`]), so the host never
+/// lags the bound the queue already holds the entry to, and the cost of a pass is one indexed
+/// `SELECT` over a table that is one row per queue entry, against a daemon that is otherwise
+/// parked on a condvar.
+pub(crate) const REVIEW_PASS_EVERY: Duration = Duration::from_secs(30);
+
 /// **Whether a row is work the idle plan-check may speak about.**
 ///
 /// The operator's ask, in their own words: *"can we handle postponed todo item properly? i.e. they
@@ -327,6 +346,11 @@ pub struct Sessions<'a> {
     nags: HashMap<String, TodoNagClock>,
     /// When to next look for a tool call nothing will answer. See `arm_sweep`.
     sweep_at: Option<Instant>,
+    /// **When to next read the store for the merge-queue reviews this daemon's sessions are
+    /// owed.** Armed at open to *now*, so a daemon that comes up between the ask and the ring
+    /// serves it on its first idle pass rather than after a window, and spent by
+    /// [`Sessions::reviews_due`]. See [`REVIEW_PASS_EVERY`] for why this is a clock at all.
+    reviews_at: Option<Instant>,
     /// **The operator's run, per session**: whether one is in flight on its own thread,
     /// and the lines queued behind it. See [`crate::bangrun::State`] — this map only holds
     /// the handle; the harness gets a clone of the same `Arc`, because the round boundary's
@@ -423,6 +447,9 @@ impl<'a> Sessions<'a> {
             fabric_seen: HashMap::new(),
             nags: HashMap::new(),
             sweep_at: None,
+            // Due at once: the first idle pass looks. A daemon that started between a review's
+            // ask and its wake has the row and nothing else, and this is what finds it.
+            reviews_at: Some(Instant::now()),
             bangs: HashMap::new(),
             wall_gave_up: std::collections::HashSet::new(),
         };
@@ -1473,6 +1500,9 @@ impl<'a> Sessions<'a> {
     /// never be swept at all — and the stall this exists for happens while a command is RUNNING,
     /// which is exactly when nothing else is due. Armed after every turn (see `arm_sweep`), so a
     /// turn that ends with a call nobody answered is looked at a moment later.
+    ///
+    /// **This is the plan-check and the sweep; the worker's wait is [`Sessions::next_idle_at`]**,
+    /// which is this and the review clock together — see `reviews_at`.
     pub fn next_nag_at(&self) -> Option<Instant> {
         let nags = self.nags.values().filter_map(|c| c.due_at()).min();
         match (nags, self.sweep_at) {
@@ -1480,6 +1510,67 @@ impl<'a> Sessions<'a> {
             (Some(a), None) => Some(a),
             (None, b) => b,
         }
+    }
+
+    /// **When the worker must next wake with nothing to do** — the earliest of the idle
+    /// plan-check, the abandoned-call sweep ([`Sessions::next_nag_at`]) and the store read for the
+    /// reviews this daemon's sessions are owed ([`Sessions::serve_reviews`], armed by
+    /// [`Sessions::reviews_due`]).
+    ///
+    /// The review clock is the one that is armed from open and never stands down, and that is the
+    /// design rather than an oversight: a review is asked for by the QUEUE's thread and served by a
+    /// SESSION's, the store is the only thing they share, and the ring between them is a bell — so
+    /// a daemon that holds the host has no event to wait for. See [`REVIEW_PASS_EVERY`].
+    pub fn next_idle_at(&self) -> Option<Instant> {
+        match (self.next_nag_at(), self.reviews_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// **Whether the store read for owed reviews is due, spending the deadline when it is** —
+    /// `TodoNagClock::due_now`'s shape and for its reason: the disarm is before the work, so a pass
+    /// that took longer than the interval does not fire again at once.
+    pub fn reviews_due(&mut self) -> bool {
+        let now = Instant::now();
+        if self.reviews_at.is_some_and(|at| at > now) {
+            return false;
+        }
+        self.reviews_at = Some(now + REVIEW_PASS_EVERY);
+        true
+    }
+
+    /// **Every review owed to a session this daemon holds, served from the store.**
+    ///
+    /// The queue's door ([`crate::mergequeue::GatekeeperDoor`]) writes the request row naming its
+    /// host and rings that host's bell — and a bell is per-daemon, so a mover in another daemon
+    /// rings one nobody is standing at, and a daemon that restarts between the ask and the wake has
+    /// nothing left to ring (the ring is in memory; the row is in the store). This is the durable
+    /// half: **each daemon serves the reviews its own sessions host**, on its own clock
+    /// ([`Sessions::reviews_due`]), from the one medium both daemons can see.
+    ///
+    /// A row whose host this daemon does not hold is left alone, and that is the design rather
+    /// than a limitation: two daemons each serving what they hold needs nothing to reach anything,
+    /// which is the only arrangement that survives a ring that cannot cross a process.
+    ///
+    /// **"Holds" means a harness** — `self.open`, which is every session this daemon has built and
+    /// can run a turn in. A session that is merely in the registry (a head's `/new`, or a host the
+    /// queue's door has just resumed) is not held yet: the open is on the worker's own queue and
+    /// `Sessions::open` builds the harness there, after which the next pass serves it.
+    ///
+    /// The body is [`Harness::serve_reviews`] — the same function the wake and the round boundary
+    /// call — so all three doors make one decision from one body of evidence: the store's
+    /// `attempts`/`failed_ms` through `mergequeue::review_retry`, and the session's own `reviewing`
+    /// list. Answers how many gatekeepers were started, for the log line.
+    pub fn serve_reviews(&mut self) -> usize {
+        let ids: Vec<String> = self.open.keys().cloned().collect();
+        let mut started = 0;
+        for id in ids {
+            if let Some(h) = self.open.get_mut(&id) {
+                started += h.serve_reviews();
+            }
+        }
+        started
     }
 
     /// Ask for a sweep a moment from now, so the idle arm gets a chance to look.
@@ -3434,6 +3525,9 @@ fn stored_end(last: &letibot_transcript::TranscriptItem) -> letibot_sessionlog::
         _ => StoredEnd::MidTurn,
     }
 }
+
+#[cfg(test)]
+mod review_pass;
 
 #[cfg(test)]
 mod stored_end_rule {

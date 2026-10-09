@@ -156,14 +156,20 @@ impl Daemon {
         // deadline and says so, which is what lets this loop act on a PAUSE rather than only on an
         // event — and the one thing that wanted to is the idle plan-check the operator asked for:
         // *"maybe wait for a timeout actually. so send it when model is idling."* The deadline is
-        // recomputed every pass because any turn re-arms it, and it is `None` (sleep until there is
-        // work) whenever no session has a check pending, which is the common case.
+        // recomputed every pass because any turn re-arms it.
+        //
+        // **Three clocks, one deadline, and one of them never stands down.** The plan-check and
+        // the sweep are `next_nag_at`'s; the third is the store read for the merge-queue reviews
+        // the sessions this daemon holds are owed, which is what makes a review asked for by
+        // ANOTHER daemon (or by a daemon that then restarted) arrive at all — a ring is a bell and
+        // a bell is per-daemon, so there is no event to wait for. See `Sessions::next_idle_at`.
         loop {
-            let deadline = sessions.next_nag_at();
+            let deadline = sessions.next_idle_at();
             match self.registry().next_work_until(deadline) {
                 // Nothing to do and the deadline is not here yet — the registry never returns this
-                // while there is work, and a session with no check armed passes `None`, so this arm
-                // is only reachable when a check is actually due.
+                // while there is work, and a session with no check armed and no review clock
+                // passes `None`, so this arm is only reachable when one of the three clocks is
+                // actually due.
                 WorkOrIdle::Idle => {
                     // **A call nothing will answer is closed out HERE**, on the idle pass, and the
                     // placement is the liveness test: the round loop is synchronous, so a round in
@@ -176,6 +182,16 @@ impl Daemon {
                     let ran = sessions.deliver_due_nags();
                     if ran > 0 {
                         eprintln!("  todo check -> {ran} session(s)");
+                    }
+                    // **And the reviews this daemon's sessions host**, read from the store — the
+                    // durable half of the queue's ring. It is due on its own clock rather than on
+                    // this pass's, because this arm is also entered for a nag or a sweep. See
+                    // `Sessions::serve_reviews` for why the store and not the ring.
+                    if sessions.reviews_due() {
+                        let served = sessions.serve_reviews();
+                        if served > 0 {
+                            eprintln!("  reviews -> {served} gatekeeper(s)");
+                        }
                     }
                     continue;
                 }
