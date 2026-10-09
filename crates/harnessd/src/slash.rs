@@ -153,6 +153,10 @@ pub enum Slash {
 /// **`veto` carries the person's own words**, because the message the child receives is built from
 /// them: a rejection a child cannot read a reason in is a rejection it cannot act on. The reason is
 /// the rest of the line, so it is a sentence and not a word.
+/// **`reset` and `clean` are the two SWEEPS**, and they take an OPTIONAL id: the operator's
+/// ruling is *"as for reset - no reset resets review states. and /queue clean deletes"*, and a
+/// queue parked on one bad afternoon is answered by a verb about the whole thing. No id is the
+/// whole queue, which is why these two carry an `Option` where the four above carry a `String`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueVerb {
     /// **Re-attempt one entry's review.** `entry` is the id the pane's row carries.
@@ -165,6 +169,13 @@ pub enum QueueVerb {
     Veto { entry: String, why: String },
     /// **Drop the entry from the queue.** The branch and its worktree stay.
     Rm { entry: String },
+    /// **Re-ask the review of the parked entries** — the whole queue, or the one entry named.
+    /// The REVIEW STATES only: no branch is moved, no worktree is swept, no row is deleted, and
+    /// the tutor re-reviews what is there.
+    Reset { entry: Option<String> },
+    /// **Delete entries from the queue** — the whole queue, or the one entry named. The branch and
+    /// its worktree stay; the row and its verdict go.
+    Clean { entry: Option<String> },
 }
 
 /// What the operator is saying about a decision the gate already made.
@@ -367,16 +378,30 @@ impl Slash {
                             .into(),
                     ),
                 },
+                // **`reset` and `clean` take an id or none, and NONE IS THE WHOLE QUEUE.** The
+                // ruling is about the queue as much as about a row (*"no reset resets review
+                // states. and /queue clean deletes"*), and a verb that insisted on an id would
+                // make re-asking twenty parked entries twenty commands — which is the ceremony
+                // these two exist to remove. There is no *missing argument* refusal here for that
+                // reason, and the sentences below say what the bare form is about instead.
+                Some("reset") => Slash::Queue(QueueVerb::Reset {
+                    entry: words.get(2).map(|id| (*id).to_string()),
+                }),
+                Some("clean") => Slash::Queue(QueueVerb::Clean {
+                    entry: words.get(2).map(|id| (*id).to_string()),
+                }),
                 Some(other) => Slash::Help(format!(
                     "/queue {other}: the sub-verbs are `approve ENTRY-ID`, `veto ENTRY-ID [in your \
-                     words]`, `rm ENTRY-ID` and `restart ENTRY-ID`. A bare `/queue` opens the \
-                     merge-queue pane."
+                     words]`, `rm ENTRY-ID`, `restart ENTRY-ID`, `reset [ENTRY-ID]` and `clean \
+                     [ENTRY-ID]`. A bare `/queue` opens the merge-queue pane."
                 )),
                 None => Slash::Help(
                     "/queue opens the merge-queue pane; `/queue approve ENTRY-ID` lets an entry \
                      through, `/queue veto ENTRY-ID [why]` sends it back to the child that did the \
-                     work, `/queue rm ENTRY-ID` drops it, and `/queue restart ENTRY-ID` asks the \
-                     gatekeeper again about a parked entry"
+                     work, `/queue rm ENTRY-ID` drops it, `/queue restart ENTRY-ID` asks the \
+                     gatekeeper again about a parked entry, `/queue reset [ENTRY-ID]` re-asks the \
+                     reviews of every parked entry (or of one), and `/queue clean [ENTRY-ID]` \
+                     deletes rows from the queue (or one)"
                         .into(),
                 ),
             },
@@ -1472,7 +1497,7 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
 mod the_verb_table_is_the_parser {
     use super::*;
 
-    /// **The four `/queue` sub-verbs are the daemon's, and the rest of `/queue` is the head's.**
+    /// **The six `/queue` sub-verbs are the daemon's, and the rest of `/queue` is the head's.**
     ///
     /// The sub-verbs are daemon acts — the queue is daemon-level and its rows are the daemon's —
     /// and everything else under the word is the head opening its pane, so the grammar refuses
@@ -1517,6 +1542,31 @@ mod the_verb_table_is_the_parser {
                 why: String::new()
             })
         );
+        // **`reset` and `clean` take an id or nothing, and nothing is the whole queue.** The
+        // two arms are the only `/queue` verbs whose argument is optional, so both spellings are
+        // asserted: a parser that dropped the bare form would make the sweep unreachable from a
+        // pipe, and one that dropped the id would reset a whole queue where a person named one
+        // row.
+        assert_eq!(
+            Slash::parse("queue reset"),
+            Slash::Queue(QueueVerb::Reset { entry: None })
+        );
+        assert_eq!(
+            Slash::parse("queue reset s-1-sub-2"),
+            Slash::Queue(QueueVerb::Reset {
+                entry: Some("s-1-sub-2".into())
+            })
+        );
+        assert_eq!(
+            Slash::parse("queue clean"),
+            Slash::Queue(QueueVerb::Clean { entry: None })
+        );
+        assert_eq!(
+            Slash::parse("queue clean s-1-sub-2"),
+            Slash::Queue(QueueVerb::Clean {
+                entry: Some("s-1-sub-2".into())
+            })
+        );
         // **A sub-verb with no id is refused with the grammar**, and so is one that is not a
         // sub-verb at all — each naming the thing it is about rather than a generic *not a verb*.
         for line in ["queue restart", "queue approve", "queue veto", "queue rm"] {
@@ -1538,8 +1588,17 @@ mod the_verb_table_is_the_parser {
         match Slash::parse("queue stop x") {
             Slash::Help(why) => assert!(
                 why.contains("approve ENTRY-ID") && why.contains("veto ENTRY-ID"),
-                "an unknown sub-verb is refused with the four that exist: {why}"
+                "an unknown sub-verb is refused with the sub-verbs that exist: {why}"
             ),
+            other => panic!("`/queue stop x` is not a daemon act: {other:?}"),
+        }
+        // **And the sweeps are named there too** — a person who typed `stop` is one typo from
+        // `reset`, and the sentence that answers a wrong sub-verb is where they find the right one.
+        match Slash::parse("queue stop x") {
+            Slash::Help(why) => {
+                assert!(why.contains("reset [ENTRY-ID]"), "{why}");
+                assert!(why.contains("clean [ENTRY-ID]"), "{why}");
+            }
             other => panic!("`/queue stop x` is not a daemon act: {other:?}"),
         }
     }

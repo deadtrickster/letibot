@@ -226,8 +226,35 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 /// the current main before the gate runs, so the gate tests the combination rather than the
 /// branch in isolation. A conflict is an `Err` with git's own words, and the caller reports
 /// it rather than resolving it — the queue's job is to notice, not to guess.
+///
+/// **`--autostash`, and without it NOTHING lands.** Every worktree this queue works in is dirty
+/// in `.commit-msg` — the operator's TRACKED file, which the landing discipline writes the
+/// commit message into — and a plain `git rebase` refuses a dirty tree with `cannot rebase: You
+/// have unstaged changes`. That refusal arrives here as an `Err` and the caller turns it into a
+/// [`MergeState::Conflict`], so a branch with no conflict at all is parked on git's complaint
+/// about a file the landing itself wrote. `--autostash` stashes the dirt, replays the branch and
+/// restores it, which is the intent exactly: the message file is the landing's scratch, not the
+/// work. The other half of this — stop using the operator's file at all — is the caller's.
 fn rebase(worktree: &Path, onto: &str) -> Result<(), String> {
-    git(worktree, &["rebase", onto]).map(|_| ())
+    git(worktree, &["rebase", "--autostash", onto]).map(|_| ())
+}
+
+/// **Whether `main` already contains `branch`** — the check that turns a stale row into what it
+/// is, instead of rebasing a branch onto a main that already has it.
+///
+/// `git merge-base --is-ancestor BRANCH main` answers with its EXIT STATUS and nothing else: 0
+/// when the branch is an ancestor of main, 1 when it is not, and neither prints a word. So the
+/// answer is `run_captured`'s `Ok`, and an error — 128, a branch git cannot name, a repository
+/// with no `main` — is `false` for the same reason it is not a conflict: a branch that cannot be
+/// found is not a branch main contains, and the rebase that follows reports the reason in git's
+/// own words rather than in a guess made here.
+fn main_contains(repo: &Path, branch: &str) -> bool {
+    run_captured(
+        repo,
+        "git",
+        &["merge-base", "--is-ancestor", branch, "main"],
+    )
+    .is_ok()
 }
 
 /// **Fast-forward main to the entry's branch**, returning the new tip SHA.
@@ -735,7 +762,9 @@ pub enum StepOutcome {
     /// Nothing was ready: no `Waiting` entry whose `needs` have all `Landed`.
     Idle,
     /// The entry was taken and landed: main was fast-forwarded, pushed, and the worktree and
-    /// branch were removed. The tip is the SHA main moved to.
+    /// branch were removed. The tip is the SHA main moved to — or, for an entry whose branch was
+    /// **already** an ancestor of main, the tip main already stood at, since the queue landed the
+    /// row without moving anything (see [`main_contains`]).
     Landed(String),
     /// The entry was taken and the rebase conflicted: the worktree stays, with git's words on
     /// the row.
@@ -952,6 +981,23 @@ pub fn review_retry(
     }
 }
 
+/// **The four states a re-review may move** — `failed`, `conflict`, `stale` and `vetoed`, which
+/// are the same four words [`Store::restart_review`] and [`Store::reset_reviews`] spell out in
+/// their `WHERE` clauses.
+///
+/// One predicate rather than a `matches!` per caller, so a state added to [`MergeState`] is
+/// classified in one place instead of being silently left out of a whole-queue reset — and so
+/// the two sweeps cannot disagree about which rows they are about.
+///
+/// [`Store::restart_review`]: letibot_tokencore::store::Store::restart_review
+/// [`Store::reset_reviews`]: letibot_tokencore::store::Store::reset_reviews
+pub fn parked(state: MergeState) -> bool {
+    matches!(
+        state,
+        MergeState::Failed | MergeState::Conflict | MergeState::Stale | MergeState::Vetoed
+    )
+}
+
 /// **Whether one entry's review may be restarted, and the sentence for either answer** — the
 /// person's act, as one pure function of the two rows.
 ///
@@ -982,10 +1028,7 @@ pub fn restartable(
             entry.branch
         ));
     }
-    if !matches!(
-        entry.state,
-        MergeState::Failed | MergeState::Conflict | MergeState::Stale | MergeState::Vetoed
-    ) {
+    if !parked(entry.state) {
         return Err(format!(
             "`{}` is `{}` — nothing to restart. Only a parked entry (failed, conflict, stale, \
              vetoed) is restarted by hand; a waiting one is what the queue's own retry is for.",
@@ -1048,12 +1091,7 @@ pub fn restart(
         // The row moved under us between the read and the write — a second press, or the queue's
         // own pass parking it somewhere else. Refused rather than reported as done, because a
         // restart that did not happen and a restart that did are the two facts a person acts on.
-        let now = store
-            .merge_entry(entry_id)
-            .ok()
-            .flatten()
-            .map(|e| e.state.as_str().to_string())
-            .unwrap_or_else(|| "gone".into());
+        let now = state_now(store, entry_id);
         return Err(format!(
             "nothing was restarted: `{entry_id}` is `{now}` and a restart only moves a parked \
              entry. If you have just asked once, this is the second ask and the first one is \
@@ -1070,6 +1108,131 @@ pub fn restart(
          is back to `waiting`, and it does not land until a verdict accepts it and the gate is \
          green.",
         entry.branch
+    ))
+}
+
+// ===== The sweeps: re-ask every parked review, or forget rows =====
+//
+// The operator's ruling, in their words: *"as for reset - no reset resets review states. and
+// /queue clean deletes"*. Two verbs about a SET of rows rather than about one: `reset` puts
+// every parked entry back in front of the tutor and changes nothing else, and `clean` forgets
+// rows. Each takes the same `Option<&str>` — an id is the one row, `None` is the whole queue —
+// and each is `restart`'s or `rm`'s rule applied to that set, so the two spellings of one verb
+// cannot disagree about a row.
+
+/// **Re-ask the review of every parked entry** — `/queue reset [ENTRY-ID]`, and the sentence it
+/// answers with.
+///
+/// The whole of the act is [`Store::reset_reviews`]'s two writes, per row: the entry back to
+/// `waiting` and its review row back to *nobody has answered*. What is here is the DECISION
+/// ([`parked`]), the sentence, and the announcement — `restart`'s shape, one set wide.
+///
+/// **What it does not touch is the point of the verb.** The ruling is explicit that a reset is
+/// about REVIEW STATES and not about entries: no branch is moved, no worktree is swept, no row
+/// is deleted, and the entry's own facts — its brief, its `needs`, its base, its worktree — are
+/// exactly what they were. The tutor re-reviews the same branch, and the queue then does what it
+/// does with a waiting entry whose verdict accepts.
+///
+/// **Why a verb of its own when `restart` exists.** `restart` is one entry and it is a person's
+/// answer to one row; this is the sweep for a queue that has parked a pile of them — the
+/// operator's four, and the nine letidb branches under the new machinery — where re-asking them
+/// one at a time is the ceremony the verb exists to remove.
+///
+/// **The announcement is one `MergeEntryMoved` per row**, the queue's own event rather than a
+/// new one, for `restart`'s reason: a reset IS an entry move, and a head that folded the queue
+/// needs no second vocabulary to learn that a parked entry is being tried again. The events are
+/// published only when the store's count is the count this function counted: a row that moved
+/// under us between the read and the write is a row whose event would be a lie, and the
+/// snapshot is the head's fallback.
+///
+/// [`Store::reset_reviews`]: letibot_tokencore::store::Store::reset_reviews
+pub fn reset(
+    store: &Store,
+    entry: Option<&str>,
+    now_ms: u64,
+    events: &dyn Fn(letibot_sessionlog::SessionEvent),
+) -> Result<String, String> {
+    // **An id that resolves to nothing is refused in the queue's own grammar** — `read_entry`'s
+    // sentence, the same one `restart` and `rm` give — rather than answered with a report of a
+    // sweep that found no rows.
+    let about: Vec<MergeEntry> = match entry {
+        Some(id) => vec![read_entry(store, id)?],
+        None => store
+            .merge_entries()
+            .map_err(|e| format!("the queue could not be read: {e}"))?,
+    };
+    let rows: Vec<MergeEntry> = about.into_iter().filter(|e| parked(e.state)).collect();
+    if rows.is_empty() {
+        let said = match entry {
+            Some(id) => format!(
+                "nothing was reset: `{id}` is not a parked entry. A reset moves a `failed`, \
+                 `conflict`, `stale` or `vetoed` entry back into the queue with its review \
+                 cleared, and nothing else; `/queue` lists the entries and the state each one is \
+                 in."
+            ),
+            None => "nothing was reset: the queue holds no parked entry. A reset moves the \
+                     `failed`, `conflict`, `stale` and `vetoed` rows back into the queue with \
+                     their reviews cleared; `/queue` lists what is there."
+                .to_string(),
+        };
+        // **A named entry that is not parked is a refusal** — `restart`'s answer to the same
+        // press — while a whole queue with nothing parked is an empty sweep rather than a
+        // failure, and says so.
+        return match entry {
+            Some(_) => Err(said),
+            None => Ok(said),
+        };
+    }
+    let moved = store
+        .reset_reviews(now_ms, entry)
+        .map_err(|e| format!("the reset could not be written: {e}"))?;
+    if moved == 0 {
+        // The row moved under us between the read and the write: the daemon claimed it, or a
+        // person answered it. Refused rather than reported as done, because a reset that did not
+        // happen and a reset that did are the two facts a person acts on.
+        return Err(match entry {
+            Some(id) => format!(
+                "nothing was reset: `{id}` is `{}` now, and a reset only moves a parked entry. \
+                 The row is still there, with its reason on it.",
+                state_now(store, id)
+            ),
+            None => "nothing was reset: every parked entry moved while this was being written \
+                     — the daemon took them, or a person answered them. `/queue` is the truth."
+                .to_string(),
+        });
+    }
+    if moved == rows.len() {
+        for e in &rows {
+            events(letibot_sessionlog::SessionEvent::MergeEntryMoved {
+                id: e.id.clone(),
+                state: crate::mergequeue::wire_state(MergeState::Waiting),
+                evidence: letibot_tokencore::store::Store::RESET_EVIDENCE.to_string(),
+            });
+        }
+    }
+    let list = rows
+        .iter()
+        .map(|e| format!("`{}` ({})", e.branch, e.state.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let word = if moved == 1 { "entry" } else { "entries" };
+    // **A short count is said rather than swallowed.** The store moved fewer rows than were read
+    // as parked, which is a row somebody else got to first; the sentence says how many and leaves
+    // the state of the rest to the queue, which is where it is true.
+    let raced = if moved == rows.len() {
+        String::new()
+    } else {
+        format!(
+            " {} of them moved while this was being written, so the queue's own state is the \
+             truth about those.",
+            rows.len() - moved
+        )
+    };
+    Ok(format!(
+        "reset {moved} {word}: {list}. The queue asks its gatekeeper about each of them again — \
+         they are back to `waiting` with their reviews cleared, and not one of them lands until a \
+         verdict accepts it and the gate is green. Nothing else about them changed: the branches, \
+         their worktrees and their rows are exactly what they were.{raced}"
     ))
 }
 
@@ -1748,23 +1911,14 @@ pub fn remove(
         .merge_review(entry_id)
         .map_err(|e| format!("the review of `{entry_id}` could not be read: {e}"))?;
     removable(&entry, review.as_ref())?;
-    let evidence = format!(
-        "removed from the queue by the operator. The branch `{}` and its worktree are untouched — \
-         the queue has forgotten the entry, not the work.",
-        entry.branch
-    );
+    let evidence = removed_evidence(&entry);
     if !store
         .remove_merge_entry(entry_id)
         .map_err(|e| format!("the removal of `{entry_id}` could not be written: {e}"))?
     {
         // The row moved under us between the read and the write: the daemon claimed it, or it
         // landed. The sentence names the state rather than guessing, `restart`'s own shape.
-        let now = store
-            .merge_entry(entry_id)
-            .ok()
-            .flatten()
-            .map(|e| e.state.as_str().to_string())
-            .unwrap_or_else(|| "gone".into());
+        let now = state_now(store, entry_id);
         return Err(format!(
             "nothing was removed: `{entry_id}` is `{now}` and a removal takes an entry the queue \
              has not taken and has not landed. The row is still there, with its reason on it."
@@ -1779,6 +1933,163 @@ pub fn remove(
          are untouched: the queue has forgotten the entry, not the work. Nothing will land it now \
          — a new `task_start` on the same branch is how it would come back.",
         entry.branch
+    ))
+}
+
+/// **The evidence on a removal** — the queue's own words for an ABSENCE, and one sentence for
+/// `rm` and `clean` both because the fact is one fact: the queue has forgotten the entry, not the
+/// work.
+fn removed_evidence(entry: &MergeEntry) -> String {
+    format!(
+        "removed from the queue by the operator. The branch `{}` and its worktree are untouched — \
+         the queue has forgotten the entry, not the work.",
+        entry.branch
+    )
+}
+
+/// **What an entry's row says NOW** — for the sentences about a write that did not happen: a row
+/// that moved under the caller between its read and its write, or one that is gone. The state's
+/// own word rather than a guess, and `gone` for an id that no longer resolves at all.
+fn state_now(store: &Store, entry_id: &str) -> String {
+    store
+        .merge_entry(entry_id)
+        .ok()
+        .flatten()
+        .map(|e| e.state.as_str().to_string())
+        .unwrap_or_else(|| "gone".into())
+}
+
+/// **Why a whole-queue clean left `entry` alone, in one clause** — the state, plus the one detail
+/// the state word does not carry: a `waiting` row a clean refused is a row with a review in
+/// flight, which is the only reason [`removable`] refuses a state it otherwise allows.
+///
+/// This is a clause for a LIST, not the decision: whether a row goes is [`removable`]'s answer and
+/// nothing else's, and a whole-queue purge that printed that function's full sentence for every
+/// row it skipped would be a wall nobody reads.
+fn kept_state(
+    entry: &MergeEntry,
+    review: Option<&letibot_tokencore::store::ReviewRecord>,
+) -> String {
+    if attempt_in_flight(review) {
+        format!("{} — a gatekeeper is working on it", entry.state.as_str())
+    } else {
+        entry.state.as_str().to_string()
+    }
+}
+
+/// **Forget rows from the queue** — `/queue clean [ENTRY-ID]`, and the sentence it answers with.
+///
+/// The operator's ruling, in their words: *"/queue clean deletes"*. One row when an id is named,
+/// every row a clean may take when it is not. **Deleting is legal here**: the append-only trigger
+/// (`transcript_item_no_delete`) is on `transcript_item`, not on the queue, so a `DELETE` from
+/// `merge_queue` is a statement this store is written to run.
+///
+/// **What may be taken is [`removable`]'s rule and nothing else** — the rule `rm` is built on, so
+/// the two verbs cannot disagree about a row. A `landed` row stays (it is the queue's record that
+/// main moved and the base a dependent rebases onto), a `taken` row stays (the daemon is landing
+/// it right now), and a row with a reviewer mid-answer stays (the verdict would be written onto a
+/// row that is gone).
+///
+/// **Named, a refusal is the answer**, in `removable`'s own words: the operator pressed the verb
+/// on one row, and a sentence about why it stays is the honest reply. **Unnamed, the sweep goes
+/// on and the refusals are REPORTED**, one per row, because a purge that silently skipped a row
+/// is a purge nobody can trust — and the row that went is named by its branch and the state it
+/// was in, so a person can see what was deleted rather than take the count on faith.
+///
+/// The branch and the worktree are untouched, `remove`'s rule and its reason: they were never the
+/// queue's to delete.
+pub fn clean(
+    store: &Store,
+    entry: Option<&str>,
+    events: &dyn Fn(letibot_sessionlog::SessionEvent),
+) -> Result<String, String> {
+    let about: Vec<MergeEntry> = match entry {
+        Some(id) => vec![read_entry(store, id)?],
+        None => store
+            .merge_entries()
+            .map_err(|e| format!("the queue could not be read: {e}"))?,
+    };
+    let mut went: Vec<MergeEntry> = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
+    for e in &about {
+        let review = store
+            .merge_review(&e.id)
+            .map_err(|err| format!("the review of `{}` could not be read: {err}", e.id))?;
+        if let Err(why) = removable(e, review.as_ref()) {
+            if entry.is_some() {
+                return Err(why);
+            }
+            kept.push(format!(
+                "`{}` ({})",
+                e.branch,
+                kept_state(e, review.as_ref())
+            ));
+            continue;
+        }
+        // **One write per row, and it is `rm`'s own** ([`Store::remove_merge_entry`]): the state
+        // guard is the row's, so a row the daemon claims between the read and this write is not
+        // deleted out from under it.
+        match store.remove_merge_entry(&e.id) {
+            Ok(true) => {
+                events(letibot_sessionlog::SessionEvent::MergeEntryRemoved {
+                    id: e.id.clone(),
+                    evidence: removed_evidence(e),
+                });
+                went.push(e.clone());
+            }
+            // The row moved under us: named, that is `remove`'s refusal in the state's own word;
+            // unnamed, it is a row that stayed and the report says which.
+            Ok(false) => {
+                if entry.is_some() {
+                    return Err(format!(
+                        "nothing was removed: `{}` is `{}` and a removal takes an entry the queue \
+                         has not taken and has not landed. The row is still there, with its \
+                         reason on it.",
+                        e.branch,
+                        state_now(store, &e.id)
+                    ));
+                }
+                kept.push(format!("`{}` ({})", e.branch, state_now(store, &e.id)));
+            }
+            Err(err) => return Err(format!("`{}` could not be removed: {err}", e.id)),
+        }
+    }
+    let list = |rows: &[String]| rows.join(", ");
+    let kept_list = list(&kept);
+    if went.is_empty() {
+        // **Nothing went, and that is a real answer rather than a failure.** The whole-queue form
+        // of a clean on a queue that is all green is *there is nothing to purge*, and the rows
+        // that stayed are named with the rule that kept them.
+        return Ok(format!(
+            "nothing was cleaned: every row the queue holds is one a clean may not take — \
+             {kept_list}. A `landed` row is the queue's record that main moved and the base an \
+             entry that needs it rebases onto, a `taken` one is being landed right now, and a row \
+             with a gatekeeper mid-answer would have its verdict written onto a row that is gone. \
+             The branches and their worktrees are untouched."
+        ));
+    }
+    let went_list = went
+        .iter()
+        .map(|e| format!("`{}` ({})", e.branch, e.state.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let word = if went.len() == 1 { "entry" } else { "entries" };
+    let stayed = if kept.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " {} row(s) stayed: {kept_list} — a `landed` row is the base a dependent rebases \
+             onto, a `taken` one is being landed right now, and a row with a gatekeeper \
+             mid-answer would have its verdict written onto a row that is gone.",
+            kept.len()
+        )
+    };
+    Ok(format!(
+        "cleaned {} {word} from the queue, with their verdicts: {went_list}. The branches and \
+         their worktrees are untouched — the queue has forgotten the entries, not the work. \
+         Nothing will land them now: a new `task_start` on the same branch is how one would come \
+         back.{stayed}",
+        went.len()
     ))
 }
 
@@ -2130,6 +2441,46 @@ impl MergeQueueDaemon {
             return Ok(StepOutcome::AwaitingGate);
         }
 
+        // **The tip of THIS repository's main, read now** — not the last SHA the queue landed:
+        // main also moves by hand (a commit, a push, the gate's own section landing), and with
+        // one queue serving several repositories the last landing may be another repository's.
+        // The queue's record is the fallback only when git cannot name the tip.
+        //
+        // **Read HERE, before the entry is claimed**, because two things need it and the second
+        // of them is a decision about whether to claim the entry at all: the already-merged check
+        // just below, and the rebase's `base`.
+        let tip_now = run_captured(&repo, "git", &["rev-parse", "main"])
+            .ok()
+            .map(|t| t.trim().to_string());
+
+        // **An entry whose branch is already in main is what it is: `Landed`.** The operator's
+        // ruling on the row that describes exactly this: *"and i love your 2"*. A branch that is
+        // an ancestor of main has nothing left to rebase onto and no diff left to gate — the work
+        // it was holding is on main already, landed by somebody else's hand (a merge of its own, a
+        // later commit that carried it) — and rebasing it would replay commits main already has,
+        // which is either a no-op git refuses or a conflict with itself. So the row is moved to
+        // `Landed` with main's own tip as its `landed_sha`, and the pass returns without claiming
+        // the entry, without rebasing it and without asking anybody's gate about it.
+        //
+        // **The claim is deliberately NOT taken first.** A claim is the queue saying *I am landing
+        // this*; here there is nothing to land, and a row that is claimed and then moved leaves a
+        // `taken` state on disk for a daemon that dies in between — for a landing that never
+        // needed to happen.
+        if let Some(tip) = tip_now.as_deref() {
+            if main_contains(&repo, &entry.branch) {
+                let evidence = format!(
+                    "landed without a rebase and without a gate: main already contains `{}` — the \
+                     branch is an ancestor of main at {tip}, so there is no diff left to rebase \
+                     onto and nothing left for a gate to judge. The row was moved to `landed` as \
+                     it stands; `/queue clean {}` drops it if you want it gone.",
+                    entry.branch,
+                    letibot_sessionlog::registry::short_id(&entry.id)
+                );
+                self.move_to(&entry, MergeState::Landed, evidence, Some(tip.to_string()))?;
+                return Ok(StepOutcome::Landed(tip.to_string()));
+            }
+        }
+
         // **Take it**: mark it `Taken`, so a daemon that dies now comes back to a row that
         // says the job was running, not a row that says nothing. Through `move_to`, like every
         // other move, so the pane is told this one too: an entry the queue is working on is not
@@ -2149,13 +2500,6 @@ impl MergeQueueDaemon {
 
         // **Rebase it at the tip**: onto the current main, not the SHA it was written
         // against. A conflict is reported, never resolved.
-        // **The tip of THIS repository's main, read now** — not the last SHA the queue landed:
-        // main also moves by hand (a commit, a push, the gate's own section landing), and with
-        // one queue serving several repositories the last landing may be another repository's.
-        // The queue's record is the fallback only when git cannot name the tip.
-        let tip_now = run_captured(&repo, "git", &["rev-parse", "main"])
-            .ok()
-            .map(|t| t.trim().to_string());
         let base = tip_now
             .as_deref()
             .unwrap_or_else(|| effective_base(&entry, &entries));
@@ -3286,6 +3630,147 @@ mod tests {
             Some(feature_tip.as_str()),
             "the row keeps the tip"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **An entry whose branch is already in main is `Landed` — without a rebase and without a
+    /// gate.**
+    ///
+    /// The operator's ruling on the row that describes exactly this: *"and i love your 2"*. The
+    /// shape is the two stale rows the live queue holds: a branch main ALREADY contains, landed by
+    /// somebody else's hand, with an entry still parked over it. Rebasing it would replay commits
+    /// main already has, and gating it would judge a diff that is already in. So the pass moves the
+    /// row to `landed` with main's own tip and returns — and the gate is never run, which a gate
+    /// that panics if it is called is the assertion of.
+    #[test]
+    fn a_branch_main_already_contains_is_landed_without_a_rebase_or_a_gate() {
+        let (root, wt, main_sha, feature_sha) = repo_with_branch("already-merged");
+        let db = root.join("sessions.db");
+        // Somebody else's hand lands the branch: main fast-forwards to the feature's own tip.
+        git(&root, &["merge", "--ff-only", "feature"]);
+        let tip = sha(&root, "main");
+        assert_eq!(tip, feature_sha, "main is at the feature's own tip");
+
+        let entry = MergeEntry {
+            id: "m-merged".into(),
+            session_id: "s".into(),
+            branch: "feature".into(),
+            base_sha: main_sha.clone(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            brief: String::new(),
+            evidence: String::new(),
+            created_ms: 1_000,
+            updated_ms: 1_000,
+            worktree: Some(wt.to_str().unwrap().to_string()),
+            landed_sha: None,
+        };
+        enqueue(&db, &entry);
+        // An accepting verdict, so the queue may TAKE it: this is about what the pass does with
+        // an entry it is allowed to take, not about a row nobody reviewed.
+        approve(&db, "m-merged");
+
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(|_| panic!("the gate must not run for a branch main already contains")),
+            quiet_reviewer(),
+            quiet_events(),
+        );
+        let outcome = daemon.step().expect("the pass");
+        assert_eq!(
+            outcome,
+            StepOutcome::Landed(tip.clone()),
+            "the entry is landed at main's own tip"
+        );
+        // **Main did not move**: there was nothing left to land.
+        assert_eq!(sha(&root, "main"), tip, "main did not move");
+        // **The row says `Landed`, with the tip and the reason on it.**
+        let store = store_at(&db);
+        let landed = store
+            .merge_entry("m-merged")
+            .expect("reads")
+            .expect("the entry");
+        assert_eq!(landed.state, MergeState::Landed, "the row is landed");
+        assert_eq!(
+            landed.landed_sha.as_deref(),
+            Some(tip.as_str()),
+            "the row keeps main's tip"
+        );
+        assert!(
+            landed.evidence.contains("main already contains"),
+            "the row says why: {:?}",
+            landed.evidence
+        );
+        // **And the cleanup `Landed` owns ran** — `git branch -d` refuses an unmerged branch, so
+        // the branch being gone is the same fact as the check being right.
+        assert!(!wt.exists(), "the worktree was removed");
+        assert!(!branch_exists(&root, "feature"), "the branch was deleted");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **The rebase goes through the dirty `.commit-msg` every worktree carries** — the fix
+    /// without which NOTHING lands.
+    ///
+    /// The landing discipline writes the commit message into the operator's TRACKED `.commit-msg`,
+    /// so a worktree is dirty in it, and a plain `git rebase` refuses a dirty tree with `cannot
+    /// rebase: You have unstaged changes`. That refusal arrives at the caller as an `Err` and is
+    /// reported as a [`MergeState::Conflict`], so a branch with no conflict at all is parked on
+    /// git's complaint about a file the landing itself wrote. The test makes the file real —
+    /// tracked on the branch and then modified in the worktree, which is the shape the live queue
+    /// is in — and asserts both halves: the plain form refuses, and the queue's own rebase does
+    /// not, with the message file still there afterwards.
+    #[test]
+    fn the_rebase_autostashes_the_operators_commit_msg() {
+        let (root, wt, main_sha, _feature_sha) = repo_with_branch("autostash");
+        // `.commit-msg` is the operator's TRACKED file, and the landing discipline leaves it
+        // modified: committed on the branch, then written again without a commit.
+        std::fs::write(wt.join(".commit-msg"), "the message the queue wrote\n").expect("write");
+        git(&wt, &["add", ".commit-msg"]);
+        git(&wt, &["commit", "-qm", "the tracked commit message file"]);
+        std::fs::write(
+            wt.join(".commit-msg"),
+            "the message the landing just wrote\n",
+        )
+        .expect("write");
+        // **And main moves on**, so the rebase has something to replay — a rebase onto the
+        // branch's own base is a no-op git may take before it ever looks at the tree.
+        std::fs::write(root.join("d.txt"), "main moves\n").expect("write");
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "main moves"]);
+        let tip = sha(&root, "main");
+        assert_ne!(tip, main_sha, "main is past the branch's base");
+
+        // **The defect, in git's own words**: the plain form refuses the tree the landing
+        // discipline leaves behind, which is what parked every entry the queue took.
+        let plain = Command::new("git")
+            .arg("-C")
+            .arg(&wt)
+            .args(["rebase", "main"])
+            .output()
+            .expect("git");
+        assert!(
+            !plain.status.success(),
+            "a plain rebase refuses a dirty tree — that is the defect this fixes"
+        );
+        let said = String::from_utf8_lossy(&plain.stderr).into_owned();
+        assert!(said.contains("cannot rebase"), "{said}");
+
+        // **And the queue's own rebase goes through**, with the message file restored rather than
+        // dropped: `--autostash` is the whole of the difference.
+        rebase(&wt, &tip).expect("the rebase goes through a dirty tracked file");
+        assert_eq!(
+            std::fs::read_to_string(wt.join(".commit-msg")).unwrap(),
+            "the message the landing just wrote\n",
+            "the stash was restored, not dropped"
+        );
+        assert!(
+            git_output(&wt, &["status", "--porcelain"]).contains(".commit-msg"),
+            "and the tree is still as the landing left it"
+        );
+        // **The branch was really replayed**: it is a descendant of the new main.
+        git(&wt, &["merge-base", "--is-ancestor", "main", "HEAD"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -5489,6 +5974,237 @@ mod person {
         e.evidence = "the branch is 0 commits over its base".into();
         enqueue(&db, &e);
         (root, db, e.id)
+    }
+
+    // ===== The two sweeps: reset the reviews, or clean the rows out =====
+
+    /// **A whole-queue reset re-asks every parked review and moves nothing else.**
+    ///
+    /// The operator's ruling, in their words: *"as for reset - no reset resets review states"*.
+    /// Two entries are parked with verdicts on them and two are not — a `waiting` one and a
+    /// `landed` one, both with a verdict of their own — and the sweep moves the two parked rows,
+    /// clears exactly their reviews, and announces one move per row, which is what a head that
+    /// folded the queue needs. The branches, the worktrees and the untouched rows are asserted to
+    /// be exactly what they were: a reset that touched them would not be the verb that was asked
+    /// for.
+    #[test]
+    fn a_whole_queue_reset_re_asks_the_parked_reviews_and_nothing_else() {
+        let root = std::env::temp_dir().join(format!("letibot-mq-reset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let db = root.join("sessions.db");
+        for (id, state, at) in [
+            ("m-failed", MergeState::Failed, 1_000u64),
+            ("m-conflict", MergeState::Conflict, 2_000),
+            ("m-waiting", MergeState::Waiting, 3_000),
+            ("m-landed", MergeState::Landed, 4_000),
+        ] {
+            let mut e = entry(id, MergePriority::Subagent, state, at);
+            e.evidence = "the gate is red".into();
+            e.worktree = Some(format!("/wt/{id}"));
+            enqueue(&db, &e);
+            // A verdict on every one of them, so "cleared" and "left alone" are both claims
+            // about a row that had something to clear.
+            refused(&db, id);
+        }
+
+        let events = RecordingEvents::default();
+        let said = reset(&store_at(&db), None, 9_000, &events.sink()).expect("the reset");
+        assert!(said.contains("reset 2 entries"), "{said}");
+        assert!(said.contains("`b-m-failed` (failed)"), "{said}");
+        assert!(said.contains("`b-m-conflict` (conflict)"), "{said}");
+
+        let store = store_at(&db);
+        for id in ["m-failed", "m-conflict"] {
+            let back = store.merge_entry(id).expect("reads").expect("the entry");
+            assert_eq!(back.state, MergeState::Waiting, "{id} is back in the queue");
+            assert_eq!(
+                back.evidence,
+                letibot_tokencore::store::Store::RESET_EVIDENCE,
+                "{id}: the row says what moved it"
+            );
+            assert_eq!(
+                back.worktree,
+                Some(format!("/wt/{id}")),
+                "{id}: the worktree is the entry's own, untouched"
+            );
+            let cleared = store.merge_review(id).expect("reads").expect("the review");
+            assert_eq!(cleared.asked_ms, 9_000, "{id}: the ask is a NEW ask");
+            assert!(
+                cleared.decision.is_none() && cleared.answered_ms.is_none(),
+                "{id}: the verdict is cleared, so the queue asks again"
+            );
+        }
+        for (id, state) in [
+            ("m-waiting", MergeState::Waiting),
+            ("m-landed", MergeState::Landed),
+        ] {
+            let still = store.merge_entry(id).expect("reads").expect("the entry");
+            assert_eq!(still.state, state, "{id} did not move");
+            assert_eq!(
+                still.evidence, "the gate is red",
+                "{id}: its row is its own"
+            );
+            let kept = store.merge_review(id).expect("reads").expect("the review");
+            assert_eq!(kept.asked_ms, 1, "{id}: its review was not restamped");
+            assert_eq!(kept.decision.as_deref(), Some("reject"), "{id}");
+        }
+        // **One move per row, and they are the two that moved** — the queue's own event, so no
+        // head needs a second vocabulary to learn that a parked entry is being tried again.
+        let moves = events.moves();
+        assert_eq!(moves.len(), 2, "{moves:?}");
+        let ids: Vec<&str> = moves.iter().map(|(id, _, _)| id.as_str()).collect();
+        assert!(
+            ids.contains(&"m-failed") && ids.contains(&"m-conflict"),
+            "{ids:?}"
+        );
+        assert!(
+            moves.iter().all(|(_, state, evidence)| {
+                *state == letibot_sessionlog::event::MergeState::Waiting
+                    && evidence == letibot_tokencore::store::Store::RESET_EVIDENCE
+            }),
+            "{moves:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A named reset of an entry that is not parked is refused, and a whole queue with nothing
+    /// parked is not a failure** — two different facts, and they get two different answers.
+    #[test]
+    fn a_named_reset_refuses_an_entry_that_is_not_parked() {
+        let (root, db, id) = parked("reset-named", MergeState::Waiting);
+        let why = reset(&store_at(&db), Some(&id), 9_000, &quiet_events()).expect_err("a refusal");
+        assert!(why.contains("nothing was reset"), "{why}");
+        assert!(why.contains(&id), "{why}");
+        // **The whole queue, with nothing parked, says so rather than failing**: `/queue reset` on
+        // a queue that is all in flight is a sweep that found nothing, not a verb that did not
+        // work.
+        let said = reset(&store_at(&db), None, 9_000, &quiet_events()).expect("the empty sweep");
+        assert!(said.contains("nothing was reset"), "{said}");
+        assert!(said.contains("no parked entry"), "{said}");
+        assert_eq!(
+            store_at(&db).merge_entry(&id).unwrap().unwrap().state,
+            MergeState::Waiting,
+            "and nothing moved"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A whole-queue clean deletes what may go and REPORTS what stayed.**
+    ///
+    /// The operator's ruling, in their words: *"/queue clean deletes"*. Three rows go — a
+    /// `failed`, a `conflict` and a `vetoed` — and three stay, each for [`removable`]'s own
+    /// reason: a `landed` row is the base a dependent rebases onto, a `taken` one is being landed
+    /// right now, and a `waiting` one has a gatekeeper mid-answer. A purge that skipped a row
+    /// silently is a purge nobody can trust, so the sentence names both lists — and the branch and
+    /// the state of every row that went, so nothing is deleted without a person being able to see
+    /// what.
+    #[test]
+    fn a_whole_queue_clean_deletes_what_may_go_and_reports_what_stayed() {
+        let root = std::env::temp_dir().join(format!("letibot-mq-clean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let db = root.join("sessions.db");
+        for (id, state, at) in [
+            ("m-failed", MergeState::Failed, 1_000u64),
+            ("m-conflict", MergeState::Conflict, 2_000),
+            ("m-vetoed", MergeState::Vetoed, 3_000),
+            ("m-waiting", MergeState::Waiting, 4_000),
+            ("m-taken", MergeState::Taken, 5_000),
+            ("m-landed", MergeState::Landed, 6_000),
+        ] {
+            let e = entry(id, MergePriority::Subagent, state, at);
+            enqueue(&db, &e);
+        }
+        // **A live attempt on the waiting row** — asked for, neither answered nor failed — which
+        // is the one refusal a clean makes that the state word does not carry.
+        let e = store_at(&db)
+            .merge_entry("m-waiting")
+            .expect("reads")
+            .expect("the entry");
+        store_at(&db)
+            .put_review(&letibot_tokencore::store::ReviewRecord {
+                entry_id: "m-waiting".into(),
+                session_id: crate::mergequeue::REVIEWER_SESSION_ID.to_string(),
+                branch: e.branch,
+                base_sha: e.base_sha,
+                asked_ms: 1,
+                answered_ms: None,
+                decision: None,
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
+                reasons: vec![],
+                files: vec![],
+                commands: vec![],
+            })
+            .expect("the live ask");
+
+        let events = RecordingEvents::default();
+        let said = clean(&store_at(&db), None, &events.sink()).expect("the clean");
+        assert!(said.contains("cleaned 3 entries"), "{said}");
+        for want in [
+            "`b-m-failed` (failed)",
+            "`b-m-conflict` (conflict)",
+            "`b-m-vetoed` (vetoed)",
+        ] {
+            assert!(said.contains(want), "the purge names what went: {said}");
+        }
+        assert!(said.contains("3 row(s) stayed"), "{said}");
+        assert!(said.contains("`b-m-landed` (landed)"), "{said}");
+        assert!(said.contains("`b-m-taken` (taken)"), "{said}");
+        assert!(
+            said.contains("`b-m-waiting` (waiting — a gatekeeper is working on it)"),
+            "{said}"
+        );
+
+        let store = store_at(&db);
+        for id in ["m-failed", "m-conflict", "m-vetoed"] {
+            assert!(store.merge_entry(id).unwrap().is_none(), "{id} went");
+            assert!(
+                store.merge_review(id).unwrap().is_none(),
+                "{id}: its verdict went with it"
+            );
+        }
+        for id in ["m-waiting", "m-taken", "m-landed"] {
+            assert!(store.merge_entry(id).unwrap().is_some(), "{id} stayed");
+        }
+        // **One absence per row, and it names the branch** — a head that folded the entries in
+        // needs the event, or the pane goes on drawing rows the queue no longer holds.
+        let removals = events.removals();
+        assert_eq!(removals.len(), 3, "{removals:?}");
+        let ids: Vec<&str> = removals.iter().map(|(id, _)| id.as_str()).collect();
+        assert!(
+            ids.contains(&"m-failed") && ids.contains(&"m-conflict") && ids.contains(&"m-vetoed"),
+            "{ids:?}"
+        );
+        assert!(
+            removals
+                .iter()
+                .all(|(_, evidence)| evidence.contains("forgotten the entry, not the work")),
+            "{removals:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A named clean refuses a row that may not go, and a whole queue with nothing to purge says
+    /// so** — `rm`'s rule and `rm`'s sentence for the one row the operator named, and a report for
+    /// the sweep that found nothing it may take.
+    #[test]
+    fn a_named_clean_refuses_a_landed_row_and_the_whole_queue_says_when_there_is_nothing() {
+        let (root, db, id) = parked("clean-named", MergeState::Landed);
+        let why = clean(&store_at(&db), Some(&id), &quiet_events()).expect_err("a refusal");
+        assert!(why.contains("has landed and its row STAYS"), "{why}");
+        assert!(
+            store_at(&db).merge_entry(&id).unwrap().is_some(),
+            "nothing was deleted"
+        );
+        // **The whole queue, with nothing a clean may take, is not a failure** — the sweep reports
+        // what it found and what stayed, with the rule that kept it.
+        let said = clean(&store_at(&db), None, &quiet_events()).expect("the empty sweep");
+        assert!(said.contains("nothing was cleaned"), "{said}");
+        assert!(said.contains("`b-m-1` (landed)"), "{said}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// **The review a person overrides**: a refusal, with the reasons and the files it was based

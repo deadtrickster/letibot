@@ -6940,6 +6940,52 @@ impl Harness {
         })
     }
 
+    /// **Re-ask the review of every parked merge-queue entry** — `/queue reset [ENTRY-ID]`, the
+    /// operator's sweep, arriving at the one door the verb and the pane share.
+    ///
+    /// The operator's ruling, in their words: *"as for reset - no reset resets review states. and
+    /// /queue clean deletes"*. The rule is `mergequeue::parked`'s and the writes are
+    /// `mergequeue::reset`'s — the entry back to `waiting`, its review row cleared, and nothing
+    /// else about it touched. What this adds is the one thing only the daemon can: **the
+    /// announcement**, one `MergeEntryMoved` per row, because the pane is open in whichever
+    /// session the person is in and the entries may have come from several others.
+    ///
+    /// `Ok` is what was done, in the words the operator gets; `Err` is why it was not, said rather
+    /// than swallowed — a sweep that silently reset nothing is indistinguishable from one that
+    /// worked.
+    pub fn reset_reviews(&self, entry: Option<&str>) -> Result<String, String> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            "this daemon has no store, so there is no merge queue to reset.".to_string()
+        })?;
+        let registry = self.session_registry.clone();
+        crate::mergequeue::reset(
+            store,
+            entry,
+            (crate::config::now_ns() / 1_000_000) as u64,
+            &move |e| {
+                registry.broadcast(e);
+            },
+        )
+    }
+
+    /// **Delete entries from the merge queue** — `/queue clean [ENTRY-ID]`, the operator's sweep.
+    ///
+    /// The operator's ruling: *"/queue clean deletes"*. The rule is `mergequeue::removable`'s and
+    /// the writes are `mergequeue::clean`'s — one `rm` per row, with `rm`'s own state guard, so a
+    /// row the daemon claims mid-sweep is not deleted out from under it. What this adds is **the
+    /// announcement**: `MergeEntryRemoved`, one per row, the queue's one event about an ABSENCE —
+    /// a head that folded the entries in has to be told they went, or an open pane goes on drawing
+    /// rows the queue no longer holds.
+    pub fn clean_entries(&self, entry: Option<&str>) -> Result<String, String> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            "this daemon has no store, so there is no merge queue to clean.".to_string()
+        })?;
+        let registry = self.session_registry.clone();
+        crate::mergequeue::clean(store, entry, &move |e| {
+            registry.broadcast(e);
+        })
+    }
+
     /// **Something fired while nothing was running.** T24's wake, from the worker —
     /// and, since R7, **the same door a background job's completion comes through.**
     ///

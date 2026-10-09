@@ -562,6 +562,11 @@ impl<'a> Sessions<'a> {
                     QueueVerb::Approve { entry } => h.approve_review(&entry, session_id),
                     QueueVerb::Veto { entry, why } => h.veto_review(&entry, &why),
                     QueueVerb::Rm { entry } => h.remove_merge_entry(&entry),
+                    // **The two sweeps take an id or none**, and none is the whole queue — the
+                    // operator's ruling is about the queue as much as about a row, so the
+                    // `Option` travels as it was parsed rather than being refused here.
+                    QueueVerb::Reset { entry } => h.reset_reviews(entry.as_deref()),
+                    QueueVerb::Clean { entry } => h.clean_entries(entry.as_deref()),
                 };
                 match said {
                     Ok(line) => SlashReply {

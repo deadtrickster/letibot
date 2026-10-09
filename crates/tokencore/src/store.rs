@@ -3125,6 +3125,81 @@ impl Store {
         Ok(moved == 1)
     }
 
+    /// **The sentence `/queue reset` writes on every row it moves** — the store's own, because
+    /// the write is the store's, and `pub` because the daemon ANNOUNCES the move with these same
+    /// words: a head that folded `MergeEntryMoved` and a reader who opens the row afterwards must
+    /// not be told two different things about one move.
+    ///
+    /// What it says is the whole of what the verb does — the review starts over and nothing else
+    /// changes — because that is the one thing a person reading a row has to be able to tell apart
+    /// from a `restart` (which re-asks the same review for one entry) and from a move that lost
+    /// work.
+    pub const RESET_EVIDENCE: &str = "reset by the operator: the review is re-asked, and the branch and its worktree are \
+         untouched.";
+
+    /// **Reset the review of every parked entry** — `/queue reset [ENTRY-ID]`, the operator's
+    /// verb, as the two writes it is, in one transaction.
+    ///
+    /// The operator's ruling, in their own words: *"as for reset - no reset resets review states.
+    /// and /queue clean deletes"*. So this is [`Store::restart_review`] with the `entry_id` filter
+    /// removed and nothing else changed: every entry parked in `failed`, `conflict`, `stale` or
+    /// `vetoed` — the four words `mergequeue::parked` names — goes back to `waiting` with
+    /// [`RESET_EVIDENCE`] on its row, and its review row goes back to *nobody has answered*:
+    /// `asked_ms` restamped to `now_ms`, `answered_ms` and `decision` NULL, `attempts` 0,
+    /// `failed_ms` NULL, `failure` empty and the three `*_json` cleared. The branches, the
+    /// worktrees and every other fact about the entries are untouched: the tutor re-reviews, and
+    /// the queue then does what it does with a waiting entry whose verdict accepts.
+    ///
+    /// **`entry: None` is the whole queue**, which is the sweep the verb is for; `Some(id)` is the
+    /// same write for one row. An entry that is not parked — `waiting` (already in the queue),
+    /// `taken` (the daemon is mid-merge on it) or `landed` (done) — is not moved, and that is the
+    /// ROW arbitrating rather than the caller: the `UPDATE`'s `WHERE` is the guard, exactly as it
+    /// is in [`Store::restart_review`], so a second press moves nothing and a live landing is
+    /// never written over.
+    ///
+    /// **A review row is cleared only where the entry actually moved**, `restart_review`'s own
+    /// rule and its reason: clearing the review of an entry that did not move would throw away a
+    /// live attempt's request.
+    ///
+    /// Returns how many entries moved. Nothing else about the queue changes, and nothing is
+    /// deleted — that is [`Store::remove_merge_entry`]'s verb.
+    pub fn reset_reviews(&self, now_ms: u64, entry: Option<&str>) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        // **The rows the write will move, read first**, because the review rows are cleared per
+        // entry and the count the caller gets is the count of these. Read inside the transaction,
+        // so what is counted is what the `UPDATE`s below are about to see.
+        let mut st = tx.prepare(
+            "SELECT id FROM merge_queue
+              WHERE state IN ('failed', 'conflict', 'stale', 'vetoed')
+                AND (?1 IS NULL OR id = ?1)",
+        )?;
+        let ids: Vec<String> = st
+            .query_map(params![entry], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        // The statement's borrow of `tx` ends here: `commit` takes the transaction by value.
+        drop(st);
+        let mut moved = 0usize;
+        for id in &ids {
+            let n = tx.execute(
+                "UPDATE merge_queue SET state = 'waiting', evidence = ?2, updated_ms = ?3
+                  WHERE id = ?1 AND state IN ('failed', 'conflict', 'stale', 'vetoed')",
+                params![id, Self::RESET_EVIDENCE, now_ms as i64],
+            )?;
+            if n == 1 {
+                tx.execute(
+                    "UPDATE merge_review SET asked_ms = ?2, answered_ms = NULL, decision = NULL,
+                            attempts = 0, failed_ms = NULL, failure = '',
+                            reasons_json = '[]', files_json = '[]', commands_json = '[]'
+                      WHERE entry_id = ?1",
+                    params![id, now_ms as i64],
+                )?;
+                moved += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(moved)
+    }
+
     /// **The person's verdict REPLACES the review's** — the entry back in the queue with an
     /// accepting verdict on it, in one transaction.
     ///
@@ -4521,6 +4596,138 @@ mod tests {
             s.merge_review("m-1").unwrap().unwrap().asked_ms,
             9_000,
             "and it did not restamp the live attempt's ask"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A whole-queue reset moves the parked rows, clears their reviews, and touches nothing
+    /// else.**
+    ///
+    /// The operator's ruling, in their words: *"as for reset - no reset resets review states. and
+    /// /queue clean deletes"*. The two halves of that are exactly what this asserts. Every parked
+    /// entry — `failed`, `conflict`, `stale`, `vetoed` — goes back to `waiting` with
+    /// [`Store::RESET_EVIDENCE`] on its row and its review row cleared to *nobody has answered*: a
+    /// NEW ask, stamped `now_ms`, with the old verdict, its reasons and its failure gone. The
+    /// three states a reset is not about — `waiting` (already in the queue), `taken` (the daemon
+    /// is mid-merge on it) and `landed` (done) — are not moved, and their review rows are left
+    /// exactly as they were.
+    ///
+    /// The second half is the one that keeps the verb from being a way around a live landing: the
+    /// arbiter is the row, so a second press moves nothing and restamps nothing.
+    #[test]
+    fn a_whole_queue_reset_moves_the_parked_rows_and_clears_their_reviews() {
+        let dir = std::env::temp_dir().join(format!("letibot-reset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let s = Store::open(&path).expect("a store");
+        let entry = |id: &str, state: MergeState| MergeEntry {
+            id: id.into(),
+            session_id: "s-child".into(),
+            branch: format!("agent/{id}"),
+            base_sha: "abc".into(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state,
+            brief: "do the work".into(),
+            evidence: "the gate is red".into(),
+            created_ms: 1,
+            updated_ms: 1,
+            worktree: Some("/wt".into()),
+            landed_sha: None,
+        };
+        // **A verdict on every one of the seven**, so "cleared" and "left alone" are both
+        // claims about a row that had something to clear.
+        for (id, state) in [
+            ("m-failed", MergeState::Failed),
+            ("m-conflict", MergeState::Conflict),
+            ("m-stale", MergeState::Stale),
+            ("m-vetoed", MergeState::Vetoed),
+            ("m-waiting", MergeState::Waiting),
+            ("m-taken", MergeState::Taken),
+            ("m-landed", MergeState::Landed),
+        ] {
+            s.put_merge_entry(&entry(id, state)).expect("the entry");
+            s.put_review(&ReviewRecord {
+                entry_id: id.into(),
+                session_id: "s-reviewer".into(),
+                branch: format!("agent/{id}"),
+                base_sha: "abc".into(),
+                asked_ms: 1_000,
+                answered_ms: Some(1_500),
+                decision: Some("reject".into()),
+                attempts: 2,
+                failed_ms: Some(1_600),
+                failure: "http 429: Weekly/Monthly Limit Exhausted".into(),
+                reasons: vec!["the branch is 0 commits over its base".into()],
+                files: vec!["crates/widget.rs".into()],
+                commands: vec!["git diff base...branch".into()],
+            })
+            .expect("the verdict");
+        }
+
+        assert_eq!(
+            s.reset_reviews(9_000, None).expect("the reset"),
+            4,
+            "the four parked entries moved, and only those"
+        );
+        for id in ["m-failed", "m-conflict", "m-stale", "m-vetoed"] {
+            let back = s.merge_entry(id).unwrap().unwrap();
+            assert_eq!(back.state, MergeState::Waiting, "{id} is back in the queue");
+            assert_eq!(
+                back.evidence,
+                Store::RESET_EVIDENCE,
+                "{id}: the row says what moved it"
+            );
+            assert_eq!(
+                back.worktree.as_deref(),
+                Some("/wt"),
+                "{id}: the tree is its own"
+            );
+            let cleared = s.merge_review(id).unwrap().unwrap();
+            assert_eq!(cleared.asked_ms, 9_000, "{id}: the ask is a NEW ask");
+            assert!(
+                cleared.answered_ms.is_none() && cleared.decision.is_none(),
+                "{id}: the verdict is cleared"
+            );
+            assert_eq!(cleared.attempts, 0, "{id}: the bound is reset");
+            assert_eq!(cleared.failed_ms, None, "{id}: the failure goes with it");
+            assert_eq!(cleared.failure, "", "{id}");
+            assert!(
+                cleared.reasons.is_empty()
+                    && cleared.files.is_empty()
+                    && cleared.commands.is_empty(),
+                "{id}: the argument goes with the verdict"
+            );
+        }
+        // **The three a reset is not about are untouched** — the row AND its review.
+        for (id, state) in [
+            ("m-waiting", MergeState::Waiting),
+            ("m-taken", MergeState::Taken),
+            ("m-landed", MergeState::Landed),
+        ] {
+            let still = s.merge_entry(id).unwrap().unwrap();
+            assert_eq!(still.state, state, "{id} did not move");
+            assert_eq!(
+                still.evidence, "the gate is red",
+                "{id}: its row is its own"
+            );
+            let kept = s.merge_review(id).unwrap().unwrap();
+            assert_eq!(kept.asked_ms, 1_000, "{id}: its review was not restamped");
+            assert_eq!(kept.decision.as_deref(), Some("reject"), "{id}");
+            assert_eq!(kept.attempts, 2, "{id}: nor was its bound");
+        }
+
+        // **One id is the same write for one row**, and a second press moves nothing: the four
+        // that moved are `waiting` now, so the `WHERE` finds none of them, and an id the queue
+        // has never held is not an error — it is a row that did not move.
+        assert_eq!(s.reset_reviews(9_100, Some("m-conflict")).unwrap(), 0);
+        assert_eq!(s.reset_reviews(9_200, Some("m-taken")).unwrap(), 0);
+        assert_eq!(s.reset_reviews(9_300, Some("m-nope")).unwrap(), 0);
+        assert_eq!(
+            s.merge_review("m-conflict").unwrap().unwrap().asked_ms,
+            9_000,
+            "and the second press did not restamp the live ask"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
