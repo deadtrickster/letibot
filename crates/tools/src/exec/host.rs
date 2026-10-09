@@ -182,27 +182,43 @@ pub struct JobView {
     pub since_last_output: Option<Duration>,
 }
 
+/// **What a job is called**: `release-build · j65`, or just `j65` when nobody named it.
+///
+/// The one rule, and it is a free function as well as a method for one reason: **a
+/// settlement outlives the view it was read from.** `Harness::completion_notice` is handed a
+/// [`crate::exec::JobView`]'s two facts and no view — by the time the notice is built the job
+/// has usually been reaped, which is exactly why the settlement carries the command — so the
+/// sentence that names the job in the transcript has to reach the rule without a table to
+/// read it off. [`JobView::label`] is this function on a view, so the daemon's `/job`
+/// listing, the `JobEntry` a head draws, a tool's own sentence and the settlement notice
+/// cannot say it four ways.
+///
+/// The name is flattened here as it is everywhere else text becomes a row: a name is one
+/// line however it was typed. It is **not** re-cut to a width — the tool that takes a name
+/// caps it at its source ([`crate::builtins::bash`]), so a name is short by construction and
+/// a second cut would only be a second opinion.
+pub fn job_label(slug: Option<&str>, id: &str) -> String {
+    match slug {
+        Some(s) if !s.trim().is_empty() => {
+            let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+            format!("{} · {}", flat, id)
+        }
+        _ => id.to_string(),
+    }
+}
+
 impl JobView {
     /// **What this job is called**: `release-build · j65`, or just `j65` when nobody named
     /// it.
     ///
-    /// One rule, on the view, because three readers need the same string — the daemon's
-    /// `/job` listing, the `JobEntry` a head draws, and a tool's own refusal when a name
-    /// matches nothing. Three spellings of it would be three answers to *which job is
-    /// this*, which is the question a name exists to answer.
-    ///
-    /// The name is flattened here as it is everywhere else text becomes a row: a name is
-    /// one line however it was typed. It is **not** re-cut to a width — the tool that takes
-    /// a name caps it at its source ([`crate::builtins::bash`]), so a name is short by
-    /// construction and a second cut would only be a second opinion.
+    /// One rule, because four readers need the same string — the daemon's `/job` listing,
+    /// the `JobEntry` a head draws, a tool's own refusal when a name matches nothing, and
+    /// the settlement notice the model reads in the transcript. Four spellings of it would
+    /// be four answers to *which job is this*, which is the question a name exists to
+    /// answer. The rule itself is [`job_label`], which is this method's body: a settlement
+    /// has the name and the id but no view to hang a method on.
     pub fn label(&self) -> String {
-        match self.slug.as_deref() {
-            Some(s) if !s.trim().is_empty() => {
-                let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
-                format!("{} · {}", flat, self.id.0)
-            }
-            _ => self.id.0.clone(),
-        }
+        job_label(self.slug.as_deref(), &self.id.0)
     }
 }
 
@@ -214,6 +230,11 @@ pub struct Promotion {
     /// The command, kept here because a promotion record read an hour later has
     /// to identify something. `/proc` will not still say.
     pub command: String,
+    /// **The name the caller gave this job**, or `None` when nobody said one — for the
+    /// same reason [`Promotion::command`] is here: a promotion read back an hour later is
+    /// a sentence about a job, and a sentence about a job says what it is called. Read off
+    /// the job at the promotion, which is the last moment the name is certain.
+    pub slug: Option<String>,
     /// The scope that owned its lifetime before.
     pub from: ScopeId,
     /// The scope that owns it now.
@@ -239,10 +260,14 @@ impl Promotion {
         self.migration.as_ref().is_some_and(|m| m.complete())
     }
 
+    /// The one line a listing draws, in the spelling every other sentence uses:
+    /// `release-build · j14` when the caller named it, the bare id when nobody did
+    /// ([`job_label`]). The record's identity is still the handle ([`Promotion::job`]); this
+    /// is what a reader is shown, and `job_list` draws the rows above it with the same rule.
     pub fn summary(&self) -> String {
         let mut s = format!(
             "`{}` promoted from {} to {} after {:.1}s — {}",
-            self.job,
+            job_label(self.slug.as_deref(), &self.job.0),
             self.from,
             self.to,
             self.ran_for.as_secs_f32(),
@@ -1713,6 +1738,7 @@ impl ProcessHost for HostProcesses {
             return Ok(self.record_promotion(Promotion {
                 job: id.clone(),
                 command: job.command.clone(),
+                slug: job.slug.clone(),
                 from: life.owner.clone(),
                 to: target,
                 ran_for,
@@ -1720,7 +1746,8 @@ impl ProcessHost for HostProcesses {
                 migration: None,
                 at: SystemTime::now(),
                 note: Some(format!(
-                    "`{id}` was already owned by that scope, so nothing moved"
+                    "`{}` was already owned by that scope, so nothing moved",
+                    job_label(job.slug.as_deref(), &id.0)
                 )),
             }));
         }
@@ -1729,6 +1756,7 @@ impl ProcessHost for HostProcesses {
             return Ok(self.record_promotion(Promotion {
                 job: id.clone(),
                 command: job.command.clone(),
+                slug: job.slug.clone(),
                 from: life.owner.clone(),
                 to: target,
                 ran_for,
@@ -1736,8 +1764,9 @@ impl ProcessHost for HostProcesses {
                 migration: None,
                 at: SystemTime::now(),
                 note: Some(format!(
-                    "`{id}` had already {} when the promotion arrived; there was no \
+                    "`{}` had already {} when the promotion arrived; there was no \
                      process left to move, and its output is still readable",
+                    job_label(job.slug.as_deref(), &id.0),
                     job.state().word()
                 )),
             }));
@@ -1772,6 +1801,7 @@ impl ProcessHost for HostProcesses {
         Ok(self.record_promotion(Promotion {
             job: id.clone(),
             command: job.command.clone(),
+            slug: job.slug.clone(),
             from: life.owner,
             to: target,
             ran_for,

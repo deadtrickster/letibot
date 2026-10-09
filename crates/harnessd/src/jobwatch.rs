@@ -155,6 +155,18 @@ pub struct JobCompletion {
     /// are separate fields rather than one reused one because a command that turns
     /// out to hold an answer is the kind of field a reader stops trusting.
     pub command: String,
+    /// **The name the caller gave this job**, or `None` when nobody said one — the same
+    /// string `bash(slug: …)` stated, read off the view at the last moment it exists.
+    ///
+    /// Here rather than looked up when the notice is built, for the reason [`Self::command`]
+    /// is: a settlement is delivered between turns, by which time the job is usually reaped
+    /// and there is no table left to read a name off. It is the field that lets the notice
+    /// say `release-build · j65` — [`letibot_tools::exec::job_label`]'s rule, which is what
+    /// the `bash` result, `/job` and the tools all use — instead of a bare counter.
+    ///
+    /// **Always `None` for a subagent**, which has a handle and no slug; the notice for one
+    /// is [`crate::harness::subagent_notice`], which never reads this.
+    pub slug: Option<String>,
     /// What happened to the process: `exited 0`, `signalled 15`, `killed by job_kill`.
     ///
     /// For a subagent: `done` or `failed` — the same two words
@@ -846,6 +858,12 @@ fn watch_one(
                 // last moment it exists: a settlement is delivered between turns, by
                 // which time the job is usually reaped and `/proc` no longer says.
                 let command = view.as_ref().map(|v| v.command.clone()).unwrap_or_default();
+                // **And the name, for the same reason and at the same moment.** A job's
+                // slug is fixed for its life, so this is not a race — it is the only
+                // place a settlement can pick it up, because the notice is built later
+                // with no table to read. Nobody having named it is `None`, which is the
+                // honest answer and draws exactly the id the notice drew before.
+                let slug = view.as_ref().and_then(|v| v.slug.clone());
                 hub.publish(SessionEvent::JobSettled {
                     job: job.clone(),
                     state: word.clone(),
@@ -861,6 +879,7 @@ fn watch_one(
                     owner: queue.owner.clone(),
                     job: job.clone(),
                     command,
+                    slug,
                     state: word,
                     produced,
                     elapsed_ms,
@@ -973,6 +992,10 @@ fn settled_here(
         // A subagent runs no command; the notice for one is built from `state`
         // and `detail` and never reads this.
         command: String::new(),
+        // **And it has no name**, because a `task` child's handle IS its identity:
+        // there is no `bash(slug: …)` behind it and `subagent_notice` never reads
+        // this. `None` rather than a guess at the handle.
+        slug: None,
         state: state.to_string(),
         // It writes no bytes to a stream this end can count. The tokens it
         // generated are in the subagent's own metrics, and `produced` means
@@ -1082,6 +1105,9 @@ mod tests {
             owner: "s-jobs".into(),
             job: job.into(),
             command: "cargo test --release".into(),
+            // The row this writes carries no name — `JobRecord` has no such field and this
+            // path is about the durable settlement, not the label.
+            slug: None,
             state: state.into(),
             produced: 4_096,
             elapsed_ms: 8_000,

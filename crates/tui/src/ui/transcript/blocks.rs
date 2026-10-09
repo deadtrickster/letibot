@@ -99,7 +99,9 @@ pub(crate) const PLAIN_LINE_MAX: usize = 512;
 /// model, which is exactly why a person should not have to read it.
 ///
 /// What is kept is every fact, one per line: the job, how it ended, what it wrote and what it
-/// ran — `Job j57 exited 0 after 7m06s, wrote 508 bytes: <command>` — and, for a child, the
+/// ran — `Job j57 exited 0 after 7m06s, wrote 508 bytes: <command>`, and
+/// `Job release-build · j57 exited 0 after …` when the agent named the job (the label, which is
+/// the same string the `bash` result and the settlement notice carry) — and, for a child, the
 /// handle and what it said — `Agent s-…-sub-… · done: 3529`. The heading is dropped, because a
 /// line that names its own kind does not need *"a job you backgrounded has ended:"* above it,
 /// and a group of three becomes three lines rather than one heading and a count.
@@ -110,9 +112,10 @@ pub(crate) const PLAIN_LINE_MAX: usize = 512;
 /// this one has an obvious way to do it: a notice whose shape changes under it would have its
 /// new half silently dropped. So every part has to be accounted for — the opening has to be one
 /// of the known ones, every settlement line has to be a bullet (a backticked handle for the two
-/// that are collected by an id, the line itself for the plan's nudge), and the only text that may
-/// follow them is one of the named promises. Anything else returns `None` and the row is drawn
-/// raw, exactly as before this existed.
+/// that are collected by an id — and the handle is the whole span between the backticks, which
+/// for a named job is `release-build · j57` and not one word of it — the line itself for the
+/// plan's nudge), and the only text that may follow them is one of the named promises. Anything
+/// else returns `None` and the row is drawn raw, exactly as before this existed.
 /// The failure of a future change here is then *"the notices got long again"*, which is visible,
 /// rather than *"a notice lost a line"*, which is not.
 ///
@@ -167,8 +170,16 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
                 settlements += 1;
                 let body = match sep {
                     Some(sep) => {
-                        let (handle, said) = bullet.split_once(' ')?;
-                        let handle = handle.strip_prefix('`')?.strip_suffix('`')?;
+                        // **The handle is everything between the backticks**, not the bullet's
+                        // first word. Since jobs got names it can be `release-build · j65`,
+                        // which has spaces in it — and a `split_once(' ')` reads
+                        // `` `release-build `` as the handle, fails to close its backtick, and
+                        // drops the WHOLE row to raw prose, including the paragraph R7
+                        // addresses to the model. That is the operator's own line, so the fold
+                        // is the last place a name may break something. A child's handle has no
+                        // spaces, so nothing about `[task]` moves.
+                        let (handle, said) = bullet.strip_prefix('`')?.split_once('`')?;
+                        let said = said.strip_prefix(' ')?;
                         // **A child's own task, LOOKED UP rather than parsed.** The notice carries
                         // only what the child answered; what it was asked is on the subagent row,
                         // and a second source for that fact is how the row and the pane come to

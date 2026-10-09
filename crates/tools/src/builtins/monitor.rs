@@ -219,7 +219,7 @@ impl Tool for Monitor {
             // against an id that does not exist — and so the refusal is clause 1's
             // listing rather than a monitor that watches nothing forever.
             let Some(h) = host.job_handle(&jid) else {
-                return super::jobs::unknown_job(host, id);
+                return super::jobs::unknown_job(&host.jobs(), id);
             };
             job_handle = Some(h);
             Watch::Job(jid)

@@ -60,8 +60,15 @@ fn no_process_host(ctx: &InvokeCtx<'_>) -> Invocation {
 }
 
 /// Clause 1 for a job id that is not there: the list, and the nearest.
-pub(crate) fn unknown_job(host: &dyn ProcessHost, asked: &str) -> Invocation {
-    let jobs = host.jobs();
+///
+/// **The table is passed in rather than asked for again**, and that is a fact about the
+/// answer rather than tidiness: this is the listing the caller is told to look in, so it has
+/// to be the table the name was matched against. A second `host.jobs()` is a second table,
+/// and a job that spawned between the two would appear in the refusal as one the caller
+/// could have meant — or worse, vanish from a list that was just used to say it was not
+/// there. It also makes the wording assertable without a cgroup tree, which is why
+/// [`ambiguous_job`] takes the same shape.
+pub(crate) fn unknown_job(jobs: &[JobView], asked: &str) -> Invocation {
     let mut body = if jobs.is_empty() {
         // A denominator of zero. `no such job` over an empty table and `no such
         // job` over a table of twelve are different facts.
@@ -70,7 +77,7 @@ pub(crate) fn unknown_job(host: &dyn ProcessHost, asked: &str) -> Invocation {
             .to_string()
     } else {
         let mut s = format!("this session has {} job(s):\n", jobs.len());
-        for j in &jobs {
+        for j in jobs {
             s.push_str(&format!(
                 "  {} — {} — {}\n",
                 j.label(),
@@ -146,8 +153,8 @@ fn resolve_job(host: &dyn ProcessHost, asked: &str) -> Result<JobView, Invocatio
     let jobs = host.jobs();
     match pick_job(&jobs, asked) {
         Picked::One(i) => Ok(jobs[i].clone()),
-        Picked::Unknown => Err(unknown_job(host, asked)),
-        Picked::Ambiguous(ids) => Err(ambiguous_job(host, asked, &ids)),
+        Picked::Unknown => Err(unknown_job(&jobs, asked)),
+        Picked::Ambiguous(ids) => Err(ambiguous_job(&jobs, asked, &ids)),
     }
 }
 
@@ -158,8 +165,14 @@ fn resolve_job(host: &dyn ProcessHost, asked: &str) -> Result<JobView, Invocatio
 /// can still hand out two. Guessing which was meant would act on a job the caller did not
 /// name, which is the one thing a handle exists to prevent; the ids are listed so the next
 /// call can say which.
-fn ambiguous_job(host: &dyn ProcessHost, asked: &str, ids: &[JobId]) -> Invocation {
-    let jobs = host.jobs();
+///
+/// **It names the job the way it was ASKED FOR**, and that is the rule for every refusal here
+/// rather than a wording choice: the caller wrote `tests`, so `tests` is what the answer is
+/// about — `release-build · j65` is a *result's* way of naming a job, and a refusal that
+/// answered with a label would be telling the caller about a string it never used. The rows
+/// beneath it are drawn by [`JobView::label`], because there the question is which job is
+/// which.
+fn ambiguous_job(jobs: &[JobView], asked: &str, ids: &[JobId]) -> Invocation {
     let lines: String = ids
         .iter()
         .filter_map(|id| jobs.iter().find(|j| &j.id == id))
@@ -515,6 +528,11 @@ impl Tool for JobOutput {
             Err(inv) => return inv,
         };
         let jid = view.id.clone();
+        // **The name every sentence about this job uses**, once, so the branches below cannot
+        // drift: `release-build · j65` when the agent named it, the bare id when nobody did
+        // ([`JobView::label`]). The sentences that tell the caller which ARGUMENT to pass keep
+        // the bare id — a label is what a reader sees, and only half of it resolves.
+        let label = view.label();
         let from = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
         let limit = args
             .get("limit")
@@ -526,7 +544,7 @@ impl Tool for JobOutput {
             Ok(s) => s,
             Err(e) => return Invocation::failed(e.to_string(), String::new()),
         };
-        let denominator = slice.denominator(&jid);
+        let denominator = slice.denominator(&jid, &label);
 
         // A job that has written nothing is not an empty answer about its output —
         // it is a job that has written nothing, and whether it is still running
@@ -548,13 +566,13 @@ impl Tool for JobOutput {
             // The daemon knows the command, so this needs nothing new on any wire.
             if let Some(path) = crate::builtins::output_redirect_path(&view.command) {
                 return Invocation::abstained(
-                    format!("`{id}`'s output goes to `{path}`, not to its window"),
+                    format!("`{label}`'s output goes to `{path}`, not to its window"),
                     format!(
-                        "`{id}` was started with its stdout redirected to `{path}`, so the \
+                        "`{label}` was started with its stdout redirected to `{path}`, so the \
                          job's capture is empty by construction — this is not a job that \
                          wrote nothing and not a window that has not filled yet. Read the \
                          file with `read`, or `tail -n` it with `bash`.\n\n**You are woken \
-                         when `{id}` ends** — that never depended on the capture — so do not \
+                         when `{label}` ends** — that never depended on the capture — so do not \
                          poll for it with a `sleep` or a loop.\n\ncommand: {}\n",
                         clip(&view.command, 200),
                     ),
@@ -562,7 +580,7 @@ impl Tool for JobOutput {
             }
             let why = if view.state.is_running() {
                 format!(
-                    "`{id}` is still running ({} elapsed) and has written nothing \
+                    "`{label}` is still running ({} elapsed) and has written nothing \
                      yet. That is not evidence that it will not — but there is nothing \
                      to do here: when it ends, its completion reaches you on its own, \
                      with how it ended and where its output is. `job_wait` with \
@@ -572,16 +590,16 @@ impl Tool for JobOutput {
                 )
             } else if view.state.never_ran() {
                 format!(
-                    "`{id}` never ran — {} — so there is no output and nothing to read: \
+                    "`{label}` never ran — {} — so there is no output and nothing to read: \
                      not an empty result, an absent run. The command was not started at \
                      all, so nothing here is a measurement of what it would have done.",
                     view.state.word()
                 )
             } else {
-                format!("`{id}` {} and wrote nothing at all.", view.state.word())
+                format!("`{label}` {} and wrote nothing at all.", view.state.word())
             };
             return Invocation::abstained(
-                format!("`{id}` has produced no output"),
+                format!("`{label}` has produced no output"),
                 format!("{why}\n\ncommand: {}\n", clip(&view.command, 200)),
             );
         }
@@ -593,7 +611,7 @@ impl Tool for JobOutput {
             denominator,
             if view.state.is_running() {
                 format!(
-                    "`{id}` is still running; this window is what it had written \
+                    "`{label}` is still running; this window is what it had written \
                      when it was read."
                 )
             } else {
@@ -686,12 +704,17 @@ fn wait_on_job(
         Err(inv) => return inv,
     };
     let jid = before.id.clone();
+    // **The name every sentence about this job uses**, once, so no branch below can drift:
+    // `release-build · j65` when the agent named it, the bare id when nobody did
+    // ([`JobView::label`]). The lines that tell the caller which ARGUMENT to pass keep the
+    // bare id — a label is what a reader sees, and only half of it resolves.
+    let label = before.label();
     // Presence, before absence. A job that already finished is not a wait that
     // succeeded; it is a wait there was nothing to do, and saying so keeps the two
     // apart.
     if !before.state.is_running() {
         return Invocation::ok(format!(
-            "`{id}` had already {} before this wait began — {} elapsed, {} bytes of \
+            "`{label}` had already {} before this wait began — {} elapsed, {} bytes of \
              output. Nothing was waited for. Read it with `job_output`.",
             before.state.word(),
             secs(before.elapsed),
@@ -728,7 +751,7 @@ fn wait_on_job(
     // whose answer was already in flight — the exact defect the paragraph below describes.
     if ctx.completion_delivered(&jid.0) {
         return Invocation::ok(format!(
-            "nothing to wait for: `{id}`'s completion reaches you on its own when it \
+            "nothing to wait for: `{label}`'s completion reaches you on its own when it \
              ends — the daemon is already watching it and will hand you the result \
              unprompted, as a turn of its own. Waiting here would hold the floor for \
              a deadline while the answer you want is already in flight.\n  command: \
@@ -740,7 +763,7 @@ fn wait_on_job(
     }
 
     ctx.progress(format!(
-        "waiting on `{id}`: {} bytes so far, deadline {}",
+        "waiting on `{label}`: {} bytes so far, deadline {}",
         before.produced,
         secs(timeout)
     ));
@@ -766,7 +789,7 @@ fn wait_on_job(
         Ok(None) => {
             let now = host.job(&jid);
             return Invocation::ok(format!(
-                "the operator interrupted this wait — `{id}` is still running and was \
+                "the operator interrupted this wait — `{label}` is still running and was \
                  NOT touched.\n  command: {}\n  output:  {} bytes so far — read it with \
                  `job_output` job=\"{id}\"\n\nThey have something to say; read it before \
                  waiting again.",
@@ -779,7 +802,7 @@ fn wait_on_job(
     let after = host.job(&jid);
     match waited {
         Waited::Happened { state, took } => Invocation::ok(format!(
-            "`{id}` {} after {}.\n  command: {}\n  output:  {} bytes — read it with \
+            "`{label}` {} after {}.\n  command: {}\n  output:  {} bytes — read it with \
              `job_output` job=\"{id}\"",
             state.map(|s| s.word()).unwrap_or_default(),
             secs(took),
@@ -796,7 +819,7 @@ fn wait_on_job(
         } => Invocation {
             outcome: letibot_transcript::ToolOutcome::Timeout,
             payload: format!(
-                "`{id}` is STILL RUNNING after {}. This is not a failure and it is \
+                "`{label}` is STILL RUNNING after {}. This is not a failure and it is \
                  not a completion.\n  command: {}\n  produced: {produced} bytes so \
                  far\n  last wrote: {}\n\nIt was not killed. Wait again with a longer \
                  `timeout_ms`, read what it has with `job_output`, or stop it with \
@@ -814,7 +837,7 @@ fn wait_on_job(
             media: None,
         },
         Waited::NeverStarted { .. } => Invocation::failed(
-            format!("`{id}` was running a moment ago and the wait could not observe it"),
+            format!("`{label}` was running a moment ago and the wait could not observe it"),
             "this is a harness defect rather than an answer about the job.".to_string(),
         ),
     }
@@ -1018,6 +1041,12 @@ impl Tool for JobKill {
         // only identification is a `/proc` read is a record that reads `[sh] (no
         // command line)` for a process caught between fork and exec.
         let mut asked_for: Option<String> = None;
+        // **And WHICH JOB this was, in the same spelling every other sentence uses** —
+        // `release-build · j65`, or the bare id when nobody named it ([`JobView::label`]).
+        // The reaping record below names the *cgroup* (`session.job-j57`), which is the thing
+        // that was killed and the right thing for a scope kill; this is the answer to the
+        // question a person actually has, which is *which of these forty jobs was that*.
+        let mut killed: Option<String> = None;
         let reaping = match (job, scope) {
             (Some(id), _) => {
                 // **The id or the name the agent stated** — see [`resolve_job`].
@@ -1026,6 +1055,7 @@ impl Tool for JobKill {
                     Err(inv) => return inv,
                 };
                 asked_for = Some(view.command.clone());
+                killed = Some(view.label());
                 host.kill_job(&view.id)
             }
             (None, Some(name)) => {
@@ -1053,6 +1083,9 @@ impl Tool for JobKill {
         // The record, verbatim, in the result. Not a "killed" boolean: the reader
         // has to be able to tell an empty scope from a reaper that did nothing.
         let mut body = format!("{}\n\n", r.summary());
+        if let Some(job) = &killed {
+            body.push_str(&format!("the job was: {job}\n"));
+        }
         if let Some(cmd) = &asked_for {
             body.push_str(&format!("the command was: {}\n", clip(cmd, 200)));
         }
@@ -1300,6 +1333,54 @@ mod tests {
         // The way out the refusal names is still unambiguous.
         assert!(matches!(pick_job(&table, "j1"), Picked::One(0)));
         assert!(matches!(pick_job(&table, "j2"), Picked::One(1)));
+    }
+
+    /// **A refusal names the job the way it was ASKED FOR, and this is the test for it.**
+    ///
+    /// A name that fits two jobs is refused rather than guessed at, and the refusal has to say
+    /// WHICH name it refused: a caller that wrote `tests` and is answered with `release-build ·
+    /// j1` has been told about a string it never wrote. So the refusal keeps the asked spelling
+    /// — [`ambiguous_job`]'s own rule — while the rows beneath it, which answer *which job is
+    /// which*, are drawn by [`JobView::label`]. The two halves are asserted together because
+    /// the point is the difference between them.
+    #[test]
+    fn a_refusal_names_the_name_it_refused_and_the_rows_beneath_it_are_labelled() {
+        let table = vec![
+            view("j1", Some("tests")),
+            view("j2", Some("tests")),
+            // A third, so the listing is not only the pair that collided.
+            view("j3", Some("release-build")),
+        ];
+        let ids = match pick_job(&table, "tests") {
+            Picked::Ambiguous(ids) => ids,
+            _ => panic!("`tests` fits two jobs and must not resolve"),
+        };
+        let refused = ambiguous_job(&table, "tests", &ids);
+        let reason = match &refused.outcome {
+            letibot_transcript::ToolOutcome::Failed { reason } => reason.clone(),
+            other => panic!("an ambiguous name is a refusal: {other:?}"),
+        };
+        assert!(
+            reason.contains("`tests` is the name of 2 jobs"),
+            "the refusal must say which name it refused: {reason}"
+        );
+        assert!(
+            !reason.contains("tests · j1"),
+            "a refusal must not answer with a label the caller never wrote: {reason}"
+        );
+        // The rows beneath it ARE labels: there the question is which job is which, and a
+        // reader who has to pick one needs the name it was given.
+        assert!(
+            refused.payload.contains("tests · j1") && refused.payload.contains("tests · j2"),
+            "the listing must label the jobs it is offering: {}",
+            refused.payload
+        );
+        // And the way out is unchanged: the id, which identifies one job by construction.
+        assert!(
+            refused.payload.contains("Use the id"),
+            "{}",
+            refused.payload
+        );
     }
 
     /// **The default is the ACTIVE jobs, and the count of what it hid is stated** — the operator's

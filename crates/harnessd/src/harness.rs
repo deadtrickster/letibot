@@ -863,6 +863,16 @@ fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> String {
 /// that waiting was the only way to learn a result; see `bash`'s backgrounded result and
 /// `job_output`'s empty-job branch for the strings that did the teaching.
 ///
+/// **And the job is named the way every other sentence names it.** The operator reads this
+/// line in the transcript, and the complaint that put this here was theirs, verbatim:
+/// *"j57 doesnt ringe the bell for me"* — a counter is not a name. So the bullet carries
+/// [`letibot_tools::exec::job_label`]'s spelling, `release-build · j65`, which is the same
+/// string `bash`'s backgrounded result printed when the job was started and the same one
+/// `/job` draws; a job nobody named is still just `j65`, byte for byte, because the label's
+/// fallback IS the id. The name is on the settlement ([`JobCompletion::slug`]) rather than
+/// looked up here, because by the time this runs the job has usually been reaped — the same
+/// reason [`JobCompletion::command`] is carried.
+///
 /// **`mine` is the ownership flag, and it is not a politeness.** `true` is the session that
 /// backgrounded the job — the only one that can read it, since `job_output` asks *this*
 /// session's host. `false` is the level the settlement was handed up to because the session
@@ -896,7 +906,7 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
         };
         s.push_str(&format!(
             "  - `{}` {} after {}, wrote {} bytes: {}{}\n",
-            c.job,
+            letibot_tools::exec::job_label(c.slug.as_deref(), &c.job),
             c.state,
             human_secs(c.elapsed_ms),
             c.produced,
@@ -16248,6 +16258,8 @@ mod tests {
                 owner: "s-me".into(),
                 job: "j7".into(),
                 command: "cargo build --release".into(),
+                // Nobody named this one; the named case is its own test below.
+                slug: None,
                 state: "exited 0".into(),
                 produced: 4096,
                 elapsed_ms: 4_400,
@@ -16267,6 +16279,61 @@ mod tests {
         assert!(text.contains("job_output"), "{text}");
     }
 
+    /// **The name reaches the transcript, and a job nobody named reads exactly as it did.**
+    ///
+    /// The operator's own correction, verbatim: *"yes, change rano, and i was look at the
+    /// transcript actually, not jobs pane"* — their complaint (*"j57 doesnt ringe the bell for
+    /// me"*) was about THIS line, the one a settlement puts in the conversation, and a counter
+    /// is not a name. So the bullet carries [`letibot_tools::exec::job_label`]'s spelling: the
+    /// same string `bash`'s backgrounded result printed when the job was started, and the same
+    /// one `/job` draws.
+    ///
+    /// **And the unnamed half is a regression test rather than a courtesy.** A job nobody named
+    /// must read byte for byte as it did before a name existed — the tree's rule for a defaulted
+    /// field — and it does, because the label's fallback IS the id. The two notices below differ
+    /// in the name and nowhere else, which is what makes that a property instead of a hope.
+    #[test]
+    fn a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged() {
+        let settled = |job: &str, slug: Option<&str>| JobCompletion {
+            kind: BackgroundKind::Job,
+            owner: "s-me".into(),
+            job: job.into(),
+            command: "cargo test".into(),
+            slug: slug.map(str::to_string),
+            state: "exited 0".into(),
+            produced: 1_030,
+            elapsed_ms: 54_900,
+            detail: String::new(),
+        };
+
+        let named = completion_notice(&[settled("j65", Some("release-build"))], true);
+        assert!(
+            named.contains(
+                "  - `release-build · j65` exited 0 after 54.9s, wrote 1030 bytes: cargo test\n"
+            ),
+            "the settlement must name the job the way the bash result did: {named}"
+        );
+
+        // **The handed-up variant carries the same name.** One bullet builder, so this is the
+        // same sentence under the other heading — and the owner is still named beside it.
+        let handed = completion_notice(&[settled("j65", Some("release-build"))], false);
+        assert!(
+            handed.contains("`release-build · j65` exited 0")
+                && handed.contains("started by `s-me`"),
+            "{handed}"
+        );
+
+        let bare = completion_notice(&[settled("j65", None)], true);
+        assert!(
+            bare.contains("  - `j65` exited 0 after 54.9s, wrote 1030 bytes: cargo test\n"),
+            "{bare}"
+        );
+        // **The name is the only difference.** Strip it from the named notice and what is left
+        // is the unnamed one, byte for byte — so "nothing regresses for those who do not use it"
+        // is asserted rather than argued.
+        assert_eq!(named.replace("release-build · ", ""), bare);
+    }
+
     /// A job whose view was already reaped still produces a usable notice: the command
     /// is the one field the durable settlement does not carry, so it is the one that can
     /// be missing, and the notice says so rather than inventing one.
@@ -16278,6 +16345,10 @@ mod tests {
                 owner: "s-me".into(),
                 job: "j9".into(),
                 command: String::new(),
+                // **And the name is gone with it.** A reaped job has no view left to read a
+                // slug off, so this is the other field that can be missing — and the notice
+                // draws the id, which is the label's own fallback rather than a second rule.
+                slug: None,
                 state: "gone".into(),
                 produced: 0,
                 elapsed_ms: 0,
@@ -16309,6 +16380,8 @@ mod tests {
             job: "s-1-sub-1".into(),
             // A subagent runs no command, and the field must not quietly hold an answer.
             command: String::new(),
+            // Nor does it have a name: a `task` child's handle is its identity.
+            slug: None,
             state: "done".into(),
             produced: 0,
             elapsed_ms: 0,
@@ -16389,6 +16462,7 @@ mod tests {
             owner: "s-me".into(),
             job: id.into(),
             command: "cargo test".into(),
+            slug: None,
             state: "exited 0".into(),
             produced: 12,
             elapsed_ms: 900,
@@ -16399,6 +16473,7 @@ mod tests {
             owner: "s-me".into(),
             job: id.into(),
             command: String::new(),
+            slug: None,
             state: "done".into(),
             produced: 0,
             elapsed_ms: 0,
@@ -16459,6 +16534,7 @@ mod tests {
             owner: "s-child".into(),
             job: "j17".into(),
             command: "sleep 25; echo done".into(),
+            slug: None,
             state: "exited 0".into(),
             produced: 5,
             elapsed_ms: 25_000,
@@ -16528,6 +16604,7 @@ mod tests {
             owner: "s-child".into(),
             job: "s-child-sub-1".into(),
             command: String::new(),
+            slug: None,
             state: "done".into(),
             produced: 0,
             elapsed_ms: 0,

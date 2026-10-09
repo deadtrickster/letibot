@@ -748,3 +748,81 @@ fn job_output_on_a_redirected_job_names_the_file_instead_of_an_empty_window() {
     );
     let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
 }
+
+// ------------------------------------------------- the name, from end to end
+
+/// **A named job is called by its name everywhere a sentence calls it, and the id still
+/// works everywhere a call needs a handle.**
+///
+/// The operator's correction, verbatim: *"yes, change rano, and i was look at the transcript
+/// actually, not jobs pane"* — the complaint (*"j57 doesnt ringe the bell for me"*) was about
+/// the line they read in the conversation. Two of those lines are here: the `bash` result that
+/// introduces the job and the `job_output` header that reads it back. The settlement notice is
+/// `harnessd`'s (`completion_notice`) and is asserted there; what this pins is that the tool
+/// half of the same rule agrees with it, which is the whole reason the rule is one function.
+///
+/// **And the resolvable half is not lost.** The label is what a reader SEES; the id is what a
+/// call passes, and the result still spells it out in the `name:` line and in every
+/// `job_output` argument it suggests — a label that only half resolves must not be handed to a
+/// caller as though it were a handle.
+#[test]
+fn a_named_job_is_called_by_its_name_and_its_id_still_resolves() {
+    let mut h = runner!("named_job_label");
+    let started = h.call(
+        "bash",
+        &serde_json::json!({
+            "command": "sleep 30",
+            "background": true,
+            "slug": "release-build"
+        })
+        .to_string(),
+    );
+    let id = match &started.outcome {
+        ToolOutcome::Backgrounded { handle, .. } => handle.clone(),
+        other => panic!("{other:?}: {}", started.render()),
+    };
+    let body = started.render();
+    // The label, spelled exactly as the settlement notice will spell it.
+    let label = format!("release-build · {id}");
+    assert!(
+        body.contains(&format!("started `{label}` in the background")),
+        "the bash result is where the operator first meets the job: {body}"
+    );
+    // **And the handle it hands over is the one that resolves** — the name, and the id beside it.
+    assert!(
+        body.contains(&format!(
+            "`job_output`, `job_kill` and `job_wait` take this or `{id}`"
+        )),
+        "the resolvable handles must be spelled out, because the label is not one: {body}"
+    );
+
+    // Read back by the NAME the agent stated...
+    let by_name = h.call(
+        "job_output",
+        &serde_json::json!({"job": "release-build"}).to_string(),
+    );
+    let named = by_name.render();
+    assert!(
+        named.contains(&format!("`{label}` has produced no output")),
+        "a result names the job by its label, whoever asked by whatever handle: {named}"
+    );
+    // **And the argument it suggests is a handle, not the label.** It echoes what the caller
+    // wrote — here the name, which resolves — rather than `release-build · j10`, which does not.
+    assert!(
+        named.contains("job=\"release-build\"") && !named.contains(&format!("job=\"{label}\"")),
+        "the suggested argument must be the resolvable one: {named}"
+    );
+
+    // ...and by the id, with the same label in the answer.
+    let by_id = h.call(
+        "job_output",
+        &serde_json::json!({"job": id.clone()}).to_string(),
+    );
+    assert!(
+        by_id.render().contains(&format!("`{label}`")),
+        "the same job, the same name, whichever handle was written: {}",
+        by_id.render()
+    );
+
+    let _ = h.call("job_kill", &serde_json::json!({"job": id}).to_string());
+}
