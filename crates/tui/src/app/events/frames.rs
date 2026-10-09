@@ -120,6 +120,22 @@ impl App {
             // spilled to a file so no cap on the pane is a cap on the record.
             ServerFrame::Settings { rows } => {
                 self.settings = rows;
+                // **The stood-down compaction, for a head that attached AFTER the
+                // guard fired.** The warning arm is the live half; this is the
+                // durable one, read whenever settings arrive (attach, `/config`,
+                // `/models`, a session switch). Keyed on the `off —` spelling
+                // rather than bare `off`, because the daemon writes `off — …`
+                // only for the guard's finding and a `--no-auto-compact` the
+                // operator typed is not news to them — and `on` CLEARS it, so a
+                // switch to a session the guard never fired on takes the line
+                // away rather than leaving stale state above the composer.
+                self.auto_compact_off = self.settings.iter().find_map(|r| {
+                    (r.key == "auto-compact").then(|| {
+                        r.value
+                            .strip_prefix("off —")
+                            .map(|why| format!("auto-compaction is off: {}", why.trim()))
+                    })?
+                });
                 // Stamped, so the header can tell whether a turn has named a model
                 // since. See `model_from_settings_at`.
                 self.model_from_settings_at = self.seq;

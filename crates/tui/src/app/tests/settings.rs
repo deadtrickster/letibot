@@ -901,3 +901,69 @@ fn down_keeps_the_config_cursor_in_view_and_wraps_to_the_first_row() {
     assert_eq!(a.config_sel, n - 1);
     assert!(a.screen(100, 16).join("\n").contains('▸'));
 }
+
+/// **The stood-down compaction arrives on `Settings`, and only in the guard's
+/// own spelling.**
+///
+/// A head that attaches AFTER the no-progress guard fired never saw the
+/// warning — this is the durable half of the channel, read whenever settings
+/// arrive. The key is the `off —` prefix the daemon writes only for the
+/// guard's finding: a bare `off` is the operator's own `--no-auto-compact`,
+/// which is not news to them, and `on` takes the line away so a switch to a
+/// session the guard never fired on does not leave stale state above the
+/// composer. Measured on the wedge that made the line necessary
+/// (2026-10-09): the guard's fact lived in memory, a restart cleared it, and
+/// nothing anywhere said the session had stopped tidying itself.
+#[test]
+fn the_stood_down_row_sets_and_clears_the_resident_line() {
+    use letibot_sessionlog::protocol::SettingRow;
+    let mut a = app();
+    let stood_row = |value: &str| SettingRow {
+        key: "auto-compact".into(),
+        value: value.into(),
+        source: String::new(),
+        editable: String::new(),
+        choices: Vec::new(),
+        tools: Vec::new(),
+    };
+    // The guard's finding, as the daemon renders it: the `off —` spelling,
+    // with the pair.
+    a.apply(ServerFrame::Settings {
+        rows: vec![stood_row(
+            "off — the no-progress guard stood it down: compacted 1849499 to 1530411 \
+             tokens and still no room for the next turn",
+        )],
+    });
+    let line = a
+        .auto_compact_off
+        .as_deref()
+        .expect("the row set the state");
+    assert!(
+        line.contains("no room"),
+        "the line carries the daemon's own why, not a paraphrase: {line}"
+    );
+    // A bare `off` — the operator's own flag — is not the guard's finding and
+    // must not draw the line.
+    a.apply(ServerFrame::Settings {
+        rows: vec![stood_row("off")],
+    });
+    assert!(
+        a.auto_compact_off.is_none(),
+        "an off the operator typed is not re-announced to them"
+    );
+    // And `on` clears it: the line is a state, and states end.
+    a.apply(ServerFrame::Settings {
+        rows: vec![stood_row(
+            "off — the no-progress guard stood it down: compacted 1849499 to 1530411 \
+             tokens and still no room for the next turn",
+        )],
+    });
+    assert!(a.auto_compact_off.is_some());
+    a.apply(ServerFrame::Settings {
+        rows: vec![stood_row("on")],
+    });
+    assert!(
+        a.auto_compact_off.is_none(),
+        "a session the guard never fired on takes the line away"
+    );
+}

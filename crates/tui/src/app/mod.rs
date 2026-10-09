@@ -1400,6 +1400,21 @@ pub struct App {
     /// had not changed (2026-09-20). Nothing here can be confused with the session's
     /// figures however alike they look, because nothing else writes this field.
     pub(crate) compacting: Option<CompactionLine>,
+    /// **Pre-emptive compaction is OFF for this session, and why** — the
+    /// no-progress guard's finding, as the daemon rendered it on the
+    /// `auto-compact` settings row or in its `auto_compact_no_progress`
+    /// warning. `None` is the ordinary state and draws nothing.
+    ///
+    /// A resident line's state, for `link_line`'s reason: it is true until it is
+    /// not, and a note anchored in the scrollback would be saying nothing about
+    /// NOW. Two channels feed it because two moments matter — the WARNING while
+    /// this head is attached to see it happen, and the SETTINGS row when a head
+    /// attaches after the fact (a head that never saw the warning must not draw
+    /// a blank screen about a fact the daemon has held for a week). The row is
+    /// keyed on the `off —` spelling the daemon writes ONLY for the guard's
+    /// finding, so a `--no-auto-compact` the operator typed themselves is not
+    /// re-announced to them on every frame.
+    pub(crate) auto_compact_off: Option<String>,
 }
 
 /// **The two words an echo can carry** (R16). Constants because both the renderer and
@@ -1642,6 +1657,7 @@ impl App {
             bulk: None,
             filling: None,
             compacting: None,
+            auto_compact_off: None,
             bye: None,
             daemon_pid: None,
             unconfirmed: Vec::new(),

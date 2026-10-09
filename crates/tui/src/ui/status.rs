@@ -69,6 +69,37 @@ impl App {
         row_strings(&facts::warning(&said, w), self.cfg.palette())
     }
 
+    /// **The line a stood-down auto-compaction draws**, above the composer with
+    /// the link and lock lines.
+    ///
+    /// A resident line for [`App::link_line`]'s reason — it is a *state*, true
+    /// until the session is replaced or the window is raised, and the warning
+    /// that announced it scrolls away with the conversation. This is the defect
+    /// the line exists for, measured 2026-10-09 on `s-1789919514688401228`: the
+    /// no-progress guard switched that session's automatic compaction off in
+    /// memory, nothing durable held the fact, and the operator's only record of
+    /// it was one warning line that had scrolled past — while thirty provider
+    /// refusals piled up behind a session that would not tidy itself and could
+    /// not say why.
+    ///
+    /// The sentence keeps the two doors apart, because the daemon's recovery
+    /// now does: PRE-EMPTIVE tidying is off, a REFUSED turn is still compacted
+    /// under duress, and `/compact` is always by hand. A line that said only
+    /// "compaction is off" would be telling the operator less than the daemon
+    /// knows.
+    pub(crate) fn compact_off_line(&self, w: usize) -> Vec<String> {
+        let Some(said) = &self.auto_compact_off else {
+            return Vec::new();
+        };
+        let said = format!(
+            "{said}. The session is no longer tidied pre-emptively at the wall; a \
+             turn the provider refuses for length is still compacted, and `/compact` \
+             does it by hand. A fresh session, or a larger --context-window, is the \
+             way past a summary that cannot shrink."
+        );
+        row_strings(&facts::warning(&said, w), self.cfg.palette())
+    }
+
     /// **The line a head draws while it waits for a daemon it asked to stop** (R30).
     ///
     /// A resident line and not a note, for `link_line`'s reason: it is a state, true until
@@ -202,6 +233,17 @@ impl App {
                 "Every head on this session sees the same stream from its own \
                  read mark. Closing one does not stop the turn.",
             );
+        }
+        // **A stood-down auto-compaction is a state, not an event** — which is
+        // why it is here beside `session` and `head` rather than counted with
+        // the diagnostics below. `/status` is the whole-set read (§13.2b), and
+        // "this session will not tidy itself at the wall, and here is the pair
+        // that decided it" is the one fact a person diagnosing a session that
+        // stopped compacting needs first. Absent means the guard has not
+        // fired — which is not drawn, because §13.2b is about fields whose
+        // absence is ambiguous and this one's is not.
+        if let Some(said) = &self.auto_compact_off {
+            row("auto-compact", "off".into(), said);
         }
         row(
             "seq",
