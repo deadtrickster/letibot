@@ -341,6 +341,26 @@ impl From<letibot_turn::EngineError> for HarnessError {
     }
 }
 
+/// **Which question a compaction door is answering.**
+///
+/// Two questions share `Config::at_the_wall`'s arithmetic and differ in exactly
+/// one gate, which is why they are one body with a parameter
+/// (`Harness::compact_at_the_wall`) rather than two functions with copied
+/// thresholds — a copy is the drift this tree deletes:
+///
+/// * [`WallWhy::Tidy`] — *would the next turn not fit, so should something be
+///   tidied first?* `auto_compact` answers it, and the no-progress guard stands
+///   the flag down precisely to stop this door compacting once per turn for ever.
+/// * [`WallWhy::Refused`] — *a turn was just refused for context length, is there
+///   a way forward?* The refusal is the evidence, so there is no threshold to
+///   re-check and no flag to read: the provider measured the prompt against the
+///   real window and said no.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WallWhy {
+    Tidy,
+    Refused,
+}
+
 /// What one user turn produced.
 #[derive(Debug, Clone)]
 pub struct Reply {
@@ -1263,6 +1283,14 @@ pub struct Harness {
     /// True only while [`Harness::compact`] is running its summary turn. See the
     /// context-wall check in `run_rounds` for why that turn must be exempt.
     compacting: bool,
+    /// **The refused door's rate limit** — set when a compaction FORCED by a
+    /// context-length refusal completed and the session is still at the wall,
+    /// which is this history saying no fold can shrink it. One summary turn per
+    /// daemon lifetime is the budget; the pre-emptive flag used to carry this and
+    /// could not, because it also has to stand down while the forced door still
+    /// has work to do (2026-10-09's wedge, exactly). See
+    /// [`Harness::compact_because_refused`].
+    forced_gave_up: bool,
     /// How this daemon RENDERS a prompt: the dialect's template and the tool-schema
     /// serialiser. Kept so a re-seat can build a new stable prefix the same way
     /// `open` built the first one — one renderer, so the prefix a re-seat writes
@@ -3573,6 +3601,7 @@ impl Harness {
             last_turn_id: String::new(),
             resumed: resume,
             compacting: false,
+            forced_gave_up: false,
             render: parts.wiring.clone(),
             supplies,
             open_notes: notes,
@@ -6358,7 +6387,13 @@ impl Harness {
         // window.
         let mut walls = 0usize;
         while matches!(out, Err(HarnessError::ContextWall { .. })) {
-            let attempted = self.compact_if_at_the_wall();
+            // **The REFUSED door, not the pre-emptive one** — the wall this loop
+            // answers is one the engine or the provider already raised, and
+            // `compact_if_at_the_wall` would refuse to act exactly when the
+            // no-progress guard has stood the flag down, which is the state this
+            // loop exists for (2026-10-09's child wedge had no `Sessions` to
+            // recover it and no door that would).
+            let attempted = self.compact_because_refused();
             if !attempted {
                 // The same contradiction `after_turn` reports: a wall fired and
                 // nothing compacted, so WHICH number disagreed is said rather than
@@ -6411,8 +6446,46 @@ impl Harness {
     /// ATTEMPTED"* needs that to be a fact rather than a hope, and until this
     /// existed a child's was a promise nothing behind it kept.
     fn compact_if_at_the_wall(&mut self) -> bool {
+        self.compact_at_the_wall(WallWhy::Tidy)
+    }
+
+    /// **The other question: a turn was just REFUSED for context length — is
+    /// there a way forward?** Same body as [`Self::compact_if_at_the_wall`], and
+    /// the difference is one gate: this one does not read `auto_compact`, because
+    /// the no-progress guard turns that flag off **without freeing anything**, and
+    /// a refusal recovery gated on it would refuse the only lever it has.
+    ///
+    /// MEASURED 2026-10-09, session `s-1789919514688401228`: one automatic
+    /// compaction made no room (1,849,499 ledger tokens in, still over a
+    /// 1,000,000-token plan), the guard switched compaction off, and the next
+    /// thirty provider refusals met a recovery that would not act. `plan_overrun`
+    /// — the two-half fold a `Refused` compaction reaches through `compact()` —
+    /// is the strategy for exactly that state, and it never ran once.
+    ///
+    /// The refusal itself is the evidence, so there is no threshold to re-check:
+    /// the provider measured the prompt against the real window and said no.
+    /// What bounds THIS door is the guard's own answer — a forced compaction
+    /// that still leaves the session at the wall stands the forced door down too
+    /// (`forced_gave_up`, this daemon's lifetime), so a history no fold can shrink
+    /// cannot spend a summary turn per refused turn. That is the rate limit the
+    /// pre-emptive flag used to be, applied to the door it belongs to.
+    fn compact_because_refused(&mut self) -> bool {
+        self.compact_at_the_wall(WallWhy::Refused)
+    }
+
+    /// **One body, two questions.** `should_compact`/`at_the_wall` are the
+    /// decision — the arithmetic is NOT copied — and `why` is the only thing the
+    /// two doors disagree on.
+    fn compact_at_the_wall(&mut self, why: WallWhy) -> bool {
         let resident = self.session.ledger.len() as u64;
-        if !self.cfg.should_compact(resident) {
+        // The one gate the two questions differ by: the PRE-EMPTIVE door reads
+        // `auto_compact` (and the no-progress guard's whole purpose lives there);
+        // the REFUSED door cannot, and reads its own latch instead.
+        let due = match why {
+            WallWhy::Tidy => self.cfg.should_compact(resident),
+            WallWhy::Refused => !self.forced_gave_up,
+        };
+        if !due {
             return false;
         }
         // **Shown in the operator's units, decided in the ledger's** — the same rule
@@ -6425,6 +6498,16 @@ impl Harness {
                 .shown_tokens(self.cfg.planning_window().unwrap_or(0)),
             self.cfg.shown_tokens(self.cfg.headroom()),
         );
+        // A refusal-answer names what sent it, because the operator watching a
+        // session that "compacts automatically" deserves to know why THIS one
+        // compacted with the automatic compaction stood down.
+        let because = match why {
+            WallWhy::Tidy => String::new(),
+            WallWhy::Refused => " The turn before this one was refused for length, so this \\
+                                 compaction is under duress: the refusal is the wall either \\
+                                 way."
+                .into(),
+        };
         // **And it names the session, for the reason the sibling's line does**: the
         // log is one file every daemon appends to, and a child's compaction lines
         // land between its parent's work with nothing to say whose they were.
@@ -6439,7 +6522,7 @@ impl Harness {
                 "{r} of {w} tokens resident, leaving less than the {h} the next turn \
                  needs — compacting now, as one more message so the prefix the server \
                  already holds is reused. This is the wall, not a judgement about the \
-                 conversation."
+                 conversation.{because}"
             ),
             compaction: None,
         });
@@ -6464,17 +6547,42 @@ impl Harness {
                 // turn each time and never lets the conversation continue. Turning
                 // `auto_compact` off also stands down the round-loop wall check for
                 // this session, which is the same trade the daemon's sessions make.
-                if self.cfg.should_compact(after) {
-                    self.cfg.auto_compact = false;
+                //
+                // `at_the_wall`, NOT `should_compact`, because the flag is already
+                // off on the refused door that can reach this arm — reading the
+                // guard through the flag would make it unreachable from exactly the
+                // door the wedge of 2026-10-09 came through. On the pre-emptive
+                // door the two spellings agree (the flag is on, or it would not
+                // have run).
+                if self.cfg.at_the_wall(after) {
+                    // The latch is the REFUSED door's rate limit, and it is the
+                    // refused door's OWN finding or nothing: one forced fold that
+                    // gained nothing says this history will not shrink. A
+                    // PRE-EMPTIVE fold that gained nothing does NOT latch it —
+                    // the ordinary fold keeps a verbatim tail and the refused
+                    // door's `Cut` fold (both halves summarised) is the more
+                    // aggressive strategy that may still cure exactly the case
+                    // the ordinary one failed on. Latching on the tidy door's
+                    // failure would rebuild the wedge one door along.
+                    if matches!(why, WallWhy::Refused) {
+                        self.forced_gave_up = true;
+                    }
+                    self.stand_down_auto_compact(resident, after);
                     self.hub.publish(SessionEvent::Warning {
                         code: "auto_compact_no_progress".into(),
                         detail: format!(
                             "compacted from {r} to {} tokens and that is STILL within \
                              {h} of the {w} window, so automatic compaction is now off \
-                             for this session rather than looping once per turn. The \
+                             for this session rather than looping once per turn{}. The \
                              summary itself is near the wall: start a fresh session, or \
                              raise --context-window if the server really has more.",
-                            self.cfg.shown_tokens(after)
+                            self.cfg.shown_tokens(after),
+                            match why {
+                                WallWhy::Tidy => "",
+                                WallWhy::Refused =>
+                                    " — and a refusal will not force \
+                                 another: this fold could not shrink the history",
+                            }
                         ),
                         compaction: None,
                     });
@@ -8824,6 +8932,87 @@ impl Harness {
                  daemon's own default answers"
             )),
         }
+    }
+
+    /// **THE GUARD'S ONE ACT, IN ONE PLACE** — switch this session's pre-emptive
+    /// compaction off, remember why, put the why where a restart and a head can
+    /// read it.
+    ///
+    /// Called by both no-progress guards (`Sessions::compact_at_wall`'s and this
+    /// file's own `compact_if_at_the_wall` sibling) so the two doors cannot stand
+    /// the same session down differently. Three things happen together or not at
+    /// all, because a reader who finds one without the others has been lied to:
+    ///
+    /// * `auto_compact = false` — the PRE-EMPTIVE door stands down. A wall the
+    ///   provider already refused is still compacted for, through
+    ///   [`Self::compact_because_refused`]; standing this flag down never stood
+    ///   THAT up (2026-10-09's wedge was the two sharing one switch).
+    /// * `auto_compact_stood_down = Some((resident, after))` — the pair, on the
+    ///   config, for the settings row and the resident line a head draws.
+    /// * the pair on the session row — the durable half. The guard's old write
+    ///   was `auto_compact = false` in memory, which a restart silently cleared
+    ///   in both directions: the loop it existed to stop came back, and nothing
+    ///   said the session had ever been stood down.
+    ///
+    /// And `publish_settings`, so the row a head reads on its next `Settings` ask
+    /// says `off —` rather than `true` — the pane is where a person looks first.
+    pub fn stand_down_auto_compact(&mut self, resident: u64, after: u64) {
+        self.cfg.auto_compact = false;
+        self.cfg.auto_compact_stood_down = Some((resident, after));
+        if let Some(store) = &self.store
+            && let Err(e) =
+                store.set_auto_compact_stood_down(&self.cfg.session_id, Some((resident, after)))
+        {
+            // Said, not swallowed: the in-memory fact is set and the daemon behaves
+            // correctly for this process; the row is what a restart and a head read,
+            // and a failed write there is a fact the operator can act on (`/compact`
+            // by hand) rather than infer from a silence.
+            eprintln!(
+                "  {}: could not write the stood-down pair to the store: {e}",
+                self.cfg.session_id
+            );
+            self.hub.publish(SessionEvent::Warning {
+                code: "auto_compact_no_progress".into(),
+                detail: format!(
+                    "automatic compaction is now off for this session, and writing THAT \
+                     down failed: {e}. It is off until this daemon stops; `/compact` does it \
+                     by hand."
+                ),
+                compaction: None,
+            });
+        }
+        self.publish_settings();
+    }
+
+    /// **A resume restores the session's stood-down compaction**, from the row the
+    /// guard wrote.
+    ///
+    /// `restore_provider_choice`'s shape, for its reason: without this call the
+    /// row would only be read on the lazy path a head's switch reaches, and the
+    /// one resume everybody types (`--continue`) would come back with the
+    /// pre-emptive compaction re-armed — the guard's finding silently unrecorded,
+    /// which is the loop it existed to stop. Returns the sentence a resume should
+    /// say, or `None` when there was nothing to restore.
+    pub fn restore_auto_compact(&mut self) -> Option<String> {
+        let (resident, after) = self
+            .store
+            .as_ref()
+            .and_then(|s| s.session(&self.cfg.session_id).ok())
+            .flatten()?
+            .auto_compact_stood_down?;
+        // Idempotent: a second caller (a head switching IN to a live session)
+        // finds the flag already down and says nothing.
+        if !self.cfg.auto_compact && self.cfg.auto_compact_stood_down.is_some() {
+            return None;
+        }
+        self.cfg.auto_compact = false;
+        self.cfg.auto_compact_stood_down = Some((resident, after));
+        self.publish_settings();
+        Some(format!(
+            "restored with automatic compaction OFF: a summary that compacted \
+             {resident} to {after} tokens gained no room, and the guard that stopped \
+             the loop is still standing"
+        ))
     }
 }
 

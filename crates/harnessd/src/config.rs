@@ -318,7 +318,32 @@ pub struct Config {
     /// NOT quality — depth was measured not to hurt (1.000 at 60k against 0.829
     /// at zero). So the policy is *compact when you must, as late as possible*,
     /// and this is the "must".
+    ///
+    /// **It gates the PRE-EMPTIVE question only** — *would the next turn fit, so
+    /// should something be tidied first?* ([`Config::should_compact`]). The other
+    /// question, *a turn was just refused for context length, is there a way
+    /// forward?*, is answered through [`Config::at_the_wall`] with this flag
+    /// deliberately absent: the no-progress guard turns this flag off without
+    /// freeing anything, and a refusal that met a stood-down compaction would be
+    /// the wedge of 2026-10-09 (session `s-1789919514688401228`: one compaction,
+    /// then thirty provider 400s in a row, none of them recovered) all over
+    /// again. See `Sessions::compact_because_refused`.
     pub auto_compact: bool,
+    /// **The pair that stood automatic compaction down** — `(resident, after)`,
+    /// both in LEDGER tokens: the conversation's size going into the compaction
+    /// that made no room, and its size coming out still within a headroom of the
+    /// window. `Some` ⟺ the no-progress guard has fired for this session.
+    ///
+    /// Carried on the config because the config is the per-session object that
+    /// survives being handed around (the store row is written from it at
+    /// [`crate::harness::Harness::stand_down_auto_compact`] and read back at
+    /// [`crate::harness::Harness::restore_auto_compact`]), so a daemon that comes
+    /// back after a restart holds the same fact the row does — measured on
+    /// 2026-10-09: the guard's old `auto_compact = false` lived in memory only, so
+    /// the restart was the one thing that cleared it, silently, in both directions.
+    /// Nothing clears it but a fresh session or a raised window: a manual
+    /// `/compact` does not re-arm the automatic one, and never has.
+    pub auto_compact_stood_down: Option<(u64, u64)>,
     /// The GGUF the vocabulary is read from. For a split model, the first shard.
     ///
     /// `None` is a daemon for a cloud provider: its ledger uses the byte vocabulary
@@ -1217,11 +1242,40 @@ impl Config {
         Some(((ledger_tokens as u128 * provider as u128) / ledger as u128) as u64)
     }
 
-    pub fn should_compact(&self, resident_tokens: u64) -> bool {
+    /// **Is the ledger AT THE WALL — within a headroom of the window?**
+    ///
+    /// This is [`Config::should_compact`]'s threshold half, factored out because
+    /// two questions share it and only one of them is the flag's business:
+    ///
+    /// * *would the next turn fit — should something be tidied pre-emptively?* is
+    ///   [`Config::should_compact`], and `auto_compact` answers it. The no-progress
+    ///   guard stands the flag down precisely to stop that door compacting once
+    ///   per turn for ever.
+    /// * *a turn was just refused for context length — is there a way forward?*
+    ///   reads THIS method with the flag deliberately absent, because the guard
+    ///   turns the flag off **without freeing anything** and a refusal recovery
+    ///   gated on it would refuse the only lever it has. MEASURED 2026-10-09,
+    ///   session `s-1789919514688401228`: one automatic compaction made no room,
+    ///   the guard switched compaction off, and the next thirty provider refusals
+    ///   (1,048,624 / 1,049,070 / 1,049,191 tokens against a 1,048,576 limit) met
+    ///   a recovery that would not act — a wedge with no door out.
+    ///
+    /// `false` whenever the window is unknown, for the same reason
+    /// [`Config::should_compact`] says false: not knowing is not a reason to act,
+    /// and an invented number here would compact conversations that had room.
+    pub fn at_the_wall(&self, resident_tokens: u64) -> bool {
         let Some(w) = self.planning_window() else {
             return false;
         };
-        self.auto_compact && resident_tokens + self.headroom() >= w
+        resident_tokens + self.headroom() >= w
+    }
+
+    /// **The PRE-EMPTIVE question: would the next turn not fit, so should
+    /// something be tidied first?** [`Config::auto_compact`]'s own gate, and the
+    /// one the no-progress guard stands down. A refusal that has already happened
+    /// is the other question — see [`Config::at_the_wall`].
+    pub fn should_compact(&self, resident_tokens: u64) -> bool {
+        self.auto_compact && self.at_the_wall(resident_tokens)
     }
 
     /// Would a turn starting at `resident` tokens fit, with the headroom reserved?
@@ -1363,6 +1417,7 @@ impl Config {
             context_window: None,
             media_marker: None,
             auto_compact: true,
+            auto_compact_stood_down: None,
             placement: letibot_tools::builtins::task::Placement::Host,
             vm_args: Vec::new(),
             provider: None,
@@ -1742,7 +1797,33 @@ impl Config {
             "",
             "",
         ));
-        out.push(row("auto-compact", self.auto_compact.to_string(), "", ""));
+        // **The row a stood-down compaction is found by.** The value carries the
+        // pair that turned it off (shown in the operator's units, like every other
+        // number the pane renders) because `off` alone cannot tell the reader
+        // WHICH of the two states it is: a `--no-auto-compact` the operator typed,
+        // or the no-progress guard acting on its own after a summary that gained
+        // no room. One is a choice, the other is a finding, and a head that draws
+        // a resident line for the second must not draw it for the first. The
+        // spelling `off — …` is what the head keys on; see its `auto-compact` arm.
+        out.push(row(
+            "auto-compact",
+            match (self.auto_compact, self.auto_compact_stood_down) {
+                (true, _) => "on".into(),
+                (false, Some((resident, after))) => format!(
+                    "off — the no-progress guard stood it down: compacted {} to {} \
+                     tokens and still no room for the next turn",
+                    self.shown_tokens(resident),
+                    self.shown_tokens(after)
+                ),
+                (false, None) => "off".into(),
+            },
+            if self.auto_compact_stood_down.is_some() {
+                "the no-progress guard, after a compaction that gained no room"
+            } else {
+                ""
+            },
+            "",
+        ));
         out.push(row(
             "effort",
             self.effort.clone().unwrap_or_else(|| "default".into()),

@@ -44,6 +44,15 @@ impl App {
                 if code == "auto_compact_failed" {
                     self.compacting = None;
                 }
+                // **The guard's finding becomes a state this head holds.** The
+                // warning is the live half of the channel — this head was
+                // attached to see the guard fire — and `auto_compact_off` is
+                // what the resident line and `/status` read. The settings row is
+                // the other half, for a head that attaches later; see the
+                // `Settings` arm.
+                if code == "auto_compact_no_progress" {
+                    self.auto_compact_off = Some(format!("auto-compaction is off: {detail}"));
+                }
                 // A slash LISTING opens the pane; a slash sentence stays a note.
                 // The daemon sends both under one code — `detail` is the command
                 // it echoes back, then the reply — so the head splits them by the

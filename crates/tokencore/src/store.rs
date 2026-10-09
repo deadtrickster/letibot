@@ -292,7 +292,14 @@ pub struct ShapelessAdmit {
 /// (R12) — `oracle_reading`, additive, described at its migration arm below. **10** since it
 /// records whether an oracle was consulted and what it answered (R11), and **9** added
 /// `oracle_reply` for the same requirement.
-pub const SCHEMA_VERSION: i64 = 18;
+///
+/// **19** since the session row carries the pair that stood its automatic compaction
+/// down — `auto_compact_resident`/`auto_compact_after`, additive, described at its
+/// migration arm below. The pair is written once, when the no-progress guard fires, and
+/// nothing clears it but a fresh session or a raised window: a reader asking *why does
+/// this session not compact* can only answer it from here once the daemon that decided
+/// it is gone.
+pub const SCHEMA_VERSION: i64 = 19;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -359,7 +366,12 @@ CREATE TABLE IF NOT EXISTS session (
                                      -- bigger conversation and so a wrong ratio in the
                                      -- direction that compacts too late. NULL = no
                                      -- measurement / one that predates this column.
-    context_window INTEGER           -- v14; the window this session plans its compaction against.
+    context_window INTEGER,          -- v14; the window this session plans its compaction against.
+    auto_compact_resident INTEGER,   -- v19; LEDGER tokens going into the compaction that
+                                     -- made no room. NULL = the no-progress guard has
+                                     -- not fired for this session.
+    auto_compact_after INTEGER       -- v19; LEDGER tokens coming out of it, still within
+                                     -- a headroom of the window. NULL with its pair.
                                                                                                                                                                                                                                                                                                                                                                                   );
 
 CREATE TABLE IF NOT EXISTS transcript (
@@ -881,6 +893,26 @@ pub struct StoredSession {
     /// every check that would compact reads `let Some(window) = …` and is skipped, so a
     /// `None` here says the record cannot answer rather than that the session had room.
     pub context_window: Option<u64>,
+    /// **The pair that stood this session's automatic compaction down** —
+    /// `(resident, after)`, both LEDGER tokens — or `None` when the no-progress guard
+    /// has never fired for it.
+    ///
+    /// On the row because the guard's old fact was `auto_compact = false` in the
+    /// daemon's memory: it died with the process, so a restart silently re-armed the
+    /// looping the guard existed to stop — and, worse, the same restart was the ONLY
+    /// thing that cleared it, so a wedged session came back wedged with nothing saying
+    /// why. MEASURED 2026-10-09, session `s-1789919514688401228`: one `compacting:`
+    /// line in the whole log, then thirty provider 400s (1,048,624 tokens against a
+    /// 1,048,576 limit, attributed first to `monitor` and last to `todo check`), none
+    /// of them recovered. The pair says what the guard saw, in the units it decided
+    /// in, so the next daemon — and the operator, on `/status` — read the finding
+    /// rather than inferring it from a silence.
+    ///
+    /// `None` is *the guard has not fired*, which is not the same fact as
+    /// `auto_compact` being on: a `--no-auto-compact` session has the flag off and
+    /// this pair absent, and the two readers that care (the settings row, the
+    /// resident line a head draws) keep them apart on purpose.
+    pub auto_compact_stood_down: Option<(u64, u64)>,
 }
 
 /// **One job's row, as the session store keeps it** — the durable half of the process table.
@@ -1976,6 +2008,32 @@ impl Store {
                  );",
             )?;
         }
+        if from < 19 {
+            // v19: **the pair that stood automatic compaction down** — see
+            // [`StoredSession::auto_compact_stood_down`] for the wedge it answers.
+            //
+            // Two columns rather than one JSON blob, because the pair is two numbers a
+            // reader compares (`did it shrink?`), and a reader comparing them should not
+            // have to parse first. NULL in every existing row, and deliberately not
+            // backfilled: a session that predates v19 never had the guard fire on it, and
+            // *the guard has not fired* is the true state of such a row.
+            //
+            // Idempotent for the same reason v6, v12, v13 and v14 are: a fixture walks a
+            // current store backwards, so the columns can already be here.
+            let has: bool = self
+                .conn
+                .prepare(
+                    "SELECT 1 FROM pragma_table_info('session') WHERE name = 'auto_compact_resident'",
+                )
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn.execute_batch(
+                    "ALTER TABLE session ADD COLUMN auto_compact_resident INTEGER;
+                     ALTER TABLE session ADD COLUMN auto_compact_after INTEGER;",
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -2367,7 +2425,9 @@ impl Store {
                     s.context_cached,
                     s.context_ledger,
                     s.provider_choice,
-                    s.context_window
+                    s.context_window,
+                    s.auto_compact_resident,
+                    s.auto_compact_after
                FROM session s",
         )?;
         let mut out: Vec<StoredSession> = stmt
@@ -2392,6 +2452,15 @@ impl Store {
                     context_ledger: r.get::<_, Option<i64>>(14)?.map(|v| v as u64),
                     provider_choice: r.get(15)?,
                     context_window: r.get::<_, Option<i64>>(16)?.map(|v| v as u64),
+                    auto_compact_stood_down: match (
+                        r.get::<_, Option<i64>>(17)?,
+                        r.get::<_, Option<i64>>(18)?,
+                    ) {
+                        // Half a pair is a store this file never wrote; reading it as
+                        // `Some` would invent the other number, so it reads as no pair.
+                        (Some(resident), Some(after)) => Some((resident as u64, after as u64)),
+                        _ => None,
+                    },
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -2489,6 +2558,27 @@ impl Store {
         let n = self.conn.execute(
             "UPDATE session SET context_window = ?2 WHERE id = ?1",
             params![id, window.map(|w| w as i64)],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("session {id}")));
+        }
+        Ok(())
+    }
+
+    /// **Write the pair that stood automatic compaction down.** See
+    /// [`StoredSession::auto_compact_stood_down`].
+    ///
+    /// A setter of its own for the same reason [`Store::set_window`] has one: the two
+    /// facts have different lifetimes, and folding them into another setter's
+    /// parameter list would say they were written together. This pair is written
+    /// ONCE — when the no-progress guard fires — and `None` clears it for the
+    /// session-naming tests, not for the daemon: nothing in the daemon re-arms a
+    /// guard that has fired, because the finding it recorded does not expire.
+    pub fn set_auto_compact_stood_down(&self, id: &str, pair: Option<(u64, u64)>) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE session SET auto_compact_resident = ?2, auto_compact_after = ?3 \
+             WHERE id = ?1",
+            params![id, pair.map(|(r, _)| r as i64), pair.map(|(_, a)| a as i64)],
         )?;
         if n == 0 {
             return Err(StoreError::NotFound(format!("session {id}")));
@@ -4532,6 +4622,185 @@ mod tests {
         assert!(
             s.set_window("s-window", Some(1)).is_ok(),
             "a store already at the current version still answers a write"
+        );
+    }
+
+    /// **A v18 store gains the stood-down pair** — v19's arm, in the v13
+    /// fixture's shape (additive arms take hand-written DDL; see that test's
+    /// note for why this is the one place hand-written DDL is not drift).
+    ///
+    /// What is asserted is what the arm DOES: the two columns appear, a row
+    /// written before them reads as *the guard has not fired* rather than as a
+    /// guess, and a pair written through the API comes back.
+    #[test]
+    fn a_v18_store_gains_the_stood_down_pair() {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-migrate-v18-{}-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
+        ));
+        let _ = std::fs::remove_file(&path);
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _clean = Clean(path.clone());
+
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE session (
+                     id    TEXT PRIMARY KEY,
+                     title TEXT,
+                     role  TEXT
+                 );
+                 INSERT INTO session (id, title, role) VALUES ('s-stood', 'old', 'coder');
+                 CREATE TABLE schema_version (version INTEGER);
+                 INSERT INTO schema_version (version) VALUES (18);",
+            )
+            .unwrap();
+            // Prove the fixture really is pre-v19, or the arm below is tested
+            // by nothing.
+            assert!(
+                c.query_row("SELECT auto_compact_resident FROM session", [], |r| r
+                    .get::<_, Option<i64>>(0))
+                    .is_err(),
+                "the fixture already has an auto_compact_resident column, so it is not a v18 store"
+            );
+        }
+
+        let s = Store::open(&path).unwrap();
+        let v: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION, "the migration stamped the new version");
+
+        // Both columns are there, and the row that predates them says *the
+        // guard has not fired* — which is not the same fact as `auto_compact`
+        // being on, and is deliberately not backfilled.
+        let (resident, after): (Option<i64>, Option<i64>) = s
+            .connection()
+            .query_row(
+                "SELECT auto_compact_resident, auto_compact_after FROM session \
+                 WHERE id = 's-stood'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((resident, after), (None, None));
+
+        // And the pair is writeable through the API this column exists for.
+        s.set_auto_compact_stood_down("s-stood", Some((1_849_499, 1_850_000)))
+            .unwrap();
+        let (resident, after): (Option<i64>, Option<i64>) = s
+            .connection()
+            .query_row(
+                "SELECT auto_compact_resident, auto_compact_after FROM session \
+                 WHERE id = 's-stood'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((resident, after), (Some(1_849_499), Some(1_850_000)));
+
+        // Reopening is a no-op rather than a second migration.
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert!(
+            s.set_auto_compact_stood_down("s-stood", None).is_ok(),
+            "a store already at the current version still answers a write"
+        );
+    }
+
+    /// **The guard's pair survives the daemon that decided it** — the whole
+    /// point of the columns, and the half nothing could answer before they
+    /// existed.
+    ///
+    /// The guard's old write was `auto_compact = false` in the daemon's
+    /// memory: it died with the process, so a restart silently re-armed the
+    /// looping the guard existed to stop AND silently cleared the one fact
+    /// that explained a session that would not tidy itself. This closes and
+    /// reopens the store, which is the only thing that proves the row is on
+    /// disk rather than in a cache the next daemon would not have.
+    #[test]
+    fn a_stood_down_compaction_survives_the_daemon_that_decided_it() {
+        let dir = std::env::temp_dir().join(format!("letibot-stood-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _clean = Clean(dir.clone());
+        let path = dir.join("sessions.db");
+
+        // The pair at the wedge's own scale: the 2026-10-09 session compacted
+        // 1,849,499 ledger tokens and the summary still stood within a
+        // headroom of the 1,000,000-token plan.
+        {
+            let s = Store::open(&path).unwrap();
+            s.put_session(&SessionRecord {
+                id: "s-wedge".into(),
+                title: Some("the wedged session".into()),
+                model_id: "m".into(),
+                dialect_sha: "sha".into(),
+                workspace_root: "/w".into(),
+                owner: "dead".into(),
+                role: None,
+                approvers: vec![],
+                parent_session_id: None,
+            })
+            .unwrap();
+            s.set_auto_compact_stood_down("s-wedge", Some((1_849_499, 1_530_411)))
+                .unwrap();
+        }
+
+        // The next daemon opens the same file and reads the finding.
+        let s = Store::open(&path).unwrap();
+        let got = s
+            .session("s-wedge")
+            .unwrap()
+            .expect("the row survived the reopen");
+        assert_eq!(
+            got.auto_compact_stood_down,
+            Some((1_849_499, 1_530_411)),
+            "the pair comes back in the units it was taken in — LEDGER tokens, \
+             because that is what the guard decided in"
+        );
+
+        // And a session the guard never fired on stays absent, which is a
+        // different fact from a pair of zeros: `None` is *the guard has not
+        // fired*, and the settings row keeps it apart from `--no-auto-compact`.
+        s.put_session(&SessionRecord {
+            id: "s-fresh".into(),
+            title: None,
+            model_id: "m".into(),
+            dialect_sha: "sha".into(),
+            workspace_root: "/w".into(),
+            owner: "dead".into(),
+            role: None,
+            approvers: vec![],
+            parent_session_id: None,
+        })
+        .unwrap();
+        assert_eq!(
+            s.session("s-fresh")
+                .unwrap()
+                .unwrap()
+                .auto_compact_stood_down,
+            None
         );
     }
 

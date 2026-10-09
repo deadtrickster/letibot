@@ -23,11 +23,14 @@
 //! refusal is bytes on the wire, and the compaction's summary turns are
 //! answered by the canned server the turn crate's tests replay.
 
+use letibot_harnessd::Sessions;
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{Harness, HarnessError};
 use letibot_harnessd::{Dialect, Parts};
 use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::hub::Hub;
+use letibot_sessionlog::registry::Registry;
+use letibot_tokencore::store::{SessionRecord, Store, TodoBy, TodoCondition, TodoItem, TodoStatus};
 
 /// The canned server the turn crate's tests replay, shared by path rather than
 /// copied — a second copy of the wire shape would drift from the first.
@@ -153,6 +156,96 @@ fn a_plain_answer_turn(
     frames
 }
 
+/// **The wedge's own first half**: one round that answers the prompt with a
+/// BATCH of ten `read` calls, exactly the shape that pushes a session past its
+/// wall by ACCUMULATION (the operator's child crossed it on its 207th call;
+/// this fixture crosses it on the first round so the test does not spend ten
+/// turns getting there). The calls end the turn pending, which is what makes
+/// the harness run them and append ~40k tokens of results between rounds.
+fn a_turn_of_ten_reads(vocab: &letibot_tokencore::Vocab, rel: &str) -> Vec<canned::Frame> {
+    let mut round0 = vec![canned::Frame::Progress {
+        total: 30,
+        processed: 30,
+    }];
+    round0.push(canned::Frame::Token {
+        id: THINK_OPEN,
+        text: "",
+    });
+    round0.push(canned::Frame::Token {
+        id: THINK_CLOSE,
+        text: "",
+    });
+    let mut control = 2u64;
+    let mut spoken_ids = 0usize;
+    for offset in (0..10).map(|n| 1 + n * 260) {
+        let call = format!(
+            "\n<function=read>\n<parameter=path>\n{rel}\n</parameter>\n<parameter=offset>\n{offset}\n</parameter>\n<parameter=limit>\n260\n</parameter>\n</function>\n"
+        );
+        let call_ids = ids(vocab, &call);
+        spoken_ids += call_ids.len();
+        control += 2;
+        round0.push(canned::Frame::Token {
+            id: TOOL_CALL_OPEN,
+            text: "<tool_call>",
+        });
+        round0.extend(spoken(vocab, &call_ids));
+        round0.push(canned::Frame::Token {
+            id: TOOL_CALL_CLOSE,
+            text: "</tool_call>",
+        });
+    }
+    round0.push(canned::Frame::Final {
+        stop_type: "eos",
+        // The accumulator counts what was streamed; this must agree exactly or
+        // the turn dies in `CountMismatch` before the wall is ever reached.
+        n_decoded: (spoken_ids as u64) + control,
+        n_prompt: 30,
+        cache_n: 0,
+    });
+    round0
+}
+
+/// The file the ten reads read: 260 numbered lines, ~3950 tokens as `read`
+/// renders them. Ten of those past a 32768-token window is the `Cut` state —
+/// a history that does not fit with any room for a tail, which is exactly the
+/// state `plan_overrun` exists for and the one the wedge never reached.
+fn write_the_big_file(dir: &TempDir) -> String {
+    let big = dir.path().join("big.txt");
+    let mut body = String::new();
+    for i in 0..260 {
+        body.push_str(&format!(
+            "line {i}: the quick brown fox jumps over the lazy dog\n"
+        ));
+    }
+    std::fs::write(&big, body).expect("the file to read is written");
+    big.strip_prefix("/tmp")
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| big.display().to_string())
+}
+
+/// The session row a resumed daemon needs, carrying the guard's stood-down
+/// pair — the state the restart used to lose.
+fn seed_a_stood_down_session(path: &std::path::Path, session_id: &str) {
+    let s = Store::open(path).expect("seeding");
+    s.put_session(&SessionRecord {
+        id: session_id.into(),
+        title: Some("the wedged session".into()),
+        model_id: "m".into(),
+        dialect_sha: "sha".into(),
+        workspace_root: "/tmp".into(),
+        owner: "dead".into(),
+        role: None,
+        approvers: vec![],
+        parent_session_id: None,
+    })
+    .expect("the session row");
+    // The pair the guard wrote when its one compaction gained no room. The
+    // numbers are the fixture's own scale, not the log's — the QUESTION is
+    // whether the pair survives, not whether this conversation is 1.8M tokens.
+    s.set_auto_compact_stood_down(session_id, Some((43_000, 42_500)))
+        .expect("the stood-down pair");
+}
+
 /// The warnings a session's log holds, code and detail, in order — the order
 /// is half of every assertion below (announced before attempted before done).
 fn warnings_of(hub: &Hub) -> Vec<(String, String)> {
@@ -163,6 +256,259 @@ fn warnings_of(hub: &Hub) -> Vec<(String, String)> {
             _ => None,
         })
         .collect()
+}
+
+fn at(warnings: &[(String, String)], code: &str, text: &str) -> usize {
+    warnings
+        .iter()
+        .position(|(c, d)| c == code && d.contains(text))
+        .unwrap_or_else(|| panic!("no {code} warning saying {text:?} — the log:\n{warnings:#?}"))
+}
+
+/// **THE CHAIN, through the daemon's own door, with the guard already fired.**
+///
+/// This is the assertion the whole change exists for: `auto_compact` OFF (the
+/// no-progress guard's state, restored from the store the way a restarted
+/// daemon now restores it), a turn refused for context length STILL compacts —
+/// through the forced door, onto the `Cut` fold that deals with a history too
+/// big for a summary in place — and the prompt finishes on the summary rather
+/// than dying at the wall. Before the split, every letter of that sentence was
+/// false: the recovery read the flag, the flag was off, and the session met
+/// the same refusal on every turn for the rest of the daemon's life.
+#[test]
+fn a_refused_prompt_compacts_under_duress_with_auto_compact_off_and_finishes() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-refused-daemon");
+    let path = dir.path().join("sessions.db");
+    let session_id = "refused-daemon-test";
+    let rel = write_the_big_file(&dir);
+
+    // The guard's finding is on the row BEFORE the daemon opens, exactly as a
+    // restart would find it — which also proves the restore: without
+    // `restore_auto_compact` the pre-flight below would find the flag ON and
+    // compact before the send, and the refusal the test exists for would never
+    // be sent.
+    seed_a_stood_down_session(&path, session_id);
+
+    let mut cfg = config(&path, session_id);
+    // The window that makes ten reads an overrun, at the scale the real ones
+    // are: headroom 2048, wall 30720, prefix ~3634 + ten ~3950-token results
+    // ≈ 43000 — past the wall and past the window, which is the `Cut` state.
+    cfg.context_window = Some(32768);
+
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let vocab = &parts.vocab;
+
+    // Request one: the prompt turn, answered with the batch of reads. Request
+    // two: round one, REFUSED in deepseek's own words, verbatim. Then the two
+    // half-summaries a local `Cut` fold runs, the continuation's answer, and
+    // spares — an undersupplied server turns a scripted answer into a socket
+    // error and the test would fail for a reason that is not the one under
+    // test.
+    let half = a_plain_answer_turn(
+        vocab,
+        "summarising",
+        "the operator asked for a file; it was read ten times; the work continues",
+        30,
+    );
+    let half2 = a_plain_answer_turn(
+        vocab,
+        "summarising",
+        "the earlier history: the same file, read again; nothing else happened",
+        30,
+    );
+    let continued = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
+    let spare = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
+    let spare2 = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
+    let scripts = vec![
+        Reply::Frames(a_turn_of_ten_reads(vocab, &rel)),
+        Reply::Status {
+            code: 400,
+            body: OPENAI_REFUSAL.into(),
+        },
+        Reply::Frames(half),
+        Reply::Frames(half2),
+        Reply::Frames(continued),
+        Reply::Frames(spare),
+        Reply::Frames(spare2),
+    ];
+    let serv = canned::Canned::serve_replies(scripts, 8);
+    cfg.endpoint = serv.endpoint.clone();
+
+    let registry = Registry::new();
+    registry
+        .create(session_id, "", Sessions::wiring(&cfg))
+        .expect("the session is in the registry");
+    let hub = registry.get(session_id).expect("the hub is the registry's");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
+
+    // The guard's finding came back with the session: the pre-emptive door is
+    // stood down, or none of what follows means what it must.
+    assert!(
+        sessions
+            .harness_of(session_id)
+            .is_some_and(|h| !h.config().auto_compact),
+        "the stood-down pair on the row restores as auto_compact = false"
+    );
+
+    let out = sessions.submit(session_id, "read big.txt and finish the task");
+    assert!(
+        out.is_ok(),
+        "the prompt finishes on the summary, past a refused round: {out:?}"
+    );
+
+    let warnings = warnings_of(&hub);
+
+    // (1) The refusal was classified AS THE WALL — the warning says the
+    // provider refused, and names the provider's own two numbers beside this
+    // box's ledger count, so the operator can compare without guessing units.
+    let refused = at(&warnings, "context_wall", "the PROVIDER refused the prompt");
+    let detail = &warnings[refused].1;
+    assert!(
+        detail.contains("1463497") && detail.contains("1048576"),
+        "the provider's numbers are named, not paraphrased: {detail}"
+    );
+
+    // (2) The compaction that answered it was FORCED — announced as under
+    // duress, because the automatic one is off and an operator watching a
+    // session that "compacts automatically" deserves to know why this ran.
+    let duress = at(&warnings, "auto_compact", "under duress");
+    assert!(
+        refused < duress,
+        "the wall is announced before the compaction reacts to it"
+    );
+
+    // (3) **It reached the overrun branch.** The local `Cut` fold announces
+    // itself in its own words — two halves that overlap — and that arm is the
+    // strategy for exactly the refused state: a history with no room for a
+    // summary in place. The ordinary fold never runs on a session at its wall
+    // (it needs resident + headroom ≤ window), so the sentence is evidence of
+    // WHICH fold ran, not decoration.
+    let cut = at(&warnings, "auto_compact", "two halves that overlap");
+    assert!(
+        duress < cut,
+        "the forced door announces before the fold it chose: {duress} < {cut}"
+    );
+
+    // (4) The fold landed: a `compacted` report, a forked transcript, and the
+    // continuation AFTER the fork.
+    let compacted = at(&warnings, "compacted", "tokens");
+    assert!(
+        cut < compacted,
+        "the fold is chosen before it is reported: {cut} < {compacted}"
+    );
+    assert_eq!(
+        sessions
+            .harness_of(session_id)
+            .expect("the session is still open")
+            .transcript_id(),
+        format!("{session_id}#t1"),
+        "the wedged session forked onto the compaction's base"
+    );
+
+    // (5) And the guard did not re-fire: this fold made room, which is the
+    // difference between a session that recovers and one that is stood down
+    // for good.
+    assert!(
+        !warnings
+            .iter()
+            .any(|(c, _)| c == "auto_compact_no_progress"),
+        "a fold that made room does not trip the no-progress guard: {warnings:#?}"
+    );
+}
+
+/// **The same chain through a child's own seam**, on the other measured body.
+///
+/// `submit_as_a_normal_session` is the tail a subagent's thread gives its
+/// prompts — no `Sessions`, no `after_turn`, nothing but the harness — and it
+/// is where the 2026-10-06 child wedge lived. The refusal here is llama.cpp's
+/// JSON shape, so both measured bodies are proven through a real door and not
+/// only through the matcher's unit tests.
+#[test]
+fn a_refused_prompt_through_a_childs_seam_compacts_and_finishes() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-refused-child");
+    let path = dir.path().join("sessions.db");
+    let session_id = "refused-child-test";
+    let rel = write_the_big_file(&dir);
+
+    let mut cfg = config(&path, session_id);
+    cfg.context_window = Some(32768);
+    // The wedge's own state: the guard has fired, the flag is off. The child
+    // has no store row here because a spawned child is a NEW session — the
+    // flag is the fact, and this test sets it the way the guard does.
+    cfg.auto_compact = false;
+
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let vocab = &parts.vocab;
+
+    let half = a_plain_answer_turn(
+        vocab,
+        "summarising",
+        "the operator asked for a file; it was read ten times; the work continues",
+        30,
+    );
+    let half2 = a_plain_answer_turn(
+        vocab,
+        "summarising",
+        "the earlier history: the same file, read again; nothing else happened",
+        30,
+    );
+    let continued = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
+    let spare = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
+    let spare2 = a_plain_answer_turn(vocab, "resuming", "the task is finished", 30);
+    let scripts = vec![
+        Reply::Frames(a_turn_of_ten_reads(vocab, &rel)),
+        Reply::Status {
+            code: 400,
+            body: LLAMACPP_REFUSAL.into(),
+        },
+        Reply::Frames(half),
+        Reply::Frames(half2),
+        Reply::Frames(continued),
+        Reply::Frames(spare),
+        Reply::Frames(spare2),
+    ];
+    let serv = canned::Canned::serve_replies(scripts, 8);
+    cfg.endpoint = serv.endpoint.clone();
+
+    // A CHILD's harness: opened bare, held directly, the way the runner drives
+    // one. Everything the daemon's own sessions get around a turn, this
+    // harness must supply itself.
+    let hub = Hub::new(session_id);
+    let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the child opens");
+
+    let out = h.submit_as_a_normal_session("read big.txt and finish the task");
+    assert!(
+        out.is_ok(),
+        "the child's task finishes past a refused round: {out:?}"
+    );
+
+    let warnings = warnings_of(&hub);
+    // The refusal was classified, with llama.cpp's own numbers named: this
+    // body carries them as FIELDS, and the warning still says whose they are.
+    let refused = at(&warnings, "context_wall", "the PROVIDER refused the prompt");
+    assert!(
+        warnings[refused].1.contains("1504198") && warnings[refused].1.contains("262144"),
+        "the JSON body's fields are the numbers named: {}",
+        warnings[refused].1
+    );
+    // Under duress, onto the two-half fold, forked, finished — the same chain,
+    // the other seam.
+    let duress = at(&warnings, "auto_compact", "under duress");
+    let cut = at(&warnings, "auto_compact", "two halves that overlap");
+    let compacted = at(&warnings, "compacted", "tokens");
+    assert!(refused < duress && duress < cut && cut < compacted);
+    assert_eq!(
+        h.transcript_id(),
+        format!("{session_id}#t1"),
+        "the child's transcript forked onto the compaction's base"
+    );
 }
 
 /// **A 400 that is not about context length stays a backend error.**

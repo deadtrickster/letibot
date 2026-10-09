@@ -1953,3 +1953,53 @@ fn ctrl_o_tells_a_generating_model_apart_from_an_idle_session() {
     assert!(said.contains("still working"), "{said}");
     assert!(said.contains("no command running"), "{said}");
 }
+
+/// **The no-progress guard's warning leaves a RESIDENT state, not a note.**
+///
+/// The guard's finding is true until the session is replaced or the window is
+/// raised, and the warning that announced it scrolls away with the
+/// conversation — which is exactly where the 2026-10-09 wedge left it: one
+/// warning line, scrolled past, and thirty provider refusals behind a session
+/// that would not tidy itself and could not say why. The line above the
+/// composer is what a person looks at on the way to typing; `/status` is the
+/// whole-set read; and the sentence keeps the two doors apart, because the
+/// daemon's recovery now does: pre-emptive tidying is off, a refused turn is
+/// still compacted.
+#[test]
+fn the_no_progress_warning_leaves_a_resident_line_and_a_status_row() {
+    let hub = Hub::new("s");
+    let mut a = app();
+    a.clock(1_000);
+    let e = hub.publish(SessionEvent::Warning {
+        code: "auto_compact_no_progress".into(),
+        detail: "compacted from 1849499 to 1530411 tokens and that is STILL within \
+                 62500 of the 1000000 window, so automatic compaction is now off \
+                 for this session rather than looping once per turn. The summary \
+                 itself is near the wall: start a fresh session, or raise \
+                 --context-window if the server really has more."
+            .into(),
+        compaction: None,
+    });
+    a.apply(ServerFrame::Event(e));
+
+    // The resident line, above the composer, saying both halves: it is off,
+    // AND a refused turn is still compacted.
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("auto-compaction is off"),
+        "no resident line for the guard's finding: {screen}"
+    );
+    assert!(
+        screen.contains("still compacted"),
+        "the line keeps the pre-emptive and refused doors apart: {screen}"
+    );
+
+    // And `/status` carries it as a state row beside `session` and `head`, with
+    // the daemon's own why as the gloss.
+    a.command("status");
+    let status = a.screen(120, 100).join("\n");
+    assert!(
+        status.contains("auto-compact") && status.contains("auto-compaction is off"),
+        "no auto-compact row on /status: {status}"
+    );
+}
