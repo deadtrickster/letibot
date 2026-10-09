@@ -14250,14 +14250,33 @@ mod tests {
             (view.command, view.state, slice)
         }
 
-        fn a_host(name: &str) -> (std::path::PathBuf, std::sync::Arc<HostProcesses>) {
+        /// **A host over a temp root — or nothing, when this box cannot delegate a
+        /// cgroup v2 subtree.**
+        ///
+        /// A job needs a process-lifetime tree, and a box without one is a real thing:
+        /// CI's runner is one, MEASURED on run 37925350568 — *"mkdir
+        /// /sys/fs/cgroup/system.slice/hosted-compute-agent.service/letibot.7443.2:
+        /// Permission denied (os error 13) — a delegated cgroup v2 subtree is needed;
+        /// …/hosted-compute-agent.service is the harness's own cgroup and it is not
+        /// writable"*. A `#[ignore]` here would be a green suite that measured nothing,
+        /// so the absence is SAID and `LETIBOT_REQUIRE_APPARATUS=1` refuses it — the same
+        /// gate over the same predicate this crate's other host-spawning tests take (see
+        /// `jobwatch.rs`).
+        fn a_host(name: &str) -> Option<(std::path::PathBuf, std::sync::Arc<HostProcesses>)> {
+            let Some(_) = letibot_tokencore::apparatus::present(
+                "a process-lifetime tree (cgroup v2; process groups on macOS)",
+                letibot_tools::host_tree().is_ok(),
+            ) else {
+                return None;
+            };
             let root = std::env::temp_dir().join(format!(
                 "letibot-jobtail-{name}-{pid}",
                 pid = std::process::id()
             ));
             std::fs::create_dir_all(&root).expect("scratch");
-            let host = HostProcesses::new(&root).expect("this box has a cgroup v2 tree");
-            (root, std::sync::Arc::new(host))
+            let host = HostProcesses::new(&root)
+                .expect("the tree probed writable above, so this root builds one");
+            Some((root, std::sync::Arc::new(host)))
         }
 
         /// **THE MEASURED DEFECT, j87's own shape**: a compound command whose preamble
@@ -14271,7 +14290,9 @@ mod tests {
         /// are outside the window and which file the window is.
         #[test]
         fn a_preamble_in_the_capture_does_not_stop_the_window_being_the_file() {
-            let (root, host) = a_host("compound");
+            let Some((root, host)) = a_host("compound") else {
+                return;
+            };
             let log = root.join("work.log");
             let command = format!(
                 "sleep 0.1; echo '=== MIX (load + validate + mix) ==='; \
@@ -14318,7 +14339,9 @@ mod tests {
         /// window gains no phantom disclosure about bytes that were never there.
         #[test]
         fn a_redirect_with_an_empty_capture_still_tails_and_claims_no_preamble() {
-            let (root, host) = a_host("empty-capture");
+            let Some((root, host)) = a_host("empty-capture") else {
+                return;
+            };
             let log = root.join("solo.log");
             let command = format!("printf 'solo\\n' > {} 2>&1", log.display());
             let (command, state, slice) = a_settled_job(&host, &command);
@@ -14342,7 +14365,9 @@ mod tests {
         /// window path to the same guarantee end to end.
         #[test]
         fn a_merged_descriptor_keeps_the_capture_as_the_window() {
-            let (root, host) = a_host("merge");
+            let Some((root, host)) = a_host("merge") else {
+                return;
+            };
             let (command, state, slice) = a_settled_job(&host, "echo merged 2>&1");
             assert!(slice.produced > 0);
 
@@ -14360,7 +14385,9 @@ mod tests {
         /// as before — the redirect branch must not have widened into this case.
         #[test]
         fn a_job_with_no_redirect_keeps_the_capture_as_the_window() {
-            let (root, host) = a_host("plain");
+            let Some((root, host)) = a_host("plain") else {
+                return;
+            };
             let (command, state, slice) = a_settled_job(&host, "echo plain");
             assert!(slice.produced > 0);
 
