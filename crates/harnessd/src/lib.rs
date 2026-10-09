@@ -111,6 +111,7 @@ pub mod progress;
 pub mod prompt;
 pub mod sessions;
 pub mod slash;
+pub mod standing_notes;
 pub mod sudo;
 pub mod suggest;
 pub mod tasks;
