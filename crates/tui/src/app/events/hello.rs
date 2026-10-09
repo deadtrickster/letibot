@@ -31,7 +31,18 @@ impl App {
                 let moved = !self.session_id.is_empty() && self.session_id != session_id;
                 // The daemon has answered, so whatever the head drew while it was
                 // asking is about to be replaced by the truth. See `attaching`.
-                self.attaching = false;
+                //
+                // **Unless this is the stop on the way.** A head that asked for a stored
+                // session is seated somewhere first; that `Hello` is not the answer, and
+                // ending the wait on it drew the placeholder as "said nothing yet". See
+                // `fetching`.
+                match self.fetching.as_deref() {
+                    Some(asked) if asked != session_id => {}
+                    _ => {
+                        self.fetching = None;
+                        self.attaching = false;
+                    }
+                }
                 // **The version the daemon is TOLD to be, checked at the handshake.**
                 //
                 // This is the one moment a skew is cheap to say: nothing has been read

@@ -370,6 +370,7 @@ impl App {
             return;
         }
         self.want_new_session = true;
+        self.fetching = Some(id.to_string());
         self.queued.push(Action::ResumeSession(id.to_string()));
     }
 
@@ -697,6 +698,11 @@ impl App {
                 "resuming {} from the store…",
                 self.session_label(&id)
             ));
+            // The cat, until the session is here: a long one is seconds of restoring, and
+            // the screen it would otherwise hold is the session being left — which, for a
+            // head that just started, is an empty one that invites typing.
+            self.fetching = Some(id.clone());
+            self.begin_attach();
             return Some(Action::ResumeSession(id));
         }
         // `since_seq` is not sent: this head has no state for the session it is

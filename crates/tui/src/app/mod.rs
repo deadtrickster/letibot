@@ -1229,6 +1229,13 @@ pub struct App {
     /// cat (see [`cat_frame`]), which is what says "working on it" without saying
     /// anything about the session.
     pub(crate) attaching: bool,
+    /// The session this head asked the daemon to resume and has not been seated in yet.
+    ///
+    /// `--continue` and the picker's resume are two steps — seated somewhere, then moved —
+    /// and the `Hello` for the first step is not the answer. While this is set a `Hello`
+    /// for any other session leaves [`Self::attaching`] up, so the placeholder's empty
+    /// banner is never drawn as if it were the conversation asked for.
+    pub(crate) fetching: Option<String>,
     /// When the attach began, on the clock `App::clock` is given.
     ///
     /// The cat's frame comes from the **elapsed** time rather than from a counter,
@@ -1558,6 +1565,7 @@ impl App {
             marker_facts: MarkerFacts::default(),
             body_len: 0,
             attaching: false,
+            fetching: None,
             link: Link::Attached,
             daemon_protocol: None,
             daemon_seat: None,

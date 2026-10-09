@@ -2162,3 +2162,84 @@ fn switching_replaces_the_previous_sessions_facts_and_does_not_carry_them_over()
     assert!(h.contains("2/2"), "{h}");
     assert!(a.turn.is_none(), "the old session's turn came along");
 }
+
+/// **A head asked for a stored session keeps the cat until it is IN that session.**
+///
+/// `letibot --continue` and the picker's resume are two steps: the daemon seats the head
+/// somewhere first — the fresh session a new head gets — and only then answers the resume.
+/// On a long session that second step is seconds, and the first `Hello` used to end the
+/// wait: the screen said "this session has said nothing yet" about the placeholder, and the
+/// operator, who asked for a conversation with two thousand rows in it, started typing into
+/// the empty one. The wait is over when the head is where it was asked to go.
+#[test]
+fn a_resume_keeps_the_cat_until_the_asked_for_session_arrives() {
+    fn empty(id: &str) -> Snapshot {
+        Snapshot {
+            session_id: id.into(),
+            seq: 0,
+            dropped: 0,
+            items_dropped: 0,
+            items: Vec::new(),
+            turn: None,
+            open_decisions: Vec::new(),
+            settled_decisions: Vec::new(),
+            warnings: Vec::new(),
+            heads: Vec::new(),
+            subagents: Vec::new(),
+        }
+    }
+    let waiting = |a: &mut App, when: &str| {
+        let flat = a.screen(80, 24).join("\n");
+        assert!(
+            !flat.contains("has said nothing yet"),
+            "{when}: the placeholder is drawn as if it were the session asked for: {flat:?}"
+        );
+        assert!(
+            a.attaching,
+            "{when}: the wait ended before the session arrived"
+        );
+    };
+
+    // `--continue`: asked for before the attach, seated in a fresh session first.
+    let mut a = app();
+    a.request_session("s-long");
+    a.begin_attach_at(0);
+    a.apply(hello("s-fresh", Vec::new(), empty("s-fresh")));
+    waiting(&mut a, "--continue, seated in the placeholder");
+    a.apply(hello("s-long", Vec::new(), empty("s-long")));
+    assert!(
+        !a.attaching,
+        "the session asked for arrived and the cat stayed"
+    );
+
+    // The picker: a session that is on disk and not live.
+    let mut b = app();
+    b.apply(hello("s-fresh", Vec::new(), empty("s-fresh")));
+    let mut stored = brief("s-long", "long", false);
+    stored.live = false;
+    b.sessions = vec![brief("s-fresh", "fresh", false), stored];
+    assert_eq!(
+        b.switch_to("s-long".into()),
+        Some(Action::ResumeSession("s-long".into()))
+    );
+    waiting(&mut b, "picker resume, before the daemon answers");
+
+    // And a resume the daemon refuses ends the wait: the refusal is said, and the head is
+    // where it was.
+    b.apply(ServerFrame::Rejected {
+        client_request_id: String::new(),
+        reason: format!(
+            "{}: \"s-long\"",
+            letibot_sessionlog::protocol::REJECT_NOT_IN_STORE
+        ),
+        expected_seq: 0,
+        actual_seq: 0,
+    });
+    assert!(!b.attaching, "a refused resume left the cat walking");
+    assert!(
+        b.screen(80, 24)
+            .join("\n")
+            .contains("no such session in the store"),
+        "the refusal was not said"
+    );
+}

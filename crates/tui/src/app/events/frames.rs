@@ -308,6 +308,14 @@ impl App {
                 // Both numbers, so the operator can see what they were looking at.
                 // A peek answered with one of these also ends its waiting.
                 self.sub_out_pending = None;
+                // And a refusal while the head is between seats is the trip's: not in the
+                // store, a restore that failed, a switch to a session that went away. Any of
+                // them ends the wait — the head stays where it is, and the line below says
+                // why. Matched on the state rather than the reason, because a failed restore
+                // carries whatever the store said.
+                if self.fetching.take().is_some() {
+                    self.attaching = false;
+                }
                 // **And this is the daemon naming a seq this head has not reached**
                 // (R17) — the same fact `Accepted` carries, stated the other way round.
                 // A refusal "for a stale `expected_seq`" is exactly what being behind
