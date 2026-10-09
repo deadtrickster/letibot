@@ -228,10 +228,15 @@ pub fn run(args: &[String]) -> i32 {
 /// hung daemon is reported rather than endured.
 const ATTACH_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// **Is there a daemon here, and does it speak this build's protocol?**
+/// **Is there a daemon here, and can this build attach to it?**
 ///
-/// `0` when there is and it does, `1` when there is and it does not (with the
-/// daemon's own refusal on stderr), `2` when there is not.
+/// `0` when there is and it answers, `1` when there is and it refuses (with the
+/// daemon's own refusal on stderr), `2` when there is not. A version skew is no
+/// longer a refusal from a current daemon — it accepts the attach and states its own
+/// number in the `Hello`, so a skewed probe is exit `0` and the launcher routes to
+/// the head, which seats read-only against an older daemon and says so. Exit `1` on
+/// a version skew is now the mark of a daemon built **before** that acceptance: its
+/// bare `Bye` is exactly what this arm prints.
 ///
 /// # Why this is not `--no-tty`
 ///
@@ -627,10 +632,11 @@ fn live(args: &Args, cfg: RenderConfig) -> Result<(), Box<dyn std::error::Error>
     // the `Hello`, so the wait below is an ordinary read on an ordinary channel — which
     // is also what makes a *re*-attach look like the first one: same frame, same path.
     //
-    // The Attach is sent here rather than on the thread, so a refused attach — the
-    // protocol-skew case the launcher refuses to route around — is known before
-    // anything is drawn, and a head that cannot attach never claims the screen. A
-    // *socket* error is still only discoverable on the connect, so this reports one.
+    // The Attach is sent here rather than on the thread, so a refused attach — a
+    // daemon built before the acceptance change refusing on the version, or an
+    // unknown session — is known before anything is drawn, and a head that cannot
+    // attach never claims the screen. A *socket* error is still only discoverable
+    // on the connect, so this reports one.
     let mut link = Link::open(
         &args.socket,
         &args.session,

@@ -420,6 +420,167 @@ fn a_version_skew_is_said_once_however_many_hellos_arrive() {
     }
     assert_eq!(a.notes.len(), 1, "said three times: {:?}", a.notes);
 }
+/// **An OLDER daemon seats this head read-only: nothing is sent, and the refusal says the
+/// whole informed sentence.**
+///
+/// The operator's own case is the setup — a daemon speaking 22 against this head's 36 — and
+/// three facts are asserted together because they are one behaviour:
+///
+/// * **the head stays attached and keeps reading** — the conversation is there, which is the
+///   *look around* half of the ruling;
+/// * **nothing leaves, including the asks the seating itself would have made** — `TermStatus`
+///   arrived at protocol 34 and `ListJobs` at 21, so an unlocked head would have killed the
+///   operator's daemon a tick after the `Hello` without anyone typing anything;
+/// * **the composer refuses with `protocol_skew`'s sentence and the chord**, and holds the
+///   line — the *decide* half, armed rather than presumed.
+#[test]
+fn an_older_daemon_seats_this_head_read_only_and_the_refusal_says_the_sentence() {
+    let hub = Hub::new("s");
+    // The operator's own numbers: a 17-day-old daemon speaking 22, this head speaking 36.
+    let older = letibot_sessionlog::protocol::PROTOCOL_VERSION.saturating_sub(14);
+    let mut a = app();
+    a.apply(hello_at(
+        "s",
+        vec![brief("s", "one", false)],
+        hub.snapshot(),
+        older,
+    ));
+    assert!(a.skew_locked(), "the OLDER direction is the locked one");
+    // **The seating's own asks did not go out.** This is the assertion the feature stands
+    // on: `TermStatus` (34) and `ListJobs` (21) against a daemon at 22 are frames it has
+    // never heard of, and a head that sent them on arrival would have spent the session
+    // before the operator pressed a key.
+    assert!(
+        a.take_actions().is_empty(),
+        "a locked head queues nothing at the seating"
+    );
+    // The head still reads: a frame lands and the head takes it.
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    assert!(a.turn_busy(), "reading is what a read-only attach is for");
+
+    // The composer refuses, says the sentence, and holds the line.
+    assert_eq!(a.submit("hello?".into()), None, "nothing was sent");
+    assert_eq!(a.input(), "hello?", "the line is held, not dropped");
+    let said = a.notice.as_deref().unwrap_or("");
+    assert!(said.contains("OLDER build"), "{said}");
+    // The load-bearing clause of the informed sentence, not merely the numbers.
+    assert!(
+        said.contains("closing the socket"),
+        "the refusal must say what sending costs: {said}"
+    );
+    assert!(
+        said.contains("ctrl-^"),
+        "the refusal must spell the way out: {said}"
+    );
+    assert!(said.contains("Nothing was sent"), "{said}");
+    // And the resident line says the state and the chord where the person is looking.
+    // The chord is asserted on the whole screen because the line wraps — at 120 columns
+    // `ctrl-^` is on its second visual row, and a wrapped sentence is still one line.
+    let screen = a.screen(120, 40).join("\n");
+    let lock_rows: Vec<&str> = screen.lines().filter(|l| l.contains("read-only")).collect();
+    assert_eq!(lock_rows.len(), 1, "one resident line: {lock_rows:?}");
+    assert!(
+        screen.contains("ctrl-^"),
+        "the chord is spelled on the screen"
+    );
+}
+
+/// **`ctrl-^` is the deliberate override: the lock lifts, the seating's asks go out, and
+/// the composer sends again.** A head that only knew how to refuse would have implemented
+/// half the ruling.
+#[test]
+fn ctrl_caret_lifts_the_read_only_and_pays_the_seatings_asks() {
+    let hub = Hub::new("s");
+    let older = letibot_sessionlog::protocol::PROTOCOL_VERSION.saturating_sub(14);
+    let mut a = app();
+    a.apply(hello_at(
+        "s",
+        vec![brief("s", "one", false)],
+        hub.snapshot(),
+        older,
+    ));
+    a.key(Key::CtrlCaret);
+    assert!(!a.skew_locked(), "the chord is the override");
+    // The asks the lock skipped are the head's own obligations, and lifting the lock is
+    // when they come due — an overridden head is not a head with a stale header forever.
+    let asked = a.take_actions();
+    for want in [
+        Action::TermStatus,
+        Action::Settings,
+        Action::ListJobs,
+        Action::ListSessions,
+    ] {
+        assert!(asked.contains(&want), "missing {want:?} in {asked:?}");
+    }
+    // The lock line came down with the lock.
+    assert!(!a.screen(120, 40).join("\n").contains("read-only"));
+    // And the composer sends again — the person's decision, made deliberately.
+    assert_eq!(
+        a.submit("hello?".into()),
+        Some(Action::Prompt("hello?".into())),
+        "an overridden head sends"
+    );
+
+    // **The override belongs to the seat it was given on.** A second `Hello` from the same
+    // daemon — what a `Switch` produces — must not re-lock a head the operator unlocked,
+    // while the same pid speaking a *different* older protocol is a new party and re-locks.
+    a.apply(hello_at(
+        "s",
+        vec![brief("s", "one", false)],
+        hub.snapshot(),
+        older,
+    ));
+    assert!(!a.skew_locked(), "the same seat keeps the override");
+    a.apply(hello_at(
+        "s",
+        vec![brief("s", "one", false)],
+        hub.snapshot(),
+        older - 1,
+    ));
+    assert!(
+        a.skew_locked(),
+        "a replaced daemon is a new decision — the lock returns"
+    );
+}
+
+/// **A NEWER daemon disables nothing**: the skew is said and counted, but the seating's
+/// asks go out and the composer sends, exactly as on a matching build.
+#[test]
+fn a_newer_daemon_attaches_with_nothing_disabled() {
+    let hub = Hub::new("s");
+    let newer = letibot_sessionlog::protocol::PROTOCOL_VERSION + 3;
+    let mut a = app();
+    a.apply(hello_at(
+        "s",
+        vec![brief("s", "one", false)],
+        hub.snapshot(),
+        newer,
+    ));
+    assert!(
+        !a.skew_locked(),
+        "the reading direction is survivable as-is"
+    );
+    // The seating's asks went out as on any attach.
+    let asked = a.take_actions();
+    assert!(
+        asked.contains(&Action::TermStatus) && asked.contains(&Action::ListSessions),
+        "nothing withheld: {asked:?}"
+    );
+    // And the composer sends.
+    assert_eq!(
+        a.submit("hello?".into()),
+        Some(Action::Prompt("hello?".into()))
+    );
+    // The skew is still said — the sentence is the fact, the lock is only the OLDER half's.
+    let said = a
+        .notes
+        .last()
+        .map(|(_, n)| note_lines_unfolded(&a.cfg, n).join(" "))
+        .unwrap_or_default();
+    assert!(said.contains("NEWER"), "{said}");
+    // No lock line — nothing is locked.
+    assert!(!a.screen(120, 40).join("\n").contains("read-only"));
+}
 
 /// **A head whose daemon goes away says so, keeps its screen, and does not exit.**
 ///

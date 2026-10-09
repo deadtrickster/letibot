@@ -137,8 +137,19 @@ impl App {
                 self.term_fact = PaneFact::Unasked;
                 self.close_pending = false;
                 self.term_ask = None;
-                self.queued.push(Action::TermStatus);
-                self.refetch_session_facts();
+                // **The seating's own asks are held while the attach is read-only, and this is
+                // not an optimisation — it is the feature working at all.** Every ask below
+                // is a frame the daemon may not know, sent *without the operator typing
+                // anything*: `TermStatus` arrived at protocol 34, `ListJobs` at 21, `Settings`
+                // at 17, `ListSessions` at 2 — against the operator's own case (a head at 36,
+                // a daemon at 22) the first two would fail the daemon's deserialiser a tick
+                // after this `Hello`, and the read-only attach would die of the head's own
+                // courtesy. [`App::attach_anyway`] sends these the moment the lock lifts, so
+                // an overridden head is not a head with a stale header forever.
+                if !self.skew_locked() {
+                    self.queued.push(Action::TermStatus);
+                    self.refetch_session_facts();
+                }
                 self.head_id = head_id.clone();
                 self.seated = Some(head_id);
                 self.wiring = wiring;

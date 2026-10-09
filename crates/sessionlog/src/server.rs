@@ -640,16 +640,45 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
         return Ok(());
     };
 
+    // **A differing protocol version is ACCEPTED, and said — never refused on the
+    // number alone.**
+    //
+    // The operator's ruling, on losing a 17-day-old daemon to a bare `Bye` while a
+    // *newer* head stood there unable to read the conversation its warm KV cost
+    // minutes to rebuild: *"so ideally it would be like - connect, look around and
+    // make informed decision"*. This side of the socket cannot make that decision
+    // for the person — it does not know what they came for — but it can do the
+    // first two thirds: connect them, and hand over everything it holds. The
+    // `Hello` below states this daemon's own `PROTOCOL_VERSION`, so the head can
+    // compare and decide; a head with no comparator of its own is still seated,
+    // because a conversation readable-and-scrollable beats a closed door.
+    //
+    // What the old gate protected is still protected, one level up: §17-S6's rule
+    // — *"a silent version skew looks like a bug in the other half, forever"* —
+    // survives as LOUDNESS rather than as a refusal. This paragraph is the
+    // daemon's own record of the skew, on the stderr a person reads when they
+    // wonder why a head is cautious; the head's record is the `protocol_skew`
+    // sentence its `Hello` comparison produces; and if the two builds later
+    // exchange a frame one of them cannot read, the read loop below still answers
+    // with a `Bye` naming both versions before the socket goes. Nothing about the
+    // skew is silent in any direction — the door is simply open.
+    //
+    // **This cannot rescue a daemon already running.** A daemon built before this
+    // change carries the old gate and goes on refusing until it is restarted; the
+    // acceptance here is a fact about every daemon started from this build on.
     if protocol_version != PROTOCOL_VERSION {
-        // Refuse loudly. §17-S6's rule: a silent version skew looks like a bug in
-        // the other half, forever.
-        let mut w = writer.lock().unwrap();
-        w.write(&ServerFrame::Bye {
-            reason: format!(
-                "protocol version {protocol_version}, this daemon speaks {PROTOCOL_VERSION}"
-            ),
-        })?;
-        return Ok(());
+        let which = if protocol_version > PROTOCOL_VERSION {
+            "newer"
+        } else {
+            "older"
+        };
+        eprintln!(
+            "head {identity:?} (kind {kind:?}) attached speaking protocol \
+             {protocol_version}, {which} than this daemon's {PROTOCOL_VERSION}. Serving \
+             it rather than refusing: the skew is for the head to judge and say, and this \
+             daemon still answers a frame it cannot read with the loud `Bye` that names \
+             both builds."
+        );
     }
 
     let Some(hub) = registry.resolve(&session_id) else {

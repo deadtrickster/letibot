@@ -30,10 +30,17 @@ use crate::registry::{SessionBrief, SessionWiring};
 use crate::scrub::ScrubReport;
 use crate::view::Snapshot;
 
-/// Bumped when a frame's meaning changes. Both sides refuse a mismatch loudly —
-/// §17-S6's rule, applied here because the head protocol has the same failure mode
-/// as the control channel: a silent version skew that looks like a bug in the other
-/// half.
+/// Bumped when a frame's meaning changes. §17-S6's rule — *"a silent version skew
+/// looks like a bug in the other half, forever"* — is served by LOUDNESS, and loudness
+/// has two halves: **the daemon accepts a mismatched ATTACH and records it** (a bare
+/// `Bye` on the number alone once cost the operator a 17-day-old daemon whose warm KV
+/// took minutes to rebuild — their ruling: *"connect, look around and make informed
+/// decision"*), and **the head compares the daemon's `Hello` version against this
+/// constant and says the difference** — [`protocol_skew`] is that sentence. The bump
+/// entries below say "the same ATTACH-time refusal" in several places: that was the
+/// mechanism when each entry was written, and the reasoning under it — a frame one side
+/// cannot parse is a deserialisation fault in the middle of a turn — is still exactly
+/// when this number moves.
 ///
 /// **4** since a head can reach sessions that are not in the daemon yet.
 ///
@@ -939,22 +946,22 @@ pub fn send_line(line: &str) -> Option<&str> {
 /// **How a daemon's protocol version compares with this build's** — as the one sentence a
 /// head says, and `None` when they are the same.
 ///
-/// # Why a head checks this at all, when the daemon already refuses a mismatch
+/// # Why the head is the half that checks
 ///
-/// The daemon's ATTACH check (`server.rs`, exact equality) is the first line and it is the
-/// strict one. This is the second, and it exists because **the two halves are built and
-/// run separately**, which is the whole shape of the defect this pairs with: a head built
-/// against a newer protocol, a daemon started from a binary three weeks older, and
-/// `ReadJobOutput` sent to a daemon that had never heard of it (`872f8dd`).
-///
-/// The daemon's refusal is a `Bye` naming both versions, and a head that sees one says so
-/// — but it only fires if the daemon *has* that check, and a check is a thing a protocol
-/// gains at some version. So there are two live cases this catches and the daemon's cannot:
-/// a daemon older than the check's introduction, and a daemon whose check has been relaxed
-/// — which is the direction R3 argues for, since *"a skew is usually survivable"* is
-/// exactly why passing an unknown **event** through is right, and the same argument applies
-/// to the version number. A head must not be silent about a skew because it is trusting the
-/// other side to have mentioned it.
+/// **The daemon used to refuse a mismatched ATTACH and does not any more** — the
+/// operator's ruling, on being handed a bare `Bye` by a daemon three weeks old while a
+/// *newer* head stood there unable to read the conversation whose warm KV cost minutes to
+/// rebuild: *"so ideally it would be like - connect, look around and make informed
+/// decision"*. The daemon now seats the head whatever number it claims and states its
+/// own in the `Hello`, which makes the comparison this function is **the** check rather
+/// than the second one: *look around, then decide* is the head's half of the ruling,
+/// because the head is the half with the person at the keyboard. (A daemon built before
+/// that acceptance still refuses, and a head meeting one of those learns the skew from
+/// the `Bye`'s own reason rather than from here — no `Hello` arrives to compare.) The
+/// two halves are built and run separately, which is the whole shape of the defect this
+/// pairs with: a head built against a newer protocol, a daemon started from a binary
+/// three weeks older, and `ReadJobOutput` sent to a daemon that had never heard of it
+/// (`872f8dd`).
 ///
 /// # The direction is not decoration: the two are different problems
 ///
@@ -976,6 +983,12 @@ pub fn send_line(line: &str) -> Option<&str> {
 /// Both are said with `head` first and the direction explicit, because a bare pair of
 /// numbers makes the reader work out which side they are on, and the answer changes what
 /// they should do.
+///
+/// **The decision the sentence arms is the head's to make, and the tui head makes it
+/// conservatively**: an OLDER daemon gets a read-only attach by default — the sentence
+/// said, the conversation scrollable, nothing sent — and one chord lifts it. That policy
+/// is that head's, not the protocol's; the sentence is the shared fact every head owes
+/// its reader.
 pub fn protocol_skew(daemon: u32, head: u32) -> Option<String> {
     if daemon == head {
         return None;

@@ -46,6 +46,29 @@ impl App {
         row_strings(&facts::warning(&said, w), self.cfg.palette())
     }
 
+    /// **The line a read-only attach draws**, above the composer with the link line.
+    ///
+    /// A resident line for [`App::link_line`]'s reason — it is a *state*, true until the
+    /// lock is lifted or the daemon is replaced, and a note anchored at the handshake
+    /// scrolls away with the conversation. The whole informed sentence is that note's; this
+    /// line is the one a person looks at on the way to the composer, so it carries the
+    /// load-bearing clause — both versions, the direction, what still works — and **the
+    /// chord**, which is the one fact that must not be off-screen while the lock is on.
+    pub(crate) fn lock_line(&self, w: usize) -> Vec<String> {
+        if !self.skew_locked() {
+            return Vec::new();
+        }
+        let said = format!(
+            "read-only — this daemon speaks protocol {} and this head speaks {}: an OLDER \
+             build. Reading and scrolling work and nothing is lost; nothing is sent, because \
+             a command it has never heard of ends the connection. {ATTACH_ANYWAY_CHORD} \
+             attaches anyway — the whole sentence is in the note at the handshake.",
+            self.daemon_protocol.unwrap_or_default(),
+            letibot_sessionlog::protocol::PROTOCOL_VERSION,
+        );
+        row_strings(&facts::warning(&said, w), self.cfg.palette())
+    }
+
     /// **The line a head draws while it waits for a daemon it asked to stop** (R30).
     ///
     /// A resident line and not a note, for `link_line`'s reason: it is a state, true until
@@ -376,8 +399,8 @@ impl App {
             "The protocol both halves were built against, compared at the handshake. \
              A NEWER daemon sends frames this build may not know: they are reported as \
              they arrive and skipped. An OLDER one cannot read a command it has never \
-             heard of, and answers that by closing the connection — so a session with \
-             an older daemon can end on the next thing you type, and a restart of the \
+             heard of, and answers that by closing the connection — so this head holds \
+             its sends read-only until `ctrl-^` says otherwise, and a restart of the \
              daemon is the fix either way.",
         );
         // **Which PROCESS is on the other end of this socket** (R30). The protocol row

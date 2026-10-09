@@ -647,6 +647,17 @@ impl Link {
                 app.refused_while_detached();
                 break;
             }
+            // **Nothing leaves a read-only attach either, and this is the floor under it.**
+            // The composer has the sentence ([`App::submit`]); this arm is what makes
+            // "nothing the person types can kill the session" true for the keys that do
+            // not pass through it — a decision card's answer, a secret card, a pane's
+            // bytes, a `ctrl-q` that would ask `ListJobs` of a daemon that may never have
+            // heard of it. Same shape as the detached arm: say once, send nothing, keep
+            // reading — a locked head still receives every frame and acks what it renders.
+            if app.skew_locked() {
+                app.refused_while_locked();
+                break;
+            }
             // The whole match is one `Result` so that the *only* thing a failed write
             // does is tell the head. Each arm used to end in `?`, which propagated out
             // of this loop and out of `main`.

@@ -186,6 +186,13 @@ impl App {
         // where the eye crosses on the way to the composer — the same place the stuck
         // line and a stuck decision card sit.
         let link = self.link_line(w);
+        // **A read-only attach says so in the same slot.** The lock's resident line — see
+        // [`App::lock_line`] — and it rides the link line's budget because it is the same
+        // kind of fact: a state of the connection, never given up by the fit ladder while
+        // it is true, and drawn above the composer where the eye crosses on the way to
+        // typing. The chord it spells is the one act that changes it, so it cannot be the
+        // first thing a short screen gives up.
+        let lock = self.lock_line(w);
         // **A stop the operator ordered is the loudest thing on the screen while it
         // lasts** (R30), and it goes above the link line because the two are the same
         // slot and only one of them can be true — `link_down` refuses to run while a stop
@@ -275,7 +282,7 @@ impl App {
             pane: pane.is_some(),
             // The completions live in the box's edge now; they never take a row.
             completion_slot: false,
-            link: link.len(),
+            link: link.len() + lock.len(),
             stopping: stopping.len(),
             alarmed: self.alarmed(),
         });
@@ -288,6 +295,7 @@ impl App {
         // it reads a question nothing is waiting on.
         chrome.extend(stopping);
         chrome.extend(link);
+        chrome.extend(lock);
         // **The `allow-all` confirmation sits at the front of the chrome**, above
         // the decision card and the composer, because while it is up every key
         // belongs to it (see `key`) and a question that owns the keyboard has to be

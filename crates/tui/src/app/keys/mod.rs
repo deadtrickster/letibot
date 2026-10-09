@@ -14,6 +14,12 @@ pub use input::key_of;
 
 use std::ops::ControlFlow;
 
+/// **How the override chord is spelled in every sentence that names it** — the lock's
+/// resident line, the composer's refusal, `/status`. One constant beside the key it names
+/// so the spelling and the byte cannot drift, the way a switch's `chord()` keeps its name
+/// and its key in one entry.
+pub(crate) const ATTACH_ANYWAY_CHORD: &str = "ctrl-^";
+
 impl App {
     /// A key. Returns an action for the driver to send, if any.
     ///
@@ -81,6 +87,16 @@ impl App {
             && self.notice_until.is_some()
         {
             self.notice_until = Some(self.now_ms);
+        }
+        // **`ctrl-^` is the read-only override, and it runs before every card** — see
+        // [`App::attach_anyway`]. The order is the point: a head locked against an older
+        // daemon can be holding an open decision at the same time (the daemon's turn was
+        // running before this head attached), and answering that card is exactly the send
+        // the lock is holding — so the way to unlock it must not be behind the card. It is
+        // silent when nothing is locked, which is [`App::attach_anyway`]'s own rule.
+        if matches!(k, Key::CtrlCaret) {
+            self.attach_anyway();
+            return None;
         }
         if let ControlFlow::Break(r) = self.key_mode_confirm(&k) {
             return r;
@@ -1100,6 +1116,16 @@ pub enum Key {
     /// is a readline key, a composer key or one of the head's panes already, and `0x1d` was
     /// the one control byte this head decoded to nothing that rano does not bind either.
     CtrlBracket,
+    /// **Ctrl+`^` — "attach anyway, I know what this is"** ([`App::attach_anyway`]).
+    ///
+    /// Held only while the head is read-only against an older daemon, and spelled only
+    /// there — the lock's resident line, the composer's refusal, `/status`. `^` because the
+    /// C0 tail is where this head's one-purpose keys live (`0x1c` is the pane's way out,
+    /// `0x1d` the editor crossing) and every letter is taken: the readline keys, the
+    /// composer's chords and the panes' chords between them own `a`–`z` outright, and
+    /// `0x1e` was decoded to nothing — adopted the way `0x1d` was, from "never a key"
+    /// to the one act it is for.
+    CtrlCaret,
     PageUp,
     PageDown,
     /// Mouse wheel up, decoded from the SGR mouse protocol. Scrolls the
@@ -1158,6 +1184,7 @@ impl Key {
             | Key::CtrlQ
             | Key::CtrlN
             | Key::CtrlBracket
+            | Key::CtrlCaret
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp
