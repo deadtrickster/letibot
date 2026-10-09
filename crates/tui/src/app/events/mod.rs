@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::ui::render::BlockCache;
+use crate::ui::round_answered;
 use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::protocol::ServerFrame;
 use letibot_sessionlog::view::{
@@ -891,6 +892,47 @@ impl App {
             return;
         };
         self.items[idx].item = Some(item);
+        // **A landed tool-result BODY is what hands a live card over to the transcript.**
+        //
+        // Not the announcement: a row with no body renders zero rows, so a pane that stood
+        // down at the announcement left the call in *neither half* for the frames between
+        // `TranscriptAppended` and `TranscriptContent` — the card erased, the settled row not
+        // drawable yet, the whole window re-derived around the hole. That one-frame gap is the
+        // operator's *"periodic flicker while diff card settles"*: on a terminal that does not
+        // composite a paint (no mode 2026), the erase sweep is also what showed the hardware
+        // caret inside the card's rows. Doing it here puts the pane's stand-down and the row's
+        // first drawing in ONE frame, the card on screen throughout.
+        //
+        // The boundary is [`round_answered`]'s — the calls this round's landed bodies have
+        // answered, keyed on the row's own `call_id` — because that is also the marker's
+        // (`live_work`: *"it advances when the row's BODY lands"*), and the pane's cards, the
+        // marker's number and the marker's colour are three readers of one frontier that have
+        // to agree. The frontier still advances one call at a time in invocation order, so a
+        // body that lands out of order (or a row for a call this pane does not hold, R31's
+        // operator deposit) claims nothing it should not: it lands in `answered` and the loop
+        // stops at the first frontier call no landed row answers.
+        if matches!(
+            self.items[idx].item,
+            Some(TranscriptItem::ToolResult { .. })
+        ) && self
+            .turn
+            .as_ref()
+            .is_some_and(|t| t.appended.iter().any(|a| a == item_id))
+        {
+            let answered = self
+                .turn
+                .as_ref()
+                .map(|t| round_answered(t, &self.items))
+                .unwrap_or_default();
+            let t = self.turn.as_mut().expect("checked above");
+            while t
+                .calls
+                .get(t.settled_calls)
+                .is_some_and(|c| answered.contains(&c.call_id.as_str()))
+            {
+                t.settled_calls += 1;
+            }
+        }
         // **A body landing is the transcript moving too.** The row was announced with no
         // content, so it carried no tool calls a moment ago: a `!` candidate list built
         // then is missing every command this row ran, and a model asked then was asked

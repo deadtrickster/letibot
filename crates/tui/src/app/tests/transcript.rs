@@ -5270,6 +5270,213 @@ fn a_call_the_transcript_has_answered_is_not_drawn_executing() {
     );
 }
 
+/// **A settling diff card is handed over in ONE frame — it never leaves the screen.**
+///
+/// The operator, in a session of noop `edit`/`write` calls: *"periodic flicker while diff card
+/// settles - even green caret appears briefly inside the diff card"*. Measured on this fixture,
+/// the flicker was a **gap frame**: the live card was dropped from the pane when the result row
+/// was *announced* (`TurnPane::settled_calls` advanced at `TranscriptAppended`), while the row
+/// could not draw itself until its *body* landed (`TranscriptContent`) — a row with no body
+/// renders zero rows, so for that frame the call was in **neither half**: the card's rows were
+/// erased, the whole window re-derived around the hole, and the next frame drew the settled row
+/// in its place. A terminal that does not composite the paint (no mode 2026 — byobu, older
+/// tmux) shows the hardware caret wherever the last row-write ended, so the erase sweep put the
+/// green block **inside the card's rows** for the duration of the write. In a loop of edit
+/// calls that is the periodic flicker, once per settle.
+///
+/// The fix is the boundary this file already claims for the marker
+/// (`live_work`: *"it advances when the row's BODY lands, not when the call finishes"* — and
+/// leticl measured the same window one event earlier: *"for that window the call was in neither
+/// half"*): the pane keeps the card until the row can replace it, so the handover is one frame
+/// with the card on screen throughout.
+///
+/// The assertions, on every frame of the transition — the finished call, the announced row, the
+/// landed body:
+///
+/// 1. **the card's diff is on screen** — no frame of a settling card is a frame without it;
+/// 2. **the caret is never on one of the card's rows** — the composer's cursor is parked on the
+///    composer, and a settling card must not move it (`App::screen`'s cursor clamp is the
+///    hypothesis this test closes: measured, the clamp never engaged at any realistic size);
+/// 3. **two renders of one state are the same frame** — the property
+///    `two_renders_of_one_state_are_the_same_frame` keeps for a still transcript, held across
+///    the transition too.
+///
+/// `on_the_tail_walk` is the same transition on a conversation too big to walk from the
+/// beginning — the operator's session, resumed far over `SELF_WALK_LIMIT`, where every arriving
+/// row invalidates the rendered history wholesale. The gap frame reproduced on both walks; the
+/// tail one is here because that is the shape that was reported.
+#[test]
+fn a_settling_diff_card_never_leaves_the_screen() {
+    settling_diff_card_never_leaves_the_screen(false);
+}
+
+/// The tail-walk half of the report — see the test above for what a frame is asserted on.
+#[test]
+fn a_settling_diff_card_never_leaves_the_screen_on_the_tail_walk() {
+    settling_diff_card_never_leaves_the_screen(true);
+}
+
+fn settling_diff_card_never_leaves_the_screen(tail: bool) {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    if tail {
+        // A conversation big enough that the tail walk cannot reach the beginning — the same
+        // fixture the other tail tests use (`walk_limit = 1` is how they get into it without
+        // building a megabyte), entered honestly: the conversation is walked once first, so
+        // the assertion below can say the tail path was really taken.
+        for i in 0..400u64 {
+            let body = format!(
+                "line {i} of the conversation\n\n```rust\nfn f{i}() {{ let n = {i}; }}\n```\n\nand some prose to wrap, with `code` in it.\n"
+            );
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 1,
+                testing::appended(&format!("s.{i}"), "user"),
+            )));
+            a.apply(ServerFrame::Event(env(
+                i * 2 + 2,
+                testing::content(&format!("s.{i}"), &body),
+            )));
+        }
+        a.walk_limit = 1;
+        let _ = a.screen(100, 24);
+        assert!(
+            a.hist_floor > 0,
+            "this fixture never entered tail mode, so it cannot test the tail walk"
+        );
+    }
+    // The round: prose, then an `edit` call that finished carrying both sides of a small
+    // change — the card the operator watches settle. Seqs run on from the fixture above so
+    // the head's own gap detector has nothing to say: a `log_gap` note is a row, and a row
+    // this test did not put there is a frame this test is not about.
+    let mut seq = if tail { 801 } else { 1 };
+    let mut next = |e: SessionEvent| {
+        let s = seq;
+        seq += 1;
+        env(s, e)
+    };
+    let turn_id = if tail { "t9" } else { "t1" };
+    a.apply(ServerFrame::Event(next(testing::turn_started(turn_id))));
+    let assistant_id = if tail { "s.900" } else { "s.0" };
+    a.apply(ServerFrame::Event(next(testing::appended(
+        assistant_id,
+        "assistant",
+    ))));
+    a.apply(ServerFrame::Event(next(SessionEvent::TranscriptContent {
+        item_id: assistant_id.into(),
+        item: Box::new(TranscriptItem::Assistant {
+            text: "Now I will edit the file.".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        }),
+    })));
+    a.apply(ServerFrame::Event(next(testing::proposed_on(
+        turn_id, "c1", "edit", "a.rs",
+    ))));
+    a.apply(ServerFrame::Event(next(SessionEvent::ToolStarted {
+        turn_id: turn_id.into(),
+        call_id: "c1".into(),
+        name: "edit".into(),
+        access: Default::default(),
+    })));
+    let result_id = if tail { "s.901" } else { "s.1" };
+
+    // Every frame of the settling, asserted on as the doc above says. The frames are taken
+    // one event at a time because that is how the daemon's two events arrive: the
+    // announcement and the body are separate frames on the wire, and a head that renders
+    // between them is the head the operator was looking at.
+    let mut frame = |a: &mut App, e: SessionEvent, label: &str| {
+        a.apply(ServerFrame::Event(next(e)));
+        let f = a.screen(100, 24);
+        assert!(
+            f.iter().any(|l| l.contains("@@ -1,1 +1,3")),
+            "{label}: the diff card is not on the screen:\n{}",
+            f.join("\n")
+        );
+        let card_rows: Vec<usize> = f
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.contains("Edited") || l.contains("@@") || l.contains("fn a()"))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            !card_rows.is_empty(),
+            "{label}: no card rows found, so the caret assertion below would assert nothing"
+        );
+        if let Some((row, _)) = a.cursor() {
+            assert!(
+                !card_rows.contains(&row),
+                "{label}: the caret is parked inside the diff card, at row {row} of {:?}",
+                card_rows
+            );
+        }
+        assert_eq!(
+            a.screen(100, 24),
+            f,
+            "{label}: two renders of one state are different frames"
+        );
+        f
+    };
+
+    // 1. The call finished: the live card, diff and all.
+    let finished = frame(
+        &mut a,
+        SessionEvent::ToolFinished {
+            turn_id: turn_id.into(),
+            call_id: "c1".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload_digest: "fnv1a:1".into(),
+            inline_bytes: 64,
+            full_bytes: 64,
+            spill: None,
+            repairs: 0,
+            edit: Some(edit_excerpt()),
+        },
+        "finished",
+    );
+    // 2. The result row announced, its body not yet landed. **This is the frame that
+    //    flickered**: the card is the only thing on screen that knows the call, and the row
+    //    cannot draw yet — so the card stays. And the frame is the SAME frame, not a frame
+    //    with the card in a different place: a byte-identical frame is the one the painter
+    //    writes zero bytes for, which is what "no flicker" is at the terminal.
+    let announced = frame(
+        &mut a,
+        testing::appended(result_id, "tool_result"),
+        "announced",
+    );
+    assert_eq!(
+        announced, finished,
+        "the announcement moved the frame, and a frame that moves is a frame that repaints"
+    );
+    // 3. The body lands: the settled row draws itself and the pane stands down — one frame,
+    //    card on screen throughout.
+    frame(
+        &mut a,
+        SessionEvent::TranscriptContent {
+            item_id: result_id.into(),
+            item: Box::new(TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "edit".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: String::new(),
+                edit: None,
+                origin: None,
+                media: None,
+            }),
+        },
+        "landed",
+    );
+    // And the handover is complete: the pane no longer draws the call.
+    assert_eq!(
+        a.turn.as_ref().expect("the turn").settled_calls,
+        1,
+        "the landed row did not take the call over from the pane"
+    );
+}
+
 /// **A call id reused in the next round does not inherit the last round's answer.**
 ///
 /// The claim has to be read of THIS ROUND's rows, and this is the shape that punishes asking the
@@ -6129,7 +6336,16 @@ fn the_yellow_arrives_when_the_call_starts_not_when_a_row_lands() {
     // **The marker's own digits, not the colour's mere presence** — the spinner and the
     // composer's edge are painted yellow too, so `contains("\u{1b}[33m")` passed on them and
     // said nothing about the count. This is the shape the sibling yellow test uses.
-    const PENDING: &str = "\u{1b}[33m1\u{1b}[0m tool call";
+    //
+    // **`2`, and the digit is the fixture's own arithmetic**: the run holds one hidden
+    // result row (`s.1`, a call no pane ever proposed — the deposit shape) and the pane
+    // holds one call in flight (`c1`), which are two calls and were counted as one while
+    // the handover advanced on the announcement: `settled_calls` ran to 1 on an empty call
+    // list and the next call of the round was claimed for a row it never answered — the
+    // exact defect `round_answered`'s doc names (*"a counter that ran ahead would claim the
+    // next call of the round for it"*). The handover is id-read now, so the landed row and
+    // the live call are both counted, once each.
+    const PENDING: &str = "\u{1b}[33m2\u{1b}[0m tool calls";
     let screen = a.screen(120, 30).join("\n");
     assert!(
         !screen.contains(PENDING),

@@ -14,12 +14,26 @@ impl App {
                 kind,
                 ledger_head,
             } => {
-                // A tool-result row hands one live card over to the transcript.
+                // A tool-result row is the answer to one live card, and its facts —
+                // the duration, the edit pair, the decision — are carried across
+                // HERE, at the announcement, because this is the one moment the
+                // positional frontier is known AND the row exists to key them on.
                 // Positional, not by id: the engine invokes a round's calls in
                 // order and appends their rows in the same order, and the ids
-                // repeat every round so there is nothing to match on. The duration,
-                // the edit pair and the decision are carried across here because
-                // they are facts the live card had that the row does not.
+                // repeat every round so there is nothing to match on.
+                //
+                // **The CARD itself is not handed over here.** The row cannot draw
+                // until its body lands (`record_item`), and a row with no body
+                // renders zero rows — so a pane that dropped the card at the
+                // announcement left the call in *neither half* for the frames
+                // between the two events: the card's rows erased, the window
+                // re-derived around the hole, the settled row drawn a frame later.
+                // The operator, in a loop of noop `edit` calls: *"periodic flicker
+                // while diff card settles - even green caret appears briefly inside
+                // the diff card"* — the erase sweep is what walked the terminal's
+                // own caret through the card's rows. The handover is
+                // [`App::record_item`]'s now, on the body: one frame, the card on
+                // screen throughout.
                 let mut carried: Option<u64> = None;
                 let mut carried_edit: Option<letibot_sessionlog::event::ToolEdit> = None;
                 let mut carried_decision: Option<letibot_sessionlog::view::SettledDecision> = None;
@@ -41,7 +55,6 @@ impl App {
                         // about this call, and the row that outlives the card is
                         // where it has to keep being shown.
                         carried_decision = c.and_then(|c| c.decision.clone());
-                        t.settled_calls += 1;
                     }
                 }
                 if let Some(ms) = carried {
