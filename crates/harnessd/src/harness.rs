@@ -9287,70 +9287,129 @@ impl Harness {
         let slice = host
             .output(&jid, offset, limit)
             .map_err(|e| e.to_string())?;
-        // **A job whose output was redirected to a file: the FILE is the window** (R41).
-        //
-        // The capture is empty by construction — the daemon gave the bytes to the file — so
-        // this used to answer with a sentence NAMING the path, and the operator's next ask was
-        // the obvious one: *"job pane can tail the file"*. It can, and the DAEMON does the
-        // reading: a head has no business reading the box's filesystem, and the path is this
-        // side's own record of where it sent the bytes.
-        //
-        // `offset == 0` is the TAIL — the last `limit` bytes — because that is what an output
-        // pane is for and what a fresh read means. Any other offset is a forward window from
-        // there, so the ring's own convention holds: `→` asks for the offset `next` named, and
-        // a reader can walk to the end of a long log.
-        if slice.produced == 0
-            && let Some(path) = letibot_tools::builtins::output_redirect_path(&view.command)
-        {
-            let state = view.state.word();
-            let never_ran = view.state.never_ran();
-            return Ok(match tail_file(&path, offset, limit) {
-                Some(w) => JobWindow {
+        // **The decision is [`job_window_for`'s]**, apart from the two reads, for the same
+        // reason [`fate_of`] is apart from `job_fate`: this is what a pane turns on, and
+        // reaching it through a `Harness` needs a backend, a registry, a gate and a store —
+        // so nothing ever held it to a REAL job, which is how the compound-command defect
+        // below survived every test this module had.
+        Ok(job_window_for(
+            &view.command,
+            &view.state,
+            &slice,
+            offset,
+            limit,
+        ))
+    }
+}
+
+/// **The window one read of a job's output answers with** — the decision half of
+/// [`Harness::job_output_window`], which does the two reads (the job's row, its capture
+/// ring) and hands everything to this.
+///
+/// **A job whose command redirects its output to a file: the FILE is the window** (R41),
+/// and the daemon does the reading — a head has no business reading the box's filesystem,
+/// and the path is this side's own record of where the bytes went.
+///
+/// **The redirect is enough; the capture holding bytes must not un-redirect the job.**
+/// The first shape of this answered from the file only when the capture was *completely*
+/// empty, which read the command as if a job either redirects or writes but cannot do
+/// both. The operator's own workbench said otherwise, measured in their store:
+///
+/// ```text
+/// handle  state      produced  redirect
+/// j87     exited 0   2426      /tmp/tpcc-trace2.log   ← the file was NOT read
+/// j82     killed     13        /tmp/tpcc-trace.log    ← same shape
+/// j70     killed      0        /tmp/tpcc-trace-server.log ← this one worked
+/// ```
+///
+/// j87's command is compound — `sleep 1; head -1 …; echo "=== MIX …"; cd … && ./stroppy
+/// run … > /tmp/tpcc-trace2.log 2>&1` — so a preamble of 2426 bytes reached the capture
+/// before the work's stage sent its own bytes to the file, and entering the job drew the
+/// preamble and never the run. **The trade this takes, stated rather than papered over:
+/// when a command names a file, that file is the window whatever the capture holds, and
+/// the capture's bytes — the preamble — are not drawn.** They are not lost silently:
+/// the fresh read says how many are outside the window and where the window is, the same
+/// *counted, not hidden* rule the jobs listing itself follows. The other shapes were
+/// rejected on this tree's own rule that `produced`/`from`/`dropped` are one story about
+/// one source: splicing the capture in front of the file makes one window out of two
+/// coordinate spaces whose offsets cannot mean the same thing, and switching to the file
+/// only at settlement hands the pane a `produced` that changes stories the moment the job
+/// ends — a livetail of a redirected job wants the file too, because that is where the
+/// work has been going all along.
+///
+/// `offset == 0` is the TAIL — the last `limit` bytes — because that is what an output
+/// pane is for and what a fresh read means. Any other offset is a forward window from
+/// there, so the ring's own convention holds: `→` asks for the offset `next` named, and
+/// a reader can walk to the end of a long log.
+fn job_window_for(
+    command: &str,
+    state: &letibot_tools::exec::JobState,
+    slice: &letibot_tools::exec::OutputSlice,
+    offset: u64,
+    limit: usize,
+) -> JobWindow {
+    if let Some(path) = letibot_tools::builtins::output_redirect_path(command) {
+        return match tail_file(&path, offset, limit) {
+            Some(w) => {
+                let mut lines = Vec::new();
+                // **The preamble, counted rather than hidden.** The capture may hold
+                // bytes the redirect never took — a compound command's preamble — and
+                // this window is over the FILE, so those bytes are outside it. The
+                // fresh read is where the disclosure belongs: `offset == 0` is the
+                // read that means *the tail*, and repeating the count above every
+                // paged read would be noise, not disclosure.
+                if offset == 0 && slice.produced > 0 {
+                    lines.push(format!(
+                        "{} bytes this job wrote outside the redirect are in its capture, \
+                         not in this window — this window is `{path}`",
+                        slice.produced
+                    ));
+                }
+                lines.extend(progress_lines(&w.text));
+                JobWindow {
                     from: w.from,
                     to: w.to,
                     produced: w.produced,
                     // Everything before the window was not shown: the pane says how much.
                     dropped: w.from,
-                    state,
-                    never_ran,
-                    lines: progress_lines(&w.text),
+                    state: state.word(),
+                    never_ran: state.never_ran(),
+                    lines,
                     next: (w.to < w.produced).then_some(w.to),
-                },
-                // **The file is not there yet**, or it cannot be read. The sentence that names
-                // it is still the honest answer, and it names the command that would read it.
-                None => JobWindow {
-                    from: 0,
-                    to: 0,
-                    produced: 0,
-                    dropped: 0,
-                    state,
-                    never_ran,
-                    lines: vec![format!(
-                        "this job's output goes to `{path}` — the file is not there yet, or \
-                         could not be read. `tail -n 50 {path}`"
-                    )],
-                    next: None,
-                },
-            });
-        }
-        Ok(JobWindow {
-            from: slice.from,
-            to: slice.to,
-            produced: slice.produced,
-            dropped: slice.dropped,
-            state: view.state.word(),
-            never_ran: view.state.never_ran(),
-            lines: if slice.produced == 0 {
-                // **Empty, and the redirected case cannot reach here** — a job whose command
-                // redirects its output was answered from the FILE above. This used to name
-                // the path in a sentence, which was the honest answer before the pane could
-                // tail it; see the branch above.
-                Vec::new()
-            } else {
-                progress_lines(&slice.text())
+                }
+            }
+            // **The file is not there yet**, or it cannot be read. The sentence that names
+            // it is still the honest answer, and it names the command that would read it.
+            None => JobWindow {
+                from: 0,
+                to: 0,
+                produced: 0,
+                dropped: 0,
+                state: state.word(),
+                never_ran: state.never_ran(),
+                lines: vec![format!(
+                    "this job's output goes to `{path}` — the file is not there yet, or \
+                     could not be read. `tail -n 50 {path}`"
+                )],
+                next: None,
             },
-            next: next_job_offset(&slice),
-        })
+        };
+    }
+    JobWindow {
+        from: slice.from,
+        to: slice.to,
+        produced: slice.produced,
+        dropped: slice.dropped,
+        state: state.word(),
+        never_ran: state.never_ran(),
+        lines: if slice.produced == 0 {
+            // **Empty, and the redirected case cannot reach here** — a job whose command
+            // redirects its output was answered from the FILE above.
+            Vec::new()
+        } else {
+            progress_lines(&slice.text())
+        },
+        next: next_job_offset(slice),
     }
 }
 
@@ -14140,6 +14199,177 @@ mod tests {
         assert!(tail_file(&dir.join("nope.log").to_string_lossy(), 0, 10).is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // **The fixtures for the window tests below: real jobs, really run.** The decision
+    // those tests hold to is `job_window_for`, which `Harness::job_output_window` hands
+    // its two reads; the honest way to exercise it is with a command a real `/bin/sh`
+    // ran, a capture ring that really holds what the preamble wrote, and a file the
+    // work's stage really created — the same substrate `jobwatch`'s tests spawn on,
+    // and the only one that can prove the fixture is the operator's measurement.
+    mod job_tail {
+        use super::*;
+        use letibot_tools::ProcessHost as _;
+        use letibot_tools::exec::{HostProcesses, ScopeKind, SpawnRequest};
+        use std::time::Duration;
+
+        /// Run `command` to its end and hand back the three things the window is
+        /// decided on: the command, its state, and its capture. A job that does not
+        /// exit 0 fails here, so a broken fixture never reaches the assertions as a
+        /// mystery.
+        fn a_settled_job(
+            host: &HostProcesses,
+            command: &str,
+        ) -> (
+            String,
+            letibot_tools::exec::JobState,
+            letibot_tools::exec::OutputSlice,
+        ) {
+            let id = host
+                .spawn(&SpawnRequest {
+                    command: command.to_string(),
+                    cwd: "/".into(),
+                    scope: ScopeKind::Session,
+                    scope_name: None,
+                    background: true,
+                    env: vec![],
+                    tty: false,
+                })
+                .expect("spawn");
+            match host.wait_job(&id, Duration::from_secs(30)) {
+                Ok(letibot_tools::exec::Waited::Happened {
+                    state: Some(letibot_tools::exec::JobState::Exited { code: 0 }),
+                    ..
+                }) => {}
+                other => panic!("the fixture did not run clean: {other:?}"),
+            }
+            let view = host.job(&id).expect("the job is still in the table");
+            let slice = host
+                .output(&id, 0, JOB_OUTPUT_WINDOW)
+                .expect("the capture reads");
+            (view.command, view.state, slice)
+        }
+
+        fn a_host(name: &str) -> (std::path::PathBuf, std::sync::Arc<HostProcesses>) {
+            let root = std::env::temp_dir().join(format!(
+                "letibot-jobtail-{name}-{pid}",
+                pid = std::process::id()
+            ));
+            std::fs::create_dir_all(&root).expect("scratch");
+            let host = HostProcesses::new(&root).expect("this box has a cgroup v2 tree");
+            (root, std::sync::Arc::new(host))
+        }
+
+        /// **THE MEASURED DEFECT, j87's own shape**: a compound command whose preamble
+        /// writes to the capture and whose work redirects to a file. Read from the
+        /// operator's store — `exited 0`, produced 2426, redirect `/tmp/tpcc-trace2.log`,
+        /// the file NOT read — with j70 (`produced 0`, same redirect, worked) proving
+        /// the empty capture was the only case the pane tailed.
+        ///
+        /// The window must answer with the FILE's tail whatever the capture holds, and
+        /// the capture's bytes must be counted, not hidden: the fresh read says how many
+        /// are outside the window and which file the window is.
+        #[test]
+        fn a_preamble_in_the_capture_does_not_stop_the_window_being_the_file() {
+            let (root, host) = a_host("compound");
+            let log = root.join("work.log");
+            let command = format!(
+                "sleep 0.1; echo '=== MIX (load + validate + mix) ==='; \
+                 printf 'work-a\\nwork-b\\n' > {} 2>&1",
+                log.display()
+            );
+            let (command, state, slice) = a_settled_job(&host, &command);
+
+            // **The fixture is the measurement or it is nothing**: the capture holds the
+            // preamble — bytes, produced > 0 — and not one byte of the work.
+            assert!(slice.produced > 0, "j87's shape needs a non-empty capture");
+            assert!(slice.text().contains("=== MIX"));
+            assert!(
+                !slice.text().contains("work-a"),
+                "the work must be in the file, not the capture: {:?}",
+                slice.text()
+            );
+
+            let w = job_window_for(&command, &state, &slice, 0, JOB_OUTPUT_WINDOW);
+            let file_len = std::fs::metadata(&log).expect("the work ran").len();
+            assert_eq!(w.produced, file_len, "the denominator is the FILE's length");
+            assert_eq!(w.from, 0);
+            assert_eq!(w.to, file_len);
+            let drawn = w.lines.join("\n");
+            assert!(
+                drawn.contains("work-b"),
+                "the file's tail is the window: {drawn}"
+            );
+            assert!(
+                !drawn.contains("=== MIX"),
+                "the preamble is not the window any more: {drawn}"
+            );
+            // **The preamble is disclosed, not silently dropped.** The line names the
+            // count that stayed in the capture and the file the window is over.
+            assert!(
+                drawn.contains(&slice.produced.to_string()) && drawn.contains("work.log"),
+                "the fresh read must count what it is not showing: {drawn}"
+            );
+            let _ = std::fs::remove_dir_all(&root);
+        }
+
+        /// **j70's case must not regress**: a redirect whose capture is empty — the
+        /// `produced == 0` the old condition required — still tails the file, and the
+        /// window gains no phantom disclosure about bytes that were never there.
+        #[test]
+        fn a_redirect_with_an_empty_capture_still_tails_and_claims_no_preamble() {
+            let (root, host) = a_host("empty-capture");
+            let log = root.join("solo.log");
+            let command = format!("printf 'solo\\n' > {} 2>&1", log.display());
+            let (command, state, slice) = a_settled_job(&host, &command);
+
+            assert_eq!(slice.produced, 0, "the fixture needs the empty capture");
+            let w = job_window_for(&command, &state, &slice, 0, JOB_OUTPUT_WINDOW);
+            assert_eq!(w.produced, 5);
+            // The file's own lines, and nothing bolted on: no phantom disclosure
+            // about a preamble that was never there.
+            let body = std::fs::read_to_string(&log).expect("the work ran");
+            assert_eq!(
+                w.lines,
+                progress_lines(&body),
+                "the file, and only the file"
+            );
+            let _ = std::fs::remove_dir_all(&root);
+        }
+
+        /// **A `2>&1` merge is not a redirect** — it is what makes the capture complete,
+        /// so the window is the capture. R41's parser guarantees it; this holds the
+        /// window path to the same guarantee end to end.
+        #[test]
+        fn a_merged_descriptor_keeps_the_capture_as_the_window() {
+            let (root, host) = a_host("merge");
+            let (command, state, slice) = a_settled_job(&host, "echo merged 2>&1");
+            assert!(slice.produced > 0);
+
+            let w = job_window_for(&command, &state, &slice, 0, JOB_OUTPUT_WINDOW);
+            assert_eq!(
+                w.produced, slice.produced,
+                "the denominator is the capture's"
+            );
+            assert_eq!(w.lines, progress_lines(&slice.text()));
+            assert!(w.lines.join("\n").contains("merged"));
+            let _ = std::fs::remove_dir_all(&root);
+        }
+
+        /// **A job with no redirect is unaffected**: the capture is the window, exactly
+        /// as before — the redirect branch must not have widened into this case.
+        #[test]
+        fn a_job_with_no_redirect_keeps_the_capture_as_the_window() {
+            let (root, host) = a_host("plain");
+            let (command, state, slice) = a_settled_job(&host, "echo plain");
+            assert!(slice.produced > 0);
+
+            let w = job_window_for(&command, &state, &slice, 0, JOB_OUTPUT_WINDOW);
+            assert_eq!(w.produced, slice.produced);
+            assert_eq!(w.lines, progress_lines(&slice.text()));
+            assert!(w.lines.join("\n").contains("plain"));
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 
     use super::*;
