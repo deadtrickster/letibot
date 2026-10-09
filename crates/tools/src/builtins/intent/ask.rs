@@ -31,7 +31,7 @@
 //! opencode style free user reply input, not claude code 'chat later'"*, with the
 //! unanswered case staying `not_run` and never becoming a default.
 //!
-//! # Six ways this refuses, and all six are `not_run`
+//! # Eight ways this refuses, and all eight are `not_run`
 //!
 //! | | what happened | why not something else |
 //! |---|---|---|
@@ -40,15 +40,17 @@
 //! | [`AskError::Nonconforming`] | an answer chose an option that was never offered | the same rule [`crate::adjudicate::AskAdjudicator`] applies: a non-conforming answerer never opens the gate |
 //! | [`AskError::Empty`] | an answer arrived with no option, no note and no free text | there is nothing in it to attribute to anybody |
 //! | [`AskError::NoteQualifiesNothing`] | a note arrived with no option chosen | reading it as free text would be the harness reinterpreting what a person said, which is the one thing this module must never do |
+//! | [`AskError::AbstainedAndAnswered`] | an abstention arrived carrying a choice, a note or words | two claims in one frame, and picking which one a person meant is the same defect |
 //! | [`AskError::Anonymous`] | an answer came back with nobody attached to it | an attribution to nobody is the failure this whole module exists to prevent |
+//! | [`AskError::NotAnAnswer`] | the other vocabulary's reply arrived for this request | the hub refuses it at the door; this is the belt to that pair of braces, and it is not an answer |
 //!
 //! # The answer vocabulary (D10)
 //!
-//! Three things **together**, and the fields are separate because folding them
-//! loses information:
+//! Four things, and the fields are separate because folding them loses information:
 //!
 //! ```text
-//!   QuestionAnswer { option: Option<usize>, note: Option<String>, free: Option<String> }
+//!   QuestionAnswer { option: Option<usize>, note: Option<String>, free: Option<String>,
+//!                    abstain: bool }
 //! ```
 //!
 //! * `option` — a model-provided choice, so the common case is one keystroke.
@@ -57,10 +59,29 @@
 //!   *"option B, but only for the CUDA box"*.
 //! * `free` — a first-class answer on its own. A person who wants to type a
 //!   sentence has answered the question; they have not deferred it.
+//! * `abstain` — **a deliberate no-answer**, which is an answer. It stands alone.
 //!
-//! At least one of `option` or `free` must be present, and `note` needs an
-//! `option` to qualify. [`QuestionAnswer::validate`] is where those hold, and it is
-//! the only door into an `Ok`.
+//! At least one of `option`, `free` or `abstain` must be present, and `note` needs
+//! an `option` to qualify. [`QuestionAnswer::validate`] is where those hold, and it
+//! is the only door into an `Ok`.
+//!
+//! # An abstention is not silence and not an empty answer
+//!
+//! Three things that look alike, told apart by **what arrived and what this tool
+//! reports**, which is the whole of the distinction:
+//!
+//! | | what arrived | outcome | what the model is told |
+//! |---|---|---|---|
+//! | **silence** | nothing; the deadline passed | `not_run` | nobody answered, the question is still open |
+//! | **an empty answer** | a frame with no option, no note, no words, no abstention | `not_run` | there is nothing in it; an empty answer is not a shrug |
+//! | **an abstention** | a frame that says so | **`Abstained`** | *this person deliberately did not answer* — an answer, and not permission to proceed |
+//!
+//! So the abstention is the only one of the three with its own outcome class. The
+//! model reads the class first (a `NO_RESULT` envelope rather than a `TOOL_ERROR`),
+//! and the sentence names who abstained and what they did not do. A model that
+//! cannot tell an abstention from silence will ask again into the same silence; one
+//! that cannot tell it from an empty answer will think it misheard; and one that
+//! reads either as assent does the thing the person declined to authorise.
 //!
 //! # This vocabulary is deliberately NOT `OptionKind`
 //!
@@ -72,18 +93,19 @@
 //! Overloading one into the other would put a free-form sentence where a policy
 //! engine reads a grant, so they stay two types.
 //!
-//! # What the wire has, and what it still needs
+//! # What the wire has, and what poses the question
 //!
-//! `PROTOCOL_VERSION` is 5 and [`crate::builtins::intent::ask::QuestionAnswer`] is
-//! what `ClientFrame::AnswerQuestion` carries head → daemon. What is **not** wired
-//! is the daemon → head direction: posing a question rides on
-//! `SessionEvent::DecisionRequested`'s existing `kind` field (§11.6 — *"a permission
-//! and a question are one mechanism, differing in `kind`"*), but that event's
-//! `options` are `DecisionOption`s carrying `OptionKind`, so a question's plain-text
-//! choices have nowhere to sit. Adding a `SessionEvent` variant touches nine files,
-//! two of which are under concurrent rewrite, so it is reported rather than done.
-//! See the crate report for exactly what the head must grow. [`Headless`] is what
-//! ships, and it refuses.
+//! `ClientFrame::AnswerQuestion` carries [`QuestionAnswer`] head → daemon, and
+//! `SessionEvent::DecisionRequested` carries the question the other way — its
+//! `kind` field is `"question"` (§11.6 — *"a permission and a question are one
+//! mechanism, differing in `kind`"*) and its `choices` are the model's plain-text
+//! options, which is the field `PROTOCOL_VERSION` 7 added so that a question could
+//! be posed *with* its choices rather than *"only by discarding the choices"*.
+//!
+//! The daemon's end of that is `letibot-harnessd`'s `HeadQuestioner`, which is what
+//! [`Wiring::questioner`](crate::builtins::intent::Wiring) is given for a session
+//! whose adjudicator is the head. [`Headless`] remains what a session with no head
+//! gets, and it refuses by name.
 
 use letibot_transcript::ToolOutcome;
 use serde_json::Value;
@@ -104,9 +126,10 @@ pub struct Question {
 
 /// **What a person said** — D10's shape, and the type that goes on the wire.
 ///
-/// Three independent fields, because the three things they carry are independent:
-/// a choice, a qualification *on that choice*, and a sentence typed instead of
-/// choosing. See the module docs for why none of them collapses into another.
+/// Four independent fields, because the four things they carry are independent: a
+/// choice, a qualification *on that choice*, a sentence typed instead of choosing,
+/// and a deliberate no-answer. See the module docs for why none of them collapses
+/// into another.
 ///
 /// `Serialize`/`Deserialize` because `letibot_sessionlog`'s
 /// `ClientFrame::AnswerQuestion` carries exactly this, head → daemon.
@@ -126,6 +149,26 @@ pub struct QuestionAnswer {
     /// than an answered one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free: Option<String>,
+    /// **A deliberate no-answer**, which is an answer. The operator: *"i can
+    /// abstain or type my answer"*.
+    ///
+    /// It is the fourth field rather than an empty `free` because the three things
+    /// it must be told apart from are three different facts: silence (no frame),
+    /// an empty answer (a frame with nothing in it, refused as
+    /// [`AskError::Empty`]), and this. It stands alone — see
+    /// [`Self::validate`] — and a model that receives it must state the assumption
+    /// it would otherwise make and stop, or ask something the person can answer.
+    ///
+    /// Elided when `false`, like the three fields above: an absent `abstain` and a
+    /// `false` one are the same claim, so nothing is lost and every frame that
+    /// existed before this field did is byte-identical.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub abstain: bool,
+}
+
+/// `skip_serializing_if` for [`QuestionAnswer::abstain`].
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl QuestionAnswer {
@@ -148,11 +191,29 @@ impl QuestionAnswer {
         }
     }
 
+    /// **A deliberate no-answer.** The only way to spell one, and it stands alone.
+    pub fn abstaining() -> Self {
+        QuestionAnswer {
+            abstain: true,
+            ..Default::default()
+        }
+    }
+
     /// **The only door into an `Ok`.** Every rule D10 states is here, and each
     /// failure is a `not_run` rather than a repair.
     pub fn validate(&self, offered: usize) -> Result<(), AskError> {
         let has_free = self.free.as_deref().is_some_and(|f| !f.trim().is_empty());
         let has_note = self.note.as_deref().is_some_and(|n| !n.trim().is_empty());
+        // **First, and alone.** An abstention is a whole answer; one that also
+        // carries a choice is two claims in one frame, and choosing between them
+        // would be the harness deciding what a person meant.
+        if self.abstain {
+            return if self.option.is_some() || has_free || has_note {
+                Err(AskError::AbstainedAndAnswered)
+            } else {
+                Ok(())
+            };
+        }
         if self.option.is_none() && !has_free {
             if has_note {
                 return Err(AskError::NoteQualifiesNothing);
@@ -173,6 +234,14 @@ impl QuestionAnswer {
     /// How it reads back to the model, given the question it answers.
     pub fn render(&self, q: &Question) -> String {
         let mut s = String::new();
+        if self.abstain {
+            // Said as what they did, not as what they did not: "abstained" is the
+            // act, and the parenthesis is the definition a model cannot infer.
+            s.push_str(
+                "abstained: they deliberately did not answer this one (no choice, no note, \
+                 no words)\n",
+            );
+        }
         if let Some(i) = self.option {
             let label = q.options.get(i).map(|s| s.as_str()).unwrap_or("(unknown)");
             s.push_str(&format!("chose option {i}: {label}\n"));
@@ -201,10 +270,19 @@ pub enum AskError {
     Empty,
     /// A note arrived with no option chosen, so it qualifies nothing.
     NoteQualifiesNothing,
+    /// An abstention arrived carrying a choice, a note or words.
+    AbstainedAndAnswered,
     /// An answer came back with no answerer.
     Anonymous,
     /// The head was there and the ask itself broke.
     Transport(String),
+    /// The other vocabulary's reply arrived for this question.
+    ///
+    /// `Hub::submit` refuses a permission's answer for a question at the door, so
+    /// this is the belt to that pair of braces and is not reachable through the
+    /// daemon. It exists because the arm has to say *something*, and "a permission's
+    /// answer arrived" is not [`Self::Transport`] — nothing failed to be delivered.
+    NotAnAnswer(String),
 }
 
 impl AskError {
@@ -242,6 +320,13 @@ impl std::fmt::Display for AskError {
                  Reading it as a free-form answer instead would be the harness deciding \
                  what a person meant, which it does not do."
             ),
+            AskError::AbstainedAndAnswered => write!(
+                f,
+                "an answer said the person was abstaining and also carried a choice, a note \
+                 or words, so it was not accepted and NOBODY has answered this question. \
+                 Nobody's answer is both, and picking which half they meant is not the \
+                 harness's to do."
+            ),
             AskError::Anonymous => write!(
                 f,
                 "an answer came back with no answerer attached, so there is no person to \
@@ -252,6 +337,11 @@ impl std::fmt::Display for AskError {
                 f,
                 "the question could not be delivered ({e}), so NOBODY was asked and \
                  nobody answered."
+            ),
+            AskError::NotAnAnswer(e) => write!(
+                f,
+                "what came back was not an answer to a question ({e}), so it settles \
+                 nothing and NOBODY has answered this question."
             ),
         }
     }
@@ -322,11 +412,14 @@ impl Tool for AskUserQuestion {
             "ask_user_question",
             "Ask the person driving this session a question, and wait for their answer. \
              Give `question`; optionally `options`, a short list of answers to choose \
-             between, and `because`, one line saying what you are stuck on. It returns \
-             an answer only when a person actually gave one, attributed to them. If \
-             nobody is attached, or nobody answers, it returns no result and says which \
-             — that is never a default answer and never permission to proceed on an \
-             assumption, so do not treat it as one.",
+             between, and `because`, one line saying what you are stuck on. They answer \
+             in one of four ways, and the result says which: a choice, a choice with \
+             their own note on it, words of their own, or an abstention. An abstention \
+             is an ANSWER and not permission to proceed on an assumption. The answer is \
+             attributed to the person by name, and a note belongs to the choice it came \
+             with. If nobody is attached, or nobody answers in time, it returns no \
+             result and says which — never a default answer, never permission to \
+             proceed.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -334,7 +427,7 @@ impl Tool for AskUserQuestion {
                     "options": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Answers to choose between. Omit for an open question. An answer naming none of these is not accepted."
+                        "description": "Answers to choose between. Omit for an open question. An answer naming none of these is not accepted — a person may still answer in their own words, or abstain."
                     },
                     "because": {"type": "string", "description": "One line: what you are stuck on and why the answer changes what you do."}
                 },
@@ -413,6 +506,13 @@ impl Tool for AskUserQuestion {
 
 /// Turn an answer into a result, refusing every shape that would attribute
 /// something to nobody or reinterpret what a person said.
+///
+/// **An abstention is the one answer that is not `Ok`.** It is a real answer —
+/// somebody was reached and said *not this one* — so it is not `not_run`, which is
+/// what both silence and a malformed answer get. It is `Abstained`: no result, and
+/// no permission either. The three are told apart by the outcome class *and* the
+/// sentence, which is the property `an_abstention_is_told_apart_from_silence_and_
+/// from_an_empty_answer` holds.
 fn accept(q: &Question, a: QuestionAnswer, by: String) -> Invocation {
     let refuse = |e: AskError| Invocation {
         outcome: e.outcome(),
@@ -430,6 +530,33 @@ fn accept(q: &Question, a: QuestionAnswer, by: String) -> Invocation {
     }
     let mut body = format!("question: {}\n{by} ", q.text);
     body.push_str(a.render(q).trim_start());
+    if a.abstain {
+        body.push_str(&format!(
+            "{by} was asked and chose not to answer, so there is no answer to this \
+             question. This is NOT silence and NOT an empty answer: an abstention is a \
+             decision they made, and it is not permission to proceed on an assumption. \
+             State the assumption you would have to make and stop, or ask a question they \
+             can answer."
+        ));
+        return Invocation {
+            outcome: ToolOutcome::Abstained {
+                reason: format!(
+                    "{by} abstained: they deliberately did not answer, so nothing was \
+                     decided. An abstention is not permission to proceed on an assumption."
+                ),
+            },
+            payload: body,
+            notes: vec![],
+            edit: None,
+            needs_in_view: Vec::new(),
+            media: None,
+        }
+        .with_note(format!(
+            "the abstention is attributed to {by} and is theirs, not the harness's \
+             inference: do not read it as a choice, and do not carry on as though the \
+             question had been answered."
+        ));
+    }
     Invocation::ok(body).with_note(format!(
         "this answer is attributed to {by}; it is what they said, not what the harness \
          inferred. A note qualifies the option it came with — do not read it as a \
@@ -463,6 +590,24 @@ mod scripted {
         pub fn choosing_with_note(by: &str, option: usize, note: &str) -> Self {
             ScriptedQuestioner(Ok((
                 QuestionAnswer::choosing(option).with_note(note),
+                by.into(),
+            )))
+        }
+
+        /// **The fourth thing, and an answer.** The person was reached and said they
+        /// are not answering this one.
+        pub fn abstaining(by: &str) -> Self {
+            ScriptedQuestioner(Ok((QuestionAnswer::abstaining(), by.into())))
+        }
+
+        /// Two claims in one frame, which is refused rather than halved.
+        pub fn abstaining_and_answering(by: &str) -> Self {
+            ScriptedQuestioner(Ok((
+                QuestionAnswer {
+                    abstain: true,
+                    free: Some("go with b".into()),
+                    ..Default::default()
+                },
                 by.into(),
             )))
         }
@@ -567,7 +712,7 @@ mod tests {
         assert!(out.contains("only 2 option"), "{out}");
     }
 
-    // ---- D10: the three things, together -------------------------------
+    // ---- D10: the four things, together -------------------------------
 
     #[test]
     fn d10_one_keystroke_is_an_answer() {
@@ -602,6 +747,14 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("qualifies the option it came with"), "{out}");
+        // **Both halves, and the person's name on the whole of it.** The operator's
+        // requirement is that each choice can carry their note; what reaches the
+        // model has to say which choice, what the note was, and whose it is — a
+        // note that arrived unattributed reads as the harness's own reasoning.
+        assert!(
+            out.contains("deadtrickster chose option 1: b"),
+            "the choice is not attributed to the person beside the note: {out}"
+        );
     }
 
     #[test]
@@ -619,6 +772,121 @@ mod tests {
             "a typed answer answers the question; it does not defer it"
         );
         assert!(r.render().contains("split it in two"), "{}", r.render());
+        // The words are the person's and are attributed to them: a free answer that
+        // arrived as prose the model could mistake for its own reasoning would be
+        // the same defect as an unattributed note.
+        assert!(
+            r.render().contains("deadtrickster and said: neither"),
+            "{}",
+            r.render()
+        );
+    }
+
+    // ---- the fourth shape: abstention ----------------------------------
+
+    #[test]
+    fn an_abstention_is_an_answer_and_is_not_permission_to_proceed() {
+        let r = ask(Arc::new(ScriptedQuestioner::abstaining("deadtrickster")), Q);
+        // **Not `Ok`.** The person did not answer, so a caller that read `Ok` would
+        // be reading an answer nobody gave.
+        assert!(
+            matches!(r.outcome, ToolOutcome::Abstained { .. }),
+            "an abstention must not be Ok: {r:?}"
+        );
+        let out = r.render();
+        assert!(out.contains("deadtrickster"), "{out}");
+        assert!(out.contains("abstained"), "{out}");
+        assert!(
+            out.contains("not permission to proceed on an assumption"),
+            "{out}"
+        );
+        // The envelope says the same thing the outcome does: no result, rather than
+        // an error or a body to build on.
+        assert_eq!(Envelope::classify(&out), Some("NO_RESULT"), "{out}");
+        assert!(!r.is_grounded());
+        // And a caller whose only call abstained cannot report `Ok` (§8.2).
+        assert!(matches!(
+            propagate(&[r.outcome]),
+            Propagation::Must(ToolOutcome::Abstained { .. })
+        ));
+    }
+
+    /// **The distinction this half exists for**, in one test: three ways a question
+    /// ends without an answer, and no two of them read alike.
+    #[test]
+    fn an_abstention_is_told_apart_from_silence_and_from_an_empty_answer() {
+        let silence = ask(Arc::new(ScriptedQuestioner::silent()), Q);
+        let empty = ask(Arc::new(ScriptedQuestioner::empty("deadtrickster")), Q);
+        let abstained = ask(Arc::new(ScriptedQuestioner::abstaining("deadtrickster")), Q);
+        let free = ask(
+            Arc::new(ScriptedQuestioner::free("deadtrickster", "go with b")),
+            Q,
+        );
+
+        // **Silence is nobody answering, and it says so.**
+        assert!(matches!(silence.outcome, ToolOutcome::NotRun { .. }));
+        assert!(
+            silence.render().contains("nobody answered"),
+            "{}",
+            silence.render()
+        );
+        // **An empty answer is somebody saying nothing**, which is not a decision
+        // either — and it is refused rather than promoted to a shrug.
+        assert!(matches!(empty.outcome, ToolOutcome::NotRun { .. }));
+        assert!(empty.render().contains("not a shrug"), "{}", empty.render());
+        // **An abstention is a decision**, so it is the one that is not `not_run`.
+        assert!(matches!(abstained.outcome, ToolOutcome::Abstained { .. }));
+        // **And the free answer is an answer**, `Ok`, with words in it.
+        assert_eq!(free.outcome, ToolOutcome::Ok);
+
+        // Pairwise: the four outcomes are four classes, and the four bodies are four
+        // sentences. A model that could not tell them apart could not act on any.
+        let bodies: Vec<String> = [&silence, &empty, &abstained, &free]
+            .iter()
+            .map(|r| r.render())
+            .collect();
+        for (i, a) in bodies.iter().enumerate() {
+            for (j, b) in bodies.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "two of the four end the same way");
+                }
+            }
+        }
+        assert!(
+            !abstained.render().contains("nobody answered"),
+            "an abstention is not silence: {}",
+            abstained.render()
+        );
+        assert!(
+            !abstained.render().contains("not a shrug"),
+            "an abstention is not an empty answer: {}",
+            abstained.render()
+        );
+    }
+
+    #[test]
+    fn an_abstention_that_also_answers_is_refused_rather_than_halved() {
+        let r = ask(
+            Arc::new(ScriptedQuestioner::abstaining_and_answering(
+                "deadtrickster",
+            )),
+            Q,
+        );
+        assert!(matches!(r.outcome, ToolOutcome::NotRun { .. }), "{r:?}");
+        let out = r.render();
+        assert!(out.contains("NOBODY has answered"), "{out}");
+        assert!(out.contains("Nobody's answer is both"), "{out}");
+    }
+
+    #[test]
+    fn an_abstention_needs_no_ladder_and_is_valid_against_an_open_question() {
+        // An abstention is not about the choices, so a question that offered none
+        // can still be abstained from.
+        let r = ask(
+            Arc::new(ScriptedQuestioner::abstaining("deadtrickster")),
+            r#"{"question":"which approach?"}"#,
+        );
+        assert!(matches!(r.outcome, ToolOutcome::Abstained { .. }), "{r:?}");
     }
 
     #[test]
@@ -667,6 +935,17 @@ mod tests {
         let free = QuestionAnswer::free("split it");
         let j2 = serde_json::to_string(&free).unwrap();
         assert!(!j2.contains("option") && !j2.contains("note"), "{j2}");
+        // An abstention is its own bytes, and an answer that is not one does not
+        // carry the field at all — so every frame from before it existed is
+        // byte-identical.
+        let abstain = QuestionAnswer::abstaining();
+        let j3 = serde_json::to_string(&abstain).unwrap();
+        assert_eq!(j3, r#"{"abstain":true}"#, "{j3}");
+        assert_eq!(
+            serde_json::from_str::<QuestionAnswer>(&j3).unwrap(),
+            abstain
+        );
+        assert!(!json.contains("abstain"), "{json}");
     }
 
     #[test]
@@ -680,6 +959,7 @@ mod tests {
                 .validate(2)
                 .is_ok()
         );
+        assert!(QuestionAnswer::abstaining().validate(2).is_ok());
         assert_eq!(
             QuestionAnswer::choosing(2).validate(2),
             Err(AskError::Nonconforming {
@@ -696,15 +976,26 @@ mod tests {
             .validate(2),
             Err(AskError::NoteQualifiesNothing)
         );
+        assert_eq!(
+            QuestionAnswer {
+                abstain: true,
+                free: Some("both".into()),
+                ..Default::default()
+            }
+            .validate(2),
+            Err(AskError::AbstainedAndAnswered)
+        );
         // Every one of those is `not_run`. There is no repair path.
         for e in [
             AskError::Empty,
             AskError::NoteQualifiesNothing,
+            AskError::AbstainedAndAnswered,
             AskError::Nonconforming {
                 chose: 9,
                 offered: 2,
             },
             AskError::Anonymous,
+            AskError::NotAnAnswer("a permission's answer".into()),
         ] {
             assert!(matches!(e.outcome(), ToolOutcome::NotRun { .. }), "{e:?}");
         }
@@ -725,5 +1016,31 @@ mod tests {
     fn the_description_says_how_to_use_it_and_nothing_about_the_operator() {
         let s = AskUserQuestion::new(Arc::new(Headless)).schema();
         assert_eq!(crate::schema::lint_description(&s.description), vec![]);
+        assert!(s.description.len() < 800, "{} bytes", s.description.len());
+    }
+
+    /// **The model reads this text and nothing else**, so every shape a person can
+    /// answer in has to be in it — including the one that is not permission.
+    #[test]
+    fn the_description_names_every_way_a_person_can_answer() {
+        let s = AskUserQuestion::new(Arc::new(Headless)).schema();
+        let d = &s.description;
+        for (what, needle) in [
+            ("a choice", "a choice"),
+            ("a note on that choice", "a choice with"),
+            ("their own words", "words of their own"),
+            ("an abstention", "abstention"),
+        ] {
+            assert!(d.contains(needle), "the description omits {what}: {d}");
+        }
+        // And the one sentence that keeps an abstention from reading as assent.
+        assert!(
+            d.contains("abstention is an ANSWER and not permission to proceed"),
+            "{d}"
+        );
+        // The two absences stay named too, because they are what a model will see
+        // most often and must not read as a default.
+        assert!(d.contains("If nobody is attached"), "{d}");
+        assert!(d.contains("never a default"), "{d}");
     }
 }

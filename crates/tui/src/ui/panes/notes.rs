@@ -59,6 +59,15 @@ pub(crate) fn note_view(n: &Note) -> view::Note {
         Note::NotRun(w) => view::Note::NotRun {
             detail: w.detail.clone(),
         },
+        // **A question's answer, drawn in the faint register rano already has for a
+        // line that is nobody's verdict.** `view::Note::Decided` would force one of
+        // four permission words onto it; `view::Note::NotRun` is *"· {detail}"*, which
+        // is what a settled thing nobody is waiting on should look like.
+        Note::Answered {
+            summary, by, said, ..
+        } => view::Note::NotRun {
+            detail: format!("{summary} — {by}: {said}"),
+        },
         // **The register is the operator's own act, and it is a fact this head holds**:
         // `closed` is the head's own record that it sent `Action::TermClose`, never a match
         // on the daemon's wording of the reason.

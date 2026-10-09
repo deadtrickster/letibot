@@ -146,6 +146,27 @@ pub struct OpenDecision {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettledDecision {
     pub req_id: String,
+    /// **Which vocabulary settled it**: `permission`, `question`, or `""` for a log
+    /// recorded before the field existed.
+    ///
+    /// Carried off the open decision at settle time, for the same reason
+    /// [`Self::advice`] is: the answer event has only the `req_id`, and a head that
+    /// kept this off the answer could not tell a question from a permission once the
+    /// card was gone.
+    ///
+    /// **A head needs it because the two kinds do not render alike.**
+    /// [`DecisionOutcome`] is the permission vocabulary — `Selected { option_id }`
+    /// names a rung of a ladder, and a question has no ladder — so a question's ending
+    /// travels as `Cancelled` with the person's answer in the `basis`
+    /// (`crate::question` and `letibot-harnessd`'s `Answers::ask_question` say why).
+    /// Without this field a head would draw *"cancelled"* over an answer somebody gave.
+    ///
+    /// `default` and no `PROTOCOL_VERSION` bump: an added, defaulted field on an
+    /// existing struct, which an older head ignores and a newer one reads as *"a
+    /// decision whose kind this log does not say"* — the permission rendering, which is
+    /// what it drew for everything before questions could be posed at all.
+    #[serde(default)]
+    pub kind: String,
     /// The tool call this decision was about, when it was a permission. `None` for
     /// a question, and for a log recorded before the field existed — in which case
     /// a head renders the outcome as a standalone note rather than on the call's
@@ -571,20 +592,29 @@ impl SessionView {
                 late,
             } => {
                 // The removal is the scrub. There is no path that leaves a settled
-                // decision in `open`, so no snapshot can carry one. Three things are
+                // decision in `open`, so no snapshot can carry one. Four things are
                 // read off the open decision **before** it is removed, because the
                 // answer event carries only the `req_id`: the summary, the call to
-                // put the outcome on, and the ORACLE'S ADVICE — which the answer
-                // event does not carry and which nothing downstream can recover.
-                let (summary, call_id, advice) = self
+                // put the outcome on, which VOCABULARY settled it, and the ORACLE'S
+                // ADVICE — which the answer event does not carry and which nothing
+                // downstream can recover.
+                let (summary, call_id, kind, advice) = self
                     .open
                     .iter()
                     .find(|d| &d.req_id == req_id)
-                    .map(|d| (d.summary.clone(), d.call_id.clone(), d.advice.clone()))
+                    .map(|d| {
+                        (
+                            d.summary.clone(),
+                            d.call_id.clone(),
+                            d.kind.clone(),
+                            d.advice.clone(),
+                        )
+                    })
                     .unwrap_or_default();
                 self.open.retain(|d| &d.req_id != req_id);
                 self.settled.push(SettledDecision {
                     req_id: req_id.clone(),
+                    kind,
                     call_id,
                     summary,
                     outcome: outcome.clone(),
