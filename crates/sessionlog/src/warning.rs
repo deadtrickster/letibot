@@ -250,6 +250,12 @@ pub const TABLE: &[(&str, Class)] = &[
     // ended between that check and this drain. Routine, because nothing went wrong in the
     // session — the parent's next `task_result` reads a finished child and says so.
     ("message_idle", Class::Routine),
+    // **A refusing verdict that did not reach the child.** The review said `reject` or
+    // `needs_human`, the row is written, and the message carrying the complaints could not be
+    // sent — the child's session has closed, or the entry left the queue between the write and
+    // the delivery. Failure: the ball was supposed to go back and did not, so the entry waits
+    // for a person rather than for the child. See `Harness::send_a_refusal_back`.
+    ("refusal_undelivered", Class::Failure),
     // **A finished `task_start` child's branch is in the merge queue**, said to the parent that
     // started it. Routine by the rule at the top of this table, and for the reason
     // `operator_call_ran` is: it reports something that worked, and what it puts on the screen
@@ -640,15 +646,25 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 90 codes, of which **9** are the reader's own input refused.
+    /// **The census, pinned.** 91 codes, of which **9** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_32_routine_9_refused_and_49_failures() {
+    fn the_table_is_32_routine_9_refused_and_50_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
+        // **91, not the 90 the last census was taken at.** One arrival, and it moves the red
+        // register: `refusal_undelivered` is the sentence said when a gatekeeper's refusing
+        // verdict was written onto its review row and the message carrying the complaints could
+        // not be sent — the child's session has closed, or the entry left the queue between the
+        // write and the delivery. A Failure by the rule at the top of the table: the ball was
+        // supposed to go back to the session that did the work and did not, so the entry waits
+        // for a person rather than for the child, and the alternative to saying so is a queue
+        // that looks like it sent work back when nothing was sent. See
+        // `Harness::send_a_refusal_back`.
+        //
         // **90, not the 89 the last census was taken at.** One arrival, and it moves the red
         // register: `todo_check_failed` is a CHILD that was due its idle plan-check and whose
         // turn failed. A Failure by `wake_failed`'s own ruling three rows up — the session is
@@ -750,12 +766,12 @@ mod the_register_census {
         //     and not a routine note: it is a check that did not happen, and the sentence's job is
         //     *look at this*, because the alternative is a command that says nothing and never
         //     ends.
-        assert_eq!(TABLE.len(), 90, "the table's size");
+        assert_eq!(TABLE.len(), 91, "the table's size");
         assert_eq!(count(Class::Routine), 32);
         assert_eq!(count(Class::Refused), 9, "the nine in READER_INPUT");
-        assert_eq!(count(Class::Failure), 49);
+        assert_eq!(count(Class::Failure), 50);
         // And the census the ruling turns on, as a ratio a reader can check: **the red
-        // register is 49 of 90 and the middle is 9**, which is why the third register is a
+        // register is 50 of 91 and the middle is 9**, which is why the third register is a
         // correction rather than a redefinition — most of the failures were already the
         // right kind of thing.
     }

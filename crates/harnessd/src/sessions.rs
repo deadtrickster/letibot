@@ -1278,6 +1278,52 @@ impl<'a> Sessions<'a> {
         self.after_turn(session_id, &hub, out)
     }
 
+    /// **A message to a session the daemon holds, between that session's turns** — the row it
+    /// is, and the turn it makes.
+    ///
+    /// The operator's ruling, in their words: *"my commands should start a turn and should be
+    /// printed to me"*. A `!` line and a message are the same two acts, for the same reason: the
+    /// deposit is a row on the session's own log — the thing the agent reads and the head draws —
+    /// and the turn is what makes it an utterance somebody answered rather than a note nobody saw.
+    /// `Ignored` here would be the whole defect `run_after_operator_shell` was fixed for, one door
+    /// over: the message sits in the transcript until something else starts a turn.
+    ///
+    /// **The words are [`Harness::submit_a_parents_message`]'s, and that is not a detail.** A
+    /// message to a running session arrives through `HubSteering`'s arm as a steering message; a
+    /// message to an idle one arrives through this door as a turn. Same speaker
+    /// (`Speaker::Agent`, never the operator: a peer's words may not authorise the act they race),
+    /// same text, same trail line — a recipient that could tell which door its message came
+    /// through would be reading the machinery instead of the message.
+    ///
+    /// **The tail is `run_prompt`'s, deliberately.** A message's turn is a turn: it appends rows,
+    /// it can reach the wall, and a session that was only ever spoken to would have compacted
+    /// never. So the wall is checked before the send, the turn clock starts here, and `after_turn`
+    /// owns the way out — one copy of that sequence, the reason `run_prompt` exists at all.
+    fn run_a_message_from_a_session(
+        &mut self,
+        session_id: &str,
+        from: &str,
+        text: &str,
+    ) -> Result<Reply, HarnessError> {
+        self.compact_if_at_the_wall(session_id);
+        let began = letibot_sessionlog::event::now_ms();
+        if let Some(h) = self.open.get_mut(session_id) {
+            h.begin_turn_clock(began);
+        }
+        let hub = self.registry.get(session_id);
+        let out = match self.open.get_mut(session_id) {
+            Some(h) => h.submit_a_parents_message(from, text),
+            None => {
+                return Err(HarnessError::Setup(format!(
+                    "session {session_id} is not open, so nothing could be delivered to it"
+                )));
+            }
+        };
+        self.publish_title(session_id);
+        self.arm_wake(session_id);
+        self.after_turn(session_id, &hub, out)
+    }
+
     /// **Everything that follows a turn, whatever started it.**
     ///
     /// A prompt from a script, a prompt from a head, a monitor firing — three ways
@@ -2721,15 +2767,20 @@ impl<'a> Sessions<'a> {
                     Err(e) => Outcome::Failed(e),
                 }
             }
-            // **A parent's message for a session the daemon does not hold belongs to the thread
-            // that owns it** — the same rule, and the same door, as the interrupt arm above.
-            // Since the between-turns fix a message to a child is no longer *"a turn in flight
-            // or nothing"*: the child's own reader is woken by the parent's `task_message` and
-            // runs a turn for it (`harness::serve_child`'s `ChildCommand::Hear`). So a worker
-            // that ran this arm's sentence instead would be both the second writer this tree
-            // keeps closing and a false report — the reader IS there, and it will read it.
-            // What is left below is the case the hand-back cannot reach: a hub that is already
-            // closed, where the sentence is true.
+            // **A message for a session the daemon does not hold belongs to the thread that
+            // owns it** — the same rule, and the same door, as the interrupt arm above. Since
+            // the between-turns fix a message to a child is no longer *"a turn in flight or
+            // nothing"*: the child's own reader is woken by the sender's `task_message` and runs
+            // a turn for it (`harness::serve_child`'s `ChildCommand::Hear`). So a worker that ran
+            // this arm's sentence instead would be both the second writer this tree keeps closing
+            // and a false report — the reader IS there, and it will read it.
+            //
+            // **And a message for a session the daemon DOES hold is this arm's own work.** That
+            // is the lateral channel's whole delivery problem: the main session is `open`, so it
+            // has no reader of its own to hand anything back to, and until this branch existed a
+            // message addressed to it skipped the hand-back, fell through to `message_idle`
+            // (*"that session is gone, so nothing will deliver it"*) and was dropped — in exactly
+            // the case the design needs, a session sending another session something.
             CommandKind::Message { from, text } => {
                 if !self.open.contains_key(session_id)
                     && let Some(hub) = &hub
@@ -2737,6 +2788,23 @@ impl<'a> Sessions<'a> {
                 {
                     return Outcome::HandedOn;
                 }
+                // **The session the WORKER owns: a row the agent reads, and the turn it makes.**
+                // The operator's ruling for their own lines is the rule here too — *"my commands
+                // should start a turn and should be printed to me"* — and a message is that pair
+                // of acts: the deposit is a row on the session's own log, and the turn is what
+                // makes it an utterance somebody answered. A session whose turn is already
+                // RUNNING never reaches this arm: its own steering poll takes the message at the
+                // next round boundary (`HubSteering`'s `Message` arm), so there is one writer and
+                // one text on both doors.
+                if self.open.contains_key(session_id) {
+                    return match self.run_a_message_from_a_session(session_id, from, text) {
+                        Ok(reply) => Outcome::Replied(Box::new(reply)),
+                        Err(e) => Outcome::Failed(e.to_string()),
+                    };
+                }
+                // What is left is the case neither door can reach: a session that is not held
+                // and has no reader — its hub is closed, or there is none — where the sentence
+                // below is true.
                 if let Some(hub) = &hub {
                     let said = match text.chars().count() > 200 {
                         true => format!("{}…", text.chars().take(200).collect::<String>()),
@@ -2745,10 +2813,10 @@ impl<'a> Sessions<'a> {
                     hub.publish(SessionEvent::Warning {
                         code: "message_idle".into(),
                         detail: format!(
-                            "a message from `{from}` could not be given back to the session's \
-                             own reader — that session is gone, so nothing will deliver it: \
-                             {said}. The parent's `task_message` was accepted and did not land — \
-                             its child's answer is what `task_result` reads."
+                            "a message from `{from}` could not be delivered: `{session_id}` is \
+                             gone, so nothing will read it — the daemon holds no session of that \
+                             id and the hub it had is closed: {said}. The sender's `task_message` \
+                             was accepted and did not land."
                         ),
                         compaction: None,
                     });
