@@ -2612,15 +2612,54 @@ impl<'a> Sessions<'a> {
             }
             CommandKind::Promote => {
                 if let Some(hub) = &hub {
-                    hub.take_promote_request();
-                    hub.publish(SessionEvent::Warning {
-                        code: "promote_idle".into(),
-                        detail: "a background request arrived between turns; nothing \
-                                 was running to move"
-                            .into(),
+                    // **A run of the operator's is a call in flight that this worker is
+                    // NOT holding.** It runs on a thread of its own (`crate::bangrun`),
+                    // and that thread's `bash` wait loop — not this arm — is the
+                    // designed consumer of the promote flag: it is the thing that
+                    // knows the job id and can move the cgroup. Taking the flag here
+                    // was the operator's report, sentence for sentence — *"ctrl-o
+                    // printed \"background requested\" and didnt background it"*: the
+                    // request arrived, this arm ate it between turns because the
+                    // WORKER was between turns, and the run it was aimed at kept
+                    // sleeping in the foreground with nothing left to read. So the
+                    // flag stays for the run's own loop (it polls every half second),
+                    // and the sentence says where the request went rather than the
+                    // false "nothing was running to move".
+                    //
+                    // The one race — the run ending in the window after this check but
+                    // before its loop's last poll — is closed at the run's end:
+                    // `run_and_hand_back` takes whatever flag survives it, so a
+                    // request can never sit stale for the next unrelated foreground
+                    // call to eat.
+                    if self.bang_run_in_flight(session_id) {
+                        hub.publish(SessionEvent::Warning {
+                            code: "promote_in_flight".into(),
+                            detail: "a background request arrived while the operator's \
+                                     run is in flight on its own thread; its wait loop \
+                                     takes it and moves the run"
+                                .into(),
 
-                        compaction: None,
-                    });
+                            compaction: None,
+                        });
+                        return Outcome::Ignored;
+                    }
+                    // **`None` means a wait loop already honoured it.** A promote sent
+                    // during a turn is taken by that turn's own `bash` wait loop, which
+                    // promotes the call and settles it as `Backgrounded`; this command
+                    // then reaches the worker only after the turn has ended. Warning
+                    // "nothing was running to move" there is the same lie with the
+                    // sign flipped — a promotion that happened, reported as one that
+                    // could not.
+                    if hub.take_promote_request().is_some() {
+                        hub.publish(SessionEvent::Warning {
+                            code: "promote_idle".into(),
+                            detail: "a background request arrived between turns; nothing \
+                                     was running to move"
+                                .into(),
+
+                            compaction: None,
+                        });
+                    }
                 }
                 Outcome::Ignored
             }

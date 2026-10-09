@@ -223,6 +223,20 @@ fn run_and_hand_back(
             )
         }
     };
+    // **Take any promote request that outlived the wait.** The run's `bash` wait
+    // loop polls the flag every half second and takes one aimed at it mid-flight;
+    // a request that landed in the final window — after the loop's last poll, before
+    // the run settled — has no consumer left, and a flag left set is a trap: the
+    // NEXT unrelated foreground call in this session would take it and promote
+    // ITSELF. Both ends of the window are closed by taking it here, where the run
+    // is over and "nothing was left to move" is the honest answer.
+    let mut payload = payload;
+    if hub.take_promote_request().is_some() {
+        payload.push_str(
+            "\n\n[a background request (Ctrl+O) arrived as this run ended; there was \
+             no process left to move]",
+        );
+    }
     let queued = hub.submit_daemon(
         who.clone(),
         // The line's own submission carried the head's request id; the settle carries

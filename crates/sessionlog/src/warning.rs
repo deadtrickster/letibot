@@ -228,6 +228,14 @@ pub const TABLE: &[(&str, Class)] = &[
     // reach it, which is exactly what the wake exists to prevent.
     ("wake_failed", Class::Failure),
     ("promote_idle", Class::Routine),
+    // **A promote routed, not answered here.** The operator's Ctrl+O arrived while
+    // their own run is in flight on the bang thread, so the worker — free, by the
+    // design that put the run on a thread of its own — leaves the flag for that
+    // run's wait loop to take and move the run. Routine: it reports the operator's
+    // own act on its way to its consumer, and the promotion's own record is the
+    // answer. See `Sessions::dispatch`'s `CommandKind::Promote` arm for the drop
+    // this routing replaces.
+    ("promote_in_flight", Class::Routine),
     // **A parent's message to a subagent that had already finished** — see
     // `CommandKind::Message`. The runner refuses these by name before submitting
     // (`HarnessTaskRunner::send`), so this arm is the race it cannot close: the child's turn
@@ -624,15 +632,22 @@ mod the_register_census {
         "slash_refused",
     ];
 
-    /// **The census, pinned.** 86 codes, of which **8** are the reader's own input refused.
+    /// **The census, pinned.** 89 codes, of which **9** are the reader's own input refused.
     ///
     /// R29 part two's instruction was to *measure before ruling*, and this is the measurement
     /// kept where it cannot drift: `Class`'s docs quote these numbers, and a code moved or
     /// added without a thought fails here rather than silently changing what a reader is
     /// taught by the colour of the screen.
     #[test]
-    fn the_table_is_31_routine_9_refused_and_48_failures() {
+    fn the_table_is_32_routine_9_refused_and_48_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k)| *k == c).count();
+        // **89, not the 88 the last census was taken at.** One arrival: `promote_in_flight`
+        // is the sentence said when a head's Ctrl+O arrives while the operator's own run is
+        // in flight on the bang thread — the worker is free by that thread's design, so the
+        // flag is left for the run's own wait loop to take and move the run. Routine by
+        // `promote_idle`'s own ruling beside it: the operator asked for this, the line says
+        // where the request went, and the promotion's own record is the answer.
+        //
         // **88, not the 86 the last census was taken at.** Two arrivals, one per verdict of the
         // key card (`Harness::obtain_key`, the daemon asking for a provider's API key on the
         // masked secret card): `provider_key_saved` is Routine — the ask worked, and the line
@@ -719,8 +734,8 @@ mod the_register_census {
         //     and not a routine note: it is a check that did not happen, and the sentence's job is
         //     *look at this*, because the alternative is a command that says nothing and never
         //     ends.
-        assert_eq!(TABLE.len(), 88, "the table's size");
-        assert_eq!(count(Class::Routine), 31);
+        assert_eq!(TABLE.len(), 89, "the table's size");
+        assert_eq!(count(Class::Routine), 32);
         assert_eq!(count(Class::Refused), 9, "the nine in READER_INPUT");
         assert_eq!(count(Class::Failure), 48);
         // And the census the ruling turns on, as a ratio a reader can check: **the red

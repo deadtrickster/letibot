@@ -38,6 +38,13 @@
 //! removes it. **The operator's own `!` line has no deadline at all** — see
 //! [`deadline_for`] for the measurement and the rule.
 //!
+//! And a foreground command that runs past [`SLOW_FOREGROUND`] — one minute — is
+//! **told on**, in both directions: the wait loop's progress line while it runs
+//! (the operator's), and a note on the result (the model's, in band, on the next
+//! round) saying that a command this long belongs in the background rather than
+//! behind a raised `timeout_ms`. The rule is measured, not worded: it was written
+//! after a model asked for `timeout_ms: 600000` instead of `background: true`.
+//!
 //! ## The outcome is a variant, not a wording
 //!
 //! A backgrounded command comes back as
@@ -120,6 +127,48 @@ fn deadline_for(asked_ms: Option<u64>, background: bool, operator: bool) -> Opti
     ))
 }
 
+/// **How long a foreground run may go before the daemon says it is the wrong
+/// shape** — one minute.
+///
+/// The operator's rule, in their words: *"so if tool took more than a minute we
+/// should remind model to use background jobs"* — written after watching a model
+/// raise `timeout_ms` to 600000 for a `cargo test` it could have backgrounded. The
+/// number has three anchors rather than one taste: it is the operator's sentence;
+/// it is half of [`DEFAULT_TIMEOUT_MS`], so under the default deadline the
+/// reminder always arrives while the call is still runnable (a reminder that
+/// could only land after the kill is a post-mortem, and the kill's own sentence
+/// already teaches this); and it is 120 beats of the wait loop's 500 ms poll, so
+/// no merely slow tick can fire it.
+const SLOW_FOREGROUND: Duration = Duration::from_secs(60);
+
+/// **The reminder a long foreground run owes the seat that reads its result**, or
+/// `None` when it owes nothing.
+///
+/// Pure like [`deadline_for`], and for the same reason: the boundary is a fact
+/// about inputs — how long the run has been going, and whose run it is — and a
+/// test that waited a real minute to watch a sentence appear would not be a test
+/// at all. The wiring is two lines that reuse registers the loop already has: the
+/// progress line the wait loop emits (the operator's, live, once), and the note
+/// [`Bash::invoke`] appends to the result (the model's, on the next round, in
+/// band).
+///
+/// `operator` is the operator's own run ([`InvokeCtx::tty`]), and it is exempt:
+/// that run is watched by the person who typed it, its stop is their own act, and
+/// the seat that reads a `!` line's result is a person, not a model deciding how
+/// to spell its next call.
+fn slow_foreground(elapsed: Duration, operator: bool) -> Option<&'static str> {
+    if operator || elapsed < SLOW_FOREGROUND {
+        return None;
+    }
+    Some(concat!(
+        "this command ran over a minute in the foreground. Raising `timeout_ms` ",
+        "only makes the wait longer; a command you expect to take that long ",
+        "belongs in the background — call `bash` again with `background: true`: ",
+        "the job starts at once, its completion is delivered to you when it ends, ",
+        "and nothing (not you, not the turn) waits for it.",
+    ))
+}
+
 impl Tool for Bash {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
@@ -155,7 +204,7 @@ impl Tool for Bash {
                 "properties": {
                     "command": {"type": "string", "description": "The command line, run by /bin/sh in the workspace."},
                     "cwd": {"type": "string", "description": "Directory to run in, relative to the workspace root. Defaults to the root."},
-                    "timeout_ms": {"type": "integer", "description": "How long this command may run before it is killed and the result says so. Defaults to 120000 (2 minutes); set it higher for a command you know takes longer. Ignored when background is true."},
+                    "timeout_ms": {"type": "integer", "description": "How long this command may run before it is killed and the result says so. Defaults to 120000 (2 minutes); set it higher for a command you know takes longer. Ignored when background is true. A command you expect to take over a minute belongs in the background — `background: true` runs it with no deadline and wakes you when it ends — rather than behind a raised timeout_ms."},
                     "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting."},
                     "scope": {"type": "string", "description": "Which scope owns the process: `turn` (dies at the end of this turn), `session` (dies with the session), or `explicit` (survives the session; requires `scope_name`)."},
                     "scope_name": {"type": "string", "description": "Names an `explicit` scope so it can be listed and ended later."}
@@ -500,6 +549,7 @@ impl Tool for Bash {
                 stdin: stdin.clone(),
             });
         }
+        let waited_from = std::time::Instant::now();
         let foreground = wait_with_progress(ctx, host, &id, timeout);
         // **The run is over, so whatever card was up for it comes down.** After the wait
         // and before every branch below, because the three of them (a state, a promotion, a
@@ -704,6 +754,29 @@ impl Tool for Bash {
             ),
         };
 
+        // **A run that spent over a minute in the foreground says so on its way
+        // out** — appended to the result, which is the channel the model reads, so
+        // the reminder lands on the next round in band, with no new delivery path.
+        // The operator saw the live line during the wait (the loop's progress
+        // register); this is the model's copy, and it names the tool's own feature
+        // rather than the escape hatch the model reached for — the measured defect
+        // was a `timeout_ms` of 600000 for a build that belonged in the background.
+        //
+        // Skipped for the two deadline arms, whose payloads already end with
+        // *"call `bash` again with a larger `timeout_ms`, or `background: true`"* —
+        // a second note would give the same advice twice on one card. And for a
+        // promotion, whose body already says the command was moved because the
+        // model did not ask for it.
+        let deadline_answered = matches!(
+            &state,
+            JobState::Killed { by, .. } if by == crate::exec::DEADLINE_KILL
+        ) || (matches!(&state, JobState::Running) && timeout.is_some());
+        if let Some(note) = slow_foreground(waited_from.elapsed(), ctx.tty)
+            && !deadline_answered
+        {
+            inv = inv.with_note(note);
+        }
+
         // **And what it changed.** Attached as an edit when it is one file, which
         // is the shape a script-that-edits has; named otherwise, because
         // `ToolResult` carries one card and a merge touching forty files is not
@@ -799,6 +872,10 @@ struct Told {
     /// and not on the line alone: a program that asks the same question twice **after saying
     /// something in between** has asked twice, and the second ask is a second thing to answer.
     raised: Option<(u64, Option<String>)>,
+    /// Whether the daemon has already said this run is slow. Once per run: the
+    /// condition does not un-cross, and a line every 500 ms for one fact is the
+    /// liveness signal this loop refuses to be.
+    slow: bool,
     /// Whether the daemon has already said it cannot tell whether this run is waiting. Once
     /// per run: it is a disclosure about a condition, and the condition does not change while
     /// the run lasts.
@@ -866,6 +943,19 @@ fn wait_with_progress(
                 ));
             }
             ask_if_waiting(ctx, host, id, &v, &mut told);
+        }
+        // **Past a minute in the foreground, say so — once, in this loop's own
+        // register.** The decision is [`slow_foreground`]'s and the boundary is
+        // [`SLOW_FOREGROUND`]'s; this is the operator's live line, drawn on the
+        // same card the bytes count above draws on. The model's copy is appended
+        // to the call's result by [`Bash::invoke`], which is the channel it reads.
+        if !told.slow && slow_foreground(started.elapsed(), ctx.tty).is_some() {
+            told.slow = true;
+            ctx.progress(format!(
+                "`{id}`: {:.0}s in the foreground and still running — this is what \
+                 `background: true` is for (Ctrl+O moves it there now)",
+                started.elapsed().as_secs_f32()
+            ));
         }
     }
     Foreground::State(host.job(id).map(|v| v.state).unwrap_or(JobState::Running))
@@ -1104,6 +1194,38 @@ mod tests {
         // A `timeout_ms` no head can even pass today is still not a deadline:
         // the person's run is the person's. See `deadline_for` for the rule.
         assert_eq!(deadline_for(Some(5_000), false, true), None);
+    }
+
+    /// The boundary is the operator's own rule — *"if tool took more than a
+    /// minute"* — and both sides of it are pinned without waiting a real minute:
+    /// the decision is pure, so a nanosecond either side of [`SLOW_FOREGROUND`]
+    /// stands in for the minute.
+    #[test]
+    fn a_foreground_run_owes_the_reminder_past_one_minute_and_not_before() {
+        assert_eq!(slow_foreground(Duration::from_secs(59), false), None);
+        assert_eq!(
+            slow_foreground(SLOW_FOREGROUND - Duration::from_millis(1), false),
+            None,
+            "the reminder fires MORE than a minute in, not at the minute"
+        );
+        let note = slow_foreground(SLOW_FOREGROUND, false)
+            .expect("a run that reaches the minute owes its reader the reminder");
+        // The advice names the tool's own feature AND the escape hatch it replaces
+        // — the measured model raised `timeout_ms`, so the sentence has to say why
+        // that was the wrong knob, not merely name the right one.
+        assert!(note.contains("background: true"), "{note}");
+        assert!(note.contains("timeout_ms"), "{note}");
+        assert!(note.contains("completion is delivered"), "{note}");
+    }
+
+    /// The operator's own run is exempt: a person is watching it, and the seat
+    /// that reads its result is that person — the reminder is for a model
+    /// deciding how to spell its next call.
+    #[test]
+    fn the_operators_own_run_is_not_reminded_even_past_the_minute() {
+        assert_eq!(slow_foreground(Duration::from_secs(600), true), None);
+        // And the contrast: a model's run of the same age owes it.
+        assert!(slow_foreground(Duration::from_secs(600), false).is_some());
     }
 
     #[test]
