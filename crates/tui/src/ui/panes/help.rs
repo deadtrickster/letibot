@@ -118,8 +118,10 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
         ),
         (
             "ctrl-e",
-            "on an empty prompt: the editor (rano), asking for a file to open — ctrl-] comes \
-             back to the prompt, ctrl-q closes it. With text typed it is end-of-line",
+            "on an empty prompt: the editor (rano), asking for a file to open; with the editor \
+             open, it puts it away and brings it back, files and places kept — ctrl-] moves the \
+             keyboard between it and the prompt, ctrl-q closes it. With text typed it is \
+             end-of-line",
         ),
         ("ctrl-l", "repaint the screen"),
         (

@@ -98,6 +98,12 @@ pub struct EditorPane {
     pub(crate) ed: Rano,
     /// The pane has the keyboard. False is the composer's turn, with the pane still drawn.
     pub(crate) focused: bool,
+    /// **Put away, not closed** — `ctrl-e` on an empty prompt. The conversation has its
+    /// rectangle back and rano keeps every buffer, cursor and undo as they were; the same key
+    /// brings it back. The operator, 2026-10-09: *"how to switch from open edit back to
+    /// conversation without closing file?"* — and *"editor is just a pane"*, so typing in the
+    /// prompt never hides it: only the key does.
+    pub(crate) hidden: bool,
     /// The rectangle last given to rano, in terminal cells: mouse reports are hit-tested
     /// against it, and rano maps them through the same one.
     pub(crate) area: Area,
@@ -139,6 +145,7 @@ impl EditorPane {
         EditorPane {
             ed,
             focused: true,
+            hidden: false,
             area: Area::default(),
             sends,
             buf: rano::render::Buffer::empty(rano::render::Rect::new(0, 0, 0, 0)),
@@ -162,7 +169,7 @@ impl App {
     /// **Is the editor pane on the screen** — open, and not covered by a `!term` pane, which
     /// takes the rectangle and the keyboard first.
     pub fn editor_drawn(&self) -> bool {
-        self.edit_pane.is_some() && !self.pane_open()
+        self.edit_pane.as_ref().is_some_and(|p| !p.hidden) && !self.pane_open()
     }
 
     /// **Does the editor pane have the keyboard.**
@@ -199,6 +206,7 @@ impl App {
         }
         match pane.ed.open_review(&path, f.change.clone()) {
             Ok(()) => {
+                pane.hidden = false;
                 pane.focused = true;
                 pane.dirty = true;
             }
@@ -220,6 +228,7 @@ impl App {
     /// change — and when this conversation has changed nothing, say so rather than nothing.
     pub(crate) fn editor_chord(&mut self) -> Option<Action> {
         if let Some(p) = self.edit_pane.as_mut() {
+            p.hidden = false;
             p.focused = true;
             p.dirty = true;
         } else if let Some(f) = self.newest_change() {
@@ -262,13 +271,24 @@ impl App {
             && !self.jobs_pane
     }
 
-    /// **`ctrl-e` on an empty prompt: the editor, on any file.**
+    /// **`ctrl-e` on an empty prompt: the editor, on any file — and away again.**
     ///
-    /// Back into the pane when it is open, with whatever it holds. Otherwise rano opens with
-    /// its own `Open:` prompt up (its `open-file`, F8), so the next thing typed is a path —
-    /// relative to the directory the head runs in, as rano reads one. Nothing has to have
-    /// changed first, which is what `ctrl-]` needs.
+    /// With no pane, rano opens with its own `Open:` prompt up (its `open-file`, F8), so the
+    /// next thing typed is a path — relative to the directory the head runs in, as rano reads
+    /// one. Nothing has to have changed first, which is what `ctrl-]` needs.
+    ///
+    /// With a pane, the key **toggles it**: on the screen, it is put away and the conversation
+    /// comes back (`hidden`); put away, it comes back with the keyboard, as it was left. The
+    /// key only reaches here from the composer — inside rano `ctrl-e` is rano's — so "on the
+    /// screen" means drawn behind the composer, which is exactly when a reader wants the
+    /// conversation back without losing the file.
     pub(crate) fn open_editor(&mut self) {
+        if let Some(p) = self.edit_pane.as_mut() {
+            p.hidden = !p.hidden;
+            p.focused = !p.hidden;
+            p.dirty = true;
+            return;
+        }
         let area = self.edit_area;
         let fresh = self.edit_pane.is_none();
         let pane = self.edit_pane.get_or_insert_with(EditorPane::new);

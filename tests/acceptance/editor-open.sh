@@ -21,9 +21,21 @@ press Enter
 wait_for "line 17"
 expect_not "Open:"
 
-spec "ctrl-] comes back, and with text typed ctrl-e is end-of-line"
+spec "ctrl-] comes back, and the editor stays up behind the prompt"
 press C-]
 wait_for "ctrl-] back to the editor"
+expect "line 17"
+
+spec "ctrl-e on the empty prompt puts the editor away, and brings it back as it was"
+press C-e
+wait_gone "line 17"
+expect "Line eleven is fixed."
+press C-e
+wait_for "line 17"
+press C-]
+wait_for "ctrl-] back to the editor"
+
+spec "with text typed ctrl-e is end-of-line"
 type_text "abc"
 press C-a
 press C-e

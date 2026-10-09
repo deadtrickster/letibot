@@ -676,7 +676,7 @@ impl App {
             // **A change opened by a click, read in its whole file** — over the conversation,
             // under a `!term` pane (which owns the keys first). See `app::diff_popup`.
             self.diff_popup_rows(w, room)
-        } else if self.edit_pane.is_some() {
+        } else if self.edit_pane.as_ref().is_some_and(|p| !p.hidden) {
             // **The editor pane takes the rectangle next**, under a `!term` pane and over
             // everything else the conversation's rectangle can hold: it was opened on purpose,
             // with a click or a chord, and it is what the keys go to while it has them.

@@ -752,13 +752,51 @@ fn ctrl_e_on_an_empty_prompt_opens_the_editor_asking_for_a_file() {
     a.route(vec![ctrl(']')]);
     assert!(!a.editor_focused());
     assert!(a.edit_pane.is_some());
-    // A second ctrl-e on the empty prompt goes back into the pane, not into a second one.
+    // ctrl-e on the empty prompt now puts the pane away: the conversation is back, the pane kept.
+    a.key(Key::CtrlE);
+    assert!(a.edit_pane.is_some(), "put away, not closed");
+    assert!(!a.editor_drawn() && !a.editor_focused());
+    let screen = a.screen(100, 30).join("\n");
+    assert!(
+        !screen.contains("line 11"),
+        "the conversation has the screen: {screen}"
+    );
+    // And again brings it back with the keyboard, the same pane on the same file.
     a.key(Key::CtrlE);
     assert!(a.editor_focused());
     let screen = a.screen(100, 30).join("\n");
     assert!(
         screen.contains("line 11"),
         "the same pane, the same file: {screen}"
+    );
+}
+
+/// **The editor stays on the screen while the prompt is typed in** — *"editor is just a
+/// pane"*. `ctrl-]` crosses to the composer and back; only `ctrl-e` puts it away, and `ctrl-]`
+/// (or a click on a change) brings a put-away pane back too.
+#[test]
+fn typing_in_the_prompt_leaves_the_editor_up_and_ctrl_bracket_brings_back_a_hidden_one() {
+    let ws = workspace("hide");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    a.key(Key::CtrlBracket);
+    settle(&mut a);
+    a.route(vec![ctrl(']')]);
+    typed(&mut a, "why is line 11 like this");
+    assert!(a.editor_drawn(), "typing hid the editor");
+    // A typed prompt keeps ctrl-e as end-of-line, so the pane stays.
+    a.key(Key::CtrlE);
+    assert!(a.editor_drawn());
+    // Empty prompt: away, and ctrl-] brings it back with the keyboard.
+    while !a.editor.text().is_empty() {
+        a.key(Key::Backspace);
+    }
+    a.key(Key::CtrlE);
+    assert!(!a.editor_drawn());
+    a.key(Key::CtrlBracket);
+    assert!(
+        a.editor_focused(),
+        "ctrl-] did not bring back the put-away pane"
     );
 }
 
