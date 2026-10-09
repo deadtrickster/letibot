@@ -920,6 +920,130 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
     s
 }
 
+/// **What a gatekeeper child's state says about its review**, or `None` while it is still at it.
+///
+/// Pure, so the mapping is asserted without a child — and **the two arms are the whole of the
+/// defect this shape fixes.** A gatekeeper's attempt has three endings and they are three
+/// different facts:
+///
+/// * **A verdict** — the child answered and the answer parses into the protocol's closing block.
+///   This is the only thing that may be written into the row's `decision`, because it is the only
+///   thing that is a judgement.
+/// * **A failed attempt** — the child's turn failed (a provider's `429`, a spawn that could not
+///   happen), or it answered with something [`letibot_tools::gatekeeper::parse_verdict`] cannot
+///   read. **Neither is a verdict**, and both used to be written into `decision` as the words
+///   `failed`/`unreadable`/`could_not_start`. `mergequeue::review_gate` reads any word outside the
+///   gatekeeper's closed set as a REFUSAL, so a failure became a park on the entry's row —
+///   *"the reviewer's verdict on `x` is `failed`, which is not one of accept, reject, needs_human"*
+///   — and because `answered_ms` was set with it, nothing ever asked again. That is exactly the
+///   operator's *"4 failed items"*: entries behind a transient condition, with nothing in the
+///   queue able to say *try that one again*.
+/// * **Still working** — `None`, and the host leaves the row alone.
+#[derive(Debug, PartialEq, Eq)]
+enum ReviewOutcome {
+    /// A judgement, in the gatekeeper's own closed set.
+    Verdict {
+        decision: String,
+        reasons: Vec<String>,
+        files: Vec<String>,
+        commands: Vec<String>,
+    },
+    /// **An attempt that reached no judgement**, with why, verbatim — the provider's own words
+    /// when there are any, which is what a person reads on the entry's row.
+    Failed { why: String },
+}
+
+fn review_outcome(
+    req: &letibot_tools::gatekeeper::ReviewRequest,
+    status: letibot_tools::builtins::task::TaskStatus,
+) -> Option<ReviewOutcome> {
+    use letibot_tools::builtins::task::TaskStatus;
+    match status {
+        TaskStatus::Done { answer } => Some(
+            match letibot_tools::gatekeeper::parse_verdict(req, &answer) {
+                Ok(v) => ReviewOutcome::Verdict {
+                    decision: v.decision.as_str().to_string(),
+                    reasons: v.reasons,
+                    files: v.looked_at.files,
+                    commands: v.looked_at.commands,
+                },
+                // **A reply with no readable verdict is a failed ATTEMPT, not a word.** The
+                // protocol asks for a closing block and a model that did not give one has not
+                // judged anything; retrying it is the queue's bound's business, and the parse
+                // error is what a person reads.
+                Err(why) => ReviewOutcome::Failed { why },
+            },
+        ),
+        TaskStatus::Failed { why } => Some(ReviewOutcome::Failed { why }),
+        TaskStatus::Running { .. } | TaskStatus::Unknown => None,
+    }
+}
+
+/// **What a gatekeeper's attempt did, onto the queue's review row** — the row the queue reads on
+/// its next pass (`mergequeue::review_gate`, `mergequeue::review_retry`).
+///
+/// **The two arms write two different rows, and that is the point.** A verdict sets `decision`
+/// and `answered_ms` and clears the failure — a row that has been judged. A failed attempt
+/// leaves `decision` NULL and `answered_ms` NULL, sets `failure` (verbatim), `failed_ms` and
+/// `attempts + 1` — a row that is still waiting for a verdict and that carries why the last
+/// attempt did not produce one. `mergequeue::review_retry` reads those three columns to decide
+/// whether the queue asks again, and how long it waits first.
+///
+/// **`asked_ms` is the row's own and is not restamped here.** It is when the review was first
+/// asked for, which is a fact about the review rather than about this attempt; a restart is the
+/// one thing that restamps it (`Store::restart_review`), because a restart is a new ask.
+///
+/// A write that fails is said on stderr and the row keeps what it had, so the next pass tries
+/// again rather than the failure being lost.
+fn write_outcome(
+    store: &Store,
+    row: &letibot_tokencore::store::ReviewRecord,
+    outcome: ReviewOutcome,
+) {
+    let now = (crate::config::now_ns() / 1_000_000) as u64;
+    let rec = match outcome {
+        ReviewOutcome::Verdict {
+            decision,
+            reasons,
+            files,
+            commands,
+        } => letibot_tokencore::store::ReviewRecord {
+            answered_ms: Some(now),
+            decision: Some(decision),
+            // **A verdict clears the failure.** The row is *judged*; leaving the last attempt's
+            // failure beside a decision would make a reader ask which of the two the queue
+            // acted on.
+            failed_ms: None,
+            failure: String::new(),
+            attempts: 0,
+            reasons,
+            files,
+            commands,
+            ..row.clone()
+        },
+        ReviewOutcome::Failed { why } => letibot_tokencore::store::ReviewRecord {
+            // **`decision` stays NULL.** This is the line the whole change is for: a failure is
+            // not a word out of the gatekeeper's closed set, and writing one there is how a
+            // queue came to park four entries on a verdict nobody gave.
+            decision: None,
+            answered_ms: None,
+            failed_ms: Some(now),
+            failure: why,
+            attempts: row.attempts.saturating_add(1),
+            reasons: Vec::new(),
+            files: Vec::new(),
+            commands: Vec::new(),
+            ..row.clone()
+        },
+    };
+    if let Err(e) = store.put_review(&rec) {
+        eprintln!(
+            "  merge queue: the outcome of the attempt on `{}` was not written: {e}",
+            row.entry_id
+        );
+    }
+}
+
 /// **The same sentence for a subagent, and the same rule behind it.**
 ///
 /// A subagent settles through the job channel because it *is* one — the operator's
@@ -1089,12 +1213,12 @@ impl SteeringSource for HubSteering {
                     // the next round boundary rather than as an interruption: a child told to
                     // change course should finish the call it is in and change, not abandon it.
                     //
-                    // **The parent is NAMED in the text, and the trail cannot do it.** `say`
-                    // takes a speaker kind, not an identity, so *which* parent spoke survives
-                    // nowhere else — and the operator's whole point was addressability: a
-                    // correction from a named parent is actionable in a way the same sentence
-                    // from nowhere is not.
-                    let said = format!("message from your parent session `{from}`: {text}");
+                    // **And the words are [`parent_message_text`]'s**, which is the same text
+                    // the between-turns door hands the child (`serve_child`'s
+                    // `ChildCommand::Hear`): a child that could tell which door its parent's
+                    // correction came through would be reading the machinery instead of the
+                    // message.
+                    let said = parent_message_text(&from, &text);
                     if let Some(t) = &self.trail {
                         t.say(Speaker::Agent, &said, Some(Instant::now()));
                     }
@@ -1371,6 +1495,17 @@ pub struct Harness {
     /// only from the tool registry and the watcher set, so an interrupt had nothing to reach
     /// its children with — which is the defect, measured, that this exists for.
     subagents: Arc<dyn letibot_tools::builtins::task::TaskRunner>,
+    /// **The merge-queue reviews this session is hosting** — `(entry id, child handle, the
+    /// request)` for each gatekeeper child it started and has not yet heard back from. See
+    /// [`Harness::serve_reviews`].
+    reviewing: Vec<(String, String, letibot_tools::gatekeeper::ReviewRequest)>,
+    /// **Every gatekeeper child this session has started**, answered or not: a settlement
+    /// naming one is the review's, not news for this session's model, and is dropped from the
+    /// notices (`Harness::wake`).
+    gatekeepers: std::collections::HashSet<String>,
+    /// **The queue entries this session's model has been told need a merge gate**, so each is
+    /// said once per daemon. See [`Harness::queue_notices`].
+    gate_told: std::collections::HashSet<String>,
     /// The cloud provider the turns go to, when the session has one. `None` is
     /// the local server through the engine's own `/completion` path — **unless**
     /// [`Harness::key_wanted`] is set, which is a provider with no key yet.
@@ -2213,8 +2348,19 @@ impl Harness {
         // not attaching them makes every completion `Verification::NoEncoder`, which
         // is a state whose reason is ours.
         let intent = Arc::new(IntentLedger::new());
+        // **The question slot, and why it is a slot.** `intent_wiring` is built here,
+        // before the gate, because the tools that take it are registered with the rest
+        // of the registry; the `Answers` a question has to wait on is built with the
+        // GATE, as one act with the hub's answer sink (`crate::answers` says why those
+        // two are one act). So the wiring gets a slot and the gate fills it, and the
+        // tool reads it when it is called — which is also the honest reading, since
+        // what matters is whether a head is attached *now*.
+        let question_head: Arc<
+            std::sync::Mutex<Option<Arc<dyn letibot_tools::builtins::intent::Questioner>>>,
+        > = Default::default();
         let intent_wiring = intent_tools::Wiring {
             ledger: intent.clone(),
+            questioner: Arc::new(crate::answers::SlotQuestioner(question_head.clone())),
             ..intent_tools::Wiring::standalone()
         };
         // **`--role planner` IS plan mode**, so the state says so.
@@ -2714,6 +2860,15 @@ impl Harness {
                         // with the sink, because the two are one act (see the note below).
                         *head_answers_slot.lock().unwrap_or_else(|e| e.into_inner()) =
                             Some(answers.clone());
+                        // **And `ask_user_question` can reach the same head.** One more
+                        // line in the same act, for the same reason: the question rides
+                        // the same rendezvous and the same sink, so a slot filled anywhere
+                        // else would be a second path to a person. `HeadQuestioner` posts
+                        // `kind: "question"` and waits for `Reply::Question`; the hub
+                        // refuses either vocabulary for the other's request.
+                        *question_head.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(
+                            crate::answers::HeadQuestioner::new(hub.clone(), answers.clone()),
+                        ));
                         Box::new(crate::answers::HeadAdjudicator::new(hub.clone(), answers))
                     }
                     (None, AdjudicatorChoice::Console) => {
@@ -2734,6 +2889,14 @@ impl Harness {
                         // card reaches the same answer path the root's own escalation does.
                         *head_answers_slot.lock().unwrap_or_else(|e| e.into_inner()) =
                             Some(answers.clone());
+                        // And a question's, for the same reason and in the same act: under
+                        // `--adjudicator model` the head is still where a question goes. A
+                        // question is not an adjudication, so it is never handed to the
+                        // oracle first — `Answers::ask_question` posts it straight to the
+                        // head, and the model decides nothing about it.
+                        *question_head.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(
+                            crate::answers::HeadQuestioner::new(hub.clone(), answers.clone()),
+                        ));
                         Box::new(crate::answers::EscalateOnTimeout::new(
                             std::sync::Arc::from(model),
                             std::sync::Arc::new(crate::answers::HeadAdjudicator::new(
@@ -3651,6 +3814,9 @@ impl Harness {
             // The same `Arc` the tool registry has, cloned before it was moved in — see the
             // field: an interrupt has to be able to stop this session's children.
             subagents: subagent_runner,
+            reviewing: Vec::new(),
+            gatekeepers: Default::default(),
+            gate_told: Default::default(),
             provider,
             key_wanted,
             // Filled on the first switch away from local, never at open: a session
@@ -4922,13 +5088,30 @@ impl Harness {
     /// only place that records them as such: see [`TrailMirror`] for why the speaker
     /// cannot be recovered from the transcript afterwards.
     pub fn submit(&mut self, text: &str) -> Result<Reply, HarnessError> {
+        self.submit_spoken(Speaker::Operator, text)
+    }
+
+    /// **One turn, with the speaker given** — the operator's own words through
+    /// [`Harness::submit`], a parent's correction through
+    /// [`Harness::submit_a_parents_message`].
+    ///
+    /// The speaker is not decoration. [`AuthorisationTrail`] is where a turn's authority is
+    /// decided and [`Speaker::Agent`] never authorises on its own, so a row that says the wrong
+    /// speaker is a row that grants the wrong thing — which is why the parent's message has a
+    /// door of its own rather than a flag on this one. The two speaker vocabularies are matched
+    /// inline here for the same reason `TrailMirror::seed` matches them inline: the one place
+    /// they meet is the one place a reader has to look for the mapping.
+    fn submit_spoken(&mut self, speaker: Speaker, text: &str) -> Result<Reply, HarnessError> {
         self.trail.begin_turn();
-        self.trail
-            .say(Speaker::Operator, text, Some(Instant::now()));
+        self.trail.say(speaker, text, Some(Instant::now()));
         self.submit_item(TranscriptItem::User {
-            // **The one door the operator's own words come through**, and it says so on the
-            // row — the same speaker the trail records one line up (R42).
-            speaker: letibot_transcript::Speaker::Operator,
+            // The same speaker the trail records, one line up (R42).
+            speaker: match speaker {
+                Speaker::Operator => letibot_transcript::Speaker::Operator,
+                // A session talking to itself, a tool's row, a parent's message: none of
+                // them is the operator's words, and none may be drawn as them.
+                Speaker::Agent | Speaker::Tool => letibot_transcript::Speaker::Agent,
+            },
             parts: vec![UserPart::Text { text: text.into() }],
         })
     }
@@ -5510,6 +5693,50 @@ impl Harness {
         }
     }
 
+    /// **The whole of `/models NAME`, in one place, for both callers.**
+    ///
+    /// There are two, and the second is new: the worker's arm (`Sessions::slash`,
+    /// between turns, which is where the verb has always been answered) and the retry
+    /// loop ([`Harness::apply_queued_model`], mid-turn, which is what this exists for).
+    /// Two copies of a switch would be two places for the screen, the session row and
+    /// the thing that actually answers to disagree — which is the defect
+    /// [`Harness::persist_provider_choice`] was written for, one door along.
+    ///
+    /// **The choice is resolved by the caller, not here.** `models_choice` needs no
+    /// harness, and the worker's path must still carry the resolver's own notes when
+    /// the session it names is not open — so what this takes is the resolved choice
+    /// and the lines it came with.
+    pub fn apply_model_choice(
+        &mut self,
+        choice: crate::slash::ModelChoice,
+        mut lines: Vec<String>,
+    ) -> crate::slash::SlashReply {
+        let applied = match choice {
+            crate::slash::ModelChoice::OwnServer => self.set_provider(None),
+            crate::slash::ModelChoice::Metered(pc) => self.set_provider(Some(pc)),
+            // Its own door, because it verifies the vocabulary before it moves
+            // anything — see `Harness::set_local_model`.
+            crate::slash::ModelChoice::Local(m) => self.set_local_model(&m),
+        };
+        match applied {
+            Ok(line) => {
+                // **The choice goes to the session row in the same breath** —
+                // `persist_provider_choice`'s own doc is why. A switch that reached
+                // the screen but not the row was a choice that expired with the
+                // process, which is the defect this whole change is.
+                if let Err(why) = self.persist_provider_choice() {
+                    lines.push(why);
+                }
+                lines.push(line);
+                crate::slash::SlashReply { lines, ok: true }
+            }
+            Err(e) => {
+                lines.push(e.to_string());
+                crate::slash::SlashReply { lines, ok: false }
+            }
+        }
+    }
+
     /// **Back to the daemon's own server** — the `None` arm of [`Harness::set_provider`].
     ///
     /// `reseat_foreign` is the one honest wrinkle: `/models local` means *this
@@ -5537,7 +5764,7 @@ impl Harness {
         // wrong box is the provenance defect in report form.
         let own = self.own_server.clone();
         let mut reseat = String::new();
-        let foreign = self.cfg.vocab_gguf != own.vocab_gguf || self.cfg.dialect != own.dialect;
+        let foreign = self.on_foreign_weights();
         if foreign && reseat_foreign {
             // The mirror of the switch's cross-weights arm, aimed home: the
             // daemon's own pair, the conversation re-rendered under it, a fork
@@ -5599,6 +5826,23 @@ impl Harness {
         line.push_str(&reseat);
         self.publish_settings();
         Ok(line)
+    }
+
+    /// **Is this session on weights that are not the daemon's own?**
+    ///
+    /// The one question that decides whether a return to the daemon's own server is an
+    /// address move or a re-seat: [`Harness::set_own_server`] re-renders the conversation
+    /// into a fork when the vocabulary or the dialect has been moved by a fleet switch,
+    /// and only then.
+    ///
+    /// Named rather than inlined because it now has two readers, and they are asking
+    /// different questions of the same fact: `set_own_server` is deciding whether to
+    /// fork, and `slash::mid_turn_switch_ok` is deciding whether a RUNNING TURN may
+    /// carry a `/models local` out itself — which it may exactly when the return is the
+    /// cheap arm. Two copies of this expression would be two answers to that.
+    fn on_foreign_weights(&self) -> bool {
+        self.cfg.vocab_gguf != self.own_server.vocab_gguf
+            || self.cfg.dialect != self.own_server.dialect
     }
 
     /// The re-seat half of a return to the daemon's own weights: the mirror of
@@ -6069,6 +6313,25 @@ impl Harness {
         }
     }
 
+    /// **This session's model, spelled the way `/models` takes it** — `local`, `name`,
+    /// or `name/model`.
+    ///
+    /// Two readers, and both are asking *which model is this session on* rather than
+    /// *what is answering it*: the session row ([`Harness::persist_provider_choice`],
+    /// where a restart reads it back through the same door) and the retry loop's
+    /// fallback, which must not spend a name on the model that just refused the round.
+    /// [`Harness::provider_line`] is the other question — the one a person reads, which
+    /// names the endpoint and says METERED — and the two are deliberately not merged.
+    pub fn model_name(&self) -> String {
+        match &self.cfg.provider {
+            None => "local".to_string(),
+            Some(pc) => match &pc.model {
+                Some(m) => format!("{}/{m}", pc.name),
+                None => pc.name.clone(),
+            },
+        }
+    }
+
     /// The session is over: let the backend release what it holds and say where
     /// its work went. A host backend says nothing; a firecode one brings its VM
     /// down and names the sibling directory.
@@ -6229,6 +6492,175 @@ impl Harness {
         stop_children_first(Some(&self.subagents), &self.hub)
     }
 
+    /// **What this session's model is told about the merge queue**: each entry it queued (from
+    /// anywhere in its tree) that is waiting because its repository has no merge gate, once.
+    ///
+    /// The queue rings this session when an entry starts waiting (`GatekeeperDoor::gate_missing`);
+    /// the sentence names the branch, the repository, and what to do — `merge_gate` for the
+    /// choices, the operator to pick, the `AGENTS.md` section on main — so the model offers the
+    /// operator the choices without being asked to.
+    pub fn queue_notices(&mut self) -> Vec<String> {
+        let me = self.hub.session_id();
+        let Some(store) = self.store.as_ref() else {
+            return Vec::new();
+        };
+        let root = self.cfg.workspace.clone();
+        let mut out = Vec::new();
+        for e in store.merge_entries().unwrap_or_default() {
+            if e.state != letibot_tokencore::store::MergeState::Waiting
+                || !e.evidence.starts_with(crate::mergequeue::WAITING_FOR_GATE)
+                || self.gate_told.contains(&e.id)
+                || crate::mergequeue::root_session(store, &e.session_id) != me
+            {
+                continue;
+            }
+            self.gate_told.insert(e.id.clone());
+            let repo = e
+                .worktree
+                .as_deref()
+                .and_then(|w| crate::mergequeue::repo_of_worktree(std::path::Path::new(w)))
+                .map(|r| match r.strip_prefix(&root) {
+                    Ok(rel) if rel.as_os_str().is_empty() => ".".to_string(),
+                    Ok(rel) => rel.display().to_string(),
+                    Err(_) => r.display().to_string(),
+                })
+                .unwrap_or_else(|| ".".to_string());
+            out.push(format!(
+                "The merge queue is holding `{branch}` (entry `{id}`): the repository `{repo}` has \
+                 no merge gate on main, so nothing of it lands. Call `merge_gate` with repo \
+                 `{repo}` to see what it suggests, put those choices to the operator — they may \
+                 type their own command — and once they pick, add the `Merge gate` section to \
+                 that repository's AGENTS.md and commit it to main. The entry goes on by itself \
+                 when the section is there.",
+                branch = e.branch,
+                id = e.id,
+            ));
+        }
+        out
+    }
+
+    /// **The merge queue's reviews this session hosts: start a gatekeeper for each one that has
+    /// none, and write the verdict of each one that has answered.**
+    ///
+    /// The queue's door (`mergequeue::GatekeeperDoor`) writes a request row naming this session
+    /// as its host and rings it; this is the host's half. A gatekeeper is a **subagent** of this
+    /// session, seated `gatekeeper` (read-only, `bash` for `git diff`), given the review brief and
+    /// nothing else — so its asks come up this tree to its head like any child's, which is what a
+    /// reviewer the daemon owned alone could not have.
+    ///
+    /// Called at the top of every wake, which is what both of its triggers are: the queue's ring,
+    /// and the child's own settlement (a child's end wakes its parent). Idempotent — a row with a
+    /// gatekeeper already working is left alone — so the queue may ring as often as it likes.
+    /// After a daemon restart the children are gone and the rows are not, and the next ring
+    /// starts a new gatekeeper for each.
+    pub fn serve_reviews(&mut self) {
+        use letibot_tools::builtins::task::TaskStatus;
+        let me = self.hub.session_id();
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        // **The same bound the queue rings under, read here because this is where the turn is
+        // spent.** The queue's pass and this function are the two halves of one decision, and
+        // `mergequeue::review_retry` is that decision: *`Due`* is ask, *`Wait`* is a failed
+        // attempt whose backoff has not elapsed, *`Exhausted`* is a reviewer that could not be
+        // asked and whose attempts are spent. Without this the host would re-spawn on every
+        // wake — and a failed child's own settlement wakes its parent, so the loop would be one
+        // model turn per beat, which is the exact thing the bound exists to stop.
+        let now_ms = (crate::config::now_ns() / 1_000_000) as u64;
+        let rows: Vec<letibot_tokencore::store::ReviewRecord> = store
+            .reviews()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.answered_ms.is_none() && r.session_id == me)
+            .filter(|r| {
+                crate::mergequeue::review_retry(Some(r), now_ms)
+                    == crate::mergequeue::ReviewRetry::Due
+            })
+            .collect();
+        // **Start the ones nobody is reviewing.**
+        for row in &rows {
+            if self.reviewing.iter().any(|(e, _, _)| *e == row.entry_id) {
+                continue;
+            }
+            let Ok(Some(entry)) = store.merge_entry(&row.entry_id) else {
+                continue;
+            };
+            let req = letibot_tools::gatekeeper::ReviewRequest {
+                brief: entry.brief.clone(),
+                branch: entry.branch.clone(),
+                base_sha: entry.base_sha.clone(),
+            };
+            let spec = letibot_tools::builtins::task::TaskSpec {
+                role: "gatekeeper".into(),
+                ..Default::default()
+            };
+            match self
+                .subagents
+                .start(&letibot_tools::gatekeeper::review_prompt(&req), &spec)
+            {
+                Ok(handle) => {
+                    self.gatekeepers.insert(handle.clone());
+                    self.reviewing.push((row.entry_id.clone(), handle, req));
+                }
+                Err(why) => {
+                    // **A gatekeeper that could not start is a FAILED ATTEMPT**, not a verdict and
+                    // not a refusal: nothing judged the branch. It is written as a failure, so
+                    // the queue's own bound retries it and — when the attempts are spent — the
+                    // entry parks with this sentence on its row, where a person can read it and
+                    // restart it. It used to be written as the decision word `could_not_start`,
+                    // which `review_gate` read as a refusal: the entry parked on a judgement
+                    // nobody made, and no further attempt was ever possible.
+                    write_outcome(store, row, ReviewOutcome::Failed { why });
+                }
+            }
+        }
+        // **And write what has come back.**
+        let mut still = Vec::with_capacity(self.reviewing.len());
+        for (entry_id, handle, req) in std::mem::take(&mut self.reviewing) {
+            let Some(row) = rows.iter().find(|r| r.entry_id == entry_id) else {
+                // Answered elsewhere, or the entry left the queue: nothing to write.
+                continue;
+            };
+            let status = self.subagents.collect(&handle, std::time::Duration::ZERO);
+            // A handle this runner no longer knows is a child that is gone: dropped, so the next
+            // ring starts a new gatekeeper for the row that is still waiting.
+            let gone = status == TaskStatus::Unknown;
+            match review_outcome(&req, status) {
+                Some(o) => write_outcome(store, row, o),
+                None if !gone => still.push((entry_id, handle, req)),
+                None => {}
+            }
+        }
+        self.reviewing = still;
+    }
+
+    /// **Re-attempt one merge-queue entry's review** — `/queue restart ENTRY-ID`, and the key on
+    /// the pane's failed row, arriving at the one door both spellings share.
+    ///
+    /// The rule is `mergequeue::restartable`'s and the writes are `mergequeue::restart`'s; what
+    /// this adds is the one thing only the daemon can: **the announcement**. A restart is an
+    /// entry moving from `Failed` back to `Waiting`, and every head that folded the queue's
+    /// events must see it — the pane is open in whichever session the person is in, and the
+    /// entry may have come from another one entirely.
+    ///
+    /// `Ok` is what was done, in the words the operator gets; `Err` is why it was not, said
+    /// rather than swallowed — the tree's rule for every verb, and the one this whole report is
+    /// about, since a queue that silently did nothing is indistinguishable from one that worked.
+    pub fn restart_review(&self, entry_id: &str) -> Result<String, String> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            "this daemon has no store, so there is no merge queue to restart.".to_string()
+        })?;
+        let registry = self.session_registry.clone();
+        crate::mergequeue::restart(
+            store,
+            entry_id,
+            (crate::config::now_ns() / 1_000_000) as u64,
+            &move |e| {
+                registry.broadcast(e);
+            },
+        )
+    }
+
     /// **Something fired while nothing was running.** T24's wake, from the worker —
     /// and, since R7, **the same door a background job's completion comes through.**
     ///
@@ -6249,6 +6681,10 @@ impl Harness {
     /// and the early return that used to sit on `self.monitors` is what would have
     /// made R7 silently monitor-only.
     pub fn wake(&mut self) -> Result<Option<Reply>, HarnessError> {
+        // **The merge queue's reviews first**, and they are never a turn of this session: a
+        // gatekeeper started, or a verdict written, is the queue's business. See
+        // [`Harness::serve_reviews`].
+        self.serve_reviews();
         // **Two kinds of thing arrive between turns, and they share one turn.**
         //
         // A monitor that fired, and a background job that ended. Both are the machine's
@@ -6256,7 +6692,9 @@ impl Harness {
         // unprompted, and neither may jump a person who is waiting: that ordering is
         // `Bell::next_any`'s — commands drain before wakes — and it holds for both
         // because both arrive as `Work::Woken`.
-        let mut notices: Vec<String> = Vec::new();
+        // **And the queue's entries that wait for a merge gate**, said to this session's model —
+        // the operator: *"let main project agent manage it"*.
+        let mut notices: Vec<String> = self.queue_notices();
         if let Some(monitors) = self.monitors.clone() {
             let since = self.monitor_cursor.load(Ordering::SeqCst);
             let settled = monitors.settled_count();
@@ -6280,11 +6718,15 @@ impl Harness {
         // that still arrives here from below is a settlement whose own session stopped
         // before it could be drained ([`JobWatchers::stop`]) — and `completion_notices`
         // is given this session's id so that it is not read as this session's own.
-        let done = self
+        let mut done = self
             .job_watch
             .as_ref()
             .map(|w| w.take_completions())
             .unwrap_or_default();
+        // **A gatekeeper's settlement is the review's, not this session's news.** The verdict
+        // went onto the queue's row above; telling this session's model that "a subagent you
+        // started has finished" would be a turn about a child it never started.
+        done.retain(|c| !self.gatekeepers.contains(&c.job));
         // The sentences, and which kind gets which — [`completion_notices`], which is where that
         // decision lives so that it can be asserted without a live session.
         notices.extend(completion_notices(done, &self.hub.session_id()));
@@ -6432,12 +6874,46 @@ impl Harness {
     /// failure first, the todo nag, the turn clock — and collapsing the two now
     /// would rewire the daemon's own path for a fix that is not about it.
     pub fn submit_as_a_normal_session(&mut self, prompt: &str) -> Result<Reply, HarnessError> {
+        self.submit_spoken_as_a_normal_session(Speaker::Operator, prompt)
+    }
+
+    /// **A parent's message to a child BETWEEN turns — the turn it makes, spoken as the
+    /// parent's.**
+    ///
+    /// The operator's ruling, verbatim: *"fix task_message - it should enqueue"*. Until this
+    /// existed, a message could only enter a turn that was already running (`HubSteering`'s
+    /// `Message` arm), and the parent's tool refused to send one to a child that was not —
+    /// because *"nothing drains a child's queue between turns"*, so a queued message would
+    /// have been accepted and heard by nobody. A child between turns is now reached: the
+    /// message is queued, the child's own serving thread is woken (`Hub::wake_its_own_reader`),
+    /// and this is the turn that reads it.
+    ///
+    /// **Why this is not [`Harness::submit`]**: the speaker. The words are recorded as the
+    /// parent's — [`parent_message_text`], naming which parent — so they cannot authorise the
+    /// act they race, cannot coalesce with the operator's own text, and cannot be taken back.
+    /// That is the same rule the mid-turn door follows, and the same text: a child cannot tell
+    /// which state it was in when its parent spoke.
+    pub fn submit_a_parents_message(
+        &mut self,
+        from: &str,
+        text: &str,
+    ) -> Result<Reply, HarnessError> {
+        self.submit_spoken_as_a_normal_session(Speaker::Agent, &parent_message_text(from, text))
+    }
+
+    /// **The turn and its tail, with the speaker given** — the body both doors above share, so
+    /// the wall recovery cannot be had by one of them and not the other.
+    fn submit_spoken_as_a_normal_session(
+        &mut self,
+        speaker: Speaker,
+        text: &str,
+    ) -> Result<Reply, HarnessError> {
         // Before the send, the same pre-turn check `Sessions::run_prompt` makes: a
         // parked child taking a later prompt is the resumed-session case (its last
         // turn may have filled the window with nothing behind it to check), and a
         // fresh child's bare prefix fails `should_compact` and costs one comparison.
         self.compact_if_at_the_wall();
-        let mut out = self.submit(prompt);
+        let mut out = self.submit_spoken(speaker, text);
         // **A wall that compacted is not the end of the prompt** — `after_turn`'s
         // own rule, and the loop shape is deliberately the same: compact, MEASURE
         // the room (never read it off `auto_compact` — the no-progress guard turns
@@ -7855,7 +8331,73 @@ impl Harness {
             // `max_tool_rounds`: it produced nothing and appended nothing, and
             // ending a turn early because a server was restarting would be the
             // budget measuring the wrong thing. See `http_retry_after`.
+            //
+            // # And the second question: is this round even being sent to the model
+            // # the session is on?
+            //
+            // MEASURED 2026-10-12, the operator's GLM coding plan, quota exhausted.
+            // Their screen, in their words: *"while those backoffs were cycling - the
+            // model change didnt take"* and *"when it finally applied the turn didnt
+            // continue"*. The notices read
+            //
+            //     · model_endpoint_retry — the model endpoint at api.z.ai did not
+            //       answer: http 429: Weekly/Monthly Limit Exhausted … Taking this
+            //       round again in 1s (attempt 1 of 6). Nothing was recorded, so the
+            //       retry sends exactly the bytes this one did.
+            //
+            // six times, doubling to 32 s, and then
+            //
+            //     · slash — /models deepseek/deepseek-flash
+            //       turns go to deepseek/deepseek-flash from the next one on — METERED
+            //     ── FAILED — http 429: Weekly/Monthly Limit Exhausted …
+            //
+            // The switch was accepted and bought nothing, because the command sat in
+            // the hub's queue until the worker came back — which is after the turn,
+            // and the turn was already FAILED. Three things follow from that, and all
+            // three are here:
+            //
+            //   * **the switch is taken DURING the turn** (`apply_queued_model`,
+            //     below), on the thread that owns this harness, exactly as `/mode`
+            //     is — `Hub::try_command_for_running_turn`'s doc carries the
+            //     measurement;
+            //   * **a model that moved is not weather.** The wait below exists for a
+            //     server that is coming back; a deliberate change is the opposite, so
+            //     the round is taken again NOW, there, and nothing is waited for;
+            //   * **the ladder running out is not the end either**, when the model
+            //     itself is what refused: `[fallback] models` in the operator's
+            //     `providers.toml` says where else this box may go, and the round
+            //     goes there rather than the turn ending.
+            //
+            // `sent_to` is the model the attempt that is running (or about to run)
+            // was handed to — `provider_line`, the same spelling `/models` shows, so
+            // there is no second identity for "what is answering" to drift from.
+            // Every branch that moves the session updates it, and the one that
+            // notifies does so exactly when it moves: a switch that landed on the
+            // model already in force is a no-op and says nothing.
+            let mut sent_to = self.provider_line();
+            let mut tried_fallbacks: Vec<String> = Vec::new();
             let outcome = loop {
+                // **A model switch the operator made while this turn was running.**
+                // Applied before the attempt that will be sent under it — and before
+                // anything is waited for, which is the half the operator could not
+                // see: the ladder used to go on cycling against the model they had
+                // just left.
+                if let Some(now_on) = self.apply_queued_model()
+                    && now_on != sent_to
+                {
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "model_endpoint_retry".into(),
+                        detail: model_changed_notice(&sent_to, &now_on),
+
+                        compaction: None,
+                    });
+                    sent_to = now_on;
+                    // **The ladder is patience with ONE endpoint.** A round taken on
+                    // a different model is a new one and gets the same patience — the
+                    // same `cfg.http_retries`, the same `http_retry_after`, no second
+                    // policy: only the counter it is measured against starts over.
+                    attempt = 0;
+                }
                 let mut steering = self.steering();
                 // **Start watching BEFORE the round, so the wait itself is covered.**
                 // The host is `Some` only on the metered route — a local prefill's
@@ -7890,6 +8432,29 @@ impl Harness {
                     attempt = 0;
                     break attempted;
                 };
+                // **A model that moved under this round is not weather, and this is the
+                // window the operator watched.** The wait below exists for an endpoint
+                // that is coming back — a 5xx, a timeout; a switch they made is the
+                // opposite of that, so the round is taken again NOW, on the model this
+                // session is on, and nothing is waited for. Their words for what
+                // happened instead: *"while those backoffs were cycling - the model
+                // change didnt take"*.
+                //
+                // Before the key arm deliberately: a 401 from the model they just left
+                // is not a reason to ask for a key to it.
+                if let Some(now_on) = self.apply_queued_model()
+                    && now_on != sent_to
+                {
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "model_endpoint_retry".into(),
+                        detail: model_changed_notice(&sent_to, &now_on),
+
+                        compaction: None,
+                    });
+                    sent_to = now_on;
+                    attempt = 0;
+                    continue;
+                }
                 // **A refused key is asked for again**, on the same card, and the round is
                 // taken again — nothing was recorded, so the retry sends the same bytes.
                 // Only a key this session can replace: one from `$PROVIDER_API_KEY` or
@@ -7911,6 +8476,33 @@ impl Harness {
                     continue;
                 }
                 let Some(wait) = http_retry_after(&e, attempt, self.cfg.http_retries) else {
+                    // **The ladder has nothing left to wait for, and the turn does not
+                    // have to end.** Two ways out, and both are the same principle as
+                    // the switch above — re-issue the round somewhere that can answer
+                    // it:
+                    //
+                    //   * the session's model moved and this round was sent to the old
+                    //     one — checked at the top of this arm, so it cannot reach here;
+                    //   * the MODEL itself is what refused (a 429 or a 5xx, not a wire
+                    //     failure) and this box has a `[fallback] models` list —
+                    //     `fall_back_from` moves the session to the first name that
+                    //     answers and says which one.
+                    //
+                    // A transport failure gets neither: the model may be perfectly
+                    // well and it is the route to it that is down, so moving the
+                    // session would abandon the box the operator chose for a reason
+                    // that is not about the model.
+                    if let Some(now_on) = self.fall_back_from(&e, &mut tried_fallbacks) {
+                        self.hub.publish(SessionEvent::Warning {
+                            code: "model_endpoint_retry".into(),
+                            detail: fallback_notice(&sent_to, &now_on, &e),
+
+                            compaction: None,
+                        });
+                        sent_to = now_on;
+                        attempt = 0;
+                        continue;
+                    }
                     break Err(TurnFailure::Http(e));
                 };
                 attempt += 1;
@@ -8503,6 +9095,191 @@ impl Harness {
         }
     }
 
+    /// **A `/models` the operator typed while this turn was running**, taken and
+    /// applied here, on the thread that owns this harness.
+    ///
+    /// Returns the model line it landed on, when one landed — `None` when the queue
+    /// held no switch this turn could carry out. The caller compares it against what
+    /// the round was sent to, because *a switch that landed on the model already in
+    /// force* is not a change and must not be announced as one.
+    ///
+    /// # Why this is a door at all
+    ///
+    /// `Hub::try_command_for_running_turn` carries the measurement (2026-10-12: the
+    /// operator's `/models` sat in the queue for a whole 63-second ladder and was
+    /// applied after the turn, by which time the turn was FAILED). The short version:
+    /// `/mode` has had this door since R29 and `/models` did not.
+    ///
+    /// # What it will NOT take
+    ///
+    /// `slash::mid_turn_switch_ok` decides, and its two `no`s are the switches that
+    /// re-seat the conversation — a fleet model's weights, and `local` when this
+    /// session is on foreign weights. A re-seat forks the transcript and swaps the
+    /// session under `self.session`, under a turn that is in flight with a sink open
+    /// and rows still to reconcile. Those lines stay in the queue, in order, and the
+    /// worker takes them when the turn ends, exactly as every `/models` did before
+    /// this existed: the switch still lands, one turn later than it would have.
+    fn apply_queued_model(&mut self) -> Option<String> {
+        let mut landed = None;
+        while let Some(cmd) = self.take_queued_model() {
+            let letibot_sessionlog::hub::CommandKind::Slash { line } = &cmd.kind else {
+                continue;
+            };
+            let line = line.clone();
+            let reply = match crate::slash::Slash::parse(&line) {
+                crate::slash::Slash::ModelsSet {
+                    provider,
+                    model,
+                    key,
+                } => match crate::slash::models_choice(
+                    &provider,
+                    model.as_deref(),
+                    key.as_deref(),
+                    None,
+                ) {
+                    Ok((choice, lines)) => self.apply_model_choice(choice, lines),
+                    Err(lines) => crate::slash::SlashReply { lines, ok: false },
+                },
+                // The picker only says yes to a model switch, so this is a bug in the
+                // predicate rather than a verb. Answered rather than dropped: the
+                // command has been taken out of the queue, and a command that vanishes
+                // without a word is the failure this tree keeps deleting.
+                _ => crate::slash::SlashReply {
+                    lines: vec![format!(
+                        "/{line}: not a model switch this turn can apply, so nothing moved"
+                    )],
+                    ok: false,
+                },
+            };
+            // **The reply the worker would have published** — the same two codes and
+            // the same body, so "what did my switch do" does not depend on which thread
+            // happened to apply it. `apply_queued_mode`'s rule, one verb along.
+            self.hub.publish(SessionEvent::Warning {
+                code: if reply.ok {
+                    "slash".into()
+                } else {
+                    "slash_refused".into()
+                },
+                detail: format!("/{line}\n{}", reply.lines.join("\n")),
+
+                compaction: None,
+            });
+            if reply.ok {
+                landed = Some(self.provider_line());
+            }
+        }
+        landed
+    }
+
+    /// The picker half of [`Harness::apply_queued_model`]: **the next queued command
+    /// this running turn can carry out**, with the verb's own grammar answering.
+    fn take_queued_model(&self) -> Option<letibot_sessionlog::hub::QueuedCommand> {
+        let foreign = self.on_foreign_weights();
+        self.hub.try_command_for_running_turn(|kind| match kind {
+            letibot_sessionlog::hub::CommandKind::Slash { line } => {
+                crate::slash::mid_turn_switch_ok(line, foreign)
+            }
+            _ => false,
+        })
+    }
+
+    /// **The model is out, and this box has somewhere else to go** — `[fallback]
+    /// models` in `providers.toml`, tried in the operator's order, once each.
+    ///
+    /// # Why the turn does not end here
+    ///
+    /// The operator's ruling: *"it is a standard thing to do - limits, 5xx, etc. we
+    /// must be able to change models like for the main session"*. A 429 that says
+    /// `Weekly/Monthly Limit Exhausted` is not weather — no wait lifts it — and the
+    /// shape before this spent 63 s of ladder on it and then recorded the turn FAILED.
+    ///
+    /// # The two guards, and why each is here
+    ///
+    /// * **`model_refused`**: a 429 or a 5xx only. A connection that was refused, a
+    ///   stream that did not parse, a 408 — those are the route rather than the model,
+    ///   and moving the session would abandon the model the operator chose for a reason
+    ///   that is not about it.
+    /// * **`context_length_refusal`**: a provider refusing the prompt for LENGTH is
+    ///   answering perfectly well. That is the wall, it is classified as one a few lines
+    ///   below in `run_rounds`, and another model would refuse the same prompt.
+    ///
+    /// # What it will and will not switch to
+    ///
+    /// A **metered** name only, and this is narrower than `/models` on purpose. The
+    /// operator's own switch may take the cheap `local` arm; the DAEMON's automatic one
+    /// may not, because the other two choices can re-seat the conversation into a fork
+    /// and that is not something a retry loop should be doing unbidden under a turn that
+    /// is in flight. A name it will not take is SAID and skipped — a fallback nobody can
+    /// reach, silently, is the defect the key's own reader is written against.
+    ///
+    /// Returns the line it landed on, or `None` when the list is empty, spent, or has
+    /// nothing this turn can use.
+    fn fall_back_from(
+        &mut self,
+        e: &letibot_turn::HttpError,
+        tried: &mut Vec<String>,
+    ) -> Option<String> {
+        if !model_refused(e) || self.cfg.fallback.is_empty() {
+            return None;
+        }
+        if let letibot_turn::HttpError::Status { body, .. } = e
+            && context_length_refusal(body).is_some()
+        {
+            return None;
+        }
+        let here = self.model_name();
+        for name in self.cfg.fallback.clone() {
+            // **Once each, and never the model that just refused the round.** A name
+            // already spent is skipped; a name that IS what is answering would be a
+            // no-op switch and the same failure one attempt later.
+            if tried.iter().any(|t| *t == name) || name == here {
+                continue;
+            }
+            tried.push(name.clone());
+            let (provider, model) = crate::slash::split_model_name(&name);
+            let (choice, lines) =
+                match crate::slash::models_choice(&provider, model.as_deref(), None, None) {
+                    Ok(x) => x,
+                    Err(lines) => {
+                        self.fallback_skip(&name, &lines.join(" "));
+                        continue;
+                    }
+                };
+            if !matches!(choice, crate::slash::ModelChoice::Metered(_)) {
+                self.fallback_skip(
+                    &name,
+                    "a running turn can only move to a metered model, and this one is the \
+                     daemon's own server or a fleet model — either can re-render the \
+                     conversation into a fork, which is not something a retry should do \
+                     unbidden",
+                );
+                continue;
+            }
+            let reply = self.apply_model_choice(choice, lines);
+            if !reply.ok {
+                self.fallback_skip(&name, &reply.lines.join(" "));
+                continue;
+            }
+            return Some(self.provider_line());
+        }
+        None
+    }
+
+    /// **A fallback name that could not be taken, said.** The same code as the retry it
+    /// is part of — the round is still being taken again, and what this adds is why it
+    /// is not going *there*.
+    fn fallback_skip(&self, name: &str, why: &str) {
+        self.hub.publish(SessionEvent::Warning {
+            code: "model_endpoint_retry".into(),
+            detail: format!(
+                "`[fallback]` names `{name}` and this session cannot take it: {why}. \
+                 Trying the next name."
+            ),
+
+            compaction: None,
+        });
+    }
+
     fn steering(&self) -> HubSteering {
         HubSteering {
             hub: self.hub.clone(),
@@ -8822,13 +9599,7 @@ impl Harness {
         let Some(store) = &self.store else {
             return Ok(());
         };
-        let stored = match &self.cfg.provider {
-            None => "local".to_string(),
-            Some(pc) => match &pc.model {
-                Some(m) => format!("{}/{}", pc.name, m),
-                None => pc.name.clone(),
-            },
-        };
+        let stored = self.model_name();
         store
             .set_provider_choice(&self.cfg.session_id, Some(&stored))
             .map_err(|e| format!("the choice was not written to the session row: {e}"))
@@ -9657,6 +10428,56 @@ fn http_retry_after(
     worth_it.then(|| std::time::Duration::from_secs(1u64 << attempt))
 }
 
+/// **Did the MODEL refuse, rather than the wire failing?**
+///
+/// The discriminator `Harness::fall_back_from` turns on, and it is deliberately narrower
+/// than [`http_retry_after`]'s `worth_it` rather than a copy of it — the two are
+/// different questions and this file already had the first:
+///
+/// * *is this worth waiting for* includes a connection that was refused and a stream
+///   that did not parse, because the endpoint may be restarting and the model behind it
+///   may be perfectly well;
+/// * *is the model itself out* is a `429` or a `5xx` and nothing else. A `408` is the one
+///   that looks like it and is not: the server waited too long for US, which is weather
+///   on the route rather than a statement about the model, so it stays on the waiting
+///   side and never moves a session.
+///
+/// Kept beside [`http_retry_after`] because they are the same subject — one failure, two
+/// questions — and a reader changing what counts as weather must see both.
+fn model_refused(e: &letibot_turn::HttpError) -> bool {
+    matches!(e, letibot_turn::HttpError::Status { code, .. } if *code == 429 || *code >= 500)
+}
+
+/// **The retry notice for a round taken again on a DIFFERENT model.**
+///
+/// The sentence is the whole point of the notice, and the reason is the operator's own
+/// report: the notice they were reading said *"the retry sends exactly the bytes this one
+/// did"*, which was true and made a switch that HAD been accepted look like one that had
+/// not. So this one says the opposite thing in the same breath — what changed, that the
+/// bytes are unchanged, and that the difference is which model answers them.
+fn model_changed_notice(was: &str, now: &str) -> String {
+    format!(
+        "the model changed to {now} while this round was failing at {was}: taking this round \
+         again NOW, there, rather than waiting out a backoff for a model this session has \
+         left. A change somebody made is not weather. Nothing was recorded, so the round is \
+         sent again unchanged — the difference is which model answers it."
+    )
+}
+
+/// **The retry notice for a round that moved because the model is OUT.**
+///
+/// Names what refused, what it said, where the session went, and how to come back — four
+/// facts, because this one is a model change the operator did not type and every one of
+/// them is a question they will have.
+fn fallback_notice(was: &str, now: &str, e: &letibot_turn::HttpError) -> String {
+    format!(
+        "the model at {was} is out — {e} — and the retry ladder has nothing left to wait \
+         for, so this session moved to {now}, the first name in `[fallback]` that answers, \
+         and the round is being taken again there. Nothing was recorded. `/models` moves it \
+         back, and the list is in `[fallback] models` in providers.toml."
+    )
+}
+
 /// **A refusal no retry can lift: the account cannot pay for the call.**
 ///
 /// A 429 is the status a provider uses for both *not yet* (a rate limit) and *not ever until
@@ -10229,6 +11050,23 @@ impl Drop for AnswerOnce<'_> {
     }
 }
 
+/// **A parent's correction, in the words the child hears** — one function, because two doors
+/// deliver it and a child that could tell which door it came through would be reading the
+/// machinery instead of the message.
+///
+/// The two doors are the two states a child can be in: a **running** turn takes it at its next
+/// round boundary ([`HubSteering`]'s `Message` arm, as a `SteeringMessage::normal`), and a child
+/// **between turns** has a turn started for it (`serve_child`'s [`ChildCommand::Hear`]). Same
+/// text, same `Speaker::Agent` row, same trail line.
+///
+/// **The parent is NAMED, and nothing else can name it.** `AuthorisationTrail::say` takes a
+/// speaker KIND, not an identity, so *which* parent spoke survives nowhere else — and the
+/// operator's whole point was addressability: a correction from a named parent is actionable in
+/// a way the same sentence from nowhere is not.
+pub fn parent_message_text(from: &str, text: &str) -> String {
+    format!("message from your parent session `{from}`: {text}")
+}
+
 /// **What a child does with a command that reached its queue between turns.**
 ///
 /// A free function so the decision can be read and tested without a model, a hub or a socket —
@@ -10240,6 +11078,11 @@ enum ChildCommand {
     /// another agent. its 'sub' is a way to inherit something and be managable. so mid turn, post
     /// turn whatever"*.
     Answer,
+    /// **Hear it: a parent's message, and there is no turn to steer it into.** The child's own
+    /// turn is STARTED for it — see [`ChildCommand::Hear`]'s arm in [`serve_child`] and
+    /// [`Harness::submit_a_parents_message`] — because the operator's ruling is that a message
+    /// which is queued must be heard: *"fix task_message - it should enqueue"*.
+    Hear,
     /// **Leave, and stop this session's children on the way out.** See [`ChildCommand::Stop`].
     Leave(&'static str),
     /// **A stop, and a stop walks the subtree downward.** See the supervision invariant on
@@ -10259,11 +11102,15 @@ fn child_command(kind: &letibot_sessionlog::CommandKind) -> ChildCommand {
         // own still computing. Saying *nothing is running to interrupt* was true of the session
         // and false of its subtree, which is the whole of what a supervision tree is for.
         K::Interrupt { .. } => ChildCommand::Stop,
-        // A message's contract is a turn IN FLIGHT — the parent's own `task_message` refuses to
-        // send one to a child that is not running — so one here is the race that refusal names.
-        // Answering it as a prompt would answer, in the parent's name, something the parent
-        // deliberately did not send.
-        K::Message { .. } => ChildCommand::Leave("a message steers a turn in flight"),
+        // **A message is a turn when there is no turn to steer.** Until 2026-10 this arm LEFT
+        // the message here, because the parent's `task_message` refused to send one to a child
+        // that was not running — so a message in this queue could only be the race that refusal
+        // names. The operator's ruling makes the between-turns case the ordinary one: *"fix
+        // task_message - it should enqueue"*, and the queue a message lands on is this one.
+        // What must NOT change is who is speaking: answering it as a prompt would put the
+        // parent's words in the operator's mouth and let them authorise — which is why this is
+        // a variant of its own rather than `Answer`.
+        K::Message { .. } => ChildCommand::Hear,
         // The rest is a session's own machinery — a compaction, a re-seat, a mode, the operator's
         // door — and a child inherits all of it from its parent rather than owning a copy.
         _ => ChildCommand::Leave("a door a child does not own"),
@@ -10503,6 +11350,39 @@ pub fn serve_child_under(
                 // A prompt is a turn whether it succeeded or failed — `after_turn` runs for
                 // both on the daemon, and the anchor is the turn's own end.
                 rearm_the_idle_check(sub, &mut nag, &mut board_version, true);
+            }
+            // **A parent's message, and there is no turn to steer it into — so one is started.**
+            // This is the between-turns half of the operator's ruling (*"fix task_message - it
+            // should enqueue"*): the message was put on this queue by the parent's
+            // `task_message`, the parent's wake reached this thread, and the turn that reads it
+            // is the child's own. `submit_a_parents_message` is the same seam the prompt above
+            // takes — a child near the wall compacts on this turn exactly as on any other — and
+            // it is NOT `submit_as_a_normal_session`: the words are recorded as the parent's
+            // (`Speaker::Agent`), naming which parent, so they can neither authorise an act nor
+            // be read as something the operator typed. The mid-turn door
+            // (`HubSteering::try_next`) speaks the same text through
+            // [`parent_message_text`], so a child cannot tell which state it was in.
+            ChildCommand::Hear => {
+                let (from, text) = match &kind {
+                    letibot_sessionlog::CommandKind::Message { from, text } => {
+                        (from.clone(), text.clone())
+                    }
+                    _ => unreachable!("`child_command` hears a Message and nothing else"),
+                };
+                if let Err(e) = sub.submit_a_parents_message(&from, &text) {
+                    // The same report the prompt's failure gets, and for the same reason: a
+                    // child has no worker to publish a `turn_failed`, so the sentence goes on
+                    // the child's own log, which its parent and the operator both read.
+                    hub.publish(letibot_sessionlog::SessionEvent::Warning {
+                        code: "turn_failed".into(),
+                        detail: format!(
+                            "{sub_id} was sent a message from `{from}` and the turn that would \
+                             have read it failed: {e}. The message is spent — ask again, or read \
+                             the child with `task_result`."
+                        ),
+                        compaction: None,
+                    });
+                }
             }
             // **The children first, then this session.** Stopping is a tree's downward edge — see
             // the supervision invariant on [`HarnessTaskRunner`] — and this is where a child that
@@ -11026,6 +11906,54 @@ fn subagent_depth_refusal(depth: u32, max: u32) -> Option<String> {
     ))
 }
 
+/// **The git repositories under `root`**, at most `depth` directories down, for a refusal to
+/// name: a session a level above its repositories is told which ones it can pick. A directory
+/// holding `.git` (a directory or a worktree's file) is one, and is not descended into.
+fn repos_under(root: &std::path::Path, depth: usize) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return out;
+    };
+    let mut dirs: Vec<std::path::PathBuf> = rd
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| !n.starts_with('.') && n != "target" && n != "node_modules")
+        })
+        .collect();
+    dirs.sort();
+    for d in dirs {
+        if d.join(".git").exists() {
+            out.push(d);
+        } else if depth > 1 {
+            out.extend(repos_under(&d, depth - 1));
+        }
+        if out.len() >= 20 {
+            break;
+        }
+    }
+    out
+}
+
+/// The repositories a refusal names, relative to the session root: ` Repositories here: `a`,
+/// `b/c`.` — or nothing when there are none.
+fn name_repos(root: &str, repos: &[std::path::PathBuf]) -> String {
+    if repos.is_empty() {
+        return String::new();
+    }
+    let names: Vec<String> = repos
+        .iter()
+        .map(|p| {
+            let rel = p.strip_prefix(root).unwrap_or(p);
+            format!("`{}`", rel.display())
+        })
+        .collect();
+    format!(" Repositories here: {}.", names.join(", "))
+}
+
 /// **Run a git command in a directory and return its stdout, trimmed.**
 ///
 /// The one door `task_start`'s filesystem work goes through: the tool layer has no
@@ -11124,6 +12052,20 @@ struct ForeignWeights {
 }
 
 impl HarnessTaskRunner {
+    /// **This session's slot for one handle**, if it started one under that name. `None` is a
+    /// handle this runner never minted — the same answer `collect` gives as `Unknown`.
+    ///
+    /// A helper rather than a fourth copy of the lookup: `send` reads `has_exited` off it (a
+    /// thread that has ended takes no wake) and `collect` reads the status.
+    fn slot(&self, handle: &str) -> Option<Arc<TaskSlot>> {
+        self.slots
+            .lock()
+            .expect("task slots")
+            .iter()
+            .find(|(h, _)| h == handle)
+            .map(|(_, s)| s.clone())
+    }
+
     /// **Load and seat another model's tokenizer for a child** — the spawn half of
     /// [`LocalSwitch::OtherWeights`].
     ///
@@ -11351,7 +12293,31 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         if let Some(why) = subagent_depth_refusal(self.base.depth, self.base.max_subagent_depth) {
             return Err(why);
         }
-        let workspace = self.base.workspace.display().to_string();
+        // **The directory the git work runs in**: the repository the caller named, or the
+        // session root. A root that is in no repository (a session a level above its repos) is
+        // refused by name with the repositories it can see, so the next call can name one.
+        let root = self.base.workspace.display().to_string();
+        let workspace = match worktree.repo.as_deref() {
+            Some(r) if r.starts_with('/') => r.to_string(),
+            Some(r) => format!("{root}/{r}"),
+            None => root.clone(),
+        };
+        if git_in(&workspace, &["rev-parse", "--show-toplevel"]).is_err() {
+            let repos = repos_under(std::path::Path::new(&root), 3);
+            return Err(match &worktree.repo {
+                Some(r) => format!(
+                    "`{r}` is not in a git repository, so no worktree can be cut there. Nothing \
+                     was arranged and nothing was spawned.{}",
+                    name_repos(&root, &repos)
+                ),
+                None => format!(
+                    "the session root `{root}` is in no git repository, so there is nothing to \
+                     cut a worktree from. Name the repository with `repo`.{} Nothing was \
+                     arranged and nothing was spawned.",
+                    name_repos(&root, &repos)
+                ),
+            });
+        }
         let slug = if worktree.slug.is_empty() {
             slug_from_prompt(prompt)
         } else {
@@ -11558,14 +12524,43 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
     /// its next round boundary, recorded as an agent's, instead of something the operator is
     /// supposed to have typed.
     ///
-    /// **REFUSED BY NAME WHEN THE CHILD IS NOT RUNNING, and that is a measurement rather than
-    /// caution.** A message rides the same queue as every other command, so a submission against
-    /// a child whose turn has ended answers `Accepted` and then sits there: nothing drains a
-    /// child's queue between turns, so the parent would be told it had corrected a child that
-    /// never hears a word of it. The operator met the other end of this: *"message was queued
-    /// when you stopped and it didnt restart you"*. So the live turn is the precondition, and it
-    /// is checked rather than assumed — the race it cannot close (the turn ending between this
-    /// check and the drain) is named on the child's log by the worker's own arm.
+    /// **REFUSED BY NAME WHEN THE CHILD'S THREAD IS GONE, and the answer says WHICH delivery the
+    /// parent got.** What this door used to do was refuse anything that was not a running turn,
+    /// and its reason was a measurement rather than caution: a message rides the same queue as
+    /// every other command, so a submission against a child whose turn had ended answered
+    /// `Accepted` and then sat there, because *nothing drains a child's queue between turns* —
+    /// the parent would have been told it had corrected a child that never heard a word of it.
+    /// The operator met the other end of this: *"message was queued when you stopped and it didnt
+    /// restart you"*, and then ruled on it: *"fix task_message - it should enqueue"*.
+    ///
+    /// **What changed is the sentence in the middle, and it changed by being made false rather
+    /// than by being deleted.** A child's queue now HAS a between-turns reader: the message is
+    /// put on it, and [`Hub::wake_its_own_reader`] wakes the thread that owns the child — the
+    /// same door a subagent's settlement takes through `Sessions::wake` — whose own loop answers
+    /// it by running the turn ([`serve_child`]'s `ChildCommand::Hear`, which submits through
+    /// [`Harness::submit_a_parents_message`]). So there are two deliveries and they are not the
+    /// same sentence:
+    ///
+    ///   * **the child's turn is running** — it hears the message at its next round boundary,
+    ///     as an agent's utterance, and keeps working;
+    ///   * **the child is between turns** — a turn is STARTED for it, and the message is what
+    ///     that turn is about.
+    ///
+    /// **The order is the race handling: durable first, wake second.** The message is on the
+    /// queue before the wake is sent, so a wake that is missed, or a turn that ends in the window
+    /// between the state read below and the child's next look at its queue, still finds work
+    /// waiting — the message is never `Accepted` into a queue that nothing will look at. The
+    /// window is genuinely narrow and genuinely there (the child can end its turn between the
+    /// read and the drain) and it is CLOSED by the wake rather than named and left: whichever of
+    /// the two states the child was in, the queue entry and the wake are both delivered.
+    ///
+    /// **The two failures stay failures, by name.** A handle the registry does not hold is the
+    /// refusal it always was. A child whose own thread has ENDED is refused too, because a thread
+    /// that has ended takes no wake — [`TaskSlot::has_exited`] is the same fact `stop_all` reads
+    /// before submitting an interrupt nothing would answer — and that check happens BEFORE the
+    /// submit, so "nothing was sent" is true when it is said. The one residual window is a hub
+    /// that closes between the submit and the wake: then the message really is on a queue with no
+    /// reader, and the answer says exactly that instead of claiming a delivery.
     fn send(&self, handle: &str, text: &str) -> Result<String, String> {
         let Some(hub) = self.registry.get(handle) else {
             return Err(format!(
@@ -11573,16 +12568,21 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                  with no argument lists the ones there are."
             ));
         };
-        // **The live turn is the precondition.** See this function's docstring: a message to a
-        // child between turns is `Accepted` by the hub and read by nobody.
-        if !hub.status().running {
+        // **A thread that has ended takes no wake, and a message nobody reads is the lie this
+        // door exists not to tell.** Checked before the submit, because after it the message is
+        // on a queue and "nothing was sent" would be false.
+        if self.slot(handle).is_some_and(|s| s.has_exited()) {
             return Err(format!(
-                "`{handle}` is not running a turn, so there is nothing to steer: a message is \
-                 delivered INTO the turn it is meant to correct, and a subagent between turns \
-                 would never hear one. Read it with `task_result` instead, or start a new \
-                 subagent with the correction in its prompt. Nothing was sent."
+                "`{handle}`'s own thread has ended, so nothing would read a message queued for \
+                 it: a subagent between turns is reached by starting a turn for it, and this one \
+                 has no thread left to start. Nothing was sent. `task_result` reads what it \
+                 answered, and a new subagent is how to say something more."
             ));
         }
+        // **Which of the two deliveries this is, read before the submit.** Both are real and
+        // they are told apart by the child's state at the moment the parent spoke — a running
+        // turn hears it at its next round boundary, a child between turns has a turn started.
+        let running = hub.status().running;
         let f = hub.submit(
             letibot_sessionlog::hub::DAEMON_SUBMITTER,
             &format!(
@@ -11596,11 +12596,55 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             },
         );
         match &f {
-            letibot_sessionlog::ServerFrame::Accepted { .. } => Ok(format!(
-                "`{handle}` was told, as `{}`: it hears this at its next round boundary and \
-                 keeps working.",
-                self.base.session_id
-            )),
+            letibot_sessionlog::ServerFrame::Accepted { .. } => {
+                // **Durable first, wake second.** `submit` put the message on the child's
+                // queue and did the two things a queued command does: it notified this hub's
+                // own condvar — which is what a PARKED child's reader is blocked on — and it
+                // rang the BELL, which is the daemon's worker. The bell is the wrong reader for
+                // a child (the worker cannot run its turn, and `Sessions::dispatch` hands a
+                // message back to the thread that can), so the wake below is sent as well, and
+                // for the two things the queue alone cannot say:
+                //
+                //   * **whether the session is still there.** `Hub::submit` does not refuse a
+                //     command on a closed hub — it queues it into a queue nothing will drain —
+                //     so this return value is the only liveness answer this door has, and a
+                //     `false` here is a message that will NOT be heard.
+                //   * **the belt for a reader that is not parked on that condvar.** If the
+                //     child's turn ends in the window between the state read above and its next
+                //     look at its queue, the queue entry is what it finds and the wake is what
+                //     makes it look; a wake that finds nothing settled runs no turn at all
+                //     (`Harness::wake` answers `Ok(None)`).
+                let woken = hub.wake_its_own_reader();
+                // **`false` is not a delivery.** It means the hub is closed — `Hub::submit` does
+                // not check that (it queues into a queue nothing will drain), so this return
+                // value is the only liveness answer this door has. No turn will be STARTED for
+                // the message: a child between turns has no reader left (`take_own_work`
+                // answers `Closed` and its thread leaves), and a turn already running could
+                // still take it at its next round boundary through its own steering poll — but
+                // nothing after it will, which is not a correction a parent may rely on and not
+                // one this door will claim.
+                if !woken {
+                    return Err(format!(
+                        "`task_message` reached `{handle}`'s queue and then its session went \
+                         away: the hub is closed, so no turn will be started for it. Do not read \
+                         this as a correction delivered — `task_result` reads what the child \
+                         answered."
+                    ));
+                }
+                if running {
+                    return Ok(format!(
+                        "`{handle}` was told, as `{}`: its turn is running, so it hears this at \
+                         its next round boundary and keeps working.",
+                        self.base.session_id
+                    ));
+                }
+                Ok(format!(
+                    "`{handle}` was told, as `{}`: it was between turns, so the message is on \
+                     its queue and a turn has been started for it — it hears this now, and its \
+                     answer is what `task_result` reads.",
+                    self.base.session_id
+                ))
+            }
             // The same rule `kill` follows, and for the same reason: a tool may not report a
             // state change the daemon refused.
             other => Err(format!(
@@ -11615,13 +12659,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         handle: &str,
         timeout: std::time::Duration,
     ) -> letibot_tools::builtins::task::TaskStatus {
-        let slot = self
-            .slots
-            .lock()
-            .expect("task slots")
-            .iter()
-            .find(|(h, _)| h == handle)
-            .map(|(_, s)| s.clone());
+        let slot = self.slot(handle);
         let Some(slot) = slot else {
             return letibot_tools::builtins::task::TaskStatus::Unknown;
         };
@@ -13150,7 +14188,7 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     // Always a door for a root session, seat or no seat: without one the tool
     // says so and names `/flowy login`. That is what lets a seat arrive while
     // the session is open. A subagent hears through its parent.
-    if cfg.parent_session_id.is_none() && seat != Seat::Runner {
+    if cfg.parent_session_id.is_none() && !matches!(seat, Seat::Runner | Seat::Gatekeeper) {
         r.tools.push("flowy".into());
     }
     // **`web_search` is seated only when something is behind it**, and a subagent
@@ -13160,14 +14198,14 @@ fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     // bytes in the stable prefix, so seating it unconditionally would re-prefill
     // every stored conversation on this box to add a tool that refuses. A session
     // started without `--web-search` is byte-identical to yesterday's.
-    if cfg.web_search.is_some() && seat != Seat::Runner {
+    if cfg.web_search.is_some() && !matches!(seat, Seat::Runner | Seat::Gatekeeper) {
         r.tools.push("web_search".into());
         r.max_tools += 1;
     }
     // **`web_fetch` seats on the same rule as `web_search`**: only when
     // something is behind it, so a session started without `--web-fetch` is
     // byte-identical to one from before the flag existed.
-    if cfg.web_fetch && seat != Seat::Runner {
+    if cfg.web_fetch && !matches!(seat, Seat::Runner | Seat::Gatekeeper) {
         r.tools.push("web_fetch".into());
         r.max_tools += 1;
     }
@@ -13189,6 +14227,15 @@ fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
         }
         Seat::Runner => {
             let mut r = roles::m2_runner();
+            if !cfg.allow_bash {
+                r.tools.retain(|t| t != "bash");
+            }
+            r
+        }
+        // **The reviewer**: read-only by construction, `bash` only behind the daemon's flag —
+        // without it the gatekeeper reads the files and cannot diff, and says so in its verdict.
+        Seat::Gatekeeper => {
+            let mut r = roles::gatekeeper();
             if !cfg.allow_bash {
                 r.tools.retain(|t| t != "bash");
             }
@@ -15549,8 +16596,8 @@ mod tests {
         );
     }
 
-    /// **A prompt is answered, a stop is a STOP for the whole subtree, and everything else a
-    /// child inherits is left, and named.**
+    /// **A prompt is answered, a parent's message is HEARD, a stop is a STOP for the whole
+    /// subtree, and everything else a child inherits is left, and named.**
     ///
     /// The operator's ruling is what makes the first arm right — *"subagent is just another
     /// agent… mid turn, post turn whatever"* — and the other arms are what keeps this door from
@@ -15560,6 +16607,14 @@ mod tests {
     /// *"nothing is running to interrupt"*, which was true of the session and false of its
     /// subtree: a child between turns, with children of its own still computing, was told
     /// nothing and left them running. See the supervision invariant on [`HarnessTaskRunner`].
+    ///
+    /// **The message arm was the second correction** — the operator's ruling, verbatim: *"fix
+    /// task_message - it should enqueue"*. It used to `Leave` a message here on the grounds
+    /// that *"a message steers a turn in flight"*, which was true of the door it was written
+    /// for and false of a child whose queue is drained between turns: the parent was told
+    /// *nothing drains a child's queue between turns*, and what was actually missing was a
+    /// meaning for the entry that arrived. It has one now — a turn of its own, spoken as the
+    /// parent's (see [`Harness::submit_a_parents_message`]).
     #[test]
     fn a_child_answers_a_prompt_and_leaves_the_machinery_its_parent_owns() {
         use letibot_sessionlog::CommandKind as K;
@@ -15571,30 +16626,32 @@ mod tests {
             "the operator asking a child something is a turn, not a no-op"
         );
         assert_eq!(
+            child_command(&K::Message {
+                from: "s-parent".into(),
+                text: "change of plan".into(),
+            }),
+            ChildCommand::Hear,
+            "a parent's message is heard: the child's own turn reads it"
+        );
+        assert_eq!(
             child_command(&K::Interrupt {
                 reason: "esc".into()
             }),
             ChildCommand::Stop,
             "an interrupt IS this child's stop between turns — its children go first, then it does"
         );
-        for (kind, why) in [
-            (
-                K::Message {
-                    from: "s-parent".into(),
-                    text: "change of plan".into(),
-                },
-                "a message steers a turn in flight",
-            ),
-            (K::Compact, "a door a child does not own"),
-            (
-                K::Mode {
-                    name: "allow-all".into(),
-                    consented: true,
-                },
-                "a door a child does not own",
-            ),
+        for kind in [
+            K::Compact,
+            K::Mode {
+                name: "allow-all".into(),
+                consented: true,
+            },
         ] {
-            assert_eq!(child_command(&kind), ChildCommand::Leave(why), "{kind:?}");
+            assert_eq!(
+                child_command(&kind),
+                ChildCommand::Leave("a door a child does not own"),
+                "{kind:?}"
+            );
         }
     }
 
@@ -15782,6 +16839,14 @@ mod tests {
         cfg.flowy = Some(crate::config::FlowyConfig::default());
         let root = role_for(&cfg);
         assert!(root.tools.iter().any(|t| t == "flowy"));
+        // **And the person can be asked.** The operator's ruling, 2026-10-09: *"yeah i
+        // want you to be able to ask me for a choice"* — the seat carries it whether or
+        // not a room is attached, because asking is not a room's business.
+        assert!(
+            root.tools.iter().any(|t| t == "ask_user_question"),
+            "the leticode seat cannot ask the person a question: {:?}",
+            root.tools
+        );
         // The whole opencode union plus the room fits the ceiling, which moved to
         // twenty-four when `task_message` joined the delegation trio — see leticode's own
         // note on `max_tools` for why it took a seat rather than trading for one. A tool
@@ -16279,7 +17344,8 @@ mod endpoint_retry {
     //! codes except unauthenticated"*.
     use super::{
         ContextLengthRefusal, MAX_HTTP_RETRIES, SilenceWatch, context_length_refusal,
-        http_retry_after, retry_host, silence_host, silence_notice,
+        fallback_notice, http_retry_after, model_changed_notice, model_refused, retry_host,
+        silence_host, silence_notice,
     };
     use letibot_turn::{Endpoint, HttpError};
 
@@ -16404,6 +17470,86 @@ mod endpoint_retry {
         assert!(http_retry_after(&status(403), 0, MAX_HTTP_RETRIES).is_none());
         // And not on a later attempt either — it is the code, not the streak.
         assert!(http_retry_after(&status(401), 3, MAX_HTTP_RETRIES).is_none());
+    }
+
+    /// **"The model is out" is a narrower question than "is this worth waiting for",
+    /// and the difference is what decides whether a session MOVES.**
+    ///
+    /// `fall_back_from` reads this, so an answer that is too wide moves a conversation to
+    /// another model over a failure that had nothing to do with the model — a route that is
+    /// down, a stream that did not parse, a server that waited too long for us. And one that
+    /// is too narrow leaves the operator's quota exhaustion ending a turn, which is the
+    /// report this whole change is.
+    #[test]
+    fn a_model_is_out_only_when_the_model_says_so() {
+        // Out: the two the operator's plan produces, and any 5xx.
+        assert!(model_refused(&status(429)), "a quota, a rate limit, a plan");
+        assert!(model_refused(&status(500)));
+        assert!(model_refused(&status(502)));
+        assert!(
+            model_refused(&status(503)),
+            "a server reloading is still out"
+        );
+        // Not out: the wire, which `http_retry_after` waits on and this must not act on.
+        assert!(!model_refused(&HttpError::Io(std::io::Error::other(
+            "refused"
+        ))));
+        assert!(!model_refused(&HttpError::Malformed("truncated".into())));
+        // And the two that look like timing and are not about the model: 408 is the
+        // server waiting too long for US, and a 400 is the request.
+        assert!(!model_refused(&status(408)));
+        assert!(!model_refused(&status(400)));
+        assert!(
+            http_retry_after(&status(408), 0, MAX_HTTP_RETRIES).is_some(),
+            "408 stays on the waiting side, which is exactly why it is not here"
+        );
+    }
+
+    /// **The two retry sentences, in the words the operator needed to read.**
+    ///
+    /// The notice they were getting said *"the retry sends exactly the bytes this one
+    /// did"* — true, and the reason an accepted switch looked like one that had not taken.
+    /// So the changed-model one must say which model, that the round goes there now, and
+    /// that the bytes are unchanged; and the fallback one must name what refused, where the
+    /// session went, and how to come back.
+    #[test]
+    fn a_model_change_is_announced_as_a_change_and_a_fallback_names_the_way_back() {
+        let changed = model_changed_notice(
+            "glm-coding/glm-5.3 (metered)",
+            "deepseek/deepseek-flash (metered)",
+        );
+        assert!(changed.contains("deepseek/deepseek-flash"), "{changed}");
+        assert!(
+            changed.contains("glm-coding/glm-5.3"),
+            "the model it left: {changed}"
+        );
+        assert!(changed.contains("NOW"), "nothing is waited for: {changed}");
+        assert!(
+            !changed.contains("sends exactly the bytes this one did"),
+            "the sentence that made the switch look like it had not taken: {changed}"
+        );
+
+        let moved = fallback_notice(
+            "glm-coding/glm-5.3 (metered)",
+            "deepseek/deepseek-flash (metered)",
+            &HttpError::Status {
+                code: 429,
+                body: "Weekly/Monthly Limit Exhausted".into(),
+            },
+        );
+        assert!(moved.contains("deepseek/deepseek-flash"), "{moved}");
+        assert!(
+            moved.contains("Weekly/Monthly Limit Exhausted"),
+            "what the provider actually said: {moved}"
+        );
+        assert!(
+            moved.contains("[fallback]"),
+            "where the choice came from: {moved}"
+        );
+        assert!(
+            moved.contains("/models"),
+            "and how a person undoes it: {moved}"
+        );
     }
 
     /// **The notice fires only past the threshold, and says what it knows.**
@@ -16915,4 +18061,230 @@ pub fn abandoned_calls(items: &[TranscriptItem]) -> Vec<(String, String)> {
         .into_iter()
         .filter(|(id, _)| !answered.iter().any(|a| a == id))
         .collect()
+}
+
+#[cfg(test)]
+mod gatekeeper_reviews {
+    //! **The host's half of a merge-queue review** — what a gatekeeper child's state turns into
+    //! on the queue's row (`review_outcome`), the seat it runs in, and the mark a head hides it
+    //! by. The spawn itself is `HarnessTaskRunner::start` with the seat named, which is every
+    //! child's path; what is new is asserted here.
+    use super::*;
+    use letibot_tools::builtins::task::TaskStatus;
+    use letibot_tools::gatekeeper::ReviewRequest;
+
+    fn req() -> ReviewRequest {
+        ReviewRequest {
+            brief: "make the reader keep the last record".into(),
+            branch: "agent/reader".into(),
+            base_sha: "abc123".into(),
+        }
+    }
+
+    #[test]
+    fn a_gatekeepers_answer_becomes_the_rows_verdict() {
+        let ok = review_outcome(
+            &req(),
+            TaskStatus::Done {
+                answer: "Read the diff.\n\nverdict: accept\nreasons: - the test covers it\n\
+                         files: src/reader.rs\ncommands: git diff abc123...agent/reader"
+                    .into(),
+            },
+        )
+        .expect("settled");
+        match ok {
+            ReviewOutcome::Verdict {
+                decision,
+                reasons,
+                files,
+                ..
+            } => {
+                assert_eq!(decision, "accept");
+                assert_eq!(reasons, vec!["the test covers it".to_string()]);
+                assert_eq!(files, vec!["src/reader.rs".to_string()]);
+            }
+            other => panic!("a readable answer is a verdict: {other:?}"),
+        }
+
+        assert_eq!(
+            review_outcome(&req(), TaskStatus::Running { note: None }),
+            None
+        );
+        assert_eq!(review_outcome(&req(), TaskStatus::Unknown), None);
+    }
+
+    /// **A failed attempt is not a verdict, and the row it writes says so.**
+    ///
+    /// The operator's report, verbatim: *"so merge queue has 4 failed items, we need a way to
+    /// restart them"*. Four gatekeeper reviews sat on a provider that answered `http 429:
+    /// Weekly/Monthly Limit Exhausted` — a quota, which is weather — and the queue had no way to
+    /// try one again, because the failure had been written where a JUDGEMENT goes.
+    ///
+    /// This is the row half of that, asserted against a real store: a child that died and a
+    /// reply with no readable verdict in it are both `Failed { why }`, and the row they leave has
+    /// `decision` NULL (so `mergequeue::review_gate` does not read it as a refusal), `answered_ms`
+    /// NULL (so the review is still outstanding), the provider's own words in `failure`, and the
+    /// attempt counted.
+    #[test]
+    fn a_failed_attempt_is_not_recorded_as_a_verdict() {
+        // The two endings that reach no judgement. The second is the one that used to be the
+        // word `unreadable`: a model that answered outside the protocol has not judged anything
+        // either, and reading its prose as a decision is the same defect one hop along.
+        for status in [
+            TaskStatus::Failed {
+                why: "http 429: Weekly/Monthly Limit Exhausted. Your limit will reset at \
+                      2026-10-12 15:01:48"
+                    .into(),
+            },
+            TaskStatus::Done {
+                answer: "looks fine to me".into(),
+            },
+        ] {
+            let outcome = review_outcome(&req(), status).expect("settled");
+            let why = match &outcome {
+                ReviewOutcome::Failed { why } => why.clone(),
+                other => panic!("an attempt that reached no judgement is not a verdict: {other:?}"),
+            };
+            assert!(!why.is_empty(), "a failure carries its reason");
+
+            let dir =
+                std::env::temp_dir().join(format!("letibot-review-fail-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let store = Store::open(&dir.join("sessions.db")).expect("a store");
+            let row = letibot_tokencore::store::ReviewRecord {
+                entry_id: "m-1".into(),
+                session_id: "s-host".into(),
+                branch: "agent/reader".into(),
+                base_sha: "abc123".into(),
+                asked_ms: 1_000,
+                answered_ms: None,
+                decision: None,
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
+                reasons: Vec::new(),
+                files: Vec::new(),
+                commands: Vec::new(),
+            };
+            store.put_review(&row).expect("the request row");
+            write_outcome(&store, &row, outcome);
+
+            let back = store.merge_review("m-1").expect("reads").expect("the row");
+            assert!(
+                back.decision.is_none(),
+                "a failure is not a verdict — `review_gate` reads any word here as a refusal, \
+                 which is how four entries came to be parked on a judgement nobody made: {:?}",
+                back.decision
+            );
+            assert!(
+                back.answered_ms.is_none(),
+                "the review is still outstanding: nothing answered it"
+            );
+            assert_eq!(back.attempts, 1, "the attempt is counted");
+            assert!(back.failed_ms.is_some(), "and it is stamped");
+            assert_eq!(
+                back.failure, why,
+                "the failure is carried VERBATIM, which is what a person reads on the row"
+            );
+            // **And the queue's own retry can see it**, which is the whole point: a row whose
+            // last attempt failed is one the queue may ask again, boundedly.
+            assert_ne!(
+                crate::mergequeue::review_retry(Some(&back), back.failed_ms.unwrap()),
+                crate::mergequeue::ReviewRetry::Exhausted,
+                "one failed attempt is not the end of the road"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// **A verdict is still a verdict, and it clears the failure.** The other half of the pair:
+    /// the change above must not have made a real judgement look like an attempt.
+    #[test]
+    fn a_readable_answer_still_writes_the_verdict() {
+        let dir = std::env::temp_dir().join(format!("letibot-review-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("sessions.db")).expect("a store");
+        let row = letibot_tokencore::store::ReviewRecord {
+            entry_id: "m-2".into(),
+            session_id: "s-host".into(),
+            branch: "agent/reader".into(),
+            base_sha: "abc123".into(),
+            asked_ms: 1_000,
+            // **A row that had already failed once**, so the clearing is asserted rather than
+            // the absence of a value nobody set.
+            answered_ms: None,
+            decision: None,
+            attempts: 1,
+            failed_ms: Some(1_500),
+            failure: "http 429: Weekly/Monthly Limit Exhausted".into(),
+            reasons: Vec::new(),
+            files: Vec::new(),
+            commands: Vec::new(),
+        };
+        store.put_review(&row).expect("the failed-attempt row");
+        let outcome = review_outcome(
+            &req(),
+            TaskStatus::Done {
+                answer: "verdict: accept\nreasons: - the test covers it".into(),
+            },
+        )
+        .expect("settled");
+        write_outcome(&store, &row, outcome);
+        let back = store.merge_review("m-2").expect("reads").expect("the row");
+        assert_eq!(back.decision.as_deref(), Some("accept"));
+        assert!(back.answered_ms.is_some());
+        assert_eq!(
+            back.failure, "",
+            "a verdict clears the last attempt's failure"
+        );
+        assert_eq!(back.failed_ms, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A session above its repositories is told which ones it can name** — `task_start`'s
+    /// refusal when its root is in no repository.
+    #[test]
+    fn the_repositories_under_a_root_are_named() {
+        let root = std::env::temp_dir().join(format!("letibot-repos-under-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for d in [
+            "app/.git",
+            "libs/core/.git",
+            "libs/core/nested/.git",
+            "notes",
+            "target/x/.git",
+        ] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let found = repos_under(&root, 3);
+        let said = name_repos(&root.display().to_string(), &found);
+        assert!(said.contains("`/app`") || said.contains("`app`"), "{said}");
+        assert!(said.contains("libs/core"), "{said}");
+        assert!(
+            !said.contains("nested"),
+            "a repository is not descended into: {said}"
+        );
+        assert!(!said.contains("target"), "{said}");
+        assert_eq!(name_repos("/x", &[]), "");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_gatekeeper_is_a_seat_and_the_head_can_tell_its_child_apart() {
+        assert_eq!(Seat::parse("gatekeeper").unwrap(), Seat::Gatekeeper);
+        assert_eq!(Seat::Gatekeeper.as_str(), "gatekeeper");
+        assert!(
+            !Seat::Gatekeeper.needs_writable_backend(),
+            "a reviewer writes nothing"
+        );
+        // The child's title is cut from the brief's first line, and the head hides a child whose
+        // title begins with the mark — so the brief must begin with it, word for word.
+        assert!(
+            letibot_tools::gatekeeper::review_prompt(&req())
+                .starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX),
+            "the review brief no longer begins with the head's mark"
+        );
+    }
 }

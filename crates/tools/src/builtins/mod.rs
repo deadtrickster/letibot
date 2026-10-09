@@ -44,6 +44,7 @@ pub mod harness_view;
 pub mod intent;
 pub mod jobs;
 pub mod lsp;
+pub mod merge_gate;
 pub mod monitor;
 pub mod notes;
 pub mod outline;

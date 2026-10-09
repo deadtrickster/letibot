@@ -1310,12 +1310,44 @@ fn a_created_file_renders_as_all_right_panel_and_a_cap_says_so() {
     );
 }
 
+/// **The verb decides the HEADER; the pair decides the BODY.**
+///
+/// This read *"a non-edit call never grows a second panel"*, and that was right while `edit`
+/// and `write` were the only calls that carried an excerpt: the name was the whole signal,
+/// and a `grep` carrying one was a shape that could not happen. `crates/tools/src/detect.rs`
+/// made a `bash` call a **second carrier** — a shell that rewrites a file hands the head both
+/// sides deliberately, so that the change can be read — and the gate on the name then drew
+/// the note and no diff. The operator, watching a `python3` heredoc rewrite a file: *"right,
+/// but i didnt see the diff"*.
+///
+/// So what survives of the old rule is the half that was ever about the NAME: a call draws a
+/// panel for the pair it holds and for nothing else, and it is still drawn under its own
+/// verb — `Ran` for a shell, which is the label `crates/tools/src/detect.rs` refuses to
+/// falsify by calling the change an `edit`.
 #[test]
-fn a_non_edit_call_never_grows_a_second_panel() {
-    let mut row = edit_row(Some(edit_excerpt()));
+fn a_call_draws_a_panel_for_the_pair_it_carries_and_never_for_one_it_does_not() {
+    // No pair, whatever the verb: no panel.
+    let mut row = edit_row(None);
     row.name = "grep".into();
     let rows = call_card(&row, &plain_cfg(120), 0, Fold::Open, true);
     assert!(!rows.join("\n").contains('│'), "{rows:?}");
+
+    // A pair on a call whose verb is not an edit — the shape `bash` arrives in — draws it,
+    // and the header still says what the call was rather than claiming `Edited`.
+    let mut row = edit_row(Some(edit_excerpt()));
+    row.name = "bash".into();
+    row.target = "python3 - <<'PYEOF' …".into();
+    let rows = call_card(&row, &plain_cfg(120), 0, Fold::Open, true);
+    let text = rows.join("\n");
+    assert!(text.contains('│'), "no panel for the pair: {rows:?}");
+    assert!(
+        text.contains("x();"),
+        "the change is not on screen: {rows:?}"
+    );
+    assert!(
+        text.contains("Ran"),
+        "the verb is still the call's own: {rows:?}"
+    );
 }
 
 #[test]

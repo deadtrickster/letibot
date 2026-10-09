@@ -158,6 +158,11 @@ pub struct WorktreeSpec {
     /// `false` is the default — a `task_start` that did not name the main tree creates
     /// a worktree, and the main tree is the thing it exists to keep the child out of.
     pub main_tree: bool,
+    /// **The repository to cut the worktree from**, when it is not the one the session root is
+    /// in — a session may run a level above its repositories (`~/Projects`), and then the root
+    /// is in no repository at all. Relative to the session root, or absolute. `None` is the
+    /// session root's own repository, which is what every earlier build used.
+    pub repo: Option<String>,
 }
 
 /// **Where a `task_start` child works, as the runner arranged it.**
@@ -436,11 +441,14 @@ pub trait TaskRunner: Send + Sync {
     /// reason: a message reported as delivered that nobody heard is worse than one refused,
     /// because the parent then believes its child was corrected.
     ///
-    /// **A message is not a second prompt.** It enters the turn the child is already
-    /// running, recorded as an agent's utterance rather than the operator's, so a child that
-    /// is off the path hears *stop, do it this way* at its next round instead of after it has
-    /// finished. A child between turns cannot be reached this way at all, and a runner says
-    /// so by name rather than accepting something nothing will drain.
+    /// **A message is not a second prompt.** It is recorded as an agent's utterance rather
+    /// than the operator's, so it can neither authorise the act it races nor be read as
+    /// something a person typed. **Both states of a child are reachable, and they are
+    /// different deliveries**: a child with a turn RUNNING hears it at its next round
+    /// boundary, and a child BETWEEN turns has a turn started for it with this message as
+    /// what the turn is about (the operator's ruling, *"fix task_message - it should
+    /// enqueue"*). The one thing a runner must not do is accept a message nothing will read:
+    /// a handle whose session is gone, or whose thread has ended, is refused by name.
     fn send(&self, handle: &str, _text: &str) -> Result<String, String> {
         Err(format!(
             "this session's runner cannot message `{handle}`: a subagent is reached through \
@@ -718,7 +726,8 @@ impl Tool for TaskStartTool {
                     "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
                     "base": {"type": "string", "description": "The ref the branch is cut from. Defaults to the repo's current HEAD."},
                     "slug": {"type": "string", "description": "The slug the worktree and branch are named by. Defaults to a derivation from the prompt."},
-                    "main_tree": {"type": "boolean", "description": "Work in the main checkout instead of a fresh worktree. The exception; off by default."}
+                    "main_tree": {"type": "boolean", "description": "Work in the main checkout instead of a fresh worktree. The exception; off by default."},
+                    "repo": {"type": "string", "description": "The repository to work in, when it is not the one the session root is in (a session above its repositories names one). Relative to the session root, or absolute."}
                 },
                 "required": ["prompt"]
             }),
@@ -774,6 +783,11 @@ impl Tool for TaskStartTool {
             .get("main_tree")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let repo = args
+            .get("repo")
+            .and_then(|v| v.as_str())
+            .map(|r| r.trim().trim_end_matches('/').to_string())
+            .filter(|r| !r.is_empty() && r != ".");
 
         // **The slug, derived from the prompt when the caller did not name one.** The
         // derivation is the default, not a lock: a caller that wants a different name
@@ -797,7 +811,13 @@ impl Tool for TaskStartTool {
         // rather than by a child that was never started. The main tree is the
         // exception and does not create a path, so it is not checked.
         if !main_tree {
-            let path = worktree_path(&workspace, &slug);
+            // Under the named repository, when there is one — the runner arranges it there.
+            let under = match &repo {
+                Some(r) if r.starts_with('/') => r.clone(),
+                Some(r) => format!("{workspace}/{r}"),
+                None => workspace.clone(),
+            };
+            let path = worktree_path(&under, &slug);
             if std::fs::symlink_metadata(&path).is_ok() {
                 return Invocation::failed(
                     format!("the path {path} already exists"),
@@ -824,6 +844,7 @@ impl Tool for TaskStartTool {
             slug,
             base,
             main_tree,
+            repo,
         };
 
         let handle = match self.runner.start_worktree(prompt, &spec, &worktree_spec) {
@@ -1036,12 +1057,13 @@ impl Tool for TaskResultTool {
     }
 }
 
-/// `task_message` — correct a subagent while it is still working.
+/// `task_message` — correct a subagent, running or not.
 ///
 /// The third thing a parent does to work it handed off: `task` starts a child,
 /// `task_result` reads it, `job_kill` stops it, and this **steers** it. Sibling by shape and
 /// by reason — see [`TaskRunner::send`] for why a correction is not a second prompt in the
-/// child's session, and why a finished child is refused rather than queued.
+/// child's session, for the two deliveries (a running turn and a child between turns), and
+/// for why a child whose session is gone is refused rather than queued.
 pub struct TaskMessageTool {
     runner: Arc<dyn TaskRunner>,
 }
@@ -1056,12 +1078,12 @@ impl Tool for TaskMessageTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "task_message",
-            "Say something to a subagent that is STILL WORKING — a live correction, \
-             delivered into the turn it is running now rather than queued behind it. Give \
+            "Say something to a subagent you started — a live correction. Give \
              `task` (the handle `task` returned) and `text` (what to say). It is not a \
-             second prompt: the child hears it at its next round boundary, as your \
-             message, and carries on working. Refused by name if the child has already \
-             answered, because nothing would deliver it. Read a child with `task_result`; \
+             second prompt: the child hears it as your message and carries on. A child \
+             whose turn is running hears it at its next round boundary; a child that has \
+             answered and is waiting is woken and runs a turn for it. Refused by name if \
+             the child's session is gone. Read a child with `task_result`; \
              stop one with `job_kill`.",
             json!({
                 "type": "object",

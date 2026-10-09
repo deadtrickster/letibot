@@ -97,6 +97,12 @@ pub enum Seat {
     /// backend at `/` and leaves gating to the permission ruleset and the mode,
     /// rather than confining to the project like `coder` and `runner`.
     Leticode,
+    /// **The merge queue's reviewer** ([`letibot_tools::runtime::roles::gatekeeper`]): `read`,
+    /// `grep`, `glob`, `read_spill`, and — behind [`Config::allow_bash`], like the runner's —
+    /// `bash` for `git diff` and `git log`. Nothing that can author code, and never a seat a
+    /// person picks: the daemon starts it as a hidden child of the session whose branch it
+    /// judges (`mergequeue::GatekeeperDoor`).
+    Gatekeeper,
 }
 
 impl Seat {
@@ -108,6 +114,7 @@ impl Seat {
             Seat::Coder => "coder",
             Seat::Runner => "runner",
             Seat::Leticode => "leticode",
+            Seat::Gatekeeper => "gatekeeper",
         }
     }
 
@@ -122,9 +129,10 @@ impl Seat {
             "coder" => Ok(Seat::Coder),
             "runner" => Ok(Seat::Runner),
             "leticode" | "opencode" => Ok(Seat::Leticode),
+            "gatekeeper" => Ok(Seat::Gatekeeper),
             other => Err(format!(
                 "unknown role `{other}`; this build has orchestrator, planner, \
-                 researcher, coder, runner, leticode"
+                 researcher, coder, runner, leticode, gatekeeper"
             )),
         }
     }
@@ -156,7 +164,7 @@ impl Seat {
         //
         // It does NOT seat `bash`. That is still behind `--bash` for both seats, so
         // the capability arrives because somebody typed it.
-        matches!(self, Seat::Runner | Seat::Coder)
+        matches!(self, Seat::Runner | Seat::Coder | Seat::Gatekeeper)
     }
 
     /// The read-only grants this seat needs to be useful, beyond the project.
@@ -509,6 +517,20 @@ pub struct Config {
     pub vm_args: Vec<String>,
     /// The cloud provider the turns go to, when not the local server.
     pub provider: Option<ProviderConfig>,
+    /// **What to try when the model this session is on is OUT** — `[fallback] models`
+    /// in `providers.toml`, in the order the operator wrote it.
+    ///
+    /// Empty is the old behaviour and the default: the turn fails, as it always did.
+    /// Names are the ones `/models` accepts (`deepseek/deepseek-flash`, a
+    /// `[model."…"]` fleet name, `local`), resolved through the same door
+    /// `models_choice` when one is needed — so a name here cannot be one the verb
+    /// would refuse. See [`letibot_provider::keys::fallback_models`] for the key and
+    /// `Harness::fall_back_from` for who reads it.
+    ///
+    /// **Read once at startup**, like `[default]`: a session carries this list the
+    /// way it carries the model it was launched on, and an edit to the file takes
+    /// effect on the next daemon.
+    pub fallback: Vec<String>,
     /// What the fabric block in the system prompt is, said by whoever composed
     /// it (`Sessions`): live, cached with its age, or unreachable. `None` when
     /// there is no seat, and then there is no block.
@@ -1394,6 +1416,11 @@ impl Config {
             title: String::new(),
             owner: std::env::var("USER").unwrap_or_else(|_| "operator".into()),
             system: DEFAULT_SYSTEM.into(),
+            // No fallback until `run` reads `[fallback]` out of `providers.toml`. An
+            // empty list is the old behaviour exactly — a model that is out fails the
+            // turn — so a test that wants the fallback path sets this field by hand,
+            // and nothing about a daemon that never wrote the key changes.
+            fallback: Vec::new(),
             // No overrides until `run` loads the operator's `prompts.toml`. `Default`
             // is the byte-identical case: a daemon that never reads the file composes
             // `DEFAULT_SYSTEM` for every session.

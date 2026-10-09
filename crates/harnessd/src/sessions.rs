@@ -523,6 +523,32 @@ impl<'a> Sessions<'a> {
                 ok: false,
             },
             Slash::Gate(verb) => crate::slash::gate(self.base.store.as_deref(), &verb),
+            // **The merge queue's one human act.** It goes through the session's own harness
+            // because that is the half that can announce the move on every head's log: a restart
+            // is an entry going from `Failed` back to `Waiting`, and the pane may be open in a
+            // session that is not the one the entry came from.
+            //
+            // A refusal is a `SlashReply` with `ok: false`, which the worker publishes as
+            // `slash_refused` — the same door every other verb's "no" comes through, so a
+            // restart that could not happen says so where the operator is already looking.
+            Slash::Queue(crate::slash::QueueVerb::Restart { entry }) => {
+                match self.open.get_mut(session_id) {
+                    Some(h) => match h.restart_review(&entry) {
+                        Ok(line) => SlashReply {
+                            lines: vec![line],
+                            ok: true,
+                        },
+                        Err(why) => SlashReply {
+                            lines: vec![why],
+                            ok: false,
+                        },
+                    },
+                    None => SlashReply {
+                        lines: vec![format!("session {session_id} is not open")],
+                        ok: false,
+                    },
+                }
+            }
             Slash::Supervise { want, at } => {
                 let Some(h) = self.open.get_mut(session_id) else {
                     return SlashReply {
@@ -723,30 +749,14 @@ impl<'a> Sessions<'a> {
                     lines.push(format!("session {session_id} is not open"));
                     return SlashReply { lines, ok: false };
                 };
-                let applied = match choice {
-                    crate::slash::ModelChoice::OwnServer => h.set_provider(None),
-                    crate::slash::ModelChoice::Metered(pc) => h.set_provider(Some(pc)),
-                    // Its own door, because it verifies the vocabulary before it
-                    // moves anything — see `Harness::set_local_model`.
-                    crate::slash::ModelChoice::Local(m) => h.set_local_model(&m),
-                };
-                match applied {
-                    Ok(line) => {
-                        // **The choice goes to the session row in the same breath** —
-                        // `persist_provider_choice`'s own doc is why. A switch that
-                        // reached the screen but not the row was a choice that expired
-                        // with the process, which is the defect this whole change is.
-                        if let Err(why) = h.persist_provider_choice() {
-                            lines.push(why);
-                        }
-                        lines.push(line);
-                        SlashReply { lines, ok: true }
-                    }
-                    Err(e) => {
-                        lines.push(e.to_string());
-                        SlashReply { lines, ok: false }
-                    }
-                }
+                // **The act itself is the harness's** — `Harness::apply_model_choice`,
+                // which is now the ONE implementation of this verb. It has a second
+                // caller as of 2026-10-12: the retry loop, which applies a `/models`
+                // typed during a retrying turn on the spot rather than after it — see
+                // `Harness::apply_queued_model`. Two copies of a switch would be two
+                // places for the screen, the session row and the thing that actually
+                // answers to disagree.
+                h.apply_model_choice(choice, lines)
             }
         }
     }
@@ -2681,12 +2691,22 @@ impl<'a> Sessions<'a> {
                     Err(e) => Outcome::Failed(e),
                 }
             }
-            // **A parent's message that lost its race with the child's turn.** The runner
-            // refuses these by name when the child is not running (`HarnessTaskRunner::send`),
-            // so reaching the between-turn worker means the turn ended between that check and
-            // this drain. Said rather than dropped: the parent was told the message was
-            // accepted, and this sentence is the only thing that corrects that.
+            // **A parent's message for a session the daemon does not hold belongs to the thread
+            // that owns it** — the same rule, and the same door, as the interrupt arm above.
+            // Since the between-turns fix a message to a child is no longer *"a turn in flight
+            // or nothing"*: the child's own reader is woken by the parent's `task_message` and
+            // runs a turn for it (`harness::serve_child`'s `ChildCommand::Hear`). So a worker
+            // that ran this arm's sentence instead would be both the second writer this tree
+            // keeps closing and a false report — the reader IS there, and it will read it.
+            // What is left below is the case the hand-back cannot reach: a hub that is already
+            // closed, where the sentence is true.
             CommandKind::Message { from, text } => {
+                if !self.open.contains_key(session_id)
+                    && let Some(hub) = &hub
+                    && hub.give_back_to_its_own_reader(cmd.clone())
+                {
+                    return Outcome::HandedOn;
+                }
                 if let Some(hub) = &hub {
                     let said = match text.chars().count() > 200 {
                         true => format!("{}…", text.chars().take(200).collect::<String>()),
@@ -2695,10 +2715,10 @@ impl<'a> Sessions<'a> {
                     hub.publish(SessionEvent::Warning {
                         code: "message_idle".into(),
                         detail: format!(
-                            "a message from `{from}` arrived after the turn it was meant to \
-                             steer had ended, so nothing will deliver it: {said}. The parent's \
-                             `task_message` was accepted and did not land — its child's answer \
-                             is what `task_result` reads."
+                            "a message from `{from}` could not be given back to the session's \
+                             own reader — that session is gone, so nothing will deliver it: \
+                             {said}. The parent's `task_message` was accepted and did not land — \
+                             its child's answer is what `task_result` reads."
                         ),
                         compaction: None,
                     });

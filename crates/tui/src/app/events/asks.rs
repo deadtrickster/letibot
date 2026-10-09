@@ -68,16 +68,26 @@ impl App {
                 // summary, the call to put the outcome on, and the oracle's advice.
                 // The last is the one the answer event can never carry — its `basis`
                 // is the DECIDER's, and under `/supervise` the decider is usually the
-                // operator.
-                let (summary, call_id, advice) = self
+                // operator. And which KIND it was, which the live arm needs for the
+                // same reason the view keeps it: a question has no ladder, so its
+                // ending travels as `Cancelled` with the answer in the basis.
+                let (summary, call_id, kind, advice) = self
                     .open
                     .iter()
                     .find(|d| d.req_id == req_id)
-                    .map(|d| (d.summary.clone(), d.call_id.clone(), d.advice.clone()))
+                    .map(|d| {
+                        (
+                            d.summary.clone(),
+                            d.call_id.clone(),
+                            d.kind.clone(),
+                            d.advice.clone(),
+                        )
+                    })
                     .unwrap_or_default();
                 self.open.retain(|d| d.req_id != req_id);
                 let d = SettledDecision {
                     req_id,
+                    kind: kind.clone(),
                     call_id: call_id.clone(),
                     summary,
                     outcome,
@@ -96,7 +106,7 @@ impl App {
                 {
                     c.decision = Some(d);
                 } else {
-                    self.note(Note::Decided(d));
+                    self.note(Note::settled(d));
                 }
                 Disposition::Rendered
             }

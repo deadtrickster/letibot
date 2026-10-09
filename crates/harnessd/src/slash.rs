@@ -72,6 +72,7 @@ pub const VERBS: &[&str] = &[
     "job",
     "login",
     "models",
+    "queue",
     "supervise",
     "tools",
 ];
@@ -123,6 +124,13 @@ pub enum Slash {
     DefaultModel(Option<String>),
     /// **The supervised-labelling verb.** See [`gate`].
     Gate(GateVerb),
+    /// **The merge queue's own verb**, for the one act on an entry that is a person's.
+    ///
+    /// `/queue` alone is the HEAD's — it opens the pane, and it never reaches here. What does is
+    /// the sub-verb, because restarting a review is a daemon act: the queue is daemon-level,
+    /// its rows are the daemon's, and the pane may be open in a session that is not the one the
+    /// entry came from.
+    Queue(QueueVerb),
     /// Turn the guard model on or off on the running session. `None` reports.
     ///
     /// `at` carries an address the first time somebody names one; it is remembered,
@@ -132,6 +140,18 @@ pub enum Slash {
         at: Option<String>,
     },
     Help(String),
+}
+
+/// **What the operator is asking of the merge queue** — see [`Slash::Queue`].
+///
+/// One sub-verb, and it is the one the operator named: *"so merge queue has 4 failed items, we
+/// need a way to restart them"*. A parked entry is terminal by design — `Failed` is the queue
+/// saying *this did not land and the tree is where the reason is* — so the move out of it is
+/// somebody's, and this is where they say it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueueVerb {
+    /// **Re-attempt one entry's review.** `entry` is the id the pane's row carries.
+    Restart { entry: String },
 }
 
 /// What the operator is saying about a decision the gate already made.
@@ -156,6 +176,20 @@ pub enum GateVerb {
         kind: &'static str,
         note: String,
     },
+}
+
+/// **`PROVIDER[/MODEL]`, split** — the one spelling of a model name in this tree.
+///
+/// Read by the verb's own parser and by `[fallback] models`, and it is a function
+/// rather than two `split_once('/')`s because the two callers must not be able to
+/// disagree about what `deepseek/deepseek-flash` means: the fallback resolves its
+/// names through [`models_choice`], the same door `/models` goes through, and a
+/// second split is a second answer to that question.
+pub fn split_model_name(spec: &str) -> (String, Option<String>) {
+    match spec.split_once('/') {
+        Some((p, m)) => (p.to_string(), Some(m.to_string())),
+        None => (spec.to_string(), None),
+    }
 }
 
 impl Slash {
@@ -230,10 +264,7 @@ impl Slash {
             Some("models") | Some("model") => match words.get(1).copied() {
                 None | Some("list") => Slash::Models,
                 Some(spec) => {
-                    let (provider, model) = match spec.split_once('/') {
-                        Some((p, m)) => (p.to_string(), Some(m.to_string())),
-                        None => (spec.to_string(), None),
-                    };
+                    let (provider, model) = split_model_name(spec);
                     let key = words
                         .iter()
                         .position(|w| *w == "--key" || *w == "--api-key")
@@ -271,6 +302,32 @@ impl Slash {
                 Some(other) => Slash::Help(format!(
                     "/supervise [on|off|status|HOST:PORT] — `{other}` is none of those"
                 )),
+            },
+            // **`/queue` is two verbs under one word, and only one of them is the daemon's.**
+            // A bare `/queue` never reaches here — the head answers it by opening the pane — so
+            // this arm sees the sub-verb, and an unrecognised one is refused by name with the
+            // grammar rather than forwarded to `Slash::Help`'s *"is not a daemon verb"* about a
+            // verb that is.
+            Some("queue") => match words.get(1).copied() {
+                Some("restart") => match words.get(2) {
+                    Some(id) => Slash::Queue(QueueVerb::Restart {
+                        entry: (*id).to_string(),
+                    }),
+                    None => Slash::Help(
+                        "/queue restart ENTRY-ID — `/queue` lists the entries, and each row \
+                         carries its id"
+                            .into(),
+                    ),
+                },
+                Some(other) => Slash::Help(format!(
+                    "/queue {other}: the sub-verb is `restart ENTRY-ID`. A bare `/queue` opens \
+                     the merge-queue pane."
+                )),
+                None => Slash::Help(
+                    "/queue opens the merge-queue pane; `/queue restart ENTRY-ID` asks the \
+                     gatekeeper again about a parked entry"
+                        .into(),
+                ),
             },
             Some("gate") => {
                 let note = |from: usize| words[from.min(words.len())..].join(" ");
@@ -606,6 +663,50 @@ pub fn models_choice(
         }),
         notes,
     ))
+}
+
+/// **Is this name a model the FLEET declares** — a `[model."…"]` block with an address?
+///
+/// The same list [`models_choice`] looks in, so the two cannot disagree about which
+/// names take the fleet path (they are the operator's own blocks, and a block wins
+/// over a preset of the same name).
+pub fn fleet_model_named(provider: &str, file: Option<&std::path::Path>) -> bool {
+    letibot_provider::keys::local_models(file)
+        .iter()
+        .any(|m| m.name == provider)
+}
+
+/// **Can a RUNNING TURN carry this `/models` line out itself?**
+///
+/// The one question the retry loop's picker asks of a queued line, answered where the
+/// verb's grammar is. Two of the three choices are yes and one is no:
+///
+///   * a **metered** switch is a `MessagesBackend` built and put in place — nothing
+///     about the conversation, the ledger or the engine moves, so a round that failed
+///     a moment ago can be taken again on it;
+///   * **`local`** is yes only when this session is NOT on another model's weights
+///     (`on_foreign_weights`): the return to the daemon's own server is then an
+///     address move, and otherwise it re-seats — which is the no;
+///   * a **fleet** model (`/models dense78`) is always the no, because the switch
+///     decides with a `/props` probe whether it has to re-render the conversation into
+///     a fork, and forking under a turn that is in flight is not something a retry loop
+///     should be doing.
+///
+/// **What "no" means is that nothing happens here.** The line stays in the queue, in
+/// order, and the worker takes it when the turn ends — which is what every `/models`
+/// did before this existed. It is not a refusal: the operator's switch still lands,
+/// one turn later than it would have, and the turn it was typed during is not put at
+/// risk for it.
+pub fn mid_turn_switch_ok(line: &str, on_foreign_weights: bool) -> bool {
+    match Slash::parse(line) {
+        Slash::ModelsSet { provider, .. } => {
+            if provider == "local" {
+                return !on_foreign_weights;
+            }
+            !fleet_model_named(&provider, None)
+        }
+        _ => false,
+    }
 }
 
 /// **`/default-model` — what a NEW session starts on.**
@@ -1319,6 +1420,31 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
 #[cfg(test)]
 mod the_verb_table_is_the_parser {
     use super::*;
+
+    /// **`/queue restart ID` is the daemon's, and the rest of `/queue` is the head's.**
+    ///
+    /// The sub-verb is a daemon act — the queue is daemon-level and its rows are the daemon's —
+    /// and everything else under the word is the head opening its pane, so the grammar refuses
+    /// by name rather than forwarding a half-typed line into `Help`'s *"is not a daemon verb"*
+    /// about a verb that is one.
+    #[test]
+    fn the_queue_sub_verb_is_the_restart_and_nothing_else() {
+        assert_eq!(
+            Slash::parse("queue restart s-1-sub-2"),
+            Slash::Queue(QueueVerb::Restart {
+                entry: "s-1-sub-2".into()
+            })
+        );
+        for line in ["queue restart", "queue", "queue stop x"] {
+            match Slash::parse(line) {
+                Slash::Help(why) => assert!(
+                    why.contains("restart") || why.contains("merge-queue pane"),
+                    "`/{line}` is refused with the grammar: {why}"
+                ),
+                other => panic!("`/{line}` is not a daemon act: {other:?}"),
+            }
+        }
+    }
 
     /// **Every arm's first word is in [`VERBS`], and every name there has an arm.**
     ///

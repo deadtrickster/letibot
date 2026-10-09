@@ -329,6 +329,86 @@ pub fn default_choice(file: Option<&Path>) -> Result<Option<DefaultChoice>, Unre
     }))
 }
 
+/// **What answers when the model this session is on is OUT** — `[fallback]` in the
+/// same file, in the order it is written.
+///
+/// ```toml
+/// [fallback]
+/// models = ["deepseek/deepseek-flash", "dense78"]
+/// ```
+///
+/// # The key this needed, and did not have
+///
+/// MEASURED 2026-10-12 on the operator's GLM coding plan: the weekly limit ran out
+/// mid-turn, the endpoint answered `http 429: Weekly/Monthly Limit Exhausted` to
+/// every attempt, the ladder took the round again six times over 63 s, and the turn
+/// was then recorded as FAILED. Their ruling on it — *"it is a standard thing to do
+/// - limits, 5xx, etc. we must be able to change models like for the main session"*
+/// — is the behaviour this key exists for, and there was nowhere to write it: the
+/// file has a key per provider, a `[default]`, prices and per-model profiles, and
+/// **nothing that says what to do when the model you are on cannot answer**.
+///
+/// # Why a list, and why not in code
+///
+/// The alternative is a chain of provider names compiled into the retry loop, and
+/// that is the drift this tree deletes: which models this box may reach is a fact
+/// about the box (which keys are here, which LAN servers are up), not about the
+/// build. Names are the ones `/models` accepts, tried in order, and a name that
+/// cannot be built is SAID and skipped — see `Harness::fall_back_from`.
+///
+/// **Absent or empty is the old behaviour**: the turn fails, as it always did. This
+/// is opt-in, because a daemon that moved a conversation to another model on its own
+/// initiative without being told to is a surprise in the one direction nobody would
+/// look for.
+///
+/// `Ok(vec![])` covers three situations that all mean *the operator asked for no
+/// fallback* — no file, no `[fallback]` section, an empty list — and `Err` is the
+/// fourth, the same one [`default_choice`] names: the file is there and the parser
+/// could not read it, which is a fault rather than an absence.
+pub fn fallback_models(file: Option<&Path>) -> Result<Vec<String>, Unreadable> {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    let parsed = if file.is_file() {
+        Some(parse_file(&file).map_err(|why| Unreadable {
+            file: file.clone(),
+            why,
+        })?)
+    } else {
+        None
+    };
+    let Some(raw) = parsed
+        .as_ref()
+        .and_then(|p| p.sections.get("fallback"))
+        .and_then(|s| s.get("models"))
+    else {
+        return Ok(Vec::new());
+    };
+    parse_model_list(raw).map_err(|why| Unreadable {
+        file: file.clone(),
+        why,
+    })
+}
+
+/// `models = ["a/b", "c"]` as [`parse_file`] hands it over: one string, brackets and
+/// all, because the parser is deliberately three lines of grammar and not a TOML
+/// crate. So the list is split here, and a value that is not a list is a sentence
+/// rather than an empty list — a fallback nobody can reach, silently, is the defect
+/// this whole reader is written against.
+fn parse_model_list(raw: &str) -> Result<Vec<String>, String> {
+    let trimmed = raw.trim();
+    let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
+        return Err(format!(
+            "`[fallback] models` is a LIST of names — models = [\"deepseek/deepseek-flash\", \"dense78\"] \
+             — and `{raw}` is not one. Nothing was changed and no fallback is in force."
+        ));
+    };
+    Ok(inner
+        .split(',')
+        .map(|m| m.trim().trim_matches(['"', '\'']).trim())
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 /// Record the standing choice. `provider = "local"` records the local server.
 pub fn set_default(
     file: Option<&Path>,
@@ -1030,6 +1110,66 @@ mod tests {
                 provider: "deepseek".into(),
                 model: Some("deepseek-flash".into()),
             }))
+        );
+    }
+
+    /// **The fallback list, in the order the operator wrote it.** Order is the whole
+    /// of the policy this key carries — first name first — so the reader must not
+    /// sort, dedupe or otherwise have an opinion about it.
+    #[test]
+    fn the_fallback_list_is_read_in_the_order_it_was_written() {
+        let f = tmp_providers(
+            "fallback_order",
+            "[deepseek]\nkey = \"sk-x\"\n\n\
+             [fallback]\nmodels = [\"deepseek/deepseek-flash\", \"dense78\", \"local\"]\n",
+        );
+        assert_eq!(
+            fallback_models(Some(&f)),
+            Ok(vec![
+                "deepseek/deepseek-flash".to_string(),
+                "dense78".to_string(),
+                "local".to_string(),
+            ])
+        );
+        // One name is still a list, and the brackets are the grammar.
+        let g = tmp_providers("fallback_one", "[fallback]\nmodels = [\"glm/glm-4.6\"]\n");
+        assert_eq!(fallback_models(Some(&g)), Ok(vec!["glm/glm-4.6".into()]));
+    }
+
+    /// **No file, no section, no list: no fallback, and no complaint.** These are the
+    /// states of every box that has not asked for one, which is every box today — a
+    /// fault printed here would be a fault printed on every daemon on this box.
+    #[test]
+    fn an_absent_fallback_is_empty_and_silent() {
+        let missing = std::env::temp_dir().join(format!(
+            "letibot-prof-{}-no-such-fallback/providers.toml",
+            std::process::id()
+        ));
+        assert!(!missing.exists());
+        assert_eq!(fallback_models(Some(&missing)), Ok(Vec::new()), "no file");
+
+        let f = tmp_providers("no_fallback_section", "[deepseek]\nkey = \"sk-x\"\n");
+        assert_eq!(fallback_models(Some(&f)), Ok(Vec::new()), "no section");
+
+        let g = tmp_providers("empty_fallback", "[fallback]\nmodels = []\n");
+        assert_eq!(fallback_models(Some(&g)), Ok(Vec::new()), "an empty list");
+    }
+
+    /// **A fallback nobody can reach, said.** A value that is not a list is the one
+    /// shape that would otherwise read as *you asked for no fallback* — the same
+    /// silent-knob defect `[model]`'s unknown keys are loud about, one section down.
+    #[test]
+    fn a_fallback_that_is_not_a_list_is_a_fault_rather_than_an_empty_list() {
+        let f = tmp_providers(
+            "fallback_not_a_list",
+            "[fallback]\nmodels = \"deepseek/deepseek-flash\"\n",
+        );
+        let e = fallback_models(Some(&f)).unwrap_err();
+        assert_eq!(e.file, f, "the file is named");
+        assert!(
+            e.why.contains("is a LIST") && e.why.contains("deepseek/deepseek-flash"),
+            "the fault quotes what was written and what a list looks like: {}",
+            e.why
         );
     }
 }

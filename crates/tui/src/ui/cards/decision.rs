@@ -35,8 +35,24 @@ impl App {
     /// The order the card is read in does not change: content above, choices below, which is
     /// the bottom of the card and therefore the row nearest the composer.
     pub(crate) fn decision_card(&self, d: &OpenDecision, w: usize) -> (Vec<String>, Vec<String>) {
-        let (content, choices) = self.decision_view(d).split(w);
+        let (content, mut choices) = self.decision_view(d).split(w);
         let p = self.cfg.palette();
+        // **A question's two spellings the model cannot offer.** rano draws the hint for
+        // a question (*"↑↓ to choose · Enter to answer · or type your own answer"*), and
+        // rano is pinned, so the other two shapes — a note on a choice, and an abstention
+        // — are this head's row under it. Without it they exist and are undiscoverable,
+        // which for an affordance is the same as absent.
+        //
+        // In the `choices` half rather than the content: this is how to answer, and R20's
+        // rule is that the answer half is never trimmed and never scrolled.
+        if d.kind == "question" {
+            choices.push(rano::agent::pane::faint(rano::agent::text::trim_to(
+                &format!(
+                    "  type `{ABSTAIN}` to answer nothing · `<choice> {NOTE_SEP} <note>` puts your note on that choice"
+                ),
+                w,
+            )));
+        }
         (row_strings(&content, p), row_strings(&choices, p))
     }
 

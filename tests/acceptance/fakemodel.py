@@ -18,6 +18,11 @@ first user message carries a marker, and the model plays its part for that marke
     CHILD-SAY         answer `child-done: said hello from the subagent`, no tools.
     PARENT-SLOW       call `task` with the CHILD-SLOW brief.
     CHILD-SLOW        hold the answer $FAKEMODEL_SLOW_SECONDS (40), so the child is mid-turn.
+    PARENT-GATE       call `merge_gate`, then say what it listed.
+    GATE-NOTICE       a turn carrying the queue's "waiting for a merge gate" notice: call
+                      `merge_gate` for the repository it names, then say the choices are offered.
+    GATEKEEPER        the merge queue's reviewer (its brief begins "You are the gatekeeper."):
+                      answer a verdict block — `verdict: accept` — with no tools.
     CHILD-UNAME       call `bash` with `uname -s; echo from-the-vm`; after the
                       result, answer `child-done:` and what the shell said.
 
@@ -93,6 +98,22 @@ def play(messages):
         import time
         time.sleep(float(os.environ.get("FAKEMODEL_SLOW_SECONDS", "40")))
         return ("text", "child-done: slow and steady")
+    if "PARENT-GATE" in brief:
+        if not results:
+            return ("call", "merge_gate", {})
+        return ("text", "parent: the gate choices are in.")
+    if brief.startswith("You are the gatekeeper."):
+        branch = brief.split("- branch:", 1)[1].split("\n", 1)[0].strip() if "- branch:" in brief else "?"
+        return ("text", "Read the change.\n\nverdict: accept\n"
+                        f"reasons: - the fake reviewer read {branch}\n"
+                        "files: none\ncommands: none")
+    said = [text_of(m) for m in messages if m.get("role") != "assistant"]
+    notice = next((t for t in said if "The merge queue is holding" in t), None)
+    if notice is not None:
+        if not results:
+            repo = notice.split("the repository `", 1)[1].split("`", 1)[0] if "the repository `" in notice else "."
+            return ("call", "merge_gate", {"repo": repo})
+        return ("text", "parent: offered the operator the gate choices.")
     if "CHILD-SAY" in brief:
         return ("text", "child-done: said hello from the subagent")
     if "CHILD-UNAME" in brief:

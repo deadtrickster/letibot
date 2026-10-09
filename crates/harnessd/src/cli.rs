@@ -949,34 +949,23 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // is told it has no queue rather than pretending to serve one.
     let merge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    // **The door the queue reviews through, and the one thing about it that is NOT built.**
+    // **The door the queue reviews through: a gatekeeper SUBAGENT.**
     //
-    // `SessionReviewer` is the daemon's half of a wake: it writes the request into the session
-    // store and rings the bell that starts the reviewer's turn. What it does NOT do is start a
-    // reviewer, because there is no reviewer session to start — and the reason is a capability
-    // question rather than an omission.
-    //
-    // `roles::gatekeeper()` seats `bash`, `bash` is `Access::Exec`, and a seat that can reach
-    // the gate must have an adjudicator that reaches somebody: `Harness::open` REFUSES to open
-    // a session with an exec tool and an adjudicator whose own account of itself begins `none`.
-    // A daemon-owned reviewer has no head, so the default `Head` adjudicator is exactly that,
-    // and the alternatives are a `Console` reader (a background daemon has none) or a model
-    // adjudicator over `[gatekeeper] endpoint` (a real answer, and a decision about who rules
-    // on a reviewer's own commands that belongs with the gatekeeper's seat rather than with
-    // this wiring).
-    //
-    // So the door is wired and it REFUSES BY NAME when no reviewer session is live — which is
-    // the honest state of this build, and the safe direction: the queue asks, is told nobody
-    // can be asked, and lands nothing. Nothing lands unreviewed either way; what is missing is
-    // the review that would let it land at all.
+    // A reviewer the daemon owned by itself could not be opened — the gatekeeper seats `bash`,
+    // and `Harness::open` refuses an exec seat whose adjudicator reaches nobody, which is what a
+    // headless daemon session has. A subagent's asks go up to its root's head, so the review
+    // runs as a hidden child of the root of the session that enqueued the entry (resumed from
+    // the store when it is not live): `GatekeeperDoor` writes the request naming that host and
+    // rings it, and the host spawns the child and writes the verdict
+    // (`Harness::serve_reviews`). With no store there is no row to write, and the door refuses
+    // by name.
     let reviewer: Box<dyn letibot_tools::gatekeeper::Reviewer + Send> = match cfg.store.as_ref() {
         None => Box::new(letibot_tools::gatekeeper::NoReviewer),
         Some(path) => match letibot_tokencore::store::Store::open(path) {
-            Ok(store) => Box::new(crate::mergequeue::SessionReviewer::new(
+            Ok(store) => Box::new(crate::mergequeue::GatekeeperDoor::new(
                 store,
                 registry.bell().clone(),
                 registry.clone(),
-                crate::mergequeue::REVIEWER_SESSION_ID.to_string(),
             )),
             Err(e) => {
                 eprintln!(
@@ -1344,6 +1333,32 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                  frequency_penalty, repeat_penalty, seed, max_tokens, thinking_budget_tokens."
             );
         }
+    }
+
+    // **What to try when the model this session is on is OUT** — `[fallback] models`
+    // in the same file, read once here rather than at the moment of need.
+    //
+    // A model that cannot answer is the one failure a person cannot fix by waiting
+    // (MEASURED 2026-10-12: a weekly quota exhausted, 63 s of retries, the turn
+    // recorded as FAILED), and until now there was nowhere in the file to say what
+    // should answer instead. The list is theirs, in their order; this only reads it.
+    //
+    // **Said at startup**, because a fallback nobody knows is configured is a model
+    // change nobody authorised: the first notice of one should not be a turn that
+    // silently went somewhere else. A file that will not parse is a fault and says
+    // so, the same way `[default]` does — the two readers of one file must not
+    // disagree about it.
+    match letibot_provider::keys::fallback_models(None) {
+        Ok(list) if !list.is_empty() => {
+            eprintln!(
+                "  fallback: {} — from [fallback] in {}",
+                list.join(", "),
+                letibot_provider::keys::config_file().display()
+            );
+            cfg.fallback = list;
+        }
+        Ok(_) => {}
+        Err(why) => eprintln!("  providers.toml: {why} — no fallback is in force"),
     }
 
     // **Captured here rather than before the levels**, because this is the banner's

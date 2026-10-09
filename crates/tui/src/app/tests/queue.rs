@@ -69,6 +69,127 @@ fn esc_leaves_the_entry_overlay_with_the_queue_still_behind_it() {
     assert!(!a.screen(100, 24).join("\n").contains("merge queue · entry"));
 }
 
+/// **A failed review is legible on the pane's row** — the operator's other half of the report,
+/// and the one that makes the restart a decision about something: *"Today the four entries are
+/// invisible as failures unless you go to the store."*
+///
+/// The quota sentence is the thing to show rather than the word *failed*, and it has to survive
+/// two things the pane does to it: rano draws `{id}{review}{evidence}` truncated at the pane's
+/// width, and the review half used to say *the reviewer has been asked and has not answered*
+/// over an attempt that had already died. So this asserts both halves of the fix — the review
+/// says `no verdict` rather than *still waiting*, and the entry's own reason reaches the row.
+#[test]
+fn a_failed_review_says_so_on_the_panes_row() {
+    use letibot_sessionlog::event::MergeState;
+    let quota = "http 429: Weekly/Monthly Limit Exhausted. Your limit will reset at \
+                 2026-10-12 15:01:48";
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut entry = queue_entry("c1", MergeState::Failed);
+    // **The daemon's own words on the entry**, which is where the row a person scans reads the
+    // reason: `mergequeue::review_exhausted_evidence` puts the failure FIRST for exactly this.
+    entry.evidence = format!(
+        "{quota} — the gatekeeper's attempt failed 3 times and the queue has stopped asking. \
+         Nothing judged this branch. `/queue restart c1` asks again."
+    );
+    a.apply(queue_frame(
+        vec![entry],
+        vec![queue_review_failed("c1", quota)],
+    ));
+    let screen = a.screen(120, 24).join("\n");
+    assert!(
+        screen.contains("http 429: Weekly/Monthly Limit Exhausted"),
+        "the quota sentence is on the row, not the word `failed`: {screen}"
+    );
+    assert!(
+        screen.contains("reviewer: no verdict"),
+        "and the review says no verdict rather than still waiting: {screen}"
+    );
+    assert!(
+        !screen.contains("the reviewer has been asked and has not answered"),
+        "an attempt that has died is not an attempt that is running: {screen}"
+    );
+    // **And a verdict still reads as one.** The change above must not have flattened the three
+    // review states into two.
+    a.apply(queue_frame(
+        vec![queue_entry("c2", MergeState::Failed)],
+        vec![queue_review("c2", Some("reject"))],
+    ));
+    let screen = a.screen(120, 24).join("\n");
+    assert!(screen.contains("reviewer: reject"), "{screen}");
+}
+
+/// **The row draws the SHORT id, because the reason is what the line is for.** rano draws
+/// `{id}{review}{evidence}` truncated at the pane's width, and a `task_start` entry's id is
+/// forty-odd columns of `s-…-sub-…` — so a full id spent the line on itself and the failure a
+/// person needed to read was cut off the end. The tail is the part that differs, and the overlay
+/// still prints the id in full.
+#[test]
+fn the_row_draws_the_short_id_so_the_reason_fits() {
+    use letibot_sessionlog::event::MergeState;
+    let long = "s-1789919514688401228-sub-1791569790219697204";
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut entry = queue_entry(long, MergeState::Failed);
+    entry.evidence = "http 429: Weekly/Monthly Limit Exhausted".into();
+    a.apply(queue_frame(vec![entry], Vec::new()));
+    let screen = a.screen(100, 24).join("\n");
+    // `registry::short_id`: an ellipsis and the last eight characters, the part that differs.
+    assert!(
+        screen.contains(&format!("…{}", &long[long.len() - 8..])),
+        "the row draws the tail: {screen}"
+    );
+    assert!(
+        !screen.contains(long),
+        "and not the forty-character id that would truncate the reason away: {screen}"
+    );
+    assert!(
+        screen.contains("http 429: Weekly/Monthly Limit Exhausted"),
+        "so the failure fits: {screen}"
+    );
+}
+
+/// **`r` on a parked row asks the daemon to restart that entry's review** — the operator's ask,
+/// in their words: *"so merge queue has 4 failed items, we need a way to restart them"*. The key
+/// and the typed spelling send ONE verb, so the two cannot drift.
+#[test]
+fn the_restart_key_sends_the_verb_for_the_row_under_the_cursor() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    a.apply(queue_frame(
+        vec![
+            queue_entry("c1", MergeState::Waiting),
+            queue_entry("c2", MergeState::Failed),
+        ],
+        Vec::new(),
+    ));
+    // The cursor starts on the first row, which is `waiting`: nothing to restart, said rather
+    // than sent, and nothing reaches the daemon.
+    assert_eq!(
+        a.key(Key::Char('r')),
+        None,
+        "a waiting row is not restarted"
+    );
+    let screen = a.screen(100, 24).join("\n");
+    assert!(
+        screen.contains("nothing to restart") || screen.contains("is `waiting`"),
+        "{screen}"
+    );
+    // Down onto the failed row, and `r` is the restart.
+    a.key(Key::Down);
+    assert_eq!(
+        a.key(Key::Char('r')),
+        Some(Action::Slash {
+            line: "queue restart c2".into()
+        }),
+        "the key sends the same verb `/queue restart ID` sends"
+    );
+}
+
 /// **Folded, never invented** — the jobs pane's rule, and the two arrivals it is about.
 /// A move for an entry this head was never told about adds nothing (the next snapshot
 /// carries it), and the same id twice is the same row, because the enqueue is idempotent

@@ -1216,3 +1216,62 @@ fn the_footers_number_is_the_rows_the_pane_draws() {
         "and the footer said `2 subagents running` for exactly these:\n{screen}"
     );
 }
+
+/// **The merge queue's gatekeeper is not one of this session's subagents** — the operator,
+/// 2026-10-09: *"it shouldnt be visible in "normal" agents count"*. The daemon runs the reviewer
+/// as a child of this session so its approvals reach this head, but nobody here started it: a
+/// live `Subagent` event naming the `gatekeeper` seat, and a list row whose title is the review
+/// brief, both stay out of the pane and the count.
+#[test]
+fn a_gatekeeper_child_is_not_counted_or_listed() {
+    let mut a = app();
+    a.apply(hello("s", Vec::new(), Hub::new("s").snapshot()));
+    // A normal child and the reviewer, both live.
+    a.apply(ServerFrame::Event(env(
+        1,
+        child_event("s-sub-1", "running", None),
+    )));
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::Subagent {
+            subagent_id: "s-sub-gk".into(),
+            state: "running".into(),
+            prompt: letibot_sessionlog::GATEKEEPER_TITLE_PREFIX.into(),
+            role: "gatekeeper".into(),
+            task: format!(
+                "{} judge the branch",
+                letibot_sessionlog::GATEKEEPER_TITLE_PREFIX
+            ),
+            model: String::new(),
+            answer: None,
+        },
+    )));
+    let ids: Vec<&str> = a.subagents.iter().map(|s| s.session_id.as_str()).collect();
+    assert_eq!(ids, vec!["s-sub-1"], "the reviewer is in the tree: {ids:?}");
+    let screen = a.screen(100, 24).join("\n");
+    assert!(screen.contains("1 subagent running"), "{screen}");
+
+    // And rebuilt from the session list, where only the title can say what it is.
+    let mut gk = brief(
+        "s-sub-gk",
+        &format!(
+            "{} A subagent has finished work",
+            letibot_sessionlog::GATEKEEPER_TITLE_PREFIX
+        ),
+        true,
+    );
+    gk.parent_session_id = Some("s".into());
+    let mut child = brief("s-sub-1", "find the bug", true);
+    child.parent_session_id = Some("s".into());
+    a.apply(ServerFrame::Sessions {
+        sessions: vec![brief("s", "parent", false), child, gk],
+        current: "s".into(),
+        created: None,
+    });
+    let ids: Vec<&str> = a.subagents.iter().map(|s| s.session_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["s-sub-1"],
+        "rebuilt with the reviewer in it: {ids:?}"
+    );
+}

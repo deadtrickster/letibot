@@ -299,7 +299,7 @@ pub struct ShapelessAdmit {
 /// nothing clears it but a fresh session or a raised window: a reader asking *why does
 /// this session not compact* can only answer it from here once the daemon that decided
 /// it is gone.
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -494,6 +494,17 @@ CREATE INDEX IF NOT EXISTS merge_queue_state_idx
 -- NULL while no verdict has come back. `reasons_json` is the reviewer's reasons and
 -- `files_json`/`commands_json` are what it looked at — a verdict with no evidence is an
 -- opinion, which is why they are columns and not prose.
+--
+-- **`attempts`, `failed_ms` and `failure` (v20) are the ATTEMPT, and the attempt is not the
+-- verdict.** A reviewer whose turn failed — a provider that answered `429`, a child that could
+-- not be started, a reply with no readable verdict in it — has reached no judgement at all, and
+-- writing one into `decision` was the defect these columns exist to end: `mergequeue::review_gate`
+-- reads a word outside the closed set as a REFUSAL, so a failed attempt was parked on the entry
+-- as though somebody had judged it, and `answered_ms` being set made that park terminal. So a
+-- failure goes in `failure` (the provider's own words, verbatim), `failed_ms` is when it
+-- happened, and `attempts` counts how many attempts have failed since the last restart.
+-- `decision` stays NULL, which is what lets the queue ask again — boundedly, and restartable
+-- by hand (`mergequeue::restart`).
 CREATE TABLE IF NOT EXISTS merge_review (
     entry_id       TEXT PRIMARY KEY,
     session_id     TEXT NOT NULL,
@@ -502,6 +513,9 @@ CREATE TABLE IF NOT EXISTS merge_review (
     asked_ms       INTEGER NOT NULL,
     answered_ms    INTEGER,
     decision       TEXT,
+    attempts       INTEGER NOT NULL DEFAULT 0,
+    failed_ms      INTEGER,
+    failure        TEXT NOT NULL DEFAULT '',
     reasons_json   TEXT NOT NULL DEFAULT '[]',
     files_json     TEXT NOT NULL DEFAULT '[]',
     commands_json  TEXT NOT NULL DEFAULT '[]'
@@ -1296,6 +1310,20 @@ pub struct ReviewRecord {
     /// `None` is *no verdict yet*, which is not the same fact as a rejection: the queue waits
     /// for the first and refuses to land on the second.
     pub decision: Option<String>,
+    /// **How many attempts have FAILED since the last restart** (v20), and the whole of the
+    /// queue's bound: the queue asks again while this is under its own ceiling, and stops when
+    /// it is not. `0` on a fresh ask, and `0` again after a person restarts one.
+    pub attempts: u32,
+    /// **When the last attempt failed** (v20), Unix ms, or `None` when no attempt has failed
+    /// since the last restart. This is the clock the queue's backoff reads, and it is the fact
+    /// that tells *an attempt is in flight* from *an attempt came back badly* — the two are the
+    /// same `decision: None` otherwise, and a restart has to tell them apart.
+    pub failed_ms: Option<u64>,
+    /// **The last attempt's failure, verbatim** (v20) — the provider's own words, or the reason
+    /// a child could not be started. **Not a verdict**: `decision` stays `None`, and this is what
+    /// a person reads on the entry's row so the restart is a decision about something legible
+    /// rather than about the word *failed*.
+    pub failure: String,
     /// The reviewer's reasons, in its own words.
     pub reasons: Vec<String>,
     /// The files the reviewer read.
@@ -1316,6 +1344,9 @@ struct RawReviewRecord {
     asked_ms: i64,
     answered_ms: Option<i64>,
     decision: Option<String>,
+    attempts: i64,
+    failed_ms: Option<i64>,
+    failure: String,
     reasons_json: String,
     files_json: String,
     commands_json: String,
@@ -1331,9 +1362,12 @@ fn review_raw_from_row(r: &rusqlite::Row) -> rusqlite::Result<RawReviewRecord> {
         asked_ms: r.get(4)?,
         answered_ms: r.get(5)?,
         decision: r.get(6)?,
-        reasons_json: r.get(7)?,
-        files_json: r.get(8)?,
-        commands_json: r.get(9)?,
+        attempts: r.get(7)?,
+        failed_ms: r.get(8)?,
+        failure: r.get(9)?,
+        reasons_json: r.get(10)?,
+        files_json: r.get(11)?,
+        commands_json: r.get(12)?,
     })
 }
 
@@ -1346,6 +1380,9 @@ fn review_from_raw(raw: RawReviewRecord) -> Result<ReviewRecord> {
         asked_ms: raw.asked_ms.max(0) as u64,
         answered_ms: raw.answered_ms.map(|v| v.max(0) as u64),
         decision: raw.decision,
+        attempts: raw.attempts.max(0) as u32,
+        failed_ms: raw.failed_ms.map(|v| v.max(0) as u64),
+        failure: raw.failure,
         reasons: serde_json::from_str(&raw.reasons_json)?,
         files: serde_json::from_str(&raw.files_json)?,
         commands: serde_json::from_str(&raw.commands_json)?,
@@ -2073,6 +2110,58 @@ impl Store {
                      commands_json  TEXT NOT NULL DEFAULT '[]'
                  );",
             )?;
+        }
+        if from < 20 {
+            // v20: **the failed attempt, which is not a verdict** — see [`ReviewRecord`]'s
+            // `attempts`/`failed_ms`/`failure` and the `merge_review` comment in [`SCHEMA_SQL`].
+            //
+            // Three columns rather than one, because the three answer different questions:
+            // *may the queue ask again* (`attempts`), *has it waited long enough* (`failed_ms`),
+            // and *what should a person read on the row* (`failure`, verbatim).
+            //
+            // Guarded rather than a bare `ALTER TABLE`, for the reason v17's `brief` is: a
+            // fixture walks a current store backwards by dropping columns and lowering the
+            // version, and a fixture that dropped only some of them would otherwise fail here
+            // with "duplicate column name" — which reads as corruption rather than as the
+            // idempotence every other step in this function has.
+            // **The table first, in its v20 shape, `IF NOT EXISTS`** — the v5 and v16 arms'
+            // posture, for their reason: a migrated store never runs `SCHEMA_SQL`, and a fixture
+            // may arrive at this version with no table at all (the stood-down fixture builds a
+            // bare v18 store and jumps straight here). On a real v18 store this is a no-op and
+            // the guarded `ALTER`s below do the work; on a bare one it IS the work.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS merge_review (
+                     entry_id       TEXT PRIMARY KEY,
+                     session_id     TEXT NOT NULL,
+                     branch         TEXT NOT NULL,
+                     base_sha       TEXT NOT NULL,
+                     asked_ms       INTEGER NOT NULL,
+                     answered_ms    INTEGER,
+                     decision       TEXT,
+                     attempts       INTEGER NOT NULL DEFAULT 0,
+                     failed_ms      INTEGER,
+                     failure        TEXT NOT NULL DEFAULT '',
+                     reasons_json   TEXT NOT NULL DEFAULT '[]',
+                     files_json     TEXT NOT NULL DEFAULT '[]',
+                     commands_json  TEXT NOT NULL DEFAULT '[]'
+                 );",
+            )?;
+            let has: bool = self
+                .conn
+                .prepare("SELECT 1 FROM pragma_table_info('merge_review') WHERE name = 'failure'")
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                // **Every existing row reads as *no failed attempt*.** A row written before
+                // these columns existed has a `decision` and an `answered_ms` — it is a verdict,
+                // and a verdict is not a failure. `attempts = 0` says the queue has not spent an
+                // attempt on it, which is the true state of a row whose ask was answered.
+                self.conn.execute_batch(
+                    "ALTER TABLE merge_review ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+                     ALTER TABLE merge_review ADD COLUMN failed_ms INTEGER;
+                     ALTER TABLE merge_review ADD COLUMN failure TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
         }
         if from < 19 {
             // v19: **the pair that stood automatic compaction down** — see
@@ -2817,6 +2906,18 @@ impl Store {
     /// [`Store::put_job`] stamps it: the store is the clock, and a caller that supplies its
     /// own would be a caller that could backdate a move. `created_ms` is the entry's, because
     /// it is the enqueue time and the enqueue is the entry's own act.
+    /// **Take a waiting entry, or learn that somebody else has** — one `UPDATE … WHERE state =
+    /// 'waiting'`, so two daemons over one store cannot both take the same branch: exactly one
+    /// of them sees `true`. The row moves to `taken`; the caller writes the rest of the move.
+    pub fn claim_merge_entry(&self, id: &str) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE merge_queue SET state = 'taken', updated_ms = ?2
+              WHERE id = ?1 AND state = 'waiting'",
+            params![id, now_ms()],
+        )?;
+        Ok(n == 1)
+    }
+
     pub fn put_merge_entry(&self, entry: &MergeEntry) -> Result<()> {
         self.conn.execute(
             "INSERT INTO merge_queue
@@ -2901,12 +3002,13 @@ impl Store {
         self.conn.execute(
             "INSERT INTO merge_review
                 (entry_id, session_id, branch, base_sha, asked_ms, answered_ms, decision,
-                 reasons_json, files_json, commands_json)
-              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 attempts, failed_ms, failure, reasons_json, files_json, commands_json)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
               ON CONFLICT(entry_id) DO UPDATE SET
                 session_id = ?2, branch = ?3, base_sha = ?4, asked_ms = ?5,
-                answered_ms = ?6, decision = ?7, reasons_json = ?8, files_json = ?9,
-                commands_json = ?10",
+                answered_ms = ?6, decision = ?7, attempts = ?8, failed_ms = ?9,
+                failure = ?10, reasons_json = ?11, files_json = ?12,
+                commands_json = ?13",
             params![
                 rec.entry_id,
                 rec.session_id,
@@ -2915,12 +3017,59 @@ impl Store {
                 rec.asked_ms as i64,
                 rec.answered_ms.map(|v| v as i64),
                 rec.decision,
+                rec.attempts as i64,
+                rec.failed_ms.map(|v| v as i64),
+                rec.failure,
                 serde_json::to_string(&rec.reasons)?,
                 serde_json::to_string(&rec.files)?,
                 serde_json::to_string(&rec.commands)?,
             ],
         )?;
         Ok(())
+    }
+
+    /// **Re-attempt one entry's review** — the person's act, as the two writes it is, in one
+    /// transaction: the entry goes back to `waiting`, and its review row goes back to *nobody
+    /// has answered*.
+    ///
+    /// The operator's report, verbatim: *"so merge queue has 4 failed items, we need a way to
+    /// restart them"*. The queue could not: `Failed` is terminal, and a review row with a
+    /// `decision` on it is never re-asked. So the restart is the one move that un-parks an
+    /// entry, and it is the QUEUE's own retry asked for by hand rather than a second rule — see
+    /// `mergequeue::restart`, which is where the decision to allow it lives and which is the
+    /// only caller.
+    ///
+    /// **Conditional, and the condition is the double-press guard.** The `UPDATE` moves an
+    /// entry only while it is parked (`failed`, `conflict`, `stale`), so a second press finds
+    /// it `waiting` and moves nothing — `false` — and no second reviewer is ever asked for.
+    /// That is the same shape [`Store::claim_merge_entry`] has, one state over: the row is the
+    /// arbiter, not the caller's memory of what it just did.
+    ///
+    /// **The review row is cleared only when the entry actually moved.** Clearing it for an
+    /// entry that did not move would throw away a live attempt's request — the second-writer
+    /// shape the whole queue is written to refuse.
+    ///
+    /// `asked_ms` is restamped to `now_ms`, because the row is a NEW ask: the old `asked_ms` was
+    /// the first attempt's, and a person reading *asked 4h ago* about an attempt that started a
+    /// second ago would be reading the wrong fact.
+    pub fn restart_review(&self, entry_id: &str, evidence: &str, now_ms: u64) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        let moved = tx.execute(
+            "UPDATE merge_queue SET state = 'waiting', evidence = ?2, updated_ms = ?3
+              WHERE id = ?1 AND state IN ('failed', 'conflict', 'stale')",
+            params![entry_id, evidence, now_ms as i64],
+        )?;
+        if moved == 1 {
+            tx.execute(
+                "UPDATE merge_review SET asked_ms = ?2, answered_ms = NULL, decision = NULL,
+                        attempts = 0, failed_ms = NULL, failure = '',
+                        reasons_json = '[]', files_json = '[]', commands_json = '[]'
+                  WHERE entry_id = ?1",
+                params![entry_id, now_ms as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(moved == 1)
     }
 
     /// **Every review, oldest ask first** — the whole table, which is what the queue's pass
@@ -2932,7 +3081,7 @@ impl Store {
     pub fn reviews(&self) -> Result<Vec<ReviewRecord>> {
         let mut st = self.conn.prepare(
             "SELECT entry_id, session_id, branch, base_sha, asked_ms, answered_ms, decision,
-                    reasons_json, files_json, commands_json
+                    attempts, failed_ms, failure, reasons_json, files_json, commands_json
                FROM merge_review ORDER BY asked_ms, entry_id",
         )?;
         let rows = st.query_map([], review_raw_from_row)?;
@@ -2948,7 +3097,7 @@ impl Store {
     pub fn merge_review(&self, entry_id: &str) -> Result<Option<ReviewRecord>> {
         let mut st = self.conn.prepare(
             "SELECT entry_id, session_id, branch, base_sha, asked_ms, answered_ms, decision,
-                    reasons_json, files_json, commands_json
+                    attempts, failed_ms, failure, reasons_json, files_json, commands_json
                FROM merge_review WHERE entry_id = ?1",
         )?;
         let raw: Option<RawReviewRecord> = st
@@ -4110,6 +4259,135 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **A failed attempt is a row of its own, and a restart clears it.**
+    ///
+    /// The operator's report, verbatim: *"so merge queue has 4 failed items, we need a way to
+    /// restart them"*. Three columns carry the attempt (`attempts`, `failed_ms`, `failure`) and
+    /// `decision` stays NULL — a failure is not a judgement — which is what lets the queue ask
+    /// again and a person start it by hand.
+    #[test]
+    fn a_failed_attempt_is_its_own_row_and_a_restart_clears_it() {
+        let dir = std::env::temp_dir().join(format!("letibot-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let s = Store::open(&path).expect("a store");
+        s.put_merge_entry(&MergeEntry {
+            id: "m-1".into(),
+            session_id: "s-1".into(),
+            branch: "agent/x".into(),
+            base_sha: "abc".into(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            // Parked, which is the state a restart moves.
+            state: MergeState::Failed,
+            brief: "do the work".into(),
+            evidence: "http 429: Weekly/Monthly Limit Exhausted".into(),
+            created_ms: 1,
+            updated_ms: 1,
+            worktree: None,
+            landed_sha: None,
+        })
+        .expect("the entry");
+        s.put_review(&ReviewRecord {
+            entry_id: "m-1".into(),
+            session_id: "s-host".into(),
+            branch: "agent/x".into(),
+            base_sha: "abc".into(),
+            asked_ms: 1_000,
+            answered_ms: None,
+            decision: None,
+            attempts: 3,
+            failed_ms: Some(1_500),
+            failure: "http 429: Weekly/Monthly Limit Exhausted".into(),
+            reasons: vec![],
+            files: vec![],
+            commands: vec![],
+        })
+        .expect("the failed-attempt row");
+        // **Read back whole.** A column that exists and refuses a value is not a column the
+        // queue can use.
+        let back = s.merge_review("m-1").unwrap().unwrap();
+        assert_eq!(back.attempts, 3);
+        assert_eq!(back.failed_ms, Some(1_500));
+        assert_eq!(back.failure, "http 429: Weekly/Monthly Limit Exhausted");
+        assert!(back.decision.is_none(), "a failure is not a verdict");
+
+        // **The restart is conditional on the entry being parked**, and it is the row that
+        // arbitrates: the first ask moves it, the second moves nothing.
+        assert!(
+            s.restart_review("m-1", "restarted by the operator", 9_000)
+                .expect("the first ask")
+        );
+        let entry = s.merge_entry("m-1").unwrap().unwrap();
+        assert_eq!(entry.state, MergeState::Waiting, "back in the queue");
+        assert_eq!(entry.evidence, "restarted by the operator");
+        let cleared = s.merge_review("m-1").unwrap().unwrap();
+        assert_eq!(cleared.attempts, 0, "the bound is reset");
+        assert_eq!(cleared.failed_ms, None);
+        assert_eq!(cleared.failure, "");
+        assert_eq!(cleared.asked_ms, 9_000, "the ask is a NEW ask");
+        assert!(
+            !s.restart_review("m-1", "again", 9_001).unwrap(),
+            "a second ask moves nothing, because the entry is not parked any more"
+        );
+        assert_eq!(
+            s.merge_review("m-1").unwrap().unwrap().asked_ms,
+            9_000,
+            "and it did not restamp the live attempt's ask"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A v19 store gains the three columns, and its existing rows read as *no failed
+    /// attempt*.** A verdict is not a failure, and `attempts = 0` is the true state of a row
+    /// whose ask was answered.
+    #[test]
+    fn a_v19_store_gains_the_attempt_columns() {
+        let dir = std::env::temp_dir().join(format!("letibot-migrate-v20-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let verdict = ReviewRecord {
+            entry_id: "m-old".into(),
+            session_id: "s-host".into(),
+            branch: "agent/x".into(),
+            base_sha: "abc".into(),
+            asked_ms: 1_000,
+            answered_ms: Some(2_000),
+            decision: Some("accept".into()),
+            attempts: 0,
+            failed_ms: None,
+            failure: String::new(),
+            reasons: vec!["it does what the ask said".into()],
+            files: vec![],
+            commands: vec![],
+        };
+        {
+            let s = Store::open(&path).unwrap();
+            s.put_review(&verdict).unwrap();
+        }
+        {
+            // Walk the store back to v19: the three columns go, and the version with them —
+            // the same shape the v15 fixture uses, one version along.
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "ALTER TABLE merge_review DROP COLUMN attempts;
+                 ALTER TABLE merge_review DROP COLUMN failed_ms;
+                 ALTER TABLE merge_review DROP COLUMN failure;
+                 DELETE FROM schema_version;
+                 INSERT INTO schema_version (version) VALUES (19);",
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).expect("the migration runs");
+        let back = s.merge_review("m-old").unwrap().unwrap();
+        assert_eq!(back, verdict, "a v19 verdict reads back unchanged");
+        assert_eq!(back.attempts, 0, "and reads as no failed attempt");
+        assert_eq!(back.failure, "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// **A review survives the daemon that asked for it, and the two writes are one row** — the
     /// half of the gate that has to outlive everything: the ask is durable, the verdict is
     /// durable, and the row is the same row.
@@ -4132,6 +4410,9 @@ mod tests {
             asked_ms: 1_000,
             answered_ms: None,
             decision: None,
+            attempts: 0,
+            failed_ms: None,
+            failure: String::new(),
             reasons: vec![],
             files: vec![],
             commands: vec![],

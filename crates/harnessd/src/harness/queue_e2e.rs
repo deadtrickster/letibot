@@ -51,8 +51,9 @@
 //!   link in the chain still read rather than measured, and it is named here rather than left
 //!   for a reader to discover.
 //! * **The gate.** The daemon is driven with a no-op gate, which is the seam
-//!   `MergeQueueDaemon::new` exists to make replaceable; `ci_gate` itself is not run, because it
-//!   is `cargo test --workspace` and a release build.
+//!   `MergeQueueDaemon::new` exists to make replaceable; `repo_gate` itself is not run here, because
+//!   for this repository it is `cargo test --workspace` and a release build — it is asserted in
+//!   `mergequeue`'s own tests against a temp repo with an `AGENTS.md` of its own.
 //! * **`Stale`.** Reachable through `MergeQueueDaemon::recover` on a `Taken` row, and asserted
 //!   there, in `mergequeue`'s own tests against a real temp repo — which is why this file does
 //!   not repeat it. What this file adds is that the entry those paths act on is one the *runner*
@@ -312,6 +313,9 @@ fn approve(fx: &Fixture, entry_id: &str) {
             asked_ms: 1,
             answered_ms: Some(2),
             decision: Some("accept".into()),
+            attempts: 0,
+            failed_ms: None,
+            failure: String::new(),
             reasons: vec!["the artifact does what the brief asked".into()],
             files: vec!["a.txt".into()],
             commands: vec!["git diff base...branch".into()],
