@@ -307,10 +307,12 @@ impl<'a> Sessions<'a> {
             nagged: HashMap::new(),
         };
         let (tool, cond) = sessions.seat_tool(&id);
-        // Compose the system prompt from `prompts.toml`, once, at open. Message 0 is
-        // written from this and never rewritten after — see `Config::compose_system`.
+        // Compose the system prompt from `prompts.toml` and the standing notes,
+        // once, at open. Message 0 is written from this and never rewritten
+        // after — see `Config::compose_system_with_notes` for which input is
+        // frozen and which is re-read at every base rebuild.
         let mut cfg = cfg;
-        cfg.compose_system();
+        cfg.compose_system_with_notes(&parts.vocab);
         let cfg = sessions.with_fabric(&id, cfg, cond.is_some());
         let mut harness =
             Harness::open_with_registry(parts, cfg, hub, None, tool, registry.clone())?;
@@ -990,10 +992,10 @@ impl<'a> Sessions<'a> {
                 ..self.base.clone()
             };
             let (tool, cond) = self.seat_tool(session_id);
-            // Compose the system prompt from `prompts.toml`, once, at open — the same
-            // rule as the first session: message 0 is written from this and never
-            // rewritten after.
-            cfg.compose_system();
+            // Compose the system prompt from `prompts.toml` and the standing
+            // notes, once, at open — the same rule as the first session:
+            // message 0 is written from this and never rewritten after.
+            cfg.compose_system_with_notes(&self.parts.vocab);
             let cfg = self.with_fabric(session_id, cfg, cond.is_some());
             let mut h = Harness::open_with_registry(
                 self.parts,

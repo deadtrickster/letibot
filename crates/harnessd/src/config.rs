@@ -392,10 +392,16 @@ pub struct Config {
     /// belongs in it (§5.2, and the operator paid for that rule).
     ///
     /// Built as [`DEFAULT_SYSTEM`] in [`Config::for_this_box`] and **composed once,
-    /// at session open**, from [`Prompts`] (the operator's `prompts.toml`) and this
-    /// session's model — see [`Config::compose_system`]. After that it is message 0
-    /// and is never rewritten: a session that started under one prompt keeps it for
-    /// its whole life.
+    /// at session open**, from [`Prompts`] (the operator's `prompts.toml`), this
+    /// session's model, and — through [`Config::compose_system_with_notes`] — the
+    /// standing-notes files on disk. After that it is message 0 and is never
+    /// rewritten **mid-session on a local model**: a session that started under
+    /// one prompt keeps it until a base rebuild. The standing-notes section is
+    /// the one deliberate exception to "keeps it for its whole life": every fork
+    /// re-reads the files (`Harness::reseat_target`), because a compaction is
+    /// already a cold prefill and moving the head there costs nothing extra.
+    /// `prompts.toml` itself stays a fact about NEW sessions — it is parsed once
+    /// and never re-read.
     pub system: String,
     /// The operator's `prompts.toml`, loaded once at startup. `Default` (no
     /// overrides) when the file is absent or was refused — which is also the
@@ -1425,6 +1431,28 @@ impl Config {
     pub fn compose_system(&mut self) {
         let name = self.prompt_model_name();
         self.system = self.prompts.compose(&name);
+    }
+
+    /// [`Config::compose_system`], then the standing notes read off disk.
+    ///
+    /// The one input to the prompt that is NOT session-frozen: `AGENTS.md` and the
+    /// notes directories are read here, every time this runs, and the assembled
+    /// section (verbatim under a token budget, a digest with line references over
+    /// it — see [`crate::standing_notes`]) is appended after `system_extra`, so it
+    /// is the newest thing the model reads before the conversation. Called at
+    /// session open with the vocabulary the session will count with; every base
+    /// rebuild re-reads through `Harness::reseat_target` rather than here.
+    ///
+    /// Takes the [`Vocab`] rather than holding one: `Config` is built before any
+    /// engine exists, and the encoder is the session's, not the daemon's.
+    pub fn compose_system_with_notes(&mut self, vocab: &letibot_tokencore::Vocab) {
+        self.compose_system();
+        let section = crate::standing_notes::section(
+            &self.workspace,
+            &crate::standing_notes::global_dir(),
+            vocab,
+        );
+        self.system = crate::standing_notes::replace(&self.system, section.as_deref());
     }
 
     /// The things that are off, and why.
@@ -3450,6 +3478,59 @@ system_extra = "One short tool call beats a long plan."
         // And the source is empty rather than `--model`: the model is the provider's,
         // not the flag's.
         assert_eq!(row.source, "", "{}", row.source);
+    }
+
+    /// **`compose_system_with_notes` puts the standing notes after
+    /// `system_extra`, and only there.**
+    ///
+    /// The brief's placement rule: the newest thing the model reads before the
+    /// conversation. Asserted by position against a `system_extra` the
+    /// fixture sets, and the section is read back with `carried` — the same
+    /// extraction a base rebuild uses — so the test also pins that what is
+    /// appended is what is swapped later. Assertions are made against the
+    /// workspace's file with a nonce, so a box whose global notes directory
+    /// has files of its own still passes: those belong in the section too.
+    #[test]
+    fn compose_system_with_notes_appends_the_section_after_system_extra() {
+        let ws = std::env::temp_dir().join(format!("letibot-notes-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&ws);
+        std::fs::create_dir_all(&ws).expect("temp dir");
+        std::fs::write(ws.join("AGENTS.md"), "nonce-notes-order\n").expect("fixture");
+        let mut cfg = Config::for_this_box(&ws);
+        cfg.prompts = Prompts {
+            base_extra: Some("extra goes before the notes".into()),
+            ..Prompts::default()
+        };
+        cfg.compose_system_with_notes(&letibot_tokencore::Vocab::bytes([], []));
+        assert!(cfg.system.contains("nonce-notes-order"), "{}", cfg.system);
+        let extra = cfg
+            .system
+            .find("extra goes before the notes")
+            .expect("extra");
+        let notes = cfg
+            .system
+            .find("[standing-notes-begin]")
+            .expect("the section is in the composed prompt");
+        assert!(
+            extra < notes,
+            "`system_extra` first, the notes after it: {}",
+            cfg.system
+        );
+        // What was appended is what a rebuild would swap out — same envelope,
+        // markers included.
+        let carried = crate::standing_notes::carried(&cfg.system).expect("carried");
+        assert!(carried.contains("nonce-notes-order"), "{carried}");
+        // And the composition without notes is untouched: `compose_system`'s
+        // own byte-for-byte test still rules that half.
+        let mut bare = Config::for_this_box(&ws);
+        bare.prompts = cfg.prompts.clone();
+        bare.compose_system();
+        assert_eq!(
+            crate::standing_notes::replace(&cfg.system, None),
+            bare.system,
+            "stripping the section gives back the plain composition"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
     }
 
     /// The pane's contract: the two rows that change now come first and name
