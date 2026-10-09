@@ -553,6 +553,36 @@ fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// **One question and the answer it got, as the daemon's own questioner saw them.**
+///
+/// The tool returns the answer to the model; the transcript is the SESSION's to write
+/// ([`crate::harness::Harness`] — *the writer is the daemon, not the tool*). This is how
+/// the two halves meet: the questioner records what it carried, and the round loop — the
+/// one place a result is appended — reads it back and writes the person's answer down as
+/// theirs.
+///
+/// **A record and not a parse.** The tool's payload is prose the harness itself rendered
+/// (`QuestionAnswer::render`), and reading a person's words back out of our own sentences
+/// would be the harness deciding what they said. What is kept here is the structured
+/// answer that came off the wire, beside the question it answers.
+#[derive(Debug, Clone)]
+pub struct Asked {
+    /// The question as it was posed, options and all — the answer row's context, and
+    /// where a chosen option's own text is read from.
+    pub question: Question,
+    /// What the person said.
+    pub answer: QuestionAnswer,
+    /// Who said it: the head's identity, the same string the gate records as
+    /// `human:<who>`, so the row and its own adjudication name the actor the same way.
+    pub by: String,
+}
+
+/// Where a questioner records the exchange it just carried. `None` is an empty slot.
+///
+/// One slot rather than a queue: a session runs one tool call at a time on its worker,
+/// so a second exchange cannot start before the first is written down.
+pub type AskLog = Arc<Mutex<Option<Asked>>>;
+
 /// **The questioner a session with a head is given.**
 ///
 /// The seam is [`Questioner`] and this is the implementation D10's tool was missing:
@@ -560,10 +590,15 @@ fn one_line(s: &str) -> String {
 /// had. It holds nothing of its own — the rendezvous is [`Answers`], shared with the
 /// adjudicator — so a question and a permission are one mechanism in the daemon too,
 /// differing in `kind`, which is §11.6's sentence made true one layer down.
+///
+/// The one thing it does hold is the [`AskLog`] a session hands it, which is not state
+/// of its own either: it is where the exchange goes so the session that owns the
+/// transcript can write the person's half of it down.
 pub struct HeadQuestioner {
     hub: Arc<Hub>,
     answers: Arc<Answers>,
     budget: Duration,
+    asked: Option<AskLog>,
 }
 
 impl HeadQuestioner {
@@ -572,6 +607,7 @@ impl HeadQuestioner {
             hub,
             answers,
             budget: ANSWER_BUDGET,
+            asked: None,
         }
     }
 
@@ -579,11 +615,32 @@ impl HeadQuestioner {
         self.budget = budget;
         self
     }
+
+    /// **Where the exchange is recorded for the session to write down.** `None` — the
+    /// default — is a questioner asked by a test that only wants the question asked.
+    pub fn with_ask_log(mut self, asked: AskLog) -> Self {
+        self.asked = Some(asked);
+        self
+    }
 }
 
 impl Questioner for HeadQuestioner {
     fn ask(&self, q: &Question) -> Result<(QuestionAnswer, String), AskError> {
-        self.answers.ask_question(&self.hub, q, self.budget)
+        let got = self.answers.ask_question(&self.hub, q, self.budget)?;
+        // **Recorded on the way past, and only an ANSWER.** Every `Err` arm of
+        // `ask_question` is *nobody answered* — no head, a deadline, an interrupt — and a
+        // refusal is not a person's utterance, so nothing is written down for one.
+        // Whether the tool then ACCEPTS the answer (an abstention is accepted, an option
+        // index nobody offered is not) is the tool's own call, and the round loop asks the
+        // result before it writes anything.
+        if let Some(log) = &self.asked {
+            *log.lock().unwrap_or_else(|e| e.into_inner()) = Some(Asked {
+                question: q.clone(),
+                answer: got.0.clone(),
+                by: got.1.clone(),
+            });
+        }
+        Ok(got)
     }
 
     /// The same shape [`HeadAdjudicator::describe`] gives, and read for the same
@@ -1429,6 +1486,76 @@ mod tests {
                 && settled.basis.contains("only for the CUDA box"),
             "the basis is not what the person said: {}",
             settled.basis
+        );
+    }
+
+    /// **The exchange is recorded where the session can write it down, and only an
+    /// answer is.**
+    ///
+    /// The two halves of this are one test because they are one rule: what a session
+    /// turns into the operator's own row is what a person SAID, and a question nobody
+    /// answered is not something they said. `Answers::ask_question`'s `Err` arms are
+    /// every way a question ends without an answer, and none of them may leave a record
+    /// behind that the transcript would then attribute to somebody.
+    #[test]
+    fn a_questioner_records_the_exchange_it_carried_and_nothing_for_a_refusal() {
+        let hub = Hub::new("s");
+        let answers = Arc::new(Answers::new());
+        hub.set_answer_sink(answers.clone());
+        let head = hub.attach("tui", "deadtrickster", Caps::default(), 0);
+        let q = a_question();
+        let log: AskLog = Default::default();
+        let asker = HeadQuestioner::new(hub.clone(), answers.clone())
+            .with_budget(Duration::from_secs(10))
+            .with_ask_log(log.clone());
+
+        let hub2 = hub.clone();
+        let head_id = head.head_id.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let answerer = std::thread::spawn(move || {
+            while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Some(d) = hub2.snapshot().open_decisions.first() {
+                    hub2.submit(
+                        &head_id,
+                        "c1",
+                        0,
+                        letibot_sessionlog::hub::CommandKind::Answer {
+                            req_id: d.req_id.clone(),
+                            reply: Reply::Question(
+                                letibot_sessionlog::question::QuestionAnswer::choosing(0),
+                            ),
+                        },
+                    );
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            false
+        });
+        let got = asker.ask(&q);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(answerer.join().unwrap(), "the head never got the question");
+        assert!(got.is_ok(), "{got:?}");
+
+        let held = log.lock().unwrap().clone().expect("the exchange is recorded");
+        assert_eq!(held.question.text, q.text, "the question it answered");
+        assert_eq!(held.question.options, q.options);
+        assert_eq!(held.answer.option, Some(0));
+        assert_eq!(held.by, "deadtrickster", "the answer is attributed to nobody");
+
+        // **A refusal records nothing.** No head is attached to this hub, so the ask
+        // refuses before anybody is posted to — and the slot it left is the empty one.
+        let bare = Hub::new("bare");
+        let log: AskLog = Default::default();
+        let asker = HeadQuestioner::new(bare, Arc::new(Answers::new()))
+            .with_budget(Duration::from_secs(1))
+            .with_ask_log(log.clone());
+        let refused = asker.ask(&q);
+        assert!(matches!(refused, Err(AskError::NoHead(_))), "{refused:?}");
+        assert!(
+            log.lock().unwrap().is_none(),
+            "a question nobody answered left a record to attribute to somebody"
         );
     }
 

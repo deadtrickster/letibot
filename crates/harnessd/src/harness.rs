@@ -695,6 +695,97 @@ impl TrailMirror {
 }
 
 // ---------------------------------------------------------------------------
+// A question the model asked, and the answer a person gave it
+// ---------------------------------------------------------------------------
+
+/// **The tool whose call is an exchange with a person** rather than a piece of work.
+///
+/// Spelled here and not imported from `letibot-tools`, because what the name means at
+/// THIS layer is *the one call whose result carries a person's own utterance* — a fact
+/// about the transcript, not about the tool's schema.
+const ASK_USER_QUESTION: &str = "ask_user_question";
+
+/// **The person's own words, exactly** — what their row carries, or `None` when there is
+/// no honest way to state them.
+///
+/// The brief this answers is the one the `!` line's own row keeps: *their words, verbatim*.
+/// So the parts are read off the ANSWER and nothing of ours is prepended — a citable
+/// utterance with a harness sentence glued to its front is a citable utterance of the
+/// wrong thing.
+///
+/// | what they did | what the row says |
+/// |---|---|
+/// | chose an option | the option's own text |
+/// | chose, and qualified it | the option's text, then their note, on its own line |
+/// | typed an answer | what they typed |
+/// | abstained | `abstain` — the act, which is the only word for it the wire carries |
+///
+/// `None` is *an answer with nothing of the person's in it*: an option index the question
+/// never offered. The tool refuses one of those (`QuestionAnswer::validate`), and the round
+/// loop writes no rows for a result the tool did not accept — so this arm is the belt to
+/// that pair of braces and not a state a session reaches.
+fn operator_answer_text(asked: &crate::answers::Asked) -> Option<String> {
+    let a = &asked.answer;
+    if a.abstain {
+        return Some("abstain".to_string());
+    }
+    let mut said: Vec<String> = Vec::new();
+    if let Some(i) = a.option {
+        said.push(asked.question.options.get(i)?.clone());
+    }
+    if let Some(n) = a.note.as_deref().filter(|n| !n.trim().is_empty()) {
+        said.push(n.trim().to_string());
+    }
+    if let Some(f) = a.free.as_deref().filter(|f| !f.trim().is_empty()) {
+        said.push(f.trim().to_string());
+    }
+    if said.is_empty() {
+        return None;
+    }
+    Some(said.join("\n"))
+}
+
+/// **The question, as the SESSION's own row** — never the operator's.
+///
+/// The trail reads every `User` row with `speaker: Operator` as words of theirs that an
+/// action may cite, so a question put in their mouth would be a question the harness could
+/// quote back as authorisation for the answer to it. This row is `Speaker::Agent` for that
+/// reason and for the other one: the question is the model's, and a head drawing it as the
+/// person's would be showing the reader the wrong half of the exchange as theirs.
+fn question_row_text(asked: &crate::answers::Asked) -> String {
+    let q = &asked.question;
+    let mut said = format!("asked: {}", q.text.trim());
+    if !q.options.is_empty() {
+        said.push_str(&format!("\noptions offered: {}", q.options.join(" | ")));
+    }
+    said
+}
+
+/// **The two rows the person's half of a question makes**, as a free function so the shape
+/// can be tested without a daemon, a model or a socket — the same reason `abandoned_calls`
+/// is one.
+///
+/// The order is the question and then the answer, which is how a reader walks them. Where
+/// they land relative to the call's own result is the round loop's business, and it is not
+/// this order: see `Harness::settle_asked`.
+fn asked_rows(asked: &crate::answers::Asked, said: &str) -> [TranscriptItem; 2] {
+    [
+        TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
+            parts: vec![UserPart::Text {
+                text: question_row_text(asked),
+            }],
+        },
+        TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![UserPart::Text {
+                text: said.to_string(),
+            }],
+        },
+    ]
+}
+
+// ---------------------------------------------------------------------------
 // Surfacing a denial
 // ---------------------------------------------------------------------------
 
@@ -1454,6 +1545,11 @@ pub struct Harness {
     /// Who said what, so the gate's adjudicator can see what authorised an action.
     /// Fed at every append, because the provenance is only knowable there.
     trail: Arc<TrailMirror>,
+    /// **The last question this session asked a person, and the answer it got** — filled by
+    /// the session's own [`crate::answers::HeadQuestioner`] and read back by the round loop,
+    /// which is the one place a tool result is appended. See [`Harness::settle_asked`] for
+    /// why the person's half of the exchange is written down there and not by the tool.
+    asked: crate::answers::AskLog,
     /// The session's todo list, shared with the tool that writes it. The harness
     /// is the persister: [`Harness::flush_todos`] compares the board's version
     /// with the last one it handled and does the store write and the
@@ -2830,6 +2926,11 @@ impl Harness {
         let trail = Arc::new(TrailMirror::default());
         let injected: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
         let monitor_cursor = Arc::new(AtomicUsize::new(0));
+        // **Where this session's questions and their answers are recorded.** Created here,
+        // before the gate, because the questioner that fills it is built with the gate and
+        // the harness that reads it is built after — and it is the same `Arc` the
+        // `HeadQuestioner` below is handed, so the two halves cannot drift.
+        let asked: crate::answers::AskLog = Default::default();
 
         // **The gate, built here so the three seams cannot be skipped.** See
         // `open_with`'s docs for why this is not a parameter.
@@ -2867,7 +2968,8 @@ impl Harness {
                         // `kind: "question"` and waits for `Reply::Question`; the hub
                         // refuses either vocabulary for the other's request.
                         *question_head.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(
-                            crate::answers::HeadQuestioner::new(hub.clone(), answers.clone()),
+                            crate::answers::HeadQuestioner::new(hub.clone(), answers.clone())
+                                .with_ask_log(asked.clone()),
                         ));
                         Box::new(crate::answers::HeadAdjudicator::new(hub.clone(), answers))
                     }
@@ -2895,7 +2997,8 @@ impl Harness {
                         // oracle first — `Answers::ask_question` posts it straight to the
                         // head, and the model decides nothing about it.
                         *question_head.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(
-                            crate::answers::HeadQuestioner::new(hub.clone(), answers.clone()),
+                            crate::answers::HeadQuestioner::new(hub.clone(), answers.clone())
+                                .with_ask_log(asked.clone()),
                         ));
                         Box::new(crate::answers::EscalateOnTimeout::new(
                             std::sync::Arc::from(model),
@@ -3825,6 +3928,7 @@ impl Harness {
             // then is unreachable in a daemon, and harmless in a bare-harness test.
             bang: None,
             trail,
+            asked,
             todos: todo_board,
             todos_version: 0,
             intent,
@@ -4348,6 +4452,81 @@ impl Harness {
             },
         ];
         self.append_imported(&rows).map_err(|e| e.to_string())
+    }
+
+    /// **Write down the question the model asked and the answer a person gave it.**
+    ///
+    /// Called from the round loop with the result of an [`ASK_USER_QUESTION`] call — *the*
+    /// place a result is appended, and the reason the tool does not write these rows itself:
+    /// the transcript has one writer, and it is the session. What the tool returns is the
+    /// answer the model reads; what a PERSON said is written here, as their own row.
+    ///
+    /// # What lands, and in which order
+    ///
+    /// The question as the session's own row ([`question_row_text`] — never the operator's,
+    /// because the trail may cite a `User` row of theirs and a question is not theirs), then
+    /// the answer as a `User` row with `speaker: Operator` whose text is **exactly** what
+    /// they said ([`operator_answer_text`]).
+    ///
+    /// # Why they land AFTER the call's own result
+    ///
+    /// The brief's shape — the person's row, then the result — is the `!` line's, and it is
+    /// right there because nothing above the result proposed the call. Here something did:
+    /// the model's `Assistant { tool_calls }` row is already on the log, and
+    /// `letibot_provider::messages::pair_tool_calls` **closes the answering window on any
+    /// non-`tool` row**. A `User` row between the proposal and its result therefore makes
+    /// the model read *"no result was recorded for this call"* beside the real one, which is
+    /// a lie about the exchange the rows exist to record. So the result goes first and the
+    /// person's half follows it — the round loop appends both in one batch, all results
+    /// before all of these.
+    ///
+    /// # What makes the result the person's act
+    ///
+    /// The row keeps its payload — the model reads the same bytes it always did — and takes
+    /// `origin: Some(CallOrigin::Operator { who })`, which is what makes every head draw it
+    /// as the person's act at every verbosity (`tui::app::visibility::operator_act`). The
+    /// operator's report this answers is *"by the way i dont see my answer to the selector"*:
+    /// the card is a live overlay and this row is what is left of it afterwards.
+    ///
+    /// # The trail
+    ///
+    /// Both rows are recorded where the composer's own speech is (`TrailMirror::say`), and
+    /// the SPEAKER is the whole point: the answer goes in as `Speaker::Operator`, so a *yes*
+    /// given through a question card can be cited as authorisation exactly as a *yes* typed
+    /// into the composer can. Before this it could not — the answer was a tool payload and
+    /// nothing else, and no `User` row of theirs existed to cite.
+    fn settle_asked(&mut self, result: &mut TranscriptItem) -> Vec<TranscriptItem> {
+        let Some(asked) = self
+            .asked
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        else {
+            return Vec::new();
+        };
+        // **Only an answer the tool ACCEPTED.** `ask_user_question` reports an abstention as
+        // `Abstained` — a real answer — and everything it refused (an empty answer, an option
+        // index nobody offered, a note qualifying nothing) as `not_run`. Writing a person's
+        // row for one of those would attribute to them a sentence the harness rejected.
+        let TranscriptItem::ToolResult { outcome, origin, .. } = result else {
+            return Vec::new();
+        };
+        if !matches!(
+            outcome,
+            letibot_transcript::ToolOutcome::Ok | letibot_transcript::ToolOutcome::Abstained { .. }
+        ) {
+            return Vec::new();
+        }
+        let Some(said) = operator_answer_text(&asked) else {
+            return Vec::new();
+        };
+        *origin = Some(letibot_transcript::CallOrigin::Operator {
+            who: asked.by.clone(),
+        });
+        let at = Some(Instant::now());
+        self.trail.say(Speaker::Agent, &question_row_text(&asked), at);
+        self.trail.say(Speaker::Operator, &said, at);
+        asked_rows(&asked, &said).to_vec()
     }
 
     /// **The runtime as a shareable handle**, for the thread that runs the operator's
@@ -9002,14 +9181,35 @@ impl Harness {
             let turn_id = ok.turn_id.clone();
             let mut backgrounded = false;
             let mut results = Vec::with_capacity(calls.len());
+            // **The person's half of a question, held back until every result is in.**
+            //
+            // A question's answer is the operator's own row, and it is appended with this
+            // round's results — but AFTER all of them, never between a call and its result.
+            // `Harness::settle_asked` carries the measurement and the reason; the short of
+            // it is that a non-`tool` row closes `pair_tool_calls`' answering window, so a
+            // `User` row inserted before the result makes the model read *no result was
+            // recorded* beside the real one.
+            let mut asked: Vec<TranscriptItem> = Vec::new();
             for call in &calls {
                 // Call order, and appended in call order. See point 3 above.
                 // `self.tool_sink` is the log sink wrapped in the intent encoder, so
                 // every result is measured on its way past — an `ok` is an effect
                 // and anything else is an attempt, which is the distinction the
                 // diff below is built on.
+                // **And nothing an earlier call left can be read as this one's answer.**
+                // The slot is emptied immediately before the call runs, so whatever is in
+                // it afterwards belongs to THIS call — including nothing. Without this a
+                // questioner that ran outside the round loop (the door's own execute path)
+                // would leave an exchange for the next model question to claim.
+                self.asked.lock().unwrap_or_else(|e| e.into_inner()).take();
                 let r = self.runtime.invoke(&turn_id, call, &mut self.tool_sink);
-                let item = ToolRuntime::transcript_item(&r);
+                let mut item = ToolRuntime::transcript_item(&r);
+                // **A question the model asked is an exchange with a person, and the
+                // person's half of it is theirs.** The tool returns the answer; the
+                // session writes it down, here, where every other result is appended.
+                if call.name == ASK_USER_QUESTION {
+                    asked.extend(self.settle_asked(&mut item));
+                }
                 // The progress encoder reads the *rendered* result, which is the
                 // string the model will actually get to read. Digesting anything
                 // else would measure novelty the model never saw.
@@ -9029,6 +9229,7 @@ impl Harness {
                 }
                 results.push(item);
             }
+            results.extend(asked);
             let round_verdict = progress.end_round();
             let mut sink = CapturingSink::new(self.hub.clone());
             self.session
@@ -14854,6 +15055,112 @@ mod queue_e2e;
 
 #[cfg(test)]
 mod tests {
+    use letibot_tools::builtins::intent::{Question, QuestionAnswer};
+
+    fn a_question() -> Question {
+        Question {
+            text: "which database should the migration target?".into(),
+            options: vec!["postgres".into(), "sqlite".into()],
+            because: "the two need different migration files".into(),
+        }
+    }
+
+    fn asked(answer: QuestionAnswer) -> crate::answers::Asked {
+        crate::answers::Asked {
+            question: a_question(),
+            answer,
+            by: "dead".into(),
+        }
+    }
+
+    /// **The answer row carries what the person said, and nothing of ours.**
+    ///
+    /// The rule the `!` line's own row keeps — *their words, verbatim* — one vocabulary over.
+    /// A label, an index or a harness sentence glued to the front would be a citable utterance
+    /// of the wrong thing, and the trail cites this row.
+    #[test]
+    fn the_answer_row_is_the_persons_words_and_nothing_else() {
+        // A choice is the OPTION'S TEXT — the label they were shown and picked. An index is
+        // not something anybody said.
+        assert_eq!(
+            operator_answer_text(&asked(QuestionAnswer::choosing(1))).as_deref(),
+            Some("sqlite")
+        );
+        // A note is theirs too, and it qualifies the choice, so it rides with it.
+        assert_eq!(
+            operator_answer_text(&asked(
+                QuestionAnswer::choosing(0).with_note("only for the CUDA box")
+            ))
+            .as_deref(),
+            Some("postgres\nonly for the CUDA box")
+        );
+        // Typed words are the whole answer.
+        assert_eq!(
+            operator_answer_text(&asked(QuestionAnswer::free(
+                "neither — split it in two"
+            )))
+            .as_deref(),
+            Some("neither — split it in two")
+        );
+        // And an abstention is the act, in the only word the wire carries for it.
+        assert_eq!(
+            operator_answer_text(&asked(QuestionAnswer::abstaining())).as_deref(),
+            Some("abstain")
+        );
+        // **An index nobody offered has nothing of theirs in it.** The tool refuses one of
+        // those, so this is the belt to that pair of braces rather than a state a session
+        // reaches — and returning words here would be inventing a sentence for them.
+        assert_eq!(operator_answer_text(&asked(QuestionAnswer::choosing(7))), None);
+    }
+
+    /// **The two rows: the question is the session's, the answer is the operator's.**
+    ///
+    /// The speakers are the whole of what an `ALLOW <n>` rests on, so they are asserted on the
+    /// rows the session writes and not on a rendering.
+    #[test]
+    fn the_question_row_is_the_sessions_and_the_answer_row_is_the_operators() {
+        let rows = asked_rows(&asked(QuestionAnswer::choosing(1)), "sqlite");
+        let [question, answer] = rows;
+        let text = |item: &TranscriptItem| match item {
+            TranscriptItem::User { parts, .. } => parts
+                .iter()
+                .map(|p| match p {
+                    UserPart::Text { text } => text.clone(),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            other => panic!("not a user row: {other:?}"),
+        };
+        assert!(
+            matches!(
+                question,
+                TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Agent,
+                    ..
+                }
+            ),
+            "the question must never read back as the operator's words: {question:?}"
+        );
+        let asked_text = text(&question);
+        assert!(
+            asked_text.contains("which database should the migration target?")
+                && asked_text.contains("postgres | sqlite"),
+            "the question row must name the question and the options it offered: {asked_text}"
+        );
+        assert!(
+            matches!(
+                answer,
+                TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Operator,
+                    ..
+                }
+            ),
+            "the answer row must be the person's: {answer:?}"
+        );
+        assert_eq!(text(&answer), "sqlite");
+    }
+
     /// **A job this daemon never ran is answered from the record, not refused.**
     ///
     /// The operator, after a restart: entering a job showed nothing at all — `no job ... here`
