@@ -30,6 +30,33 @@ output = 1.10
 A missing key refuses at open, naming the variable and the file — not three
 seconds into the first turn as a 401 that names neither.
 
+### When the model you are on is OUT
+
+A 429 that names a quota, or a 5xx, is not weather: no backoff lifts it, and the
+retry ladder that exists for a server reloading spends a minute finding that out.
+`[fallback]` says where else this box may go, in the order to try:
+
+```toml
+[fallback]
+models = ["deepseek/deepseek-flash", "dense78"]
+```
+
+Names are the ones `/models` takes (`provider/model`, a `[model."…"]` fleet name,
+`local`), resolved through the same door the verb uses, so a name here cannot be
+one `/models` would refuse. When the model refuses a round and the ladder has
+nothing left to wait for, the session moves to the first name that can answer and
+the round is taken again there — announced, written to the session row, and shown
+in the header, exactly as `/models` would have done it. `/models` moves it back.
+
+**The list is the whole policy.** Empty or absent is the old behaviour: the turn
+fails. Nothing is compiled in, and no second model is guessed at.
+
+Two limits, both said rather than hidden: a **metered** name is the only kind the
+daemon will take on its own (the other two can re-render the conversation into a
+fork, which is not something a retry should do under a turn that is in flight), and
+a **transport** failure is never a reason to move — the model may be fine and it is
+the route to it that is down.
+
 ## What crosses the seam
 
 `MessagesBackend` (in `letibot-backend`): the **transcript** goes over as the

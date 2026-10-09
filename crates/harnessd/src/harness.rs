@@ -5498,6 +5498,50 @@ impl Harness {
         }
     }
 
+    /// **The whole of `/models NAME`, in one place, for both callers.**
+    ///
+    /// There are two, and the second is new: the worker's arm (`Sessions::slash`,
+    /// between turns, which is where the verb has always been answered) and the retry
+    /// loop ([`Harness::apply_queued_model`], mid-turn, which is what this exists for).
+    /// Two copies of a switch would be two places for the screen, the session row and
+    /// the thing that actually answers to disagree — which is the defect
+    /// [`Harness::persist_provider_choice`] was written for, one door along.
+    ///
+    /// **The choice is resolved by the caller, not here.** `models_choice` needs no
+    /// harness, and the worker's path must still carry the resolver's own notes when
+    /// the session it names is not open — so what this takes is the resolved choice
+    /// and the lines it came with.
+    pub fn apply_model_choice(
+        &mut self,
+        choice: crate::slash::ModelChoice,
+        mut lines: Vec<String>,
+    ) -> crate::slash::SlashReply {
+        let applied = match choice {
+            crate::slash::ModelChoice::OwnServer => self.set_provider(None),
+            crate::slash::ModelChoice::Metered(pc) => self.set_provider(Some(pc)),
+            // Its own door, because it verifies the vocabulary before it moves
+            // anything — see `Harness::set_local_model`.
+            crate::slash::ModelChoice::Local(m) => self.set_local_model(&m),
+        };
+        match applied {
+            Ok(line) => {
+                // **The choice goes to the session row in the same breath** —
+                // `persist_provider_choice`'s own doc is why. A switch that reached
+                // the screen but not the row was a choice that expired with the
+                // process, which is the defect this whole change is.
+                if let Err(why) = self.persist_provider_choice() {
+                    lines.push(why);
+                }
+                lines.push(line);
+                crate::slash::SlashReply { lines, ok: true }
+            }
+            Err(e) => {
+                lines.push(e.to_string());
+                crate::slash::SlashReply { lines, ok: false }
+            }
+        }
+    }
+
     /// **Back to the daemon's own server** — the `None` arm of [`Harness::set_provider`].
     ///
     /// `reseat_foreign` is the one honest wrinkle: `/models local` means *this
@@ -5525,7 +5569,7 @@ impl Harness {
         // wrong box is the provenance defect in report form.
         let own = self.own_server.clone();
         let mut reseat = String::new();
-        let foreign = self.cfg.vocab_gguf != own.vocab_gguf || self.cfg.dialect != own.dialect;
+        let foreign = self.on_foreign_weights();
         if foreign && reseat_foreign {
             // The mirror of the switch's cross-weights arm, aimed home: the
             // daemon's own pair, the conversation re-rendered under it, a fork
@@ -5587,6 +5631,23 @@ impl Harness {
         line.push_str(&reseat);
         self.publish_settings();
         Ok(line)
+    }
+
+    /// **Is this session on weights that are not the daemon's own?**
+    ///
+    /// The one question that decides whether a return to the daemon's own server is an
+    /// address move or a re-seat: [`Harness::set_own_server`] re-renders the conversation
+    /// into a fork when the vocabulary or the dialect has been moved by a fleet switch,
+    /// and only then.
+    ///
+    /// Named rather than inlined because it now has two readers, and they are asking
+    /// different questions of the same fact: `set_own_server` is deciding whether to
+    /// fork, and `slash::mid_turn_switch_ok` is deciding whether a RUNNING TURN may
+    /// carry a `/models local` out itself — which it may exactly when the return is the
+    /// cheap arm. Two copies of this expression would be two answers to that.
+    fn on_foreign_weights(&self) -> bool {
+        self.cfg.vocab_gguf != self.own_server.vocab_gguf
+            || self.cfg.dialect != self.own_server.dialect
     }
 
     /// The re-seat half of a return to the daemon's own weights: the mirror of
@@ -6054,6 +6115,25 @@ impl Harness {
                 self.cfg.endpoint.authority()
             ),
             Some(p) => format!("{}/{} (metered)", p.name(), p.model()),
+        }
+    }
+
+    /// **This session's model, spelled the way `/models` takes it** — `local`, `name`,
+    /// or `name/model`.
+    ///
+    /// Two readers, and both are asking *which model is this session on* rather than
+    /// *what is answering it*: the session row ([`Harness::persist_provider_choice`],
+    /// where a restart reads it back through the same door) and the retry loop's
+    /// fallback, which must not spend a name on the model that just refused the round.
+    /// [`Harness::provider_line`] is the other question — the one a person reads, which
+    /// names the endpoint and says METERED — and the two are deliberately not merged.
+    pub fn model_name(&self) -> String {
+        match &self.cfg.provider {
+            None => "local".to_string(),
+            Some(pc) => match &pc.model {
+                Some(m) => format!("{}/{m}", pc.name),
+                None => pc.name.clone(),
+            },
         }
     }
 
@@ -7843,7 +7923,73 @@ impl Harness {
             // `max_tool_rounds`: it produced nothing and appended nothing, and
             // ending a turn early because a server was restarting would be the
             // budget measuring the wrong thing. See `http_retry_after`.
+            //
+            // # And the second question: is this round even being sent to the model
+            // # the session is on?
+            //
+            // MEASURED 2026-10-12, the operator's GLM coding plan, quota exhausted.
+            // Their screen, in their words: *"while those backoffs were cycling - the
+            // model change didnt take"* and *"when it finally applied the turn didnt
+            // continue"*. The notices read
+            //
+            //     · model_endpoint_retry — the model endpoint at api.z.ai did not
+            //       answer: http 429: Weekly/Monthly Limit Exhausted … Taking this
+            //       round again in 1s (attempt 1 of 6). Nothing was recorded, so the
+            //       retry sends exactly the bytes this one did.
+            //
+            // six times, doubling to 32 s, and then
+            //
+            //     · slash — /models deepseek/deepseek-flash
+            //       turns go to deepseek/deepseek-flash from the next one on — METERED
+            //     ── FAILED — http 429: Weekly/Monthly Limit Exhausted …
+            //
+            // The switch was accepted and bought nothing, because the command sat in
+            // the hub's queue until the worker came back — which is after the turn,
+            // and the turn was already FAILED. Three things follow from that, and all
+            // three are here:
+            //
+            //   * **the switch is taken DURING the turn** (`apply_queued_model`,
+            //     below), on the thread that owns this harness, exactly as `/mode`
+            //     is — `Hub::try_command_for_running_turn`'s doc carries the
+            //     measurement;
+            //   * **a model that moved is not weather.** The wait below exists for a
+            //     server that is coming back; a deliberate change is the opposite, so
+            //     the round is taken again NOW, there, and nothing is waited for;
+            //   * **the ladder running out is not the end either**, when the model
+            //     itself is what refused: `[fallback] models` in the operator's
+            //     `providers.toml` says where else this box may go, and the round
+            //     goes there rather than the turn ending.
+            //
+            // `sent_to` is the model the attempt that is running (or about to run)
+            // was handed to — `provider_line`, the same spelling `/models` shows, so
+            // there is no second identity for "what is answering" to drift from.
+            // Every branch that moves the session updates it, and the one that
+            // notifies does so exactly when it moves: a switch that landed on the
+            // model already in force is a no-op and says nothing.
+            let mut sent_to = self.provider_line();
+            let mut tried_fallbacks: Vec<String> = Vec::new();
             let outcome = loop {
+                // **A model switch the operator made while this turn was running.**
+                // Applied before the attempt that will be sent under it — and before
+                // anything is waited for, which is the half the operator could not
+                // see: the ladder used to go on cycling against the model they had
+                // just left.
+                if let Some(now_on) = self.apply_queued_model()
+                    && now_on != sent_to
+                {
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "model_endpoint_retry".into(),
+                        detail: model_changed_notice(&sent_to, &now_on),
+
+                        compaction: None,
+                    });
+                    sent_to = now_on;
+                    // **The ladder is patience with ONE endpoint.** A round taken on
+                    // a different model is a new one and gets the same patience — the
+                    // same `cfg.http_retries`, the same `http_retry_after`, no second
+                    // policy: only the counter it is measured against starts over.
+                    attempt = 0;
+                }
                 let mut steering = self.steering();
                 // **Start watching BEFORE the round, so the wait itself is covered.**
                 // The host is `Some` only on the metered route — a local prefill's
@@ -7878,6 +8024,29 @@ impl Harness {
                     attempt = 0;
                     break attempted;
                 };
+                // **A model that moved under this round is not weather, and this is the
+                // window the operator watched.** The wait below exists for an endpoint
+                // that is coming back — a 5xx, a timeout; a switch they made is the
+                // opposite of that, so the round is taken again NOW, on the model this
+                // session is on, and nothing is waited for. Their words for what
+                // happened instead: *"while those backoffs were cycling - the model
+                // change didnt take"*.
+                //
+                // Before the key arm deliberately: a 401 from the model they just left
+                // is not a reason to ask for a key to it.
+                if let Some(now_on) = self.apply_queued_model()
+                    && now_on != sent_to
+                {
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "model_endpoint_retry".into(),
+                        detail: model_changed_notice(&sent_to, &now_on),
+
+                        compaction: None,
+                    });
+                    sent_to = now_on;
+                    attempt = 0;
+                    continue;
+                }
                 // **A refused key is asked for again**, on the same card, and the round is
                 // taken again — nothing was recorded, so the retry sends the same bytes.
                 // Only a key this session can replace: one from `$PROVIDER_API_KEY` or
@@ -7899,6 +8068,33 @@ impl Harness {
                     continue;
                 }
                 let Some(wait) = http_retry_after(&e, attempt, self.cfg.http_retries) else {
+                    // **The ladder has nothing left to wait for, and the turn does not
+                    // have to end.** Two ways out, and both are the same principle as
+                    // the switch above — re-issue the round somewhere that can answer
+                    // it:
+                    //
+                    //   * the session's model moved and this round was sent to the old
+                    //     one — checked at the top of this arm, so it cannot reach here;
+                    //   * the MODEL itself is what refused (a 429 or a 5xx, not a wire
+                    //     failure) and this box has a `[fallback] models` list —
+                    //     `fall_back_from` moves the session to the first name that
+                    //     answers and says which one.
+                    //
+                    // A transport failure gets neither: the model may be perfectly
+                    // well and it is the route to it that is down, so moving the
+                    // session would abandon the box the operator chose for a reason
+                    // that is not about the model.
+                    if let Some(now_on) = self.fall_back_from(&e, &mut tried_fallbacks) {
+                        self.hub.publish(SessionEvent::Warning {
+                            code: "model_endpoint_retry".into(),
+                            detail: fallback_notice(&sent_to, &now_on, &e),
+
+                            compaction: None,
+                        });
+                        sent_to = now_on;
+                        attempt = 0;
+                        continue;
+                    }
                     break Err(TurnFailure::Http(e));
                 };
                 attempt += 1;
@@ -8491,6 +8687,191 @@ impl Harness {
         }
     }
 
+    /// **A `/models` the operator typed while this turn was running**, taken and
+    /// applied here, on the thread that owns this harness.
+    ///
+    /// Returns the model line it landed on, when one landed — `None` when the queue
+    /// held no switch this turn could carry out. The caller compares it against what
+    /// the round was sent to, because *a switch that landed on the model already in
+    /// force* is not a change and must not be announced as one.
+    ///
+    /// # Why this is a door at all
+    ///
+    /// `Hub::try_command_for_running_turn` carries the measurement (2026-10-12: the
+    /// operator's `/models` sat in the queue for a whole 63-second ladder and was
+    /// applied after the turn, by which time the turn was FAILED). The short version:
+    /// `/mode` has had this door since R29 and `/models` did not.
+    ///
+    /// # What it will NOT take
+    ///
+    /// `slash::mid_turn_switch_ok` decides, and its two `no`s are the switches that
+    /// re-seat the conversation — a fleet model's weights, and `local` when this
+    /// session is on foreign weights. A re-seat forks the transcript and swaps the
+    /// session under `self.session`, under a turn that is in flight with a sink open
+    /// and rows still to reconcile. Those lines stay in the queue, in order, and the
+    /// worker takes them when the turn ends, exactly as every `/models` did before
+    /// this existed: the switch still lands, one turn later than it would have.
+    fn apply_queued_model(&mut self) -> Option<String> {
+        let mut landed = None;
+        while let Some(cmd) = self.take_queued_model() {
+            let letibot_sessionlog::hub::CommandKind::Slash { line } = &cmd.kind else {
+                continue;
+            };
+            let line = line.clone();
+            let reply = match crate::slash::Slash::parse(&line) {
+                crate::slash::Slash::ModelsSet {
+                    provider,
+                    model,
+                    key,
+                } => match crate::slash::models_choice(
+                    &provider,
+                    model.as_deref(),
+                    key.as_deref(),
+                    None,
+                ) {
+                    Ok((choice, lines)) => self.apply_model_choice(choice, lines),
+                    Err(lines) => crate::slash::SlashReply { lines, ok: false },
+                },
+                // The picker only says yes to a model switch, so this is a bug in the
+                // predicate rather than a verb. Answered rather than dropped: the
+                // command has been taken out of the queue, and a command that vanishes
+                // without a word is the failure this tree keeps deleting.
+                _ => crate::slash::SlashReply {
+                    lines: vec![format!(
+                        "/{line}: not a model switch this turn can apply, so nothing moved"
+                    )],
+                    ok: false,
+                },
+            };
+            // **The reply the worker would have published** — the same two codes and
+            // the same body, so "what did my switch do" does not depend on which thread
+            // happened to apply it. `apply_queued_mode`'s rule, one verb along.
+            self.hub.publish(SessionEvent::Warning {
+                code: if reply.ok {
+                    "slash".into()
+                } else {
+                    "slash_refused".into()
+                },
+                detail: format!("/{line}\n{}", reply.lines.join("\n")),
+
+                compaction: None,
+            });
+            if reply.ok {
+                landed = Some(self.provider_line());
+            }
+        }
+        landed
+    }
+
+    /// The picker half of [`Harness::apply_queued_model`]: **the next queued command
+    /// this running turn can carry out**, with the verb's own grammar answering.
+    fn take_queued_model(&self) -> Option<letibot_sessionlog::hub::QueuedCommand> {
+        let foreign = self.on_foreign_weights();
+        self.hub.try_command_for_running_turn(|kind| match kind {
+            letibot_sessionlog::hub::CommandKind::Slash { line } => {
+                crate::slash::mid_turn_switch_ok(line, foreign)
+            }
+            _ => false,
+        })
+    }
+
+    /// **The model is out, and this box has somewhere else to go** — `[fallback]
+    /// models` in `providers.toml`, tried in the operator's order, once each.
+    ///
+    /// # Why the turn does not end here
+    ///
+    /// The operator's ruling: *"it is a standard thing to do - limits, 5xx, etc. we
+    /// must be able to change models like for the main session"*. A 429 that says
+    /// `Weekly/Monthly Limit Exhausted` is not weather — no wait lifts it — and the
+    /// shape before this spent 63 s of ladder on it and then recorded the turn FAILED.
+    ///
+    /// # The two guards, and why each is here
+    ///
+    /// * **`model_refused`**: a 429 or a 5xx only. A connection that was refused, a
+    ///   stream that did not parse, a 408 — those are the route rather than the model,
+    ///   and moving the session would abandon the model the operator chose for a reason
+    ///   that is not about it.
+    /// * **`context_length_refusal`**: a provider refusing the prompt for LENGTH is
+    ///   answering perfectly well. That is the wall, it is classified as one a few lines
+    ///   below in `run_rounds`, and another model would refuse the same prompt.
+    ///
+    /// # What it will and will not switch to
+    ///
+    /// A **metered** name only, and this is narrower than `/models` on purpose. The
+    /// operator's own switch may take the cheap `local` arm; the DAEMON's automatic one
+    /// may not, because the other two choices can re-seat the conversation into a fork
+    /// and that is not something a retry loop should be doing unbidden under a turn that
+    /// is in flight. A name it will not take is SAID and skipped — a fallback nobody can
+    /// reach, silently, is the defect the key's own reader is written against.
+    ///
+    /// Returns the line it landed on, or `None` when the list is empty, spent, or has
+    /// nothing this turn can use.
+    fn fall_back_from(
+        &mut self,
+        e: &letibot_turn::HttpError,
+        tried: &mut Vec<String>,
+    ) -> Option<String> {
+        if !model_refused(e) || self.cfg.fallback.is_empty() {
+            return None;
+        }
+        if let letibot_turn::HttpError::Status { body, .. } = e
+            && context_length_refusal(body).is_some()
+        {
+            return None;
+        }
+        let here = self.model_name();
+        for name in self.cfg.fallback.clone() {
+            // **Once each, and never the model that just refused the round.** A name
+            // already spent is skipped; a name that IS what is answering would be a
+            // no-op switch and the same failure one attempt later.
+            if tried.iter().any(|t| *t == name) || name == here {
+                continue;
+            }
+            tried.push(name.clone());
+            let (provider, model) = crate::slash::split_model_name(&name);
+            let (choice, lines) =
+                match crate::slash::models_choice(&provider, model.as_deref(), None, None) {
+                    Ok(x) => x,
+                    Err(lines) => {
+                        self.fallback_skip(&name, &lines.join(" "));
+                        continue;
+                    }
+                };
+            if !matches!(choice, crate::slash::ModelChoice::Metered(_)) {
+                self.fallback_skip(
+                    &name,
+                    "a running turn can only move to a metered model, and this one is the \
+                     daemon's own server or a fleet model — either can re-render the \
+                     conversation into a fork, which is not something a retry should do \
+                     unbidden",
+                );
+                continue;
+            }
+            let reply = self.apply_model_choice(choice, lines);
+            if !reply.ok {
+                self.fallback_skip(&name, &reply.lines.join(" "));
+                continue;
+            }
+            return Some(self.provider_line());
+        }
+        None
+    }
+
+    /// **A fallback name that could not be taken, said.** The same code as the retry it
+    /// is part of — the round is still being taken again, and what this adds is why it
+    /// is not going *there*.
+    fn fallback_skip(&self, name: &str, why: &str) {
+        self.hub.publish(SessionEvent::Warning {
+            code: "model_endpoint_retry".into(),
+            detail: format!(
+                "`[fallback]` names `{name}` and this session cannot take it: {why}. \
+                 Trying the next name."
+            ),
+
+            compaction: None,
+        });
+    }
+
     fn steering(&self) -> HubSteering {
         HubSteering {
             hub: self.hub.clone(),
@@ -8810,13 +9191,7 @@ impl Harness {
         let Some(store) = &self.store else {
             return Ok(());
         };
-        let stored = match &self.cfg.provider {
-            None => "local".to_string(),
-            Some(pc) => match &pc.model {
-                Some(m) => format!("{}/{}", pc.name, m),
-                None => pc.name.clone(),
-            },
-        };
+        let stored = self.model_name();
         store
             .set_provider_choice(&self.cfg.session_id, Some(&stored))
             .map_err(|e| format!("the choice was not written to the session row: {e}"))
@@ -9643,6 +10018,56 @@ fn http_retry_after(
         }
     };
     worth_it.then(|| std::time::Duration::from_secs(1u64 << attempt))
+}
+
+/// **Did the MODEL refuse, rather than the wire failing?**
+///
+/// The discriminator `Harness::fall_back_from` turns on, and it is deliberately narrower
+/// than [`http_retry_after`]'s `worth_it` rather than a copy of it — the two are
+/// different questions and this file already had the first:
+///
+/// * *is this worth waiting for* includes a connection that was refused and a stream
+///   that did not parse, because the endpoint may be restarting and the model behind it
+///   may be perfectly well;
+/// * *is the model itself out* is a `429` or a `5xx` and nothing else. A `408` is the one
+///   that looks like it and is not: the server waited too long for US, which is weather
+///   on the route rather than a statement about the model, so it stays on the waiting
+///   side and never moves a session.
+///
+/// Kept beside [`http_retry_after`] because they are the same subject — one failure, two
+/// questions — and a reader changing what counts as weather must see both.
+fn model_refused(e: &letibot_turn::HttpError) -> bool {
+    matches!(e, letibot_turn::HttpError::Status { code, .. } if *code == 429 || *code >= 500)
+}
+
+/// **The retry notice for a round taken again on a DIFFERENT model.**
+///
+/// The sentence is the whole point of the notice, and the reason is the operator's own
+/// report: the notice they were reading said *"the retry sends exactly the bytes this one
+/// did"*, which was true and made a switch that HAD been accepted look like one that had
+/// not. So this one says the opposite thing in the same breath — what changed, that the
+/// bytes are unchanged, and that the difference is which model answers them.
+fn model_changed_notice(was: &str, now: &str) -> String {
+    format!(
+        "the model changed to {now} while this round was failing at {was}: taking this round \
+         again NOW, there, rather than waiting out a backoff for a model this session has \
+         left. A change somebody made is not weather. Nothing was recorded, so the round is \
+         sent again unchanged — the difference is which model answers it."
+    )
+}
+
+/// **The retry notice for a round that moved because the model is OUT.**
+///
+/// Names what refused, what it said, where the session went, and how to come back — four
+/// facts, because this one is a model change the operator did not type and every one of
+/// them is a question they will have.
+fn fallback_notice(was: &str, now: &str, e: &letibot_turn::HttpError) -> String {
+    format!(
+        "the model at {was} is out — {e} — and the retry ladder has nothing left to wait \
+         for, so this session moved to {now}, the first name in `[fallback]` that answers, \
+         and the round is being taken again there. Nothing was recorded. `/models` moves it \
+         back, and the list is in `[fallback] models` in providers.toml."
+    )
 }
 
 /// **A refusal no retry can lift: the account cannot pay for the call.**
@@ -16152,7 +16577,8 @@ mod endpoint_retry {
     //! codes except unauthenticated"*.
     use super::{
         ContextLengthRefusal, MAX_HTTP_RETRIES, SilenceWatch, context_length_refusal,
-        http_retry_after, retry_host, silence_host, silence_notice,
+        fallback_notice, http_retry_after, model_changed_notice, model_refused, retry_host,
+        silence_host, silence_notice,
     };
     use letibot_turn::{Endpoint, HttpError};
 
@@ -16277,6 +16703,86 @@ mod endpoint_retry {
         assert!(http_retry_after(&status(403), 0, MAX_HTTP_RETRIES).is_none());
         // And not on a later attempt either — it is the code, not the streak.
         assert!(http_retry_after(&status(401), 3, MAX_HTTP_RETRIES).is_none());
+    }
+
+    /// **"The model is out" is a narrower question than "is this worth waiting for",
+    /// and the difference is what decides whether a session MOVES.**
+    ///
+    /// `fall_back_from` reads this, so an answer that is too wide moves a conversation to
+    /// another model over a failure that had nothing to do with the model — a route that is
+    /// down, a stream that did not parse, a server that waited too long for us. And one that
+    /// is too narrow leaves the operator's quota exhaustion ending a turn, which is the
+    /// report this whole change is.
+    #[test]
+    fn a_model_is_out_only_when_the_model_says_so() {
+        // Out: the two the operator's plan produces, and any 5xx.
+        assert!(model_refused(&status(429)), "a quota, a rate limit, a plan");
+        assert!(model_refused(&status(500)));
+        assert!(model_refused(&status(502)));
+        assert!(
+            model_refused(&status(503)),
+            "a server reloading is still out"
+        );
+        // Not out: the wire, which `http_retry_after` waits on and this must not act on.
+        assert!(!model_refused(&HttpError::Io(std::io::Error::other(
+            "refused"
+        ))));
+        assert!(!model_refused(&HttpError::Malformed("truncated".into())));
+        // And the two that look like timing and are not about the model: 408 is the
+        // server waiting too long for US, and a 400 is the request.
+        assert!(!model_refused(&status(408)));
+        assert!(!model_refused(&status(400)));
+        assert!(
+            http_retry_after(&status(408), 0, MAX_HTTP_RETRIES).is_some(),
+            "408 stays on the waiting side, which is exactly why it is not here"
+        );
+    }
+
+    /// **The two retry sentences, in the words the operator needed to read.**
+    ///
+    /// The notice they were getting said *"the retry sends exactly the bytes this one
+    /// did"* — true, and the reason an accepted switch looked like one that had not taken.
+    /// So the changed-model one must say which model, that the round goes there now, and
+    /// that the bytes are unchanged; and the fallback one must name what refused, where the
+    /// session went, and how to come back.
+    #[test]
+    fn a_model_change_is_announced_as_a_change_and_a_fallback_names_the_way_back() {
+        let changed = model_changed_notice(
+            "glm-coding/glm-5.3 (metered)",
+            "deepseek/deepseek-flash (metered)",
+        );
+        assert!(changed.contains("deepseek/deepseek-flash"), "{changed}");
+        assert!(
+            changed.contains("glm-coding/glm-5.3"),
+            "the model it left: {changed}"
+        );
+        assert!(changed.contains("NOW"), "nothing is waited for: {changed}");
+        assert!(
+            !changed.contains("sends exactly the bytes this one did"),
+            "the sentence that made the switch look like it had not taken: {changed}"
+        );
+
+        let moved = fallback_notice(
+            "glm-coding/glm-5.3 (metered)",
+            "deepseek/deepseek-flash (metered)",
+            &HttpError::Status {
+                code: 429,
+                body: "Weekly/Monthly Limit Exhausted".into(),
+            },
+        );
+        assert!(moved.contains("deepseek/deepseek-flash"), "{moved}");
+        assert!(
+            moved.contains("Weekly/Monthly Limit Exhausted"),
+            "what the provider actually said: {moved}"
+        );
+        assert!(
+            moved.contains("[fallback]"),
+            "where the choice came from: {moved}"
+        );
+        assert!(
+            moved.contains("/models"),
+            "and how a person undoes it: {moved}"
+        );
     }
 
     /// **The notice fires only past the threshold, and says what it knows.**

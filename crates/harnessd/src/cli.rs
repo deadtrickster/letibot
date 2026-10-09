@@ -1346,6 +1346,32 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     }
 
+    // **What to try when the model this session is on is OUT** — `[fallback] models`
+    // in the same file, read once here rather than at the moment of need.
+    //
+    // A model that cannot answer is the one failure a person cannot fix by waiting
+    // (MEASURED 2026-10-12: a weekly quota exhausted, 63 s of retries, the turn
+    // recorded as FAILED), and until now there was nowhere in the file to say what
+    // should answer instead. The list is theirs, in their order; this only reads it.
+    //
+    // **Said at startup**, because a fallback nobody knows is configured is a model
+    // change nobody authorised: the first notice of one should not be a turn that
+    // silently went somewhere else. A file that will not parse is a fault and says
+    // so, the same way `[default]` does — the two readers of one file must not
+    // disagree about it.
+    match letibot_provider::keys::fallback_models(None) {
+        Ok(list) if !list.is_empty() => {
+            eprintln!(
+                "  fallback: {} — from [fallback] in {}",
+                list.join(", "),
+                letibot_provider::keys::config_file().display()
+            );
+            cfg.fallback = list;
+        }
+        Ok(_) => {}
+        Err(why) => eprintln!("  providers.toml: {why} — no fallback is in force"),
+    }
+
     // **Captured here rather than before the levels**, because this is the banner's
     // copy of the model and the levels are what decide it: a file that set
     // `main_model` would otherwise be disclosed by the daemon's own launch line.

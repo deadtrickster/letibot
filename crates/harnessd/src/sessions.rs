@@ -624,30 +624,14 @@ impl<'a> Sessions<'a> {
                     lines.push(format!("session {session_id} is not open"));
                     return SlashReply { lines, ok: false };
                 };
-                let applied = match choice {
-                    crate::slash::ModelChoice::OwnServer => h.set_provider(None),
-                    crate::slash::ModelChoice::Metered(pc) => h.set_provider(Some(pc)),
-                    // Its own door, because it verifies the vocabulary before it
-                    // moves anything — see `Harness::set_local_model`.
-                    crate::slash::ModelChoice::Local(m) => h.set_local_model(&m),
-                };
-                match applied {
-                    Ok(line) => {
-                        // **The choice goes to the session row in the same breath** —
-                        // `persist_provider_choice`'s own doc is why. A switch that
-                        // reached the screen but not the row was a choice that expired
-                        // with the process, which is the defect this whole change is.
-                        if let Err(why) = h.persist_provider_choice() {
-                            lines.push(why);
-                        }
-                        lines.push(line);
-                        SlashReply { lines, ok: true }
-                    }
-                    Err(e) => {
-                        lines.push(e.to_string());
-                        SlashReply { lines, ok: false }
-                    }
-                }
+                // **The act itself is the harness's** — `Harness::apply_model_choice`,
+                // which is now the ONE implementation of this verb. It has a second
+                // caller as of 2026-10-12: the retry loop, which applies a `/models`
+                // typed during a retrying turn on the spot rather than after it — see
+                // `Harness::apply_queued_model`. Two copies of a switch would be two
+                // places for the screen, the session row and the thing that actually
+                // answers to disagree.
+                h.apply_model_choice(choice, lines)
             }
         }
     }
