@@ -34,7 +34,7 @@ libc = "0.2"
 # **And the terminal** (`rano::term`): raw mode, the row-diffing painter, the input decoder,
 # the kitty graphics and OSC 8 protocols. rano reads the bytes into what was *pressed*; what a
 # key *means* stays here, in `app::key_of`.
-rano = { git = "https://github.com/deadtrickster/rano", tag = "v0.7.3" }
+rano = { git = "https://github.com/deadtrickster/rano", tag = "v0.8.0" }
 
 [[bin]]
 name = "letibot-tui"
