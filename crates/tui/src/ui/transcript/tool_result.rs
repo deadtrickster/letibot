@@ -181,6 +181,14 @@ pub(crate) fn tool_result_row_lines(
     let diff = edit
         .filter(|_| verb.is_an_edit())
         .map(|e| crate::ui::edit_diff(e, w.saturating_sub(2), cfg, diff_split));
+    // **And a change DETECTED after a command draws one too** — below the command's own
+    // output rather than instead of it, because this row's body is what the command SAID and
+    // the change it made is a second thing. The verb is `Ran`, so `rano` will not draw the
+    // panel; [`detected_diff_rows`] is the head's half of `crates/tools/src/detect.rs`, and
+    // without it the row keeps the note's promise (*"the diff beside it"*) with no diff.
+    let detected = edit
+        .filter(|_| !verb.is_an_edit())
+        .map(|e| detected_diff_rows(e, &target, w.saturating_sub(2), cfg, diff_split, tools));
     // **The payload's own window**: `payload_view` carries *which* row, because several
     // payloads can be unfolded on one screen and a bare offset would page all of them.
     let window = payload_view
@@ -212,8 +220,9 @@ pub(crate) fn tool_result_row_lines(
     if let (Some(max), Some(cell)) = (layout.max_page, payload_max) {
         cell.set(max);
     }
-    (
-        RowClass::Activity,
-        step_in(row_strings(&layout.lines, p), ind),
-    )
+    let mut rendered = row_strings(&layout.lines, p);
+    if let Some(rows) = detected {
+        rendered.extend(rows);
+    }
+    (RowClass::Activity, step_in(rendered, ind))
 }
