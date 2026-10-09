@@ -10,6 +10,32 @@ and a yellow `[3 tools, 2 thinking]` on the sentence it belongs to — and, on i
 above the composer, `Responded in 12.4s at 21:07`. The counters go yellow while the work is still
 going and stop when it is; the row above the input never moves.
 
+## Features
+
+- **Daemon and heads.** Sessions live in `harnessd`; close the terminal and the turn keeps going.
+  Attach several heads to one conversation, resume any session from the store.
+- **Local or cloud.** llama.cpp locally, or DeepSeek, GLM, Grok. Switch per session, per subagent.
+- **Gate before every tool call.** Approve once, or "always allow" a pattern; the reasoning is
+  stored with the decision.
+- **Subagents as real sessions.** Each one attachable and steerable mid-run (`task_message`), in
+  its own git worktree (`task_start`) or a [firecode](https://github.com/deadtrickster/firecode) VM.
+- **Merge queue.** A finished branch is reviewed by a gatekeeper subagent that never sees the
+  author's report, rebased onto main's tip, run through the repository's own gate, then
+  fast-forwarded. One queue serves every repository under the workspace.
+- **Per-repository gate.** A `## Merge gate` section in `AGENTS.md`. The agent proposes one from
+  what the repo has — `make test`, cargo, go, npm, pytest, `act` for `.github/workflows` — and you
+  pick.
+- **Background jobs and monitors.** Long commands go to the background, settle into the
+  conversation when done; conditions can be watched across turns.
+- **Graduated compaction.** Context is summarised in levels, each one saying what it dropped.
+- **An editor inside.** [rano](https://github.com/deadtrickster/rano) as a pane: `ctrl-e` opens any
+  file, a click on an edit shows the whole file with the change, `alt-s` sends your place to the
+  prompt.
+- **Shell in the conversation.** `!cmd` runs it, `!term` keeps a terminal pane that survives
+  detaching.
+- **Built for long sessions.** Scrollback pins the prompt of the turn you are reading; a held view
+  does not move while the model streams; themes and colours are yours (`head.toml`).
+
 ## What it is
 
 `harnessd` is a daemon. `letibot-tui` is one of its heads. A head speaks the session protocol over
