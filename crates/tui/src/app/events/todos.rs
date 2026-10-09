@@ -65,6 +65,27 @@ impl App {
                 self.redraw = true;
                 Disposition::Filtered
             }
+            SessionEvent::MergeEntryRemoved { id, evidence } => {
+                // **The row goes, and its verdict goes with it.** The store deletes the review
+                // with the entry (`Store::remove_merge_entry`), so a head that kept it would
+                // answer `review_of` for an entry that is not there — and the overlay's
+                // *attach to the reviewer* line would outlive the verdict it points at.
+                self.merge.retain(|e| e.id != id);
+                self.merge_reviews.retain(|r| r.entry_id != id);
+                // **And a cursor past the end is put back on a row.** The removal is the one
+                // queue event that shortens the list, so the selection can be left pointing
+                // past the last row — which the arrows and Enter would then read as *nothing*
+                // while the pane still drew a cursor. `evidence` is deliberately not drawn:
+                // there is no row to put it on, and the sentence the operator reads is the
+                // verb's reply in the conversation. It is on the event because the session log
+                // is the durable record of what the queue did.
+                let _ = evidence;
+                if self.queue_sel >= self.merge.len() {
+                    self.queue_sel = self.merge.len().saturating_sub(1);
+                }
+                self.redraw = true;
+                Disposition::Filtered
+            }
             _ => unreachable!("on_todo_event was handed an event it does not handle"),
         }
     }

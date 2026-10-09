@@ -908,6 +908,9 @@ impl SessionView {
             // carries no queue state, because the queue is not the session's.
             SessionEvent::MergeEntryAdded { .. } => {}
             SessionEvent::MergeEntryMoved { .. } => {}
+            // A removal is the same shape as the two above — a fact about the daemon-level
+            // queue, carried to heads by the events and not by the per-session view.
+            SessionEvent::MergeEntryRemoved { .. } => {}
         }
     }
 

@@ -6649,6 +6649,84 @@ impl Harness {
         )
     }
 
+    /// **Approve one merge-queue entry** — `/queue approve ENTRY-ID`, and the `a` key on the
+    /// pane's row, arriving at the one door both spellings share.
+    ///
+    /// The rule is `mergequeue::approvable`'s and the writes are `mergequeue::approve`'s —
+    /// including **the git the landing needs** when the work is still uncommitted in the worktree,
+    /// which is the operator's ruling in their own words: *"no way i touch git myself, we build
+    /// this queue not for that"*. What this adds is the daemon's own half: **the announcement**, so
+    /// every head that folded the queue sees the entry move back to `waiting` — the pane may be
+    /// open in a session that is not the one the entry came from — and `by`, the session the verb
+    /// came from, which the act writes on the review row as the person who decided.
+    ///
+    /// `Ok` is what was done, in the words the operator gets; `Err` is why it was not, said rather
+    /// than swallowed.
+    pub fn approve_review(&self, entry_id: &str, by: &str) -> Result<String, String> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            "this daemon has no store, so there is no merge queue to approve anything in."
+                .to_string()
+        })?;
+        let registry = self.session_registry.clone();
+        crate::mergequeue::approve(
+            store,
+            entry_id,
+            by,
+            (crate::config::now_ns() / 1_000_000) as u64,
+            &move |e| {
+                registry.broadcast(e);
+            },
+        )
+    }
+
+    /// **Veto one merge-queue entry** — `/queue veto ENTRY-ID [in your words]`, and the `v` key on
+    /// the pane's row.
+    ///
+    /// The rule is `mergequeue::vetoable`'s and the writes are `mergequeue::veto`'s; what this adds
+    /// is the two things only the daemon has: **the delivery** and **the announcement**.
+    ///
+    /// **The delivery goes through the same door `task_message` uses** (`TaskRunner::send`, the
+    /// `CommandKind::Message` a child's own reader answers by starting a turn), and it is that door
+    /// rather than a second one on purpose: a veto cannot report a delivery that door would have
+    /// refused, so *the ball went back* means the same thing here as it means to a parent. A child
+    /// that is gone is refused by the act, with the child's id in the sentence and the two moves
+    /// that are left — `/queue approve` and `/queue rm` — rather than a claim that a message
+    /// landed.
+    pub fn veto_review(&self, entry_id: &str, why: &str) -> Result<String, String> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            "this daemon has no store, so there is no merge queue to veto anything in.".to_string()
+        })?;
+        let registry = self.session_registry.clone();
+        let runner = self.subagents.clone();
+        crate::mergequeue::veto(
+            store,
+            entry_id,
+            why,
+            (crate::config::now_ns() / 1_000_000) as u64,
+            &|handle, text| letibot_tools::builtins::task::TaskRunner::send(&*runner, handle, text),
+            &move |e| {
+                registry.broadcast(e);
+            },
+        )
+    }
+
+    /// **Drop one merge-queue entry** — `/queue rm ENTRY-ID`, and the `d` key on the pane's row.
+    ///
+    /// The rule is `mergequeue::removable`'s and the write is `mergequeue::remove`'s. The
+    /// announcement is the one event the queue has for an ABSENCE (`MergeEntryRemoved`): a head
+    /// that folded the entry in has to be told it went, or an open pane goes on drawing a row the
+    /// queue no longer holds.
+    pub fn remove_merge_entry(&self, entry_id: &str) -> Result<String, String> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            "this daemon has no store, so there is no merge queue to remove anything from."
+                .to_string()
+        })?;
+        let registry = self.session_registry.clone();
+        crate::mergequeue::remove(store, entry_id, &move |e| {
+            registry.broadcast(e);
+        })
+    }
+
     /// **Something fired while nothing was running.** T24's wake, from the worker —
     /// and, since R7, **the same door a background job's completion comes through.**
     ///

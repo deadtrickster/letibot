@@ -555,11 +555,11 @@ impl App {
                     Key::Char('r') => {
                         use letibot_sessionlog::event::MergeState as S;
                         let e = &self.merge[at];
-                        if !matches!(e.state, S::Failed | S::Conflict | S::Stale) {
+                        if !matches!(e.state, S::Failed | S::Conflict | S::Stale | S::Vetoed) {
                             self.say(&format!(
-                                "`{}` is `{}` — only a parked entry (failed, conflict, stale) \
-                                 is restarted by hand; a waiting one is what the queue's own \
-                                 retry is for.",
+                                "`{}` is `{}` — only a parked entry (failed, conflict, stale, \
+                                 vetoed) is restarted by hand; a waiting one is what the queue's \
+                                 own retry is for.",
                                 e.branch,
                                 crate::ui::panes::queue::merge_state_word(e.state)
                             ));
@@ -567,6 +567,43 @@ impl App {
                             return ControlFlow::Break(None);
                         }
                         let line = format!("queue restart {}", e.id);
+                        return ControlFlow::Break(Some(Action::Slash { line }));
+                    }
+                    // **`a`, `v` and `d` are the person's three verbs** — the operator's ask, in
+                    // their words: *"i want to be able to approve / veto / delete"*. Each sends
+                    // the SAME verb its typed spelling sends (`Action::Slash`), so the key and
+                    // `/queue approve|veto|rm ID` cannot drift.
+                    //
+                    // **A row the daemon would refuse is said, not sent** — `r`'s own rule, one
+                    // state over: `taken` is the queue mid-merge and `landed` is merged, and both
+                    // are refusals the head already knows, so making the operator wait for a
+                    // round trip to be told no would be a round trip wasted. Everything else —
+                    // waiting, the three machine-parked states and a person's own `vetoed` — is
+                    // a row a person may answer, and what the DAEMON says about it (a live
+                    // review attempt, a verdict that already accepts) is the daemon's to say.
+                    Key::Char('a') | Key::Char('v') | Key::Char('d') => {
+                        use letibot_sessionlog::event::MergeState as S;
+                        let e = &self.merge[at];
+                        let verb = match k {
+                            Key::Char('a') => "approve",
+                            Key::Char('v') => "veto",
+                            _ => "rm",
+                        };
+                        if !matches!(
+                            e.state,
+                            S::Waiting | S::Failed | S::Conflict | S::Stale | S::Vetoed
+                        ) {
+                            self.say(&format!(
+                                "`{}` is `{}` — a person's verb moves an entry that is waiting or \
+                                 parked, never one the queue has taken (it is mid-merge) or landed \
+                                 (it is merged). Nothing was sent.",
+                                e.branch,
+                                crate::ui::panes::queue::merge_state_word(e.state)
+                            ));
+                            self.redraw = true;
+                            return ControlFlow::Break(None);
+                        }
+                        let line = format!("queue {verb} {}", e.id);
                         return ControlFlow::Break(Some(Action::Slash { line }));
                     }
                     // **A click moves the cursor, and Enter still opens the entry** — the same

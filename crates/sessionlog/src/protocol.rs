@@ -541,7 +541,32 @@ use crate::view::Snapshot;
 /// **35 is skipped rather than spent.** It was reserved for `agent/agent-refresh` — a head
 /// re-seating itself asks the status read — and that branch has not landed, so the count steps
 /// over 35 here the way it steps over 4 for `session-resume`.
-pub const PROTOCOL_VERSION: u32 = 37;
+///
+/// # 38: an entry a PERSON parked in the merge queue
+///
+/// [`crate::event::MergeState`] grows `Vetoed` and [`crate::SessionEvent`] grows
+/// `MergeEntryRemoved` — the operator's own verbs, and the operator's own ask: *"i want to be
+/// able to approve / veto / delete"*. **No frame is added and the number still has to move**,
+/// by 36's and 37's rule one level over: the state word travels inside
+/// [`crate::SessionEvent::MergeEntryMoved`] and [`ServerFrame::MergeQueue`], and the removal is
+/// a NEW EVENT (a head has no arm for it at all) — `serde` has no catch-all on either enum, so a
+/// version-37 head cannot DECODE `"state":"vetoed"` or a `merge_entry_removed` line, and the
+/// failure would take the whole snapshot or frame down with it, mid-session. The pane would go
+/// empty rather than red, which is the operator's requirement inverted: a person's rejection is
+/// a state the head has to be able to NAME (and must not draw as red), and a deletion is an
+/// ABSENCE it has to be told about, or an open pane goes on drawing a row the queue no longer
+/// holds. Both sides refuse the mismatch by name at ATTACH instead.
+///
+/// **What it is for, and why it is not `Failed`.** A gate that went red, a rebase that conflicted
+/// and a reviewer that refused are all *the machine said no*; a veto is *a person said no*, and
+/// the two must not draw the same way — the operator's requirement, in the words the branch was
+/// cut from: *"a vetoed entry must not draw as red"*. The queue never takes a vetoed entry, so no
+/// gatekeeper is asked again about a branch somebody has already refused.
+///
+/// **No store migration rides with it**: `merge_queue.state` is `TEXT` with no `CHECK`, and the
+/// closed set is parsed on read, so the seventh word is a word and not a column. What moves is the
+/// number and the two enums, which is why this section is here and not in `store.rs`.
+pub const PROTOCOL_VERSION: u32 = 38;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -2506,6 +2531,7 @@ mod tests {
                 | crate::SessionEvent::JobSettled { .. }
                 | crate::SessionEvent::MergeEntryAdded { .. }
                 | crate::SessionEvent::MergeEntryMoved { .. }
+                | crate::SessionEvent::MergeEntryRemoved { .. }
                 | crate::SessionEvent::OperatorCallAllowed { .. }
                 | crate::SessionEvent::Filling { .. }
                 | crate::SessionEvent::CompactionProgress { .. }
@@ -2569,8 +2595,16 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 37,
-            "the match above was last reconciled with the frame list at 37 — bumped for \
+            PROTOCOL_VERSION, 38,
+            "the match above was last reconciled with the frame list at 38 — bumped for \
+             `MergeState::Vetoed`, a NEW VARIANT on an existing enum: **no frame is added and the \
+             number still has to move**, because the word travels inside `MergeEntryMoved` and \
+             `ServerFrame::MergeQueue` — both carry the state — and a version-37 head cannot DECODE \
+             `\"state\":\"vetoed\"`: the failure takes the whole snapshot down with it, \
+             mid-session (the version-36 argument, at the level of a variant again). The operator \
+             may now VETO an entry — their own ask, *\"i want to be able to approve / veto / \
+             delete\"* — and a person's rejection is not a gate's failure, so it is a state a head \
+             has to be able to name (and must not draw as red). 37 was \
              `TodoBy::Parent`, a NEW VARIANT on an existing enum: **no frame is added — the parent's \
              write is daemon-internal, nothing new crosses the wire as a frame — and the number \
              still has to move**, because a version-36 head cannot DECODE `\"by\":\"Parent s-…\"` \

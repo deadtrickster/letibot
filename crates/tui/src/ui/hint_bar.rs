@@ -56,6 +56,17 @@ impl App {
         } else {
             HintMode::Conversation
         };
+        // **The queue pane's person-verbs, in the half of the bar this head owns.** rano owns
+        // `HintMode::Queue`'s tail sentence (the pane's own keys — enter, the arrows, esc — and
+        // rano is pinned by tag), so `a`/`v`/`d`/`r` go in the `editor` half, which is the left half
+        // of the SAME row and is empty while a pane has the keyboard. They lead there on purpose:
+        // the bar is over capacity at 80 columns by construction, and the renderer keeps the head,
+        // so the keys this pane adds are the ones that survive the cut.
+        let editor = if self.queue_pane && self.queue_open.is_none() {
+            Line::styled("a approve · v veto · d drop · r restart", Role::Faint)
+        } else {
+            editor
+        };
         crate::ui::render::row(&HintBar { editor, mode }.line(w), self.cfg.palette())
     }
 }

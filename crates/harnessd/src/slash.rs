@@ -144,14 +144,27 @@ pub enum Slash {
 
 /// **What the operator is asking of the merge queue** — see [`Slash::Queue`].
 ///
-/// One sub-verb, and it is the one the operator named: *"so merge queue has 4 failed items, we
-/// need a way to restart them"*. A parked entry is terminal by design — `Failed` is the queue
-/// saying *this did not land and the tree is where the reason is* — so the move out of it is
-/// somebody's, and this is where they say it.
+/// The operator's ask, in their words: *"i want to be able to approve / veto / delete"*, and
+/// *"no way i touch git myself, we build this queue not for that"*. `restart` was the first
+/// person-verb — the operator's *"so merge queue has 4 failed items, we need a way to restart
+/// them"* — and it re-asks the REVIEW. These three are the other half: a person's verdict on what
+/// the review said, and a person's decision to stop holding the entry at all.
+///
+/// **`veto` carries the person's own words**, because the message the child receives is built from
+/// them: a rejection a child cannot read a reason in is a rejection it cannot act on. The reason is
+/// the rest of the line, so it is a sentence and not a word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueVerb {
     /// **Re-attempt one entry's review.** `entry` is the id the pane's row carries.
     Restart { entry: String },
+    /// **The person's verdict replaces the review's** — the entry returns to the queue, and the
+    /// queue then does its normal thing: rebase at the tip, gate, land. Never past the gate.
+    Approve { entry: String },
+    /// **The person's rejection, delivered to the child that did the work.** `why` is the person's
+    /// own words, empty when they gave none.
+    Veto { entry: String, why: String },
+    /// **Drop the entry from the queue.** The branch and its worktree stay.
+    Rm { entry: String },
 }
 
 /// What the operator is saying about a decision the gate already made.
@@ -319,12 +332,50 @@ impl Slash {
                             .into(),
                     ),
                 },
+                Some("approve") => match words.get(2) {
+                    Some(id) => Slash::Queue(QueueVerb::Approve {
+                        entry: (*id).to_string(),
+                    }),
+                    None => Slash::Help(
+                        "/queue approve ENTRY-ID — the person's verdict replaces the review's, \
+                         and the queue then rebases, gates and lands it. `/queue` lists the \
+                         entries, and each row carries its id"
+                            .into(),
+                    ),
+                },
+                // **The reason is the rest of the line**, the shape `/gate` already keeps: a
+                // rejection a child cannot read a reason in is a rejection it cannot act on.
+                Some("veto") => match words.get(2) {
+                    Some(id) => Slash::Queue(QueueVerb::Veto {
+                        entry: (*id).to_string(),
+                        why: words[3.min(words.len())..].join(" "),
+                    }),
+                    None => Slash::Help(
+                        "/queue veto ENTRY-ID [in your words] — the entry's child is sent back to \
+                         work with what you said and the review's reasons, and the entry waits \
+                         for it. `/queue` lists the entries, and each row carries its id"
+                            .into(),
+                    ),
+                },
+                Some("rm") | Some("remove") | Some("delete") => match words.get(2) {
+                    Some(id) => Slash::Queue(QueueVerb::Rm {
+                        entry: (*id).to_string(),
+                    }),
+                    None => Slash::Help(
+                        "/queue rm ENTRY-ID — the queue forgets the entry; the branch and its \
+                         worktree stay. `/queue` lists the entries, and each row carries its id"
+                            .into(),
+                    ),
+                },
                 Some(other) => Slash::Help(format!(
-                    "/queue {other}: the sub-verb is `restart ENTRY-ID`. A bare `/queue` opens \
-                     the merge-queue pane."
+                    "/queue {other}: the sub-verbs are `approve ENTRY-ID`, `veto ENTRY-ID [in your \
+                     words]`, `rm ENTRY-ID` and `restart ENTRY-ID`. A bare `/queue` opens the \
+                     merge-queue pane."
                 )),
                 None => Slash::Help(
-                    "/queue opens the merge-queue pane; `/queue restart ENTRY-ID` asks the \
+                    "/queue opens the merge-queue pane; `/queue approve ENTRY-ID` lets an entry \
+                     through, `/queue veto ENTRY-ID [why]` sends it back to the child that did the \
+                     work, `/queue rm ENTRY-ID` drops it, and `/queue restart ENTRY-ID` asks the \
                      gatekeeper again about a parked entry"
                         .into(),
                 ),
@@ -1421,28 +1472,75 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
 mod the_verb_table_is_the_parser {
     use super::*;
 
-    /// **`/queue restart ID` is the daemon's, and the rest of `/queue` is the head's.**
+    /// **The four `/queue` sub-verbs are the daemon's, and the rest of `/queue` is the head's.**
     ///
-    /// The sub-verb is a daemon act — the queue is daemon-level and its rows are the daemon's —
+    /// The sub-verbs are daemon acts — the queue is daemon-level and its rows are the daemon's —
     /// and everything else under the word is the head opening its pane, so the grammar refuses
     /// by name rather than forwarding a half-typed line into `Help`'s *"is not a daemon verb"*
     /// about a verb that is one.
+    ///
+    /// **`veto`'s reason is the rest of the line**, which is why it is asserted with a sentence
+    /// rather than a word: the message the child receives is built from it, so a parser that kept
+    /// only the first word would hand the child a rejection it cannot act on.
     #[test]
-    fn the_queue_sub_verb_is_the_restart_and_nothing_else() {
+    fn the_queue_sub_verbs_are_the_persons_and_nothing_else() {
         assert_eq!(
             Slash::parse("queue restart s-1-sub-2"),
             Slash::Queue(QueueVerb::Restart {
                 entry: "s-1-sub-2".into()
             })
         );
-        for line in ["queue restart", "queue", "queue stop x"] {
+        assert_eq!(
+            Slash::parse("queue approve s-1-sub-2"),
+            Slash::Queue(QueueVerb::Approve {
+                entry: "s-1-sub-2".into()
+            })
+        );
+        assert_eq!(
+            Slash::parse("queue rm s-1-sub-2"),
+            Slash::Queue(QueueVerb::Rm {
+                entry: "s-1-sub-2".into()
+            })
+        );
+        // The person's own words, whole — and empty is a real value, not a missing one.
+        assert_eq!(
+            Slash::parse("queue veto s-1-sub-2 it lands nothing, put the work in a commit"),
+            Slash::Queue(QueueVerb::Veto {
+                entry: "s-1-sub-2".into(),
+                why: "it lands nothing, put the work in a commit".into()
+            })
+        );
+        assert_eq!(
+            Slash::parse("queue veto s-1-sub-2"),
+            Slash::Queue(QueueVerb::Veto {
+                entry: "s-1-sub-2".into(),
+                why: String::new()
+            })
+        );
+        // **A sub-verb with no id is refused with the grammar**, and so is one that is not a
+        // sub-verb at all — each naming the thing it is about rather than a generic *not a verb*.
+        for line in ["queue restart", "queue approve", "queue veto", "queue rm"] {
             match Slash::parse(line) {
                 Slash::Help(why) => assert!(
-                    why.contains("restart") || why.contains("merge-queue pane"),
-                    "`/{line}` is refused with the grammar: {why}"
+                    why.contains("ENTRY-ID"),
+                    "`/{line}` names the argument it is missing: {why}"
                 ),
                 other => panic!("`/{line}` is not a daemon act: {other:?}"),
             }
+        }
+        match Slash::parse("queue") {
+            Slash::Help(why) => assert!(
+                why.contains("merge-queue pane") && why.contains("approve"),
+                "a bare `/queue` is the head's, and the refusal says so: {why}"
+            ),
+            other => panic!("a bare `/queue` is not a daemon act: {other:?}"),
+        }
+        match Slash::parse("queue stop x") {
+            Slash::Help(why) => assert!(
+                why.contains("approve ENTRY-ID") && why.contains("veto ENTRY-ID"),
+                "an unknown sub-verb is refused with the four that exist: {why}"
+            ),
+            other => panic!("`/queue stop x` is not a daemon act: {other:?}"),
         }
     }
 
