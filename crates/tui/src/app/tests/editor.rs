@@ -667,3 +667,57 @@ fn the_file_before_the_edit_is_the_file_with_the_edit_undone() {
     let other = now.replace("line 3", "line three");
     assert_eq!(crate::app::diff_popup::whole_file_before(&other, &c), None);
 }
+
+/// **Scrolling the popup moves the popup and nothing else, and there is no caret.**
+///
+/// The operator, 2026-10-09: *"if i scroll here back and forth very fast, the very bottom keymap
+/// starts to flicker and my green caret starts to appear literally everywhere, including prompt
+/// box borders"*. The keys are the popup's while it is open, so a caret parked in the composer
+/// is an affordance for a field nobody is typing in — and every frame that showed it had the
+/// terminal's cursor visible while the rows were being written.
+#[test]
+fn scrolling_the_popup_repaints_only_the_popup_and_shows_no_caret() {
+    let ws = workspace("popscroll");
+    let mut a = edited(&ws);
+    a.screen(100, 14);
+    let (y, _) = a.file_rows[0].clone();
+    a.key(Key::Click { x: 10, y: y as u16 });
+    let first = a.screen(100, 14);
+    assert_eq!(a.cursor(), None, "a caret over the popup: {first:#?}");
+    let mut frames = vec![first.clone()];
+    for k in [
+        Key::WheelDown,
+        Key::WheelDown,
+        Key::WheelUp,
+        Key::WheelDown,
+        Key::WheelUp,
+    ] {
+        let said = format!("{k:?}");
+        a.take_redraw();
+        a.key(k);
+        assert!(
+            !a.take_redraw(),
+            "{said} asked for a full repaint: the whole screen erased for a scroll"
+        );
+        frames.push(a.screen(100, 14));
+        assert_eq!(a.cursor(), None, "a caret over the popup after {said}");
+    }
+    // The popup's own rows move; the header and everything under the popup do not.
+    let moved: Vec<usize> = (0..first.len())
+        .filter(|&i| frames.iter().any(|f| f[i] != first[i]))
+        .collect();
+    assert!(!moved.is_empty(), "the wheel moved nothing");
+    let popup_end = first
+        .iter()
+        .position(|l| l.contains("esc closes"))
+        .expect("the popup's footer");
+    assert!(
+        moved.iter().all(|&i| i >= 1 && i < popup_end),
+        "rows outside the popup changed while it scrolled: {moved:?} (popup ends at {popup_end})\n{}",
+        frames
+            .iter()
+            .map(|f| f.join("\n"))
+            .collect::<Vec<_>>()
+            .join("\n-----\n")
+    );
+}
