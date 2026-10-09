@@ -990,6 +990,11 @@ pub mod roles {
                 "grep",
                 "glob",
                 "bash",
+                // `notes`: the standing-notes writer, seated beside `write`/`edit`
+                // for the same reason it is in `m2_coder` — a standing note is
+                // a write to the operator's tree. It is the entry that moves
+                // `max_tools` below; the comment there says why.
+                "notes",
                 "todo_write",
                 "skill",
                 "lsp",
@@ -1055,9 +1060,15 @@ pub mod roles {
         // and it takes its own seat for the same reason: a seat that can start a child but
         // not arrange its placement is the seat that spawns it into the main tree and then
         // kills it for being in the wrong place.
-        // Declared here, like `m2_runner`'s ninth, because a ceiling quietly raised for
-        // everybody is not a ceiling.
-        r.max_tools = 25;
+        // **Twenty-five exactly since `notes`** — the standing-notes writer, seated
+        // beside `write`/`edit` — and this one MOVES the declared ceiling by one,
+        // to twenty-six, because the room is added on top of this list for a
+        // root session (`flowy`, in `role_for_seat`) and `notes` took the last
+        // spare seat: the alternative was a coder session that cannot open the
+        // door, which the `flowy_is_a_door_for_every_root_session` test refuses
+        // on our behalf. Declared here, like `m2_runner`'s ninth, because a
+        // ceiling quietly raised for everybody is not a ceiling.
+        r.max_tools = 26;
         r
     }
 
@@ -1247,6 +1258,13 @@ pub mod roles {
                 "read_spill",
                 "todo",
                 "bash",
+                // **`notes` is seated beside `write`/`edit`, and nowhere else** —
+                // the standing-notes writer. A note is a write to the
+                // operator's tree (it is read into every later session's
+                // prompt), so it rides the write decision rather than
+                // arriving with a read-only seat. Thirteen tools against a
+                // ceiling of sixteen.
+                "notes",
                 "task",
                 "task_result",
                 "task_message",
