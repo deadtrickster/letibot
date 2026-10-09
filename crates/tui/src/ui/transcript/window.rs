@@ -57,37 +57,11 @@ impl App {
                     .iter()
                     .all(|c| matches!(c.state, CallState::Finished { .. }))
         });
-        // **A conversation too big to walk is rendered from its end.**
-        //
-        // Placed here, before `in_flight` borrows `turn`, because the fill needs the
-        // whole `App` while that borrow is alive.
-        //
-        // The frame shows the bottom of the session, so the bottom is what gets
-        // rendered — see `fill_backward`. The test is the size of the transcript
-        // rather than a time budget: below `SELF_WALK_LIMIT` the whole walk is a couple
-        // of milliseconds and doing it keeps `hist_marks` dense, which is what makes
-        // `invalidate_history_from` incremental. Above it, only the tail is rendered
-        // and marks go unbuilt — correct, and a full rebuild when a row changes.
-        if self.hist_floor == 0
-            && self.hist_lines.is_empty()
-            && transcript_bytes(&self.items) > self.walk_limit
-        {
-            self.hist_floor = self.items.len();
-            self.fill_backward(room + TAIL_SLACK);
-        }
-        // **And the held row, if this head has not drawn it** (R36).
-        //
-        // A tail walk renders the last screenful and skips everything above it, so a
-        // viewport holding a row from further up has no span and nothing to place itself
-        // against. Rendering down to that row is the one thing that fixes it, and it is
-        // asked for by ROW rather than by lines — a fill measured in lines can stop short
-        // of the very row being held, which is a viewport chasing its own tail.
-        if let Some(h) = self.anchor.clone() {
-            let drawn = self.span_for(&h.item_id).is_some();
-            if !drawn && self.items.iter().any(|it| it.item_id == h.item_id) {
-                self.fill_to_row(h.ordinal);
-            }
-        }
+        // **A conversation too big to walk is rendered from its end, and the held row is
+        // rendered down to it** (R36) — the frame's half of [`App::render_held`], which is
+        // the one place the bootstrap lives now so that a scroll key between frames can
+        // run the same two steps. See that method for the second caller's story.
+        self.render_held(room);
         // **The one row `ctrl-t` can act on**, read once here rather than per row inside
         // the walk below — and before the walk's own borrow of `self`, which is why it is
         // not beside the rest of the tail's inputs. See [`ItemCtx::payload_newest`].

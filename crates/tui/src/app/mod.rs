@@ -1330,6 +1330,19 @@ pub struct App {
     /// rewritten; and both happen here, because a snapshot replaces the transcript whole
     /// and an elision changes a row's height. See [`App::hold`].
     pub(crate) anchor: Option<Held>,
+    /// **How many wheel notches down this flick has counted, when the last one fell, and
+    /// how many rows the transcript held when it did** (2026-10-09's third report).
+    ///
+    /// A notch on its own walks three lines — that is October's reconciliation and it is
+    /// not negotiable. What it cannot do is walk a reader 190 lines up back to a tail that
+    /// keeps receding, which is what the operator sat inside: the notch moved, the count
+    /// grew. A *flick* — several notches inside one read, an intent repeated — is the unit
+    /// that gathers speed, and the row count is how the head tells a transcript that is
+    /// holding still (walked) from one that is streaming (run). See
+    /// [`App::wheel_down_notch`].
+    pub(crate) wheel_run: usize,
+    pub(crate) wheel_last_ms: u64,
+    pub(crate) wheel_items: usize,
     /// **Where each rendered row's lines are**, ascending by `at`. Rebuilt as the history
     /// is walked and prepended to, cleared whenever that buffer is thrown away.
     pub(crate) spans: Vec<Span>,
@@ -1662,6 +1675,9 @@ impl App {
             daemon_pid: None,
             unconfirmed: Vec::new(),
             anchor: None,
+            wheel_run: 0,
+            wheel_last_ms: 0,
+            wheel_items: 0,
             spans: Vec::new(),
             view_top: 0,
             view_room: 0,

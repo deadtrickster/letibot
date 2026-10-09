@@ -697,6 +697,11 @@ impl App {
     /// is what made a press buy one frame's worth instead of a screen. The fill raises the
     /// real total, and `body_window` clamps against that after it has.
     pub(crate) fn scroll_up(&mut self, by: usize) {
+        // **A change of direction is a change of intent** — the run a flick was counting
+        // is over the moment the reader turns around, so the next flick starts at a walk.
+        // Here rather than in the key handler, because every way of going up — the wheel,
+        // the page keys, a pane handing its edge on — means the same thing: not this way.
+        self.wheel_run = 0;
         if self.hist_floor > 0 {
             // A screen past where the reader is *going*, so the next press has rows to move
             // into and does not have to wait for a frame to catch up. `view_top` is the last
@@ -720,6 +725,55 @@ impl App {
             .unwrap_or(self.view_top)
     }
 
+    /// **Render what a held viewport needs, before anything asks where it is** — the
+    /// frame's own bootstrap in one place, so that a key can run it too (2026-10-09's
+    /// *"stuck at 190 lines"*).
+    ///
+    /// Two steps, and the frame has always done both:
+    ///
+    /// * the **tail bootstrap** — a conversation too big to walk from the beginning is
+    ///   rendered from its end, which is the frame's ordinary way into a big session;
+    /// * **the held row, if this head has not drawn it** (R36): a tail walk renders the
+    ///   last screenful and skips everything above it, so a viewport holding a row from
+    ///   further up has no span and nothing to place itself against. Rendering down to
+    ///   that row is the one thing that fixes it, and it is asked for by ROW rather than
+    ///   by lines — a fill measured in lines can stop short of the very row being held,
+    ///   which is a viewport chasing its own tail.
+    ///
+    /// **Why a key needs this and not only the frame.** In tail mode every arriving row
+    /// invalidates the rendered history *wholesale* — a tail walk leaves no marks, so
+    /// [`App::invalidate_history_from`] has nothing to rewind to and throws the lot away,
+    /// correctly, because the rows above the floor were never rendered and there is
+    /// nothing to be stale — and on a session whose turns keep arriving, that wipe sits
+    /// *between two frames* more often than not. A wheel notch that lands there finds no
+    /// spans at all: [`App::held_line`] falls back to a stale `view_top`,
+    /// [`App::span_at_line`] answers `None`, and the notch's own `None` arm has nothing
+    /// to anchor on either — so it moves **nothing**. Measured on the fixture below: the
+    /// operator's park — 190 lines up, on the tail path, rows arriving — took thirty-two
+    /// notches down and the window never moved a line while the count grew to 319. `esc`
+    /// worked because it clears the anchor outright and never asks the spans anything.
+    ///
+    /// **A key that scrolls is a key that renders** — the rule [`App::scroll_up`] already
+    /// keeps for going up, and the mirror of `fill_backward` for coming down. The frame's
+    /// `room` is the frame's own; a key between frames uses the last frame's
+    /// ([`App::view_room`]), which is R36's rule about the key handler answering from the
+    /// glass.
+    pub(crate) fn render_held(&mut self, room: usize) {
+        if self.hist_floor == 0
+            && self.hist_lines.is_empty()
+            && transcript_bytes(&self.items) > self.walk_limit
+        {
+            self.hist_floor = self.items.len();
+            self.fill_backward(room + TAIL_SLACK);
+        }
+        if let Some(h) = self.anchor.clone() {
+            let drawn = self.span_for(&h.item_id).is_some();
+            if !drawn && self.items.iter().any(|it| it.item_id == h.item_id) {
+                self.fill_to_row(h.ordinal);
+            }
+        }
+    }
+
     /// **Move the held viewport by `delta` lines**, staying on a ROW.
     ///
     /// The sign is the reader's: negative is up, positive is down. The conversion
@@ -731,6 +785,10 @@ impl App {
     /// following means and it is an act they took — the same act as `esc`. Arriving content
     /// never does it, which is the difference this requirement is about.
     pub(crate) fn hold(&mut self, delta: isize) {
+        // **The row being held must be drawable before the hold can move off it** — or the
+        // step is spent on a span table an arriving row just wiped, which is the pin this
+        // answers. See [`App::render_held`].
+        self.render_held(self.view_room.max(1));
         // **The count is kept in step with the hold**, and it is a *derived* value: the
         // frame recomputes it from the anchor every time it draws, because only the frame
         // knows how many lines the body has. What this buys is that the two never disagree
@@ -811,6 +869,70 @@ impl App {
         // frame, and every frame erased the screen. Measured — see the commit that removed this.
         // The state above is the part a scroll owes, and it is untouched; what to write to the
         // glass is the frame's business and the diff already answers it.
+    }
+
+    /// **One notch down walks three lines; a RUN of notches gathers speed — but only
+    /// against a stream that is still arriving.**
+    ///
+    /// This is the reconciliation of the wheel's three reports. 2026-10-05: *"I cant
+    /// scroll back to bottom with a mouse wheel - have to press escape"* — answered by
+    /// making one notch clear the anchor, which 2026-10-09 recoiled from: *"one simple
+    /// stroke gets me to the bottom immediately — effectively like Esc"*, because a
+    /// reader could no longer walk DOWN through a conversation. The answer then was the
+    /// three-line walk, and it is right — on a transcript that is holding still.
+    ///
+    /// What it cannot do is cover a deep park against a stream that keeps arriving,
+    /// which is where the operator sat: *"scrolled up and couldnt scroll back with mouse
+    /// - stuck at 190 lines lol. Esc worked"*, and the narrowing — *"to trigger
+    /// conversation must be scrolled up far enough"*. Two mechanisms measured on the
+    /// failing fixture: a notch landing between an arrival and the next frame found the
+    /// span table wiped and moved **nothing** (fixed in [`App::render_held`]); and with
+    /// the spans live, three lines a notch is outrun by two arriving rows — the notch
+    /// moved every time and the count still grew, 191 to 319 over thirty-two notches.
+    ///
+    /// So the walk and the run are separated by the one fact that makes the difference:
+    /// **whether the transcript moved under the reader**. On a still transcript the
+    /// notch is a walk — three lines, every notch, whatever came before — which is
+    /// 2026-10-09's reconciliation entire, and its tests pin it. Against a stream the
+    /// notch joins a run, and each further notch of the same run doubles the step:
+    /// 3, 6, 12, 24 … — a stream adds rows at some finite pace and a doubling outgrows
+    /// any fixed pace, so the tail is reachable in a bounded number of notches however
+    /// fast it recedes, near the end included. The first notch of a run is three lines
+    /// either way, so one stroke is never the tail — October's line, held exactly.
+    ///
+    /// The run ends three ways, all of them the reader's: they pause
+    /// ([`WHEEL_RUN_MS`] — a notch spent reading is its own), they turn around
+    /// ([`App::scroll_up`] resets the count — a change of direction is a change of
+    /// intent), or they are back on the stream and the next park is a fresh question.
+    pub(crate) fn wheel_down_notch(&mut self) -> usize {
+        // **The distance this notch steps is measured on a live span table** — the wipe an
+        // arriving row leaves behind ([`App::render_held`]) would otherwise hand the step a
+        // stale `view_top` and a stale `body_len`, and the step it sizes from them is the
+        // step that stalls four lines from the end for ever. Rendering here is idempotent:
+        // `hold` runs the same call a moment later and finds everything drawn.
+        self.render_held(self.view_room.max(1));
+        let now = self.held_line();
+        let bottom = self.body_len.saturating_sub(self.view_room.max(1));
+        let dist = bottom.saturating_sub(now);
+        let fresh =
+            self.anchor.is_none() || self.now_ms.saturating_sub(self.wheel_last_ms) > WHEEL_RUN_MS;
+        if fresh {
+            self.wheel_run = 0;
+        }
+        self.wheel_last_ms = self.now_ms;
+        // **The one fact that separates the walk from the run**: did rows arrive since
+        // the last notch down? A still transcript is walked whatever the distance; a
+        // living one is the case the walk was outrun by.
+        let stream = self.items.len() != self.wheel_items;
+        self.wheel_items = self.items.len();
+        self.wheel_run = self.wheel_run.saturating_add(1);
+        if !stream {
+            return 3;
+        }
+        // **3, 6, 12, 24 … capped at 192** — bigger than any glass, so the cap is about
+        // sanity rather than reach — **and never past the bottom**: the step that lands
+        // on the tail is the step that follows it, and `hold` treats it as arrival.
+        (3usize << (self.wheel_run - 1).min(6)).min(dist.max(3))
     }
 
     /// **Draw rows until one of them is rendered** — R36.
@@ -1085,6 +1207,16 @@ pub(crate) const SELF_WALK_LIMIT: usize = 2 * 1024 * 1024;
 /// `App::fill_backward`). This is only what is kept ready for the frames that need no
 /// new work.
 pub(crate) const TAIL_SLACK: usize = 40;
+
+/// **How long a wheel notch remembers the one before it** — 2026-10-09's third report.
+///
+/// Notches closer together than this are one flick, and a flick is an intent repeated;
+/// notches further apart are a reader stepping through the conversation, and the step
+/// between them is a walk. The driver waits ~100 ms for a read and hands one tick
+/// whatever the terminal buffered, so an inertial flick lands whole bursts inside this
+/// window — often several ticks' worth, because the flick outlasts one read — while a
+/// notch spent reading arrives alone. 200 ms sits above the one and below the other.
+pub(crate) const WHEEL_RUN_MS: u64 = 200;
 
 /// Roughly how many bytes of text the transcript carries.
 ///
