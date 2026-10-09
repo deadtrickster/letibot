@@ -647,7 +647,8 @@ impl App {
             .daemon_protocol
             .unwrap_or(letibot_sessionlog::protocol::PROTOCOL_VERSION);
         self.say(&format!(
-            "attached anyway — this head now sends to a daemon speaking protocol {older} \n             against its own {}. The first frame the two do not share still ends the \
+            "attached anyway — this head now sends to a daemon speaking protocol {older} \
+             against its own {}. The first frame the two do not share still ends the \
              connection, with a `Bye` naming both builds; restarting the daemon is the fix.",
             letibot_sessionlog::protocol::PROTOCOL_VERSION
         ));
