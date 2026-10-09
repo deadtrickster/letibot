@@ -441,11 +441,14 @@ pub trait TaskRunner: Send + Sync {
     /// reason: a message reported as delivered that nobody heard is worse than one refused,
     /// because the parent then believes its child was corrected.
     ///
-    /// **A message is not a second prompt.** It enters the turn the child is already
-    /// running, recorded as an agent's utterance rather than the operator's, so a child that
-    /// is off the path hears *stop, do it this way* at its next round instead of after it has
-    /// finished. A child between turns cannot be reached this way at all, and a runner says
-    /// so by name rather than accepting something nothing will drain.
+    /// **A message is not a second prompt.** It is recorded as an agent's utterance rather
+    /// than the operator's, so it can neither authorise the act it races nor be read as
+    /// something a person typed. **Both states of a child are reachable, and they are
+    /// different deliveries**: a child with a turn RUNNING hears it at its next round
+    /// boundary, and a child BETWEEN turns has a turn started for it with this message as
+    /// what the turn is about (the operator's ruling, *"fix task_message - it should
+    /// enqueue"*). The one thing a runner must not do is accept a message nothing will read:
+    /// a handle whose session is gone, or whose thread has ended, is refused by name.
     fn send(&self, handle: &str, _text: &str) -> Result<String, String> {
         Err(format!(
             "this session's runner cannot message `{handle}`: a subagent is reached through \
@@ -1054,12 +1057,13 @@ impl Tool for TaskResultTool {
     }
 }
 
-/// `task_message` — correct a subagent while it is still working.
+/// `task_message` — correct a subagent, running or not.
 ///
 /// The third thing a parent does to work it handed off: `task` starts a child,
 /// `task_result` reads it, `job_kill` stops it, and this **steers** it. Sibling by shape and
 /// by reason — see [`TaskRunner::send`] for why a correction is not a second prompt in the
-/// child's session, and why a finished child is refused rather than queued.
+/// child's session, for the two deliveries (a running turn and a child between turns), and
+/// for why a child whose session is gone is refused rather than queued.
 pub struct TaskMessageTool {
     runner: Arc<dyn TaskRunner>,
 }
@@ -1074,12 +1078,12 @@ impl Tool for TaskMessageTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "task_message",
-            "Say something to a subagent that is STILL WORKING — a live correction, \
-             delivered into the turn it is running now rather than queued behind it. Give \
+            "Say something to a subagent you started — a live correction. Give \
              `task` (the handle `task` returned) and `text` (what to say). It is not a \
-             second prompt: the child hears it at its next round boundary, as your \
-             message, and carries on working. Refused by name if the child has already \
-             answered, because nothing would deliver it. Read a child with `task_result`; \
+             second prompt: the child hears it as your message and carries on. A child \
+             whose turn is running hears it at its next round boundary; a child that has \
+             answered and is waiting is woken and runs a turn for it. Refused by name if \
+             the child's session is gone. Read a child with `task_result`; \
              stop one with `job_kill`.",
             json!({
                 "type": "object",
