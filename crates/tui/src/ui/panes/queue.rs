@@ -41,10 +41,21 @@ impl App {
                     state: merge_state_word(e.state).to_string(),
                     // **The state word is the daemon's**, and the mark is this head's reading of
                     // it — the same split the jobs pane keeps.
+                    //
+                    // **A veto is NOT the red one.** `Parked` is the loud mark for the three
+                    // states a machine parks an entry in (failed, conflict, stale), and the
+                    // operator's requirement for the person's own rejection is that it does not
+                    // draw the same way: *"a vetoed entry must not draw as red"*. rano's four
+                    // marks are the whole vocabulary this head has (the pane is rano's, pinned by
+                    // tag) and none of them means *a person decided*, so a vetoed row takes
+                    // `Waiting` — the one mark that is neither a failure nor a success nor work
+                    // in progress — and the word beside it (`· vetoed ·`) plus the evidence are
+                    // what say which of the two it is.
                     mark: match e.state {
                         S::Waiting => MergeMark::Waiting,
                         S::Taken => MergeMark::Taken,
                         S::Landed => MergeMark::Landed,
+                        S::Vetoed => MergeMark::Waiting,
                         S::Failed | S::Conflict | S::Stale => MergeMark::Parked,
                     },
                     age: dur_human(self.now_ms.saturating_sub(e.created_ms)),
@@ -131,6 +142,10 @@ pub(crate) fn merge_state_word(state: letibot_sessionlog::event::MergeState) -> 
         S::Failed => "failed",
         S::Conflict => "conflict",
         S::Stale => "stale",
+        // **A person's decision, and not a machine's** — the operator's own verb. It is a state
+        // of its own rather than a `failed` with a sentence on it because the pane draws the two
+        // differently: this one is not red.
+        S::Vetoed => "vetoed",
     }
 }
 

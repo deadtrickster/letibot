@@ -315,3 +315,163 @@ fn an_entry_with_no_review_says_nobody_has_asked() {
         "{screen}"
     );
 }
+
+/// **`a`, `v` and `d` are the person's three verbs** — the operator's ask, in their words: *"i
+/// want to be able to approve / veto / delete"*. Each key sends the SAME verb its typed spelling
+/// sends, so the key and `/queue approve|veto|rm ID` cannot drift; and a row the daemon would
+/// refuse is said rather than sent, `r`'s own rule one state over.
+#[test]
+fn the_person_verbs_send_the_verb_for_the_row_under_the_cursor() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    a.apply(queue_frame(
+        vec![
+            queue_entry("c1", MergeState::Failed),
+            queue_entry("c2", MergeState::Vetoed),
+            queue_entry("c3", MergeState::Landed),
+        ],
+        Vec::new(),
+    ));
+    assert_eq!(
+        a.key(Key::Char('a')),
+        Some(Action::Slash {
+            line: "queue approve c1".into()
+        }),
+        "`a` sends the same verb `/queue approve ID` sends"
+    );
+    a.key(Key::Down);
+    assert_eq!(
+        a.key(Key::Char('v')),
+        Some(Action::Slash {
+            line: "queue veto c2".into()
+        }),
+        "`v` sends the child back"
+    );
+    // **A vetoed row is a person's own decision, and `d` takes it away** — the way out of a
+    // decision is a person's, one verb over.
+    assert_eq!(
+        a.key(Key::Char('d')),
+        Some(Action::Slash {
+            line: "queue rm c2".into()
+        })
+    );
+    // **A landed row is said, not sent.** The head already knows the daemon refuses it, so a
+    // round trip to be told no is a round trip wasted — and the same for a row the queue has
+    // taken and is mid-merge on.
+    a.key(Key::Down);
+    for k in ['a', 'v', 'd'] {
+        assert_eq!(a.key(Key::Char(k)), None, "`{k}` on a landed row");
+    }
+    let screen = a.screen(100, 24).join("\n");
+    assert!(screen.contains("is `landed`"), "{screen}");
+}
+
+/// **A vetoed entry does not draw as red** — the operator's requirement, and the whole reason a
+/// veto is a state rather than a sentence on a `failed` row: a person's decision and a machine's
+/// must not look alike.
+///
+/// Asserted against the FAILED row in the same frame, because *not red* alone would pass on a
+/// head that drew no marks at all.
+#[test]
+fn a_vetoed_entry_does_not_draw_as_red() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = App::new(RenderConfig {
+        width: 100,
+        color: true,
+        ..RenderConfig::default()
+    });
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut vetoed = queue_entry("c1", MergeState::Vetoed);
+    vetoed.evidence = "vetoed by the operator: it lands nothing".into();
+    let mut failed = queue_entry("c2", MergeState::Failed);
+    failed.evidence = "the gate is red".into();
+    a.apply(queue_frame(vec![vetoed, failed], Vec::new()));
+    let rows = a.screen(100, 24);
+    let red = a.cfg.palette().open(Role::Failure);
+    // **Two lines an entry** (rano's shape): the first carries the mark and the state word, the
+    // second the id, the review and the reason.
+    let vetoed_row = rows
+        .iter()
+        .find(|l| l.contains("· vetoed ·"))
+        .expect("the vetoed row is drawn");
+    assert!(
+        !vetoed_row.contains(&red),
+        "a person's veto is not a failure: {vetoed_row:?}"
+    );
+    assert!(
+        rows.iter().any(|l| l.contains("vetoed by the operator")),
+        "and the row says who decided, in their own words: {rows:?}"
+    );
+    let failed_row = rows
+        .iter()
+        .find(|l| l.contains("· failed ·"))
+        .expect("the failed row is drawn");
+    assert!(
+        failed_row.contains(&red),
+        "and the contrast holds — a gate failure IS the loud one: {failed_row:?}"
+    );
+}
+
+/// **The pane's keys are on the bar that describes the keys** — four verbs, and a person who has
+/// not read the source has to be able to find them.
+#[test]
+fn the_hint_line_names_the_person_verbs() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let bar = a.hint_bar(160);
+    for want in ["a approve", "v veto", "d drop", "r restart"] {
+        assert!(bar.contains(want), "the bar names `{want}`: {bar}");
+    }
+    // And it names them only while the pane has the keys: the bar is what the keys DO now.
+    a.command("queue");
+    assert!(!a.hint_bar(160).contains("v veto"), "{}", a.hint_bar(160));
+}
+
+/// **A removed entry leaves the pane, and its verdict goes with it** — the queue's one event
+/// about an ABSENCE, which a head that folded the entry in needs or it goes on drawing a row the
+/// queue no longer holds.
+#[test]
+fn a_removed_entry_leaves_the_pane_and_its_verdict_with_it() {
+    use letibot_sessionlog::event::MergeState;
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    a.apply(queue_frame(
+        vec![
+            queue_entry("c1", MergeState::Failed),
+            queue_entry("c2", MergeState::Waiting),
+        ],
+        vec![queue_review("c1", Some("reject"))],
+    ));
+    assert_eq!(a.merge.len(), 2, "both rows are here to start with");
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::MergeEntryRemoved {
+            id: "c1".into(),
+            evidence: "removed from the queue by the operator".into(),
+        },
+    )));
+    assert_eq!(a.merge.len(), 1, "the row is gone");
+    assert_eq!(a.merge[0].id, "c2");
+    assert!(
+        a.review_of("c1").is_none(),
+        "and its verdict with it: a verdict for an entry that is not there is a row nothing \
+         reads, and the overlay would point at a reviewer of a deleted entry"
+    );
+    let screen = a.screen(100, 24).join("\n");
+    assert!(!screen.contains("reviewer: reject"), "{screen}");
+    // **And a removal for an id this head never had is not an entry invented** — the jobs pane's
+    // rule, one arrival over.
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::MergeEntryRemoved {
+            id: "c9".into(),
+            evidence: "removed".into(),
+        },
+    )));
+    assert_eq!(a.merge.len(), 1, "nothing was added");
+}

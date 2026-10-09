@@ -539,6 +539,7 @@ pub fn wire_state(state: MergeState) -> letibot_sessionlog::event::MergeState {
         MergeState::Failed => wire::MergeState::Failed,
         MergeState::Conflict => wire::MergeState::Conflict,
         MergeState::Stale => wire::MergeState::Stale,
+        MergeState::Vetoed => wire::MergeState::Vetoed,
     }
 }
 
@@ -891,24 +892,22 @@ pub fn restartable(
     entry: &MergeEntry,
     review: Option<&letibot_tokencore::store::ReviewRecord>,
 ) -> Result<(), String> {
-    if let Some(rec) = review {
-        if rec.answered_ms.is_none() && rec.failed_ms.is_none() {
-            return Err(format!(
-                "a gatekeeper is working on `{}` right now — the review has been asked for and \
-                 has neither answered nor failed. A second reviewer beside a live one would be a \
-                 second writer on one entry's verdict, so nothing was restarted. Wait for it; if \
-                 its attempt dies, the entry comes back here with the failure on its row.",
-                entry.branch
-            ));
-        }
+    if attempt_in_flight(review) {
+        return Err(format!(
+            "a gatekeeper is working on `{}` right now — the review has been asked for and \
+             has neither answered nor failed. A second reviewer beside a live one would be a \
+             second writer on one entry's verdict, so nothing was restarted. Wait for it; if \
+             its attempt dies, the entry comes back here with the failure on its row.",
+            entry.branch
+        ));
     }
     if !matches!(
         entry.state,
-        MergeState::Failed | MergeState::Conflict | MergeState::Stale
+        MergeState::Failed | MergeState::Conflict | MergeState::Stale | MergeState::Vetoed
     ) {
         return Err(format!(
-            "`{}` is `{}` — nothing to restart. Only a parked entry (failed, conflict, stale) \
-             is restarted by hand; a waiting one is what the queue's own retry is for.",
+            "`{}` is `{}` — nothing to restart. Only a parked entry (failed, conflict, stale, \
+             vetoed) is restarted by hand; a waiting one is what the queue's own retry is for.",
             entry.branch,
             entry.state.as_str()
         ));
@@ -939,15 +938,7 @@ pub fn restart(
     now_ms: u64,
     events: &dyn Fn(letibot_sessionlog::SessionEvent),
 ) -> Result<String, String> {
-    let entry = store
-        .merge_entry(entry_id)
-        .map_err(|e| format!("the entry `{entry_id}` could not be read: {e}"))?
-        .ok_or_else(|| {
-            format!(
-                "there is no entry `{entry_id}` in the queue — `/queue` lists what is there, and \
-                 the pane's rows carry their ids."
-            )
-        })?;
+    let entry = read_entry(store, entry_id)?;
     let review = store
         .merge_review(entry_id)
         .map_err(|e| format!("the review of `{entry_id}` could not be read: {e}"))?;
@@ -997,6 +988,715 @@ pub fn restart(
         "restarted `{}` (`{entry_id}`): {was}. The queue asks its gatekeeper again — the entry \
          is back to `waiting`, and it does not land until a verdict accepts it and the gate is \
          green.",
+        entry.branch
+    ))
+}
+
+// ===== The person's three verbs: approve, veto and rm =====
+//
+// The operator's ask, in their words: *"i want to be able to approve / veto / delete"*. Three
+// acts, and they are the three things a person can say about an entry the queue is holding: *let
+// it through* (approve), *send it back* (veto) and *forget it* (rm). Each is a PURE decision
+// ([`approvable`], [`vetoable`], [`removable`]) plus a conditional store write plus a sentence —
+// `restart`'s shape one verb over, because the rule is what a test asserts without a daemon and
+// the write is what the row arbitrates.
+
+/// **The states a person's verb may move an entry out of**, or the sentence that refuses one.
+///
+/// Two states are refused and the sentences are different because the two facts are: `taken` is
+/// the daemon working — a verb there is a second writer on a row the landing is about to
+/// overwrite — and `landed` is done. Everything else is a row the queue is not touching.
+///
+/// **A `match` over the whole closed set rather than a `matches!` on the five it allows**, so a
+/// state added to [`MergeState`] fails to compile HERE, in the one place that decides what a
+/// person may answer, rather than being silently classified as movable by a list that forgot it.
+fn movable(entry: &MergeEntry) -> Result<(), String> {
+    match entry.state {
+        MergeState::Waiting
+        | MergeState::Failed
+        | MergeState::Conflict
+        | MergeState::Stale
+        | MergeState::Vetoed => Ok(()),
+        MergeState::Taken => Err(format!(
+            "`{}` is `taken` — the queue has claimed it and is rebasing and gating it right now, \
+             so a verb here would be a second writer on a row the landing is about to overwrite. \
+             Nothing was done. It comes back to `waiting` with a verdict, or to a parked state \
+             with the reason, and then it is yours to answer.",
+            entry.branch
+        )),
+        MergeState::Landed => Err(format!(
+            "`{}` has already landed — main is where it went, and its worktree and branch are \
+             cleaned up. Nothing was done: a merged branch is not something a person can \
+             un-decide from here.",
+            entry.branch
+        )),
+    }
+}
+
+/// **Whether a review attempt is IN FLIGHT** — asked for, and neither answered nor failed.
+///
+/// The one predicate the refusals that name a live attempt share ([`restartable`],
+/// [`approvable`], [`removable`]). `decision: None` with no `failed_ms` is *the reviewer is
+/// working on it right now*, which is why it is not simply *there is no verdict*: an attempt
+/// that has DIED leaves `decision` `None` too, and a person may act on that one.
+pub fn attempt_in_flight(review: Option<&letibot_tokencore::store::ReviewRecord>) -> bool {
+    review.is_some_and(|r| r.answered_ms.is_none() && r.failed_ms.is_none())
+}
+
+/// **Whether one entry may be approved by a person, and the sentence for either answer** — the
+/// person's verdict, as one pure function of the two rows.
+///
+/// An approval says *I have read it and it goes*: it REPLACES the review's judgement — the entry
+/// returns to `waiting` with an accepting verdict on its review — and then the queue does what it
+/// does with any waiting entry whose verdict accepts: rebase at the tip of main, run the gate,
+/// land. **It overrides a JUDGEMENT and never the landing machinery**, which is the whole of what
+/// keeps a person's verb from being a way around the gate.
+///
+/// Three refusals, and each names a different fact:
+///
+/// * **A live attempt is refused.** The reviewer has been asked and has neither answered nor
+///   failed, so an approval would write its verdict over one that is about to arrive — two
+///   writers on one entry's verdict, the shape this tree refuses everywhere.
+/// * **An entry that already accepts is refused.** There is nothing to override, and refusing is
+///   what makes a second press of the same verb move nothing: the verdict row is the arbiter.
+/// * **`taken` and `landed` are refused** — see [`movable`].
+pub fn approvable(
+    entry: &MergeEntry,
+    review: Option<&letibot_tokencore::store::ReviewRecord>,
+) -> Result<(), String> {
+    use letibot_tools::gatekeeper::Decision;
+    movable(entry)?;
+    if attempt_in_flight(review) {
+        return Err(format!(
+            "a gatekeeper is working on `{}` right now — the review has been asked for and has \
+             neither answered nor failed, and an approval would write the person's verdict over \
+             the one that is about to arrive. That is two writers on one entry's judgement, so \
+             nothing was approved. Wait for the verdict; an attempt that dies comes back to you \
+             with its failure on the row.",
+            entry.branch
+        ));
+    }
+    if review
+        .and_then(|r| r.decision.as_deref())
+        .and_then(Decision::parse)
+        == Some(Decision::Accept)
+    {
+        return Err(format!(
+            "`{}` already carries an accepting verdict — there is nothing to override, and the \
+             queue is already taking it. Nothing was done.",
+            entry.branch
+        ));
+    }
+    Ok(())
+}
+
+/// **Whether one entry may be vetoed by a person, and the sentence for either answer.**
+///
+/// A veto is not a park: the entry's ORIGINAL subagent is sent back to work with the refusal, and
+/// the entry is parked in `vetoed` — a state the queue never acts on — until that child's work is
+/// enqueued again (`MergeState::Vetoed`). It reads the entry alone: the review is not consulted,
+/// because a person's rejection overrides whatever the review would say and the queue never reads
+/// the review of an entry that is not waiting.
+///
+/// **Why not `waiting`.** The child is working, so the entry is live rather than dead — but a
+/// `waiting` row would have the daemon ask its gatekeeper again on the very next pass, about a
+/// branch the child has not touched yet, and park it `Failed` with a second refusal on it. The
+/// row would be red within a second of the person sending the child back, which is the opposite
+/// of what the verb means. `vetoed` is the state that says *the ball is with the child*.
+pub fn vetoable(entry: &MergeEntry) -> Result<(), String> {
+    movable(entry)?;
+    if entry.state == MergeState::Vetoed {
+        return Err(format!(
+            "`{}` is already `vetoed` — it was sent back to its child, and a second veto would be \
+             the same decision twice. Nothing was done. `/queue restart {}` asks the gatekeeper \
+             about the branch as it is now, `/queue approve {}` overrides the review, and \
+             `/queue rm {}` drops the entry.",
+            entry.branch,
+            letibot_sessionlog::registry::short_id(&entry.id),
+            letibot_sessionlog::registry::short_id(&entry.id),
+            letibot_sessionlog::registry::short_id(&entry.id),
+        ));
+    }
+    Ok(())
+}
+
+/// **Whether one entry may be dropped from the queue by a person, and the sentence for either
+/// answer.**
+///
+/// `rm` forgets the entry: the row and its review go, and the branch and its worktree stay —
+/// they were never the queue's to delete, and `Landed`'s cleanup is the only thing in this module
+/// that removes a tree.
+///
+/// **A live attempt is refused**, and here it is the sharpest of the three: the review row is
+/// deleted with the entry, so a reviewer answering now would be writing a verdict onto a row that
+/// is gone. That is the second-writer shape this queue refuses everywhere.
+///
+/// **A landed row is refused too, and that is a decision this brief did not ask for.** A landed
+/// row is the queue's record that main moved, and it is also the base a pending dependent rebases
+/// onto ([`effective_base`]); `unmet_needs` reads a dependency that is not in the queue as
+/// unmet, so deleting a landed row would leave a dependent waiting for ever on an id that is
+/// gone — a silent wedge in place of a row. Nothing about the operator's ask needs the landed
+/// rows gone (they are green, not red), so the refusal is cheap and the alternative is a queue
+/// that can be broken from the pane.
+pub fn removable(
+    entry: &MergeEntry,
+    review: Option<&letibot_tokencore::store::ReviewRecord>,
+) -> Result<(), String> {
+    if entry.state == MergeState::Landed {
+        return Err(format!(
+            "`{}` has landed and its row STAYS: it is the queue's record that main moved, and the \
+             base an entry that needs it rebases onto. A dependency the queue cannot find is one \
+             it cannot vouch for, so deleting this row would leave a waiting entry waiting for \
+             ever. Nothing was removed.",
+            entry.branch
+        ));
+    }
+    movable(entry)?;
+    if attempt_in_flight(review) {
+        return Err(format!(
+            "a gatekeeper is working on `{}` right now — the review has been asked for and has \
+             neither answered nor failed. The queue forgets an entry's verdict with the entry, so \
+             removing this one would have a reviewer writing its verdict onto a row that is gone. \
+             Nothing was removed; wait for the verdict, or `/queue approve {}` if the review is \
+             not what you want to hear from.",
+            entry.branch,
+            letibot_sessionlog::registry::short_id(&entry.id),
+        ));
+    }
+    Ok(())
+}
+
+// ===== The git the landing needs, when the work is still in the worktree =====
+//
+// **The operator's ruling, in their words: *"no way i touch git myself, we build this queue not
+// for that"*.** An entry whose branch is 0 commits over its base with the work sitting
+// uncommitted in the worktree is not a branch nobody reviewed — the reviewer's *"landing the
+// branch lands nothing"* is correct and useless. It is three of the six entries the operator was
+// looking at, and the answer the queue exists to avoid is *the person runs git*. So `approve`
+// commits the worktree's work onto the branch, and then the ordinary landing runs.
+
+/// **The one path `task_start` writes into a worktree, and the reason it is never swept.**
+///
+/// `harness.rs` writes `<worktree>/.cargo/config.toml` — a `[build] target-dir` pointing at the
+/// main tree's `target/`, so a child does not pay a cold build of the whole graph — and then adds
+/// the path to the worktree's own `info/exclude`. **That exclude is inert for a TRACKED file**, so
+/// in a repository that tracks `.cargo/config.toml` (a musl static-build config, in the repository
+/// this was measured against) the redirect arrives as a MODIFICATION of a real file: a blind `git
+/// add -A` would commit the repository's own config away, and `task_start` would have done it to
+/// every worktree the queue was ever asked to land.
+pub const BUILD_CACHE_REDIRECT: &str = ".cargo/config.toml";
+
+/// **Whether a file's content is the build-cache redirect `task_start` wrote** — its own first
+/// line is the marker.
+///
+/// Content rather than the path alone, because the path is a real config in a repository that
+/// tracks it and a person may have edited it as part of the work: what the sweep must never take
+/// is `task_start`'s own sentence, and what it must leave alone is everything else.
+pub fn is_build_cache_redirect(text: &str) -> bool {
+    text.lines()
+        .next()
+        .is_some_and(|l| l.contains("Written by `task_start`"))
+}
+
+/// **What the queue must do about the work an entry's worktree is holding** — one decision, from
+/// the facts git gave, with no repository in reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Sweep {
+    /// The branch already carries commits over its base: the work is committed, and the person's
+    /// approval is only a verdict.
+    Already,
+    /// The branch is 0 commits over its base AND the worktree holds nothing but the build-cache
+    /// redirect. Approving would land nothing, which is what the reviewer said.
+    Nothing,
+    /// One commit of these paths, and `redirect` says whether `task_start`'s redirect was among
+    /// the changed paths — the act restores it rather than committing it.
+    Commit { paths: Vec<String>, redirect: bool },
+}
+
+/// See [`Sweep`] — the decision, as one pure function of the two facts git reports.
+///
+/// The redirect is filtered out of `paths` HERE rather than by the act, so the rule *the
+/// build-cache redirect is never swept* is a rule a test asserts with no repository, no git and
+/// no store — the same reason the rest of this module's core is pure.
+pub fn sweep_for(commits_over_base: usize, changed: &[String]) -> Sweep {
+    if commits_over_base > 0 {
+        return Sweep::Already;
+    }
+    let redirect = changed.iter().any(|p| p == BUILD_CACHE_REDIRECT);
+    let paths: Vec<String> = changed
+        .iter()
+        .filter(|p| *p != BUILD_CACHE_REDIRECT)
+        .cloned()
+        .collect();
+    if paths.is_empty() {
+        Sweep::Nothing
+    } else {
+        Sweep::Commit { paths, redirect }
+    }
+}
+
+/// **The paths `git status --porcelain -z -uall` names**, in git's own order.
+///
+/// `-z` rather than the line form: a path with a space or a quote in it is a path a line-based
+/// read mangles, and this list goes into a commit message and onto a row a person reads — a name
+/// that is wrong is worse than a name that is missing. The NUL form puts the two status columns
+/// and a space before the path, and a rename or a copy carries its ORIGIN after its destination,
+/// so the second path is skipped rather than committed as a path of its own.
+///
+/// **`-uall` because the default collapses an untracked directory to the directory itself**: a
+/// fresh `docs/` holding three files came back as one entry, `docs/`, and the operator's second
+/// requirement is that the commit and the row name the FILES that were taken (*"say what it
+/// swept"*) — a directory name is a summary a person cannot check. Measured here: without it the
+/// sweep's own test read `["b.txt", "docs/"]`.
+fn changed_paths(status_z: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut parts = status_z.split('\0').filter(|s| !s.is_empty());
+    while let Some(entry) = parts.next() {
+        if entry.len() < 4 {
+            continue;
+        }
+        let (status, path) = entry.split_at(3);
+        out.push(path.to_string());
+        if status.contains('R') || status.contains('C') {
+            let _ = parts.next();
+        }
+    }
+    out
+}
+
+/// **The two facts the sweep's decision is made from**, read in the entry's own worktree: how many
+/// commits the branch carries over the base it was cut from, and what git says has changed.
+fn worktree_facts(worktree: &Path, base: &str) -> Result<(usize, Vec<String>), String> {
+    let range = format!("{base}..HEAD");
+    let count = git(worktree, &["rev-list", "--count", &range])?;
+    let commits = count.trim().parse::<usize>().map_err(|e| {
+        format!(
+            "git rev-list --count {range} answered `{}`, which is not a number: {e}",
+            count.trim()
+        )
+    })?;
+    let status = git(worktree, &["status", "--porcelain", "-z", "-uall"])?;
+    Ok((commits, changed_paths(&status)))
+}
+
+/// **Put the tracked build-cache redirect back**, and answer whether there was one to put back.
+///
+/// Three cases, and only one of them writes: the path is TRACKED and its content is
+/// `task_start`'s redirect (restore it — the repository's own config belongs in the worktree, and
+/// the rebase the queue does next REFUSES to run with a modified tracked file, which is how a
+/// sweep that left it alone would turn into the same dirty-tree conflict one pass later); the
+/// path is untracked (leave it — it is excluded by construction, `git add -A` will not take it,
+/// and the worktree keeps its shared build cache); the path is tracked and its content is NOT the
+/// redirect (leave it: that is a person's edit, and the sweep's business is to commit the work,
+/// not to decide which work).
+fn restore_redirect(worktree: &Path) -> Result<bool, String> {
+    let path = worktree.join(BUILD_CACHE_REDIRECT);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(false);
+    };
+    if !is_build_cache_redirect(&text) {
+        return Ok(false);
+    }
+    if git(
+        worktree,
+        &["ls-files", "--error-unmatch", BUILD_CACHE_REDIRECT],
+    )
+    .is_err()
+    {
+        return Ok(false);
+    }
+    git(worktree, &["checkout", "--", BUILD_CACHE_REDIRECT])?;
+    Ok(true)
+}
+
+/// **Commit the work the worktree is holding onto the entry's branch** — one commit, and the
+/// sentence that says what it took.
+///
+/// The commit message is the durable half of the operator's second requirement (*"say what it
+/// swept"*): it names the entry, says that the operator approved and that this is the queue doing
+/// the landing rather than a person running git, and lists the paths. The entry's evidence carries
+/// the same list, so a person who pressed the verb sees what was taken without opening git at
+/// all.
+///
+/// **The staging excludes the redirect by pathspec as well as by the restore above**, which is
+/// belt and braces on purpose: the restore is what keeps the worktree clean enough for the rebase
+/// that follows, and the exclusion is what makes *the redirect is never committed* true even if
+/// `task_start`'s marker sentence is ever reworded.
+fn sweep_worktree(
+    worktree: &Path,
+    entry_id: &str,
+    paths: &[String],
+    redirect: bool,
+) -> Result<String, String> {
+    let restored = if redirect {
+        restore_redirect(worktree)?
+    } else {
+        false
+    };
+    let exclude = format!(":(exclude){BUILD_CACHE_REDIRECT}");
+    git(worktree, &["add", "-A", "--", ".", &exclude])?;
+    let mut message = format!(
+        "the work the worktree was holding, committed by the merge queue\n\n\
+         The branch carried no commits over its base and the worktree was not clean, so there\n\
+         was nothing for the queue to land. The operator approved the entry `{entry_id}`\n\
+         (`/queue approve {entry_id}`), and this commit is the queue doing what the landing\n\
+         needs rather than asking a person to run git.\n\nSwept from the worktree:\n"
+    );
+    for p in paths {
+        message.push_str(&format!("  {p}\n"));
+    }
+    if restored {
+        message.push_str(&format!(
+            "\nThe build-cache redirect at `{BUILD_CACHE_REDIRECT}` (`task_start` writes it) was \
+             restored, not swept.\n"
+        ));
+    }
+    git(worktree, &["commit", "-m", &message])?;
+    let mut said = format!(
+        "The branch was 0 commits over its base and the worktree held work, so the queue \
+         committed it — {} file(s): {}",
+        paths.len(),
+        paths.join(", ")
+    );
+    if restored {
+        said.push_str(&format!(
+            ", and restored the build-cache redirect at `{BUILD_CACHE_REDIRECT}` (`task_start` \
+             writes it) rather than sweeping it"
+        ));
+    }
+    said.push('.');
+    Ok(said)
+}
+
+/// **One entry by the id a person typed**, or the refusal that names the grammar.
+///
+/// One function for the four verbs, because *the id does not resolve* has one true answer and the
+/// four acts must not paraphrase it four ways: `/queue` lists the entries and each row carries its
+/// id.
+fn read_entry(store: &Store, entry_id: &str) -> Result<MergeEntry, String> {
+    store
+        .merge_entry(entry_id)
+        .map_err(|e| format!("the entry `{entry_id}` could not be read: {e}"))?
+        .ok_or_else(|| {
+            format!(
+                "there is no entry `{entry_id}` in the queue — `/queue` lists what is there, and \
+                 the pane's rows carry their ids."
+            )
+        })
+}
+
+/// **Approve one entry** — the person's verdict, the git the landing needs, and the sentence it
+/// answers with.
+///
+/// The whole of the act is [`Store::approve_entry`]'s two writes (the verdict, then the move back
+/// to `waiting`) plus the sweep above when the branch has nothing on it yet. What is here is the
+/// DECISION ([`approvable`]), the sentences, and the announcement, so the verb that calls it holds
+/// no rule of its own.
+///
+/// **The gate is not bypassed and the sentence says so.** An approval overrides the reviewer's
+/// judgement; the queue then rebases, gates and lands exactly as it would for a verdict it was
+/// given, and the row says so in as many words — a person reading *approved by the operator* must
+/// not be able to conclude that the gate was skipped.
+///
+/// **`by` is the session the verb came from**, and it is written on the review row: after an
+/// approval the argument that matters is the person's, and the pane draws that column as *attach
+/// to it to read the argument*.
+pub fn approve(
+    store: &Store,
+    entry_id: &str,
+    by: &str,
+    now_ms: u64,
+    events: &dyn Fn(letibot_sessionlog::SessionEvent),
+) -> Result<String, String> {
+    let entry = read_entry(store, entry_id)?;
+    let review = store
+        .merge_review(entry_id)
+        .map_err(|e| format!("the review of `{entry_id}` could not be read: {e}"))?;
+    approvable(&entry, review.as_ref())?;
+
+    // **The work, before the verdict.** A branch with 0 commits over its base is a branch the
+    // gate would run on nothing, and the operator's ruling is that the queue absorbs this rather
+    // than the person: the worktree's work becomes one commit, and then the ordinary landing runs.
+    // The sweep goes FIRST so that a store write that loses a race leaves a commit and an
+    // unapproved entry rather than an approved entry the gate cannot land — and a second press
+    // finds the work committed (`Sweep::Already`) and commits nothing twice.
+    let swept = match entry.worktree.as_deref().map(Path::new) {
+        Some(wt) if wt.is_dir() => {
+            let (commits, changed) = worktree_facts(wt, &entry.base_sha)?;
+            match sweep_for(commits, &changed) {
+                Sweep::Already => None,
+                Sweep::Nothing => {
+                    return Err(format!(
+                        "`{}` has nothing to land — its branch is 0 commits over its base (`{}`) \
+                         and its worktree at `{}` is clean, so there is no work for the queue to \
+                         commit and nothing for the gate to run on. That is what its reviewer \
+                         said, and approving it would land nothing. Nothing was approved. If the \
+                         work exists somewhere else, it is not in this entry's worktree; \
+                         `/queue rm {entry_id}` drops the entry.",
+                        entry.branch,
+                        entry.base_sha,
+                        wt.display()
+                    ));
+                }
+                Sweep::Commit { paths, redirect } => {
+                    Some(sweep_worktree(wt, entry_id, &paths, redirect)?)
+                }
+            }
+        }
+        // **No worktree, so nothing to sweep and nothing to say about it.** The queue cannot
+        // rebase a branch that is not checked out either, and its own row says so
+        // (`"no worktree: the branch is not checked out"`); the person's verdict is still theirs
+        // to give, so the approval goes through rather than being refused for a reason that is
+        // the queue's to report.
+        _ => None,
+    };
+
+    // **What was overridden, in the row's own words.** A verdict, an attempt that failed and a
+    // person's own earlier veto are three different things to name, and naming the wrong one
+    // would send a reader looking for a judgement nobody made.
+    let was = match (entry.state, review.as_ref()) {
+        (MergeState::Vetoed, _) => "a person had vetoed it".to_string(),
+        (_, Some(r)) if r.decision.is_some() => format!(
+            "the verdict on it was `{}`",
+            r.decision.as_deref().unwrap_or_default()
+        ),
+        (_, Some(r)) if !r.failure.is_empty() => format!(
+            "{} attempt(s) failed — {}",
+            r.attempts,
+            first_line(&r.failure)
+        ),
+        (_, Some(_)) => "nobody had answered the review".to_string(),
+        (_, None) => "nobody had asked for a verdict".to_string(),
+    };
+    let evidence = format!(
+        "approved by the operator: {was}. {}The queue takes it again and the gate still runs — \
+         nothing lands until it is green.",
+        swept.as_deref().unwrap_or_default()
+    );
+    if !store
+        .approve_entry(&entry, by, &evidence, now_ms)
+        .map_err(|e| format!("the approval of `{entry_id}` could not be written: {e}"))?
+    {
+        // The row moved under us between the read and the write — a second press, the daemon
+        // claiming it, or a landing. Refused rather than reported as done, because an approval
+        // that did not happen and one that did are the two facts a person acts on.
+        let now = store
+            .merge_entry(entry_id)
+            .ok()
+            .flatten()
+            .map(|e| e.state.as_str().to_string())
+            .unwrap_or_else(|| "gone".into());
+        return Err(format!(
+            "nothing was approved: `{entry_id}` is `{now}` and an approval moves an entry that \
+             is waiting or parked, never one the queue has taken or landed. If you have just \
+             asked once, this is the second ask — the verdict already accepts it.{} ",
+            match &swept {
+                Some(what) => format!(" The work was committed, once: {what}"),
+                None => String::new(),
+            }
+        ));
+    }
+    events(letibot_sessionlog::SessionEvent::MergeEntryMoved {
+        id: entry_id.to_string(),
+        state: crate::mergequeue::wire_state(MergeState::Waiting),
+        evidence: evidence.clone(),
+    });
+    Ok(format!(
+        "approved `{}` (`{entry_id}`): {was}. {}\
+         The entry is back to `waiting` — the queue rebases it at the tip of main, runs the gate \
+         and lands it, and the gate is not skipped: an approval overrides the judgement, never \
+         the landing.",
+        entry.branch,
+        swept.as_deref().unwrap_or_default()
+    ))
+}
+
+/// **What the child is told when an entry goes back to it** — one pure function of the entry, the
+/// person's words and the verdict.
+///
+/// The operator's own model of this queue, in their words: *"gatekeeper reviews and drives
+/// subagents to completion by nagging them via messages. so it gets queue item - reviews if ok -
+/// puts into merge queue ... and if it is not happy - it sends a message with complaints to
+/// original subagent"*. **A function rather than a string built at the call site** for exactly that
+/// reason: the nagging half is a gatekeeper sending the same message with its own complaints where
+/// a person's words go, and this is the shape it will carry.
+pub fn veto_message(
+    entry: &MergeEntry,
+    why: &str,
+    review: Option<&letibot_tokencore::store::ReviewRecord>,
+) -> String {
+    let said = match why.trim() {
+        "" => "The operator vetoed it and gave no reason.".to_string(),
+        w => format!("This is what the operator said:\n\n  {w}"),
+    };
+    let reviewed = match review {
+        Some(r) if !r.reasons.is_empty() => {
+            let mut out = format!(
+                "The review's verdict was `{}`, and this is what it said:\n",
+                r.decision.as_deref().unwrap_or("no verdict")
+            );
+            for reason in &r.reasons {
+                out.push_str(&format!("\n  - {reason}"));
+            }
+            out
+        }
+        // **A failed attempt is not a verdict**, and the child must not read one as the other:
+        // nobody judged this branch, the reviewer could not be asked.
+        Some(r) if !r.failure.is_empty() => format!(
+            "The gatekeeper could not be asked — {} — so nothing has judged the branch.",
+            first_line(&r.failure)
+        ),
+        _ => "Nobody has judged the branch yet.".to_string(),
+    };
+    format!(
+        "Your branch `{}` was taken out of the merge queue: it is NOT landing as it stands, and \
+         the entry `{}` is back with you.\n\n{said}\n\n{reviewed}\n\nCarry on in the worktree at \
+         `{}` — the work you do there is what the entry is reviewed against next. Nothing lands \
+         until a review accepts it and the gate is green.",
+        entry.branch,
+        entry.id,
+        entry
+            .worktree
+            .as_deref()
+            .unwrap_or("(none — the branch is not checked out)")
+    )
+}
+
+/// **Veto one entry** — the person's rejection, delivered to the child that did the work.
+///
+/// **This is not a park.** The ball goes back: the entry's original subagent — the entry's own id,
+/// which is the child's session (`entry_for_finished`) — is sent a message carrying the person's
+/// words and, when there was one, the review's reasons, and that message starts its turn
+/// (`CommandKind::Message`, answered by `serve_child`'s `Hear` arm). The entry is parked `vetoed`
+/// meanwhile: a state the queue never acts on, so no gatekeeper is asked again about a branch the
+/// child has not touched yet, and the row reads as a decision somebody made rather than as a
+/// gate's failure.
+///
+/// **The message is sent BEFORE the row is written, and a delivery that failed moves nothing.**
+/// A child that is gone cannot be sent back to work, and the answer says which happened rather
+/// than pretending the ball went back: the refusal names the child and the two moves that are
+/// left (`/queue approve`, `/queue rm`).
+///
+/// `deliver` is a seam like `events` — the daemon's `task_message` door — so the act is a function
+/// of a store and two callbacks and a test can drive it without a socket.
+pub fn veto(
+    store: &Store,
+    entry_id: &str,
+    why: &str,
+    now_ms: u64,
+    deliver: &dyn Fn(&str, &str) -> Result<String, String>,
+    events: &dyn Fn(letibot_sessionlog::SessionEvent),
+) -> Result<String, String> {
+    let entry = read_entry(store, entry_id)?;
+    vetoable(&entry)?;
+    let review = store
+        .merge_review(entry_id)
+        .map_err(|e| format!("the review of `{entry_id}` could not be read: {e}"))?;
+
+    let said = veto_message(&entry, why, review.as_ref());
+    let delivery = deliver(&entry.id, &said).map_err(|e| {
+        format!(
+            "the veto of `{}` was NOT delivered to `{}`: {e} Nothing was moved — the entry is \
+             where it was, and the queue will go on holding it. `/queue approve {entry_id}` \
+             overrides the review and lets the queue land it, and `/queue rm {entry_id}` drops \
+             the entry.",
+            entry.branch, entry.id
+        )
+    })?;
+
+    let reason = match why.trim() {
+        "" => "nothing said".to_string(),
+        w => format!("\"{w}\""),
+    };
+    let evidence = format!(
+        "vetoed by the operator: {reason}. The child `{entry_id}` has been sent back to work; the \
+         branch and its worktree are untouched, and the queue will not take the entry again until \
+         it is enqueued. `/queue restart {}` asks the gatekeeper about it as it is now, \
+         `/queue approve {entry_id}` overrides the review, `/queue rm {entry_id}` drops it.",
+        letibot_sessionlog::registry::short_id(entry_id)
+    );
+    if !store
+        .veto_entry(entry_id, &evidence, now_ms)
+        .map_err(|e| format!("the veto of `{entry_id}` could not be written: {e}"))?
+    {
+        let now = store
+            .merge_entry(entry_id)
+            .ok()
+            .flatten()
+            .map(|e| e.state.as_str().to_string())
+            .unwrap_or_else(|| "gone".into());
+        return Err(format!(
+            "nothing was vetoed: `{entry_id}` is `{now}` and a veto moves an entry that is waiting \
+             or parked, never one the queue has taken or landed. The child HAS been sent the \
+             message above — the entry is where it was."
+        ));
+    }
+    events(letibot_sessionlog::SessionEvent::MergeEntryMoved {
+        id: entry_id.to_string(),
+        state: crate::mergequeue::wire_state(MergeState::Vetoed),
+        evidence: evidence.clone(),
+    });
+    Ok(format!(
+        "vetoed `{}` (`{entry_id}`): {reason}, and the child has it back — {delivery} The entry is \
+         parked as `vetoed`, which is a decision somebody made rather than a gate's failure, and \
+         the queue will not take it again while it stands. `/queue restart {}` asks the \
+         gatekeeper about the branch as it is now, `/queue approve {entry_id}` overrides the \
+         review, and `/queue rm {entry_id}` drops the entry.",
+        entry.branch,
+        letibot_sessionlog::registry::short_id(entry_id)
+    ))
+}
+
+/// **Drop one entry from the queue** — the third of the person's verbs.
+///
+/// The store forgets the entry and its verdict ([`Store::remove_merge_entry`]); the branch and its
+/// worktree stay, because they were never the queue's to delete and a person who wanted the tree
+/// gone has `git` and the worktree cleanup for it. What is here is the DECISION
+/// ([`removable`]), the sentence and the announcement.
+///
+/// **The announcement is an absence and the queue's own vocabulary has no word for one**, which is
+/// why `MergeEntryRemoved` exists: a head that folded the entry in has to be told it went, or an
+/// open pane goes on drawing a row the queue no longer holds.
+pub fn remove(
+    store: &Store,
+    entry_id: &str,
+    events: &dyn Fn(letibot_sessionlog::SessionEvent),
+) -> Result<String, String> {
+    let entry = read_entry(store, entry_id)?;
+    let review = store
+        .merge_review(entry_id)
+        .map_err(|e| format!("the review of `{entry_id}` could not be read: {e}"))?;
+    removable(&entry, review.as_ref())?;
+    let evidence = format!(
+        "removed from the queue by the operator. The branch `{}` and its worktree are untouched — \
+         the queue has forgotten the entry, not the work.",
+        entry.branch
+    );
+    if !store
+        .remove_merge_entry(entry_id)
+        .map_err(|e| format!("the removal of `{entry_id}` could not be written: {e}"))?
+    {
+        // The row moved under us between the read and the write: the daemon claimed it, or it
+        // landed. The sentence names the state rather than guessing, `restart`'s own shape.
+        let now = store
+            .merge_entry(entry_id)
+            .ok()
+            .flatten()
+            .map(|e| e.state.as_str().to_string())
+            .unwrap_or_else(|| "gone".into());
+        return Err(format!(
+            "nothing was removed: `{entry_id}` is `{now}` and a removal takes an entry the queue \
+             has not taken and has not landed. The row is still there, with its reason on it."
+        ));
+    }
+    events(letibot_sessionlog::SessionEvent::MergeEntryRemoved {
+        id: entry_id.to_string(),
+        evidence,
+    });
+    Ok(format!(
+        "removed `{}` (`{entry_id}`) from the queue, with its verdict. The branch and its worktree \
+         are untouched: the queue has forgotten the entry, not the work. Nothing will land it now \
+         — a new `task_start` on the same branch is how it would come back.",
         entry.branch
     ))
 }
@@ -2307,6 +3007,24 @@ mod tests {
                         state,
                         evidence,
                     } => Some((id.clone(), *state, evidence.clone())),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// **The removals**, which are the queue's one event about an ABSENCE — see
+        /// [`letibot_sessionlog::SessionEvent::MergeEntryRemoved`]. A head that folded the entry
+        /// in has to be told it went, so this is as load-bearing as a move and is asserted the
+        /// same way.
+        pub(super) fn removals(&self) -> Vec<(String, String)> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|e| match e {
+                    letibot_sessionlog::SessionEvent::MergeEntryRemoved { id, evidence } => {
+                        Some((id.clone(), evidence.clone()))
+                    }
                     _ => None,
                 })
                 .collect()
@@ -4442,5 +5160,653 @@ fn tests_entry_for_door(id: &str, session: &str) -> MergeEntry {
         updated_ms: 1,
         worktree: None,
         landed_sha: None,
+    }
+}
+
+/// **The person's three verbs, and the git `approve` absorbs** — the operator's ask, in their
+/// words: *"i want to be able to approve / veto / delete"* and *"no way i touch git myself, we
+/// build this queue not for that"*.
+///
+/// Its own module rather than a section of `tests`, for `restart`'s reason: these are about the
+/// four doors onto an entry a person answers, and the fixtures they need (a store on disk, an
+/// entry, a delivery that records what it was asked) are the queue's own, borrowed from `tests`
+/// rather than copied.
+#[cfg(test)]
+mod person {
+    use super::tests::{RecordingEvents, enqueue, entry, quiet_events, store_at};
+    use super::*;
+
+    /// **The pure decisions, asserted with no store, no git and no daemon** — every state of the
+    /// closed set, and the two rows' facts that make a verb legal.
+    #[test]
+    fn the_pure_decisions_answer_for_every_state() {
+        use letibot_tokencore::store::ReviewRecord;
+        let rec = |decision: Option<&str>, answered: bool, failed: bool| ReviewRecord {
+            entry_id: "m-1".into(),
+            session_id: "s-reviewer".into(),
+            branch: "b-m-1".into(),
+            base_sha: "base".into(),
+            asked_ms: 1,
+            answered_ms: answered.then_some(2),
+            decision: decision.map(str::to_string),
+            attempts: usize::from(failed) as u32,
+            failed_ms: failed.then_some(3),
+            failure: if failed {
+                "http 429".into()
+            } else {
+                String::new()
+            },
+            reasons: vec![],
+            files: vec![],
+            commands: vec![],
+        };
+        let at = |state: MergeState| entry("m-1", MergePriority::Subagent, state, 1_000);
+        // **The two states no person's verb moves**, each with its own sentence: the queue is
+        // working on one, the other is done.
+        for state in [MergeState::Taken, MergeState::Landed] {
+            let why = approvable(&at(state), None).expect_err("a refusal");
+            assert!(why.contains(state.as_str()), "{state:?}: {why}");
+            assert!(vetoable(&at(state)).is_err(), "{state:?} is not vetoable");
+            assert!(
+                removable(&at(state), None).is_err(),
+                "{state:?} is not removable"
+            );
+        }
+        // **Waiting and the parked four are a person's to answer.**
+        for state in [
+            MergeState::Waiting,
+            MergeState::Failed,
+            MergeState::Conflict,
+            MergeState::Stale,
+        ] {
+            assert!(approvable(&at(state), None).is_ok(), "{state:?}");
+            assert!(vetoable(&at(state)).is_ok(), "{state:?}");
+            assert!(removable(&at(state), None).is_ok(), "{state:?}");
+        }
+        // **A live attempt is refused by all three of the verbs that name one**, and the refusal
+        // says which fact stopped it: asked for, neither answered nor failed.
+        let live = rec(None, false, false);
+        for why in [
+            approvable(&at(MergeState::Waiting), Some(&live)).expect_err("a refusal"),
+            removable(&at(MergeState::Waiting), Some(&live)).expect_err("a refusal"),
+            restartable(&at(MergeState::Failed), Some(&live)).expect_err("a refusal"),
+        ] {
+            assert!(why.contains("a gatekeeper is working on"), "{why}");
+        }
+        // **An attempt that DIED is not a live one** — the entry is a person's to answer.
+        let died = rec(None, false, true);
+        assert!(approvable(&at(MergeState::Waiting), Some(&died)).is_ok());
+        assert!(removable(&at(MergeState::Waiting), Some(&died)).is_ok());
+        // **A verdict that already accepts is nothing to override** — the second press.
+        let accepting = rec(Some("accept"), true, false);
+        let why = approvable(&at(MergeState::Waiting), Some(&accepting)).expect_err("a refusal");
+        assert!(
+            why.contains("already carries an accepting verdict"),
+            "{why}"
+        );
+        assert!(
+            approvable(
+                &at(MergeState::Waiting),
+                Some(&rec(Some("reject"), true, false))
+            )
+            .is_ok(),
+            "a refusal is exactly what a person may override"
+        );
+        // **A veto is not a park, so a second veto is the same decision twice** — and it is the
+        // only state a veto refuses beyond the two every verb refuses.
+        let why = vetoable(&at(MergeState::Vetoed)).expect_err("a refusal");
+        assert!(why.contains("already `vetoed`"), "{why}");
+        // **And a person's veto is a state `approve` and `rm` may still move**: the way back from
+        // a decision is a person's, one verb over.
+        assert!(approvable(&at(MergeState::Vetoed), None).is_ok());
+        assert!(removable(&at(MergeState::Vetoed), None).is_ok());
+        // **A landed row is refused by `rm` for a reason of its own** — it is the base a
+        // dependent rebases onto, so deleting it wedges one.
+        let why = removable(&at(MergeState::Landed), None).expect_err("a refusal");
+        assert!(why.contains("has landed and its row STAYS"), "{why}");
+        // **And the four acts refuse an id that does not resolve, in the queue's own grammar.**
+        let store = Store::open_in_memory().expect("a store");
+        for why in [read_entry(&store, "m-nope").expect_err("a refusal")] {
+            assert!(why.contains("no entry `m-nope`"), "{why}");
+            assert!(why.contains("`/queue` lists what is there"), "{why}");
+        }
+    }
+
+    /// **The sweep's decision, with no repository in reach** — and the one rule the operator's
+    /// correction is load-bearing about: the build-cache redirect `task_start` writes is never
+    /// swept, whatever else is in the worktree.
+    #[test]
+    fn the_sweep_never_takes_the_build_cache_redirect() {
+        let redirect = BUILD_CACHE_REDIRECT.to_string();
+        // **The branch has commits: the work is committed and the person's approval is a verdict.**
+        assert_eq!(sweep_for(1, &["a.rs".into()]), Sweep::Already);
+        assert_eq!(sweep_for(3, &[]), Sweep::Already);
+        // **Nothing to land**: 0 commits and nothing changed, or 0 commits and nothing changed
+        // but the redirect — which is not work, so the reviewer's *"lands nothing"* is true.
+        assert_eq!(sweep_for(0, &[]), Sweep::Nothing);
+        assert_eq!(sweep_for(0, &[redirect.clone()]), Sweep::Nothing);
+        // **The sweep names the paths, and the redirect is not one of them.**
+        assert_eq!(
+            sweep_for(
+                0,
+                &["crates/a.rs".into(), redirect.clone(), "docs/b.md".into()]
+            ),
+            Sweep::Commit {
+                paths: vec!["crates/a.rs".into(), "docs/b.md".into()],
+                redirect: true,
+            }
+        );
+        assert_eq!(
+            sweep_for(0, &["a.rs".into()]),
+            Sweep::Commit {
+                paths: vec!["a.rs".into()],
+                redirect: false,
+            }
+        );
+        // **The marker is the writer's own sentence**, so a repository that tracks the path with
+        // a REAL config in it is not mistaken for the redirect.
+        assert!(is_build_cache_redirect(
+            "# Written by `task_start`: the build cache is shared with the main tree, so this \
+             worktree does not pay a cold build of the whole graph.\n[build]\ntarget-dir = \"/x/target\"\n"
+        ));
+        assert!(!is_build_cache_redirect(
+            "[build]\ntarget = \"x86_64-unknown-linux-musl\"\n"
+        ));
+        assert!(!is_build_cache_redirect(""));
+    }
+
+    /// **The paths git names, from its own NUL-separated output** — the parse that decides what a
+    /// commit message and a row will say, asserted on git's shape rather than on a guess about it.
+    #[test]
+    fn the_changed_paths_come_back_as_git_names_them() {
+        assert_eq!(
+            changed_paths(" M crates/a.rs\0?? docs/b.md\0"),
+            vec!["crates/a.rs", "docs/b.md"]
+        );
+        // **A rename carries TWO paths and only the destination is committed** — the origin is
+        // the path it came from, and listing it as a change would put a file that is not there
+        // into the commit message.
+        assert_eq!(
+            changed_paths("R  new/name.rs\0old/name.rs\0 M a.rs\0"),
+            vec!["new/name.rs", "a.rs"]
+        );
+        // A path with a space survives, which is the whole reason for `-z`.
+        assert_eq!(changed_paths("?? a b c.txt\0"), vec!["a b c.txt"]);
+        assert!(changed_paths("").is_empty());
+    }
+
+    /// **A store with one entry in it**, and the entry's id — `restart`'s own fixture.
+    fn parked(name: &str, state: MergeState) -> (PathBuf, PathBuf, String) {
+        let root =
+            std::env::temp_dir().join(format!("letibot-mq-person-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let db = root.join("sessions.db");
+        let mut e = entry("m-1", MergePriority::Subagent, state, 1_000);
+        e.brief = "do the work".into();
+        e.evidence = "the branch is 0 commits over its base".into();
+        enqueue(&db, &e);
+        (root, db, e.id)
+    }
+
+    /// **The review a person overrides**: a refusal, with the reasons and the files it was based
+    /// on, which is what a veto carries to the child and what an approval replaces.
+    fn refused(db: &Path, id: &str) {
+        let e = store_at(db)
+            .merge_entry(id)
+            .expect("reads")
+            .expect("the entry");
+        store_at(db)
+            .put_review(&letibot_tokencore::store::ReviewRecord {
+                entry_id: id.to_string(),
+                session_id: crate::mergequeue::REVIEWER_SESSION_ID.to_string(),
+                branch: e.branch,
+                base_sha: e.base_sha,
+                asked_ms: 1,
+                answered_ms: Some(2),
+                decision: Some("reject".into()),
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
+                reasons: vec!["the branch is 0 commits over its base".into()],
+                files: vec!["crates/widget.rs".into()],
+                commands: vec!["git diff base...branch".into()],
+            })
+            .expect("the verdict");
+    }
+
+    /// **An approval writes the verdict, moves the entry, and says the gate still runs.**
+    #[test]
+    fn an_approval_moves_the_entry_and_names_what_it_overrode() {
+        let (root, db, id) = parked("approve", MergeState::Failed);
+        refused(&db, &id);
+        let events = RecordingEvents::default();
+        let said = approve(&store_at(&db), &id, "s-operator", 5_000, &events.sink())
+            .expect("the approval");
+        // **What it overrode, in the row's own words** — a person who pressed it on the wrong
+        // entry has to be able to see that they did.
+        assert!(said.contains("the verdict on it was `reject`"), "{said}");
+        // **And the half that must never be silent: the gate was not skipped.**
+        assert!(said.contains("the gate is not skipped"), "{said}");
+        let back = store_at(&db)
+            .merge_entry(&id)
+            .expect("reads")
+            .expect("the entry");
+        assert_eq!(back.state, MergeState::Waiting, "back in the queue");
+        assert!(
+            back.evidence.starts_with("approved by the operator"),
+            "{back:?}"
+        );
+        assert!(back.evidence.contains("the gate still runs"), "{back:?}");
+        // **The verdict the queue reads, with the person on it.**
+        let ruled = store_at(&db)
+            .merge_review(&id)
+            .expect("reads")
+            .expect("a row");
+        assert_eq!(ruled.decision.as_deref(), Some("accept"));
+        assert_eq!(ruled.session_id, "s-operator");
+        assert!(
+            ruled.reasons.is_empty(),
+            "the reviewer's argument is replaced"
+        );
+        // **Every head hears**, through the queue's own event and no new vocabulary.
+        assert_eq!(
+            events.moves(),
+            vec![(
+                id.clone(),
+                letibot_sessionlog::event::MergeState::Waiting,
+                back.evidence.clone()
+            )]
+        );
+        // **The second press is refused, and it is the verdict row that refuses it.**
+        let why = approve(&store_at(&db), &id, "s-operator", 5_001, &quiet_events())
+            .expect_err("a second press");
+        assert!(
+            why.contains("already carries an accepting verdict"),
+            "{why}"
+        );
+        assert_eq!(
+            store_at(&db).merge_entry(&id).unwrap().unwrap().evidence,
+            back.evidence,
+            "and the second press wrote nothing"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **An approval of an entry with nothing to land refuses, and says what it found** — the
+    /// reviewer's *"landing the branch lands nothing"* is true, and a person pressing the verb
+    /// has to be told that rather than obeyed into an empty landing.
+    #[test]
+    fn an_approval_of_a_clean_branch_with_nothing_on_it_refuses() {
+        // A real repository, because the two facts are git's: 0 commits over the base, and a
+        // worktree with nothing in it.
+        let root = std::env::temp_dir().join(format!("letibot-mq-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["config", "user.email", "t@t"]);
+        git(&root, &["config", "user.name", "t"]);
+        std::fs::write(root.join("a.txt"), "one\n").expect("write");
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "first"]);
+        let base = git(&root, &["rev-parse", "main"])
+            .expect("rev-parse")
+            .trim()
+            .to_string();
+        git(&root, &["branch", "feature"]);
+        let wt = root.join("worktrees").join("feature");
+        git(
+            &root,
+            &["worktree", "add", "-q", wt.to_str().unwrap(), "feature"],
+        );
+        let db = root.join("sessions.db");
+        let mut e = entry("m-1", MergePriority::Subagent, MergeState::Failed, 1_000);
+        e.base_sha = base;
+        e.worktree = Some(wt.to_string_lossy().into_owned());
+        e.branch = "feature".into();
+        enqueue(&db, &e);
+        let why = approve(&store_at(&db), &e.id, "s-operator", 5_000, &quiet_events())
+            .expect_err("a refusal");
+        assert!(why.contains("has nothing to land"), "{why}");
+        assert!(why.contains("0 commits over its base"), "{why}");
+        assert_eq!(
+            store_at(&db).merge_entry(&e.id).unwrap().unwrap().state,
+            MergeState::Failed,
+            "nothing was approved and nothing was committed"
+        );
+        assert_eq!(
+            git(&wt, &["rev-list", "--count", "main..HEAD"])
+                .unwrap()
+                .trim(),
+            "0",
+            "and the branch is where it was"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **The sweep commits the worktree's work and does NOT commit the build-cache redirect** —
+    /// the operator's first constraint, measured against a real repository that TRACKS the path
+    /// (the letidb shape), because that is the case a blind `git add -A` gets wrong.
+    #[test]
+    fn the_sweep_commits_the_work_and_restores_the_tracked_redirect() {
+        let root = std::env::temp_dir().join(format!("letibot-mq-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["config", "user.email", "t@t"]);
+        git(&root, &["config", "user.name", "t"]);
+        // **A TRACKED `.cargo/config.toml`** — the repository's own real config, which is what a
+        // blind sweep would commit away.
+        std::fs::create_dir_all(root.join(".cargo")).expect("mkdir");
+        let real_config = "[build]\ntarget = \"x86_64-unknown-linux-musl\"\n";
+        std::fs::write(root.join(BUILD_CACHE_REDIRECT), real_config).expect("write");
+        std::fs::write(root.join("a.txt"), "one\n").expect("write");
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "first"]);
+        let base = git(&root, &["rev-parse", "main"])
+            .expect("rev-parse")
+            .trim()
+            .to_string();
+        git(&root, &["branch", "feature"]);
+        let wt = root.join("worktrees").join("feature");
+        git(
+            &root,
+            &["worktree", "add", "-q", wt.to_str().unwrap(), "feature"],
+        );
+        // **`task_start`'s own two writes**, verbatim: the redirect over the tracked config, and
+        // the work the child left.
+        std::fs::write(
+            wt.join(BUILD_CACHE_REDIRECT),
+            "# Written by `task_start`: the build cache is shared with the main tree, so this \
+             worktree does not pay a cold build of the whole graph.\n[build]\ntarget-dir = \
+             \"/x/target\"\n",
+        )
+        .expect("write");
+        std::fs::create_dir_all(wt.join("docs")).expect("mkdir");
+        std::fs::write(wt.join("b.txt"), "the work\n").expect("write");
+        std::fs::write(wt.join("docs").join("c.md"), "more work\n").expect("write");
+
+        // **The facts, then the decision, then the act** — the three steps the verb takes.
+        let (commits, changed) = worktree_facts(&wt, &base).expect("git's facts");
+        assert_eq!(commits, 0, "the branch carries nothing yet");
+        let Sweep::Commit { paths, redirect } = sweep_for(commits, &changed) else {
+            panic!("the sweep is the act here: {changed:?}");
+        };
+        assert!(redirect, "the redirect was among the changed paths");
+        assert!(
+            !paths.iter().any(|p| p == BUILD_CACHE_REDIRECT),
+            "and it is not one of the paths to commit: {paths:?}"
+        );
+        assert!(paths.contains(&"b.txt".to_string()), "{paths:?}");
+        assert!(paths.contains(&"docs/c.md".to_string()), "{paths:?}");
+        let said = sweep_worktree(&wt, "m-1", &paths, redirect).expect("the sweep");
+        assert!(
+            said.contains("b.txt") && said.contains("docs/c.md"),
+            "{said}"
+        );
+        assert!(said.contains("restored the build-cache redirect"), "{said}");
+
+        // **The commit is on the branch, with the work in it.**
+        assert_eq!(
+            git(&wt, &["rev-list", "--count", &format!("{base}..HEAD")])
+                .unwrap()
+                .trim(),
+            "1",
+            "one commit, not two"
+        );
+        let files = git(&wt, &["show", "--name-only", "--format=", "HEAD"]).expect("show");
+        assert!(
+            files.contains("b.txt") && files.contains("docs/c.md"),
+            "{files}"
+        );
+        assert!(
+            !files.contains(BUILD_CACHE_REDIRECT),
+            "the redirect is NOT in the commit: {files}"
+        );
+        // **And the repository's own config is what is in the tree and in the commit** — the
+        // first constraint, measured: a blind `git add -A` would have committed the redirect.
+        let in_commit = git(&wt, &["show", &format!("HEAD:{BUILD_CACHE_REDIRECT}")]).expect("show");
+        assert_eq!(in_commit, real_config, "the real config survived the sweep");
+        // **And the worktree is clean, which is what the rebase the queue does next needs** — a
+        // modified tracked file is a rebase git REFUSES (`cannot rebase: You have unstaged
+        // changes`), and a sweep that left it dirty would turn into the same conflict one pass
+        // later.
+        assert_eq!(
+            git(&wt, &["status", "--porcelain"]).unwrap().trim(),
+            "",
+            "the worktree is clean after the sweep"
+        );
+        // **And the sweep is idempotent**: a second look finds the branch carrying a commit, so
+        // there is nothing to sweep and nothing is committed twice.
+        let (commits, changed) = worktree_facts(&wt, &base).expect("git's facts");
+        assert_eq!(sweep_for(commits, &changed), Sweep::Already);
+        assert_eq!(
+            git(&wt, &["rev-list", "--count", &format!("{base}..HEAD")])
+                .unwrap()
+                .trim(),
+            "1"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A veto sends the child back to work, carries the reasons, and parks the entry as a
+    /// person's decision.**
+    #[test]
+    fn a_veto_sends_the_child_back_and_parks_the_entry() {
+        let (root, db, id) = parked("veto", MergeState::Waiting);
+        refused(&db, &id);
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let inbox = sent.clone();
+        let deliver = move |handle: &str, text: &str| {
+            inbox
+                .lock()
+                .unwrap()
+                .push((handle.to_string(), text.to_string()));
+            Ok("its turn is running, so it hears this at its next round boundary.".to_string())
+        };
+        let events = RecordingEvents::default();
+        let said = veto(
+            &store_at(&db),
+            &id,
+            "it lands nothing — put the work in a commit",
+            5_000,
+            &deliver,
+            &events.sink(),
+        )
+        .expect("the veto");
+        // **The message went to the ENTRY's own id** — the child that did the work, which is what
+        // the id is (`entry_for_finished`) — and it carries the person's words and the reasons the
+        // review gave, because a rejection a child cannot read a reason in is one it cannot act on.
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 1, "one message, to one child");
+        assert_eq!(sent[0].0, id, "the entry's id IS the child");
+        assert!(
+            sent[0].1.contains("put the work in a commit"),
+            "the person's own words: {}",
+            sent[0].1
+        );
+        assert!(
+            sent[0].1.contains("the branch is 0 commits over its base"),
+            "and the review's reasons: {}",
+            sent[0].1
+        );
+        assert!(
+            sent[0].1.contains("b-m-1"),
+            "and which branch: {}",
+            sent[0].1
+        );
+        drop(sent);
+        // **The row is a person's decision, not a machine's**, and the report says what happened
+        // to the ball.
+        assert!(said.contains("the child has it back"), "{said}");
+        assert!(said.contains("a decision somebody made"), "{said}");
+        let back = store_at(&db).merge_entry(&id).unwrap().unwrap();
+        assert_eq!(back.state, MergeState::Vetoed);
+        assert!(back.evidence.contains("vetoed by the operator"), "{back:?}");
+        assert!(
+            back.evidence.contains("put the work in a commit"),
+            "{back:?}"
+        );
+        // **And the review is untouched**: the judgement the person overrode is a fact about the
+        // branch, and the pane reads that column as the reviewer's.
+        let ruled = store_at(&db).merge_review(&id).unwrap().unwrap();
+        assert_eq!(ruled.decision.as_deref(), Some("reject"));
+        assert_eq!(ruled.reasons, vec!["the branch is 0 commits over its base"]);
+        assert_eq!(
+            events.moves(),
+            vec![(
+                id.clone(),
+                letibot_sessionlog::event::MergeState::Vetoed,
+                back.evidence.clone()
+            )]
+        );
+        // **A second veto is the same decision twice**, and the row says so.
+        let why = veto(
+            &store_at(&db),
+            &id,
+            "again",
+            5_001,
+            &deliver,
+            &quiet_events(),
+        )
+        .expect_err("a second veto");
+        assert!(why.contains("already `vetoed`"), "{why}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A child that is gone is refused, and NOTHING is moved** — the ball cannot go back to a
+    /// session that is not there, and the act must not report a delivery that did not happen.
+    #[test]
+    fn a_veto_whose_child_is_gone_moves_nothing() {
+        let (root, db, id) = parked("gone", MergeState::Failed);
+        let gone = |_: &str, _: &str| {
+            Err("no subagent `m-1` in this session, or its session is gone.".to_string())
+        };
+        let events = RecordingEvents::default();
+        let why =
+            veto(&store_at(&db), &id, "no", 5_000, &gone, &events.sink()).expect_err("a refusal");
+        // **The refusal names the child and the moves that are left**, rather than pretending the
+        // ball went back.
+        assert!(why.contains("was NOT delivered to `m-1`"), "{why}");
+        assert!(why.contains("Nothing was moved"), "{why}");
+        assert!(why.contains("/queue approve m-1"), "{why}");
+        assert!(why.contains("/queue rm m-1"), "{why}");
+        assert_eq!(
+            store_at(&db).merge_entry(&id).unwrap().unwrap().state,
+            MergeState::Failed,
+            "the entry is where it was"
+        );
+        assert!(events.moves().is_empty(), "and no head was told it moved");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A removal forgets the entry and its verdict, and every head is told it went.**
+    #[test]
+    fn a_removal_forgets_the_entry_and_its_verdict() {
+        let (root, db, id) = parked("rm", MergeState::Failed);
+        refused(&db, &id);
+        let events = RecordingEvents::default();
+        let said = remove(&store_at(&db), &id, &events.sink()).expect("the removal");
+        assert!(
+            said.contains("the queue has forgotten the entry, not the work"),
+            "{said}"
+        );
+        assert!(
+            store_at(&db).merge_entry(&id).unwrap().is_none(),
+            "the row is gone"
+        );
+        assert!(
+            store_at(&db).merge_review(&id).unwrap().is_none(),
+            "and its verdict with it: a verdict nothing can be joined against is a leak"
+        );
+        let removals = events.removals();
+        assert_eq!(
+            removals.len(),
+            1,
+            "the head is told, or it draws a row that is gone"
+        );
+        assert_eq!(removals[0].0, id);
+        assert!(
+            removals[0]
+                .1
+                .contains("removed from the queue by the operator")
+        );
+        // **A second press is refused BY NAME, and that is the shape a deletion has.** The row is
+        // gone, so the second press cannot resolve the id at all — the same refusal an id that
+        // never existed gets, which is the truth of it. The conditional `DELETE` is still the
+        // arbiter for the race (the daemon claiming the entry, or a landing, between the read and
+        // the write), which is why the store's `false` is handled rather than assumed.
+        let why = remove(&store_at(&db), &id, &quiet_events()).expect_err("a second press");
+        assert!(why.contains("no entry `m-1`"), "{why}");
+        assert!(why.contains("`/queue` lists what is there"), "{why}");
+        let why = remove(&store_at(&db), "m-nope", &quiet_events()).expect_err("an unknown id");
+        assert!(why.contains("no entry `m-nope`"), "{why}");
+        assert!(why.contains("`/queue` lists what is there"), "{why}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **The three verbs refuse a live attempt and a row the queue has taken**, at the act's own
+    /// door and not only in the pure decision — the sentences a person reads.
+    #[test]
+    fn the_verbs_refuse_a_live_attempt_and_a_taken_row() {
+        use letibot_tokencore::store::ReviewRecord;
+        let (root, db, id) = parked("live", MergeState::Failed);
+        let e = store_at(&db).merge_entry(&id).unwrap().unwrap();
+        store_at(&db)
+            .put_review(&ReviewRecord {
+                entry_id: id.clone(),
+                session_id: crate::mergequeue::REVIEWER_SESSION_ID.to_string(),
+                branch: e.branch.clone(),
+                base_sha: e.base_sha.clone(),
+                asked_ms: 1,
+                answered_ms: None,
+                decision: None,
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
+                reasons: vec![],
+                files: vec![],
+                commands: vec![],
+            })
+            .expect("the live attempt");
+        for why in [
+            approve(&store_at(&db), &id, "s-operator", 5_000, &quiet_events())
+                .expect_err("a refusal"),
+            remove(&store_at(&db), &id, &quiet_events()).expect_err("a refusal"),
+        ] {
+            assert!(why.contains("a gatekeeper is working on"), "{why}");
+        }
+        // **And the entry is untouched** — the live attempt keeps its request.
+        let review = store_at(&db).merge_review(&id).unwrap().unwrap();
+        assert!(review.decision.is_none() && review.answered_ms.is_none());
+        assert_eq!(
+            store_at(&db).merge_entry(&id).unwrap().unwrap().state,
+            MergeState::Failed
+        );
+        // **A taken row is refused by all three**, with the daemon's own reason.
+        let (root2, db2, id2) = parked("taken", MergeState::Taken);
+        for why in [
+            approve(&store_at(&db2), &id2, "s-operator", 5_000, &quiet_events())
+                .expect_err("a refusal"),
+            veto(
+                &store_at(&db2),
+                &id2,
+                "no",
+                5_000,
+                &|_, _| Ok(String::new()),
+                &quiet_events(),
+            )
+            .expect_err("a refusal"),
+            remove(&store_at(&db2), &id2, &quiet_events()).expect_err("a refusal"),
+        ] {
+            assert!(why.contains("is `taken`"), "{why}");
+            assert!(why.contains("Nothing was done"), "{why}");
+        }
+        assert_eq!(
+            store_at(&db2).merge_entry(&id2).unwrap().unwrap().state,
+            MergeState::Taken
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&root2);
     }
 }

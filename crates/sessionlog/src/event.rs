@@ -261,6 +261,14 @@ pub enum MergeState {
     Conflict,
     /// The gate job died with the daemon; it is listed with its reason, not dropped.
     Stale,
+    /// **A PERSON rejected it** (`PROTOCOL_VERSION` 38) — the operator's verdict, and not a
+    /// gatekeeper's. A state of its own rather than a sentence on a `failed` row because a
+    /// person's rejection and a machine's must not draw the same way: the head draws `failed`,
+    /// `conflict` and `stale` as the loud, red ones, and the operator's requirement is that a
+    /// veto does not (`"a vetoed entry must not draw as red"`). It is terminal: the queue only
+    /// ever takes a `waiting` entry, so a vetoed one is never reviewed or gated again. The way
+    /// back is a person's — `approve` reverses the decision it was made by, `rm` forgets it.
+    Vetoed,
 }
 
 /// **One entry in the merge queue, on the wire** — a copy of
@@ -1788,6 +1796,22 @@ pub enum SessionEvent {
         /// The reason for the state, in the queue's own words.
         evidence: String,
     },
+    /// **A merge-queue entry was REMOVED** — the operator's `rm`, and the only way a row leaves
+    /// the queue without a state.
+    ///
+    /// The queue's other events carry a MOVE; this one carries an absence, and a head that
+    /// folded [`SessionEvent::MergeEntryAdded`] needs it for the reason it needs
+    /// [`SessionEvent::MergeEntryMoved`]: without it an open pane would go on drawing a row the
+    /// queue no longer holds, which is exactly the lie the module is written to refuse and the
+    /// one an operator who has just deleted an entry would be looking straight at. The head
+    /// drops the row and its verdict; the `evidence` is here for the log, which is the durable
+    /// record of what the queue did and why, rather than for a row there is no longer.
+    MergeEntryRemoved {
+        /// The id of the entry that was removed.
+        id: String,
+        /// Why, in the queue's own words — the act's own sentence.
+        evidence: String,
+    },
     /// **A window of one background job's output, for a pane that draws it.**
     ///
     /// The jobs pane drew `N out` for every row and had no way to show the bytes it counted. Enter
@@ -1968,6 +1992,7 @@ impl SessionEvent {
             SessionEvent::JobSettled { .. } => "JobSettled",
             SessionEvent::MergeEntryAdded { .. } => "MergeEntryAdded",
             SessionEvent::MergeEntryMoved { .. } => "MergeEntryMoved",
+            SessionEvent::MergeEntryRemoved { .. } => "MergeEntryRemoved",
             SessionEvent::OperatorCallAllowed { .. } => "OperatorCallAllowed",
             SessionEvent::JobOutput { .. } => "JobOutput",
             SessionEvent::Filling { .. } => "Filling",
