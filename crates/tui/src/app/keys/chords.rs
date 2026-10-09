@@ -132,15 +132,9 @@ impl App {
             // is line-feed; Q is XON, dead the same way Ctrl+S's XOFF would be —
             // and fixed the same way: cfmakeraw clears IXON, so nothing is
             // listening for flow control and the byte arrives like any other.
-            Key::CtrlQ => {
-                self.jobs_pane = !self.jobs_pane;
-                self.pane_scroll = 0;
-                self.redraw = true;
-                // Opening it asks the daemon, the way the todos pane does: the
-                // process table is the daemon's and a head that drew its own
-                // version drew a stale one. Later changes arrive as `JobSettled`.
-                return ControlFlow::Break(self.jobs_pane.then_some(Action::ListJobs));
-            }
+            // The act itself is `toggle_jobs`'s, shared with `/jobs` and a click
+            // on the count label so the three cannot drift.
+            Key::CtrlQ => return ControlFlow::Break(self.toggle_jobs()),
             // **R22: clearing your own screen costs one key.**
             //
             // Retiring a note used to be `/notes dismiss all` — the right power in the wrong

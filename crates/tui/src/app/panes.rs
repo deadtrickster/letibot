@@ -25,6 +25,22 @@ impl App {
         self.redraw = true;
     }
 
+    /// **The jobs pane's own toggle — and the only spelling of it.** `ctrl-q`, `/jobs` and
+    /// a click on the jobs count label all end here, so the three cannot drift the way a
+    /// second copy of "open the pane" drifts: one of them asking for the table and the
+    /// others forgetting is exactly the defect §6's rule ("both spellings end in the same
+    /// function") exists to close.
+    ///
+    /// Opening asks the daemon for the table, the way the todos pane asks for its rows:
+    /// the process table is the daemon's and a head that drew its own version drew a stale
+    /// one. Later changes arrive as `JobSettled`.
+    pub(crate) fn toggle_jobs(&mut self) -> Option<Action> {
+        self.jobs_pane = !self.jobs_pane;
+        self.pane_scroll = 0;
+        self.redraw = true;
+        self.jobs_pane.then_some(Action::ListJobs)
+    }
+
     /// **The pane's rows, as ONE enumeration** — the arrows, Enter, `p`, the drawn `▸` and the
     /// scroll all read this and nothing else.
     ///

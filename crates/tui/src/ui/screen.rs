@@ -318,6 +318,7 @@ impl App {
         if show_status {
             chrome.push(status);
         }
+        let mut box_top_at: Option<(usize, BoxTopLabels)> = None;
         if boxed {
             // The top edge carries the facts that exist ONLY while they are true, pinned right:
             // subagents this session spawned and background jobs it started. The legend that used
@@ -330,7 +331,13 @@ impl App {
             // row has just been given to the turn (item 1) while this edge already carries the
             // session's other running things. One edge for *what this session has in flight* is
             // one place to look, and it is the same kind of fact as the subagent count beside it.
-            chrome.push(self.box_top(w));
+            //
+            // **Its place in the chrome is kept** (`box_top_at`), because the edge is also a
+            // click target and a target needs the row it was drawn on — which the fit below can
+            // still change, so the row is resolved after the frame's final shape is known.
+            let (edge, labels) = self.box_top(w);
+            box_top_at = Some((chrome.len(), labels));
+            chrome.push(edge);
         }
         let caret_at = chrome.len() + caret_row;
         chrome.extend(input_rows);
@@ -395,8 +402,27 @@ impl App {
             out.insert(0, l);
             body_rows += 1;
         }
+        // Rows the backstop took off the front of the chrome, read before the extend
+        // below consumes it — the edge's index has to come down by exactly this many.
+        let drained = pre_chrome - chrome.len();
         out.extend(chrome);
         out.truncate(h);
+        // **The count labels' hit boxes, recorded here where the frame's final shape is
+        // known.** The backstop above may have drained rows off the front of the chrome
+        // and the truncate may have cut its tail, and the edge is a target only while it
+        // is still in the frame — the same rule the mode card's record keeps
+        // (`mode_rows_drawn`), for the same reason: a click into a frame that cut the
+        // thing it lands on is a click nobody can see the target of. The columns are the
+        // row's own plus the gutter, because a click's `x` is in terminal cells.
+        self.box_top_hits = box_top_at.and_then(|(at, labels)| {
+            let at = at.checked_sub(drained)?;
+            let row = body_rows + at;
+            (row < out.len()).then_some(BoxTopHits {
+                row,
+                subagents: labels.subagents.map(|(col, w)| (col + gutter, w)),
+                jobs: labels.jobs.map(|(col, w)| (col + gutter, w)),
+            })
+        });
         // The caret is the affordance. It goes where the composer says, and the
         // terminal draws it as a steady block because `term::enter` asked for one.
         self.cursor = Some((
@@ -464,10 +490,47 @@ impl App {
 /// R29's rule for a disclosure: it carries the act that ends it.
 pub const HOLD_MARKER: &str = "⏸ the view is held — ctrl-p follows again";
 
+/// One count label's columns in the drawn edge — `(first column, width)`, in the row's
+/// own columns. The facts are rano's wording, joined ` · ` and inlaid in the edge's right
+/// end, so this walks the SPANS rano built and finds the fact's own boundaries around the
+/// `needle` it is known by (`subagent`, `job`): the fact starts after the separator before
+/// it and ends at the next one, which makes the label the WHOLE fact — `2 jobs running ·
+/// 1 to a file` included, because the tail is that fact's own second half.
+///
+/// Reading the drawn line rather than rebuilding the layout is the point. rano truncates
+/// the edge when the terminal is narrow, and the cut eats the jobs label first (it sits to
+/// the right), so the record honestly loses that target while the subagents one survives;
+/// and a wording rano changes stops matching the `needle`, which leaves a label that does
+/// not click rather than one that clicks wrong — the only failure this walk can have is
+/// the safe one.
+fn box_top_label(line: &rano::render::Line, needle: &str) -> Option<(usize, usize)> {
+    let mut col = 0usize;
+    for span in &line.spans {
+        let text = span.content.as_str();
+        if let Some(at) = text.find(needle) {
+            let start = text[..at].rfind(" · ").map_or(0, |sep| sep + 3);
+            let end = text[start..]
+                .find(" · ")
+                .map_or(text.len(), |next| start + next);
+            return Some((
+                col + visible_width(&text[..start]),
+                visible_width(&text[start..end]),
+            ));
+        }
+        col += visible_width(text);
+    }
+    None
+}
+
 impl App {
     /// **The composer box's top edge**, carrying what this session has running: its live
-    /// subagents and its background jobs.
-    pub(crate) fn box_top(&self, w: usize) -> String {
+    /// subagents and its background jobs — **and the labels' columns, read off the line
+    /// rano returned**. The second half of the return is what a click on the edge is
+    /// measured against ([`BoxTopLabels`]), and it is taken from the drawn line rather
+    /// than recomputed from the counts because the line is the thing on the screen: rano
+    /// pins the labels right and truncates them when the edge is narrow, and both of
+    /// those move a target that arithmetic over the counts would misplace.
+    pub(crate) fn box_top(&self, w: usize) -> (String, BoxTopLabels) {
         // **The number is the rows the pane draws, and not a second rule about them**: the one
         // lifecycle predicate ([`SubagentState::is_finished`]) the pane's own active group is
         // built from — *"an agent is alive from spawn until it has finished"*.
@@ -480,7 +543,33 @@ impl App {
                 .filter(|j| j.running && j.redirect.is_some())
                 .count(),
         };
-        crate::ui::rows::row(&top.line(w), self.cfg.palette())
+        let line = top.line(w);
+        let labels = BoxTopLabels {
+            subagents: box_top_label(&line, "subagent"),
+            jobs: box_top_label(&line, "job"),
+        };
+        (crate::ui::rows::row(&line, self.cfg.palette()), labels)
+    }
+
+    /// **Which count label a click landed on, if any** — read off the record the last
+    /// frame made ([`App::box_top_hits`]) and nothing else: no arithmetic about where the
+    /// labels "should" sit, because only the frame knows where they did. `x`/`y` are the
+    /// click's terminal cells, which is what the record keeps.
+    pub(crate) fn box_top_label_at(&self, x: u16, y: u16) -> Option<CountLabel> {
+        let hits = self.box_top_hits.as_ref()?;
+        if hits.row != usize::from(y) {
+            return None;
+        }
+        let x = usize::from(x);
+        let inside =
+            |label: &Option<(usize, usize)>| label.is_some_and(|(col, w)| x >= col && x < col + w);
+        if inside(&hits.subagents) {
+            Some(CountLabel::Subagents)
+        } else if inside(&hits.jobs) {
+            Some(CountLabel::Jobs)
+        } else {
+            None
+        }
     }
 
     /// **The composer box's bottom edge**, carrying the alarm, where the reader is in the
