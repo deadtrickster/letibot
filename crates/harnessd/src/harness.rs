@@ -61,10 +61,10 @@ use letibot_tools::{
 };
 use letibot_transcript::{SystemOrigin, ToolCall, TranscriptItem, UserPart};
 use letibot_turn::{
-    CompactionOutcome, Endpoint, EventSink, OverrunPlan, Session, SteeringMessage, SteeringSource,
-    TailSplit, TurnEngine, TurnEvent, TurnFailure, TurnMetrics, TurnOk, plan_compaction_tail,
-    plan_fold, plan_overrun, run_compaction, summarise_first_half, summarise_overrun, tail_because,
-    tail_split_of,
+    CompactionOutcome, Endpoint, EventSink, Harvest, OverrunPlan, Session, SteeringMessage,
+    SteeringSource, TailSplit, TurnEngine, TurnEvent, TurnFailure, TurnMetrics, TurnOk,
+    plan_compaction_tail, plan_fold, plan_overrun, run_compaction, summarise_first_half,
+    summarise_overrun, tail_because, tail_split_of,
 };
 
 use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat, SpillPolicy, SpillStorage};
@@ -7669,6 +7669,43 @@ impl Harness {
     ///
     /// See `crates/turn/src/compaction.rs` for the arithmetic and for why the
     /// cache and the log are two different things.
+    /// **Summarise the first half, keep the rest verbatim** — the fold, carried out.
+    ///
+    /// Two arms go through here so they cannot drift: the overrun arm (the history is
+    /// past the window) and the ordinary arm (a remote session is at the wall, where
+    /// `plan_fold`'s own doc says the fold is the cleanest of the three strategies and
+    /// the one to prefer wherever it can be afforded).
+    ///
+    /// **The summary turn runs against the FIRST HALF only**, in a scratch transcript,
+    /// and that is also why the fold is the *safe* answer at the wall rather than
+    /// merely the better one: the ordinary path asks the model to read the whole
+    /// history and write a summary with less than a reserve of room left to do it in.
+    fn compact_by_folding(
+        &mut self,
+        items: &[TranscriptItem],
+        split: usize,
+        sink: &mut CapturingSink,
+    ) -> Result<(Harvest, Vec<TranscriptItem>, Option<TailSplit>), HarnessError> {
+        let prefix = self.prefix.clone();
+        let scratch = format!("{}#overrun", self.transcript_id);
+        let answerer = Self::answerer(&self.provider, &self.prefix);
+        let harvest = summarise_first_half(
+            &mut self.engine,
+            &prefix,
+            &scratch,
+            items,
+            split,
+            sink,
+            &answerer,
+        )
+        .map_err(HarnessError::Turn)?;
+        Ok((
+            harvest,
+            items[split..].to_vec(),
+            tail_split_of(items, split),
+        ))
+    }
+
     fn compact_inner(&mut self) -> Result<CompactReport, HarnessError> {
         let mut sink = CapturingSink::new(self.hub.clone());
 
@@ -7713,6 +7750,70 @@ impl Harness {
                 // answer into the record that replaces them. The clone is the
                 // same one the overrun arm takes and for the same reason.
                 let items: Vec<TranscriptItem> = self.session.items.clone();
+                // **The first choice when a remote backend can afford it.** `plan_fold`'s
+                // doc: the fold is the cleanest of the three strategies and the one to
+                // prefer wherever it can be afforded, and what it costs is the cache —
+                // ten minutes of cold prefill on a local llama.cpp, six cents on a cloud
+                // provider. Local keeps the ordinary path below, deliberately.
+                //
+                // **Asked with the door's own reserve, not the window's.** The door fires
+                // at `resident + headroom >= window` — a headroom BEFORE the window is
+                // full — so a resumed session arrives inside the band where `plan_fold`
+                // used to decline and this arm used to summarise the whole history down to
+                // a 15,000-token tail. Measured 2026-10-10, session
+                // `s-1789462738453908838`: 958,397 in, 100,005 out, and the part of the
+                // conversation that was still live went with it.
+                let fold = self
+                    .provider
+                    .is_some()
+                    .then(|| plan_fold(&per_item, prefix_tokens, window, self.cfg.headroom()))
+                    .flatten();
+                if let Some(split) = fold {
+                    self.hub.publish(SessionEvent::Warning {
+                        code: "auto_compact".into(),
+                        detail: format!(
+                            "at the wall: summarising the first {split} item(s) and continuing \
+                             on the summary plus the rest, verbatim"
+                        ),
+                        compaction: None,
+                    });
+                    let (harvest, tail, tail_split) =
+                        self.compact_by_folding(&items, split, &mut sink)?;
+                    // The fold's summary ran in a scratch transcript, so its outcome is
+                    // built here rather than coming back from `run_summary_turn`: none of
+                    // this session's own prefix was reused and no tokens were served from
+                    // its cache. The overrun arm builds the same record for the same
+                    // reason.
+                    let outcome = CompactionOutcome {
+                        turn_id: format!("{}#overrun", self.transcript_id),
+                        summary: harvest.summary,
+                        tool_calls: harvest.tool_calls,
+                        truncated: harvest.truncated,
+                        cached_tokens: 0,
+                        reusable: 0,
+                        generated_tokens: 0,
+                    };
+                    let because = if tail.is_empty() { "" } else { "fold" };
+                    let fork = self.fork_to_summary(
+                        &outcome,
+                        reseat.as_ref().map(|(p, _)| p),
+                        reseat.as_ref().map(|(_, id)| id.as_str()),
+                        ForkTail {
+                            items: &tail,
+                            split: tail_split,
+                            because,
+                        },
+                    )?;
+                    let (gained, lost) = self.adopt_reseat(reseat);
+                    return Ok(CompactReport {
+                        fork,
+                        summary_turn: outcome,
+                        gained,
+                        lost,
+                        // The scratch summary went to a `NullSink`; nobody saw it.
+                        summary_was_streamed: false,
+                    });
+                }
                 let answerer = Self::answerer(&self.provider, &self.prefix);
                 let outcome = Self::run_summary_turn(
                     &self.hub,
@@ -7787,7 +7888,9 @@ impl Harness {
                 // to a question that is no longer present is the one thing the
                 // reader has to be told about (R27).
                 let (harvest, tail, tail_split) = if self.provider.is_some() {
-                    match plan_fold(&per_item, prefix_tokens, window) {
+                    // **The reserve is the door's, not the window's**: a history that
+                    // fits only by spending `headroom()` is one this arm was asked about.
+                    match plan_fold(&per_item, prefix_tokens, window, self.cfg.headroom()) {
                         Some(split) => {
                             self.hub.publish(SessionEvent::Warning {
                                 code: "auto_compact".into(),
@@ -7798,18 +7901,7 @@ impl Harness {
 
                                 compaction: None,
                             });
-                            let answerer = Self::answerer(&self.provider, &self.prefix);
-                            let h = summarise_first_half(
-                                &mut self.engine,
-                                &prefix,
-                                &scratch,
-                                &items,
-                                split,
-                                &mut sink,
-                                &answerer,
-                            )
-                            .map_err(HarnessError::Turn)?;
-                            (h, items[split..].to_vec(), tail_split_of(&items, split))
+                            self.compact_by_folding(&items, split, &mut sink)?
                         }
                         // No workable fold: fall through to the two-half plan,
                         // which asks less of the split.

@@ -1829,9 +1829,36 @@ fn summarise_one(
 /// which for a conversation at the wall they comfortably are: the first half must
 /// leave room to summarise it, and the second half plus that summary must leave
 /// room to work in.
-pub fn plan_fold(item_tokens: &[u64], prefix_tokens: u64, window: u64) -> Option<usize> {
+///
+/// # When it is asked at all, and `reserve`
+///
+/// **"It fits" is the caller's verdict, not this function's** — which is why the
+/// reserve is a parameter. It is what the caller sets aside for the turn it is about
+/// to run (a daemon passes its `headroom()`), and a conversation that fits only by
+/// spending that reserve is one the caller has already decided to compact.
+///
+/// This was wrong on 2026-10-10 and cost a thread of work. The gate used to be
+/// `prefix + total + MIN_SUMMARY_ROOM <= window -> None` while the daemon's door
+/// fires at `resident + headroom >= window`: between the two sits the band
+/// `window - headroom ... window`, and that band is exactly where a **resumed**
+/// session arrives. Measured, session `s-1789462738453908838`: resumed at 958,397 of
+/// a 1,000,000-token window, the door compacted, the fold declined because 958,397
+/// fits the window, and the ordinary path summarised the WHOLE history and kept a
+/// 15,000-token tail — 858,392 tokens of conversation came back as 100,005, and the
+/// part of it that was still live went with them. Two hours earlier the same session,
+/// at 1,753,858 (over the window, so past that gate), folded and kept 931,814.
+pub fn plan_fold(
+    item_tokens: &[u64],
+    prefix_tokens: u64,
+    window: u64,
+    reserve: u64,
+) -> Option<usize> {
     let total: u64 = item_tokens.iter().sum();
-    if prefix_tokens + total + MIN_SUMMARY_ROOM <= window {
+    // A caller with no reserve to name still has to be over the window by something
+    // before a fold is worth a summary turn: `MIN_SUMMARY_ROOM` is that floor, so the
+    // callers that predate `reserve` pass zero and keep their meaning.
+    let reserve = reserve.max(MIN_SUMMARY_ROOM);
+    if prefix_tokens + total + reserve <= window {
         return None;
     }
     let half = total / 2;
@@ -1895,14 +1922,32 @@ mod folding {
     #[test]
     fn a_conversation_with_room_is_not_folded() {
         let items: Vec<u64> = std::iter::repeat(1_000).take(100).collect();
-        assert_eq!(plan_fold(&items, P, W), None);
+        assert_eq!(plan_fold(&items, P, W, 0), None);
+    }
+
+    /// **The band the door acts in, which is where a resume lands.**
+    ///
+    /// 200k of a 262k window is *not overrun* by the old reading and is 76% full:
+    /// room to fit, and no room to *work* once the caller's own reserve is set aside.
+    /// Measured 2026-10-10 — this is the shape that came back as a summary when it
+    /// could have come back as half the conversation, verbatim.
+    #[test]
+    fn a_reserve_makes_a_conversation_at_the_wall_fold() {
+        let items: Vec<u64> = std::iter::repeat(1_000).take(200).collect();
+        assert_eq!(
+            plan_fold(&items, P, W, 0),
+            None,
+            "it fits, and no reserve is named: no fold"
+        );
+        let split = plan_fold(&items, P, W, 62_500).expect("the door's own band folds");
+        assert!((98..=102).contains(&split), "halfway, got {split}");
     }
 
     /// The split is halfway BY TOKENS, and both halves are workable.
     #[test]
     fn the_split_is_halfway_by_tokens() {
         let items: Vec<u64> = std::iter::repeat(1_000).take(255).collect();
-        let split = plan_fold(&items, P, W).expect("255k of a 262k window folds");
+        let split = plan_fold(&items, P, W, 0).expect("255k of a 262k window folds");
         assert!((126..=129).contains(&split), "halfway, got {split}");
 
         let first: u64 = items[..split].iter().sum();
@@ -1925,7 +1970,7 @@ mod folding {
         items.extend(std::iter::repeat(1_000).take(55));
         // The first item alone is past half, so the split lands before it and the
         // first half would be empty -- there is no useful fold here.
-        assert_eq!(plan_fold(&items, P, W), None);
+        assert_eq!(plan_fold(&items, P, W, 0), None);
     }
 }
 
