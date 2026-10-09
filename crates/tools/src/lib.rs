@@ -222,6 +222,10 @@ pub fn with_session_tools(
     // placement arranged first: a `task_start` that used a second runner would hand out
     // handles its sibling's `task_result` cannot collect.
     reg.register(Box::new(builtins::task::TaskStartTool::new(task_runner)))?;
+    // **The merge gate, read** — what a repository's queue runs before landing, and what its
+    // files suggest. Read-only: the agent writes the `AGENTS.md` section with `edit`, which is
+    // where the operator's approval is. See `builtins::merge_gate`.
+    reg.register(Box::new(builtins::merge_gate::MergeGate))?;
     Ok(reg)
 }
 

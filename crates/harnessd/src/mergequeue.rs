@@ -382,42 +382,59 @@ fn run_captured(dir: &Path, program: &str, args: &[&str]) -> Result<String, Stri
     }
 }
 
-/// **The gate CI runs** — the format check on the files this change touches, clippy, the
-/// workspace tests, and the release build — run in the entry's worktree after the rebase.
+/// **The repository's merge gate, as `main` says it is** — the steps of the `Merge gate`
+/// section of `main`'s `AGENTS.md` ([`letibot_tools::gatekeeper::parse_merge_gate`]), or `None`
+/// when there is no such file or section.
 ///
-/// The operator's ask, in their words: *"we need a gated merge to main"*, and the gate is
-/// the same one `.github/workflows/ci.yml` runs: `scripts/check-fmt.sh`, `cargo clippy
-/// --all-targets`, `cargo test --workspace --no-fail-fast -- --nocapture` and `cargo build
-/// --release --bins`. **Not a second, weaker check**: a queue that lands on a different
-/// standard from the one the branch was written to is a queue that lands branches CI would
-/// have refused.
+/// The operator, 2026-10-09: *"make the gate configurable per repo … a project has this gate
+/// command, which must go to repo obviously"*, and *"then it becomes a section in agents.md"*.
+/// The gate used to be letibot's own four CI commands for every repository, which no other
+/// project can pass.
 ///
-/// **The base the format check measures from is `main`, and the rebase is what makes that
-/// true.** The branch was rebased onto the current main immediately before this runs, so
-/// `main` is exactly the revision the change is measured from — and `check-fmt.sh` refuses
-/// a base it cannot resolve rather than passing, which is the property wanted here: a
-/// worktree whose `main` cannot be named fails the gate instead of skipping a step.
-///
-/// The steps run in order and the first failure is the answer. There is no `--continue`: a
-/// gate that ran everything after a red step would spend minutes to say what the first
-/// line already said.
-pub fn ci_gate(worktree: &Path) -> Result<(), String> {
-    let steps: [(&str, &[&str]); 4] = [
-        ("sh", &["scripts/check-fmt.sh", "main"]),
-        ("cargo", &["clippy", "--all-targets"]),
-        (
-            "cargo",
-            &["test", "--workspace", "--no-fail-fast", "--", "--nocapture"],
-        ),
-        ("cargo", &["build", "--release", "--bins"]),
-    ];
-    for (program, args) in steps {
-        if let Err(out) = run_captured(worktree, program, args) {
-            return Err(format!(
-                "{program} {} failed:\n{}",
-                args.join(" "),
-                tail(&out, EVIDENCE_BYTES)
-            ));
+/// **Read from `main`, never from the branch.** A branch that rewrote its own gate would be
+/// judged by the gate it wrote; `main`'s copy is the one every branch is held to, and a change
+/// to the gate itself lands through the queue under the gate it replaces. `dir` is the repo or
+/// any worktree of it — they share `main`.
+pub fn gate_on_main(dir: &Path) -> Result<Option<Vec<String>>, String> {
+    let names = run_captured(dir, "git", &["ls-tree", "--name-only", "main"])?;
+    let Some(file) = names
+        .lines()
+        .find(|n| n.eq_ignore_ascii_case("agents.md"))
+        .map(str::to_string)
+    else {
+        return Ok(None);
+    };
+    let text = run_captured(dir, "git", &["show", &format!("main:{file}")])?;
+    Ok(letibot_tools::gatekeeper::parse_merge_gate(&text))
+}
+
+/// **Whether this repository has a gate yet** — the check the queue makes before it takes an
+/// entry, so a repository with none HOLDS its branches (and says why on each row) rather than
+/// failing them: once the section lands on `main`, the waiting entries go on by themselves.
+pub fn gate_configured(repo: &Path) -> Result<(), String> {
+    match gate_on_main(repo) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(format!(
+            "waiting for a merge gate: `main` has no `Merge gate` section in AGENTS.md at {}. \
+             The project's agent can propose one (`merge_gate` lists what this repository \
+             suggests) for the operator to choose; the entry goes on once it is on main.",
+            repo.display()
+        )),
+        Err(e) => Err(format!("the merge gate could not be read from main: {e}")),
+    }
+}
+
+/// **Run the gate** — `main`'s steps, in order, each through `sh -c` in the entry's worktree
+/// after the rebase. The first that fails is the answer, with the tail of its output; there is
+/// no `--continue`, because a gate that ran everything after a red step would spend minutes to
+/// say what the first line already said.
+pub fn repo_gate(worktree: &Path) -> Result<(), String> {
+    let steps = gate_on_main(worktree)?.ok_or_else(|| {
+        "there is no merge gate on main (a `Merge gate` section in AGENTS.md)".to_string()
+    })?;
+    for step in steps {
+        if let Err(out) = run_captured(worktree, "sh", &["-c", &step]) {
+            return Err(format!("`{step}` failed:\n{}", tail(&out, EVIDENCE_BYTES)));
         }
     }
     Ok(())
@@ -603,6 +620,9 @@ pub enum StepOutcome {
     /// guess at a verdict that has not come back. The entry is listed with its ask on the row,
     /// which is what a person watching the queue needs to know.
     AwaitingReview,
+    /// **An entry is ready and the repository has no gate** — it waits, with the reason on its
+    /// row, until `main` has one ([`gate_configured`]).
+    AwaitingGate,
     /// **The reviewer refused the entry, so it did not land.** The row is `Failed` with the
     /// verdict's own words on it and the worktree stays, which is the same shape a failed gate
     /// takes and for the same reason: the tree is where the reason is.
@@ -739,6 +759,11 @@ pub struct MergeQueueDaemon {
     /// after the rebase. The seam is the function, and the production wiring fills it with
     /// the CI commands.
     gate: Box<dyn Fn(&Path) -> Result<(), String> + Send>,
+    /// **Whether the repository has a gate at all**, asked before an entry is taken — `Err` is
+    /// why it has not, and the entry waits with that on its row. Always ready unless set
+    /// ([`Self::with_gate_check`]): the production wiring asks `main`'s AGENTS.md
+    /// ([`gate_configured`]), and a test's no-op gate needs no file.
+    gate_ready: Box<dyn Fn(&Path) -> Result<(), String> + Send>,
     /// **The door the reviewer is asked through** — see
     /// [`letibot_tools::gatekeeper::Reviewer`].
     ///
@@ -773,9 +798,19 @@ impl MergeQueueDaemon {
             store,
             repo,
             gate,
+            gate_ready: Box::new(|_| Ok(())),
             reviewer,
             events,
         }
+    }
+
+    /// **Hold entries until the repository has a gate** — see [`Self::gate_ready`].
+    pub fn with_gate_check(
+        mut self,
+        check: Box<dyn Fn(&Path) -> Result<(), String> + Send>,
+    ) -> Self {
+        self.gate_ready = check;
+        self
     }
 
     /// **The repo this daemon serves** — the path the git operations run in.
@@ -880,6 +915,16 @@ impl MergeQueueDaemon {
             });
         };
         let entry = entries[idx].clone();
+
+        // **No gate, no take.** A repository whose `main` has no gate holds its branches —
+        // reviewed or not — and says so on the row, once; the entry goes on by itself when the
+        // section lands. Not `Failed`: nothing about the branch is wrong.
+        if let Err(why) = (self.gate_ready)(&self.repo) {
+            if entry.evidence != why {
+                self.move_to(&entry, MergeState::Waiting, why, None)?;
+            }
+            return Ok(StepOutcome::AwaitingGate);
+        }
 
         // **Take it**: mark it `Taken`, so a daemon that dies now comes back to a row that
         // says the job was running, not a row that says nothing. Through `move_to`, like every
@@ -1031,6 +1076,11 @@ impl MergeQueueDaemon {
                 StepOutcome::AwaitingReview => {
                     std::thread::sleep(std::time::Duration::from_secs(1));
                 }
+                // The same wait for the same reason: what it is waiting on arrives on `main`,
+                // from somebody else's hands.
+                StepOutcome::AwaitingGate => {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                }
                 StepOutcome::Refused => {
                     eprintln!(
                         "  merge queue: the reviewer refused an entry — it is `failed` with the \
@@ -1120,7 +1170,8 @@ pub fn spawn_for(
             return None;
         }
     };
-    match MergeQueueDaemon::new(store, repo.clone(), Box::new(ci_gate), reviewer, events)
+    match MergeQueueDaemon::new(store, repo.clone(), Box::new(repo_gate), reviewer, events)
+        .with_gate_check(Box::new(gate_configured))
         .spawn(stop)
     {
         Ok(handle) => {
@@ -2736,28 +2787,128 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// **The gate is CI's command line, and the step that failed is the answer.** Asserted
-    /// without running a build: in a worktree with no `scripts/check-fmt.sh`, the FIRST step
-    /// fails, and the evidence names it with its own words.
-    ///
-    /// The second assertion is the one about the shape: `cargo clippy`, `cargo test` and the
-    /// release build must not have run after a red format check, because a gate that continues
-    /// spends minutes to say what the first line already said.
+    /// **The gate is `main`'s `AGENTS.md`, the step that failed is the answer, and a branch
+    /// cannot change its own gate.** Against a real repository: no section on `main` is no gate
+    /// (and the queue holds the entry rather than failing it); a section is its steps, run in
+    /// order through `sh -c`, the first red one ending the run; and a branch that rewrote the
+    /// section to pass is still judged by `main`'s.
     #[test]
-    fn the_gate_reports_the_step_that_failed_and_runs_no_further() {
+    fn the_gate_is_mains_agents_md_and_the_first_red_step_ends_it() {
         let dir = std::env::temp_dir().join(format!("letibot-mq-gate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
-        let err = ci_gate(&dir).expect_err("a worktree with no scripts/check-fmt.sh is not green");
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .current_dir(&dir)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .expect("git")
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("README.md"), "x\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+        // No AGENTS.md on main: no gate, and the queue's check says so in words.
+        assert_eq!(gate_on_main(&dir).unwrap(), None);
+        assert!(gate_configured(&dir).unwrap_err().contains("Merge gate"));
+
+        std::fs::write(
+            dir.join("AGENTS.md"),
+            "# Project\n\n## Merge gate\n\n```sh\ntrue\nsh -c 'echo red-step >&2; exit 3'\n\
+             touch ran-after\n```\n",
+        )
+        .unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "gate"]);
+        assert!(gate_configured(&dir).is_ok());
+        let err = repo_gate(&dir).expect_err("the second step is red");
         assert!(
-            err.contains("scripts/check-fmt.sh"),
-            "the failing step is named: {err:?}"
+            err.contains("exit 3") && err.contains("red-step"),
+            "{err:?}"
         );
         assert!(
-            !err.contains("cargo clippy") && !err.contains("cargo test"),
-            "a later step ran anyway: {err:?}"
+            !dir.join("ran-after").exists(),
+            "a step after the red one ran"
+        );
+
+        // A branch that rewrites its own gate to pass is judged by main's.
+        git(&["checkout", "-q", "-b", "agent/sneaky"]);
+        std::fs::write(dir.join("AGENTS.md"), "## Merge gate\n\n```sh\ntrue\n```\n").unwrap();
+        git(&["commit", "-qam", "loosen the gate"]);
+        assert!(repo_gate(&dir).is_err(), "the branch's own gate was used");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **No gate, no take — and no failure.** A reviewed entry in a repository whose `main`
+    /// has no gate is held `Waiting` with the reason on its row, written once; the pass says
+    /// it is waiting on the gate, and the entry is taken the moment the gate exists.
+    #[test]
+    fn a_repository_with_no_gate_holds_its_entries_with_the_reason() {
+        let dir = std::env::temp_dir().join(format!("letibot-mq-nogate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let db = dir.join("s.db");
+        let mut e = entry("g1", MergePriority::Subagent, MergeState::Waiting, 1_000);
+        e.brief = "do it".into();
+        enqueue(&db, &e);
+        approve(&db, "g1");
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let r2 = ready.clone();
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            dir.clone(),
+            Box::new(|_| Ok(())),
+            quiet_reviewer(),
+            quiet_events(),
+        )
+        .with_gate_check(Box::new(move |_| {
+            if r2.load(std::sync::atomic::Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err("waiting for a merge gate".into())
+            }
+        }));
+        assert_eq!(daemon.step().expect("the pass"), StepOutcome::AwaitingGate);
+        let row = store_at(&db).merge_entry("g1").unwrap().unwrap();
+        assert_eq!(row.state, MergeState::Waiting, "held, not failed");
+        assert_eq!(row.evidence, "waiting for a merge gate");
+        // The gate lands on main: the next pass takes it (and, with no worktree here, says so).
+        ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        daemon.step().expect("the pass");
+        let row = store_at(&db).merge_entry("g1").unwrap().unwrap();
+        assert_ne!(
+            row.evidence, "waiting for a merge gate",
+            "it was taken: {row:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **letibot's own gate is CI's four steps**, read out of this repository's `agents.md` the
+    /// way the queue reads it — so an edit that drops a step from the section is caught here.
+    #[test]
+    fn letibots_own_gate_is_cis_steps() {
+        let steps = letibot_tools::gatekeeper::parse_merge_gate(include_str!("../../../agents.md"))
+            .expect("agents.md has a Merge gate section");
+        assert_eq!(
+            steps,
+            vec![
+                "sh scripts/check-fmt.sh main",
+                "cargo clippy --all-targets",
+                "cargo test --workspace --no-fail-fast -- --nocapture",
+                "cargo build --release --bins",
+            ]
+        );
     }
 
     /// **A truncation says it truncated** — the same rule the queue's own read is written to,

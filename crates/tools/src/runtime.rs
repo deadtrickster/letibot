@@ -1039,6 +1039,10 @@ pub mod roles {
                 // question it answers — "why was that refused" — is otherwise put
                 // to the operator, who has to go and read the corpus themselves.
                 "decisions",
+                // `merge_gate`: the merge queue's gate for this repository, and the choices
+                // its files suggest — read-only; the agent writes the AGENTS.md section the
+                // operator chose. The operator: *"let main project agent manage it"*.
+                "merge_gate",
             ],
         );
         // Eighteen: the opencode union, the room (`flowy`, seated by the daemon
@@ -1068,7 +1072,10 @@ pub mod roles {
         // door, which the `flowy_is_a_door_for_every_root_session` test refuses
         // on our behalf. Declared here, like `m2_runner`'s ninth, because a
         // ceiling quietly raised for everybody is not a ceiling.
-        r.max_tools = 26;
+        // **Twenty-seven since `merge_gate`**, which takes its own seat: the queue holds a
+        // repository's branches until its gate exists, and the agent that runs the project is
+        // the one the operator asked to set it.
+        r.max_tools = 27;
         r
     }
 

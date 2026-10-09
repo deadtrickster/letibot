@@ -655,3 +655,121 @@ mod tests {
         assert!(e.contains("does not land without a verdict"), "{e}");
     }
 }
+
+/// **The heading the merge gate lives under**, in the repository's `AGENTS.md`.
+///
+/// The operator, 2026-10-09: *"make the gate configurable per repo … a project has this gate
+/// command, which must go to repo obviously"*, and *"then it becomes a section in agents.md for
+/// example and can be parsed from it"*. A section rather than a file of its own because the
+/// file is already the one agents and people both read about how a project is worked on.
+pub const MERGE_GATE_HEADING: &str = "Merge gate";
+
+/// **The gate's steps, out of an `AGENTS.md`**: the first fenced block under a `Merge gate`
+/// heading (any level, any case), one command per line; blank lines and `#` comments skipped.
+/// `None` when there is no such section, or its block has no command in it — a gate nobody
+/// wrote is not a gate that passes everything.
+///
+/// The block ends at its closing fence, and the search for it ends at the next heading of the
+/// same or a higher level, so a fence further down the file cannot be read as this one.
+pub fn parse_merge_gate(md: &str) -> Option<Vec<String>> {
+    let heading = |line: &str| -> Option<(usize, String)> {
+        let t = line.trim_start();
+        let level = t.chars().take_while(|c| *c == '#').count();
+        (level > 0 && t[level..].starts_with(' ')).then(|| {
+            (
+                level,
+                t[level..].trim().trim_end_matches('#').trim().to_string(),
+            )
+        })
+    };
+    let mut lines = md.lines();
+    let level = loop {
+        let line = lines.next()?;
+        if let Some((level, title)) = heading(line)
+            && title.eq_ignore_ascii_case(MERGE_GATE_HEADING)
+        {
+            break level;
+        }
+    };
+    let mut steps = Vec::new();
+    let mut fence: Option<&str> = None;
+    for line in lines {
+        let t = line.trim();
+        match fence {
+            None => {
+                if let Some((l, _)) = heading(line)
+                    && l <= level
+                {
+                    return None;
+                }
+                if t.starts_with("```") {
+                    fence = Some("```");
+                } else if t.starts_with("~~~") {
+                    fence = Some("~~~");
+                }
+            }
+            Some(f) => {
+                if t.starts_with(f) {
+                    break;
+                }
+                if !t.is_empty() && !t.starts_with('#') {
+                    steps.push(t.to_string());
+                }
+            }
+        }
+    }
+    (!steps.is_empty()).then_some(steps)
+}
+
+/// **The section, written** — what [`parse_merge_gate`] reads back, for an agent to put into
+/// `AGENTS.md` once the operator has chosen.
+pub fn merge_gate_section(steps: &[String]) -> String {
+    format!(
+        "## {MERGE_GATE_HEADING}\n\n\
+         The merge queue runs these in a branch's worktree, after rebasing it onto `main` and \
+         before landing it; the first that fails parks the branch. Read from `main`'s copy of \
+         this file, so a branch cannot change its own gate.\n\n\
+         ```sh\n{}\n```\n",
+        steps.join("\n")
+    )
+}
+
+#[cfg(test)]
+mod merge_gate_section {
+    use super::*;
+
+    #[test]
+    fn the_gate_is_the_first_block_under_its_heading() {
+        let md = "# Project\n\nSome text.\n\n```sh\nnot this\n```\n\n## Merge gate\n\nWhy.\n\n\
+                  ```sh\n# fmt first\nmake fmt-check\n\nmake test\n```\n\n```sh\nnor this\n```\n";
+        assert_eq!(
+            parse_merge_gate(md),
+            Some(vec!["make fmt-check".into(), "make test".into()])
+        );
+        // Written and read back.
+        let steps = vec!["cargo test --workspace".to_string()];
+        assert_eq!(parse_merge_gate(&merge_gate_section(&steps)), Some(steps));
+    }
+
+    #[test]
+    fn no_section_or_an_empty_block_is_no_gate() {
+        assert_eq!(
+            parse_merge_gate("# Project\n\n```sh\nmake test\n```\n"),
+            None
+        );
+        assert_eq!(
+            parse_merge_gate("## Merge gate\n\n```sh\n# nothing\n```\n"),
+            None
+        );
+        // A block past the next heading is another section's.
+        assert_eq!(
+            parse_merge_gate("## Merge gate\n\nTBD\n\n## Other\n\n```sh\nmake test\n```\n"),
+            None
+        );
+        // Any level, any case, tildes too.
+        assert_eq!(
+            parse_merge_gate("### merge GATE\n~~~\ngo test ./...\n~~~\n"),
+            Some(vec!["go test ./...".into()])
+        );
+    }
+}

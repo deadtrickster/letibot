@@ -66,6 +66,20 @@ wrappers' source of truth), `tests/fidelity`, `scratch/` (untracked; see gotchas
   the crate you touched (`cargo test -p letibot-tui`), not the workspace,
   unless the operator asked for the live ones.
 
+## Merge gate
+
+The merge queue runs these in a branch's worktree, after rebasing it onto `main` and before
+landing it; the first that fails parks the branch. Read from `main`'s copy of this file, so a
+branch cannot change its own gate. They are what `.github/workflows/ci.yml` runs — a queue that
+lands on a weaker standard than CI lands branches CI would refuse.
+
+```sh
+sh scripts/check-fmt.sh main
+cargo clippy --all-targets
+cargo test --workspace --no-fail-fast -- --nocapture
+cargo build --release --bins
+```
+
 ## The operator's standing rules
 
 - Work in git worktrees `~/Projects/letibot-<topic>` on a topic branch; merge
