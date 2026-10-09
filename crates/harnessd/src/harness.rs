@@ -49,6 +49,9 @@ use letibot_sessionlog::{LogSink, SessionEvent, ToolLogSink};
 use letibot_tokencore::store::TodoItem;
 use letibot_tokencore::store::{JobRecord, SessionRecord, StablePrefixRecord, Store};
 use letibot_tokencore::{Vocab, ledger::hex as hex32};
+// The same hash `letibot_tokencore::store` content-addresses a stable prefix with, taken
+// directly rather than through a helper there: the fingerprint is over the FROZEN text,
+// and only this crate knows what the live half of the prompt is.
 use letibot_tools::authorise::{
     AuthorisationTrail, BreakerState, DenialNotice, DenialSink, Speaker, Utterance,
 };
@@ -66,6 +69,7 @@ use letibot_turn::{
     plan_fold, plan_overrun, run_compaction, summarise_first_half, summarise_overrun, tail_because,
     tail_split_of,
 };
+use sha2::{Digest, Sha256};
 
 use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat, SpillPolicy, SpillStorage};
 use crate::dialect::Wiring;
@@ -1796,6 +1800,17 @@ fn wire_turns(items: &[TranscriptItem]) -> Vec<letibot_sessionlog::event::Compac
 }
 
 fn tool_names(tools_json: &[String]) -> std::collections::BTreeSet<String> {
+    tool_schemas(tools_json).into_keys().collect()
+}
+
+/// **The tool schemas by name, verbatim** — the same read as [`tool_names`], keeping the
+/// schema text as well.
+///
+/// The extra half is what lets a schema that GREW be named. A tool whose parameters
+/// gained a field is in neither the added set nor the gone set, and the operator's own
+/// case was exactly that — `todo_write`'s `target` arrived in a build whose sessions were
+/// already speaking the old prompt, so nothing about the *list* had moved.
+fn tool_schemas(tools_json: &[String]) -> std::collections::BTreeMap<String, String> {
     tools_json
         .iter()
         .filter_map(|j| {
@@ -1804,9 +1819,88 @@ fn tool_names(tools_json: &[String]) -> std::collections::BTreeSet<String> {
                 .pointer("/function/name")
                 .or_else(|| v.get("name"))?
                 .as_str()?;
-            Some(n.to_string())
+            Some((n.to_string(), j.clone()))
         })
         .collect()
+}
+
+/// **The fingerprint of a session's FROZEN prefix — one function, and this is the only
+/// place either side of the comparison computes it.**
+///
+/// A session's message 0 is fixed when it is created: the composed system instructions and
+/// the tool schemas the seat hands it are written into the stable prefix once, and every
+/// later turn appends under them. So a daemon that has since changed what it would seat —
+/// a tool whose schema grew, an edited `prompts.toml`, a different seat — composes a
+/// different message 0, and the session goes on speaking the old one with nothing on any
+/// screen saying so. This is the hash that says so, and it is a hash rather than a token
+/// count because *the same text* must compare equal (a re-render onto another dialect or
+/// vocabulary is not a changed prompt) and *different text* must compare different (a
+/// schema can grow without the token count moving).
+///
+/// # What is in it, and what must never be
+///
+/// **Frozen: the instructions, the tool schemas, the seat.** All three are decided once, at
+/// open, and all three are in the address so that two sessions differing in any of them are
+/// two prefixes.
+///
+/// **Live: the standing notes, which is why they are stripped before hashing.** `AGENTS.md`
+/// and the notes directories are re-read at session open, at every base rebuild (a
+/// compaction counts) and on every provider turn, so a fingerprint that covered them would
+/// report every session stale the moment a note was written — the false positive that makes
+/// a warning furniture. The section is swapped in and out by its own markers
+/// ([`crate::standing_notes::replace`]), which is exactly what makes the strip exact: the
+/// text on either side of the markers is the composed prompt, byte for byte.
+///
+/// **Not in it: the dialect and the vocabulary.** Those decide how the text is *rendered*,
+/// and a session recorded under another renderer is re-rendered onto a fork rather than
+/// left stale — a different remedy for a different fact, so folding them in here would
+/// report the wrong one.
+///
+/// The address is spelled the way [`letibot_tokencore::store::StablePrefixRecord::id`] is —
+/// fields separated by a NUL, no length prefixes — for its reason: an id is a function of
+/// the content and nothing else, and a separator a field can contain would let two different
+/// prefixes collide.
+pub fn prefix_fingerprint(seat: Seat, prefix: &StablePrefix) -> String {
+    let mut h = Sha256::new();
+    h.update(seat.as_str().as_bytes());
+    h.update([0]);
+    h.update(crate::standing_notes::replace(&prefix.system, None).as_bytes());
+    h.update([0]);
+    for tool in &prefix.tools_json {
+        h.update(tool.as_bytes());
+        h.update([0]);
+    }
+    hex32(&h.finalize().into())
+}
+
+/// **When a session was seated, in the launcher's own spelling** — `10-08 21:14`.
+///
+/// The register is `~/bin/letibot`'s `daemon_stale_line`, which prints *"daemon %s started
+/// %s; %s was built %s"*: a person reading it can tell a five-minute gap from a five-day
+/// one because both ends carry the day. Same two facts here, same reason.
+///
+/// An unreadable or absent clock is **said** rather than rendered as the epoch: `0` is
+/// *nobody recorded when*, which is a different sentence from *seated at 01:00 on 01-01*.
+fn seated_at(ms: i64) -> String {
+    if ms <= 0 {
+        return "an unrecorded time".into();
+    }
+    let secs = (ms / 1000) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `localtime_r` writes into `tm` and reads `secs`; both are owned here. The
+    // `_r` form is the one that does not hand back a shared static, which matters because
+    // a harness is opened from more than one thread.
+    let ok = unsafe { !libc::localtime_r(&secs, &mut tm).is_null() };
+    if !ok {
+        return "an unrecorded time".into();
+    }
+    format!(
+        "{:02}-{:02} {:02}:{:02}",
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min
+    )
 }
 
 /// Whether the store already holds this transcript row.
@@ -3266,7 +3360,7 @@ impl Harness {
             _ => None,
         };
 
-        let (transcript_id, session, persisted, resume, prefix, prefix_id) = match resumed {
+        let (transcript_id, session, persisted, resume, prefix, prefix_id, stale) = match resumed {
             Some((s, transcript_id)) => {
                 let loaded = s
                     .load_transcript(&transcript_id)
@@ -3379,6 +3473,18 @@ impl Harness {
                             items.len() as u32,
                         )
                         .map_err(|e| HarnessError::Store(e.to_string()))?;
+                    // The session now speaks the prefix this daemon composes, and the column
+                    // says so — see `Store::set_prefix_fingerprint`: it is written wherever a
+                    // transcript row is, and a re-render fork onto the seated prefix is one of
+                    // those places. Left alone here, this session would report itself stale on
+                    // its very next resume, having just been re-rendered onto exactly the
+                    // prompt the comparison would compose.
+                    store
+                        .set_prefix_fingerprint(
+                            &cfg.session_id,
+                            &prefix_fingerprint(cfg.seat, &prefix),
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
 
                     // Written before the head attaches, so a daemon that dies now
                     // leaves a fork that resumes rather than one that has to be
@@ -3440,34 +3546,17 @@ impl Harness {
                         Some(report),
                         prefix.clone(),
                         new_prefix_id,
+                        // Re-rendered onto the prefix this daemon composes, so the session
+                        // speaks it: nothing to say to a head that attaches.
+                        None,
                     )
                 } else {
                     let session = Session::restore(&loaded).map_err(|e| {
                         HarnessError::Store(format!("session {}: {e}", cfg.session_id))
                     })?;
-
-                    // The *fact*, not a proxy for it: render this daemon's stable prefix
-                    // and compare the tokens with the ones the session is carrying. Equal
-                    // means the vocabulary and the renderer agree, whatever the recorded
-                    // GGUF path says; different means they do not, and the session keeps
-                    // the prefix it was created with — which is correct and has to be
-                    // said, because the operator's `--system` change did not take effect
-                    // in this session and nothing else would tell them.
-                    let fresh = engine
-                        .open(&format!("{transcript_id}#probe"), &prefix)
-                        .map_err(|e| HarnessError::Setup(format!("rendering the prefix: {e}")))?;
-                    if fresh.ledger.prefix_tokens() != session.ledger.prefix_tokens() {
-                        notes.push(format!(
-                            "this session keeps the stable prefix it was created with \
-                         ({} tokens, h_init {}). The prefix this daemon would render now \
-                         is {} tokens — a changed system prompt, tool set or effort level. \
-                         Rewriting message 0 is what forces a full cold re-prefill, so it \
-                         is not done; start a new session to pick up the change.",
-                            session.ledger.prefix_len(),
-                            &hex32(&session.ledger.h_init())[..16],
-                            fresh.ledger.prefix_len(),
-                        ));
-                    }
+                    // What a head attaching to this session should be told, or `None` when the
+                    // session speaks the prompt this daemon would compose now.
+                    let mut stale: Option<String> = None;
 
                     // The prefix the session's own tokens came from — the store's
                     // record, not the daemon's current render. A compaction fork keeps
@@ -3480,68 +3569,130 @@ impl Harness {
                         tools_json: own.tools_json,
                     };
 
-                    // **What the MODEL can call is the prefix, not the registry.**
+                    // **Message 0 is frozen, and this is where that is held up against what
+                    // this daemon would seat now.**
                     //
-                    // The tool schemas live in the stable prefix, and a resume replays
-                    // the stored one — it must, the stored tokens were produced under
-                    // it. The registry, meanwhile, is rebuilt from THIS daemon's flags.
-                    // When the two disagree the session has tools the conversation has
-                    // never been told about, and every disclosure below is computed
-                    // from the registry: the banner announced `bash` and
-                    // `Access: exec` at a session whose prompt lists nine tools and no
-                    // shell, so the model never called it and the operator spent an
-                    // hour on "still no exec" while the banner said exec was seated.
+                    // A session keeps the prefix it was created with — a resume replays the
+                    // stored one, because every token in the conversation was produced under
+                    // it — so a build that has since changed the instructions, the tool
+                    // schemas or the seat composes a prompt this session will never speak,
+                    // and says nothing about it. That silence is the whole of the cost: the
+                    // model cannot call a tool the seat has added since, a schema that grew
+                    // is invisible to it, and the way anybody finds out is by re-seating and
+                    // reading what the report says changed. The operator paid for that four
+                    // ways in one night, `todo_write`'s grown `target` among them.
                     //
-                    // Named here, where both halves are in hand. This does not refuse:
-                    // the conversation is intact and every tool the PREFIX declares
-                    // still works. What it may not do is let the disclosure claim the
-                    // difference away.
-                    {
-                        let now = parts.wiring.tools_json(&schemas);
-                        if now != own_prefix.tools_json {
-                            // Both shapes a tool schema is rendered in: OpenAI's
-                            // `{function:{name}}` and the bare `{name}`. A schema whose
-                            // name cannot be read is left out of the diff rather than
-                            // guessed at — the sentence below names what it is sure of.
-                            let named = |t: &[String]| -> std::collections::BTreeSet<String> {
-                                t.iter()
-                                    .filter_map(|j| {
-                                        let v: serde_json::Value = serde_json::from_str(j).ok()?;
-                                        let n = v
-                                            .pointer("/function/name")
-                                            .or_else(|| v.get("name"))?
-                                            .as_str()?;
-                                        Some(n.to_string())
-                                    })
-                                    .collect()
-                            };
-                            let (was, is) = (named(&own_prefix.tools_json), named(&now));
-                            let added: Vec<&String> = is.difference(&was).collect();
-                            let gone: Vec<&String> = was.difference(&is).collect();
-                            let mut say = String::from(
-                                "this session's PROMPT carries the tool list it was created with,                              and this daemon seats a different one. A resume replays the                              stored prefix, so what the model can actually call is the                              stored list",
-                            );
-                            if !added.is_empty() {
-                                say.push_str(&format!(
-                                " — seated here but NOT in this conversation's prompt, so the                                  model cannot call them: {}",
-                                added
-                                    .iter()
-                                    .map(|s| s.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ));
-                            }
-                            if !gone.is_empty() {
-                                say.push_str(&format!(
-                                " — in the prompt but not seated here, so a call to them                                  refuses: {}",
-                                gone.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
-                            ));
-                            }
-                            say.push_str(
-                            ". `/reseat` rebuilds the prompt from what is seated now,                              forking the conversation onto it and carrying it across as it                              is; a new session gets the seated list from the start.",
+                    // **Two facts, compared, said plainly** — the register `~/bin/letibot`
+                    // prints *"daemon %s started %s; %s was built %s — it is not running what
+                    // is on disk"* in. Nothing is guessed: the comparison is a hash of both
+                    // sides, computed by the one `prefix_fingerprint`.
+                    //
+                    // **The session's own side is the column, and the stored prefix row is
+                    // the fallback for a session seated before the column existed** — which is
+                    // every session that existed when this was written, so the fallback is
+                    // not a nicety. Both are the same fact: the column is the hash taken at
+                    // the moment of seating, the row is the text it was taken over. `None`
+                    // from both means *nothing here can say*, and the honest answer to that is
+                    // silence.
+                    let seated = stored
+                        .as_ref()
+                        .and_then(|r| r.prefix_fingerprint.clone())
+                        .unwrap_or_else(|| prefix_fingerprint(cfg.seat, &own_prefix));
+                    if seated != prefix_fingerprint(cfg.seat, &prefix) {
+                        let (was, is) = (
+                            tool_schemas(&own_prefix.tools_json),
+                            tool_schemas(&prefix.tools_json),
                         );
-                            notes.push(say);
+                        let mut added: Vec<String> = Vec::new();
+                        let mut gone: Vec<String> = Vec::new();
+                        // **A schema that GREW is named as one**, and it is not the same
+                        // finding as a tool that arrived: it is in both lists, so the
+                        // added/gone pair is silent about it — and a grown schema is exactly
+                        // the case that started this (`todo_write`'s `target`).
+                        let mut grew: Vec<String> = Vec::new();
+                        for (name, schema) in &is {
+                            match was.get(name) {
+                                None => added.push(name.clone()),
+                                Some(old) if old != schema => grew.push(name.clone()),
+                                Some(_) => {}
+                            }
                         }
+                        for name in was.keys() {
+                            if !is.contains_key(name) {
+                                gone.push(name.clone());
+                            }
+                        }
+                        let instructions = crate::standing_notes::replace(&own_prefix.system, None)
+                            != crate::standing_notes::replace(&prefix.system, None);
+                        let mut moved: Vec<&str> = Vec::new();
+                        if instructions {
+                            moved.push("the system instructions");
+                        }
+                        if !added.is_empty() || !gone.is_empty() || !grew.is_empty() {
+                            moved.push("the tool schemas");
+                        }
+                        // Neither moved and the hash still differs: the seat's own name is
+                        // the third input, and it is in the address precisely so that this
+                        // case has a sentence rather than an empty list. The verb travels
+                        // with the noun because one of the three is singular.
+                        let (what, verb) = match moved.as_slice() {
+                            [] => ("the seat".to_string(), "has"),
+                            [one] => ((*one).to_string(), "have"),
+                            [a, b] => (format!("{a} and {b}"), "have"),
+                            many => (many.join(", "), "have"),
+                        };
+                        let mut say = format!(
+                            "session {} was seated {} with a prompt this daemon would not \
+                             compose now: {what} {verb} changed since. This session keeps the \
+                             prefix it was created with — message 0 is frozen, and rewriting it \
+                             is a full cold re-prefill — so the model cannot call a tool seated \
+                             since, and a schema that grew is one it has never been told about",
+                            cfg.session_id,
+                            seated_at(stored.as_ref().map(|r| r.created_ms).unwrap_or(0)),
+                        );
+                        if !added.is_empty() {
+                            say.push_str(&format!(
+                                ". Seated here but not in this conversation's prompt, so the \
+                                 model cannot call them: {}",
+                                added.join(", ")
+                            ));
+                        }
+                        if !gone.is_empty() {
+                            say.push_str(&format!(
+                                ". In the prompt but not seated here, so a call to them refuses: {}",
+                                gone.join(", ")
+                            ));
+                        }
+                        if !grew.is_empty() {
+                            say.push_str(&format!(
+                                ". Seated on both sides with a different schema, so the model is \
+                                 working from the older one: {}",
+                                grew.join(", ")
+                            ));
+                        }
+                        say.push_str(
+                            ". `/reseat` rebuilds the prompt from what is seated now, carrying \
+                             this conversation across as it is; a new session gets the seated one \
+                             from the start.",
+                        );
+                        // **On the session's own log, and SAID AT ATTACH — not here.**
+                        //
+                        // The comparison is made here because here is the only place both
+                        // facts are in one hand: the prefix this session was seated with,
+                        // and the prefix this daemon would compose now. The SENTENCE cannot
+                        // be said here, and that is not a detail — a warning published
+                        // before a head attaches is filed by it as `Placed::Before`:
+                        // listed by `/notes`, counted by `/status`, and **not drawn**,
+                        // because it is older than the conversation on the screen. Every
+                        // ordinary path reaches here before any head is on this session
+                        // (the daemon opens its first session at startup, and a `Resume`
+                        // is answered on the worker before the head switches).
+                        //
+                        // So it goes into the registry, where the attach path
+                        // (`server::seat_in`) reads it and publishes it while the head
+                        // that just arrived is watching. See
+                        // `Registry::set_stale_prefix`.
+                        stale = Some(say);
                     }
 
                     let rows = session.ledger.rows().len();
@@ -3560,6 +3711,7 @@ impl Harness {
                         Some(report),
                         own_prefix,
                         loaded.stable_prefix_id,
+                        stale,
                     )
                 }
             }
@@ -3605,11 +3757,31 @@ impl Harness {
                     if !transcript_exists(s, &transcript_id) {
                         s.put_transcript(&transcript_id, &cfg.session_id, &prefix_id)
                             .map_err(|e| HarnessError::Store(e.to_string()))?;
+                        // **The fingerprint of what this session was seated with**, written
+                        // where its transcript row is written — the one rule the column has,
+                        // and the reason it is not a field on `SessionRecord` above: a fork
+                        // re-seats a session long after its creation and rewrites this.
+                        //
+                        // Here and not beside `put_session`, because a session row can
+                        // already exist with a transcript under a DIFFERENT prefix (the
+                        // daemon that made it never got a prompt), and in that case this
+                        // branch does not run and the row keeps the fingerprint of the
+                        // transcript it actually speaks.
+                        s.set_prefix_fingerprint(
+                            &cfg.session_id,
+                            &prefix_fingerprint(cfg.seat, &prefix),
+                        )
+                        .map_err(|e| HarnessError::Store(e.to_string()))?;
                     }
                 }
-                (transcript_id, session, 0, None, prefix, prefix_id)
+                (transcript_id, session, 0, None, prefix, prefix_id, None)
             }
         };
+
+        // **What a head attaching to this session should be told**, published where the head
+        // can hear it — see the comment in the resume arm for why it is not said here. A
+        // session no harness has opened has no entry, and this is then a no-op.
+        session_registry.set_stale_prefix(&cfg.session_id, stale);
 
         // **The window this session plans its compaction against, written down.** See
         // `StoredSession::context_window`: the number was otherwise knowable only at the
@@ -7903,6 +8075,34 @@ impl Harness {
                 forked_at as u32,
             )
             .map_err(|e| HarnessError::Store(e.to_string()))?;
+        // **And the fingerprint follows the transcript.** A fork is the other place a
+        // session's prefix is decided — `/reseat`, a compaction that picked up the seated
+        // tools, a dialect or model switch — and a column left at what the session was
+        // CREATED with would report every re-seated session stale on the next attach, which
+        // is the false positive that makes a warning furniture. One rule, and the writers are
+        // the places a transcript row is written: see `Store::set_prefix_fingerprint`.
+        //
+        // A plain compaction reaches here with `onto` already resolved to the prefix the
+        // conversation is speaking, and only the standing notes have moved — the frozen
+        // half is byte-identical, so this writes the same hash it read. That is deliberate:
+        // the write is unconditional so that there is no second rule about when it is needed.
+        store
+            .set_prefix_fingerprint(
+                &self.cfg.session_id,
+                &prefix_fingerprint(self.cfg.seat, &onto),
+            )
+            .map_err(|e| HarnessError::Store(e.to_string()))?;
+        // **And there is nothing left to tell an attaching head.** A fork is what takes a
+        // session off a stale prefix, and the argument is `reseat_target`'s own: a fork
+        // opens under `onto`, and `onto` is `self.prefix` only when the caller had no new
+        // prefix to hand in — which happens exactly when `reseat_target` answered `None`,
+        // which happens exactly when the prefix being spoken IS the one this daemon would
+        // compose. So a fork either moves the session onto the seated prompt or leaves it on
+        // one that was never stale, and in both cases the notice has stopped being true.
+        // Leaving it would be a head told *your prompt is not what this daemon seats* about
+        // a session that has just been re-seated onto it.
+        self.session_registry
+            .set_stale_prefix(&self.cfg.session_id, None);
         let mut next = self
             .engine
             .open(&new_id, &onto)
@@ -18158,6 +18358,121 @@ mod gatekeeper_reviews {
             letibot_tools::gatekeeper::review_prompt(&req())
                 .starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX),
             "the review brief no longer begins with the head's mark"
+        );
+    }
+}
+
+#[cfg(test)]
+mod prefix_fingerprint_tests {
+    use super::{Seat, StablePrefix, prefix_fingerprint, seated_at};
+
+    fn prefix(system: &str, tools: &[&str]) -> StablePrefix {
+        StablePrefix {
+            system: system.to_string(),
+            tools_json: tools.iter().map(|t| (*t).to_string()).collect(),
+        }
+    }
+
+    /// **The three inputs are all in the address, and the one that must not be is not.**
+    ///
+    /// The four assertions are the whole contract of the hash, and each is a different way
+    /// the comparison could be wrong: a seat ignored would call two differently-seated
+    /// sessions identical, an instruction ignored would miss `--system`, a schema ignored
+    /// would miss the operator's own case, and a note counted would report every session
+    /// stale the moment anybody wrote one down.
+    #[test]
+    fn the_frozen_three_are_in_the_address_and_the_live_one_is_not() {
+        let one = prefix("instructions", &["{\"name\":\"read\"}"]);
+        let other_system = prefix("instructions, edited", &["{\"name\":\"read\"}"]);
+        let other_tools = prefix(
+            "instructions",
+            &["{\"name\":\"read\"}", "{\"name\":\"bash\"}"],
+        );
+        assert_eq!(
+            prefix_fingerprint(Seat::Coder, &one),
+            prefix_fingerprint(Seat::Coder, &one),
+            "the same prefix hashes the same, or nothing downstream can compare"
+        );
+        assert_ne!(
+            prefix_fingerprint(Seat::Coder, &one),
+            prefix_fingerprint(Seat::Runner, &one),
+            "the seat is part of what a session was seated with"
+        );
+        assert_ne!(
+            prefix_fingerprint(Seat::Coder, &one),
+            prefix_fingerprint(Seat::Coder, &other_system),
+            "the instructions are"
+        );
+        assert_ne!(
+            prefix_fingerprint(Seat::Coder, &one),
+            prefix_fingerprint(Seat::Coder, &other_tools),
+            "the tool schemas are"
+        );
+
+        // **And a schema that GREW moves it with the list unchanged** — `todo_write`'s
+        // `target`, which is the case this whole feature was written for and the one an
+        // added/gone comparison of tool NAMES cannot see.
+        let before = prefix(
+            "instructions",
+            &["{\"name\":\"todo_write\",\"parameters\":[]}"],
+        );
+        let after = prefix(
+            "instructions",
+            &["{\"name\":\"todo_write\",\"parameters\":[{\"name\":\"target\"}]}"],
+        );
+        assert_ne!(
+            prefix_fingerprint(Seat::Coder, &before),
+            prefix_fingerprint(Seat::Coder, &after),
+            "a grown schema is a changed prompt, and the names are identical"
+        );
+
+        // The standing-notes section, by its own markers, is stripped before hashing —
+        // see `standing_notes::replace`, which is what does the stripping.
+        let with_a = prefix(
+            "instructions\n\n[standing-notes-begin]\nnote one\n[standing-notes-end]",
+            &["{\"name\":\"read\"}"],
+        );
+        let with_b = prefix(
+            "instructions\n\n[standing-notes-begin]\nnote two\n[standing-notes-end]",
+            &["{\"name\":\"read\"}"],
+        );
+        assert_eq!(
+            prefix_fingerprint(Seat::Coder, &with_a),
+            prefix_fingerprint(Seat::Coder, &with_b),
+            "the notes are re-read at every base rebuild; counting them would make every \
+             session stale on every note"
+        );
+        assert_eq!(
+            prefix_fingerprint(Seat::Coder, &with_a),
+            prefix_fingerprint(
+                Seat::Coder,
+                &prefix("instructions", &["{\"name\":\"read\"}"])
+            ),
+            "and stripping them leaves exactly the composed prompt"
+        );
+    }
+
+    /// **The seated time is a time, and a missing clock is not the epoch.**
+    ///
+    /// `0` is *nobody recorded when*, and a sentence reading *seated 01-01 00:00* about a
+    /// session nobody dated is the class of lie the whole notice exists to avoid.
+    #[test]
+    fn an_unrecorded_time_is_said_and_a_recorded_one_is_the_launchers_spelling() {
+        assert_eq!(seated_at(0), "an unrecorded time");
+        assert_eq!(seated_at(-1), "an unrecorded time");
+        // 2026-10-08 21:14 UTC is 2026-10-08 in every zone this runs in except a +3h one
+        // crossing midnight — so the assertion is the SHAPE, which is what the launcher's
+        // `%m-%d %H:%M` fixes, and not a zone's arithmetic.
+        let said = seated_at(1_791_500_040_000);
+        assert_eq!(said.len(), 11, "{said}");
+        assert!(
+            said.chars().enumerate().all(|(i, c)| match i {
+                2 => c == '-',
+                5 => c == ' ',
+                8 => c == ':',
+                _ => c.is_ascii_digit(),
+            }),
+            "`MM-DD HH:MM`, the launcher's own spelling: {said}"
         );
     }
 }

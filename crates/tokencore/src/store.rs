@@ -299,7 +299,12 @@ pub struct ShapelessAdmit {
 /// nothing clears it but a fresh session or a raised window: a reader asking *why does
 /// this session not compact* can only answer it from here once the daemon that decided
 /// it is gone.
-pub const SCHEMA_VERSION: i64 = 20;
+///
+/// **21** since the session row carries the FROZEN prefix's fingerprint —
+/// `prefix_fingerprint`, additive, described at its migration arm below. See
+/// [`StoredSession::prefix_fingerprint`] for what is in it and why the live half of the
+/// prompt is not.
+pub const SCHEMA_VERSION: i64 = 21;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -370,8 +375,16 @@ CREATE TABLE IF NOT EXISTS session (
     auto_compact_resident INTEGER,   -- v19; LEDGER tokens going into the compaction that
                                      -- made no room. NULL = the no-progress guard has
                                      -- not fired for this session.
-    auto_compact_after INTEGER       -- v19; LEDGER tokens coming out of it, still within
+    auto_compact_after INTEGER,      -- v19; LEDGER tokens coming out of it, still within
                                      -- a headroom of the window. NULL with its pair.
+    prefix_fingerprint TEXT          -- v21; the hash of the FROZEN prefix this session was
+                                     -- seated with — the composed instructions and the
+                                     -- tool schemas this seat hands a session, with the
+                                     -- standing notes excluded, because those are re-read
+                                     -- at every base rebuild. NULL = seated before this
+                                     -- column existed, which the resume path falls back to
+                                     -- the stored prefix row for. See
+                                     -- `StoredSession::prefix_fingerprint`.
                                                                                                                                                                                                                                                                                                                                                                                   );
 
 CREATE TABLE IF NOT EXISTS transcript (
@@ -881,6 +894,28 @@ pub struct StoredSession {
     pub context_tokens: Option<u64>,
     /// The last turn's cached tokens, for the cache %. `None` with `context_tokens`.
     pub context_cached: Option<u64>,
+    /// **The fingerprint of the FROZEN prefix this session was seated with**, or `None`
+    /// for a session seated before this column existed.
+    ///
+    /// **What it is:** one hash over the composed system instructions and the tool schemas
+    /// this seat hands this session, plus the seat's own name — computed by
+    /// `letibot_harnessd`'s `prefix_fingerprint`, which is the only thing that ever writes
+    /// or reads it. Message 0 is frozen at creation, so a daemon that has since changed
+    /// what it would seat composes a different one, and this is how that is detected
+    /// without rendering either.
+    ///
+    /// **What it is not:** the standing notes. Those are re-read at session open, at every
+    /// base rebuild and on every provider turn, so a fingerprint that covered them would
+    /// cry stale every time a note was written. The frozen/live split is the whole reason
+    /// this is a column rather than a hash of the stored prefix row — that row's `system`
+    /// carries the notes as they were, and the section markers that would have to be
+    /// stripped out of it belong to the daemon, not to this file.
+    ///
+    /// `None` means *nobody recorded one here*, which a reader must not render as *the
+    /// prefix is unchanged*: the resume path falls back to the session's own stored
+    /// `stable_prefix` row for exactly this case, and says nothing at all when neither is
+    /// there.
+    pub prefix_fingerprint: Option<String>,
     /// **The ledger this box counted for the same prompt** — the other half of the
     /// measurement [`StoredSession::context_tokens`] is one side of.
     ///
@@ -2111,6 +2146,35 @@ impl Store {
                  );",
             )?;
         }
+        if from < 21 {
+            // v21: **the frozen prefix's fingerprint** — see
+            // [`StoredSession::prefix_fingerprint`] for what is in it and why the standing
+            // notes are not. Written where a session's transcript row is written (its
+            // creation, and every fork onto a new prompt), so that a session opened by a
+            // later build can be told its message 0 is not what this daemon would seat now.
+            //
+            // **NULL on every existing row, and deliberately not backfilled here.** A
+            // session seated before this column existed has the same fact on disk already —
+            // its `stable_prefix` row holds the system text and the tool schemas it was
+            // seated with — and the reader falls back to that rather than a migration
+            // guessing at a hash it would have to re-derive from text this file cannot see
+            // the markers of. *Nobody recorded one here* is the true state of such a row.
+            //
+            // Idempotent for the reason v6, v12, v13, v14 and v19 are: a fixture walks a
+            // current store backwards, so the column can already be here.
+            let has: bool = self
+                .conn
+                .prepare(
+                    "SELECT 1 FROM pragma_table_info('session') \
+                     WHERE name = 'prefix_fingerprint'",
+                )
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn
+                    .execute_batch("ALTER TABLE session ADD COLUMN prefix_fingerprint TEXT")?;
+            }
+        }
         if from < 20 {
             // v20: **the failed attempt, which is not a verdict** — see [`ReviewRecord`]'s
             // `attempts`/`failed_ms`/`failure` and the `merge_review` comment in [`SCHEMA_SQL`].
@@ -2587,7 +2651,8 @@ impl Store {
                       WHERE i.transcript_id = (SELECT t.id FROM transcript t
                           WHERE t.session_id = s.id
                           ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
-                      ORDER BY i.seq DESC LIMIT 1)
+                      ORDER BY i.seq DESC LIMIT 1),
+                    s.prefix_fingerprint
                FROM session s",
         )?;
         let mut out: Vec<StoredSession> = stmt
@@ -2630,6 +2695,10 @@ impl Store {
                     last_item: r
                         .get::<_, Option<String>>(19)?
                         .and_then(|j| serde_json::from_str(&j).ok()),
+                    // **Index 20, appended for the same reason 19 was.** The list is read BY
+                    // POSITION and this is the newest fact on the row; the fingerprint goes
+                    // last so nothing above it shifts.
+                    prefix_fingerprint: r.get(20)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -2727,6 +2796,31 @@ impl Store {
         let n = self.conn.execute(
             "UPDATE session SET context_window = ?2 WHERE id = ?1",
             params![id, window.map(|w| w as i64)],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("session {id}")));
+        }
+        Ok(())
+    }
+
+    /// **Write the fingerprint of the frozen prefix this session is seated with.** See
+    /// [`StoredSession::prefix_fingerprint`] for what it is.
+    ///
+    /// **Written where a session's transcript row is written, and nowhere else.** That is
+    /// the whole rule, and it is what makes the column mean one thing: *the prefix the
+    /// session's CURRENT transcript was opened under*. Two callers obey it — the open that
+    /// creates a session, and the fork that re-seats one onto a new prompt — and a caller
+    /// that wrote it anywhere else would be recording a prefix no transcript speaks.
+    ///
+    /// A setter of its own rather than a field on [`SessionRecord`], for the reason
+    /// [`Store::set_window`] is one: a `SessionRecord` is the session's creation and this
+    /// fact outlives it — a re-seat writes it again, long after the row exists. Keeping it
+    /// out of `put_session` also keeps it out of the twenty-odd fixtures that build a
+    /// `SessionRecord` to test something else.
+    pub fn set_prefix_fingerprint(&self, id: &str, fingerprint: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE session SET prefix_fingerprint = ?2 WHERE id = ?1",
+            params![id, fingerprint],
         )?;
         if n == 0 {
             return Err(StoreError::NotFound(format!("session {id}")));
@@ -5166,6 +5260,107 @@ mod tests {
         let s = Store::open(&path).unwrap();
         assert!(
             s.set_auto_compact_stood_down("s-stood", None).is_ok(),
+            "a store already at the current version still answers a write"
+        );
+    }
+
+    /// **A v20 store gains the frozen prefix's fingerprint** — v21's arm, in the v13
+    /// fixture's shape (additive arms take hand-written DDL; see that test's note for why
+    /// this is the one place hand-written DDL is not drift).
+    ///
+    /// What is asserted is what the arm DOES: the column appears, a row written before it
+    /// reads `NULL` — *nobody recorded one here*, which is deliberately not backfilled and
+    /// not the same fact as *the prefix is unchanged* — and a fingerprint written through
+    /// the API comes back, which is what the resume path's comparison reads.
+    #[test]
+    fn a_v20_store_gains_the_prefix_fingerprint_column() {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-migrate-v20-{}-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            {
+                static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
+        ));
+        let _ = std::fs::remove_file(&path);
+        struct Clean(std::path::PathBuf);
+        impl Drop for Clean {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _clean = Clean(path.clone());
+
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE session (
+                     id    TEXT PRIMARY KEY,
+                     title TEXT,
+                     role  TEXT
+                 );
+                 INSERT INTO session (id, title, role) VALUES ('s-seated', 'old', 'coder');
+                 CREATE TABLE schema_version (version INTEGER);
+                 INSERT INTO schema_version (version) VALUES (20);",
+            )
+            .unwrap();
+            // Prove the fixture really is pre-v21, or the arm below is tested by nothing.
+            assert!(
+                c.query_row("SELECT prefix_fingerprint FROM session", [], |r| r
+                    .get::<_, Option<String>>(0))
+                    .is_err(),
+                "the fixture already has a prefix_fingerprint column, so it is not a v20 store"
+            );
+        }
+
+        let s = Store::open(&path).unwrap();
+        let v: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION, "the migration stamped the new version");
+
+        let got: Option<String> = s
+            .connection()
+            .query_row(
+                "SELECT prefix_fingerprint FROM session WHERE id = 's-seated'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            got, None,
+            "a session seated before the column existed reads as unrecorded, which the \
+             resume path answers by falling back to the session's own stable_prefix row \
+             rather than by treating it as unchanged"
+        );
+
+        // And it is writeable through the API this column exists for.
+        s.set_prefix_fingerprint("s-seated", "0123456789abcdef")
+            .unwrap();
+        let got: Option<String> = s
+            .connection()
+            .query_row(
+                "SELECT prefix_fingerprint FROM session WHERE id = 's-seated'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(got.as_deref(), Some("0123456789abcdef"));
+        // A session nobody has heard of is refused by name rather than silently doing
+        // nothing — the rule every setter in this file follows.
+        assert!(s.set_prefix_fingerprint("s-nobody", "x").is_err());
+
+        // Reopening is a no-op rather than a second migration.
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert!(
+            s.set_prefix_fingerprint("s-seated", "fedcba9876543210")
+                .is_ok(),
             "a store already at the current version still answers a write"
         );
     }

@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use crate::SessionEvent;
 use crate::hub::{CommandKind, Delivery, Hub, Reply};
 use crate::protocol::{
     ClientFrame, HEAD_RUN_TOOLS, PROTOCOL_VERSION, PeekShape, REJECT_NOT_IN_STORE,
@@ -1785,6 +1786,31 @@ fn seat_in(
     let a = hub.attach(kind, identity, caps.clone(), since_seq);
     let head_id = a.head_id.clone();
     let session_id = hub.session_id();
+    // **What this session's harness found about its frozen prefix, said NOW.**
+    //
+    // The comparison was made when the harness opened — that is the only moment both
+    // facts are in one place — and the SENTENCE belongs here, because a warning published
+    // before this head arrived is filed by it as `Placed::Before`: listed by `/notes`,
+    // counted by `/status`, and not drawn. A head attaching to a session whose prompt has
+    // moved must be told while it is watching, which is also what the operator asked for
+    // in the words *"the `!` warning lines"*.
+    //
+    // After `attach` and before the pump starts, so the head receives the `Hello`, then
+    // this event — in that order on one socket, from one writer. Nothing is said for a
+    // session no harness has opened (there is no entry to hold a sentence) and nothing is
+    // said when the harness found the prefixes equal, which is every ordinary attach.
+    //
+    // **Said on every attach**, deliberately: the session goes on speaking the old prompt
+    // until somebody re-seats it, so a second head — or the same one tomorrow — is told the
+    // same true thing about the same unchanged state. Silence on the second attach would be
+    // a reader who was not there the first time being told nothing.
+    if let Some(said) = registry.stale_prefix(&session_id) {
+        hub.publish(SessionEvent::Warning {
+            code: "prefix_stale".into(),
+            detail: said,
+            compaction: None,
+        });
+    }
     {
         let mut w = writer.lock().unwrap();
         w.write(&ServerFrame::Hello {
