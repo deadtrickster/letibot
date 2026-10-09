@@ -1727,6 +1727,49 @@ impl Hub {
         g.commands.remove(i)
     }
 
+    /// **The next queued command a RUNNING TURN can act on, chosen by the turn.**
+    ///
+    /// The fourth of the same picker, and the only one whose predicate is not a
+    /// `CommandKind` written here — because for this one the *verb* belongs to
+    /// `harnessd`. `/models` rides [`CommandKind::Slash`] as the operator's own line,
+    /// and its grammar lives in one place (`harnessd`'s `slash::parse`); a picker that
+    /// spelled the verb here — even a single `== "models"` — would be a second copy of
+    /// that grammar, and the two copies would drift the first time an alias was added.
+    /// So the turn passes the question and this takes the answer.
+    ///
+    /// # What it is for, and the measurement
+    ///
+    /// MEASURED 2026-10-12, the operator's GLM coding plan, quota exhausted: the
+    /// retry ladder took the round again six times over 63 s against an endpoint
+    /// answering `http 429: Weekly/Monthly Limit Exhausted`, they typed `/models
+    /// deepseek/deepseek-flash` while those backoffs were cycling, and their words on
+    /// it are the whole defect — *"the model change didnt take"* and then *"when it
+    /// finally applied the turn didnt continue"*. It did not take because the command
+    /// sat in this queue until the worker came back, which is after the turn; the turn
+    /// was already FAILED by then. That is `try_mode_command`'s defect exactly, one
+    /// verb along.
+    ///
+    /// # The contract on `want`
+    ///
+    /// It is called on every queued command, in order, and **must be pure**: it is a
+    /// question about whether the turn can act on a command, and the command it
+    /// answers yes to is taken and applied by the caller. A predicate that resolves a
+    /// `/models` line has to do it without storing the key the line carries — see
+    /// `slash::mid_turn_model_switch`, which is the one written so far.
+    ///
+    /// A command the predicate says no to stays where it is, in order, for the
+    /// worker — which is the honest outcome for a verb this turn cannot carry out
+    /// (a switch that would re-seat the conversation under a turn that is in flight)
+    /// and is exactly what happened to every such command before this existed.
+    pub fn try_command_for_running_turn(
+        &self,
+        want: impl Fn(&CommandKind) -> bool,
+    ) -> Option<QueuedCommand> {
+        let mut g = self.lock();
+        let i = (0..g.commands.len()).find(|&i| want(&g.commands[i].kind))?;
+        g.commands.remove(i)
+    }
+
     /// The next take-back a **running turn** can act on, dropping the issuing
     /// head's still-queued prompts with it.
     ///
@@ -2700,6 +2743,82 @@ mod mode_steering_tests {
             matches!(left.kind, CommandKind::OperatorCall { execute: false, .. }),
             "{:?}",
             left.kind
+        );
+    }
+
+    /// **The turn's own picker takes what it asks for and nothing else** — the door
+    /// `/models` reaches a retrying turn through.
+    ///
+    /// MEASURED 2026-10-12: the operator typed `/models deepseek/deepseek-flash` while a
+    /// 63-second backoff ladder was cycling, and it sat in this queue until the worker came
+    /// back — which is after the turn, by which time the turn was FAILED. *"while those
+    /// backoffs were cycling - the model change didnt take"*, and then *"when it finally
+    /// applied the turn didnt continue"*.
+    ///
+    /// Three things this pins, and the middle one is the reason the predicate exists at
+    /// all:
+    ///
+    /// 1. a command the predicate says yes to is taken, here, mid-turn;
+    /// 2. **a command it says no to stays in the queue, in order, for the worker** — a
+    ///    switch that would re-seat the conversation is not this door's to take, and
+    ///    dropping it would be worse than leaving it;
+    /// 3. it is taken once, and the queue behind it is undisturbed.
+    #[test]
+    fn the_turns_own_picker_takes_what_it_asks_for_and_leaves_the_rest() {
+        let hub = Hub::new("s");
+        let head = hub.attach("tui", "dead", Caps::default(), 0);
+
+        // In front of the one the turn wants, and refused by its predicate.
+        hub.submit(
+            &head.head_id,
+            "c1",
+            0,
+            CommandKind::Slash {
+                line: "models dense78".into(),
+            },
+        );
+        hub.submit(
+            &head.head_id,
+            "c2",
+            0,
+            CommandKind::Slash {
+                line: "models glm/glm-4.6".into(),
+            },
+        );
+        // And one behind it, for the same reason the mode test keeps one: the queue is
+        // not drained by taking from the middle of it.
+        hub.submit(&head.head_id, "c3", 0, CommandKind::Compact);
+
+        let want = |k: &CommandKind| matches!(k, CommandKind::Slash { line } if line == "models glm/glm-4.6");
+        let got = hub
+            .try_command_for_running_turn(want)
+            .expect("the switch the turn can apply");
+        match got.kind {
+            CommandKind::Slash { line } => assert_eq!(line, "models glm/glm-4.6"),
+            other => panic!("took the wrong command: {other:?}"),
+        }
+        // Once.
+        assert!(hub.try_command_for_running_turn(want).is_none());
+
+        // **The refused one is still there, and still first.** Order is the promise a
+        // person reads off the queue, and a picker that reordered it would apply their two
+        // switches backwards.
+        let first = hub
+            .try_command()
+            .expect("the refused switch is still queued");
+        match first.kind {
+            CommandKind::Slash { line } => assert_eq!(line, "models dense78"),
+            other => panic!("the queue was reordered: {other:?}"),
+        }
+        assert!(
+            matches!(
+                hub.take_own_work(),
+                OwnWork::Command(QueuedCommand {
+                    kind: CommandKind::Compact,
+                    ..
+                })
+            ),
+            "the compaction behind it was eaten"
         );
     }
 
