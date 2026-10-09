@@ -158,6 +158,11 @@ pub struct WorktreeSpec {
     /// `false` is the default — a `task_start` that did not name the main tree creates
     /// a worktree, and the main tree is the thing it exists to keep the child out of.
     pub main_tree: bool,
+    /// **The repository to cut the worktree from**, when it is not the one the session root is
+    /// in — a session may run a level above its repositories (`~/Projects`), and then the root
+    /// is in no repository at all. Relative to the session root, or absolute. `None` is the
+    /// session root's own repository, which is what every earlier build used.
+    pub repo: Option<String>,
 }
 
 /// **Where a `task_start` child works, as the runner arranged it.**
@@ -718,7 +723,8 @@ impl Tool for TaskStartTool {
                     "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
                     "base": {"type": "string", "description": "The ref the branch is cut from. Defaults to the repo's current HEAD."},
                     "slug": {"type": "string", "description": "The slug the worktree and branch are named by. Defaults to a derivation from the prompt."},
-                    "main_tree": {"type": "boolean", "description": "Work in the main checkout instead of a fresh worktree. The exception; off by default."}
+                    "main_tree": {"type": "boolean", "description": "Work in the main checkout instead of a fresh worktree. The exception; off by default."},
+                    "repo": {"type": "string", "description": "The repository to work in, when it is not the one the session root is in (a session above its repositories names one). Relative to the session root, or absolute."}
                 },
                 "required": ["prompt"]
             }),
@@ -774,6 +780,11 @@ impl Tool for TaskStartTool {
             .get("main_tree")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let repo = args
+            .get("repo")
+            .and_then(|v| v.as_str())
+            .map(|r| r.trim().trim_end_matches('/').to_string())
+            .filter(|r| !r.is_empty() && r != ".");
 
         // **The slug, derived from the prompt when the caller did not name one.** The
         // derivation is the default, not a lock: a caller that wants a different name
@@ -797,7 +808,13 @@ impl Tool for TaskStartTool {
         // rather than by a child that was never started. The main tree is the
         // exception and does not create a path, so it is not checked.
         if !main_tree {
-            let path = worktree_path(&workspace, &slug);
+            // Under the named repository, when there is one — the runner arranges it there.
+            let under = match &repo {
+                Some(r) if r.starts_with('/') => r.clone(),
+                Some(r) => format!("{workspace}/{r}"),
+                None => workspace.clone(),
+            };
+            let path = worktree_path(&under, &slug);
             if std::fs::symlink_metadata(&path).is_ok() {
                 return Invocation::failed(
                     format!("the path {path} already exists"),
@@ -824,6 +841,7 @@ impl Tool for TaskStartTool {
             slug,
             base,
             main_tree,
+            repo,
         };
 
         let handle = match self.runner.start_worktree(prompt, &spec, &worktree_spec) {

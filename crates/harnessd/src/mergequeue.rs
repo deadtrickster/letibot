@@ -382,6 +382,43 @@ fn run_captured(dir: &Path, program: &str, args: &[&str]) -> Result<String, Stri
     }
 }
 
+/// **The root of the session tree `session` is in**, walking the stored parents — a branch is
+/// usually finished by a subagent, and the session a person attaches to is its root. Bounded,
+/// so a cycle written by a bug ends rather than spins.
+pub fn root_session(store: &Store, session: &str) -> String {
+    let mut cur = session.to_string();
+    for _ in 0..32 {
+        let parent = store
+            .session(&cur)
+            .ok()
+            .flatten()
+            .and_then(|s| s.parent_session_id);
+        match parent {
+            Some(p) if !p.is_empty() => cur = p,
+            _ => break,
+        }
+    }
+    cur
+}
+
+/// **The repository a worktree belongs to** — the directory holding its common `.git` — or
+/// `None` for a path git does not know.
+pub fn repo_of_worktree(worktree: &Path) -> Option<PathBuf> {
+    let common = run_captured(
+        worktree,
+        "git",
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()?;
+    let common = PathBuf::from(common.trim());
+    if common.file_name().is_some_and(|n| n == ".git") {
+        common.parent().map(Path::to_path_buf)
+    } else {
+        // A bare repository: the common dir is the repository.
+        Some(common)
+    }
+}
+
 /// **The repository's merge gate, as `main` says it is** — the steps of the `Merge gate`
 /// section of `main`'s `AGENTS.md` ([`letibot_tools::gatekeeper::parse_merge_gate`]), or `None`
 /// when there is no such file or section.
@@ -408,6 +445,11 @@ pub fn gate_on_main(dir: &Path) -> Result<Option<Vec<String>>, String> {
     Ok(letibot_tools::gatekeeper::parse_merge_gate(&text))
 }
 
+/// **How an entry's row begins while its repository has no gate** — what the queue writes
+/// ([`gate_configured`]) and what the project's session looks for to tell its model
+/// (`Harness::queue_notices`).
+pub const WAITING_FOR_GATE: &str = "waiting for a merge gate";
+
 /// **Whether this repository has a gate yet** — the check the queue makes before it takes an
 /// entry, so a repository with none HOLDS its branches (and says why on each row) rather than
 /// failing them: once the section lands on `main`, the waiting entries go on by themselves.
@@ -415,7 +457,7 @@ pub fn gate_configured(repo: &Path) -> Result<(), String> {
     match gate_on_main(repo) {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(format!(
-            "waiting for a merge gate: `main` has no `Merge gate` section in AGENTS.md at {}. \
+            "{WAITING_FOR_GATE}: `main` has no `Merge gate` section in AGENTS.md at {}. \
              The project's agent can propose one (`merge_gate` lists what this repository \
              suggests) for the operator to choose; the entry goes on once it is on main.",
             repo.display()
@@ -764,6 +806,13 @@ pub struct MergeQueueDaemon {
     /// ([`Self::with_gate_check`]): the production wiring asks `main`'s AGENTS.md
     /// ([`gate_configured`]), and a test's no-op gate needs no file.
     gate_ready: Box<dyn Fn(&Path) -> Result<(), String> + Send>,
+    /// **The workspace this daemon serves**, canonical — an entry is this daemon's when the
+    /// root of the session that queued it was opened on it ([`Self::serves`]). `None` serves
+    /// every entry, which is what a test's daemon does.
+    serving: Option<PathBuf>,
+    /// Each entry's repository, read once from its worktree ([`repo_of_worktree`]): a worktree
+    /// does not change repositories, and the queue asks every second.
+    repos: std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
     /// **The door the reviewer is asked through** — see
     /// [`letibot_tools::gatekeeper::Reviewer`].
     ///
@@ -799,8 +848,55 @@ impl MergeQueueDaemon {
             repo,
             gate,
             gate_ready: Box::new(|_| Ok(())),
+            serving: None,
+            repos: Default::default(),
             reviewer,
             events,
+        }
+    }
+
+    /// **Serve only the entries queued from sessions opened on `workspace`** — see
+    /// [`Self::serves`].
+    pub fn serving(mut self, workspace: &Path) -> Self {
+        self.serving = Some(std::fs::canonicalize(workspace).unwrap_or(workspace.to_path_buf()));
+        self
+    }
+
+    /// **The repository an entry lands in**: its worktree's own repository, so one queue serves
+    /// every repository under its workspace — a session may run a level above them. An entry
+    /// with no worktree is the daemon's own repository's.
+    fn repo_for(&self, entry: &MergeEntry) -> PathBuf {
+        if let Some(r) = self.repos.lock().expect("repos").get(&entry.id) {
+            return r.clone();
+        }
+        let repo = entry
+            .worktree
+            .as_deref()
+            .and_then(|wt| repo_of_worktree(Path::new(wt)))
+            .unwrap_or_else(|| self.repo.clone());
+        self.repos
+            .lock()
+            .expect("repos")
+            .insert(entry.id.clone(), repo.clone());
+        repo
+    }
+
+    /// **Whether this daemon serves `entry`**: the root of the session that queued it was
+    /// opened on this daemon's workspace. One store holds every daemon's queue, and each
+    /// session is served by the daemon for its workspace — so this is the rule that keeps two
+    /// daemons from reviewing, resuming or landing the same entry. A root the store does not
+    /// know falls back to where the entry's repository is: under this workspace, or not.
+    fn serves(&self, entry: &MergeEntry) -> bool {
+        let Some(ws) = &self.serving else {
+            return true;
+        };
+        let root = root_session(&self.store, &entry.session_id);
+        match self.store.session(&root).ok().flatten() {
+            Some(s) => {
+                let at = Path::new(&s.workspace_root);
+                std::fs::canonicalize(at).unwrap_or(at.to_path_buf()) == *ws
+            }
+            None => self.repo_for(entry).starts_with(ws),
         }
     }
 
@@ -842,6 +938,9 @@ impl MergeQueueDaemon {
     /// what happened.
     pub fn step(&self) -> Result<StepOutcome, letibot_tokencore::store::StoreError> {
         let entries = self.store.merge_entries()?;
+        // **This daemon's entries only** — see [`Self::serves`]. The rest are another daemon's,
+        // and asking, resuming or landing them from here would race it.
+        let entries: Vec<MergeEntry> = entries.into_iter().filter(|e| self.serves(e)).collect();
         let reviews = self.store.reviews()?;
 
         // **First, the review of everything that is due** — asked for, or parked by its
@@ -919,9 +1018,18 @@ impl MergeQueueDaemon {
         // **No gate, no take.** A repository whose `main` has no gate holds its branches —
         // reviewed or not — and says so on the row, once; the entry goes on by itself when the
         // section lands. Not `Failed`: nothing about the branch is wrong.
-        if let Err(why) = (self.gate_ready)(&self.repo) {
+        let repo = self.repo_for(&entry);
+        if let Err(why) = (self.gate_ready)(&repo) {
             if entry.evidence != why {
                 self.move_to(&entry, MergeState::Waiting, why, None)?;
+                // **And the project's agent is told**, once — the operator: *"let main project
+                // agent manage it"*. A door that could not reach anybody is said, not swallowed.
+                if let Err(e) = self.reviewer.gate_missing(&entry.id) {
+                    eprintln!(
+                        "  merge queue: nobody could be told `{}` needs a gate: {e}",
+                        entry.id
+                    );
+                }
             }
             return Ok(StepOutcome::AwaitingGate);
         }
@@ -931,6 +1039,11 @@ impl MergeQueueDaemon {
         // other move, so the pane is told this one too: an entry the queue is working on is not
         // an entry that is still waiting, and a head that only saw the landing would draw a
         // `waiting` row through the whole gate.
+        // **Claimed first, atomically**: a second daemon over the same store that reached the
+        // same entry in the same second loses here rather than rebasing it twice.
+        if !self.store.claim_merge_entry(&entry.id)? {
+            return Ok(StepOutcome::Idle);
+        }
         self.move_to(
             &entry,
             MergeState::Taken,
@@ -940,7 +1053,16 @@ impl MergeQueueDaemon {
 
         // **Rebase it at the tip**: onto the current main, not the SHA it was written
         // against. A conflict is reported, never resolved.
-        let base = effective_base(&entry, &entries);
+        // **The tip of THIS repository's main, read now** — not the last SHA the queue landed:
+        // main also moves by hand (a commit, a push, the gate's own section landing), and with
+        // one queue serving several repositories the last landing may be another repository's.
+        // The queue's record is the fallback only when git cannot name the tip.
+        let tip_now = run_captured(&repo, "git", &["rev-parse", "main"])
+            .ok()
+            .map(|t| t.trim().to_string());
+        let base = tip_now
+            .as_deref()
+            .unwrap_or_else(|| effective_base(&entry, &entries));
         let worktree = entry.worktree.as_deref().unwrap_or("");
         if worktree.is_empty() {
             // No worktree: the enqueuer's half has not created one, and the queue cannot
@@ -968,14 +1090,14 @@ impl MergeQueueDaemon {
         }
 
         // **Fast-forward main and push**: the merge, and the landing.
-        let tip = match fast_forward_main(&self.repo, &entry.branch) {
+        let tip = match fast_forward_main(&repo, &entry.branch) {
             Ok(tip) => tip,
             Err(e) => {
                 self.move_to(&entry, MergeState::Failed, e, None)?;
                 return Ok(StepOutcome::Failed);
             }
         };
-        if let Err(e) = push_main(&self.repo) {
+        if let Err(e) = push_main(&repo) {
             self.move_to(&entry, MergeState::Failed, e, None)?;
             return Ok(StepOutcome::Failed);
         }
@@ -1014,7 +1136,7 @@ impl MergeQueueDaemon {
             moved.landed_sha = landed_sha;
         }
         self.store.put_merge_entry(&moved)?;
-        clean_up(&self.repo, entry, state);
+        clean_up(&self.repo_for(entry), entry, state);
         // **The move is announced, and AFTER the row is written.** A head that folded the
         // event before the row was on disk could re-read the queue and find the old state,
         // which is the one order that makes the snapshot and the events disagree; writing
@@ -1156,13 +1278,10 @@ pub fn spawn_for(
     events: Box<dyn Fn(letibot_sessionlog::SessionEvent) + Send>,
 ) -> Option<JoinHandle<()>> {
     let store_path = cfg.store.as_ref()?;
-    let repo = match repo_root(&cfg.workspace) {
-        Ok(repo) => repo,
-        Err(e) => {
-            eprintln!("  merge queue: not served — {e}");
-            return None;
-        }
-    };
+    // **The workspace's own repository, or the workspace itself** when it is in none — a
+    // daemon a level above its repositories still serves them: each entry lands in its
+    // worktree's repository ([`MergeQueueDaemon::repo_for`]).
+    let repo = repo_root(&cfg.workspace).unwrap_or_else(|_| cfg.workspace.clone());
     let store = match Store::open(store_path) {
         Ok(store) => store,
         Err(e) => {
@@ -1172,6 +1291,7 @@ pub fn spawn_for(
     };
     match MergeQueueDaemon::new(store, repo.clone(), Box::new(repo_gate), reviewer, events)
         .with_gate_check(Box::new(gate_configured))
+        .serving(&cfg.workspace)
         .spawn(stop)
     {
         Ok(handle) => {
@@ -1229,24 +1349,40 @@ impl GatekeeperDoor {
         }
     }
 
-    /// **The root of the tree `session` is in**, walking the stored parents — a branch is
-    /// usually finished by a subagent, and the reviewer is a child of the ROOT, the session a
-    /// person attaches to. Bounded, so a cycle written by a bug ends rather than spins.
-    fn root_of(&self, session: &str) -> String {
-        let mut cur = session.to_string();
-        for _ in 0..32 {
-            let parent = self
-                .store
-                .session(&cur)
-                .ok()
-                .flatten()
-                .and_then(|s| s.parent_session_id);
-            match parent {
-                Some(p) if !p.is_empty() => cur = p,
-                _ => break,
+    /// **The session an entry's queue business goes to** — the root of the session that queued
+    /// it, resumed from the store when this daemon does not hold it (the operator's ruling), so
+    /// an entry whose session closed hours ago still has somebody to ask. `what` says what the
+    /// session is wanted for, in the refusal when there is none.
+    fn host_for(&self, entry_id: &str, what: &str) -> Result<(MergeEntry, String), String> {
+        let entry = self
+            .store
+            .merge_entry(entry_id)
+            .map_err(|e| format!("the entry `{entry_id}` could not be read: {e}"))?
+            .ok_or_else(|| format!("the entry `{entry_id}` is not in the queue's table"))?;
+        let host = root_session(&self.store, &entry.session_id);
+        if self.registry.get(&host).is_none() {
+            match self.registry.resumable(&host) {
+                Some(brief) => {
+                    self.registry
+                        .create(&host, &brief.title, brief.wiring)
+                        .map_err(|e| {
+                            format!(
+                                "the session `{host}` that `{entry_id}` came from could not be \
+                                 resumed to {what}: {e}"
+                            )
+                        })?;
+                }
+                None => {
+                    return Err(format!(
+                        "the session `{host}` that `{entry_id}` (branch `{}`) came from is in \
+                         neither this daemon nor the store, so there is no session to {what}. \
+                         The branch does not land without it.",
+                        entry.branch
+                    ));
+                }
             }
         }
-        cur
+        Ok((entry, host))
     }
 }
 
@@ -1256,36 +1392,7 @@ impl letibot_tools::gatekeeper::Reviewer for GatekeeperDoor {
         entry_id: &str,
         req: &letibot_tools::gatekeeper::ReviewRequest,
     ) -> Result<String, String> {
-        let entry = self
-            .store
-            .merge_entry(entry_id)
-            .map_err(|e| format!("the entry `{entry_id}` could not be read: {e}"))?
-            .ok_or_else(|| format!("the entry `{entry_id}` is not in the queue's table"))?;
-        let host = self.root_of(&entry.session_id);
-        // **A host the daemon does not hold is resumed**, the way a head's `ResumeSession` is —
-        // its stored wiring, its title — and the worker opens it on the ring `create` makes.
-        if self.registry.get(&host).is_none() {
-            match self.registry.resumable(&host) {
-                Some(brief) => {
-                    self.registry
-                        .create(&host, &brief.title, brief.wiring)
-                        .map_err(|e| {
-                            format!(
-                                "the session `{host}` that `{entry_id}` came from could not be \
-                                 resumed to review it under: {e}"
-                            )
-                        })?;
-                }
-                None => {
-                    return Err(format!(
-                        "the session `{host}` that `{entry_id}` (branch `{}`) came from is in \
-                         neither this daemon nor the store, so there is no session to run its \
-                         gatekeeper under. The branch does not land without a verdict.",
-                        req.branch
-                    ));
-                }
-            }
-        }
+        let (_, host) = self.host_for(entry_id, "run its gatekeeper under")?;
         let existing = self
             .store
             .merge_review(entry_id)
@@ -1325,6 +1432,18 @@ impl letibot_tools::gatekeeper::Reviewer for GatekeeperDoor {
              on the entry's row and nothing lands without it. Its approvals ask in `{host}`.",
             req.branch, req.base_sha
         ))
+    }
+
+    /// **The project's agent is told its repository has no gate**: the root session that queued
+    /// the entry is rung (resumed if it is not live), and its wake finds the entry waiting and
+    /// tells its model (`Harness::queue_notices`).
+    fn gate_missing(&self, entry_id: &str) -> Result<(), String> {
+        let (_, host) = self.host_for(entry_id, "ask for a merge gate")?;
+        if self.bell.is_closed() {
+            return Err("the daemon's bell is closed (it is shutting down)".into());
+        }
+        self.bell.ring_wake(&host);
+        Ok(())
     }
 }
 
@@ -2847,6 +2966,210 @@ mod tests {
         std::fs::write(dir.join("AGENTS.md"), "## Merge gate\n\n```sh\ntrue\n```\n").unwrap();
         git(&["commit", "-qam", "loosen the gate"]);
         assert!(repo_gate(&dir).is_err(), "the branch's own gate was used");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A daemon above its repositories lands each entry in its worktree's repository.** The
+    /// daemon's own directory is in no repository at all — a session at `~/Projects` — and the
+    /// entry still rebases, gates and fast-forwards the `main` of the repository its worktree
+    /// belongs to.
+    #[test]
+    fn an_entry_lands_in_its_worktrees_repository_when_the_daemon_serves_above_it() {
+        let (root, wt, main_sha, feature_sha) = repo_with_branch("above");
+        let above =
+            std::env::temp_dir().join(format!("letibot-mq-above-ws-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&above);
+        std::fs::create_dir_all(&above).expect("mkdir");
+        assert!(
+            repo_root(&above).is_err(),
+            "the daemon's directory is in no repository"
+        );
+        let db = above.join("s.db");
+        let mut e = entry("up", MergePriority::Subagent, MergeState::Waiting, 1_000);
+        e.branch = "feature".into();
+        e.base_sha = main_sha;
+        e.worktree = Some(wt.to_str().unwrap().to_string());
+        enqueue(&db, &e);
+        approve(&db, "up");
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            above.clone(),
+            Box::new(|_| Ok(())),
+            quiet_reviewer(),
+            quiet_events(),
+        );
+        assert_eq!(
+            daemon.step().expect("the pass"),
+            StepOutcome::Landed(feature_sha.clone())
+        );
+        assert_eq!(
+            sha(&root, "main"),
+            feature_sha,
+            "the worktree's repository's main moved"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&above);
+    }
+
+    /// **Main moved by hand, and the entry still lands** — the rebase is onto the tip of main as
+    /// it is now, not onto the last SHA the queue itself landed. A commit straight to main (a
+    /// person's, or a gate section) used to leave the branch rebased onto a stale base and the
+    /// fast-forward refused.
+    #[test]
+    fn an_entry_lands_after_main_moved_outside_the_queue() {
+        let (root, wt, main_sha, _) = repo_with_branch("moved");
+        std::fs::write(root.join("hand.txt"), "by hand\n").unwrap();
+        git(&root, &["add", "hand.txt"]);
+        git(&root, &["commit", "-qm", "a commit straight to main"]);
+        let db = root.join("s.db");
+        let mut e = entry("mv", MergePriority::Subagent, MergeState::Waiting, 1_000);
+        e.branch = "feature".into();
+        e.base_sha = main_sha;
+        e.worktree = Some(wt.to_str().unwrap().to_string());
+        enqueue(&db, &e);
+        approve(&db, "mv");
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(|_| Ok(())),
+            quiet_reviewer(),
+            quiet_events(),
+        );
+        let out = daemon.step().expect("the pass");
+        assert!(matches!(out, StepOutcome::Landed(_)), "{out:?}");
+        assert!(
+            root.join("hand.txt").exists() && root.join("b.txt").exists(),
+            "both are on main"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A daemon serves only the entries queued from sessions opened on its workspace.** One
+    /// store holds every daemon's queue; an entry whose root session belongs to another
+    /// workspace is that daemon's, and this one neither asks about it nor touches its row.
+    #[test]
+    fn a_daemon_leaves_another_workspaces_entries_alone() {
+        let dir = std::env::temp_dir().join(format!("letibot-mq-serves-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let db = dir.join("s.db");
+        let store = store_at(&db);
+        for (id, ws) in [("s-a", &a), ("s-b", &b)] {
+            store
+                .put_session(&letibot_tokencore::store::SessionRecord {
+                    id: id.into(),
+                    title: None,
+                    model_id: "m".into(),
+                    dialect_sha: "sha".into(),
+                    workspace_root: ws.display().to_string(),
+                    owner: "dead".into(),
+                    role: None,
+                    approvers: vec![],
+                    parent_session_id: None,
+                })
+                .unwrap();
+        }
+        let mut ea = entry("ea", MergePriority::Subagent, MergeState::Waiting, 1_000);
+        ea.session_id = "s-a".into();
+        let mut eb = entry("eb", MergePriority::Subagent, MergeState::Waiting, 900);
+        eb.session_id = "s-b".into();
+        enqueue(&db, &ea);
+        enqueue(&db, &eb);
+        approve(&db, "ea");
+        approve(&db, "eb");
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            a.clone(),
+            Box::new(|_| Ok(())),
+            quiet_reviewer(),
+            quiet_events(),
+        )
+        .serving(&a);
+        daemon.step().expect("the pass");
+        let row = |id: &str| store_at(&db).merge_entry(id).unwrap().unwrap();
+        assert!(
+            row("ea").evidence.contains("no worktree"),
+            "its own entry was acted on: {:?}",
+            row("ea")
+        );
+        assert_eq!(
+            row("eb").evidence,
+            "",
+            "another workspace's entry was touched"
+        );
+        assert_eq!(row("eb").state, MergeState::Waiting);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The project's agent is told once that its repository has no gate** — on the pass the
+    /// entry starts waiting, not on every pass after.
+    #[test]
+    fn the_agent_is_told_once_that_a_gate_is_missing() {
+        #[derive(Default)]
+        struct Counting(Arc<std::sync::atomic::AtomicUsize>);
+        impl letibot_tools::gatekeeper::Reviewer for Counting {
+            fn wake(
+                &self,
+                _: &str,
+                _: &letibot_tools::gatekeeper::ReviewRequest,
+            ) -> Result<String, String> {
+                Ok("asked".into())
+            }
+            fn gate_missing(&self, _: &str) -> Result<(), String> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("letibot-mq-told-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("s.db");
+        enqueue(
+            &db,
+            &entry("t1", MergePriority::Subagent, MergeState::Waiting, 1_000),
+        );
+        approve(&db, "t1");
+        let told = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            dir.clone(),
+            Box::new(|_| Ok(())),
+            Box::new(Counting(told.clone())),
+            quiet_events(),
+        )
+        .with_gate_check(Box::new(|_| Err(format!("{WAITING_FOR_GATE}: none"))));
+        for _ in 0..3 {
+            assert_eq!(daemon.step().expect("the pass"), StepOutcome::AwaitingGate);
+        }
+        assert_eq!(
+            told.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "told more than once"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Two daemons cannot take one entry**: the claim is one conditional update, and only the
+    /// first sees it succeed.
+    #[test]
+    fn an_entry_is_claimed_once() {
+        let dir = std::env::temp_dir().join(format!("letibot-mq-claim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("s.db");
+        enqueue(
+            &db,
+            &entry("c1", MergePriority::Subagent, MergeState::Waiting, 1_000),
+        );
+        let (one, two) = (store_at(&db), store_at(&db));
+        assert!(one.claim_merge_entry("c1").unwrap());
+        assert!(!two.claim_merge_entry("c1").unwrap(), "claimed twice");
+        assert_eq!(
+            two.merge_entry("c1").unwrap().unwrap().state,
+            MergeState::Taken
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

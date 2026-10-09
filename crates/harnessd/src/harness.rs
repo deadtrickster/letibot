@@ -1453,6 +1453,9 @@ pub struct Harness {
     /// naming one is the review's, not news for this session's model, and is dropped from the
     /// notices (`Harness::wake`).
     gatekeepers: std::collections::HashSet<String>,
+    /// **The queue entries this session's model has been told need a merge gate**, so each is
+    /// said once per daemon. See [`Harness::queue_notices`].
+    gate_told: std::collections::HashSet<String>,
     /// The cloud provider the turns go to, when the session has one. `None` is
     /// the local server through the engine's own `/completion` path — **unless**
     /// [`Harness::key_wanted`] is set, which is a provider with no key yet.
@@ -3735,6 +3738,7 @@ impl Harness {
             subagents: subagent_runner,
             reviewing: Vec::new(),
             gatekeepers: Default::default(),
+            gate_told: Default::default(),
             provider,
             key_wanted,
             // Filled on the first switch away from local, never at open: a session
@@ -6381,6 +6385,53 @@ impl Harness {
         stop_children_first(Some(&self.subagents), &self.hub)
     }
 
+    /// **What this session's model is told about the merge queue**: each entry it queued (from
+    /// anywhere in its tree) that is waiting because its repository has no merge gate, once.
+    ///
+    /// The queue rings this session when an entry starts waiting (`GatekeeperDoor::gate_missing`);
+    /// the sentence names the branch, the repository, and what to do — `merge_gate` for the
+    /// choices, the operator to pick, the `AGENTS.md` section on main — so the model offers the
+    /// operator the choices without being asked to.
+    pub fn queue_notices(&mut self) -> Vec<String> {
+        let me = self.hub.session_id();
+        let Some(store) = self.store.as_ref() else {
+            return Vec::new();
+        };
+        let root = self.cfg.workspace.clone();
+        let mut out = Vec::new();
+        for e in store.merge_entries().unwrap_or_default() {
+            if e.state != letibot_tokencore::store::MergeState::Waiting
+                || !e.evidence.starts_with(crate::mergequeue::WAITING_FOR_GATE)
+                || self.gate_told.contains(&e.id)
+                || crate::mergequeue::root_session(store, &e.session_id) != me
+            {
+                continue;
+            }
+            self.gate_told.insert(e.id.clone());
+            let repo = e
+                .worktree
+                .as_deref()
+                .and_then(|w| crate::mergequeue::repo_of_worktree(std::path::Path::new(w)))
+                .map(|r| match r.strip_prefix(&root) {
+                    Ok(rel) if rel.as_os_str().is_empty() => ".".to_string(),
+                    Ok(rel) => rel.display().to_string(),
+                    Err(_) => r.display().to_string(),
+                })
+                .unwrap_or_else(|| ".".to_string());
+            out.push(format!(
+                "The merge queue is holding `{branch}` (entry `{id}`): the repository `{repo}` has \
+                 no merge gate on main, so nothing of it lands. Call `merge_gate` with repo \
+                 `{repo}` to see what it suggests, put those choices to the operator — they may \
+                 type their own command — and once they pick, add the `Merge gate` section to \
+                 that repository's AGENTS.md and commit it to main. The entry goes on by itself \
+                 when the section is there.",
+                branch = e.branch,
+                id = e.id,
+            ));
+        }
+        out
+    }
+
     /// **The merge queue's reviews this session hosts: start a gatekeeper for each one that has
     /// none, and write the verdict of each one that has answered.**
     ///
@@ -6499,7 +6550,9 @@ impl Harness {
         // unprompted, and neither may jump a person who is waiting: that ordering is
         // `Bell::next_any`'s — commands drain before wakes — and it holds for both
         // because both arrive as `Work::Woken`.
-        let mut notices: Vec<String> = Vec::new();
+        // **And the queue's entries that wait for a merge gate**, said to this session's model —
+        // the operator: *"let main project agent manage it"*.
+        let mut notices: Vec<String> = self.queue_notices();
         if let Some(monitors) = self.monitors.clone() {
             let since = self.monitor_cursor.load(Ordering::SeqCst);
             let settled = monitors.settled_count();
@@ -11503,6 +11556,54 @@ fn subagent_depth_refusal(depth: u32, max: u32) -> Option<String> {
     ))
 }
 
+/// **The git repositories under `root`**, at most `depth` directories down, for a refusal to
+/// name: a session a level above its repositories is told which ones it can pick. A directory
+/// holding `.git` (a directory or a worktree's file) is one, and is not descended into.
+fn repos_under(root: &std::path::Path, depth: usize) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return out;
+    };
+    let mut dirs: Vec<std::path::PathBuf> = rd
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| !n.starts_with('.') && n != "target" && n != "node_modules")
+        })
+        .collect();
+    dirs.sort();
+    for d in dirs {
+        if d.join(".git").exists() {
+            out.push(d);
+        } else if depth > 1 {
+            out.extend(repos_under(&d, depth - 1));
+        }
+        if out.len() >= 20 {
+            break;
+        }
+    }
+    out
+}
+
+/// The repositories a refusal names, relative to the session root: ` Repositories here: `a`,
+/// `b/c`.` — or nothing when there are none.
+fn name_repos(root: &str, repos: &[std::path::PathBuf]) -> String {
+    if repos.is_empty() {
+        return String::new();
+    }
+    let names: Vec<String> = repos
+        .iter()
+        .map(|p| {
+            let rel = p.strip_prefix(root).unwrap_or(p);
+            format!("`{}`", rel.display())
+        })
+        .collect();
+    format!(" Repositories here: {}.", names.join(", "))
+}
+
 /// **Run a git command in a directory and return its stdout, trimmed.**
 ///
 /// The one door `task_start`'s filesystem work goes through: the tool layer has no
@@ -11828,7 +11929,31 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         if let Some(why) = subagent_depth_refusal(self.base.depth, self.base.max_subagent_depth) {
             return Err(why);
         }
-        let workspace = self.base.workspace.display().to_string();
+        // **The directory the git work runs in**: the repository the caller named, or the
+        // session root. A root that is in no repository (a session a level above its repos) is
+        // refused by name with the repositories it can see, so the next call can name one.
+        let root = self.base.workspace.display().to_string();
+        let workspace = match worktree.repo.as_deref() {
+            Some(r) if r.starts_with('/') => r.to_string(),
+            Some(r) => format!("{root}/{r}"),
+            None => root.clone(),
+        };
+        if git_in(&workspace, &["rev-parse", "--show-toplevel"]).is_err() {
+            let repos = repos_under(std::path::Path::new(&root), 3);
+            return Err(match &worktree.repo {
+                Some(r) => format!(
+                    "`{r}` is not in a git repository, so no worktree can be cut there. Nothing \
+                     was arranged and nothing was spawned.{}",
+                    name_repos(&root, &repos)
+                ),
+                None => format!(
+                    "the session root `{root}` is in no git repository, so there is nothing to \
+                     cut a worktree from. Name the repository with `repo`.{} Nothing was \
+                     arranged and nothing was spawned.",
+                    name_repos(&root, &repos)
+                ),
+            });
+        }
         let slug = if worktree.slug.is_empty() {
             slug_from_prompt(prompt)
         } else {
@@ -17542,6 +17667,34 @@ mod gatekeeper_reviews {
             None
         );
         assert_eq!(review_outcome(&req(), TaskStatus::Unknown), None);
+    }
+
+    /// **A session above its repositories is told which ones it can name** — `task_start`'s
+    /// refusal when its root is in no repository.
+    #[test]
+    fn the_repositories_under_a_root_are_named() {
+        let root = std::env::temp_dir().join(format!("letibot-repos-under-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for d in [
+            "app/.git",
+            "libs/core/.git",
+            "libs/core/nested/.git",
+            "notes",
+            "target/x/.git",
+        ] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let found = repos_under(&root, 3);
+        let said = name_repos(&root.display().to_string(), &found);
+        assert!(said.contains("`/app`") || said.contains("`app`"), "{said}");
+        assert!(said.contains("libs/core"), "{said}");
+        assert!(
+            !said.contains("nested"),
+            "a repository is not descended into: {said}"
+        );
+        assert!(!said.contains("target"), "{said}");
+        assert_eq!(name_repos("/x", &[]), "");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

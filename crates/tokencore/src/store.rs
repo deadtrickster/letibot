@@ -2817,6 +2817,18 @@ impl Store {
     /// [`Store::put_job`] stamps it: the store is the clock, and a caller that supplies its
     /// own would be a caller that could backdate a move. `created_ms` is the entry's, because
     /// it is the enqueue time and the enqueue is the entry's own act.
+    /// **Take a waiting entry, or learn that somebody else has** — one `UPDATE … WHERE state =
+    /// 'waiting'`, so two daemons over one store cannot both take the same branch: exactly one
+    /// of them sees `true`. The row moves to `taken`; the caller writes the rest of the move.
+    pub fn claim_merge_entry(&self, id: &str) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE merge_queue SET state = 'taken', updated_ms = ?2
+              WHERE id = ?1 AND state = 'waiting'",
+            params![id, now_ms()],
+        )?;
+        Ok(n == 1)
+    }
+
     pub fn put_merge_entry(&self, entry: &MergeEntry) -> Result<()> {
         self.conn.execute(
             "INSERT INTO merge_queue

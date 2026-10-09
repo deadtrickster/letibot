@@ -299,6 +299,13 @@ pub trait Reviewer {
     /// **Write the request down and ring the reviewer's bell.** `Ok` is what was done, in the
     /// words the operator gets; `Err` is why it could not be, said rather than swallowed.
     fn wake(&self, entry_id: &str, req: &ReviewRequest) -> Result<String, String>;
+
+    /// **Tell the project's agent that the entry's repository has no merge gate.** Called once,
+    /// when an entry starts waiting for one. The default tells nobody, which is a door with no
+    /// sessions behind it (and every test's); the daemon's door rings the session that queued it.
+    fn gate_missing(&self, _entry_id: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// **A door that refuses by name** — what a build with no reviewer session attached answers.
