@@ -98,18 +98,63 @@ pub enum TodoStatus {
 /// **Who wrote a todo**, on the wire — the whole of the difference between the operator's items and
 /// the model's, which share one list, one format and one tool. The operator's ruling: *"the existing
 /// getter should return mine and yours, and the rest is also the same. the only difference is who
-/// created and that is it."*
+/// created and that is it."* A third author arrived with parents writing their children's boards:
+/// *"yes - i want parent agents to be able to create todos for subagents. throught tree author -
+/// (Parent <session-id-of-parent>)"*.
 ///
 /// A copy of `letibot_tokencore::store::TodoBy` rather than a re-export, for the reason
 /// `TodoStatus` above is already a copy: this crate is the WIRE, and a wire type that aliases a
 /// storage type changes when the storage does. The two are converted at the one seam that owns the
 /// board.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// **`Parent` carries the author string, so `by` is a bare string on the wire** — `"model"`,
+/// `"operator"`, `"Parent s-…"` — spelled by custom impls on both copies, and **adding the variant
+/// moved `PROTOCOL_VERSION` to 37** for the reason `TodoStatus::Postponed`'s own doc gives: no frame
+/// is added, and the number still moves, because a head built before it cannot decode the word —
+/// and the failure is the whole `TodosUpdated`/`Todos` frame, not the row.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TodoBy {
     #[default]
     Model,
     Operator,
+    /// **A parent session wrote it on a child's board.** The string is the author exactly as the
+    /// operator specified — `Parent <full parent session id>` — so a child reading its own board
+    /// can tell what it decided from what it was told, and by whom.
+    Parent(String),
+}
+
+impl TodoBy {
+    /// The author string for a parent's row: `Parent <session-id>`, verbatim and in full.
+    pub fn parent_of(session_id: &str) -> TodoBy {
+        TodoBy::Parent(format!("Parent {session_id}"))
+    }
+}
+
+impl Serialize for TodoBy {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            TodoBy::Model => s.serialize_str("model"),
+            TodoBy::Operator => s.serialize_str("operator"),
+            // The variant CARRIES the author string, so the wire form is the string itself.
+            TodoBy::Parent(author) => s.serialize_str(author),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for TodoBy {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<TodoBy, D::Error> {
+        let word = String::deserialize(d)?;
+        match word.as_str() {
+            "model" => Ok(TodoBy::Model),
+            "operator" => Ok(TodoBy::Operator),
+            // `Parent …` is the one open spelling; anything else is a word this reader does not
+            // know, refused by name rather than read as the model's the way a catch-all would.
+            other if other.starts_with("Parent ") => Ok(TodoBy::Parent(other.to_string())),
+            other => Err(serde::de::Error::custom(format!(
+                "`{other}` is not a todo author: model, operator, or `Parent <session-id>`"
+            ))),
+        }
+    }
 }
 
 /// **A path a gated action opens for writing** — R35's field, and the shape the other head's

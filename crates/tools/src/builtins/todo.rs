@@ -39,6 +39,22 @@ pub struct TodoBoard {
     /// wrong is a delta nobody can audit"* — so an operator row left in that vector would be deleted
     /// by the model's next `todo` call. Two halves, one getter.
     operator: Mutex<Vec<TodoItem>>,
+    /// **A PARENT session's rows on THIS board — the third half, and the one that must never meet
+    /// the wholesale replace.**
+    ///
+    /// The operator: *"yes - i want parent agents to be able to create todos for subagents.
+    /// throught tree author - (Parent <session-id-of-parent>)"*. A child's board therefore has three
+    /// authors, and the new one's write is the OPPOSITE of the model's own: the parent's `todos` are
+    /// an UPSERT scoped to the parent's authorship ([`TodoBoard::upsert_parent`]), because
+    /// *"send the whole list; omitting an entry removes it"* is a contract about **your own** board —
+    /// carried across sessions it would be a parent's three rows wiping a child's plan and the
+    /// operator's rows, which is precisely the collision the two-author rule on this board exists to
+    /// prevent. Same reasoning as the operator's half, one author over: three halves, one getter.
+    ///
+    /// Single-author by construction — [`ChildTodos::upsert_child`] is the only writer, it stamps
+    /// `by` itself from the calling session's id, and only a child's own parent reaches it — so the
+    /// half holds rows by exactly one `Parent <id>` string.
+    parent: Mutex<Vec<TodoItem>>,
     version: AtomicU64,
 }
 
@@ -47,17 +63,28 @@ impl TodoBoard {
     /// plan the model was working from is what it keeps working from.
     ///
     /// **AND THE STORE'S LIST IS THE UNION, so it is SPLIT BY AUTHOR here.** `flush_todos` persists
-    /// `snapshot()`, which is both halves in one list, and this used to put all of it into the
+    /// `snapshot()`, which is all three halves in one list, and this used to put all of it into the
     /// model's half with the operator's half empty. A resumed session then had the operator's rows
     /// **inside the model's list** — so `todo_write`'s wholesale replace would delete them, the nag
     /// would count them twice once the head re-pushed its own half on hello, and the pane would draw
-    /// each of them twice. Sorting it once, here, is what makes *two halves, one getter* an
+    /// each of them twice. Sorting it once, here, is what makes *several halves, one getter* an
     /// invariant rather than a property of the callers: nothing that loads a list can get it wrong.
+    /// A `Parent` row is the third case, and a resumed child is the one that has them: its board is
+    /// restored from the store the same way, so what its parent told it survives the restart.
     pub fn new(initial: Vec<TodoItem>) -> Self {
-        let (mine, theirs): (Vec<TodoItem>, Vec<TodoItem>) =
-            initial.into_iter().partition(|t| t.by == TodoBy::Model);
+        let mut mine = Vec::new();
+        let mut told = Vec::new();
+        let mut theirs = Vec::new();
+        for t in initial {
+            match t.by {
+                TodoBy::Model => mine.push(t),
+                TodoBy::Parent(_) => told.push(t),
+                TodoBy::Operator => theirs.push(t),
+            }
+        }
         TodoBoard {
             todos: Mutex::new(mine),
+            parent: Mutex::new(told),
             operator: Mutex::new(theirs),
             version: AtomicU64::new(0),
         }
@@ -168,6 +195,75 @@ impl TodoBoard {
             .clone()
     }
 
+    /// **The rows a parent has put on this board, as a sibling reader sees them** — the child
+    /// cannot act on them (no field of `todo_write` aims at this half), but the tests and the
+    /// daemon-side resolver both need to say what survived.
+    pub fn parent_snapshot(&self) -> Vec<TodoItem> {
+        self.parent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// **A PARENT's write: an UPSERT scoped to the parent's own authorship — never the wholesale
+    /// replace the model's half takes.**
+    ///
+    /// The whole of the safety here is WHAT IT DOES NOT TOUCH, so read this twice. The model's
+    /// `todo_write` contract is *"send the WHOLE list every time — there is no delta; omitting an
+    /// entry removes it"*, and that contract **does not carry across sessions**: a parent sending
+    /// its own three rows as the whole list would delete the child's plan and the operator's rows —
+    /// one agent overwriting another agent's plan, the exact collision the author split on this
+    /// board exists to prevent. So here the rows sent are the rows the parent is ADDING or
+    /// state-updating AS THE PARENT, and nothing else moves:
+    ///
+    /// * a row whose trimmed text matches one of this author's existing rows **moves its state**
+    ///   (and nothing else — the text is the name, and a re-worded row is a NEW row, the same rule
+    ///   `set_operator_states` keeps for the operator's);
+    /// * a row that matches none is **appended** to this half, stamped `by` the author the CALLER
+    ///   passed — never a `by` from the wire, which the tool refuses as an unknown field;
+    /// * the child's rows, the operator's rows, and any other author's rows are **untouched**, and
+    ///   there is **no delete**: a parent retires a row by marking it `completed`, the same way the
+    ///   operator's rows are disposed of, and omission leaves a row exactly where it was.
+    ///
+    /// The author match is part of the scoping and not a nicety: this half is single-author by
+    /// construction, and comparing anyway is what makes that a checked fact rather than an
+    /// assumption a future writer could break.
+    ///
+    /// Returns how many rows were ADDED or CHANGED, and bumps the version only when that is not
+    /// zero — the same rule `set_operator_states` keeps, so a re-send of an unchanged plan is not
+    /// an event and does not cost the store a write or the pane a publish.
+    pub fn upsert_parent(&self, rows: &[(String, TodoStatus)], by: &TodoBy) -> usize {
+        let mut half = self.parent.lock().unwrap_or_else(|e| e.into_inner());
+        let mut changed = 0usize;
+        for (content, status) in rows {
+            let want = content.trim();
+            if let Some(hit) = half
+                .iter_mut()
+                .find(|t| t.by == *by && t.content.trim() == want)
+            {
+                if hit.status != *status {
+                    hit.status = *status;
+                    changed += 1;
+                }
+            } else {
+                half.push(TodoItem {
+                    content: content.to_string(),
+                    status: *status,
+                    by: by.clone(),
+                    // A condition is the OPERATOR's own act — a job-conditioned row fires on a
+                    // clock the parent does not own, and `[p]`/`postponed` is the operator's own
+                    // state besides. A parent's row is plain work, asked for now.
+                    when: None,
+                });
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        changed
+    }
+
     /// Replace the list. Returns the new version, which is what the harness
     /// compares against to decide whether a store write and an announcement are
     /// owed.
@@ -213,14 +309,18 @@ impl TodoBoard {
     }
 
     /// The list as it stands.
+    ///
+    /// **THE UNION, and it is the whole of the feature.** Everything downstream reads this one
+    /// getter — the pane's `Todos` reply, the model's own view of the plan, and the idle nag
+    /// (`harness.rs`'s `nag_notice`, which asks `unfinished_plan` of exactly this) — so nothing
+    /// else had to learn that the operator or a parent can write a row too. The model's list comes
+    /// first because it is the list the model has been working from; then what it was TOLD, parent
+    /// before operator — the caller nearest first, the human last and on top — and each block is
+    /// contiguous, the property `the_union_is_two_contiguous_blocks…` asserts for its two.
     pub fn snapshot(&self) -> Vec<TodoItem> {
-        // **THE UNION, and it is the whole of the feature.** Everything downstream reads this one
-        // getter — the pane's `Todos` reply, the model's own view of the plan, and the idle nag
-        // (`harness.rs`'s `nag_notice`, which asks `unfinished_plan` of exactly this) — so nothing
-        // else had to learn that the operator can write a row too. The model's list comes first
-        // because it is the list the model has been working from, and the operator's rows are the
-        // ones it has been asked for on top.
         let mut out = self.todos.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let told = self.parent.lock().unwrap_or_else(|e| e.into_inner());
+        out.extend(told.iter().cloned());
         let operator = self.operator.lock().unwrap_or_else(|e| e.into_inner());
         out.extend(operator.iter().cloned());
         out
@@ -319,13 +419,16 @@ pub fn unfinished_plan(todos: &[TodoItem]) -> Option<String> {
     };
     // **WHO ASKED, and it is not a courtesy — it decides WHICH FIELD disposes of the row.** A row the
     // model wrote is rewritten with `todos`; a row the OPERATOR wrote is moved with `operator`, its
-    // text quoted exactly. The nag is the one place the model hears about a row before acting on it,
-    // so leaving the author out is how a model comes to rewrite its own plan at the row the operator
-    // is waiting on.
-    let who = if next.by == TodoBy::Operator {
-        "the operator's"
-    } else {
-        "yours"
+    // text quoted exactly; and a row a PARENT wrote is one NO field of this tool may dispose of —
+    // the author retires it — which the child has to be told rather than left to guess. The nag is
+    // the one place the model hears about a row before acting on it, so leaving the author out is
+    // how a model comes to rewrite its own plan at the row somebody else is waiting on.
+    let who = match &next.by {
+        TodoBy::Operator => "the operator's",
+        // The author string itself (`Parent <session id>`), verbatim: a child reading its own
+        // board must be able to tell what it decided from what it was told, and by whom.
+        TodoBy::Parent(author) => author.as_str(),
+        TodoBy::Model => "yours",
     };
     let state = match next.status {
         TodoStatus::InProgress => format!(" — {who}, and you had it in progress"),
@@ -335,13 +438,26 @@ pub fn unfinished_plan(todos: &[TodoItem]) -> Option<String> {
     // is what `drop` is for — and may not drop the operator's: their row is their words, so the model
     // moves its STATE and says in its reply why it is not doing the work. `todo_write`'s `operator`
     // field is named in the message because a model that has to guess a mechanism guesses wrong.
-    let advice = if next.by == TodoBy::Operator {
-        "the operator asked for this one, so do it — or mark it done with `todo_write`'s \
-         `operator` field, quoting the text above exactly. You cannot remove their row: if you \
-         think it should not be done, say why in your reply."
-    } else {
-        "do this one, or mark it done, or drop it — a plan left open is a plan nobody is \
-         following. If you are stopping here deliberately, say why in your reply."
+    // A parent's row is the third case and the line is deliberately harder than the operator's: the
+    // parent is a live session that will read this child's reply, so the child's way out is to DO
+    // the work and SAY it did — no field of this tool aims at the parent's half, and a child that
+    // could silently close a parent's row could silently close work it was told to do.
+    let advice = match &next.by {
+        TodoBy::Operator => {
+            "the operator asked for this one, so do it — or mark it done with `todo_write`'s \
+             `operator` field, quoting the text above exactly. You cannot remove their row: if you \
+             think it should not be done, say why in your reply."
+        }
+        TodoBy::Parent(_) => {
+            "your parent asked for this one, so do it and say in your reply when it is done — \
+             they retire the row themselves when they read you. You cannot remove or restate \
+             their row: it is theirs, and if you think it should not be done, say why in your \
+             reply."
+        }
+        TodoBy::Model => {
+            "do this one, or mark it done, or drop it — a plan left open is a plan nobody is \
+             following. If you are stopping here deliberately, say why in your reply."
+        }
     };
     Some(format!(
         "[todo check] this turn is finished and one item is not done{rest}:\n  - {}{state}\n{advice}",
@@ -353,14 +469,59 @@ pub fn unfinished_plan(todos: &[TodoItem]) -> Option<String> {
 // length of list to truncate. The operator's ruling — *"only one todo at a time, so a model will not
 // be defocused"* — removes the thing that constant existed for.
 
+/// **The daemon-side half of `todo_write`'s `target`: reaching a CHILD session's board.**
+///
+/// The tool owns THIS session's board; a child's board is another `Arc` held by the daemon, and
+/// only the daemon can say which sessions are whose children — `parent_session_id` on the session
+/// list — and which session is calling now. So the implementation is built PER SESSION with the
+/// caller already bound, and decides EVERYTHING the safety of this feature turns on:
+///
+/// * whether the target names one of the CALLER's own children (full id or the short `…tail` form
+///   the subagent pane shows), refused BY NAME otherwise — a session that could write a sibling's
+///   or its parent's board is a session that can overwrite another agent's plan;
+/// * the AUTHOR — `Parent <the caller's full session id>`, built daemon-side and never taken from
+///   the call, so a model cannot claim an authorship it does not have — which is also why `caller`
+///   is not a parameter: an author a tool could name is an author a tool could forge;
+/// * the upsert itself ([`TodoBoard::upsert_parent`]) and the flush that makes it durable
+///   (`put_todos` + `TodosUpdated` on the child's hub), so the rows are on the pane and in the
+///   store the moment they are written, not at the child's next turn boundary.
+///
+/// Returns the child's whole board — the union — so the tool can render what the child now sees,
+/// which is the parent's confirmation that the right rows survived beside the child's own.
+pub trait ChildTodos: Send + Sync {
+    /// Add or state-update ROWS on the named child's board, authored as the CALLER this
+    /// implementation was built for. `Err` is the refusal, written to be shown to the model
+    /// as it stands.
+    fn upsert_child(
+        &self,
+        target: &str,
+        rows: &[(String, TodoStatus)],
+    ) -> Result<Vec<TodoItem>, String>;
+}
+
 /// The write tool. Holds the board; the harness holds the same `Arc`.
 pub struct TodoWriteTool {
     board: Arc<TodoBoard>,
+    /// The daemon's child-board resolver — `None` in a runtime with no daemon behind it, in which
+    /// case a `target` write is refused by name rather than quietly aimed at this session's board.
+    children: Option<Arc<dyn ChildTodos>>,
 }
 
 impl TodoWriteTool {
     pub fn new(board: Arc<TodoBoard>) -> Self {
-        TodoWriteTool { board }
+        TodoWriteTool {
+            board,
+            children: None,
+        }
+    }
+
+    /// Seat the tool with a way to reach CHILDREN's boards — the daemon's half of `target`. The
+    /// board stays the session's own; nothing here can write it as anybody else.
+    pub fn with_children(board: Arc<TodoBoard>, children: Arc<dyn ChildTodos>) -> Self {
+        TodoWriteTool {
+            board,
+            children: Some(children),
+        }
     }
 }
 
@@ -382,7 +543,16 @@ impl Tool for TodoWriteTool {
              does not match exactly one of their rows is refused and nothing is \
              written, because a guessed row is a row changing state under you. You \
              cannot delete their row; if you think it should not be done, say so in \
-             your reply.",
+             your reply.\n\n`target` names a session YOU spawned with `task` and \
+             writes YOUR rows onto THAT session's board instead of your own. There the \
+             whole-list contract is OFF: your `todos` are the rows you are adding or \
+             updating as the parent — a row whose text matches one of yours there \
+             moves its state, a new text is added — and the child's rows, the \
+             operator's rows and every other author's rows are UNTOUCHED. Omitting \
+             one of your rows leaves it on the child's board; there is no delete, so \
+             retire a row by marking it completed. The child is told through the usual \
+             todo nags, and rows you write there show as `Parent <your session id>`. \
+             `target` and `operator` do not mix: name one child, your own rows only.",
             json!({
                 "type": "object",
                 "properties": {
@@ -405,7 +575,11 @@ impl Tool for TodoWriteTool {
                     },
                     "todos": {
                         "type": "array",
-                        "description": "The complete list, in the order to do them.",
+                        "description": "The complete list, in the order to do them. With \
+                                        `target`: the rows you are adding to or \
+                                        state-updating on that child's board — not a \
+                                        replace; the child's own rows and everyone \
+                                        else's are untouched.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -417,6 +591,20 @@ impl Tool for TodoWriteTool {
                             },
                             "required": ["content", "status"]
                         }
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Write onto a CHILD session's board instead of \
+                                        your own: the child's session id, full or the \
+                                        short `…tail` form the subagent pane and \
+                                        `task_result` show. Only a session YOU spawned \
+                                        with `task` may be named; anything else — a \
+                                        sibling, your own parent, yourself — is refused \
+                                        by name. With `target`, `todos` is an upsert of \
+                                        your own rows there (matched by exact text) \
+                                        and NEVER a replace: the child's rows, the \
+                                        operator's rows and other authors' rows are \
+                                        untouched, and there is no delete."
                     }
                 },
                 "required": ["todos"]
@@ -434,89 +622,92 @@ impl Tool for TodoWriteTool {
                  not clear the list.",
             );
         };
-        let mut items = Vec::with_capacity(list.len());
-        for (i, t) in list.iter().enumerate() {
-            // **AN UNKNOWN FIELD IN AN ENTRY IS REFUSED BY NAME, AND THIS IS THE ONE THAT COST A
-            // TURN. MEASURED, verbatim, from the transcript of a real session:**
-            //
-            //   {"todos": [{"content": "plain quoting — marked complete on the operator's
-            //               instruction; origin unrecoverable",
-            //               "operator": "mark that todo item as complete. no idea where it came from",
-            //               "status": "completed"}]}
-            //
-            // `operator` is a **TOP-LEVEL** argument of this tool and the model put it one level too
-            // deep. Every field this function reads was valid, so the call SUCCEEDED: the entry went
-            // into the model's own half and **the operator's row was never touched**. The model then
-            // spent two more calls and a paragraph of its reply working out why the row would not
-            // close — *"the mark didn't take, and I can't make it"* — and the operator watched a
-            // duplicate appear in their pane.
-            //
-            // **That is the same defect this crate refuses everywhere else**: a tool that ignores a
-            // field rather than saying it does not know it turns a wrong write into a silent one, and
-            // the model has no way to tell *nothing happened* from *it worked and you cannot see it*.
-            // The schema already says exactly two fields; this is where that is enforced.
-            if let Some(obj) = t.as_object() {
-                for key in obj.keys() {
-                    if !matches!(key.as_str(), "content" | "status") {
-                        return Invocation::failed(
-                            format!("entry {} has an unknown field `{key}`", i + 1),
-                            if key == "operator" {
-                                "**`operator` is a TOP-LEVEL argument, not a field of a `todos` \
-                                 entry**: send it BESIDE `todos`, as {\"todos\": […], \"operator\": \
-                                 [{\"content\": \"<the row's own words, quoted exactly>\", \
-                                 \"status\": \"completed\"}]}. Left inside an entry it is ignored, \
-                                 and being ignored is what makes it look like the row changed when \
-                                 it did not."
-                            } else {
-                                "a `todos` entry has exactly `content` and `status` — the whole list \
-                                 is replaced on every call, so an unknown field is refused rather \
-                                 than ignored."
-                            },
-                        );
-                    }
-                }
-            }
-            let Some(content) = t.get("content").and_then(|v| v.as_str()) else {
-                return Invocation::failed(
-                    format!("entry {} has no content", i + 1),
-                    "every entry needs `content` (what the step is) and `status`.",
+        let rows = match parse_rows(list) {
+            Ok(rows) => rows,
+            Err(inv) => return inv,
+        };
+        // **THE TARGET PATH — a write onto a CHILD's board — runs before anything of this
+        // session's own moves, and it never reaches `board` at all.**
+        //
+        // Everything below this block is the two-author contract on THIS board (wholesale
+        // replace + the operator's state-only edits); none of it may leak across sessions, so
+        // the block validates its own rows above (`parse_rows`, the same refusals), refuses the
+        // `operator` field beside it (two boards' concerns in one call is a wrong write waiting
+        // to happen), and hands the rows to the daemon-side resolver — which checks the target is
+        // the CALLER's own child, stamps the author itself, upserts, and returns the child's
+        // board for the reply. `Err` from it is already a refusal written for the model.
+        if let Some(target) = args.get("target") {
+            let refused = |what: String, why: &str| {
+                Invocation::failed(
+                    what,
+                    "**nothing was written — not on any board.** ".to_string() + why,
+                )
+            };
+            let Some(target) = target.as_str() else {
+                return refused(
+                    "`target` needs to be a session id".into(),
+                    "send `target` as the child's session id — full, or the short `…tail` form the \
+                     subagent pane shows — or leave it out to write your own board.",
                 );
             };
-            if content.trim().is_empty() {
-                return Invocation::failed(
-                    format!("entry {} is empty", i + 1),
-                    "an empty entry says nothing; drop it or write the step.",
+            if let Some(op) = args.get("operator") {
+                return refused(
+                    format!(
+                        "`target` and `operator` do not mix: this call named a child (`{target}`) \
+                         and an `operator` block ({op})"
+                    ),
+                    "`operator` moves the rows the OPERATOR wrote on YOUR board; `target` writes \
+                     your rows onto a CHILD's board. One call, one board — send them separately.",
                 );
             }
-            let status = match t.get("status").and_then(|v| v.as_str()) {
-                Some("pending") => TodoStatus::Pending,
-                Some("in_progress") => TodoStatus::InProgress,
-                Some("completed") => TodoStatus::Completed,
-                Some(other) => {
-                    return Invocation::failed(
-                        format!("entry {} has status `{other}`", i + 1),
-                        "`status` is one of: pending, in_progress, completed.",
-                    );
-                }
-                None => {
-                    return Invocation::failed(
-                        format!("entry {} has no status", i + 1),
-                        "every entry needs `content` and `status`.",
-                    );
-                }
+            if rows.is_empty() {
+                return refused(
+                    "`todos` is empty and `target` names a child".into(),
+                    "on a child's board your rows are ADDED or state-updated, never replaced, so \
+                     an empty list has nothing to say — and there is no delete to mean by it. Name \
+                     the rows you are adding, or mark one you already wrote there `completed`.",
+                );
+            }
+            let Some(children) = &self.children else {
+                return refused(
+                    format!(
+                        "`target` was given (`{target}`) but this session has no children's boards to address"
+                    ),
+                    "this runtime seats `todo_write` without a child-board resolver — a standalone \
+                     or test runtime. Leave `target` out: the call writes your own board.",
+                );
             };
-            items.push(TodoItem {
-                content: content.to_string(),
+            return match children.upsert_child(target, &rows) {
+                // The resolver is built per session with the caller already bound, which is why
+                // the author never comes from the wire — see `ChildTodos::upsert_child`'s doc.
+                Ok(child_board) => Invocation::ok(format!(
+                    "written onto {target}'s board as `Parent <your session id>` — your rows were \
+                     added or state-updated as yours; the child's rows, the operator's rows and \
+                     every other author's are untouched, and nothing was deleted.\n\n{}",
+                    render(&child_board),
+                )),
+                Err(why) => Invocation::failed(
+                    format!("`{target}` was not written: {why}"),
+                    "a target must be a session THIS session spawned with `task`. Quote one of \
+                     your children — the subagent pane (`ctrl-g`) and `task_result` list them — \
+                     or leave `target` out to write your own board.",
+                ),
+            };
+        }
+        let items: Vec<TodoItem> = rows
+            .into_iter()
+            .map(|(content, status)| TodoItem {
+                content,
                 status,
-                // the MODEL's list, by definition: this function is the `todo` tool
+                // the MODEL's list, by definition: this arm of the function is the `todo` tool
                 by: letibot_tokencore::store::TodoBy::Model,
                 // **The model's own half is replaced wholesale on every call**, so a condition
                 // written here would die on the model's next `todo_write` — see
                 // `TodoItem::when`. A conditioned row belongs to the OPERATOR's half, which this
                 // tool does not own and cannot overwrite.
                 when: None,
-            });
-        }
+            })
+            .collect();
         // **THE OPERATOR'S ROWS ARE MOVED BEFORE THE MODEL'S LIST IS REPLACED**, so a quote that
         // does not resolve costs nothing at all: `set_operator_states` resolves every name before it
         // applies any, and a refusal here leaves the model's own half exactly as it was. The other
@@ -589,6 +780,90 @@ impl Tool for TodoWriteTool {
     }
 }
 
+/// **Parse and validate a `todos` list — the shared gate both boards' writes pass.**
+///
+/// The refusals are the tool's own and both paths keep them: an unknown field inside an entry is
+/// refused BY NAME, an empty entry is refused, a status outside the three words is refused. The
+/// unknown-field check is the one that cost a real turn — MEASURED, verbatim, from the transcript
+/// of a real session:
+///
+///   {"todos": [{"content": "plain quoting — marked complete on the operator's
+///               instruction; origin unrecoverable",
+///               "operator": "mark that todo item as complete. no idea where it came from",
+///               "status": "completed"}]}
+///
+/// `operator` is a **TOP-LEVEL** argument of this tool and the model put it one level too deep.
+/// Every field this function read was valid, so the call SUCCEEDED: the entry went into the
+/// model's own half and **the operator's row was never touched**. The model then spent two more
+/// calls and a paragraph of its reply working out why the row would not close — *"the mark
+/// didn't take, and I can't make it"* — while the operator watched a duplicate appear in their
+/// pane. **That is the same defect this crate refuses everywhere else**: a tool that ignores a
+/// field rather than saying it does not know it turns a wrong write into a silent one. With
+/// `target` the same check refuses a smuggled `by` — the author is the daemon's to stamp, never
+/// the call's to claim.
+fn parse_rows(list: &[Value]) -> Result<Vec<(String, TodoStatus)>, Invocation> {
+    let mut rows = Vec::with_capacity(list.len());
+    for (i, t) in list.iter().enumerate() {
+        if let Some(obj) = t.as_object() {
+            for key in obj.keys() {
+                if !matches!(key.as_str(), "content" | "status") {
+                    return Err(Invocation::failed(
+                        format!("entry {} has an unknown field `{key}`", i + 1),
+                        if key == "operator" {
+                            "**`operator` is a TOP-LEVEL argument, not a field of a `todos` \
+                             entry**: send it BESIDE `todos`, as {\"todos\": […], \"operator\": \
+                             [{\"content\": \"<the row's own words, quoted exactly>\", \
+                             \"status\": \"completed\"}]}. Left inside an entry it is ignored, \
+                             and being ignored is what makes it look like the row changed when \
+                             it did not."
+                        } else if key == "by" {
+                            "**`by` is not yours to send**: the author of a row is decided by the \
+                             daemon from the session making the call — yours on your own board, \
+                             `Parent <your session id>` on a child's. Send only `content` and \
+                             `status`."
+                        } else {
+                            "a `todos` entry has exactly `content` and `status` — the whole list \
+                             is replaced on every call, so an unknown field is refused rather \
+                             than ignored."
+                        },
+                    ));
+                }
+            }
+        }
+        let Some(content) = t.get("content").and_then(|v| v.as_str()) else {
+            return Err(Invocation::failed(
+                format!("entry {} has no content", i + 1),
+                "every entry needs `content` (what the step is) and `status`.",
+            ));
+        };
+        if content.trim().is_empty() {
+            return Err(Invocation::failed(
+                format!("entry {} is empty", i + 1),
+                "an empty entry says nothing; drop it or write the step.",
+            ));
+        }
+        let status = match t.get("status").and_then(|v| v.as_str()) {
+            Some("pending") => TodoStatus::Pending,
+            Some("in_progress") => TodoStatus::InProgress,
+            Some("completed") => TodoStatus::Completed,
+            Some(other) => {
+                return Err(Invocation::failed(
+                    format!("entry {} has status `{other}`", i + 1),
+                    "`status` is one of: pending, in_progress, completed.",
+                ));
+            }
+            None => {
+                return Err(Invocation::failed(
+                    format!("entry {} has no status", i + 1),
+                    "every entry needs `content` and `status`.",
+                ));
+            }
+        };
+        rows.push((content.to_string(), status));
+    }
+    Ok(rows)
+}
+
 /// The list, the way the model wrote it.
 fn render(todos: &[TodoItem]) -> String {
     if todos.is_empty() {
@@ -607,19 +882,24 @@ fn render(todos: &[TodoItem]) -> String {
         // **AND WHO WROTE IT, or `operator` is a field the model cannot aim.** The `by` field is
         // the whole of the difference between the halves, the pane has drawn it on every row since
         // R44, and this is the same fact for the reader that has to ACT on it: a row marked `— the
-        // operator's` is one this call moves with `operator`, and one marked `— yours` is one it
-        // replaces with `todos`. Content is printed VERBATIM (never trimmed, never elided), because
-        // that string is the name the model has to quote back.
+        // operator's` is one this call moves with `operator`, one marked `— yours` is one it
+        // replaces with `todos`, and one marked with a `Parent` author is one NO field of this
+        // tool disposes of — the author retires it. Content is printed VERBATIM (never trimmed,
+        // never elided), because that string is the name the model has to quote back.
+        let author = match &t.by {
+            TodoBy::Operator => "the operator's".to_string(),
+            // **The operator's own string, verbatim and in full** — `Parent s-…` — because a
+            // child reading its own board has to be able to tell what it decided from what it
+            // was told, and by whom.
+            TodoBy::Parent(who) => who.clone(),
+            TodoBy::Model => "yours".to_string(),
+        };
         out.push_str(&format!(
             "  {}. {} {}  — {}\n",
             i + 1,
             mark,
             t.content,
-            if t.by == TodoBy::Operator {
-                "the operator's"
-            } else {
-                "yours"
-            }
+            author
         ));
     }
     // **AND WHAT `[p]` MEANS, because the model has to stop proposing the row without being told
@@ -911,7 +1191,7 @@ mod tests {
         ]);
 
         let all = b.snapshot();
-        let authors: Vec<TodoBy> = all.iter().map(|t| t.by).collect();
+        let authors: Vec<TodoBy> = all.iter().map(|t| t.by.clone()).collect();
         assert_eq!(
             authors,
             vec![
@@ -1665,5 +1945,358 @@ mod tests {
         assert!(r.payload.contains("empty"), "{}", r.payload);
         assert!(board.snapshot().is_empty());
         assert_eq!(board.version(), 2);
+    }
+
+    // -- a parent writing a child's board ---------------------------------
+
+    /// The fake daemon half: one child id, one board, a refusal it hands back verbatim —
+    /// everything the tool needs to be tested against, and nothing the real resolver does
+    /// that the tool relies on (the parentage check and the author stamp are the daemon's,
+    /// and are tested where the daemon is).
+    struct FakeChildren {
+        board: Arc<TodoBoard>,
+        refused: Mutex<Vec<String>>,
+    }
+
+    impl super::ChildTodos for FakeChildren {
+        fn upsert_child(
+            &self,
+            _target: &str,
+            rows: &[(String, TodoStatus)],
+        ) -> Result<Vec<TodoItem>, String> {
+            // The real resolver stamps the author itself; the fake does the same, with an id
+            // shaped like a real one so the rendered reply can be asserted on it.
+            let by = TodoBy::parent_of("s-1789462738453908838");
+            self.board.upsert_parent(rows, &by);
+            Ok(self.board.snapshot())
+        }
+    }
+
+    fn children_runtime(board: Arc<TodoBoard>) -> (ToolRuntime, Arc<TodoBoard>, Arc<FakeChildren>) {
+        let own = Arc::new(TodoBoard::new(vec![]));
+        let fake = Arc::new(FakeChildren {
+            board,
+            refused: Mutex::new(Vec::new()),
+        });
+        let mut reg = Registry::new();
+        reg.register(Box::new(super::TodoWriteTool::with_children(
+            own.clone(),
+            fake.clone(),
+        )))
+        .unwrap();
+        let d = TempDir::new();
+        let backend = HostBackend::new(d.path()).unwrap();
+        std::mem::forget(d);
+        (ToolRuntime::new(reg, Box::new(backend)), own, fake)
+    }
+
+    /// **A parent's write UPSERTS and never replaces — the child's rows, the operator's rows and
+    /// the version's economy all survive it.**
+    ///
+    /// This is the hazard the whole feature turns on, measured rather than argued: `todo_write`'s
+    /// own-board contract is *"send the WHOLE list; omitting an entry removes it"*, and a parent
+    /// that wrote a child's board under that contract would delete the child's plan with its own
+    /// three rows. Every arm below is one thing that must not move.
+    #[test]
+    fn a_parents_write_upserts_its_own_rows_and_nobody_elses_move() {
+        let b = TodoBoard::new(vec![
+            item("the child's own step", TodoStatus::InProgress),
+            TodoItem {
+                content: "the operator's row".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+                when: None,
+            },
+        ]);
+        let author = TodoBy::parent_of("s-1789462738453908838");
+
+        // Two rows arrive from the parent.
+        let changed = b.upsert_parent(
+            &[
+                ("land the parity row".into(), TodoStatus::Pending),
+                ("write the report".into(), TodoStatus::Pending),
+            ],
+            &author,
+        );
+        assert_eq!(changed, 2, "both rows were added");
+        assert_eq!(b.version(), 1);
+
+        // **The child's rows and the operator's are untouched, and the union orders them:
+        // what the model chose, then what it was told, then the operator's.**
+        let all = b.snapshot();
+        assert_eq!(
+            all.iter().map(|t| t.content.as_str()).collect::<Vec<_>>(),
+            vec![
+                "the child's own step",
+                "land the parity row",
+                "write the report",
+                "the operator's row",
+            ],
+            "the parent's rows went BETWEEN the model's and the operator's: {all:?}"
+        );
+        assert_eq!(b.parent_snapshot().len(), 2);
+        assert!(
+            b.parent_snapshot().iter().all(|t| t.by == author),
+            "every row in the parent's half carries the author exactly: {:?}",
+            b.parent_snapshot()
+        );
+
+        // **A re-send is a state update, not a duplicate** — and the SAME text under a different
+        // author's name would be a different row, which is the scoping, but one parent is one
+        // author, so the second send moves what the first wrote.
+        let changed = b.upsert_parent(
+            &[("land the parity row".into(), TodoStatus::Completed)],
+            &author,
+        );
+        assert_eq!(changed, 1, "the existing row moved, nothing was added");
+        assert_eq!(b.parent_snapshot().len(), 2, "still two rows: no duplicate");
+        assert_eq!(b.version(), 2);
+
+        // **Omission is not deletion.** The parent sends one row and leaves the other out —
+        // under the own-board contract that would delete it; here it must not.
+        let changed = b.upsert_parent(
+            &[("write the report".into(), TodoStatus::InProgress)],
+            &author,
+        );
+        assert_eq!(changed, 1);
+        assert_eq!(
+            b.parent_snapshot().len(),
+            2,
+            "omitting `land the parity row` did not remove it: {:?}",
+            b.parent_snapshot()
+        );
+
+        // **An unchanged re-send is not an event** — the version rule `set_operator_states` keeps.
+        let before = b.version();
+        let changed = b.upsert_parent(
+            &[("write the report".into(), TodoStatus::InProgress)],
+            &author,
+        );
+        assert_eq!(changed, 0, "nothing changed");
+        assert_eq!(b.version(), before, "and nothing was announced");
+
+        // **And the CHILD's own wholesale replace cannot reach them either** — the other edge of
+        // the same rule. The child re-plans its own half and the parent's rows stay.
+        b.replace(vec![item("the child's revised step", TodoStatus::Pending)]);
+        let all = b.snapshot();
+        assert_eq!(
+            all.iter().map(|t| t.content.as_str()).collect::<Vec<_>>(),
+            vec![
+                "the child's revised step",
+                "land the parity row",
+                "write the report",
+                "the operator's row",
+            ],
+            "the child's replace moved somebody else's rows: {all:?}"
+        );
+    }
+
+    /// **A parent's row is NAG-WORTHY BY CONSTRUCTION** — and that is the whole of “the child
+    /// learns via usual todo nags”.
+    ///
+    /// The selection rules are read here, not assumed: `unfinished_plan` filters by STATUS
+    /// (completed is out, postponed is out) and by nothing else — there is no `by` anywhere in
+    /// `open_priority` — so a pending parent row is asked about exactly like the child's own.
+    /// The child's own row is completed here so the parent's is the one named, which pins both
+    /// the row and the author string the nag shows.
+    #[test]
+    fn a_parent_row_is_nag_worthy_by_construction() {
+        let author = TodoBy::parent_of("s-1789462738453908838");
+        let all = vec![
+            item("the child's own step", TodoStatus::Completed),
+            TodoItem {
+                content: "land the parity row".into(),
+                status: TodoStatus::Pending,
+                by: author.clone(),
+                when: None,
+            },
+        ];
+        let nag = unfinished_plan(&all).expect("a pending parent row is open work");
+        assert!(
+            nag.contains("land the parity row"),
+            "the nag names the parent's row: {nag}"
+        );
+        assert!(
+            nag.contains("Parent s-1789462738453908838"),
+            "and its author — the operator's string, in full, so the child can tell what it was \
+             told from what it decided: {nag}"
+        );
+        assert!(
+            nag.contains("your parent asked for this one"),
+            "and the advice is the parent's, not the operator's and not the model's own: {nag}"
+        );
+        assert!(
+            nag.contains("they retire the row themselves"),
+            "the child is told who disposes of the row: {nag}"
+        );
+
+        // And the queue serves the child's own open work first — the model's rows precede the
+        // parent's in the union, and the stable sort keeps that order inside a band.
+        let board = TodoBoard::new(vec![
+            item("mine, pending", TodoStatus::Pending),
+            TodoItem {
+                content: "theirs, pending".into(),
+                status: TodoStatus::Pending,
+                by: author,
+                when: None,
+            },
+        ]);
+        let served: Vec<String> = open_priority(&board.snapshot())
+            .into_iter()
+            .map(|t| t.content.clone())
+            .collect();
+        assert_eq!(served, vec!["mine, pending", "theirs, pending"]);
+    }
+
+    /// **The reply names all three authors** — the child reading its own board (its own
+    /// `todo_write` reply renders the union) has to be able to tell what it decided from what it
+    /// was told, and by whom.
+    #[test]
+    fn the_reply_names_all_three_authors() {
+        let shown = render(&[
+            item("mine", TodoStatus::Pending),
+            TodoItem {
+                content: "told by the parent".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::parent_of("s-1789462738453908838"),
+                when: None,
+            },
+            TodoItem {
+                content: "the operator's".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+                when: None,
+            },
+        ]);
+        assert!(shown.contains("— yours"), "{shown}");
+        assert!(
+            shown.contains("— Parent s-1789462738453908838"),
+            "the author string verbatim, not a display name: {shown}"
+        );
+        assert!(shown.contains("— the operator's"), "{shown}");
+    }
+
+    /// **A `target` write reaches the child and ONLY the child.** The tool's own board is the
+    /// thing that must not move: the target path returns before any of the own-board code runs,
+    /// and the reply is the CHILD's board — the parent's confirmation that its rows landed
+    /// beside the child's own.
+    #[test]
+    fn a_target_write_reaches_the_child_and_not_this_board() {
+        let child = Arc::new(TodoBoard::new(vec![item(
+            "the child's step",
+            TodoStatus::InProgress,
+        )]));
+        let (mut rt, own, _fake) = children_runtime(child);
+        let mut sink = RecordingToolSink::new();
+        let r = rt.invoke(
+            "t1",
+            &call(
+                r#"{"target": "s-…908838", "todos": [{"content": "land the parity row", "status": "pending"}]}"#,
+            ),
+            &mut sink,
+        );
+        assert_eq!(r.outcome, ToolOutcome::Ok, "{} {:?}", r.payload, r.outcome);
+        assert!(
+            r.payload.contains("the child's step"),
+            "the reply shows the CHILD's board: {}",
+            r.payload
+        );
+        assert!(
+            r.payload.contains("— Parent s-1789462738453908838"),
+            "with the row's author as the child will see it: {}",
+            r.payload
+        );
+        assert!(
+            r.payload.contains("untouched"),
+            "and the upsert rule said in words: {}",
+            r.payload
+        );
+        // **And this session's own board did not move.**
+        assert_eq!(own.version(), 0, "the parent's own board was not written");
+        assert!(own.snapshot().is_empty(), "nor replaced, nor cleared");
+    }
+
+    /// **The tool's own refusals on the target path, each BY NAME** — the daemon-side refusal
+    /// (not-a-child) is the resolver's and is tested with the daemon; these are the ones the
+    /// tool owes itself.
+    #[test]
+    fn the_target_paths_own_refusals_are_by_name() {
+        let child = Arc::new(TodoBoard::new(Vec::new()));
+        let (mut rt, own, _fake) = children_runtime(child.clone());
+        let mut sink = RecordingToolSink::new();
+
+        // `target` and `operator` in one call: two boards' concerns, refused together.
+        let r = rt.invoke(
+            "t1",
+            &call(
+                r#"{"target": "s-…908838", "operator": [{"content": "x", "status": "completed"}], "todos": [{"content": "y", "status": "pending"}]}"#,
+            ),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "{:?}",
+            r.outcome
+        );
+        let said = format!("{} {:?}", r.payload, r.outcome);
+        assert!(
+            said.contains("do not mix"),
+            "the refusal names both fields: {said}"
+        );
+        assert!(said.contains("s-…908838"), "and the child it named: {said}");
+        assert!(own.snapshot().is_empty(), "and nothing moved here either");
+        assert!(
+            child.snapshot().is_empty(),
+            "the child's board was not touched by the refusal"
+        );
+
+        // An empty `todos` with a `target` is not a clear — there is no delete to mean by it.
+        let r = rt.invoke(
+            "t1",
+            &call(r#"{"target": "s-…908838", "todos": []}"#),
+            &mut sink,
+        );
+        assert!(matches!(r.outcome, ToolOutcome::Failed { .. }));
+        assert!(r.payload.contains("there is no delete"), "{}", r.payload);
+
+        // A `by` smuggled into an entry: the author is the daemon's to stamp, never the call's.
+        let r = rt.invoke(
+            "t1",
+            &call(
+                r#"{"target": "s-…908838", "todos": [{"content": "x", "status": "pending", "by": "operator"}]}"#,
+            ),
+            &mut sink,
+        );
+        assert!(matches!(r.outcome, ToolOutcome::Failed { .. }));
+        let said = format!("{} {:?}", r.payload, r.outcome);
+        assert!(
+            said.contains("`by` is not yours to send"),
+            "the refusal names the forged field: {said}"
+        );
+        assert!(
+            child.snapshot().is_empty(),
+            "nothing reached the child's board"
+        );
+    }
+
+    /// **A `target` with no resolver behind it is refused by name** — the standalone runtime's
+    /// honest answer, rather than a write quietly aimed at this session's own board.
+    #[test]
+    fn a_target_with_no_children_behind_it_is_refused_by_name() {
+        let (mut rt, own) = runtime();
+        let mut sink = RecordingToolSink::new();
+        let r = rt.invoke(
+            "t1",
+            &call(r#"{"target": "s-…908838", "todos": [{"content": "x", "status": "pending"}]}"#),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "{:?}",
+            r.outcome
+        );
+        let said = format!("{} {:?}", r.payload, r.outcome);
+        assert!(said.contains("no children's boards"), "{}", said);
+        assert!(own.snapshot().is_empty(), "and this board stayed empty");
     }
 }

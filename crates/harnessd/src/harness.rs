@@ -126,6 +126,15 @@ pub struct Parts {
     /// The loaded skills, shared with the `skill` tool and the dashboard's `skills`
     /// panel.
     pub skills: std::sync::Arc<letibot_tools::builtins::skill::SkillRegistry>,
+    /// **Every live todo board this daemon holds, by session id** — the map a parent's
+    /// `todo_write` with a `target` resolves its child through (`crate::child_todos`).
+    ///
+    /// It rides [`Parts`] for the same reason [`Parts::tree_slots`] does: a live `Arc` that
+    /// belongs to the DAEMON and not to any one session's config, handed to every harness so
+    /// each can register its own board at open — root, child, resumed or fresh — and read any
+    /// other's through the resolver built beside it. The store path rides along because the
+    /// resolver's flush needs a connection of its own (`Store` is `Send` and not `Sync`).
+    pub child_boards: std::sync::Arc<crate::child_todos::ChildBoards>,
     /// **The watcher set of the subagent TREE this session belongs to, when it is a
     /// child** (R58).
     ///
@@ -242,6 +251,9 @@ impl Parts {
             tasks,
             lsp,
             skills,
+            // The daemon-wide board map, over the same store the sessions write — see the
+            // field's doc for why it is here and not on a harness.
+            child_boards: crate::child_todos::ChildBoards::shared(cfg.store.clone()),
             // A root session is its own tree; it has no parent's watcher set to join.
             tree_watch: None,
             // Nor a parent's handle list: a root's runner gets a fresh one (R58).
@@ -2237,6 +2249,13 @@ impl Harness {
                 .map(|s| s.todos(&cfg.session_id).unwrap_or_default())
                 .unwrap_or_default(),
         ));
+        // **And registered in the daemon's board map, root or child alike** — the one place a
+        // parent's `todo_write` with a `target` can find this session's board (`crate::child_todos`).
+        // A resumed child restored with `Parent` rows lands them in its own parent half, so what
+        // its parent told it survives the restart.
+        parts
+            .child_boards
+            .register(&cfg.session_id, todo_board.clone());
         // **The slot a child of this session reads to join the tree** (R58). Declared
         // here, before the runner that holds it, and filled once `job_watch` exists
         // below — see `HarnessTaskRunner::tree_watch`.
@@ -2272,6 +2291,7 @@ impl Harness {
                 tasks: parts.tasks.clone(),
                 skills: parts.skills.clone(),
                 lsp: parts.lsp.clone(),
+                child_boards: parts.child_boards.clone(),
                 slots: parts.tree_slots.clone().unwrap_or_default(),
                 // Filled below, once this harness has built its own `job_watch` (R58).
                 tree_watch: tree_watch_slot.clone(),
@@ -2289,6 +2309,16 @@ impl Harness {
         // same object — a digest running on a second runner would be a subagent
         // tree the operator's `task_result` listing does not show.
         let digest_runner = task_runner.clone();
+        // **The daemon half of `todo_write`'s `target`** — bound to THIS session as the caller,
+        // so the author stamp (`Parent <this session's id>`) is the daemon's fact and never the
+        // call's claim, and the parentage check (`target.parent_session_id == this session`) is
+        // the resolver's and nobody else's. See `crate::child_todos`.
+        let child_todos: Arc<dyn letibot_tools::builtins::todo::ChildTodos> =
+            Arc::new(crate::child_todos::ParentTodos::new(
+                cfg.session_id.clone(),
+                session_registry.clone(),
+                parts.child_boards.clone(),
+            ));
         // **And it is the session's HOLDER OF SUBAGENT HANDLES**, for the watchers and for
         // `job_kill` both. Cloned here because `task_runner` is MOVED into the registry on
         // the next statement — `digest_runner` above is the same object for the same
@@ -2298,6 +2328,7 @@ impl Harness {
         registry = letibot_tools::with_session_tools(
             registry,
             todo_board.clone(),
+            Some(child_todos),
             task_runner,
             parts.skills.clone(),
             parts.lsp.clone(),
@@ -8677,6 +8708,12 @@ impl Harness {
                 letibot_tokencore::store::TodoBy::Operator => {
                     letibot_sessionlog::event::TodoBy::Operator
                 }
+                // **The author string TRAVELS**: `Parent s-…` is the same string in the store and
+                // on the wire, which is what lets a head or a `sqlite3` reader name the session
+                // that wrote a child's row without a second lookup.
+                letibot_tokencore::store::TodoBy::Parent(who) => {
+                    letibot_sessionlog::event::TodoBy::Parent(who)
+                }
             },
             status: match t.status {
                 letibot_tokencore::store::TodoStatus::Pending => WireTodoStatus::Pending,
@@ -10440,6 +10477,12 @@ struct HarnessTaskRunner {
     /// tools so a subagent sees the same capabilities the parent does.
     skills: Arc<letibot_tools::builtins::skill::SkillRegistry>,
     lsp: Arc<letibot_tools::builtins::lsp::LspConfig>,
+    /// **The daemon's board map, so a child's `Parts` carries the same one its parent's
+    /// did** (`crate::child_todos`): a grandchild's board must land in the SAME map the
+    /// grandparent's `todo_write` resolves through, or a parent could write one generation
+    /// of children and not the next. Cloned from `Parts` the way every other shared piece
+    /// here is.
+    child_boards: Arc<crate::child_todos::ChildBoards>,
     /// The subagents this session has started, in the order it started them.
     /// Shared with every clone of this runner — the thread that runs a child
     /// holds one, and so does the tool that collects it.
@@ -11662,6 +11705,7 @@ impl HarnessTaskRunner {
             tasks: parts.tasks.clone(),
             skills: parts.skills.clone(),
             lsp: parts.lsp.clone(),
+            child_boards: parts.child_boards.clone(),
             slots: parts.tree_slots.clone().unwrap_or_default(),
             // The three cells a SPAWN reads and an enqueue never does: a tree's watcher set,
             // the head's answers, and the daemon's server window. A test that starts no child
@@ -12195,6 +12239,11 @@ impl HarnessTaskRunner {
             tasks: self.tasks.clone(),
             lsp: self.lsp.clone(),
             skills: self.skills.clone(),
+            // **And the daemon's board map is the one thing a child must SHARE exactly** —
+            // its own board lands here at its open, and its parent's `todo_write` finds it
+            // through the same map (`crate::child_todos`). A fresh map per child would make a
+            // grandchild unaddressable by everybody above it.
+            child_boards: self.child_boards.clone(),
             // **The child joins this tree's watcher set** (R58): the parent's own set, which
             // carries the tree's ROOT (for a permission card) and the level above (for what this
             // session cannot drain, and for the ring that says so). The parent is a root at depth
