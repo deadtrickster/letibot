@@ -2,7 +2,7 @@
 //! anchor the reader holds or the bottom they follow.
 
 use crate::app::*;
-use crate::ui::render::{RenderConfig, row, row_strings, visible_width};
+use crate::ui::render::{RenderConfig, row, row_strings, trim_to, visible_width};
 use crate::ui::*;
 use letibot_sessionlog::view::{CallState, TurnState};
 use letibot_transcript::TranscriptItem;
@@ -662,6 +662,18 @@ impl App {
         // anchored row happens to sit near the END of a shortened transcript has
         // `scroll == 0`, and the reader was then left holding a viewport with nothing on
         // screen saying so. The state is the anchor, so the sentence follows the anchor.
+        // **The turn's prompt, pinned on top while the view is held** — the operator,
+        // 2026-10-09: *"when im scrolling back i want my latest prompt (truncated to one line)
+        // to stay pinned on top, otherwise i forget wtf is going on"*. It covers the window's
+        // first row the way the banner below covers its last, and only while it has scrolled
+        // off: a prompt still on screen is not drawn twice. See [`App::pinned_prompt`].
+        if !self.following()
+            && out.len() > 2
+            && let Some(pin) = self.pinned_prompt(start)
+        {
+            out[0] = pin;
+            self.file_rows.retain(|(r, _)| *r != 0);
+        }
         if !self.following() {
             let behind = total - end;
             let last = out.len().saturating_sub(1);
@@ -672,6 +684,60 @@ impl App {
             self.file_rows.retain(|(r, _)| *r != last);
         }
         out
+    }
+}
+
+impl App {
+    /// **The prompt of the turn at line `top` of the history, as one pinned row** — or `None`
+    /// when there is nothing to pin: no operator prompt at or above that line, or the prompt's
+    /// own first line is still on screen.
+    ///
+    /// The turn is found from the ROW at the top of the window (R36's span map), walking back to
+    /// the nearest row the operator wrote — so the pin is the question the visible answer is
+    /// answering, not the newest question of the session. Drawn as the operator's row is drawn
+    /// (`user_block`), with the text cut to the block's one line and the head's own `…`.
+    pub(crate) fn pinned_prompt(&self, top: usize) -> Option<String> {
+        let at_top = self.spans.iter().rev().find(|sp| sp.at <= top)?;
+        let (row, it, text) = (0..=at_top.row).rev().find_map(|k| {
+            let it = self.items.get(k)?;
+            match it.item.as_ref()? {
+                letibot_transcript::TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Operator,
+                    parts,
+                } => {
+                    let text = parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            letibot_transcript::UserPart::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    Some((k, it, text))
+                }
+                _ => None,
+            }
+        })?;
+        // Still on screen: its first line is at or below the window's top. A prompt with no
+        // span at all is above the rows a tail frame rendered — off screen by definition.
+        if self
+            .spans
+            .iter()
+            .find(|sp| sp.row == row)
+            .is_some_and(|sp| sp.at >= top)
+        {
+            return None;
+        }
+        let stamp = clock_time(it.ts);
+        let stamp_w = visible_width(&stamp);
+        let cols = self
+            .cfg
+            .width
+            .max(20)
+            .saturating_sub(2 + stamp_w + usize::from(!stamp.is_empty()))
+            .max(8);
+        let one = trim_to(&text.split_whitespace().collect::<Vec<_>>().join(" "), cols);
+        user_block(&one, it.ts, &self.cfg).into_iter().next()
     }
 }
 

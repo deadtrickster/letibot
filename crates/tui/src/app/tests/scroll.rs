@@ -2797,3 +2797,100 @@ fn a_deep_park_on_a_living_stream_is_reachable_from_the_wheel() {
         a.scroll
     );
 }
+
+/// **Scrolled back, the prompt of the turn on screen stays pinned at the top** — one line.
+///
+/// The operator, 2026-10-09: *"when im scrolling back i want my latest prompt (truncated to one
+/// line) to stay pinned on top, otherwise i forget wtf is going on. prompt for the segment /
+/// turn of course"*. So the pinned line is the operator's prompt that opened the turn the top
+/// of the window is in — not the newest prompt of the session — drawn as their row is drawn,
+/// cut to one line; and it is there only while the view is held and the prompt itself has
+/// scrolled off the top.
+#[test]
+fn scrolled_back_the_turns_prompt_is_pinned_on_top() {
+    use letibot_transcript::{TranscriptItem, UserPart};
+    let mut a = app();
+    a.session_id = "s".into();
+    let mut seq = 0u64;
+    let mut row = |a: &mut App, id: &str, kind: &str, item: TranscriptItem| {
+        seq += 1;
+        a.apply(ServerFrame::Event(env(seq, testing::appended(id, kind))));
+        seq += 1;
+        a.apply(ServerFrame::Event(env(
+            seq,
+            SessionEvent::TranscriptContent {
+                item_id: id.into(),
+                item: Box::new(item),
+            },
+        )));
+    };
+    for t in 0..3 {
+        let prompt = format!(
+            "PROMPT-{t} please look at the reader and tell me why it drops the last record \
+             when the file has no trailing newline, and fix it with a test"
+        );
+        row(
+            &mut a,
+            &format!("u{t}"),
+            "user",
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Operator,
+                parts: vec![UserPart::Text { text: prompt }],
+            },
+        );
+        let answer: String = (0..40)
+            .map(|i| format!("answer {t} line {i}\n\n"))
+            .collect();
+        row(
+            &mut a,
+            &format!("a{t}"),
+            "assistant",
+            TranscriptItem::Assistant {
+                text: answer,
+                tool_calls: vec![],
+                truncated: false,
+            },
+        );
+    }
+    let (w, h) = (80, 24);
+    let following = a.screen(w, h);
+    assert!(
+        !following.iter().any(|l| l.contains("PROMPT-")),
+        "following the tail, nothing is pinned: {following:#?}"
+    );
+    // Up into the middle of turn 1's answer.
+    while !a
+        .screen(w, h)
+        .iter()
+        .any(|l| l.contains("answer 1 line 20"))
+    {
+        a.key(Key::PageUp);
+    }
+    let screen = a.screen(w, h);
+    let pinned = &screen[1];
+    assert!(
+        pinned.contains("PROMPT-1"),
+        "the top body row is the turn's prompt: {screen:#?}"
+    );
+    assert!(pinned.contains('…'), "cut to one line: {pinned:?}");
+    assert!(
+        !screen[2].contains("tell me why"),
+        "one line, not the wrapped prompt: {screen:#?}"
+    );
+    // Further up, into turn 0: the pin follows the turn.
+    while !a
+        .screen(w, h)
+        .iter()
+        .any(|l| l.contains("answer 0 line 20"))
+    {
+        a.key(Key::PageUp);
+    }
+    let screen = a.screen(w, h);
+    assert!(screen[1].contains("PROMPT-0"), "{screen:#?}");
+    // At the very top the prompt is itself on screen, so it is not drawn twice.
+    for _ in 0..40 {
+        a.key(Key::PageUp);
+    }
+    let screen = a.screen(w, h).join("\n");
+    assert_eq!(screen.matches("PROMPT-0").count(), 1, "{screen}");
+}
