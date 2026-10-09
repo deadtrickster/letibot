@@ -362,8 +362,22 @@ fn tail(text: &str, cap: usize) -> String {
 /// for the caller's log) and `Err` is the output of one that did not, which is the
 /// evidence the row carries.
 fn run_captured(dir: &Path, program: &str, args: &[&str]) -> Result<String, String> {
+    run_captured_env(dir, &[], program, args)
+}
+
+/// [`run_captured`] with environment the caller needs to add.
+///
+/// A second function rather than a parameter on every call, because exactly one caller has any
+/// environment to add — the gate, and it has one variable ([`GATE_TARGET_DIR`]).
+fn run_captured_env(
+    dir: &Path,
+    env: &[(&str, &str)],
+    program: &str,
+    args: &[&str],
+) -> Result<String, String> {
     let out = Command::new(program)
         .current_dir(dir)
+        .envs(env.iter().copied())
         .args(args)
         .output()
         .map_err(|e| format!("{program} {}: {e}", args.join(" ")))?;
@@ -466,16 +480,83 @@ pub fn gate_configured(repo: &Path) -> Result<(), String> {
     }
 }
 
+/// **The one variable that keeps a gate's build out of the main tree's `target/`.**
+///
+/// `task_start` writes `<worktree>/.cargo/config.toml` with `[build] target-dir` pointed at the
+/// MAIN tree's `target/`, so a child does not pay a cold build of the whole graph — see
+/// [`BUILD_CACHE_REDIRECT`], which the sweep keeps out of every commit for the same reason. That
+/// is right for a child, and it is wrong for the gate: a shared target dir serves artifacts built
+/// from other sources, and the gate then fails a branch for a defect the branch does not have.
+///
+/// MEASURED 2026-10-09, the entry that made this visible: `agent/queue-reset` (`424c212`) was
+/// parked `failed` on
+///
+/// ```text
+/// error[E0599]: no associated function or constant named `RESET_EVIDENCE` found for
+///               struct `letibot_tokencore::Store      --> crates/harnessd/src/mergequeue.rs:5922
+/// ```
+///
+/// while the constant is defined in that worktree at `crates/tokencore/src/store.rs:3115` (the
+/// file's first `#[cfg(test)]` is at 3754, so it is in the main body of `impl Store`) and a direct
+/// `cargo check -p letibot-harnessd --all-targets` **in that worktree** is clean (`rc=0`, having
+/// recompiled `letibot-tokencore` from the worktree's own sources). A second child hit the same
+/// class: a `harnessd` test build failed on `plan_fold takes 3 arguments but 4 were supplied` in a
+/// file it never touched, naming a change that exists only in the *main* tree. And **a green out of
+/// that build is worth as little as a red**: a third child, `agent/agents-md`, met *missing field
+/// `slug` in initializer of `SpawnRequest`* in a worktree whose own `crates/tools` — and `main`'s —
+/// has no such field, because the artifact it reused was built from ANOTHER worktree's sources.
+///
+/// **And the same dir lies in the other direction, where the green is the false one.** MEASURED by
+/// a gatekeeper, 2026-10-10, on another branch, twice: the shared `target/` served a
+/// `letibot-tools` test binary that contained NONE of that branch's five new tests —
+/// `cargo test -- --list` listed 835 names, none of them theirs, and the run said `ok` — and a
+/// `letibot-turn` rmeta older than the branch made `harnessd` fail to compile against a file the
+/// change never touches. Both are PATH DEPENDENCIES, so `cargo clean -p <crate>` is not the fix:
+/// the next build in the shared dir mixes the trees again. A `CARGO_TARGET_DIR` per worktree is,
+/// because the whole graph is built there — every unit the gate compiles, dependencies included,
+/// comes from this worktree's own sources.
+///
+/// `CARGO_TARGET_DIR` is the general mechanism because it is inert for a repository whose gate is
+/// not cargo, and it is an OVERRIDE rather than a suggestion: an environment variable beats a
+/// config file in cargo's own precedence, which is what makes it able to answer a
+/// `[build] target-dir` the tree already carries. The redirect itself is not touched — it stays
+/// for the children it was written for; it is the gate that must not be fooled by it.
+///
+/// The cost is that an entry pays a cold build instead of reusing the main tree's artifacts, and
+/// that is the price of the gate meaning anything. The queue is serial, so it is one cold build
+/// at a time.
+pub const GATE_TARGET_DIR: &str = "CARGO_TARGET_DIR";
+
+/// **Where a gate's build must put its artifacts** — inside the worktree being judged, never the
+/// main tree's `target/`. See [`GATE_TARGET_DIR`] for the measurement this answers.
+///
+/// Absolute where it can be, because a relative `CARGO_TARGET_DIR` is resolved by cargo against
+/// the gate's own working directory and the entry's worktree is whatever the daemon's workspace
+/// was spelled as. A path that cannot be made absolute is still this worktree's own, which is the
+/// property that matters.
+pub fn gate_target_dir(worktree: &Path) -> PathBuf {
+    std::path::absolute(worktree)
+        .unwrap_or_else(|_| worktree.to_path_buf())
+        .join("target")
+}
+
 /// **Run the gate** — `main`'s steps, in order, each through `sh -c` in the entry's worktree
 /// after the rebase. The first that fails is the answer, with the tail of its output; there is
 /// no `--continue`, because a gate that ran everything after a red step would spend minutes to
 /// say what the first line already said.
+///
+/// **And the build is pointed inside that worktree** ([`GATE_TARGET_DIR`]), because the entry's
+/// own `.cargo/config.toml` points it at the main tree's `target/` and the artifacts there were
+/// built from sources that are not this branch's. A gate that judged a branch on another tree's
+/// build is a gate that is red for every branch, whatever the branch does.
 pub fn repo_gate(worktree: &Path) -> Result<(), String> {
     let steps = gate_on_main(worktree)?.ok_or_else(|| {
         "there is no merge gate on main (a `Merge gate` section in AGENTS.md)".to_string()
     })?;
+    let target = gate_target_dir(worktree).to_string_lossy().into_owned();
+    let env = [(GATE_TARGET_DIR, target.as_str())];
     for step in steps {
-        if let Err(out) = run_captured(worktree, "sh", &["-c", &step]) {
+        if let Err(out) = run_captured_env(worktree, &env, "sh", &["-c", &step]) {
             return Err(format!("`{step}` failed:\n{}", tail(&out, EVIDENCE_BYTES)));
         }
     }
@@ -4032,6 +4113,67 @@ mod tests {
         std::fs::write(dir.join("AGENTS.md"), "## Merge gate\n\n```sh\ntrue\n```\n").unwrap();
         git(&["commit", "-qam", "loosen the gate"]);
         assert!(repo_gate(&dir).is_err(), "the branch's own gate was used");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The gate's build is pointed inside the worktree it is judging** — see
+    /// [`GATE_TARGET_DIR`] for the measurement this answers (`agent/queue-reset` was parked
+    /// `failed` on an `E0599` for a constant its own worktree defines, because the build came
+    /// out of the main tree's shared `target/`).
+    ///
+    /// Pinned without cargo: the gate's step writes the variable it was handed, and the test
+    /// reads what it wrote. The fixture carries `task_start`'s redirect — a `.cargo/config.toml`
+    /// whose `[build] target-dir` is a directory that is not this worktree — so what is asserted
+    /// is the value the gate sets *while that redirect is in the tree*, which is the state every
+    /// entry is in.
+    #[test]
+    fn the_gates_build_is_pointed_inside_the_worktree_it_judges() {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-mq-gate-target-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".cargo")).expect("mkdir");
+        let git_with_identity = |args: &[&str]| {
+            let mut all = vec![
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ];
+            all.extend_from_slice(args);
+            git(&dir, &all);
+        };
+        git_with_identity(&["init", "-q", "-b", "main"]);
+        // **The redirect, in `task_start`'s own words**, pointing somewhere that is not here.
+        std::fs::write(
+            dir.join(".cargo/config.toml"),
+            "# Written by `task_start`: the build cache is shared with the main tree, so this \
+             worktree does not pay a cold build of the whole graph.\n[build]\ntarget-dir = \
+             \"/elsewhere/target\"\n",
+        )
+        .expect("write");
+        std::fs::write(
+            dir.join("AGENTS.md"),
+            "# Project\n\n## Merge gate\n\n```sh\nprintf '%s' \"$CARGO_TARGET_DIR\" > \
+             gate-target-dir\n```\n",
+        )
+        .expect("write");
+        git_with_identity(&["add", "-A"]);
+        git_with_identity(&["commit", "-qm", "gate"]);
+
+        repo_gate(&dir).expect("the gate is green");
+        let seen = std::fs::read_to_string(dir.join("gate-target-dir")).expect("the step wrote it");
+        assert_eq!(
+            Path::new(seen.trim()),
+            gate_target_dir(&dir).as_path(),
+            "the gate's build was not pointed inside the worktree it judged"
+        );
+        assert_ne!(
+            seen.trim(),
+            "/elsewhere/target",
+            "the tree's own redirect won: the gate is building the main tree again"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
