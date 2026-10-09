@@ -72,6 +72,7 @@ pub const VERBS: &[&str] = &[
     "job",
     "login",
     "models",
+    "queue",
     "supervise",
     "tools",
 ];
@@ -123,6 +124,13 @@ pub enum Slash {
     DefaultModel(Option<String>),
     /// **The supervised-labelling verb.** See [`gate`].
     Gate(GateVerb),
+    /// **The merge queue's own verb**, for the one act on an entry that is a person's.
+    ///
+    /// `/queue` alone is the HEAD's — it opens the pane, and it never reaches here. What does is
+    /// the sub-verb, because restarting a review is a daemon act: the queue is daemon-level,
+    /// its rows are the daemon's, and the pane may be open in a session that is not the one the
+    /// entry came from.
+    Queue(QueueVerb),
     /// Turn the guard model on or off on the running session. `None` reports.
     ///
     /// `at` carries an address the first time somebody names one; it is remembered,
@@ -132,6 +140,18 @@ pub enum Slash {
         at: Option<String>,
     },
     Help(String),
+}
+
+/// **What the operator is asking of the merge queue** — see [`Slash::Queue`].
+///
+/// One sub-verb, and it is the one the operator named: *"so merge queue has 4 failed items, we
+/// need a way to restart them"*. A parked entry is terminal by design — `Failed` is the queue
+/// saying *this did not land and the tree is where the reason is* — so the move out of it is
+/// somebody's, and this is where they say it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueueVerb {
+    /// **Re-attempt one entry's review.** `entry` is the id the pane's row carries.
+    Restart { entry: String },
 }
 
 /// What the operator is saying about a decision the gate already made.
@@ -282,6 +302,32 @@ impl Slash {
                 Some(other) => Slash::Help(format!(
                     "/supervise [on|off|status|HOST:PORT] — `{other}` is none of those"
                 )),
+            },
+            // **`/queue` is two verbs under one word, and only one of them is the daemon's.**
+            // A bare `/queue` never reaches here — the head answers it by opening the pane — so
+            // this arm sees the sub-verb, and an unrecognised one is refused by name with the
+            // grammar rather than forwarded to `Slash::Help`'s *"is not a daemon verb"* about a
+            // verb that is.
+            Some("queue") => match words.get(1).copied() {
+                Some("restart") => match words.get(2) {
+                    Some(id) => Slash::Queue(QueueVerb::Restart {
+                        entry: (*id).to_string(),
+                    }),
+                    None => Slash::Help(
+                        "/queue restart ENTRY-ID — `/queue` lists the entries, and each row \
+                         carries its id"
+                            .into(),
+                    ),
+                },
+                Some(other) => Slash::Help(format!(
+                    "/queue {other}: the sub-verb is `restart ENTRY-ID`. A bare `/queue` opens \
+                     the merge-queue pane."
+                )),
+                None => Slash::Help(
+                    "/queue opens the merge-queue pane; `/queue restart ENTRY-ID` asks the \
+                     gatekeeper again about a parked entry"
+                        .into(),
+                ),
             },
             Some("gate") => {
                 let note = |from: usize| words[from.min(words.len())..].join(" ");
@@ -1374,6 +1420,31 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
 #[cfg(test)]
 mod the_verb_table_is_the_parser {
     use super::*;
+
+    /// **`/queue restart ID` is the daemon's, and the rest of `/queue` is the head's.**
+    ///
+    /// The sub-verb is a daemon act — the queue is daemon-level and its rows are the daemon's —
+    /// and everything else under the word is the head opening its pane, so the grammar refuses
+    /// by name rather than forwarding a half-typed line into `Help`'s *"is not a daemon verb"*
+    /// about a verb that is one.
+    #[test]
+    fn the_queue_sub_verb_is_the_restart_and_nothing_else() {
+        assert_eq!(
+            Slash::parse("queue restart s-1-sub-2"),
+            Slash::Queue(QueueVerb::Restart {
+                entry: "s-1-sub-2".into()
+            })
+        );
+        for line in ["queue restart", "queue", "queue stop x"] {
+            match Slash::parse(line) {
+                Slash::Help(why) => assert!(
+                    why.contains("restart") || why.contains("merge-queue pane"),
+                    "`/{line}` is refused with the grammar: {why}"
+                ),
+                other => panic!("`/{line}` is not a daemon act: {other:?}"),
+            }
+        }
+    }
 
     /// **Every arm's first word is in [`VERBS`], and every name there has an arm.**
     ///

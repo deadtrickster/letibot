@@ -424,6 +424,32 @@ impl<'a> Sessions<'a> {
                 ok: false,
             },
             Slash::Gate(verb) => crate::slash::gate(self.base.store.as_deref(), &verb),
+            // **The merge queue's one human act.** It goes through the session's own harness
+            // because that is the half that can announce the move on every head's log: a restart
+            // is an entry going from `Failed` back to `Waiting`, and the pane may be open in a
+            // session that is not the one the entry came from.
+            //
+            // A refusal is a `SlashReply` with `ok: false`, which the worker publishes as
+            // `slash_refused` — the same door every other verb's "no" comes through, so a
+            // restart that could not happen says so where the operator is already looking.
+            Slash::Queue(crate::slash::QueueVerb::Restart { entry }) => {
+                match self.open.get_mut(session_id) {
+                    Some(h) => match h.restart_review(&entry) {
+                        Ok(line) => SlashReply {
+                            lines: vec![line],
+                            ok: true,
+                        },
+                        Err(why) => SlashReply {
+                            lines: vec![why],
+                            ok: false,
+                        },
+                    },
+                    None => SlashReply {
+                        lines: vec![format!("session {session_id} is not open")],
+                        ok: false,
+                    },
+                }
+            }
             Slash::Supervise { want, at } => {
                 let Some(h) = self.open.get_mut(session_id) else {
                     return SlashReply {

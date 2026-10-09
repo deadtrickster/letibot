@@ -922,17 +922,35 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
 
 /// **What a gatekeeper child's state says about its review**, or `None` while it is still at it.
 ///
-/// Pure, so the mapping is asserted without a child: an answer that parses is its verdict; an
-/// answer that does not is `unreadable`, with the parse error as its reason; a child that failed
-/// is `failed`, with why. Neither of the last two is one of the decision words, so the queue
-/// refuses them by name (`mergequeue::review_gate`) and the entry parks with the reason on it
-/// rather than waiting for a verdict that will not come.
+/// Pure, so the mapping is asserted without a child — and **the two arms are the whole of the
+/// defect this shape fixes.** A gatekeeper's attempt has three endings and they are three
+/// different facts:
+///
+/// * **A verdict** — the child answered and the answer parses into the protocol's closing block.
+///   This is the only thing that may be written into the row's `decision`, because it is the only
+///   thing that is a judgement.
+/// * **A failed attempt** — the child's turn failed (a provider's `429`, a spawn that could not
+///   happen), or it answered with something [`letibot_tools::gatekeeper::parse_verdict`] cannot
+///   read. **Neither is a verdict**, and both used to be written into `decision` as the words
+///   `failed`/`unreadable`/`could_not_start`. `mergequeue::review_gate` reads any word outside the
+///   gatekeeper's closed set as a REFUSAL, so a failure became a park on the entry's row —
+///   *"the reviewer's verdict on `x` is `failed`, which is not one of accept, reject, needs_human"*
+///   — and because `answered_ms` was set with it, nothing ever asked again. That is exactly the
+///   operator's *"4 failed items"*: entries behind a transient condition, with nothing in the
+///   queue able to say *try that one again*.
+/// * **Still working** — `None`, and the host leaves the row alone.
 #[derive(Debug, PartialEq, Eq)]
-struct ReviewOutcome {
-    decision: String,
-    reasons: Vec<String>,
-    files: Vec<String>,
-    commands: Vec<String>,
+enum ReviewOutcome {
+    /// A judgement, in the gatekeeper's own closed set.
+    Verdict {
+        decision: String,
+        reasons: Vec<String>,
+        files: Vec<String>,
+        commands: Vec<String>,
+    },
+    /// **An attempt that reached no judgement**, with why, verbatim — the provider's own words
+    /// when there are any, which is what a person reads on the entry's row.
+    Failed { why: String },
 }
 
 fn review_outcome(
@@ -943,52 +961,84 @@ fn review_outcome(
     match status {
         TaskStatus::Done { answer } => Some(
             match letibot_tools::gatekeeper::parse_verdict(req, &answer) {
-                Ok(v) => ReviewOutcome {
+                Ok(v) => ReviewOutcome::Verdict {
                     decision: v.decision.as_str().to_string(),
                     reasons: v.reasons,
                     files: v.looked_at.files,
                     commands: v.looked_at.commands,
                 },
-                Err(why) => ReviewOutcome {
-                    decision: "unreadable".into(),
-                    reasons: vec![why],
-                    files: Vec::new(),
-                    commands: Vec::new(),
-                },
+                // **A reply with no readable verdict is a failed ATTEMPT, not a word.** The
+                // protocol asks for a closing block and a model that did not give one has not
+                // judged anything; retrying it is the queue's bound's business, and the parse
+                // error is what a person reads.
+                Err(why) => ReviewOutcome::Failed { why },
             },
         ),
-        TaskStatus::Failed { why } => Some(ReviewOutcome {
-            decision: "failed".into(),
-            reasons: vec![why],
-            files: Vec::new(),
-            commands: Vec::new(),
-        }),
+        TaskStatus::Failed { why } => Some(ReviewOutcome::Failed { why }),
         TaskStatus::Running { .. } | TaskStatus::Unknown => None,
     }
 }
 
-/// **A gatekeeper's verdict, onto the queue's review row** — the row the queue reads on its
-/// next pass (`mergequeue::review_gate`). The ask's own `asked_ms` is kept; a write that fails is
-/// said on stderr, and the row stays outstanding, so the next ring starts the review again.
-fn write_verdict(
+/// **What a gatekeeper's attempt did, onto the queue's review row** — the row the queue reads on
+/// its next pass (`mergequeue::review_gate`, `mergequeue::review_retry`).
+///
+/// **The two arms write two different rows, and that is the point.** A verdict sets `decision`
+/// and `answered_ms` and clears the failure — a row that has been judged. A failed attempt
+/// leaves `decision` NULL and `answered_ms` NULL, sets `failure` (verbatim), `failed_ms` and
+/// `attempts + 1` — a row that is still waiting for a verdict and that carries why the last
+/// attempt did not produce one. `mergequeue::review_retry` reads those three columns to decide
+/// whether the queue asks again, and how long it waits first.
+///
+/// **`asked_ms` is the row's own and is not restamped here.** It is when the review was first
+/// asked for, which is a fact about the review rather than about this attempt; a restart is the
+/// one thing that restamps it (`Store::restart_review`), because a restart is a new ask.
+///
+/// A write that fails is said on stderr and the row keeps what it had, so the next pass tries
+/// again rather than the failure being lost.
+fn write_outcome(
     store: &Store,
     row: &letibot_tokencore::store::ReviewRecord,
-    decision: &str,
-    reasons: Vec<String>,
-    files: Vec<String>,
-    commands: Vec<String>,
+    outcome: ReviewOutcome,
 ) {
-    let rec = letibot_tokencore::store::ReviewRecord {
-        answered_ms: Some((crate::config::now_ns() / 1_000_000) as u64),
-        decision: Some(decision.to_string()),
-        reasons,
-        files,
-        commands,
-        ..row.clone()
+    let now = (crate::config::now_ns() / 1_000_000) as u64;
+    let rec = match outcome {
+        ReviewOutcome::Verdict {
+            decision,
+            reasons,
+            files,
+            commands,
+        } => letibot_tokencore::store::ReviewRecord {
+            answered_ms: Some(now),
+            decision: Some(decision),
+            // **A verdict clears the failure.** The row is *judged*; leaving the last attempt's
+            // failure beside a decision would make a reader ask which of the two the queue
+            // acted on.
+            failed_ms: None,
+            failure: String::new(),
+            attempts: 0,
+            reasons,
+            files,
+            commands,
+            ..row.clone()
+        },
+        ReviewOutcome::Failed { why } => letibot_tokencore::store::ReviewRecord {
+            // **`decision` stays NULL.** This is the line the whole change is for: a failure is
+            // not a word out of the gatekeeper's closed set, and writing one there is how a
+            // queue came to park four entries on a verdict nobody gave.
+            decision: None,
+            answered_ms: None,
+            failed_ms: Some(now),
+            failure: why,
+            attempts: row.attempts.saturating_add(1),
+            reasons: Vec::new(),
+            files: Vec::new(),
+            commands: Vec::new(),
+            ..row.clone()
+        },
     };
     if let Err(e) = store.put_review(&rec) {
         eprintln!(
-            "  merge queue: the verdict on `{}` was not written: {e}",
+            "  merge queue: the outcome of the attempt on `{}` was not written: {e}",
             row.entry_id
         );
     }
@@ -6497,11 +6547,23 @@ impl Harness {
         let Some(store) = self.store.as_ref() else {
             return;
         };
+        // **The same bound the queue rings under, read here because this is where the turn is
+        // spent.** The queue's pass and this function are the two halves of one decision, and
+        // `mergequeue::review_retry` is that decision: *`Due`* is ask, *`Wait`* is a failed
+        // attempt whose backoff has not elapsed, *`Exhausted`* is a reviewer that could not be
+        // asked and whose attempts are spent. Without this the host would re-spawn on every
+        // wake — and a failed child's own settlement wakes its parent, so the loop would be one
+        // model turn per beat, which is the exact thing the bound exists to stop.
+        let now_ms = (crate::config::now_ns() / 1_000_000) as u64;
         let rows: Vec<letibot_tokencore::store::ReviewRecord> = store
             .reviews()
             .unwrap_or_default()
             .into_iter()
             .filter(|r| r.answered_ms.is_none() && r.session_id == me)
+            .filter(|r| {
+                crate::mergequeue::review_retry(Some(r), now_ms)
+                    == crate::mergequeue::ReviewRetry::Due
+            })
             .collect();
         // **Start the ones nobody is reviewing.**
         for row in &rows {
@@ -6529,18 +6591,14 @@ impl Harness {
                     self.reviewing.push((row.entry_id.clone(), handle, req));
                 }
                 Err(why) => {
-                    // **A gatekeeper that could not start is a verdict the queue can show**: the
-                    // entry parks with the reason rather than waiting for a reviewer that never
-                    // came. `could_not_start` is not one of the decision words, so the queue
-                    // refuses it by name (`review_gate`).
-                    write_verdict(
-                        store,
-                        row,
-                        "could_not_start",
-                        vec![why],
-                        Vec::new(),
-                        Vec::new(),
-                    );
+                    // **A gatekeeper that could not start is a FAILED ATTEMPT**, not a verdict and
+                    // not a refusal: nothing judged the branch. It is written as a failure, so
+                    // the queue's own bound retries it and — when the attempts are spent — the
+                    // entry parks with this sentence on its row, where a person can read it and
+                    // restart it. It used to be written as the decision word `could_not_start`,
+                    // which `review_gate` read as a refusal: the entry parked on a judgement
+                    // nobody made, and no further attempt was ever possible.
+                    write_outcome(store, row, ReviewOutcome::Failed { why });
                 }
             }
         }
@@ -6556,12 +6614,39 @@ impl Harness {
             // ring starts a new gatekeeper for the row that is still waiting.
             let gone = status == TaskStatus::Unknown;
             match review_outcome(&req, status) {
-                Some(o) => write_verdict(store, row, &o.decision, o.reasons, o.files, o.commands),
+                Some(o) => write_outcome(store, row, o),
                 None if !gone => still.push((entry_id, handle, req)),
                 None => {}
             }
         }
         self.reviewing = still;
+    }
+
+    /// **Re-attempt one merge-queue entry's review** — `/queue restart ENTRY-ID`, and the key on
+    /// the pane's failed row, arriving at the one door both spellings share.
+    ///
+    /// The rule is `mergequeue::restartable`'s and the writes are `mergequeue::restart`'s; what
+    /// this adds is the one thing only the daemon can: **the announcement**. A restart is an
+    /// entry moving from `Failed` back to `Waiting`, and every head that folded the queue's
+    /// events must see it — the pane is open in whichever session the person is in, and the
+    /// entry may have come from another one entirely.
+    ///
+    /// `Ok` is what was done, in the words the operator gets; `Err` is why it was not, said
+    /// rather than swallowed — the tree's rule for every verb, and the one this whole report is
+    /// about, since a queue that silently did nothing is indistinguishable from one that worked.
+    pub fn restart_review(&self, entry_id: &str) -> Result<String, String> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            "this daemon has no store, so there is no merge queue to restart.".to_string()
+        })?;
+        let registry = self.session_registry.clone();
+        crate::mergequeue::restart(
+            store,
+            entry_id,
+            (crate::config::now_ns() / 1_000_000) as u64,
+            &move |e| {
+                registry.broadcast(e);
+            },
+        )
     }
 
     /// **Something fired while nothing was running.** T24's wake, from the worker —
@@ -17880,35 +17965,155 @@ mod gatekeeper_reviews {
             },
         )
         .expect("settled");
-        assert_eq!(ok.decision, "accept");
-        assert_eq!(ok.reasons, vec!["the test covers it".to_string()]);
-        assert_eq!(ok.files, vec!["src/reader.rs".to_string()]);
-
-        // An answer with no verdict in it is refused by name, not waited on for ever.
-        let unreadable = review_outcome(
-            &req(),
-            TaskStatus::Done {
-                answer: "looks fine to me".into(),
-            },
-        )
-        .expect("settled");
-        assert_eq!(unreadable.decision, "unreadable");
-        assert!(unreadable.reasons[0].contains("verdict"), "{unreadable:?}");
-
-        let failed = review_outcome(
-            &req(),
-            TaskStatus::Failed {
-                why: "the model went away".into(),
-            },
-        )
-        .expect("settled");
-        assert_eq!(failed.decision, "failed");
+        match ok {
+            ReviewOutcome::Verdict {
+                decision,
+                reasons,
+                files,
+                ..
+            } => {
+                assert_eq!(decision, "accept");
+                assert_eq!(reasons, vec!["the test covers it".to_string()]);
+                assert_eq!(files, vec!["src/reader.rs".to_string()]);
+            }
+            other => panic!("a readable answer is a verdict: {other:?}"),
+        }
 
         assert_eq!(
             review_outcome(&req(), TaskStatus::Running { note: None }),
             None
         );
         assert_eq!(review_outcome(&req(), TaskStatus::Unknown), None);
+    }
+
+    /// **A failed attempt is not a verdict, and the row it writes says so.**
+    ///
+    /// The operator's report, verbatim: *"so merge queue has 4 failed items, we need a way to
+    /// restart them"*. Four gatekeeper reviews sat on a provider that answered `http 429:
+    /// Weekly/Monthly Limit Exhausted` — a quota, which is weather — and the queue had no way to
+    /// try one again, because the failure had been written where a JUDGEMENT goes.
+    ///
+    /// This is the row half of that, asserted against a real store: a child that died and a
+    /// reply with no readable verdict in it are both `Failed { why }`, and the row they leave has
+    /// `decision` NULL (so `mergequeue::review_gate` does not read it as a refusal), `answered_ms`
+    /// NULL (so the review is still outstanding), the provider's own words in `failure`, and the
+    /// attempt counted.
+    #[test]
+    fn a_failed_attempt_is_not_recorded_as_a_verdict() {
+        // The two endings that reach no judgement. The second is the one that used to be the
+        // word `unreadable`: a model that answered outside the protocol has not judged anything
+        // either, and reading its prose as a decision is the same defect one hop along.
+        for status in [
+            TaskStatus::Failed {
+                why: "http 429: Weekly/Monthly Limit Exhausted. Your limit will reset at \
+                      2026-10-12 15:01:48"
+                    .into(),
+            },
+            TaskStatus::Done {
+                answer: "looks fine to me".into(),
+            },
+        ] {
+            let outcome = review_outcome(&req(), status).expect("settled");
+            let why = match &outcome {
+                ReviewOutcome::Failed { why } => why.clone(),
+                other => panic!("an attempt that reached no judgement is not a verdict: {other:?}"),
+            };
+            assert!(!why.is_empty(), "a failure carries its reason");
+
+            let dir =
+                std::env::temp_dir().join(format!("letibot-review-fail-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let store = Store::open(&dir.join("sessions.db")).expect("a store");
+            let row = letibot_tokencore::store::ReviewRecord {
+                entry_id: "m-1".into(),
+                session_id: "s-host".into(),
+                branch: "agent/reader".into(),
+                base_sha: "abc123".into(),
+                asked_ms: 1_000,
+                answered_ms: None,
+                decision: None,
+                attempts: 0,
+                failed_ms: None,
+                failure: String::new(),
+                reasons: Vec::new(),
+                files: Vec::new(),
+                commands: Vec::new(),
+            };
+            store.put_review(&row).expect("the request row");
+            write_outcome(&store, &row, outcome);
+
+            let back = store.merge_review("m-1").expect("reads").expect("the row");
+            assert!(
+                back.decision.is_none(),
+                "a failure is not a verdict — `review_gate` reads any word here as a refusal, \
+                 which is how four entries came to be parked on a judgement nobody made: {:?}",
+                back.decision
+            );
+            assert!(
+                back.answered_ms.is_none(),
+                "the review is still outstanding: nothing answered it"
+            );
+            assert_eq!(back.attempts, 1, "the attempt is counted");
+            assert!(back.failed_ms.is_some(), "and it is stamped");
+            assert_eq!(
+                back.failure, why,
+                "the failure is carried VERBATIM, which is what a person reads on the row"
+            );
+            // **And the queue's own retry can see it**, which is the whole point: a row whose
+            // last attempt failed is one the queue may ask again, boundedly.
+            assert_ne!(
+                crate::mergequeue::review_retry(Some(&back), back.failed_ms.unwrap()),
+                crate::mergequeue::ReviewRetry::Exhausted,
+                "one failed attempt is not the end of the road"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// **A verdict is still a verdict, and it clears the failure.** The other half of the pair:
+    /// the change above must not have made a real judgement look like an attempt.
+    #[test]
+    fn a_readable_answer_still_writes_the_verdict() {
+        let dir = std::env::temp_dir().join(format!("letibot-review-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("sessions.db")).expect("a store");
+        let row = letibot_tokencore::store::ReviewRecord {
+            entry_id: "m-2".into(),
+            session_id: "s-host".into(),
+            branch: "agent/reader".into(),
+            base_sha: "abc123".into(),
+            asked_ms: 1_000,
+            // **A row that had already failed once**, so the clearing is asserted rather than
+            // the absence of a value nobody set.
+            answered_ms: None,
+            decision: None,
+            attempts: 1,
+            failed_ms: Some(1_500),
+            failure: "http 429: Weekly/Monthly Limit Exhausted".into(),
+            reasons: Vec::new(),
+            files: Vec::new(),
+            commands: Vec::new(),
+        };
+        store.put_review(&row).expect("the failed-attempt row");
+        let outcome = review_outcome(
+            &req(),
+            TaskStatus::Done {
+                answer: "verdict: accept\nreasons: - the test covers it".into(),
+            },
+        )
+        .expect("settled");
+        write_outcome(&store, &row, outcome);
+        let back = store.merge_review("m-2").expect("reads").expect("the row");
+        assert_eq!(back.decision.as_deref(), Some("accept"));
+        assert!(back.answered_ms.is_some());
+        assert_eq!(
+            back.failure, "",
+            "a verdict clears the last attempt's failure"
+        );
+        assert_eq!(back.failed_ms, None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **A session above its repositories is told which ones it can name** — `task_start`'s
