@@ -3239,6 +3239,28 @@ impl Harness {
         // And this endpoint's media marker — see `engine_for`, whose construction this duplicates.
         engine.media_marker = cfg.media_marker.clone();
 
+        // **The standing notes are composed HERE, at open, and not only at a base rebuild.**
+        //
+        // `reseat_target` re-reads them on every fork — the schedule the operator asked for,
+        // *"make sure AGENTS.md reread after each compaction"* — but a fork was the ONLY thing
+        // that ran it, so a FRESH session's message zero carried no notes at all: they arrived
+        // at the first compaction, which for a long session is hours in. Measured 2026-10-10
+        // by a child chasing an unrelated red: in a workspace with a note, a fresh harness's
+        // `reseat_target` returned `Some` (its `next` differed from its seated prefix), which
+        // is also why `wired.rs::reingest_writes_no_summary_and_says_so_in_the_note` failed in
+        // any worktree that had one.
+        //
+        // A RESUMED session is unaffected: its prefix comes from the store, and this only
+        // decides what a NEW conversation's message zero says.
+        // **Named `standing` and not `notes`**: there is a `let mut notes: Vec<String>` alive in
+        // this function from the resume-report path, and a local called `notes` here shadows it
+        // for every later use in the body.
+        let standing = crate::standing_notes::section(
+            &cfg.workspace,
+            &crate::standing_notes::global_dir(),
+            parts.vocab.as_ref(),
+        );
+        cfg.system = crate::standing_notes::replace(&cfg.system, standing.as_deref());
         let prefix = StablePrefix {
             system: cfg.system.clone(),
             tools_json: parts.wiring.tools_json(&schemas),
