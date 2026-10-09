@@ -18,6 +18,7 @@ first user message carries a marker, and the model plays its part for that marke
     CHILD-SAY         answer `child-done: said hello from the subagent`, no tools.
     PARENT-SLOW       call `task` with the CHILD-SLOW brief.
     CHILD-SLOW        hold the answer $FAKEMODEL_SLOW_SECONDS (40), so the child is mid-turn.
+    PARENT-GATE       call `merge_gate`, then say what it listed.
     GATEKEEPER        the merge queue's reviewer (its brief begins "You are the gatekeeper."):
                       answer a verdict block — `verdict: accept` — with no tools.
     CHILD-UNAME       call `bash` with `uname -s; echo from-the-vm`; after the
@@ -95,6 +96,10 @@ def play(messages):
         import time
         time.sleep(float(os.environ.get("FAKEMODEL_SLOW_SECONDS", "40")))
         return ("text", "child-done: slow and steady")
+    if "PARENT-GATE" in brief:
+        if not results:
+            return ("call", "merge_gate", {})
+        return ("text", "parent: the gate choices are in.")
     if brief.startswith("You are the gatekeeper."):
         branch = brief.split("- branch:", 1)[1].split("\n", 1)[0].strip() if "- branch:" in brief else "?"
         return ("text", "Read the change.\n\nverdict: accept\n"
