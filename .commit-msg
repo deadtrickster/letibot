@@ -1,108 +1,89 @@
-merge queue: a failed review is restartable — the person's verb, and the queue's own bounded retry
+FetchRow answers from the store for a row the view has trimmed
 
-The operator's report, verbatim: *"so merge queue has 4 failed items, we need a
-way to restart them"*.
+The four steps `R19.2b-fetchrow-and-the-gate-loop.md` wrote down, done — this is the item
+the gate loop had deferred, and the loop is gone.
 
-Four gatekeeper reviews had sat for hours on `glm-coding/glm-5.3`, whose
-provider answers `http 429: Weekly/Monthly Limit Exhausted. Your limit will
-reset at 2026-10-12 15:01:48`; the daemon that spawned them predated this tree's
-re-point of `~/.config/letibot/leticode.toml` and predated the work that makes a
-429 take the round again elsewhere. A quota is weather, and weather is not the
-defect. The defect is that **a review whose attempt failed had no way to be
-attempted again**, so four entries were stuck behind a transient condition with
-nothing in the queue able to say *try that one again now*.
+## What was wrong
 
-**A failed attempt was recorded where a judgement goes, and that is what made it
-terminal.** `Harness::review_outcome` mapped a gatekeeper child whose turn died
-(a `429`, a spawn that could not happen), or which answered with no readable
-`verdict:` block, to `decision: "failed"` / `"unreadable"` / `"could_not_start"`
-— written into `merge_review.decision` with `answered_ms` set.
-`mergequeue::review_gate` reads any word outside the gatekeeper's closed set as
-a **Refusal**, so a failure parked the entry `Failed` on the evidence *"the
-reviewer's verdict on `x` is `failed`, which is not one of accept, reject,
-needs_human"*: a judgement nobody made, on a row a person reads. And because
-`answered_ms` was set, `Harness::serve_reviews` — which filters on
-`answered_ms.is_none()` — never started another one. So the four are not *may
-land* and not *may not*; they were entries behind weather with a row that said
-somebody had judged them.
+`FetchRow` exists so a head can read a row its daemon is not holding. It could not: the
+server answered through `hub.row_body_at`, which reads the **bounded view** — 2,000 rows,
+8 MB of bodies — and a snapshot's `items` *is* that same vector. So a trimmed ordinal
+answered `null` and a carried one was a row the head already had. leticl measured it; the
+seam already draws three states and one of them, *"the daemon does not hold them any more"*,
+was unreachable and had nothing true to say.
 
-**What the store actually held for the four**, checked before this was written:
-four rows in `merge_queue` (three `failed`, one `conflict`) and four in
-`merge_review`, and all four reviews had `answered_ms` set with real closed-set
-words — `needs_human`, `reject`, `accept`, `needs_human`. So for *these* four no
-failure had been recorded as a verdict; their four children
-(`…-1791569790219{697204,823991,878554,927325}`, 70/129/108/252 rows) had
-walked the 429 ladder and then answered. The path above is live in the code all
-the same, and it is the one this closes.
+The protocol's own doc had already settled the shape it should have: *"the daemon is a
+**proxy** for anything its own caches do not hold… so a head asks once and never learns
+which tier answered."*
 
-**The attempt is its own fact (schema v20).** `merge_review` gains `attempts`,
-`failed_ms` and `failure`; `ReviewRecord` carries the same three. `decision`
-stays NULL for a failed attempt, and `answered_ms` stays NULL with it — which is
-what lets the queue ask again at all. A verdict clears the failure; a restart
-clears all three.
+## The seam, and it is the `SessionSource` pattern rather than a new one
 
-**One policy, read by both halves.** `mergequeue::review_retry(review, now_ms)`
-answers `Due | Wait { in_ms } | Exhausted` from the row and the clock, and
-`MAX_REVIEW_ATTEMPTS = 3` with a wait that doubles from `REVIEW_RETRY_BASE_MS =
-30_000` is `http_retry_after`'s SHAPE — a small number, a wait that grows, and
-then a report — rather than a second policy invented here. Its numbers are its
-own and say why: one beat of the HTTP ladder is a retry inside a turn, and one
-beat of this is a whole reviewer, a child session and a turn of its own. The
-queue's pass rings under it, and **`Harness::serve_reviews` spawns under it** —
-that second reader is load-bearing, because a failed child's own settlement
-wakes its parent, so without it the host would re-spawn once per wake and the
-bound would be a bound on nothing. Three attempts and then the entry parks
-`Failed` with the failure on its row; no loop spends a model turn per beat.
+- **`registry::RowSource`** — `fn row_body(&self, session_id, row) -> Option<String>` —
+  beside `SessionSource`, set by `Registry::set_row_source` exactly as `source` is set by
+  `set_source` (*"set once at startup by the daemon"*), and `None` in every head and every
+  test that predates it, where behaviour is exactly what it was.
+- **On the registry and not on each hub.** The server's `FetchRow` arm already holds the
+  registry, and the registry is what knows whether there is a store — so no hub grows a
+  field, no hub-construction site changes, and there is no fourth place for a hub to be
+  built without it.
+- **`Registry::row_body_from_store`** clones the `Arc` out before calling it, so the lock
+  is not held across a SQLite read: a head paging a trimmed row cannot block a listing.
+- **The server asks the view first, then the store** — one lock and a `Vec` index for the
+  fast path, and the store only for a row the view has trimmed. The clamping, the cap and
+  the character-boundary arithmetic are untouched.
 
-**And a failed entry says so where a person looks.** The failure is put on the
-entry's row FIRST, because the pane hard-truncates that line: `http 429:
-Weekly/Monthly Limit Exhausted. Your limit will reset at …` opens it, and the
-queue's own words follow. Two things in the head had to move for that to be
-readable at all, and neither is in rano: the review half said *the reviewer has
-been asked and has not answered* over an attempt that had already died, and now
-says `no verdict` (the wire's `MergeReview` gains `failure`, defaulted, so no
-`PROTOCOL_VERSION` bump — it stays 37); and the row draws
-`registry::short_id` rather than a forty-character `s-…-sub-…`, which had been
-eating the whole line and truncating the reason off the end. `Enter` on the row
-still wraps the evidence whole.
+## The store's reads, which are one indexed lookup each
 
-**The person's act, in two spellings and one function.** `/queue restart
-ENTRY-ID` and `r` on a parked row in the queue pane both send `Action::Slash {
-line: "queue restart …" }`, so the key and the typed verb cannot drift — and it
-rides the existing `ClientFrame::Slash`, which is the tree's own door for *a
-daemon act with feedback on the session log*. No new frame, no protocol bump.
-`Store::restart_review` is one transaction: the entry back to `waiting` and its
-review row back to *nobody has answered*, with the entry's `UPDATE` guarded
-`WHERE state IN ('failed','conflict','stale')` so the ROW arbitrates and a
-second press moves nothing.
+- `Store::row_json_at(transcript_id, seq)` — `transcript_item`'s primary key is
+  `(transcript_id, seq)`, so this is **not** a scan and **not** `load_transcript`, which
+  reads every row of the session to return one. That is the whole difference the frame
+  needs.
+- `Store::current_transcript_id(session_id)` — the **newest** transcript, ordered
+  `created_at DESC, rowid DESC` (the rowid because a fork is written in the same
+  millisecond as the row that caused it). After a compaction, ordinal 3 is a row of the
+  *new* base; reading the old transcript's row 3 would answer with a row nobody asked
+  about.
 
-**A restart re-attempts the same entry and never a second reviewer beside a live
-one.** `mergequeue::restartable` refuses an attempt in flight (`answered_ms`
-NULL and `failed_ms` NULL: asked for, neither answered nor failed) and refuses
-an entry that is not parked, each by name. That is why the operator pressing it
-twice is safe: the first ask leaves the row outstanding, so the second is the
-in-flight case and says so. It announces the move as the queue's own
-`MergeEntryMoved` — a restart IS an entry move — published after the rows are
-written, `move_to`'s own order.
+`harnessd`'s `StoreSessions` implements `RowSource` — **the same instance** it already
+gives `set_source`, because that is one store asked two questions and a third connection
+would be a third thing in WAL's reader set. The wiring is two lines in `bin/harnessd.rs`,
+beside the `set_source` it mirrors.
 
-**The model a restarted review gets is the model a fresh review gets.** A restart
-re-spawns through the ordinary subagent door, so it resolves `[roles.gatekeeper]
-model` → `leticode.toml`'s `subagent_model` → the parent's model as the file
-stands NOW. That is exactly what makes it a restart here rather than a second
-attempt at the same wall: the four were on `glm-coding/glm-5.3` and the file has
-since been re-pointed at deepseek. Nothing about the restart names a model, and
-nothing should — a model pinned into a restart would be a restart onto the model
-that just failed.
+## `body_of`, one definition
 
-Tests: `mergequeue::restart::{a_restart_re_attempts_exactly_one_review,
-a_second_restart_does_not_double_spawn,
-a_live_review_cannot_be_restarted_into_a_duplicate,
-a_review_that_cannot_be_asked_parks_with_the_failure_on_the_row,
-the_review_retry_is_bounded_and_doubles, the_failure_leads_the_row_it_is_written_on}`;
-`harness::gatekeeper_reviews::a_failed_attempt_is_not_recorded_as_a_verdict` and
-`a_readable_answer_still_writes_the_verdict`;
-`store::tests::{a_failed_attempt_is_its_own_row_and_a_restart_clears_it,
-a_v19_store_gains_the_attempt_columns}`; `slash::the_queue_sub_verb_is_the_restart_and_nothing_else`;
-and the pane's own `a_failed_review_says_so_on_the_panes_row`,
-`the_row_draws_the_short_id_so_the_reason_fits` and
-`the_restart_key_sends_the_verb_for_the_row_under_the_cursor`.
+A row's body is a match over the item kind (a payload, a text, a user row's text parts
+joined, a segment mark's nothing) and it now lives **once**, in
+`letibot_sessionlog::body_of`, called by the view's reader *and* by the store's. Two copies
+is how the two tiers would come to disagree about what `body` means. The *windowing* is
+deliberately not in it: the cap and the boundary arithmetic belong to whoever answers the
+frame.
+
+## Tests
+
+- `store::a_row_is_readable_by_ordinal_without_loading_its_transcript` — the row by
+  ordinal through the same serde form the wire carries; `None` (not `""`) for an ordinal
+  the transcript does not have; the session→current-transcript mapping the glue depends on;
+  and `None` for a session nothing was written for.
+- `store::an_ordinal_follows_the_fork_to_the_new_base` — after `put_fork`, the *new* base
+  is what an ordinal is relative to, and its row 0 is not the old transcript's.
+- `view::a_rows_body_is_its_own_kind_of_text` — the shared definition pinned per variant,
+  rather than inferred from whichever tier a test happened to exercise.
+- The existing `sessionlog/tests/fetch_row.rs` (8 tests) is unchanged and still passes: with
+  no row source installed, the behaviour is exactly what it was.
+
+```
+cargo test -p letibot-tools       613 passed, 0 failed
+cargo test -p letibot-tui         317 passed, 0 failed, 4 ignored
+cargo test -p letibot-harnessd --lib 114 passed, 0 failed
+cargo test -p letibot-ui          103 passed, 0 failed
+cargo test -p letibot-sessionlog   96 passed, 0 failed
+cargo test -p letibot-tokencore    61 passed, 0 failed
+```
+
+**Not verified, and it is the same limit as `da4a576`:** the daemon running this session
+was built before this commit, so **no head has yet fetched a trimmed row through it**. What
+is proven is the unit — the store read, the registry's second tier, and the server's arm
+asking the view first. The end-to-end proof is on the next restart, and the head half
+already draws the state it will then have something true to say in.
+
+`rustfmt --check` still cannot run (it writes a temp file, which the gate blocks).
