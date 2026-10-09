@@ -305,7 +305,29 @@ mod tests {
             no_runner,
         )))
         .unwrap();
+        // And `notes`, one seat later again: `m2_coder` seats it beside
+        // `write`/`edit`, and a fixture without it would keep the name through
+        // the name-not-in-the-registry branch and hand `resolve_role` a refusal
+        // — the loud path measuring the gap instead of plan mode, which is what
+        // the comments above refuse for every other seat.
+        r.register(Box::new(crate::builtins::notes::NotesTool::new(
+            std::sync::Arc::new(PlanNotes),
+        )))
+        .unwrap();
         r
+    }
+
+    /// A notes scope for the fixture: the plan-mode tests never call the tool,
+    /// so it points nowhere real — it only has to let the schema exist.
+    struct PlanNotes;
+
+    impl crate::builtins::notes::NotesScope for PlanNotes {
+        fn workspace(&self) -> std::path::PathBuf {
+            std::path::PathBuf::new()
+        }
+        fn global_dir(&self) -> std::path::PathBuf {
+            std::path::PathBuf::new()
+        }
     }
 
     #[test]
@@ -330,6 +352,16 @@ mod tests {
         assert!(
             !seated.tools.contains(&"bash".to_string()),
             "plan mode that leaves a shell has not removed the write path: {:?}",
+            seated.tools
+        );
+        // And `notes`, on the same rule: a standing note outlives the plan and
+        // every session after it, which makes it the last thing a planning
+        // seat should be able to plant. Its class carries it out with
+        // `write`; naming it here is what keeps that true by assertion rather
+        // than by memory.
+        assert!(
+            !seated.tools.contains(&"notes".to_string()),
+            "plan mode that leaves the notes writer has not removed the write path: {:?}",
             seated.tools
         );
 

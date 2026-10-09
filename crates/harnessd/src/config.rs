@@ -841,6 +841,14 @@ need no permission.\n\n\
 Use that path and no other. A directory you invent under /tmp is shared temp space: deleting \
 there is a decision somebody has to make, and the name may already be another process's. Do \
 not scatter temporary files through the workspace either.\n\n\
+You can keep standing notes: markdown files the harness reads into this prompt and re-reads \
+after every compaction, so a note survives a context you cannot. Write one with the `notes` \
+tool when you find something worth keeping — interesting, remarkable or surprising, \
+something you would not want to rediscover — not as a summary of what you did. The tool \
+writes the workspace's `.letibot/notes/` only; `AGENTS.md` and the box-wide notes are the \
+operator's, and you read them rather than edit them. A note says what was true or intended \
+when it was written: verify against the tree before treating one as a fact about now, and \
+replace a note that has gone stale rather than repeat it.\n\n\
 Be direct. Prefer the shortest answer that is complete.";
 
 /// **The named sections of [`DEFAULT_SYSTEM`], in the order they appear.**
@@ -880,6 +888,10 @@ pub const SYSTEM_SECTIONS: &[(&str, &str)] = &[
         "Use that path and no other. A directory you invent under /tmp is shared temp space: deleting there is a decision somebody has to make, and the name may already be another process's. Do not scatter temporary files through the workspace either.",
     ),
     (
+        "notes",
+        "You can keep standing notes: markdown files the harness reads into this prompt and re-reads after every compaction, so a note survives a context you cannot. Write one with the `notes` tool when you find something worth keeping — interesting, remarkable or surprising, something you would not want to rediscover — not as a summary of what you did. The tool writes the workspace's `.letibot/notes/` only; `AGENTS.md` and the box-wide notes are the operator's, and you read them rather than edit them. A note says what was true or intended when it was written: verify against the tree before treating one as a fact about now, and replace a note that has gone stale rather than repeat it.",
+    ),
+    (
         "tone",
         "Be direct. Prefer the shortest answer that is complete.",
     ),
@@ -905,7 +917,7 @@ pub const SYSTEM_SECTIONS: &[(&str, &str)] = &[
 ///
 /// The keys inside a layer are the **section names** of [`SYSTEM_SECTIONS`] —
 /// `identity`, `language`, `read_only_tools`, `find_and_read`, `edit_files`,
-/// `scratch`, `scratch_path`, `tone`. A section key replaces that one section in
+/// `scratch`, `scratch_path`, `notes`, `tone`. A section key replaces that one section in
 /// place, leaving the other sections and their order alone. That is the whole
 /// feature: the operator can override one section for one model without rewriting
 /// the prompt.
@@ -3279,6 +3291,43 @@ system_extra = "And a model extra on top."
         assert_eq!(joined, DEFAULT_SYSTEM);
     }
 
+    /// **The notes convention is instruction in the base, not data in a block.**
+    ///
+    /// The injected standing-notes block is DATA — what the files on disk say
+    /// right now — and its envelope frames what the block is. The convention —
+    /// that notes exist, what belongs in one, where it lands, and that a note
+    /// is not ground truth — is INSTRUCTION, and instruction belongs in
+    /// [`DEFAULT_SYSTEM`] so it holds even for a session whose notes are empty.
+    /// The two must not restate each other: a duplicated sentence is one that
+    /// drifts, so this also asserts the paragraph does not carry the
+    /// envelope's own framing sentence.
+    #[test]
+    fn the_default_prompt_carries_the_notes_convention_and_not_the_envelope() {
+        let (name, paragraph) = SYSTEM_SECTIONS
+            .iter()
+            .find(|(n, _)| *n == "notes")
+            .expect("a `notes` section");
+        assert_eq!(*name, "notes");
+        // It exists, it is read into the prompt, it comes back after a
+        // compaction.
+        assert!(paragraph.contains("reads into this prompt"));
+        assert!(paragraph.contains("compaction"));
+        // The purpose the operator named, in their words: keep what is worth
+        // keeping — not a running summary.
+        assert!(paragraph.contains("interesting, remarkable or surprising"));
+        assert!(paragraph.contains("not want to rediscover"));
+        assert!(paragraph.contains("not as a summary of what you did"));
+        // Where they live and how to write one.
+        assert!(paragraph.contains("`notes` tool"));
+        assert!(paragraph.contains(".letibot/notes/"));
+        // The caveat, so a note is not read as ground truth.
+        assert!(paragraph.contains("what was true or intended when it was written"));
+        // And not the injected block's framing — that sentence is the
+        // envelope's job and is asserted there.
+        assert!(!paragraph.contains("one in force"));
+        assert!(!paragraph.contains("[standing-notes"));
+    }
+
     /// **A section replaced by `[model."NAME"]` changes only that section and keeps
     /// the order.**
     ///
@@ -3309,7 +3358,8 @@ read_only_tools = "You have read-only tools, and you use them."
         let edit_files = SYSTEM_SECTIONS[4].1;
         let scratch = SYSTEM_SECTIONS[5].1;
         let scratch_path = SYSTEM_SECTIONS[6].1;
-        let tone = SYSTEM_SECTIONS[7].1;
+        let notes = SYSTEM_SECTIONS[7].1;
+        let tone = SYSTEM_SECTIONS[8].1;
         let expected = [
             identity,
             language,
@@ -3318,6 +3368,7 @@ read_only_tools = "You have read-only tools, and you use them."
             edit_files,
             scratch,
             scratch_path,
+            notes,
             tone,
         ]
         .join("\n\n");

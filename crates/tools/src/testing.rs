@@ -81,6 +81,13 @@ pub struct Harness {
     /// Held so the session's scratch directory outlives the backend, for the
     /// unconfined external harness. `None` for every other shape.
     _scratch: Option<TempDir>,
+    /// Held so the box-wide notes directory outlives the `notes` tool, which
+    /// reads it through its scope rather than through the backend.
+    _notes_global: TempDir,
+    /// The two directories the `notes` tool is scoped to, for a test that
+    /// writes a fixture note or reads one back: the workspace and the
+    /// box-wide notes dir.
+    _notes: (std::path::PathBuf, std::path::PathBuf),
 }
 
 impl Harness {
@@ -105,6 +112,13 @@ impl Harness {
     /// `None` for every other shape, which has no scratch to look at.
     pub fn scratch_dir(&self) -> Option<&std::path::Path> {
         self._scratch.as_ref().map(|d| d.path())
+    }
+
+    /// The two directories the `notes` tool is scoped to — the workspace and
+    /// a hermetic box-wide notes dir — owned, so a test can keep using them
+    /// across `call`s (which take the harness mutably).
+    pub fn notes_dirs(&self) -> (std::path::PathBuf, std::path::PathBuf) {
+        self._notes.clone()
     }
 
     /// What is actually on disk, read without going through the backend.
@@ -168,6 +182,14 @@ pub fn writable_harness() -> Harness {
 /// which is the fail-closed default a real daemon starts with.
 pub fn writable_harness_with_gate(gate: Option<Box<dyn crate::runtime::Gate>>) -> Harness {
     build(Spiller::unset(), Arc::new(Unavailable), true, gate)
+}
+
+/// A read-only session whose gate admits — for a tool whose OWN second-gate
+/// check is the thing under test: with [`harness`] the first gate (no
+/// adjudicator) refuses first and the tool is never reached, and with
+/// [`writable_harness`] the backend never refuses.
+pub fn read_only_harness_with_gate(gate: Option<Box<dyn crate::runtime::Gate>>) -> Harness {
+    build(Spiller::unset(), Arc::new(Unavailable), false, gate)
 }
 
 /// A writable session whose output is bounded. Clause 5 does not stop applying
@@ -270,6 +292,8 @@ pub fn runner_harness_with_gate(
         promote: Some(promote),
         _dir: dir,
         _scratch: None,
+        _notes_global: TempDir::new(),
+        _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
     })
 }
 
@@ -303,6 +327,8 @@ pub fn text_only_runner_harness() -> Harness {
         promote: None,
         _dir: dir,
         _scratch: None,
+        _notes_global: TempDir::new(),
+        _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
     }
 }
 
@@ -368,6 +394,8 @@ pub fn confined_harness_with_gate(
         promote: None,
         _dir: dir,
         _scratch: None,
+        _notes_global: TempDir::new(),
+        _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
     })
 }
 
@@ -467,7 +495,7 @@ fn build_ext(
     // The session tool rides every registry, exactly as the real harness seats it:
     // the read-only roles name `todo_write`, so a registry they resolve against has
     // to include it. An empty board — these tests are not about the todo pane.
-    let registry = crate::with_session_tools(
+    let mut registry = crate::with_session_tools(
         registry,
         Arc::new(crate::builtins::todo::TodoBoard::new(Vec::new())),
         Arc::new(crate::builtins::task::NoTaskRunner),
@@ -475,6 +503,23 @@ fn build_ext(
         Arc::new(crate::builtins::lsp::LspConfig::default()),
     )
     .expect("todo_write registers");
+    // And the notes tool, over a scope of this fixture's own: the box-wide
+    // notes dir is a temp dir per harness so a test never reads this box's
+    // real config, and the workspace is the fixture tree — the same two facts
+    // the daemon scopes the tool with. Registered in the read-only shape too,
+    // because the tool's read verbs are the ones that must refuse honestly
+    // there (naming the second gate), not vanish.
+    let notes_global = TempDir::new();
+    let notes_scope: Arc<dyn crate::builtins::notes::NotesScope> = Arc::new(TestNotesScope {
+        workspace: dir.path().to_path_buf(),
+        global: notes_global.path().to_path_buf(),
+    });
+    let notes_dirs = (dir.path().to_path_buf(), notes_global.path().to_path_buf());
+    registry
+        .register(Box::new(crate::builtins::notes::NotesTool::new(
+            notes_scope,
+        )))
+        .expect("notes registers");
     // Registered, not seated: a role is what a session's prompt carries, and these
     // three plus the read-only seven are over §8.4's ceiling.
     let (registry, mount) = match &external {
@@ -502,6 +547,25 @@ fn build_ext(
         promote: None,
         _dir: dir,
         _scratch: scratch,
+        _notes_global: notes_global,
+        _notes: notes_dirs,
+    }
+}
+
+/// The `notes` tool's scope for a fixture: the fixture tree as the workspace
+/// and a per-harness temp dir as the box-wide notes, so a test that lists or
+/// reads never depends on (or writes to) this box's real config directory.
+struct TestNotesScope {
+    workspace: std::path::PathBuf,
+    global: std::path::PathBuf,
+}
+
+impl crate::builtins::notes::NotesScope for TestNotesScope {
+    fn workspace(&self) -> std::path::PathBuf {
+        self.workspace.clone()
+    }
+    fn global_dir(&self) -> std::path::PathBuf {
+        self.global.clone()
     }
 }
 

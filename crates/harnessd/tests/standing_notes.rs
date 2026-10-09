@@ -235,3 +235,85 @@ fn item_text(item: &TranscriptItem) -> String {
         other => panic!("a delivery is prose-carrying, not {other:?}"),
     }
 }
+
+/// **A note the `notes` tool writes is one the reader injects — round-tripped,
+/// not assumed.**
+///
+/// The tool lives in `letibot-tools` and the reader here, joined only by a
+/// trait (`NotesScope`) and a convention about directories. A note the tool
+/// writes that the reader does not read is the bug this feature exists to
+/// prevent: the model would be told it kept something, and the next session
+/// would never see it. So this drives the REAL tool over a real workspace and
+/// reads the result back through [`standing_notes::section`] — the same
+/// function `compose_system_with_notes` and `reseat_target` call.
+///
+/// No vocabulary GGUF needed: the byte vocabulary counts exactly, and the
+/// fixture is small.
+#[test]
+fn a_note_the_tool_writes_is_one_the_reader_injects() {
+    struct Scope(std::path::PathBuf, std::path::PathBuf);
+    impl letibot_tools::builtins::notes::NotesScope for Scope {
+        fn workspace(&self) -> std::path::PathBuf {
+            self.0.clone()
+        }
+        fn global_dir(&self) -> std::path::PathBuf {
+            self.1.clone()
+        }
+    }
+    let ws = TempDir::new("roundtrip");
+    let global = TempDir::new("roundtrip-global");
+    let scope = std::sync::Arc::new(Scope(ws.path().to_path_buf(), global.path().to_path_buf()));
+    // The runtime the daemon builds for the tool: the tool itself, an
+    // admitting gate (these tests are about the tool, not the gate), and a
+    // writable host backend over the workspace.
+    let mut reg = letibot_tools::runtime::Registry::new();
+    reg.register(Box::new(letibot_tools::builtins::notes::NotesTool::new(
+        scope,
+    )))
+    .expect("the notes tool registers");
+    let backend =
+        letibot_tools::backend::HostBackend::writable(ws.path()).expect("a writable fixture root");
+    let rt = letibot_tools::runtime::ToolRuntime::new(reg, Box::new(backend))
+        .with_gate(letibot_tools::testing::allow_all());
+    let call = |args: &str| {
+        let call = letibot_transcript::ToolCall {
+            id: "call_roundtrip".into(),
+            name: "notes".into(),
+            arguments: args.into(),
+        };
+        let mut sink = letibot_tools::RecordingToolSink::new();
+        rt.invoke("turn_1", &call, &mut sink)
+    };
+    let r = call(
+        r#"{"action":"add","name":"qwen-tail","text":"clamping the compaction tail beats truncating it — measured on this box, 2026-10-09"}"#,
+    );
+    assert!(r.is_grounded(), "the add lands: {}", r.render());
+
+    // And the reader — the same `section` the prompt is composed with — picks
+    // it up, verbatim, under its path.
+    let vocab = letibot_tokencore::Vocab::bytes([], []);
+    let s = standing_notes::section(ws.path(), global.path(), &vocab)
+        .expect("the reader sees the note");
+    assert!(
+        s.contains(".letibot/notes/qwen-tail.md"),
+        "under the path the tool said it wrote: {s}"
+    );
+    assert!(
+        s.contains("beats truncating it"),
+        "the text, verbatim, inside the injected block: {s}"
+    );
+    assert!(
+        s.contains("may be outdated"),
+        "the injected block carries the historical caveat too: {s}"
+    );
+
+    // And an append reaches the reader as well — the loop is round in both
+    // directions of the verb set, not just on the happy path.
+    let r = call(r#"{"action":"append","name":"qwen-tail","text":"re-measured: still true"}"#);
+    assert!(r.is_grounded(), "{}", r.render());
+    let s = standing_notes::section(ws.path(), global.path(), &vocab).unwrap();
+    assert!(
+        s.contains("re-measured: still true"),
+        "the appended text is what the reader reads: {s}"
+    );
+}

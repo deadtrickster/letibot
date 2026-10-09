@@ -7,9 +7,14 @@
 //!
 //! # What a standing note is
 //!
-//! A file on disk the operator maintains between sessions and expects to be
-//! reading *now* — not a memory of a past conversation and not something the
-//! model wrote. Three sources, in order of increasing proximity to the task:
+//! A file on disk maintained between sessions and expected to be read *now* —
+//! not a memory of a past conversation. Two authorships, kept tellable apart
+//! by directory: the operator's (`AGENTS.md` and the box-wide notes) and,
+//! since the `notes` tool, the project's `.letibot/notes/`, which sessions
+//! write too. The envelope says which is which, because authorship that
+//! cannot be told apart is how a note the model wrote comes to read as an
+//! instruction the operator gave. Three sources, in order of increasing
+//! proximity to the task:
 //!
 //! 1. `<config dir>/notes/*.md` — standing notes for the whole box, beside
 //!    `providers.toml` and `prompts.toml`.
@@ -150,7 +155,8 @@ fn gather(workspace: &Path, global: &Path) -> Vec<(PathBuf, String)> {
 /// The assembled standing-notes section, or `None` when no source exists.
 ///
 /// One section for all sources together: they are one thing to the model
-/// (the operator's standing instructions) and one thing to [`replace`].
+/// (standing material read from disk, whoever wrote it) and one thing to
+/// [`replace`].
 pub fn section(workspace: &Path, global: &Path, vocab: &Vocab) -> Option<String> {
     let files = gather(workspace, global);
     if files.is_empty() {
@@ -168,9 +174,14 @@ pub fn section(workspace: &Path, global: &Path, vocab: &Vocab) -> Option<String>
     let body = if fits { verbatim } else { digest_block(&files) };
     Some(format!(
         "{BEGIN}\nThe block below is standing notes, read from markdown files on disk by \
-         the harness: instructions the operator maintains, not text you wrote or \
-         concluded. Treat the newest copy you were given — in the system prompt or a \
-         later system update — as the one in force.\n\n{body}\n{END}"
+         the harness: the operator's standing material — AGENTS.md and the box-wide \
+         notes — and this project's `.letibot/notes/`, which the `notes` tool writes \
+         and the operator may write too. It is not text from this conversation. Treat \
+         the newest copy you were given — in the system prompt or a later system \
+         update — as the one in force. A note is historical: it records what was \
+         true or intended when it was written and may be outdated, so follow its \
+         instructions but check the tree before taking an observation in it as a \
+         fact about now.\n\n{body}\n{END}"
     ))
 }
 
@@ -524,6 +535,50 @@ mod tests {
         let s = section(&ws, &dir("none"), &vocab()).unwrap();
         assert_eq!(carried(&format!("before\n\n{s}\nafter")), Some(s.as_str()));
         assert_eq!(carried("no section here"), None);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// **The envelope says whose notes these are, and that they are
+    /// historical.**
+    ///
+    /// The operator's ruling, 2026-10-09: *"The read tool should carry a short
+    /// note - 'it is a historical note, might be outdated'"* — and the injected
+    /// block is the highest-traffic read of all, delivered at session open and
+    /// every base rebuild whether or not the tool is ever called. The envelope
+    /// also had to change for a second reason: the project's `.letibot/notes/`
+    /// is now writable by sessions through the `notes` tool, so a blanket "the
+    /// operator maintains these" stopped being true. The authorship split is
+    /// by directory — the tell that keeps a note the model wrote from reading
+    /// as an instruction the operator gave — and the caveat says what a note
+    /// is: a record of what was true when written, not a fact about now.
+    #[test]
+    fn the_envelope_splits_authorship_and_carries_the_historical_caveat() {
+        let ws = dir("envelope");
+        write(
+            &ws.join(".letibot/notes/session-find.md"),
+            "a session wrote this\n",
+        );
+        let s = section(&ws, &dir("none"), &vocab()).unwrap();
+        assert!(
+            s.contains("the operator's standing material"),
+            "whose AGENTS.md and box-wide notes are: {s}"
+        );
+        assert!(
+            s.contains(".letibot/notes/`"),
+            "the project notes are named as their own source, written by the tool: {s}"
+        );
+        assert!(
+            s.contains("not text from this conversation"),
+            "the structural distinguishability sentence survives: {s}"
+        );
+        assert!(
+            s.contains("historical") && s.contains("may be outdated"),
+            "the caveat, in the operator's own words: {s}"
+        );
+        assert!(
+            s.contains("one in force"),
+            "the which-copy-is-current rule survives: {s}"
+        );
         let _ = std::fs::remove_dir_all(&ws);
     }
 }

@@ -2320,6 +2320,18 @@ impl Harness {
             .register(Box::new(letibot_tools::builtins::write::Write))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::edit::Edit)))
             .map_err(|e| HarnessError::Setup(format!("registering the write tools: {e}")))?;
+        // **Standing notes, written.** The loop was one-way when standing notes
+        // landed (`fb96763`): the operator wrote, the harness injected, the model
+        // read. This is the other half — the `notes` tool, scoped to the
+        // workspace above (the stored one, for a resumed session) and the
+        // box-wide dir the reader reads. Registered for every session so a role
+        // that names it resolves; the ROLE decides who seats it, and only the
+        // seats with `write`/`edit` do.
+        registry
+            .register(Box::new(letibot_tools::builtins::notes::NotesTool::new(
+                std::sync::Arc::new(crate::notes_scope::ConfigNotes::new(cfg.workspace.clone())),
+            )))
+            .map_err(|e| HarnessError::Setup(format!("registering the notes tool: {e}")))?;
         registry
             .register(Box::new(letibot_tools::builtins::bash::Bash))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobList)))
@@ -12945,7 +12957,12 @@ fn downgraded_ruleset(
         return rules;
     }
     let well_known: &[(Access, &[&str])] = &[
-        (Access::Write, &["write", "edit", "exit_plan_mode"]),
+        // `notes` is in the `Write` arm on purpose: a standing note is written
+        // to the operator's tree and read into every later session's prompt,
+        // which makes it a MORE persistent write than a file edit, not a
+        // session-state one — a subagent denied `write` must not be able to
+        // plant one either.
+        (Access::Write, &["write", "edit", "exit_plan_mode", "notes"]),
         (Access::Exec, &["bash", "monitor", "job_kill", "lsp"]),
         (
             Access::Network,
@@ -15126,6 +15143,10 @@ mod tests {
             denied.contains(&"edit") && denied.contains(&"write") && denied.contains(&"odd_writer"),
             "{denied:?}"
         );
+        // `notes` denies with the write class: a standing note outlives the
+        // subagent that wrote it, so it is not a capability a `no-write`
+        // child keeps.
+        assert!(denied.contains(&"notes"), "{denied:?}");
         assert!(
             !denied.contains(&"read") && !denied.contains(&"bash") && !denied.contains(&"flowy"),
             "{denied:?}"
