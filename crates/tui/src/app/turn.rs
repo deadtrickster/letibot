@@ -124,6 +124,16 @@ pub(crate) struct TurnPane {
     /// wall the operator was looking at: eight `● Read …` rows above eight
     /// `▸ Read … · ok · N lines` rows, no added fact between them.
     ///
+    /// **The takeover is the row's BODY landing, not its announcement.** The row is
+    /// announced (`TranscriptAppended`) before its content arrives
+    /// (`TranscriptContent`), and a row with no body renders zero rows — so a mark
+    /// that advanced at the announcement handed the card to a row that could not
+    /// draw yet, and for the frames between the two events the call was in *neither
+    /// half*: the card erased, nothing in its place, the settled row a frame later.
+    /// That gap is the operator's *"periodic flicker while diff card settles"*, and
+    /// [`App::record_item`] is where the mark advances now — the same frame the row
+    /// first draws, so the handover is one frame with the card on screen throughout.
+    ///
     /// **And the mark is not the pane's alone.** Three readers ask which calls are still the live
     /// one's, and they have to agree: the live cards drawn below (`calls.get(*settled_calls..)`),
     /// the marker's NUMBER (`live_work`), and — since the stuck yellow — the marker's COLOUR, which
