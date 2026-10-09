@@ -542,6 +542,33 @@ impl App {
                         self.redraw = true;
                         return ControlFlow::Break(None);
                     }
+                    // **`r` re-attempts a parked entry's review** — the operator's ask, in
+                    // their words: *"so merge queue has 4 failed items, we need a way to
+                    // restart them"*. It is the pane's own act on the row under the cursor,
+                    // and it sends the SAME verb `/queue restart ID` sends (`Action::Slash`),
+                    // so the key and the typed spelling cannot drift.
+                    //
+                    // **An entry that is not parked is said, not sent.** `waiting` and `taken`
+                    // are the queue working and `landed` is done; a restart there would be a
+                    // frame the daemon refuses, and a head that sent it anyway would be a head
+                    // that made the operator wait for a round trip to be told no.
+                    Key::Char('r') => {
+                        use letibot_sessionlog::event::MergeState as S;
+                        let e = &self.merge[at];
+                        if !matches!(e.state, S::Failed | S::Conflict | S::Stale) {
+                            self.say(&format!(
+                                "`{}` is `{}` — only a parked entry (failed, conflict, stale) \
+                                 is restarted by hand; a waiting one is what the queue's own \
+                                 retry is for.",
+                                e.branch,
+                                crate::ui::panes::queue::merge_state_word(e.state)
+                            ));
+                            self.redraw = true;
+                            return ControlFlow::Break(None);
+                        }
+                        let line = format!("queue restart {}", e.id);
+                        return ControlFlow::Break(Some(Action::Slash { line }));
+                    }
                     // **A click moves the cursor, and Enter still opens the entry** — the same
                     // two acts the pickers here keep (*select and confirm stay two acts*),
                     // straight off the rows the pane recorded while drawing.

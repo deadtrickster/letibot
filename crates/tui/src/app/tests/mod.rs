@@ -1308,9 +1308,30 @@ fn queue_review(entry_id: &str, decision: Option<&str>) -> letibot_sessionlog::e
         asked_ms: 2_000,
         answered_ms: decision.map(|_| 3_000),
         decision: decision.map(str::to_string),
+        failure: String::new(),
         reasons: vec!["the ask is met and the tests pass".into()],
         files: vec!["crates/widget.rs".into()],
         commands: vec!["cargo test -p widget".into()],
+    }
+}
+
+/// **A review whose ATTEMPT failed** — asked for, no verdict, and the provider's own words on
+/// the row. The operator's four entries were in exactly this shape, and the pane drew them as
+/// *the reviewer has been asked and has not answered*: the failure was invisible without opening
+/// the store.
+fn queue_review_failed(entry_id: &str, failure: &str) -> letibot_sessionlog::event::MergeReview {
+    letibot_sessionlog::event::MergeReview {
+        entry_id: entry_id.into(),
+        session_id: "reviewer".into(),
+        branch: "agent/child-one".into(),
+        base_sha: "abc123".into(),
+        asked_ms: 2_000,
+        answered_ms: None,
+        decision: None,
+        failure: failure.into(),
+        reasons: Vec::new(),
+        files: Vec::new(),
+        commands: Vec::new(),
     }
 }
 
