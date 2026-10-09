@@ -738,6 +738,119 @@ fn consenting_to_allow_all_admits_a_shell_command_unasked() {
 }
 
 // ---------------------------------------------------------------------------
+// `ask_user_question`: the seat can ask, the head answers, the model is told.
+
+/// **A leticode session can ask the person a question, and the answer reaches the
+/// model.**
+///
+/// The operator's ruling, 2026-10-09: *"yeah i want you to be able to ask me for a
+/// choice. each choice can have my note, and i can abstain or type my answer"*. Before
+/// this the tool existed and the seat did not carry it, so a leticode session could
+/// only ask in prose — which is the operator's *"why i never asked here of a choice"*.
+///
+/// **End to end and not a seating assertion.** The tool is invoked through the session's
+/// own runtime, with the session's own registry and its own gate; the question is posed
+/// on the session's own hub; a head attached to that hub answers it through
+/// `CommandKind::Answer`; and the assertion is on what the MODEL gets back. Nothing here
+/// is a stub between the call and the answer.
+///
+/// **`None` for the adjudicator, and that is the point of the fixture.** The question
+/// path is installed in the arm that builds the head adjudicator from `cfg.adjudicator`
+/// — one `Answers`, one sink, one slot, as one act — so a test that handed in its own
+/// adjudicator would be testing a session where no question can reach anybody.
+#[test]
+fn a_leticode_session_asks_the_person_and_the_answer_reaches_the_model() {
+    use letibot_sessionlog::protocol::Caps;
+    use letibot_tools::events::NullToolSink;
+
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let cfg = leticode_cfg("ask-choice");
+    let p = parts(&cfg);
+    let hub = Hub::new(&cfg.session_id);
+    let h = Harness::open_with(&p, cfg, hub.clone(), None, None)
+        .expect("a leticode session opens with the head adjudicator");
+
+    // **The seat carries it.** Read off the resolved wiring, which is what the prompt
+    // is built from — not off the role's name.
+    let w = h.wiring();
+    assert!(
+        w.seated.iter().any(|t| t == "ask_user_question"),
+        "the leticode seat does not carry `ask_user_question`: {:?}",
+        w.seated
+    );
+
+    // A head that can decide, playing itself on its own thread.
+    let head = hub.attach("tui", "deadtrickster", Caps::default(), 0);
+    let hub2 = hub.clone();
+    let head_id = head.head_id.clone();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let answerer = std::thread::spawn(move || {
+        while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+            let open = hub2.snapshot().open_decisions;
+            if let Some(d) = open.first() {
+                // The card a person would be looking at: a question, the model's own
+                // choices, and the one line saying what it is stuck on.
+                assert_eq!(d.kind, "question", "the head was shown a permission");
+                assert_eq!(d.choices, vec!["postgres", "sqlite"]);
+                hub2.submit(
+                    &head_id,
+                    "c1",
+                    0,
+                    letibot_sessionlog::hub::CommandKind::Answer {
+                        req_id: d.req_id.clone(),
+                        reply: letibot_sessionlog::hub::Reply::Question(
+                            letibot_sessionlog::question::QuestionAnswer::choosing(1)
+                                .with_note("only for the CUDA box"),
+                        ),
+                    },
+                );
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        false
+    });
+
+    // The call, as the engine would make it.
+    let rt = h.runtime_handle();
+    let call = letibot_transcript::ToolCall {
+        id: "call_1".into(),
+        name: "ask_user_question".into(),
+        arguments: serde_json::json!({
+            "question": "which database should the migration target?",
+            "options": ["postgres", "sqlite"],
+            "because": "the two need different migration files",
+        })
+        .to_string(),
+    };
+    let mut sink = NullToolSink;
+    let r = rt.invoke("t1", &call, &mut sink);
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        answerer.join().unwrap(),
+        "the question never reached the head: {r:?}"
+    );
+
+    // **What the model gets**: the choice, the note beside it, and the person's name
+    // on the whole of it. A note that arrived as a separate sentence would be a
+    // qualification that lost the choice it qualifies.
+    assert_eq!(r.outcome, letibot_transcript::ToolOutcome::Ok, "{r:?}");
+    let out = r.render();
+    assert!(out.contains("chose option 1: sqlite"), "{out}");
+    assert!(
+        out.contains("with the note: only for the CUDA box"),
+        "{out}"
+    );
+    assert!(
+        out.contains("deadtrickster chose option 1: sqlite"),
+        "the answer is not attributed to the person beside the choice: {out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The custom base prompt, and what a compaction does with it.
 
 /// **`--system` reaches the rendered prefix**, so a daemon started with the

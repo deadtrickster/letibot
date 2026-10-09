@@ -328,6 +328,31 @@ pub(crate) enum Note {
     /// prompt"* — and not as nothing either, which is what it rendered as before.
     /// A tool that was refused has to look refused.
     Decided(SettledDecision),
+    /// **A question the person answered** — a faint line, and not a verdict.
+    ///
+    /// [`Note::Decided`] is rano's decision note, and its four words are a
+    /// *permission's*: `allowed`, `REFUSED`, `cancelled`, `NOT ANSWERED — the deadline
+    /// decided it`. A question has no ladder and no verdict, so none of the four fits
+    /// it — and the daemon's settled event says `Cancelled` for one, because the wire's
+    /// `DecisionOutcome` is a permission vocabulary and the alternative was inventing
+    /// an option id nothing chose (`letibot-harnessd`'s `Answers::ask_question`).
+    ///
+    /// So a person who chose `sqlite` would be shown `REFUSED (sqlite)` for the answer
+    /// they gave, and `cancelled` if the daemon had its way. What this head knows and
+    /// the wire does not is **which kind it was** (`SettledDecision::kind`, which the
+    /// view now carries), so a question gets its own row: what was asked, who
+    /// answered, and what they said — in the faint register, because nothing here is
+    /// waiting on anybody.
+    Answered {
+        /// The daemon's id for the ask, so a redelivery of the same answer is not a
+        /// second row.
+        req_id: String,
+        summary: String,
+        /// The person, as `kind identity`.
+        by: String,
+        /// What they said, rendered by the tool's own renderer.
+        said: String,
+    },
     /// **A pane's ending, as a row that is still there a minute later.**
     ///
     /// The defect this exists for, in the operator's words: *"i typed `!term mc`, it
@@ -363,6 +388,38 @@ pub(crate) enum Note {
     },
 }
 
+impl Note {
+    /// **A settled decision, as the note it deserves.**
+    ///
+    /// One function because the live arm ([`crate::app::events::asks`]) and the snapshot
+    /// arm ([`crate::app::events::apply`]) both file this, and the tree has been bitten
+    /// before by those two disagreeing: a snapshot that made a different note than the
+    /// head's own would put a different row on a resumed screen for the same fact.
+    ///
+    /// A **question** gets [`Note::Answered`] — no ladder, no verdict, and the daemon's
+    /// own event for one says `Cancelled` because `DecisionOutcome` is a permission's
+    /// vocabulary. Everything else is rano's decision note, which is where the four
+    /// permission words live.
+    pub(crate) fn settled(d: SettledDecision) -> Note {
+        if d.kind != "question" {
+            return Note::Decided(d);
+        }
+        // `kind identity`, or the kind alone: `gate:timeout` has an identity and a
+        // bare `subagent` does not, and an empty quoted name is worse than no name.
+        let by = if d.by.identity.is_empty() {
+            d.by.kind.clone()
+        } else {
+            format!("{} {}", d.by.kind, d.by.identity)
+        };
+        Note::Answered {
+            req_id: d.req_id,
+            summary: d.summary,
+            by,
+            said: d.basis,
+        }
+    }
+}
+
 /// **What a note is called when a reader wants to retire it.**
 ///
 /// One identity per disclosure, and it has to survive the two things that used to
@@ -387,6 +444,7 @@ pub(crate) fn note_key(n: &Note) -> String {
         Note::Warned(w) => format!("w|{}|{}|{:016x}", w.code, w.ts, fnv1a(&w.detail)),
         Note::NotRun(w) => format!("n|{}|{}|{:016x}", w.code, w.ts, fnv1a(&w.detail)),
         Note::Decided(d) => format!("d|{}", d.req_id),
+        Note::Answered { req_id, .. } => format!("a|{req_id}"),
         Note::Pane {
             line, said, reason, ..
         } => format!("t|{line}|{reason}|{:016x}", fnv1a(&said.join("\n"))),

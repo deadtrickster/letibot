@@ -53,6 +53,19 @@ serenedash-style dashboard over the pieces that are new.
 - **The fabric block** — the shelf's skills as summaries and the memories as
   titles in the system prompt, refreshed after a compaction as a system update,
   cached for when the node is away. `docs/flowy-monitor.md` §5c.
+- **`ask_user_question` is seated, and a person can answer it** — the operator's
+  ruling, 2026-10-09: *"yeah i want you to be able to ask me for a choice. each
+  choice can have my note, and i can abstain or type my answer"*. The tool existed
+  since D10 and lived in the `intent` bundle, which is the planner's, so a leticode
+  session had no such verb at all and a model could only ask in prose. Now the seat
+  carries it, `crates/harnessd/src/answers.rs`'s `HeadQuestioner` poses it as a
+  `DecisionRequested` with `kind: "question"` and its `choices`, and the answer comes
+  back through the frame the head already had. Four shapes, all first-class: a choice,
+  a choice **with the person's own note on it** (`<choice> -- <note>` at the composer),
+  words of their own, and an **abstention** (`abstain`, alone) — which is an answer,
+  not silence and not an empty reply, and which the model receives as `Abstained`
+  rather than `not_run`. No `PROTOCOL_VERSION` bump: every field and frame this needs
+  was already on the wire.
 
 ## The three tools, and what each is
 

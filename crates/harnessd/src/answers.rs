@@ -50,6 +50,11 @@ use letibot_tools::adjudicate::{
     AdjudicationDecision, AdjudicationRequest, Adjudicator, DecisionOutcome, ModelAdvice,
     OnTimeout, OptionKind as ToolOptionKind, RequestKind,
 };
+// **The question vocabulary, which is not the adjudication vocabulary.** §11.6's split,
+// one layer out: a permission is answered by an option id and a question by a person's
+// words, and the two must not be able to settle each other — `Hub::submit` refuses that
+// crossing at the door, and these types are why it can.
+use letibot_tools::builtins::intent::{AskError, Headless, Question, QuestionAnswer, Questioner};
 
 /// How long a person gets to answer before the gate fails closed.
 ///
@@ -283,6 +288,354 @@ enum Waited {
     Answered { reply: Reply, by: String },
     TimedOut,
     Cancelled { why: String },
+}
+
+// ---------------------------------------------------------------------------
+// `ask_user_question`: the other vocabulary, on the same rendezvous.
+// ---------------------------------------------------------------------------
+
+impl Answers {
+    /// **Post a question to the heads and wait for one of them to answer it.**
+    ///
+    /// The operator's ruling, 2026-10-09: *"yeah i want you to be able to ask me for a
+    /// choice. each choice can have my note, and i can abstain or type my answer"*. The
+    /// tool has existed since D10 and had no way to reach a person: `Headless` was what
+    /// every session got, so `ask_user_question` was a verb that could only refuse.
+    ///
+    /// # Why this is not `Answers::ask`
+    ///
+    /// The rendezvous is the same one — the same slots, the same condvar, the same
+    /// deadline, the same answer sink — because the *deadlock* is the same deadlock: the
+    /// question is asked from inside a tool call on the daemon's only worker, so the
+    /// answer cannot come in through the command queue ([`Answers`] says why). What
+    /// differs is the payload in each direction, and that is the whole of it:
+    ///
+    /// * the card is posed with `kind: "question"` and its plain-text `choices`;
+    /// * the reply is [`Reply::Question`], which `Hub::submit` will not accept for a
+    ///   permission and will not accept a permission's answer for.
+    ///
+    /// # Every way this can end
+    ///
+    /// | | what the tool gets |
+    /// |---|---|
+    /// | a head answered | the answer, and who gave it |
+    /// | **no head can answer** | [`AskError::NoHead`], *before* any wait |
+    /// | the deadline passed | [`AskError::Unanswered`] — *nobody answered* |
+    /// | the operator interrupted, or the session closed | [`AskError::Unanswered`] |
+    ///
+    /// **An abstention is not one of those.** It comes back through the first row like
+    /// any other answer, and it is the tool (`accept`, in `letibot-tools`) that reports
+    /// it as `Abstained` rather than as silence. This function never decides that a person
+    /// meant anything: it carries what arrived, and who it arrived from.
+    ///
+    /// # The settled event, and the word it carries
+    ///
+    /// A question's ending is published as [`WireOutcome::Cancelled`] with the person's
+    /// own answer in the `basis`, which is `close`'s own precedent for an outcome the wire
+    /// has not got: the request is off the screen and nobody selected anything *from a
+    /// ladder*, because a question has no ladder. The alternative — inventing an option id
+    /// so a `Selected` would parse — would put a word in the log that nothing chose, and
+    /// the answer itself is in the basis and in the tool's result either way.
+    ///
+    /// **No `PROTOCOL_VERSION` bump.** Nothing about the wire changed: `kind: "question"`
+    /// and `choices` are `PROTOCOL_VERSION` 7, `AnswerQuestion` and [`Reply::Question`] are
+    /// 5, and `DecisionOutcome` grew nothing.
+    pub fn ask_question(
+        &self,
+        hub: &Arc<Hub>,
+        q: &Question,
+        budget: Duration,
+    ) -> Result<(QuestionAnswer, String), AskError> {
+        // **Read, not assumed**, and asked before anything is posted: a session whose only
+        // head is a read-only connector cannot answer, and posting to it and then sitting
+        // out the deadline would report a timeout about a question nobody was ever asked.
+        // The same check `Answers::ask` makes, for the same reason.
+        let who = hub.deciding_heads();
+        if who.is_empty() {
+            return Err(AskError::NoHead(no_head_for_a_question()));
+        }
+
+        let req_id = question_id(&hub.session_id());
+        let deadline_ms = unix_millis() + budget.as_millis() as u64;
+        // The slot exists before the question does. See `Answers::wait` — the window is
+        // the length of a fan-out and an answer that lands inside it must have somewhere
+        // to land.
+        let waited = {
+            let mut g = self.lock();
+            g.insert(req_id.clone(), Slot::Waiting);
+            drop(g);
+            hub.publish(pose_question(&req_id, q, deadline_ms));
+            self.wait(&req_id, budget)
+        };
+
+        // **The open card is closed on every path**, including the ones nobody answered —
+        // the same rule `Answers::ask` states: a `DecisionRequested` with no matching
+        // `DecisionAnswered` stays in the head's open set for the life of the session, and
+        // the hub then accepts an answer to a question that is over.
+        let close = |outcome: WireOutcome, by: Decider, basis: String| {
+            hub.publish(close_question(&req_id, outcome, by, basis));
+        };
+
+        match waited {
+            Waited::Answered {
+                reply: Reply::Question(wire),
+                by,
+            } => {
+                let a = to_tool_answer(&wire);
+                // The same renderer the model reads, flattened onto one line, so the head
+                // and the tool cannot disagree about what the person said.
+                let basis = one_line(&a.render(q));
+                close(
+                    WireOutcome::Cancelled,
+                    Decider {
+                        kind: "human".into(),
+                        identity: by.clone(),
+                    },
+                    basis,
+                );
+                Ok((a, by))
+            }
+            // **The other vocabulary's reply.** `Hub::submit` refuses this at the door, so
+            // it is unreachable through the daemon; the arm exists because the slot can
+            // only be filled by *something*, and calling it an answer would be the defect
+            // the two types exist to prevent.
+            Waited::Answered {
+                reply: Reply::Permission { .. },
+                by,
+            } => {
+                close(
+                    WireOutcome::Cancelled,
+                    Decider {
+                        kind: "gate".into(),
+                        identity: "unavailable".into(),
+                    },
+                    format!(
+                        "a permission's answer arrived from {by} for a question, which settles \
+                     nothing; a question is settled by a choice, a note or words"
+                    ),
+                );
+                Err(AskError::NotAnAnswer(
+                    "a permission's answer arrived for it".into(),
+                ))
+            }
+            Waited::TimedOut => {
+                close(
+                    WireOutcome::TimedOut,
+                    Decider {
+                        kind: "gate".into(),
+                        identity: "timeout".into(),
+                    },
+                    format!(
+                        "nobody answered within {}s (asked {}). This is not a decision, and it \
+                     is not a declining: the question is still open.",
+                        budget.as_secs(),
+                        who.join(",")
+                    ),
+                );
+                Err(AskError::Unanswered(
+                    "the question was posted to the attached head and nobody answered before the \
+                 deadline, so NOBODY has answered it. A deadline passing is not a decision, \
+                 not a declining, and not a `chat later`: the question is still open."
+                        .into(),
+                ))
+            }
+            Waited::Cancelled { why } => {
+                close(
+                    WireOutcome::Cancelled,
+                    Decider {
+                        kind: "gate".into(),
+                        identity: "interrupt".into(),
+                    },
+                    format!("the question was cancelled before anybody answered: {why}"),
+                );
+                Err(AskError::Unanswered(format!(
+                    "the question was cancelled before anybody answered ({why}), so NOBODY has \
+                 answered it and it is still open."
+                )))
+            }
+        }
+    }
+}
+
+/// The wire's answer, as the tool's own shape.
+///
+/// **A field-by-field copy and not a `From`, deliberately.** The two types exist
+/// because neither crate may learn about the other — `crates/sessionlog/src/question.rs`
+/// says why, and its `the_wire_shape_and_the_tool_shape_agree` is the pin that keeps
+/// them one shape. A conversion that lived in either crate would be that learning; the
+/// daemon is the place they meet, which is what `lift_tools` is for the other pair.
+///
+/// A field this forgets is a field a person sent that the model never sees, which is
+/// why it copies all four and why the pin above is worth having.
+fn to_tool_answer(a: &letibot_sessionlog::question::QuestionAnswer) -> QuestionAnswer {
+    QuestionAnswer {
+        option: a.option,
+        note: a.note.clone(),
+        free: a.free.clone(),
+        abstain: a.abstain,
+    }
+}
+
+/// **The `DecisionRequested` a question is posed as.**
+///
+/// `choices` and not `options`: `options` carries the adjudication ladder, which is
+/// empty for a question, and `choices` is the plain-text list `PROTOCOL_VERSION` 7
+/// added so that a question could be posed *with* its choices rather than, in
+/// `protocol.rs`'s own words, *"only by discarding the choices"*.
+///
+/// `call_id: None`: this is not a gated call, so there is no row for the card to
+/// ride — a head draws it as the ask it is, which is why a question's settled event
+/// becomes a note rather than a line on a call.
+///
+/// `on_timeout: Deny` is the honest one of the three the wire has. `Ask` draws *"the
+/// guard model decides"* — false, nothing is consulted for a question — and `Allow`
+/// draws *"it RUNS anyway"* — false, nothing was ever going to run. `Deny` draws *"if
+/// nobody answers, nothing runs"*, which is exactly what a question's deadline costs:
+/// the tool returns `not_run` and the turn proceeds with no answer.
+fn pose_question(req_id: &str, q: &Question, deadline_ms: u64) -> SessionEvent {
+    SessionEvent::DecisionRequested {
+        write_targets: Vec::new(),
+        req_id: req_id.into(),
+        kind: "question".into(),
+        call_id: None,
+        // A question is not a gate: nothing about a declaration asks for it, and a
+        // card that drew an access class here would be claiming one.
+        access: String::new(),
+        summary: q.text.clone(),
+        target: String::new(),
+        detail: String::new(),
+        options: Vec::new(),
+        choices: q.options.clone(),
+        because: q.because.clone(),
+        advice: None,
+        subagent: None,
+        deadline: Some(deadline_ms),
+        on_timeout: WireOnTimeout::Deny,
+    }
+}
+
+/// The `DecisionAnswered` that takes a question off the head's screen.
+fn close_question(req_id: &str, outcome: WireOutcome, by: Decider, basis: String) -> SessionEvent {
+    SessionEvent::DecisionAnswered {
+        req_id: req_id.into(),
+        outcome,
+        by,
+        basis,
+        late: false,
+    }
+}
+
+/// **Why nobody could be asked, in the words a question needs rather than a gate's.**
+///
+/// [`no_head`] is the gate's sentence and says the *gate* fails closed — nothing ran
+/// and nothing changed. A question never had anything to run, so the same sentence
+/// would be describing a call that was never gated. What a model needs told here is
+/// the other half: the question is still open, and an assumption is not an answer.
+fn no_head_for_a_question() -> String {
+    "no head that can answer is attached to this session, so NOBODY was asked and nobody \
+     answered. This is not a refusal and it is not permission to proceed on an \
+     assumption: the question is still open. State the assumption you would have to make, \
+     and stop, or take the path that does not need the answer."
+        .to_string()
+}
+
+/// A question's request id: unique per daemon, and recognisable as a question's in a
+/// log where every other id begins `adj-`.
+fn question_id(session_id: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    format!("q-{session_id}-{n:04}")
+}
+
+/// Whitespace-collapsed, so a multi-line rendering travels as one `basis` line.
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// **The questioner a session with a head is given.**
+///
+/// The seam is [`Questioner`] and this is the implementation D10's tool was missing:
+/// it posts the question to the head and waits on the answer frame the head already
+/// had. It holds nothing of its own — the rendezvous is [`Answers`], shared with the
+/// adjudicator — so a question and a permission are one mechanism in the daemon too,
+/// differing in `kind`, which is §11.6's sentence made true one layer down.
+pub struct HeadQuestioner {
+    hub: Arc<Hub>,
+    answers: Arc<Answers>,
+    budget: Duration,
+}
+
+impl HeadQuestioner {
+    pub fn new(hub: Arc<Hub>, answers: Arc<Answers>) -> HeadQuestioner {
+        HeadQuestioner {
+            hub,
+            answers,
+            budget: ANSWER_BUDGET,
+        }
+    }
+
+    pub fn with_budget(mut self, budget: Duration) -> Self {
+        self.budget = budget;
+        self
+    }
+}
+
+impl Questioner for HeadQuestioner {
+    fn ask(&self, q: &Question) -> Result<(QuestionAnswer, String), AskError> {
+        self.answers.ask_question(&self.hub, q, self.budget)
+    }
+
+    /// The same shape [`HeadAdjudicator::describe`] gives, and read for the same
+    /// reason: *reachable* is a fact about right now, and a line that claimed a head
+    /// for a session with none is the disclosure claiming a safety property the
+    /// session does not have.
+    fn describe(&self) -> String {
+        let heads = self.hub.deciding_heads();
+        if heads.is_empty() {
+            return format!(
+                "asked at the head — none attached right now, so every `ask_user_question` \
+                 call refuses with not_run (deadline {}s)",
+                self.budget.as_secs()
+            );
+        }
+        format!(
+            "asked at the head: {} (deadline {}s)",
+            heads.join(", "),
+            self.budget.as_secs()
+        )
+    }
+}
+
+/// **The questioner the intent wiring is given, whose head arrives with the gate.**
+///
+/// The order is forced and not a design: `Harness::open` builds the intent wiring —
+/// and registers the tools that take it — *before* it builds the gate, and the gate is
+/// where [`Answers`] and the hub's answer sink are created, as one act, for the reason
+/// `Answers::ask` states. So the wiring gets a slot and this reads it at ask time.
+///
+/// Reading it late is also the honest reading: what matters is whether a head is
+/// attached **now**, and a session whose head attached after it opened can be asked.
+/// An empty slot refuses with [`Headless`]'s own sentence rather than a copy of it —
+/// there is one place in this tree that says what *no head* means, and this is not it.
+pub struct SlotQuestioner(pub Arc<Mutex<Option<Arc<dyn Questioner>>>>);
+
+impl Questioner for SlotQuestioner {
+    fn ask(&self, q: &Question) -> Result<(QuestionAnswer, String), AskError> {
+        let head = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match head {
+            Some(h) => h.ask(q),
+            None => Headless.ask(q),
+        }
+    }
+
+    fn describe(&self) -> String {
+        let head = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match head {
+            Some(h) => h.describe(),
+            None => Headless.describe(),
+        }
+    }
 }
 
 impl AnswerSink for Answers {
@@ -969,6 +1322,253 @@ mod tests {
         assert!(
             open_of(&hub).is_empty(),
             "an answered decision is off the head's screen"
+        );
+    }
+
+    // ---- `ask_user_question`: the other vocabulary, the same rendezvous -----
+
+    fn a_question() -> Question {
+        Question {
+            text: "which database should the migration target?".into(),
+            options: vec!["postgres".into(), "sqlite".into()],
+            because: "the two need different migration files".into(),
+        }
+    }
+
+    /// **The whole of `ask_user_question` reaching a person**, end to end inside the
+    /// daemon: the question is posed to the head as a card with its choices, the head
+    /// answers it through the frame that already existed, and the tool thread — which
+    /// is not the thread the answer arrived on — wakes with the answer **and who gave
+    /// it**.
+    ///
+    /// The attribution is the half that is not a formality: a question's result is a
+    /// claim about what a person said, and the identity is read from the connection the
+    /// answer arrived on rather than from anything the answer carries.
+    #[test]
+    fn a_head_answers_a_question_and_the_answer_carries_who_gave_it() {
+        let hub = Hub::new("s");
+        let answers = Arc::new(Answers::new());
+        hub.set_answer_sink(answers.clone());
+        let head = hub.attach("tui", "deadtrickster", Caps::default(), 0);
+
+        let budget = Duration::from_secs(10);
+        let q = a_question();
+        let asker = HeadQuestioner::new(hub.clone(), answers.clone()).with_budget(budget);
+
+        // The head's side, on its own thread: wait for the card, check it is a question
+        // with the model's own choices on it, and answer it the way `letibot-tui` does.
+        let hub2 = hub.clone();
+        let head_id = head.head_id.clone();
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let seen2 = seen.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let answerer = std::thread::spawn(move || {
+            while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+                let open = hub2.snapshot().open_decisions;
+                if let Some(d) = open.first() {
+                    *seen2.lock().unwrap() = Some(d.clone());
+                    hub2.submit(
+                        &head_id,
+                        "c1",
+                        0,
+                        letibot_sessionlog::hub::CommandKind::Answer {
+                            req_id: d.req_id.clone(),
+                            reply: Reply::Question(
+                                letibot_sessionlog::question::QuestionAnswer::choosing(1)
+                                    .with_note("only for the CUDA box"),
+                            ),
+                        },
+                    );
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            false
+        });
+
+        let got = asker.ask(&q);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let submitted = answerer.join().unwrap();
+        assert!(submitted, "the head never got the question: {got:?}");
+
+        let (a, by) = got.expect("the head answered");
+        assert_eq!(a.option, Some(1), "the choice came back as an index");
+        assert_eq!(a.note.as_deref(), Some("only for the CUDA box"));
+        assert_eq!(a.free, None);
+        assert!(!a.abstain);
+        assert_eq!(by, "deadtrickster", "the answer is attributed to nobody");
+
+        // **The card is the surface, and it is the card the composer answers.** The
+        // posed `DecisionRequested` is a `question` whose ladder is its plain-text
+        // choices — `options` is the adjudication ladder and is empty for one, which is
+        // why the hub validates an answer against `choices`.
+        let card = seen.lock().unwrap().clone().expect("the card was seen");
+        assert_eq!(card.kind, "question");
+        assert_eq!(card.summary, q.text);
+        assert_eq!(card.choices, q.options);
+        assert_eq!(card.because, q.because);
+        assert!(card.options.is_empty(), "a question has no ladder");
+        assert!(card.deadline.is_some(), "a question expires like any ask");
+
+        // And it is off the head's screen, with the answer recorded against it.
+        assert!(
+            open_of(&hub).is_empty(),
+            "an answered question is off the head's screen"
+        );
+        let settled = hub
+            .snapshot()
+            .settled_decisions
+            .into_iter()
+            .find(|d| d.req_id == card.req_id)
+            .expect("the answer is on the log");
+        assert_eq!(settled.by.kind, "human");
+        assert_eq!(settled.by.identity, "deadtrickster");
+        assert!(
+            settled.basis.contains("chose option 1: sqlite")
+                && settled.basis.contains("only for the CUDA box"),
+            "the basis is not what the person said: {}",
+            settled.basis
+        );
+    }
+
+    /// **An abstention travels the whole way and is not silence.** The head sends the
+    /// fourth shape; the hub accepts it (it is not an empty answer and it conforms);
+    /// and what comes back is the abstention itself rather than an error, which is what
+    /// lets the tool report `Abstained` rather than `not_run`.
+    #[test]
+    fn an_abstention_is_an_answer_that_reaches_the_tool_as_one() {
+        let hub = Hub::new("s");
+        let answers = Arc::new(Answers::new());
+        hub.set_answer_sink(answers.clone());
+        let head = hub.attach("tui", "deadtrickster", Caps::default(), 0);
+        let budget = Duration::from_secs(10);
+        let q = a_question();
+        let asker = HeadQuestioner::new(hub.clone(), answers.clone()).with_budget(budget);
+
+        let hub2 = hub.clone();
+        let head_id = head.head_id.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let answerer = std::thread::spawn(move || {
+            while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
+                let open = hub2.snapshot().open_decisions;
+                if let Some(d) = open.first() {
+                    hub2.submit(
+                        &head_id,
+                        "c1",
+                        0,
+                        letibot_sessionlog::hub::CommandKind::Answer {
+                            req_id: d.req_id.clone(),
+                            reply: Reply::Question(
+                                letibot_sessionlog::question::QuestionAnswer::abstaining(),
+                            ),
+                        },
+                    );
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            false
+        });
+
+        let got = asker.ask(&q);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(answerer.join().unwrap(), "the head never got the question");
+
+        let (a, by) = got.expect("an abstention is an answer, not a failure to answer");
+        assert!(a.abstain, "{a:?}");
+        assert_eq!(by, "deadtrickster");
+        // And the log says what they did rather than leaving it as a bare id.
+        let settled = hub
+            .snapshot()
+            .settled_decisions
+            .into_iter()
+            .next()
+            .expect("the abstention is on the log");
+        assert!(
+            settled.basis.contains("abstained"),
+            "the head cannot tell this from an empty answer: {}",
+            settled.basis
+        );
+    }
+
+    /// **No head, and it refuses by name rather than waiting out a deadline.** This is
+    /// the behaviour `Headless` had and it is kept: the ask must not hang, and it must
+    /// not invent an answer. Measured rather than asserted in prose — a refusal that
+    /// took the budget would pass a test that only looked at the error.
+    #[test]
+    fn a_question_with_no_head_refuses_by_name_and_does_not_wait() {
+        let hub = Hub::new("s");
+        let answers = Arc::new(Answers::new());
+        // No `attach`, so nobody can decide: the hub's own answer.
+        let budget = Duration::from_secs(30);
+        let asker = HeadQuestioner::new(hub.clone(), answers).with_budget(budget);
+        let started = std::time::Instant::now();
+        let refused = asker.ask(&a_question());
+        let took = started.elapsed();
+        let err = refused.expect_err("nobody was there to answer");
+        assert!(matches!(err, AskError::NoHead(_)), "{err:?}");
+        let said = err.to_string();
+        assert!(said.contains("NOBODY was asked"), "{said}");
+        assert!(said.contains("still open"), "{said}");
+        assert!(
+            !said.to_lowercase().contains("best judg"),
+            "the survey's failure, reproduced: {said}"
+        );
+        assert!(
+            took < budget / 2,
+            "a session with nobody to ask sat out the deadline: {took:?}"
+        );
+        // Nothing was posed, so nothing is left open on a screen nobody has.
+        assert!(open_of(&hub).is_empty());
+    }
+
+    /// A head that is attached and cannot decide is the same fact as no head, and it is
+    /// found out the same way — before the wait, not after it.
+    #[test]
+    fn a_question_to_a_head_that_cannot_decide_refuses_at_once() {
+        let hub = Hub::new("s");
+        let answers = Arc::new(Answers::new());
+        hub.set_answer_sink(answers.clone());
+        // A read-only connector: attached, and not somebody who may answer.
+        hub.attach(
+            "acp",
+            "stranger",
+            Caps {
+                can_decide: false,
+                ..Caps::default()
+            },
+            0,
+        );
+        let budget = Duration::from_secs(30);
+        let asker = HeadQuestioner::new(hub, answers).with_budget(budget);
+        let started = std::time::Instant::now();
+        let err = asker.ask(&a_question()).expect_err("nobody may answer");
+        assert!(matches!(err, AskError::NoHead(_)), "{err:?}");
+        assert!(
+            started.elapsed() < budget / 2,
+            "the ask sat out a deadline for an answer nobody was allowed to give"
+        );
+    }
+
+    /// **A question nobody answers is `not_run`, and it is not a declining.** The same
+    /// rule the gate keeps, for the same reason: a deadline is not a decision.
+    #[test]
+    fn a_question_nobody_answers_is_unanswered_and_the_card_comes_down() {
+        let hub = Hub::new("s");
+        let answers = Arc::new(Answers::new());
+        hub.set_answer_sink(answers.clone());
+        let _head = hub.attach("tui", "deadtrickster", Caps::default(), 0);
+        // Short, because the point is the ending rather than the patience.
+        let asker =
+            HeadQuestioner::new(hub.clone(), answers).with_budget(Duration::from_millis(60));
+        let err = asker.ask(&a_question()).expect_err("nobody answered");
+        assert!(matches!(err, AskError::Unanswered(_)), "{err:?}");
+        assert!(err.to_string().contains("still open"), "{err}");
+        assert!(
+            open_of(&hub).is_empty(),
+            "an unanswered question was left on the head's screen"
         );
     }
 

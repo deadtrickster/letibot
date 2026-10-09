@@ -196,27 +196,21 @@ impl App {
             // line is either one of the model's own choices or an answer, and
             // neither is "hold the words and answer the marked row".
             //
-            // **A line that IS a choice answers by index.** Matching the text is
-            // how a person answers a menu they were shown, and it costs one
-            // comparison per choice; `option` is preferred over `free` because the
-            // model gets back *which of the three it offered* rather than a
-            // sentence it has to re-read as one of them.
+            // **Four ways now, and all four are the operator's** (2026-10-09): *"each
+            // choice can have my note, and i can abstain or type my answer"*. A line
+            // that IS a choice answers by index; a choice then `--` then words answers
+            // that choice WITH the note on it; `abstain` alone is the deliberate
+            // no-answer; and anything else is their own words. `question_answer` is the
+            // whole of that rule, and it is one function so the card's hint and this
+            // cannot drift apart.
             if d.kind == "question" {
                 let typed = text.trim();
                 if typed.is_empty() {
                     return self.answer_marked();
                 }
-                let at = d
-                    .choices
-                    .iter()
-                    .position(|c| c.trim().eq_ignore_ascii_case(typed));
-                let answer = match at {
-                    Some(i) => letibot_sessionlog::question::QuestionAnswer::choosing(i),
-                    None => letibot_sessionlog::question::QuestionAnswer::free(typed),
-                };
                 return Some(Action::AnswerQuestion {
                     req_id: d.req_id.clone(),
-                    answer,
+                    answer: question_answer(&d.choices, typed),
                 });
             }
             match match_option(&d, text.trim()) {

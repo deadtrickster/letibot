@@ -1043,6 +1043,16 @@ pub mod roles {
                 // its files suggest — read-only; the agent writes the AGENTS.md section the
                 // operator chose. The operator: *"let main project agent manage it"*.
                 "merge_gate",
+                // **`ask_user_question`: the seat can ask the person, not only tell them.**
+                //
+                // The operator's ruling, 2026-10-09: *"yeah i want you to be able to ask
+                // me for a choice. each choice can have my note, and i can abstain or type
+                // my answer"*. Before this a leticode session had no such verb at all — the
+                // tool exists, and the `intent` bundle it lives in is the planner's — so a
+                // model could only ask in prose and the operator had no way to answer *as*
+                // an answer. `Access::Session` (it changes nothing on disk and interrupts a
+                // person), which is the treatment `intent/mod.rs` asserts for it.
+                "ask_user_question",
             ],
         );
         // Eighteen: the opencode union, the room (`flowy`, seated by the daemon
@@ -1075,7 +1085,14 @@ pub mod roles {
         // **Twenty-seven since `merge_gate`**, which takes its own seat: the queue holds a
         // repository's branches until its gate exists, and the agent that runs the project is
         // the one the operator asked to set it.
-        r.max_tools = 27;
+        // **And twenty-eight since `ask_user_question`**, which takes its own seat for the
+        // operator's own reason rather than by trade: *"yeah i want you to be able to ask me
+        // for a choice"*. A seat that can spawn subagents, run commands and write files but
+        // cannot ask the person a question with answerable options is a seat that asks in
+        // prose and reads silence as assent — which is the defect `ask.rs` exists against.
+        // The room is this list (27) plus the root session's `flowy` door, so the declared
+        // ceiling moves with it, here, where somebody deciding can read it.
+        r.max_tools = 28;
         r
     }
 
@@ -2531,6 +2548,57 @@ mod tests {
                 seat.max_tools
             );
         }
+    }
+
+    /// **The leticode seat can ask the person a question.**
+    ///
+    /// The operator's ruling, 2026-10-09: *"yeah i want you to be able to ask me for a
+    /// choice. each choice can have my note, and i can abstain or type my answer"*.
+    /// The tool has existed since D10 and was seated on no seat a person actually runs:
+    /// it lives in the `intent` bundle, which is the planner's, so a leticode session
+    /// had no such verb at all and a model could only ask in prose.
+    ///
+    /// **What this can and cannot prove.** The leticode seat names tools this crate
+    /// does not register — `harness`, `transcript`, `merge_gate` and the rest are the
+    /// daemon's — so `resolve_role` cannot be run against it here, and the resolve is
+    /// proven where the real registry is built (`letibot-harnessd`'s
+    /// `wired.rs::the_leticode_seat_carries_the_ask_and_its_seam_refuses_by_name`).
+    /// What this holds is the seat's own list and its ceiling, which is the half that
+    /// lives in this file.
+    #[test]
+    fn the_leticode_seat_carries_ask_user_question() {
+        let seat = roles::leticode();
+        assert!(
+            seat.tools.iter().any(|t| t == "ask_user_question"),
+            "the leticode seat does not name `ask_user_question`: {:?}",
+            seat.tools
+        );
+        // It took its own seat rather than trading for one: nothing left the list when
+        // it arrived, which is the property `max_tools` is declared for.
+        assert_eq!(seat.tools.len(), 27, "{:?}", seat.tools);
+        assert!(
+            seat.tools.len() <= seat.max_tools,
+            "the seat is over its own ceiling: {} > {}",
+            seat.tools.len(),
+            seat.max_tools
+        );
+        // And the declaration is the one `intent/mod.rs` asserts for it: it changes
+        // nothing the operator owns and reads nothing off disk; it interrupts a person.
+        let mut reg =
+            crate::coder_tools(std::sync::Arc::new(crate::builtins::retrieval::Unavailable))
+                .unwrap();
+        crate::builtins::intent::register_into(
+            &mut reg,
+            &crate::builtins::intent::Wiring::standalone(),
+        )
+        .unwrap();
+        let access = reg
+            .schemas()
+            .into_iter()
+            .find(|s| s.name == "ask_user_question")
+            .expect("the tool is registered")
+            .access;
+        assert_eq!(access, Access::Session);
     }
 
     #[test]

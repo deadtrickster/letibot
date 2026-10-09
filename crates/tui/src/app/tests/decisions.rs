@@ -589,6 +589,60 @@ fn a_refused_call_is_rendered_as_refused_rather_than_as_silence() {
     assert!(screen.contains("REFUSED"), "{screen}");
 }
 
+/// **A question the person answered is not a permission's verdict.**
+///
+/// The daemon's settled event for a question says `Cancelled` — `DecisionOutcome` is a
+/// permission's vocabulary and a question has no ladder to select from — so a head that
+/// read the outcome word alone would tell the person they had *cancelled* the answer
+/// they just gave, or (as rano's `Settled::Refused` would have it) that it was
+/// **REFUSED**. What the head knows and the wire does not is which kind it was, and
+/// this is that: the answer, attributed, in the faint register.
+#[test]
+fn an_answered_question_is_drawn_as_the_answer_and_not_as_a_permission_verdict() {
+    use letibot_sessionlog::event::{Decider, DecisionOutcome, SessionEvent};
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(
+        1,
+        testing::asked(
+            "q1",
+            "which database should the migration target?",
+            &["postgres", "sqlite"],
+            "the two need different migration files",
+        ),
+    )));
+    assert_eq!(a.open_decisions().len(), 1);
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::DecisionAnswered {
+            req_id: "q1".into(),
+            outcome: DecisionOutcome::Cancelled,
+            by: Decider {
+                kind: "human".into(),
+                identity: "deadtrickster".into(),
+            },
+            basis: "chose option 1: sqlite with the note: only for the CUDA box".into(),
+            late: false,
+        },
+    )));
+    assert!(a.open_decisions().is_empty());
+    let screen = a.screen(160, 24).join("\n");
+    assert!(
+        screen.contains("which database should the migration target?"),
+        "{screen}"
+    );
+    assert!(screen.contains("sqlite"), "{screen}");
+    assert!(
+        screen.contains("deadtrickster"),
+        "the answer is not attributed: {screen}"
+    );
+    for wrong in ["REFUSED", "cancelled", "allowed"] {
+        assert!(
+            !screen.contains(wrong),
+            "a question was drawn with a permission's word {wrong:?}: {screen}"
+        );
+    }
+}
+
 #[test]
 fn a_settled_decision_is_not_offered_for_answering() {
     let mut a = app();
@@ -756,6 +810,8 @@ fn an_operator_answer_over_an_oracles_advice_keeps_the_two_reasons_apart() {
 fn an_oracle_that_cited_nothing_says_so_loudly() {
     let d = SettledDecision {
         req_id: "r1".into(),
+        // A permission: the rendering this test is about is the ladder's.
+        kind: "permission".into(),
         call_id: Some("c1".into()),
         summary: "run it".into(),
         outcome: letibot_sessionlog::event::DecisionOutcome::Selected {

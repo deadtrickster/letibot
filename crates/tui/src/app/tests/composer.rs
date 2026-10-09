@@ -831,6 +831,118 @@ fn a_question_is_drawn_with_its_choices_and_can_be_answered_three_ways() {
     assert_eq!(a.submit(String::new()), None);
 }
 
+/// **The operator's two other ways of answering** (2026-10-09): *"each choice can have
+/// my note, and i can abstain or type my answer"*.
+///
+/// Both are composer spellings and not card affordances, deliberately: the head is
+/// driven over a pipe in this tree's own tests, so an answer only a terminal can produce
+/// is not an answer a script can give.
+#[test]
+fn a_question_takes_a_note_on_a_choice_and_an_abstention() {
+    use letibot_sessionlog::event::OnTimeout;
+    let question = |choices: &[&str]| {
+        let mut d = decision_with(&[]);
+        d.kind = "question".into();
+        d.summary = "which database should the migration target?".into();
+        d.choices = choices.iter().map(|c| (*c).to_string()).collect();
+        d.on_timeout = OnTimeout::Deny;
+        d
+    };
+    let one = question(&["postgres", "sqlite", "a new one"]);
+
+    // **The card says how**, and it says it in the half R20 never trims — the row
+    // nearest the composer, where a person is already looking when they answer.
+    let a = app();
+    let card = a.decision_lines(&one, 200).join("\n");
+    assert!(card.contains("type `abstain`"), "{card}");
+    assert!(card.contains("puts your note on that choice"), "{card}");
+
+    // **A choice with the person's own note on it.** The note rides the INDEX, so the
+    // model gets back which of the three it offered *and* what was said about it —
+    // folding the note into free text would lose the choice it qualifies.
+    let mut a = app();
+    a.open.push(one.clone());
+    match a.submit("sqlite -- only for the CUDA box".into()) {
+        Some(Action::AnswerQuestion { answer, .. }) => {
+            assert_eq!(answer.option, Some(1), "{answer:?}");
+            assert_eq!(answer.note.as_deref(), Some("only for the CUDA box"));
+            assert_eq!(answer.free, None, "the note is not free text: {answer:?}");
+            assert!(!answer.abstain);
+        }
+        other => panic!("a note on a choice is that choice and its note, got {other:?}"),
+    }
+    // Case and spacing are a person's, and the separator does not have to be spaced.
+    let mut a = app();
+    a.open.push(one.clone());
+    match a.submit("  POSTGRES --the one we already run  ".into()) {
+        Some(Action::AnswerQuestion { answer, .. }) => {
+            assert_eq!(answer.option, Some(0), "{answer:?}");
+            assert_eq!(answer.note.as_deref(), Some("the one we already run"));
+        }
+        other => panic!("got {other:?}"),
+    }
+
+    // **A note needs a choice to qualify.** A separator with nothing before it, or a
+    // choice with nothing after it, is not a note: both are the person's own words,
+    // which is the answer they gave rather than the one a guess would make for them.
+    for words in ["-- only for the CUDA box", "sqlite --", "sqlite --   "] {
+        let mut a = app();
+        a.open.push(one.clone());
+        match a.submit(words.into()) {
+            Some(Action::AnswerQuestion { answer, .. }) => {
+                assert_eq!(answer.option, None, "{words:?} became a choice: {answer:?}");
+                assert_eq!(answer.note, None, "{words:?} became a note: {answer:?}");
+                assert_eq!(answer.free.as_deref(), Some(words.trim()), "{answer:?}");
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+    // **A line that merely begins with a choice is not that choice.** `sqlite is fine`
+    // is a sentence; reading it as a note on `sqlite` would be the harness deciding
+    // what a person meant.
+    let mut a = app();
+    a.open.push(one.clone());
+    match a.submit("sqlite is fine".into()) {
+        Some(Action::AnswerQuestion { answer, .. }) => {
+            assert_eq!(answer.option, None, "{answer:?}");
+            assert_eq!(answer.free.as_deref(), Some("sqlite is fine"));
+        }
+        other => panic!("got {other:?}"),
+    }
+
+    // **An abstention is a deliberate no-answer, and it is an answer.** It goes through
+    // the same frame as any other, saying so — not as an empty answer (which the daemon
+    // refuses) and not as silence (which is no frame at all).
+    let mut a = app();
+    a.open.push(one.clone());
+    match a.submit("abstain".into()) {
+        Some(Action::AnswerQuestion { answer, .. }) => {
+            assert!(answer.abstain, "{answer:?}");
+            assert_eq!(answer.option, None, "{answer:?}");
+            assert_eq!(answer.free, None, "an abstention is not words: {answer:?}");
+            assert_eq!(answer.note, None);
+        }
+        other => panic!("an abstention is an answer, got {other:?}"),
+    }
+    // A person's casing and spacing are theirs, and the word is the whole line.
+    let mut a = app();
+    a.open.push(one.clone());
+    match a.submit("  Abstain  ".into()) {
+        Some(Action::AnswerQuestion { answer, .. }) => assert!(answer.abstain, "{answer:?}"),
+        other => panic!("got {other:?}"),
+    }
+    // **And a question that offered nothing can still be abstained from**, which is the
+    // case an abstention exists for: *I am not choosing between these.*
+    let mut a = app();
+    a.open.push(question(&[]));
+    match a.submit("abstain".into()) {
+        Some(Action::AnswerQuestion { answer, .. }) => assert!(answer.abstain, "{answer:?}"),
+        other => panic!("got {other:?}"),
+    }
+    // The line is an answer, so it does not stay in the composer.
+    assert!(a.input().is_empty(), "{:?}", a.input());
+}
+
 /// **A child whose completion arrived does not count.**
 ///
 /// The other end of the same rule: the daemon's `done` is the completion and it is the only

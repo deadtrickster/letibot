@@ -2298,8 +2298,19 @@ impl Harness {
         // not attaching them makes every completion `Verification::NoEncoder`, which
         // is a state whose reason is ours.
         let intent = Arc::new(IntentLedger::new());
+        // **The question slot, and why it is a slot.** `intent_wiring` is built here,
+        // before the gate, because the tools that take it are registered with the rest
+        // of the registry; the `Answers` a question has to wait on is built with the
+        // GATE, as one act with the hub's answer sink (`crate::answers` says why those
+        // two are one act). So the wiring gets a slot and the gate fills it, and the
+        // tool reads it when it is called — which is also the honest reading, since
+        // what matters is whether a head is attached *now*.
+        let question_head: Arc<
+            std::sync::Mutex<Option<Arc<dyn letibot_tools::builtins::intent::Questioner>>>,
+        > = Default::default();
         let intent_wiring = intent_tools::Wiring {
             ledger: intent.clone(),
+            questioner: Arc::new(crate::answers::SlotQuestioner(question_head.clone())),
             ..intent_tools::Wiring::standalone()
         };
         // **`--role planner` IS plan mode**, so the state says so.
@@ -2799,6 +2810,15 @@ impl Harness {
                         // with the sink, because the two are one act (see the note below).
                         *head_answers_slot.lock().unwrap_or_else(|e| e.into_inner()) =
                             Some(answers.clone());
+                        // **And `ask_user_question` can reach the same head.** One more
+                        // line in the same act, for the same reason: the question rides
+                        // the same rendezvous and the same sink, so a slot filled anywhere
+                        // else would be a second path to a person. `HeadQuestioner` posts
+                        // `kind: "question"` and waits for `Reply::Question`; the hub
+                        // refuses either vocabulary for the other's request.
+                        *question_head.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(
+                            crate::answers::HeadQuestioner::new(hub.clone(), answers.clone()),
+                        ));
                         Box::new(crate::answers::HeadAdjudicator::new(hub.clone(), answers))
                     }
                     (None, AdjudicatorChoice::Console) => {
@@ -2819,6 +2839,14 @@ impl Harness {
                         // card reaches the same answer path the root's own escalation does.
                         *head_answers_slot.lock().unwrap_or_else(|e| e.into_inner()) =
                             Some(answers.clone());
+                        // And a question's, for the same reason and in the same act: under
+                        // `--adjudicator model` the head is still where a question goes. A
+                        // question is not an adjudication, so it is never handed to the
+                        // oracle first — `Answers::ask_question` posts it straight to the
+                        // head, and the model decides nothing about it.
+                        *question_head.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(
+                            crate::answers::HeadQuestioner::new(hub.clone(), answers.clone()),
+                        ));
                         Box::new(crate::answers::EscalateOnTimeout::new(
                             std::sync::Arc::from(model),
                             std::sync::Arc::new(crate::answers::HeadAdjudicator::new(
@@ -16393,6 +16421,14 @@ mod tests {
         cfg.flowy = Some(crate::config::FlowyConfig::default());
         let root = role_for(&cfg);
         assert!(root.tools.iter().any(|t| t == "flowy"));
+        // **And the person can be asked.** The operator's ruling, 2026-10-09: *"yeah i
+        // want you to be able to ask me for a choice"* — the seat carries it whether or
+        // not a room is attached, because asking is not a room's business.
+        assert!(
+            root.tools.iter().any(|t| t == "ask_user_question"),
+            "the leticode seat cannot ask the person a question: {:?}",
+            root.tools
+        );
         // The whole opencode union plus the room fits the ceiling, which moved to
         // twenty-four when `task_message` joined the delegation trio — see leticode's own
         // note on `max_tools` for why it took a seat rather than trading for one. A tool

@@ -394,7 +394,12 @@ impl App {
             before.push((Placed::Before, n));
         }
         for d in notes_bound {
-            let n = Note::Decided(d);
+            // **The same split the live arm makes, through the same function.** A
+            // question has no ladder and no verdict, so its settled row is its own note
+            // rather than rano's four permission words — and a head that reattached
+            // would otherwise draw `cancelled` over an answer somebody gave. See
+            // [`Note::settled`] and [`Note::Answered`].
+            let n = Note::settled(d);
             if holds(&mine, &n) {
                 continue;
             }

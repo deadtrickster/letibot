@@ -966,6 +966,94 @@ pub(crate) fn match_option(d: &OpenDecision, typed: &str) -> OptionChoice {
     }
 }
 
+/// **The word that means "I am not answering this one".**
+///
+/// One word, alone on the line, because it has to be typeable at a composer and
+/// answerable over a pipe — the head is driven by scripts in this tree's own tests, and
+/// a keystroke only a terminal can send is not an answer a script can give. It is the
+/// fourth shape `QuestionAnswer` carries; see `crates/sessionlog/src/question.rs` for
+/// why an abstention is not silence and not an empty answer.
+///
+/// **The cost is named rather than hidden**: a person who answers a question with
+/// exactly this one word means *abstain*. That is the same bargain `deny` makes on a
+/// permission card, and the alternative — a spelling only a menu can produce — is an
+/// affordance a pipe cannot reach.
+pub(crate) const ABSTAIN: &str = "abstain";
+
+/// **The separator between a choice and the note attached to it.**
+///
+/// `<choice> -- <note>`, which is the permission card's own shape one register over: the
+/// name first, the payload after it (`deny_and_tell <why>`, `allow_always <glob>`). A
+/// question's names are prose, so a bare space cannot separate them — *"sqlite is fine"*
+/// would become a note on `sqlite` — and the separator is what makes the note deliberate.
+pub(crate) const NOTE_SEP: &str = "--";
+
+/// **The three ways a person answers a question, in one function.**
+///
+/// The operator's ruling, 2026-10-09: *"each choice can have my note, and i can abstain
+/// or type my answer"*. So:
+///
+/// | what was typed | what it answers with |
+/// |---|---|
+/// | one of the model's own choices, word for word | that choice, **by index** |
+/// | a choice, then `--`, then words | that choice **with the note on it** |
+/// | `abstain`, alone | the deliberate no-answer |
+/// | anything else | their own words, as a first-class answer |
+///
+/// **A choice is answered by index and not by its text.** The model gets back *which of
+/// the three it offered* rather than a sentence it has to re-read as one of them — the
+/// rule the composer has kept since it could answer a question at all, and the reason
+/// the note has to ride the index too.
+///
+/// **A line that merely begins with a choice is not that choice.** Only the exact words,
+/// or the exact words followed by the separator, name one; everything else is the
+/// person's own answer, which is the shape that must never be swallowed by a guess.
+pub(crate) fn question_answer(
+    choices: &[String],
+    typed: &str,
+) -> letibot_sessionlog::question::QuestionAnswer {
+    use letibot_sessionlog::question::QuestionAnswer;
+    let line = typed.trim();
+    // **Abstention first**, because it is the one shape whose spelling is a word rather
+    // than one of the model's: a choice that happened to be called `abstain` is still a
+    // choice, and a person who chose it typed its exact words, which is checked below.
+    if line.eq_ignore_ascii_case(ABSTAIN) {
+        return QuestionAnswer::abstaining();
+    }
+    if let Some(i) = choices
+        .iter()
+        .position(|c| c.trim().eq_ignore_ascii_case(line))
+    {
+        return QuestionAnswer::choosing(i);
+    }
+    // **The choice, then the note.** The choice has to be a prefix of the line for the
+    // note to have anything to qualify, and the separator has to be there for the rest
+    // to BE a note.
+    for (i, c) in choices.iter().enumerate() {
+        let c = c.trim();
+        if c.is_empty() {
+            continue;
+        }
+        let Some(head) = line.get(..c.len()) else {
+            // The line is shorter than the choice, or `c.len()` is not a char boundary.
+            continue;
+        };
+        if !head.eq_ignore_ascii_case(c) {
+            continue;
+        }
+        let Some(note) = line[c.len()..]
+            .trim_start()
+            .strip_prefix(NOTE_SEP)
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        else {
+            continue;
+        };
+        return QuestionAnswer::choosing(i).with_note(note);
+    }
+    QuestionAnswer::free(line)
+}
+
 /// The row a `ToolStarted` / `ToolProgress` / `ToolFinished` is about: the
 /// **last** call with that id that has not finished yet.
 ///

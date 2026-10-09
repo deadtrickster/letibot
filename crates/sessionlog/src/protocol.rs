@@ -1491,14 +1491,22 @@ pub enum ClientFrame {
         #[serde(default)]
         note: Option<String>,
     },
-    /// Answer an open **question**: a choice, a note on that choice, a typed reply,
-    /// or a choice and a note together (§D10). Added at `PROTOCOL_VERSION` 5.
+    /// Answer an open **question**: a choice, a note on that choice, a typed reply, a
+    /// choice and a note together, or an abstention (§D10). Added at `PROTOCOL_VERSION`
+    /// 5; `QuestionAnswer::abstain` was added later as a defaulted field, which is not a
+    /// bump — see that type for why an absent field and a `false` one are the same
+    /// claim.
     ///
     /// There is no variant for *"not now"*. A head that wants to defer simply does
     /// not send this, and the question stays open until its deadline, at which point
     /// the tool reports `not_run` — *nobody answered*. Claude Code's *"chat later"*
     /// is the thing this absence is designed as: a deferral that travels as an
     /// answer is how a turn continues on an assumption nobody made.
+    ///
+    /// **An abstention is not that deferral**, and the difference is the whole reason
+    /// it has its own field rather than being spelled by sending nothing: *"I am not
+    /// answering this one"* is a decision the person made, it is attributed to them,
+    /// and the tool reports it as `Abstained` rather than as `not_run`.
     AnswerQuestion {
         client_request_id: String,
         req_id: String,
