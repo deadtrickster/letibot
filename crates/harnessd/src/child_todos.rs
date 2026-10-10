@@ -42,7 +42,7 @@ use std::sync::{Arc, Mutex};
 
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::registry::{Registry, short_id};
-use letibot_tokencore::store::{Store, TodoBy, TodoStatus};
+use letibot_tokencore::store::{Store, TodoBy, TodoNeed, TodoStatus};
 
 use letibot_tools::builtins::todo::{ChildTodos, TodoBoard};
 
@@ -209,7 +209,7 @@ impl ChildTodos for ParentTodos {
     fn upsert_child(
         &self,
         target: &str,
-        rows: &[(String, TodoStatus)],
+        rows: &[(String, TodoStatus, Vec<TodoNeed>)],
     ) -> Result<Vec<letibot_tokencore::store::TodoItem>, String> {
         let brief = self.resolve(target)?;
         // **THE ONE PREDICATE.** The target's `parent_session_id` must be the CALLER — a
@@ -329,7 +329,7 @@ mod tests {
         let board = resolver
             .upsert_child(
                 "s-child-aaaa",
-                &[("do the thing".into(), TodoStatus::Pending)],
+                &[("do the thing".into(), TodoStatus::Pending, Vec::new())],
             )
             .expect("the caller's own child is writable");
         assert!(
@@ -341,14 +341,17 @@ mod tests {
         let board = resolver
             .upsert_child(
                 "…ild-aaaa",
-                &[("by the short id".into(), TodoStatus::Pending)],
+                &[("by the short id".into(), TodoStatus::Pending, Vec::new())],
             )
             .expect("the short form resolves");
         assert!(board.iter().any(|t| t.content == "by the short id"));
 
         // **Somebody else's child.**
         let why = resolver
-            .upsert_child("s-other-child", &[("x".into(), TodoStatus::Pending)])
+            .upsert_child(
+                "s-other-child",
+                &[("x".into(), TodoStatus::Pending, Vec::new())],
+            )
             .expect_err("a sibling's child is not this session's");
         assert!(
             why.contains("`s-other-child` is a child of `s-somebody-else`"),
@@ -361,7 +364,10 @@ mod tests {
 
         // **The caller itself.**
         let why = resolver
-            .upsert_child("s-parent-1111", &[("x".into(), TodoStatus::Pending)])
+            .upsert_child(
+                "s-parent-1111",
+                &[("x".into(), TodoStatus::Pending, Vec::new())],
+            )
             .expect_err("a session may not write its own board through `target`");
         assert!(
             why.contains("not one of this session's children"),
@@ -370,7 +376,7 @@ mod tests {
 
         // **No such session.**
         let why = resolver
-            .upsert_child("s-nope", &[("x".into(), TodoStatus::Pending)])
+            .upsert_child("s-nope", &[("x".into(), TodoStatus::Pending, Vec::new())])
             .expect_err("an unknown id is refused");
         assert!(
             why.contains("no session this daemon holds is `s-nope`"),
@@ -392,12 +398,14 @@ mod tests {
                     status: TodoStatus::InProgress,
                     by: TodoBy::Model,
                     when: None,
+                    needs: Vec::new(),
                 },
                 TodoItem {
                     content: "the operator's".into(),
                     status: TodoStatus::Pending,
                     by: TodoBy::Operator,
                     when: None,
+                    needs: Vec::new(),
                 },
             ])),
         );
@@ -406,8 +414,8 @@ mod tests {
             .upsert_child(
                 "s-child-aaaa",
                 &[
-                    ("told by the parent".into(), TodoStatus::Pending),
-                    ("and this too".into(), TodoStatus::Pending),
+                    ("told by the parent".into(), TodoStatus::Pending, Vec::new()),
+                    ("and this too".into(), TodoStatus::Pending, Vec::new()),
                 ],
             )
             .expect("writable");
@@ -433,7 +441,11 @@ mod tests {
         let board = resolver
             .upsert_child(
                 "s-child-aaaa",
-                &[("told by the parent".into(), TodoStatus::Completed)],
+                &[(
+                    "told by the parent".into(),
+                    TodoStatus::Completed,
+                    Vec::new(),
+                )],
             )
             .expect("writable");
         let moved = board
@@ -504,7 +516,7 @@ mod tests {
         resolver
             .upsert_child(
                 "s-child-aaaa",
-                &[("seen on the pane".into(), TodoStatus::Pending)],
+                &[("seen on the pane".into(), TodoStatus::Pending, Vec::new())],
             )
             .expect("writable");
         assert_eq!(
@@ -525,7 +537,7 @@ mod tests {
         resolver
             .upsert_child(
                 "s-child-aaaa",
-                &[("seen on the pane".into(), TodoStatus::Pending)],
+                &[("seen on the pane".into(), TodoStatus::Pending, Vec::new())],
             )
             .expect("writable");
         assert_eq!(
@@ -556,7 +568,10 @@ mod tests {
             boards.register(id, Arc::new(TodoBoard::new(Vec::new())));
         }
         let why = resolver
-            .upsert_child("…collide1", &[("x".into(), TodoStatus::Pending)])
+            .upsert_child(
+                "…collide1",
+                &[("x".into(), TodoStatus::Pending, Vec::new())],
+            )
             .expect_err("two children share this short id");
         assert!(
             why.contains("s-child-alpha-collide1") && why.contains("s-child-beta-collide1"),
@@ -579,7 +594,10 @@ mod tests {
             )
             .expect("adopt");
         let why = resolver
-            .upsert_child("s-child-late", &[("x".into(), TodoStatus::Pending)])
+            .upsert_child(
+                "s-child-late",
+                &[("x".into(), TodoStatus::Pending, Vec::new())],
+            )
             .expect_err("no board, no write");
         assert!(
             why.contains("no board in this daemon"),

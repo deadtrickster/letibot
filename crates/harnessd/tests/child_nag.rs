@@ -336,7 +336,10 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
     // **The parent writes, through the real resolver.** Before this branch the row
     // landed and nothing else happened; the assertion below is what changed.
     kid.parent(parent)
-        .upsert_child(child, &[(PARENTS_ROW.into(), TodoStatus::Pending)])
+        .upsert_child(
+            child,
+            &[(PARENTS_ROW.into(), TodoStatus::Pending, Vec::new())],
+        )
         .expect("the parent's write is accepted");
 
     // **The store row first** — the write is durable, authored by the parent, which is
@@ -389,7 +392,10 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
     // `Hub::take_own_work_until(None)` — the entry re-arm is spent and nothing but this
     // write's own wake can re-arm it. See `SECOND_ROW`.
     kid.parent(parent)
-        .upsert_child(child, &[(SECOND_ROW.into(), TodoStatus::Pending)])
+        .upsert_child(
+            child,
+            &[(SECOND_ROW.into(), TodoStatus::Pending, Vec::new())],
+        )
         .expect("the parent's second write is accepted");
     // The second notice is found by its OWN words and not by the second row's: a check names the
     // head of the plan and COUNTS the rest (`unfinished_plan`), so the row the parent added is the
@@ -459,7 +465,10 @@ fn a_postponed_row_a_parent_writes_persists_and_never_nags() {
 
     let kid = park_a_child(parent, child, canned, &path);
     kid.parent(parent)
-        .upsert_child(child, &[(PARENTS_ROW.into(), TodoStatus::Postponed)])
+        .upsert_child(
+            child,
+            &[(PARENTS_ROW.into(), TodoStatus::Postponed, Vec::new())],
+        )
         .expect("the parent's write is accepted");
 
     // **Persisted**: the row is real and durable, set aside rather than dropped.

@@ -6644,8 +6644,13 @@ impl Harness {
     /// The clock keeps the TEXT, which is what the ladder counts repeats of; the row itself is this
     /// harness's to remember, because the text cannot say which row it named.
     pub fn nag_notice(&mut self) -> Option<String> {
-        let askable = crate::sessions::the_plan_as_checked(&self.todos.snapshot());
-        let (text, named) = unfinished_plan_for(&askable, self.nag_choice.as_deref())?;
+        // **The board and the rows it may speak about, both** — the second is the narrowing
+        // (`the_plan_as_checked`, the ONE predicate) and the first is what a row's edges resolve
+        // against, since a need is met by a row that is DONE and a done row is exactly what the
+        // narrowing takes out. `unfinished_plan_for` says why they are two arguments.
+        let board = self.todos.snapshot();
+        let askable = crate::sessions::the_plan_as_checked(&board);
+        let (text, named) = unfinished_plan_for(&askable, &board, self.nag_choice.as_deref())?;
         self.nag_choice = Some(named);
         Some(text)
     }
@@ -15389,6 +15394,7 @@ mod tests {
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
             when,
+            needs: Vec::new(),
         };
         let waiting_on = |handle: &str| {
             Some(TodoCondition::Job {

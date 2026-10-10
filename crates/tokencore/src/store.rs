@@ -1475,6 +1475,83 @@ pub struct TodoItem {
     /// `serde(default)` makes every row already in a store read back that way.
     #[serde(default)]
     pub when: Option<TodoCondition>,
+    /// **The rows this one waits for** — the plan's edges, and the whole of why the idle check asks
+    /// for a READY SET rather than the head of the list.
+    ///
+    /// A row is *ready* when every need is met, and the check offers the ready rows and says what is
+    /// blocked on what — so an old blocked row no longer heads the line for ever. What it replaces
+    /// is `open_priority(todos).first()`, under that function's own comment *"THE QUEUE, served one
+    /// at a time"*: head-of-line blocking is now structural, and a row nobody can start is not
+    /// asked for at all.
+    ///
+    /// **An unresolvable need is never met.** A name that matches no row, a name that matches two,
+    /// or a kind this build cannot evaluate leaves the row BLOCKED and is SAID to be — see
+    /// [`TodoNeed`]. The rule is `TodoCondition`'s, learned there first: *a condition nobody can
+    /// evaluate must never read as met*, because a silently satisfied dependency makes the graph a
+    /// lie and the check asks for work that cannot be started.
+    ///
+    /// `serde(default)`, the `by` precedent: every row already in a store, and every row a head
+    /// older than this field sends, reads back as **having no edges** — which is what it was. A plan
+    /// with no edges anywhere is therefore read exactly as it was before this field existed, which
+    /// is what the compatibility test asserts.
+    #[serde(default)]
+    pub needs: Vec<TodoNeed>,
+}
+
+/// **What a row waits on** — one entry of [`TodoItem::needs`], and one edge of the plan's DAG.
+///
+/// **A tagged kind, exactly like [`TodoCondition`], and for that enum's own reason**: a kind can be
+/// added without a new field on every row, and a reader that does not know one must *say so* rather
+/// than misread it. The rule the two share is the load-bearing one — **an edge nobody can evaluate
+/// must never read as met** — and it is why this is a kind rather than a bare string: a bare string
+/// has no way to say *I do not know what this means*, and a dependency whose meaning is unknown
+/// would then be the one dependency that is silently satisfied.
+///
+/// **One variant, and the next is named when something can EVALUATE it.** The two that are already
+/// shaped for, so neither has to be designed again:
+///
+/// * a **child session** — a row that is a dispatch is not work, it waits on a session's
+///   completion, which is what makes a parent's row for a running child silent *because it is not
+///   ready* rather than because the operator postponed it;
+/// * a **wasm predicate** — the host passes values and the module answers a verdict, and a trap, a
+///   failed call or a fuelled-out one is unresolvable, which is this same rule a third time.
+///
+/// **The edge is a row's WORDS, and that is a decision rather than a shortcut.** The board has one
+/// key and it is `content`: `TodoBoard::set_operator_states` resolves the operator's rows by their
+/// exact trimmed text, `TodoBy`'s own doc says why (*"the words are the key, and that is not a
+/// shortcut — there is no other key"*), and the wire's `TodoEntry` is `content`/`status`/`by`, so a
+/// row the operator types into the pane has no id to type. An id field would be a second identity
+/// rule for the same rows, and on every board already in a store it would be empty — an id that is
+/// not a key at all until something synthesises one. What text costs is that a re-worded row breaks
+/// every edge into it; what it buys is that the break is SAID, naming the need, and repaired by one
+/// word in a plan the model is already looking at.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TodoNeed {
+    /// **Another row on this board, named by its own words** — the exact `content`, trimmed, the
+    /// way `set_operator_states` quotes one back.
+    ///
+    /// **The name must resolve to exactly ONE row.** A name that matches none, and a name that
+    /// matches two, are both *unresolvable*: the row is blocked and the check says which need it
+    /// could not place. That is the house rule for an ambiguous name — `set_operator_states`
+    /// refuses one and names the candidates — read one step earlier, where the guess it refuses to
+    /// make is a row silently starting on the strength of a name that meant something else.
+    Row { content: String },
+    /// **A kind this build does not know** — a need written by a build that has one this one does
+    /// not, and it is here because the alternative is worse in a way that is MEASURED, not imagined:
+    /// `Harness::new` restores a resumed session's board with `store.todos(id).unwrap_or_default()`,
+    /// so a `TodoNeed` that refused to deserialize would not fail loudly — it would empty the whole
+    /// PLAN, silently, on the first resume after a newer daemon wrote a kind this one lacks. That is
+    /// the one outcome the fail-loud rule exists to prevent, and it is a bigger loss than this one.
+    ///
+    /// **What is lost is the kind's own payload** — `#[serde(other)]` catches the tag and nothing
+    /// else, so a round trip through this build spells the need `unknown`. What is NOT lost is the
+    /// ANSWER: the row is blocked, and the check says the kind cannot be evaluated. A need nobody
+    /// can answer must never read as met, and this is how a reader that does not know one SAYS SO
+    /// rather than misreading it — which is exactly the promise [`TodoCondition`] makes in its own
+    /// words, kept here where the cost of breaking it is a plan rather than a row.
+    #[serde(other)]
+    Unknown,
 }
 
 /// **What a row waits on.** See [`TodoItem::when`] for what evaluating one means.
@@ -4349,6 +4426,7 @@ mod tests {
                 status: TodoStatus::InProgress,
                 by: TodoBy::Model,
                 when: None,
+                needs: Vec::new(),
             }],
         )
         .unwrap();
@@ -5279,6 +5357,81 @@ mod tests {
         assert_eq!(s.jobs("s-v14").unwrap().len(), 1);
     }
 
+    /// **An old board reads back as a board with no edges, and a need of a kind this build does not
+    /// know does not take the plan with it.**
+    ///
+    /// The first half is the `by` precedent: a `todos_json` written before `needs` existed loads
+    /// with an empty `needs`, which is what it was, and the plan is whole. The second is the reason
+    /// [`TodoNeed`] has an `Unknown` variant at all — and it is MEASURED, not imagined:
+    /// `Harness::new` restores a resumed board with `store.todos(id).unwrap_or_default()`, so a
+    /// need that refused to deserialize would silently EMPTY THE WHOLE PLAN on the first resume
+    /// after a newer daemon wrote one. What survives instead is the ANSWER: the row is there, the
+    /// need reads as a kind this build cannot evaluate, and the idle check blocks the row and says
+    /// so. The two halves are asserted on the raw JSON, because that is the only way to write a
+    /// list this build did not produce.
+    #[test]
+    fn a_board_without_needs_reads_back_and_an_unknown_kind_does_not_empty_the_plan() {
+        let s = store();
+        let _seeded = seeded(&s);
+        let write_raw = |json: &str| {
+            s.conn
+                .execute(
+                    "INSERT INTO todo (session_id, todos_json, updated_ms) VALUES (?1, ?2, 0) \
+                     ON CONFLICT(session_id) DO UPDATE SET todos_json = ?2",
+                    params!["sess-1", json],
+                )
+                .unwrap();
+        };
+        // **A row exactly as a build before this field would have written it.**
+        write_raw(r#"[{"content":"old row","status":"pending","by":"model","when":null}]"#);
+        let back = s.todos("sess-1").unwrap();
+        assert_eq!(back.len(), 1, "the plan is not emptied");
+        assert_eq!(back[0].content, "old row");
+        assert!(
+            back[0].needs.is_empty(),
+            "and the row has no edges, which is what it was"
+        );
+
+        // **And a need of a kind a NEWER build wrote** — a `session` need, which this one cannot
+        // evaluate. The plan comes back; the edge reads as unknown; nothing is satisfied.
+        write_raw(
+            r#"[{"content":"waiting on a child","status":"pending","by":"model","when":null,
+                "needs":[{"kind":"session","id":"s-child"}]}]"#,
+        );
+        let back = s.todos("sess-1").unwrap();
+        assert_eq!(
+            back.len(),
+            1,
+            "a need kind this build does not know must not take the plan with it"
+        );
+        assert_eq!(back[0].content, "waiting on a child");
+        assert_eq!(
+            back[0].needs,
+            vec![TodoNeed::Unknown],
+            "and the edge is kept as one nobody can evaluate, never dropped"
+        );
+
+        // **And the shape it round-trips as is the tagged one**, so a reader of the raw row sees a
+        // kind rather than a bare string: `{"kind": "row", "content": …}`.
+        write_raw(
+            r#"[{"content":"deploy","status":"pending","by":"model","when":null,
+                       "needs":[{"kind":"row","content":"run the tests"}]}]"#,
+        );
+        s.put_todos("sess-1", &s.todos("sess-1").unwrap()).unwrap();
+        let raw: String = s
+            .conn
+            .query_row(
+                "SELECT todos_json FROM todo WHERE session_id = ?1",
+                params!["sess-1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            raw.contains(r#""kind":"row","content":"run the tests""#),
+            "the edge is a tagged kind on the wire between this crate and `sqlite3`: {raw}"
+        );
+    }
+
     #[test]
     fn todos_are_replaced_whole_and_read_back_in_order() {
         let s = store();
@@ -5293,18 +5446,21 @@ mod tests {
                 status: TodoStatus::Completed,
                 by: TodoBy::Model,
                 when: None,
+                needs: Vec::new(),
             },
             TodoItem {
                 content: "seat the tool".into(),
                 status: TodoStatus::InProgress,
                 by: TodoBy::Model,
                 when: None,
+                needs: Vec::new(),
             },
             TodoItem {
                 content: "render the pane".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Model,
                 when: None,
+                needs: Vec::new(),
             },
         ];
         s.put_todos("sess-1", &first).unwrap();
@@ -5321,6 +5477,7 @@ mod tests {
             status: TodoStatus::InProgress,
             by: TodoBy::Model,
             when: None,
+            needs: Vec::new(),
         }];
         s.put_todos("sess-1", &second).unwrap();
         assert_eq!(s.todos("sess-1").unwrap(), second);
@@ -5352,6 +5509,7 @@ mod tests {
             when: Some(TodoCondition::Job {
                 handle: "j121".into(),
             }),
+            needs: Vec::new(),
         };
         s.put_todos("sess-1", &[set_aside.clone()]).unwrap();
         let back = s.todos("sess-1").unwrap();
@@ -5405,6 +5563,7 @@ mod tests {
             status: TodoStatus::Pending,
             by: TodoBy::parent_of("s-1789462738453908838"),
             when: None,
+            needs: Vec::new(),
         };
         s.put_todos("sess-1", &[told.clone()]).unwrap();
         assert_eq!(s.todos("sess-1").unwrap(), vec![told]);

@@ -167,6 +167,11 @@ pub(crate) fn the_check_may_ask_about(row: &TodoItem) -> bool {
 /// whatever it is handed, so the narrowing has to happen before the message and not inside it; two
 /// functions each deciding what a plan *is* is the two-answers failure this tree refuses, and a
 /// postponed row reaching the queue would be named as the next thing to do.
+///
+/// **And the WHOLE board goes beside it**, because a row's edges resolve against it: a need is met by
+/// a row that is DONE, and a done row is exactly one this removes. The two are one reading taken
+/// twice, never two rules — the caller passes this list and the board it came from, and
+/// `unfinished_plan_for` says why they are separate arguments.
 pub(crate) fn the_plan_as_checked(rows: &[TodoItem]) -> Vec<TodoItem> {
     rows.iter()
         .filter(|row| the_check_may_ask_about(row))
@@ -192,7 +197,12 @@ pub(crate) fn the_plan_as_checked(rows: &[TodoItem]) -> Vec<TodoItem> {
 /// takes, so a plan whose only unfinished row is postponed is silent on both counts: no clock, and
 /// no `[todo check]` text to send if one were armed by an earlier state of the plan.
 fn nag_should_arm(todos: &[TodoItem], nagged: Option<&str>) -> bool {
-    match unfinished_plan(&the_plan_as_checked(todos)) {
+    // **The two arguments are the two halves of one reading**: `the_plan_as_checked` is what the
+    // check may SPEAK about, and the board itself is what its edges RESOLVE against — a done row is
+    // exactly one the narrowing removes, and it is what satisfies a need. Both come from the ONE
+    // predicate, so nothing here is a second answer to what a plan is.
+    let askable = the_plan_as_checked(todos);
+    match unfinished_plan(&askable, todos) {
         Some(text) => nagged != Some(text.as_str()),
         None => false,
     }
@@ -280,7 +290,7 @@ impl TodoNagClock {
     pub fn rearm(&mut self, todos: &[TodoItem], now: Instant) {
         self.due = if nag_should_arm(todos, self.nagged.as_deref()) {
             Some(now + self.window)
-        } else if unfinished_plan(&the_plan_as_checked(todos)).is_some() {
+        } else if unfinished_plan(&the_plan_as_checked(todos), todos).is_some() {
             // `nagged_at` is written with `nagged` and cleared with it, and this arm is reached only
             // with a notice outstanding — so the anchor is there, and a missing one would be a
             // clock that armed nothing rather than one that fired at the wrong moment.
@@ -2675,6 +2685,11 @@ impl<'a> Sessions<'a> {
                             }
                         },
                         by: letibot_tokencore::store::TodoBy::Operator,
+                        // **The wire carries no edges yet**, so an operator's row arrives with
+                        // none: `TodoEntry` gains the field the moment the pane can write one
+                        // (see `TodoItem::needs`). A row the model wrote keeps its edges on its
+                        // own half, which never crosses this door.
+                        needs: Vec::new(),
                     })
                     .collect();
                 // The head is the source of truth for its own rows, so its list REPLACES that half.
@@ -3674,6 +3689,20 @@ mod idle_nag {
             status,
             by: TodoBy::Operator,
             when: None,
+            needs: Vec::new(),
+        }
+    }
+
+    /// A row that waits on the rows it names — the DAG's edge, as these tests write one.
+    fn row_needing(content: &str, on: &[&str]) -> TodoItem {
+        TodoItem {
+            needs: on
+                .iter()
+                .map(|c| letibot_tokencore::store::TodoNeed::Row {
+                    content: (*c).to_string(),
+                })
+                .collect(),
+            ..row(content, TodoStatus::Pending)
         }
     }
 
@@ -3693,6 +3722,46 @@ mod idle_nag {
         assert!(nag_should_arm(&[row("open", TodoStatus::Pending)], None));
     }
 
+    /// **A STUCK PLAN STILL ARMS THE CHECK** — the degenerate case, and the one place the ready set
+    /// could have switched the check off by accident.
+    ///
+    /// Every row left waits on another, so the ready set is EMPTY and there is no row to name. That
+    /// is exactly the state the agent has to act on — something has to finish, or a need has to be
+    /// corrected — so silence here would be the check failing at the moment it matters, which is
+    /// why `unfinished_plan_for` answers it with a SENTENCE rather than `None`. Both halves that
+    /// make this a clock question are asserted: the first arm fires, and the same stuck plan said
+    /// once is not a new notice, so it repeats at the ladder's rate instead of becoming a metronome.
+    ///
+    /// **The dependency-free half of the same question is pinned by the tests above and below this
+    /// one**, unchanged: they are flat plans, so their arming is the arming `1d24fab` had.
+    #[test]
+    fn a_stuck_plan_arms_the_check_and_is_not_a_metronome() {
+        let plan = [
+            row_needing("deploy", &["run the tests"]),
+            row_needing("run the tests", &["deploy"]),
+        ];
+        assert!(
+            nag_should_arm(&plan, None),
+            "nothing can start, so the check must speak rather than go quiet"
+        );
+        let said = super::unfinished_plan(&super::the_plan_as_checked(&plan), &plan)
+            .expect("a stuck plan is a finding");
+        assert!(said.contains("NOTHING can start"), "{said}");
+        assert!(
+            !nag_should_arm(&plan, Some(&said)),
+            "the same stuck plan is the same notice, so it repeats at the ladder's rate"
+        );
+        // **And it is a NOTICE and not a hole in the schedule**: the clock arms it one window out.
+        let t0 = std::time::Instant::now();
+        let mut clock = super::TodoNagClock::with_window(std::time::Duration::from_secs(60));
+        clock.rearm(&plan, t0);
+        assert_eq!(
+            clock.due_at(),
+            Some(t0 + std::time::Duration::from_secs(60)),
+            "a stuck plan is checked on the same schedule as any other"
+        );
+    }
+
     /// **An unchanged plan is not a NEW notice** — the `moved` half of the schedule, which is what
     /// this predicate is. It is no longer the whole of the arming decision: an unchanged plan comes
     /// back at the clock's doubled-and-capped interval (the operator's *"hmm, yes obviously it
@@ -3705,7 +3774,8 @@ mod idle_nag {
     #[test]
     fn an_unchanged_plan_is_not_a_new_notice() {
         let plan = [row("open", TodoStatus::Pending)];
-        let sent = super::unfinished_plan(&super::the_plan_as_checked(&plan)).expect("open work");
+        let sent =
+            super::unfinished_plan(&super::the_plan_as_checked(&plan), &plan).expect("open work");
         assert!(!nag_should_arm(&plan, Some(&sent)));
     }
 
@@ -3713,7 +3783,8 @@ mod idle_nag {
     #[test]
     fn a_plan_that_moved_is_armed_again() {
         let plan = [row("open", TodoStatus::Pending)];
-        let sent = super::unfinished_plan(&super::the_plan_as_checked(&plan)).expect("open work");
+        let sent =
+            super::unfinished_plan(&super::the_plan_as_checked(&plan), &plan).expect("open work");
         assert!(nag_should_arm(
             &[row("open", TodoStatus::InProgress)],
             Some(&sent)
@@ -3767,7 +3838,7 @@ mod idle_nag {
             row("now", TodoStatus::Pending),
             row("later", TodoStatus::Postponed),
         ];
-        let notice = super::unfinished_plan(&super::the_plan_as_checked(&mixed))
+        let notice = super::unfinished_plan(&super::the_plan_as_checked(&mixed), &mixed)
             .expect("the ordinary row is open work");
         assert!(
             !notice.contains("later"),
@@ -3824,7 +3895,8 @@ mod idle_nag {
         let t0 = Instant::now();
         let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
         let plan = [row("open", TodoStatus::Pending)];
-        let said = super::unfinished_plan(&super::the_plan_as_checked(&plan)).expect("open work");
+        let said =
+            super::unfinished_plan(&super::the_plan_as_checked(&plan), &plan).expect("open work");
 
         // The first check of a plan is one base window after the turn that armed it.
         clock.rearm(&plan, t0);
@@ -3871,7 +3943,7 @@ mod idle_nag {
         // steering a child exercises too (`serve_child_under`'s prompt arm) — at the base rate and
         // not at whatever gap the ladder had grown to.
         let moved_said =
-            super::unfinished_plan(&super::the_plan_as_checked(&moved)).expect("open work");
+            super::unfinished_plan(&super::the_plan_as_checked(&moved), &moved).expect("open work");
         clock.said(Some(moved_said), t0 + Duration::from_secs(400));
         clock.rearm(&moved, t0 + Duration::from_secs(400));
         assert_eq!(
@@ -3902,7 +3974,8 @@ mod idle_nag {
         let window = Duration::from_secs(1);
         let mut clock = super::TodoNagClock::with_window(window);
         let plan = [row("open", TodoStatus::Pending)];
-        let said = super::unfinished_plan(&super::the_plan_as_checked(&plan)).expect("open work");
+        let said =
+            super::unfinished_plan(&super::the_plan_as_checked(&plan), &plan).expect("open work");
         let mut at = Instant::now();
         let mut gaps: Vec<Duration> = Vec::new();
         clock.rearm(&plan, at);
@@ -3942,7 +4015,8 @@ mod idle_nag {
         let t0 = Instant::now();
         let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
         let plan = [row("open", TodoStatus::Pending)];
-        let said = super::unfinished_plan(&super::the_plan_as_checked(&plan)).expect("open work");
+        let said =
+            super::unfinished_plan(&super::the_plan_as_checked(&plan), &plan).expect("open work");
         clock.rearm(&plan, t0);
         assert!(clock.due_now(t0 + Duration::from_secs(60)));
         clock.said(Some(said), t0 + Duration::from_secs(60));
