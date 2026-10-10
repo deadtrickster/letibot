@@ -636,6 +636,18 @@ pub fn gate_configured(repo: &Path) -> Result<(), String> {
 /// The cost is that an entry pays a cold build instead of reusing the main tree's artifacts, and
 /// that is the price of the gate meaning anything. The queue is serial, so it is one cold build
 /// at a time.
+///
+/// **And the cost has a second half that nothing said out loud: a gate's steps are PROOF and not
+/// INSTALLATION.** Because the build lands in `<worktree>/target/release`, the directory the
+/// LAUNCHER starts from — `~/bin/letibot` → `scripts/letibot`, whose `BIN` is the MAIN tree's
+/// `target/release`, exec'ing `$BIN/harnessd` and `$BIN/letibot-tui` — is left exactly as it was,
+/// whatever the gate proved. So a gate whose last step is only a build is a gate whose landings
+/// are never installed. MEASURED 2026-10-10: a daemon came up at 20:55 running code from 17:44 —
+/// three hours and seventeen landings behind — and restarting it could not help, because the file
+/// it execs had not been rebuilt since. letibot's own gate therefore ends with
+/// `sh scripts/install-gate-build.sh` (`AGENTS.md`'s `Merge gate`, the copy the queue reads),
+/// which copies what this directory holds into the main tree's `target/release`. Two paths, and a
+/// reader who takes them for one is the mistake this paragraph exists to prevent.
 pub const GATE_TARGET_DIR: &str = "CARGO_TARGET_DIR";
 
 /// **Where a gate's build must put its artifacts** — inside the worktree being judged, never the
@@ -5693,21 +5705,185 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **letibot's own gate is CI's four steps**, read out of this repository's `agents.md` the
-    /// way the queue reads it — so an edit that drops a step from the section is caught here.
+    /// **letibot's own gate is CI's four steps, plus the one that installs them** — read out of
+    /// this repository's `agents.md` the way the queue reads it, so an edit that drops a step from
+    /// the section is caught here.
+    ///
+    /// The first four are `.github/workflows/ci.yml`'s, character for character: a queue that lands
+    /// on a weaker standard than CI lands branches CI would refuse. The fifth is the queue's own —
+    /// the install, which a runner has no use for — and it is asserted rather than left to prose,
+    /// because *the pipeline ends with what it proved in place* is the whole of why it is there
+    /// (see [`GATE_TARGET_DIR`] for the two paths it joins).
     #[test]
-    fn letibots_own_gate_is_cis_steps() {
+    fn letibots_own_gate_is_cis_steps_and_the_install() {
         let steps = letibot_tools::gatekeeper::parse_merge_gate(include_str!("../../../agents.md"))
             .expect("agents.md has a Merge gate section");
+        let ci = [
+            "sh scripts/check-fmt.sh main",
+            "cargo clippy --all-targets",
+            "cargo test --workspace --no-fail-fast -- --nocapture",
+            "cargo build --release --bins",
+        ];
         assert_eq!(
-            steps,
-            vec![
-                "sh scripts/check-fmt.sh main",
-                "cargo clippy --all-targets",
-                "cargo test --workspace --no-fail-fast -- --nocapture",
-                "cargo build --release --bins",
-            ]
+            steps.len(),
+            ci.len() + 1,
+            "the gate is CI's steps and the install: {steps:?}"
         );
+        assert_eq!(&steps[..ci.len()], &ci, "CI's steps, in CI's order");
+        assert_eq!(
+            steps.last().map(String::as_str),
+            Some("sh scripts/install-gate-build.sh"),
+            "the gate does not end by installing what it built: {steps:?}"
+        );
+    }
+
+    /// **The gate's last step installs into the directory the launcher starts from** — the two
+    /// paths pinned together, in the four files that have to agree, so neither can move alone.
+    ///
+    /// The step is ONE line because the gate is one command per line
+    /// ([`letibot_tools::gatekeeper::parse_merge_gate`]), so the destination is named in the script
+    /// the step runs — and an assertion that read only the step would be satisfied by a script that
+    /// installed nowhere. So this reads the script, the launcher and `install.sh` too, and each
+    /// assertion is a fact one of them states:
+    ///
+    ///   * the script names the main tree's `target/release`, and reads [`GATE_TARGET_DIR`] — the
+    ///     variable the BUILD step was handed, which is what makes the two steps one pipeline
+    ///     rather than two commands that happen to sit next to each other;
+    ///   * `scripts/letibot` resolves `BIN` through `../target/release` and execs `harnessd` and
+    ///     `letibot-tui` from it, which is the claim the script's destination rests on — a change
+    ///     to the launcher's resolution fails HERE rather than on the operator's next restart;
+    ///   * `install.sh`'s `BINARIES` names both of those, which is where the script's list of
+    ///     names comes from.
+    ///
+    /// **What it cannot see is a BUILD**, and that is named rather than papered over: nothing here
+    /// runs cargo, so the link between the artifacts `cargo build --release --bins` leaves in
+    /// `$CARGO_TARGET_DIR/release` and the files this step copies is asserted as *both read one
+    /// variable* rather than watched. [`the_gates_install_step_copies_what_was_built`] runs the step
+    /// itself, against a fixture's stand-in binaries, which is the half a test can reach.
+    #[test]
+    fn the_gates_install_step_lands_where_the_launcher_looks() {
+        let script = include_str!("../../../scripts/install-gate-build.sh");
+        assert!(
+            script.contains("target/release"),
+            "the install step does not name the main tree's target/release"
+        );
+        assert!(
+            script.contains(GATE_TARGET_DIR),
+            "the install step must read {GATE_TARGET_DIR} — the variable the build step was \
+             handed — or it looks somewhere cargo did not write"
+        );
+        assert!(
+            script.contains("install.sh") && script.contains("BINARIES"),
+            "the names installed must come from install.sh's own list rather than a copy"
+        );
+
+        let launcher = include_str!("../../../scripts/letibot");
+        assert!(
+            launcher.contains("../target/release"),
+            "the launcher no longer resolves BIN through ../target/release, which is the path \
+             this step installs into"
+        );
+        for name in ["harnessd", "letibot-tui"] {
+            assert!(
+                launcher.contains(name),
+                "the launcher does not exec {name}, so the install cannot be about it"
+            );
+        }
+
+        let installer = include_str!("../../../install.sh");
+        let names = installer
+            .lines()
+            .find_map(|l| l.strip_prefix("BINARIES=\""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .expect("install.sh has a BINARIES= line");
+        for want in ["harnessd", "letibot-tui"] {
+            assert!(
+                names.split_whitespace().any(|n| n == want),
+                "install.sh's BINARIES ({names}) does not name {want}"
+            );
+        }
+    }
+
+    /// **The install step, RUN** — against a repository of the shape the queue gates: a main tree
+    /// with a linked worktree, a private `CARGO_TARGET_DIR` inside the worktree holding what a build
+    /// would have left, and the step's own working directory.
+    ///
+    /// What is asserted is the mechanism the static test cannot see: the MAIN tree is found from
+    /// the worktree (through the common git directory), every name lands there with the same bytes,
+    /// the temporary name the rename went through is gone, and the run says which path it proved
+    /// and which one it installed into.
+    ///
+    /// **The binaries are stand-ins, and that is the limit of this test.** Nothing here builds
+    /// anything: the fixture writes four one-line scripts where `cargo build --release --bins`
+    /// would have left real binaries. What is therefore untested is the link between the build
+    /// step's output and this step's input — that the files cargo leaves in
+    /// `$CARGO_TARGET_DIR/release` are named `harnessd`, `letibot-tui`, `letibot-askpass` and
+    /// `letibot` — which is cargo's business and not this script's. The list, the copy, the rename
+    /// and the destination are the real ones, and a real build is what the gate itself runs.
+    #[test]
+    fn the_gates_install_step_copies_what_was_built() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (root, wt, _main_sha, _feature_sha) = repo_with_branch("gate-install");
+        let names = ["harnessd", "letibot-tui", "letibot-askpass", "letibot"];
+        // `install.sh`'s own line, in the tree that was built — where the step reads it.
+        std::fs::write(
+            wt.join("install.sh"),
+            format!("BINARIES=\"{}\"\n", names.join(" ")),
+        )
+        .expect("write install.sh");
+        let built = wt.join("target/release");
+        std::fs::create_dir_all(&built).expect("mkdir");
+        for name in names {
+            let p = built.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\necho \"{name} 0.1.1\"\n")).expect("write");
+            // Executable, because the step refuses a name a build did not produce — and because
+            // the step runs the two the launcher execs from where they landed.
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+
+        let step =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/install-gate-build.sh");
+        let out = Command::new("sh")
+            .arg(&step)
+            .current_dir(&wt)
+            .env(GATE_TARGET_DIR, wt.join("target"))
+            .output()
+            .expect("run the install step");
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "the step failed: {said}");
+
+        let installed = root.join("target/release");
+        for name in names {
+            assert_eq!(
+                std::fs::read(installed.join(name)).expect("the name landed in the main tree"),
+                std::fs::read(built.join(name)).expect("the built name"),
+                "{name} did not land in the main tree's target/release"
+            );
+        }
+        // **It says what it proved and where it went**, which is what the gate's row carries.
+        assert!(
+            said.contains(&built.display().to_string()),
+            "the step did not name what it proved: {said}"
+        );
+        assert!(
+            said.contains(&installed.display().to_string()),
+            "the step did not name where it installed: {said}"
+        );
+        // **And nothing is left beside it.** The temporary name is what makes the replacement
+        // atomic; one left behind would be a file nothing reads and nobody knows about.
+        let leftovers: Vec<String> = std::fs::read_dir(&installed)
+            .expect("the destination")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".new."))
+            .collect();
+        assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// **A truncation says it truncated** — the same rule the queue's own read is written to,

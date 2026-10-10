@@ -70,15 +70,41 @@ wrappers' source of truth), `tests/fidelity`, `scratch/` (untracked; see gotchas
 
 The merge queue runs these in a branch's worktree, after rebasing it onto `main` and before
 landing it; the first that fails parks the branch. Read from `main`'s copy of this file, so a
-branch cannot change its own gate. They are what `.github/workflows/ci.yml` runs — a queue that
-lands on a weaker standard than CI lands branches CI would refuse.
+branch cannot change its own gate. The first four are what `.github/workflows/ci.yml` runs — a
+queue that lands on a weaker standard than CI lands branches CI would refuse. The fifth is the
+queue's own and CI has no use for it: a runner has no launcher to satisfy.
 
 ```sh
 sh scripts/check-fmt.sh main
 cargo clippy --all-targets
 cargo test --workspace --no-fail-fast -- --nocapture
 cargo build --release --bins
+sh scripts/install-gate-build.sh
 ```
+
+**The first four are PROOF and not INSTALLATION, and the fifth is the gap.** The queue runs
+every step with `CARGO_TARGET_DIR` pointed at `<worktree>/target` (`mergequeue.rs`'s
+`GATE_TARGET_DIR`), so a branch is never judged with the main tree's artifacts — right, and it
+means the `cargo build` above leaves the main tree's `target/release` exactly as it was. That
+is the directory the launcher starts: `~/bin/letibot` is a symlink to `scripts/letibot`, which
+resolves `BIN` to `<repo>/target/release` and execs `$BIN/harnessd` and `$BIN/letibot-tui`
+from there, and `letibot-askpass` is looked for beside the daemon's own binary. So a gate that
+only proved was a gate whose landings were never installed. MEASURED 2026-10-10: a daemon came
+up at 20:55 running code from 17:44 — three hours and seventeen landings behind, with no
+per-workspace queue and no queue views in it — and restarting it could not fix that, because
+the file it execs had never been rebuilt.
+
+`scripts/install-gate-build.sh` copies what the fourth step built into the main tree's
+`target/release` (the artifact that passed, which is what `main` becomes one step later — see
+the script for why the other shape, building the main tree, installs the tree the gate did not
+judge). It copies beside the name and renames, because a running daemon holds the old inode and
+a `cp` over a running binary fails with `Text file busy`; it prints what it proved, the SHA it
+built and the path it installed into, so the row says where the binary came from. **A daemon
+already running keeps the old one until it is restarted** — `letibot --status` says so, and
+`letibot --stop && letibot` is what picks the new binary up.
+
+*(This section is read from `main`, so a change to the gate itself lands under the gate it
+replaces: the landing after this one is the first that installs.)*
 
 ## The operator's standing rules
 
