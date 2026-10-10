@@ -245,7 +245,41 @@ pub struct TodoEntry {
     pub needs: Vec<TodoNeed>,
 }
 
-/// **One row's state, named by its words** — what an operator's `/todo postpone|resume` carries
+/// **How long a row's TITLE may be, and what a title IS** — the wire's copy of
+/// `letibot_tokencore::store::TODO_TITLE_MAX` and `todo_title`, for the reason [`TodoStatus`] and
+/// [`TodoBy`] are copies rather than re-exports: **this crate is the WIRE**, the head's whole todo
+/// vocabulary is this module's, and the head does not link the store (`letibot-tokencore` is a
+/// DEV-dependency of the head — the apparatus machinery and nothing else — so a head that wanted
+/// the store's copy would link rusqlite into the TUI binary for one constant).
+///
+/// **A copy that cannot drift is a copy with a test, and there is one**: this crate's own tests
+/// see the store, so `the_wires_title_rule_is_the_stores` pins the number, the separator and the
+/// split against it. That is the half of the `TodoBy`/`TodoStatus` precedent a constant cannot get
+/// from the compiler — a new enum variant is a compile error at the conversions, while a number is
+/// only ever two numbers — so it is checked where the types are checked by `match`.
+///
+/// The rule's own reasoning — the operator's 160-cell terminal, the pane's 156-column row, the 21
+/// columns of furniture a row spends before its own words, and why the DETAIL after the separator
+/// is not capped — is written out once, at `TodoItem`, in the store.
+pub const TODO_TITLE_MAX: usize = 135;
+
+/// **The separator between a row's title and its detail** — `title — detail`, the spelling the
+/// head's own card and template seed already write. See [`TODO_TITLE_MAX`] for why this crate has
+/// its own copy of the store's constant.
+pub const TODO_DETAIL_SEP: &str = " — ";
+
+/// **A row's TITLE**: the words before [`TODO_DETAIL_SEP`], or the whole row when it has none —
+/// the string [`TODO_TITLE_MAX`] bounds. The store's `todo_title`, copied for [`TODO_TITLE_MAX`]'s
+/// reason.
+pub fn todo_title(content: &str) -> &str {
+    content
+        .split_once(TODO_DETAIL_SEP)
+        .map(|(title, _)| title)
+        .unwrap_or(content)
+        .trim()
+}
+
+/// One row's state, named by its words — what an operator's `/todo postpone|resume` carries
 /// when the row it names is not one of theirs.
 ///
 /// **Why it is not a `TodoEntry`.** A `TodoEntry` says who WROTE a row (`by`), what it waits on
@@ -2251,6 +2285,44 @@ pub fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The wire's title rule is the STORE's title rule** — the test that makes a copy safe.
+    ///
+    /// [`TODO_TITLE_MAX`] and [`todo_title`] are this crate's copies of
+    /// `letibot_tokencore::store`'s, for the reason [`TodoStatus`] and [`TodoBy`] are copies: this is
+    /// the wire, the head's todo vocabulary is this module's, and the head does not link the store.
+    /// The enum copies get their drift check from the compiler — a new variant is a compile error at
+    /// the conversions — and a number gets none, so it is checked here, in the one crate whose dev
+    /// dependencies see both sides.
+    ///
+    /// MEASURED as the failure it prevents: the operator's rows are written by the HEAD (which
+    /// reads these) and the model's by the tool (which reads the store's), and a cap that disagreed
+    /// by one would be two rules wearing one name — the model refused at 135 and the operator at
+    /// 136, or the other way round, with nothing in the tree saying which was right.
+    #[test]
+    fn the_wires_title_rule_is_the_stores() {
+        use letibot_tokencore::store;
+        assert_eq!(TODO_TITLE_MAX, store::TODO_TITLE_MAX, "one cap, not two");
+        assert_eq!(
+            TODO_DETAIL_SEP,
+            store::TODO_DETAIL_SEP,
+            "one separator, or the two doors would split a row in two places"
+        );
+        for row in [
+            "plain row",
+            "fix the test — it fails when the store is busy",
+            "  padded  ",
+            "a — b — c",
+            "",
+            " — leading separator",
+        ] {
+            assert_eq!(
+                todo_title(row),
+                store::todo_title(row),
+                "the same row's title, whichever copy is asked: {row:?}"
+            );
+        }
+    }
 
     #[test]
     fn a_delta_has_nowhere_to_put_accumulated_text() {

@@ -1123,6 +1123,14 @@ impl App {
             // Anything else is the text of a new row — including a line that begins with a number,
             // or with `done` and no argument, because those are sentences somebody could type.
             _ if !rest.is_empty() => {
+                // **The title cap, before the row is added** — the same rule `todo_write` holds the
+                // model to, refused in the operator's own words on their own screen rather than
+                // silently cut by the pane. `title_refusal`'s doc says why the check is here and
+                // not at the door the half is sent through.
+                if let Some(why) = title_refusal(rest) {
+                    self.say(&why);
+                    return None;
+                }
                 mine.push(letibot_sessionlog::event::TodoEntry {
                     content: rest.to_string(),
                     status: letibot_sessionlog::event::TodoStatus::Pending,

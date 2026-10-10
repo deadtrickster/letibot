@@ -1581,6 +1581,67 @@ fn review_from_raw(raw: RawReviewRecord) -> Result<ReviewRecord> {
     })
 }
 
+/// **How long a row's TITLE may be** — 135, and it is the pane's own row rather than a round number.
+///
+/// A board row is drawn by rano's todos pane at the width the head hands it — `w = term_w - 2 *
+/// GUTTER`, and `GUTTER` is 2 (`tui/src/ui/screen.rs`) — so what a row has to fit in is the
+/// terminal less four columns. **The operator's terminal is 160 cells**: their own words, and the
+/// number `SUBAGENT_TITLE_MAX` is written from (*"for example my terminal is 160 cells wide, make
+/// the cap 256"*, 2026-10-03). The pane therefore draws a row at 156 columns, and a row spends 21
+/// of them before its own words: 8 for the cursor mark and the `/todo` number (`"  ▸ 12  "`), 3 for
+/// the checkbox and the space after it, 3 for the two spaces before the author's name, and 7 for
+/// `— model` — read off rano's own row, whose test asserts `"        [~] write the port  — model"`.
+/// 156 − 21 = **135**, and a title longer than that is a row the pane CUTS at its right edge, with
+/// nothing anywhere saying it did.
+///
+/// **It is a bound on the TITLE, not on the row.** A row may carry a detail after
+/// [`TODO_DETAIL_SEP`], and the detail is not capped: it is not what the operator scans the list
+/// by, and a row whose title fits is a row that can still be told apart from its neighbours when
+/// its detail runs off the edge. A row's `· waits on <handle>` tail is the same case — a condition
+/// the operator set, drawn after the words, and the first thing the cut takes.
+///
+/// **Counted in `char`s, not in columns**, which is the honest limit of what a writer can be held
+/// to: a title of wide characters can still overflow the pane, and the head cuts what it draws
+/// either way. What this bounds is the WORDS, at the door they are written.
+pub const TODO_TITLE_MAX: usize = 135;
+
+/// **The separator between a row's title and its detail** — `title — detail`, the spelling this
+/// tree already writes in two places: the head's new-todo card (`tui/src/app/keys/cards.rs`, *"the
+/// card already made this head's choice for a typed detail"*) and the template seed
+/// (`tui/src/app/todos.rs`). So this is one existing convention with two writers, named once here
+/// rather than re-spelled by every reader of a row.
+///
+/// **The board has no second field for a detail and does not need one.** `TodoItem` is
+/// `content`/`status`/`by`/`when`/`needs`, the wire's `TodoEntry` is the same five, and the words
+/// are the row's one key — `needs` names a row by its exact `content`, `resolve` matches a quote by
+/// its trimmed text, and `/todo rm N` addresses the operator's rows by number over that same list.
+/// A detail field would be a second thing the key does not cover, on every row of every board
+/// already in a store; and rano's pinned `TodoLine` — the board's row — has no body to draw it in
+/// (`RepoRow`, the file's row, is the one row in that pane that has one). So the detail rides in
+/// the same string, after this separator, and the pane draws it after the title. `panes/todos.rs`
+/// says what would give it a line of its own.
+pub const TODO_DETAIL_SEP: &str = " — ";
+
+/// **A row's TITLE**: the words before [`TODO_DETAIL_SEP`], or the whole row when it has none.
+///
+/// This is the string [`TODO_TITLE_MAX`] bounds, and it is a function rather than a rule each
+/// writer spells for itself because there are three writers — the model's `todo_write`, a parent's
+/// `target` write, and the operator's own rows — and a second spelling is how one of them ends up
+/// bounding a different string than the others.
+///
+/// **A newline is not a separator, and that is deliberate.** The pane flattens one — rano's
+/// `clean_line` replaces it with a space before a row is drawn — so a second line is not a body the
+/// row has: it is words the operator will read run together, and a reader that split a title at a
+/// newline would be honouring a structure nothing else in the tree knows about. The row's words are
+/// its title, newlines and all, up to the one separator the head actually writes.
+pub fn todo_title(content: &str) -> &str {
+    content
+        .split_once(TODO_DETAIL_SEP)
+        .map(|(title, _)| title)
+        .unwrap_or(content)
+        .trim()
+}
+
 /// One line of a session's todo list, as the model wrote it.
 ///
 /// Stored as mutable session metadata — the `set_title` class, not the
@@ -6155,6 +6216,80 @@ mod tests {
         // An empty write clears; the row remains and answers empty.
         s.put_todos("sess-1", &[]).unwrap();
         assert!(s.todos("sess-1").unwrap().is_empty());
+    }
+
+    /// **A row's title is what precedes the detail separator** — the string
+    /// [`TODO_TITLE_MAX`] bounds — and a row with no separator is all title.
+    ///
+    /// The split is a function rather than a rule each writer spells, because there are three
+    /// writers and the cap is only worth anything if all three measure the same string. The first
+    /// separator wins: a row's detail may itself contain the em dash, and the title is the part the
+    /// pane's reader identifies the row by.
+    #[test]
+    fn a_rows_title_is_what_precedes_the_detail_separator() {
+        assert_eq!(todo_title("plain row"), "plain row");
+        assert_eq!(
+            todo_title("fix the test — it fails when the store is busy"),
+            "fix the test"
+        );
+        assert_eq!(todo_title("  padded  "), "padded", "the board's own trim");
+        assert_eq!(
+            todo_title("a — b — c"),
+            "a",
+            "the FIRST separator, not the last"
+        );
+        assert_eq!(
+            todo_title("one line\nand another"),
+            "one line\nand another",
+            "**a newline is not a separator**: the pane flattens one, so a second line is not a \
+             body the row has — see `todo_title`'s doc"
+        );
+        assert_eq!(TODO_DETAIL_SEP, " — ", "the spelling both heads write");
+        assert_eq!(
+            TODO_TITLE_MAX, 135,
+            "the pane's own arithmetic — see its doc"
+        );
+    }
+
+    /// **A row written before the title cap still reads** — the cap is a rule about WRITING, and
+    /// nothing in the store refuses or shortens a row that is already there.
+    ///
+    /// MEASURED as the shape of the failure it prevents: the operator's board has rows on it now,
+    /// written by a build that had no cap, and a store that dropped or refused one would be a
+    /// migration by accident — the row would vanish from the plan on the first resume after this
+    /// change, which is the one outcome the fail-loud rules in this file exist against.
+    #[test]
+    fn a_row_written_before_the_title_cap_still_reads() {
+        let s = store();
+        let _seeded = seeded(&s);
+        let legacy = "L".repeat(TODO_TITLE_MAX + 40);
+        s.conn
+            .execute(
+                "INSERT INTO todo (session_id, todos_json, updated_ms) VALUES (?1, ?2, 0) \
+                 ON CONFLICT(session_id) DO UPDATE SET todos_json = ?2",
+                params![
+                    "sess-1",
+                    format!(
+                        r#"[{{"content":"{legacy}","status":"pending","by":"model","when":null}}]"#
+                    )
+                ],
+            )
+            .unwrap();
+        let back = s.todos("sess-1").unwrap();
+        assert_eq!(back.len(), 1, "the row is not dropped");
+        assert_eq!(
+            back[0].content, legacy,
+            "and not one character of it is cut"
+        );
+        assert_eq!(
+            todo_title(&back[0].content).chars().count(),
+            TODO_TITLE_MAX + 40
+        );
+
+        // **And it survives a write of the whole list**, which is what a resumed session does with
+        // it: the store is not a second door the cap is enforced at.
+        s.put_todos("sess-1", &back).unwrap();
+        assert_eq!(s.todos("sess-1").unwrap()[0].content, legacy);
     }
 
     /// **A postponed row is a row the store keeps, and the LIFT is the same round trip.**

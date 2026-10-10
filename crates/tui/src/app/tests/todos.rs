@@ -1848,3 +1848,195 @@ fn the_starter_todos_switch_is_off_by_default() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **The title cap, at the operator's own doors** — `/todo TEXT` and the card, which are the two
+/// ways the operator writes one of their rows.
+///
+/// The rule is the model's rule (`todo_write` holds it too, and the number is
+/// `TODO_TITLE_MAX`'s): a title longer than the pane's own row is cut at the pane's right edge and
+/// read by nobody, so it is REFUSED by name instead — with the card still up and the typed door
+/// sending nothing. What is capped is the title, and the card's Detail field is where the rest of
+/// it goes, so the refusal names that too.
+#[test]
+fn a_title_over_the_cap_is_refused_at_the_operators_own_doors() {
+    use letibot_sessionlog::event::TODO_TITLE_MAX;
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+
+    // **The typed door.** `/todo <a long title>` says why and sends nothing at all.
+    let long = "x".repeat(TODO_TITLE_MAX + 1);
+    assert_eq!(a.command(&format!("todo {long}")), None, "nothing was sent");
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(
+        said.contains(&format!("at most {TODO_TITLE_MAX}")),
+        "the refusal names the cap: {said}"
+    );
+    assert!(
+        said.contains("put it after ` — `"),
+        "and where the rest of the row goes: {said}"
+    );
+    assert!(a.operator_todos().is_empty(), "no row was added: {said}");
+    assert!(
+        !a.queued
+            .iter()
+            .any(|q| matches!(q, Action::SetOperatorTodos { .. })),
+        "and no half was queued: {:?}",
+        a.queued
+    );
+
+    // **A title AT the cap passes** — the bound is a bound and not a shave.
+    let exact = "y".repeat(TODO_TITLE_MAX);
+    match a.command(&format!("todo {exact}")) {
+        Some(Action::SetOperatorTodos { items, .. }) => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].content, exact);
+        }
+        other => panic!("expected the add, got {other:?}"),
+    }
+
+    // **The card**, which measures the COMPOSED row — so a long title is refused with the card still
+    // up, and what was typed is not lost.
+    a.command("todo");
+    typed(&mut a, &long);
+    assert!(matches!(a.key(Key::Enter), None), "nothing was added");
+    assert!(a.todo_draft.is_some(), "the card stayed up");
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(
+        said.contains(&format!("at most {TODO_TITLE_MAX}")),
+        "the card's refusal names the cap too: {said}"
+    );
+    assert_eq!(
+        a.operator_todos().len(),
+        1,
+        "still the one row that fitted: {:?}",
+        a.operator_todos()
+    );
+}
+
+/// **A row the operator wrote BEFORE the cap is still theirs to move.**
+///
+/// `SetOperatorTodos` replaces the operator's half wholesale, so every row written before this
+/// change comes back through that door — and a cap checked there would refuse `/todo done 2`
+/// because some old row is long, leaving a row older than the cap impossible to close. The check
+/// is at CREATION (`title_refusal`'s doc), and this is the measurement of that: a long row that
+/// arrived from the daemon moves like any other.
+#[test]
+fn an_operator_row_written_before_the_cap_is_still_movable() {
+    use letibot_sessionlog::event::TODO_TITLE_MAX;
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    let legacy = "L".repeat(TODO_TITLE_MAX * 2);
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::TodosUpdated {
+            todos: vec![TodoEntry {
+                content: legacy.clone(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+                when: None,
+                needs: Vec::new(),
+            }],
+        },
+    )));
+    match a.command("todo done 1") {
+        Some(Action::SetOperatorTodos { items, .. }) => {
+            assert_eq!(items.len(), 1, "the old row is sent back: {items:?}");
+            assert_eq!(items[0].content, legacy, "with every character of it");
+            assert_eq!(items[0].status, TodoStatus::Completed);
+        }
+        other => panic!("expected the write of the operator's half, got {other:?}"),
+    }
+}
+
+/// **A board row is ONE line, newline and all.**
+///
+/// The pane flattens a newline (`rano`'s `clean_line`), so a writer that put a second line in
+/// `content` has not made a detail — it has made words the operator reads run together on the row.
+/// That is why `todo_title` does not split there, why the cap measures the whole of them, and why
+/// a DETAIL has a separator of its own (` — `, `TODO_DETAIL_SEP`). Measured on the pane's own
+/// lines rather than argued: one row, both halves of it, no second row.
+#[test]
+fn a_board_row_with_a_newline_is_drawn_on_one_line() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::TodosUpdated {
+            todos: vec![TodoEntry {
+                content: "first line\nsecond line".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Operator,
+                when: None,
+                needs: Vec::new(),
+            }],
+        },
+    )));
+    let lines = a.todos_lines(120);
+    assert!(
+        lines.iter().any(|l| l.contains("first line second line")),
+        "the row is drawn as ONE line, with the newline flattened: {lines:#?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.trim_start().starts_with("second line")),
+        "and the second line is not a row of its own: {lines:#?}"
+    );
+}
+
+/// **A template item whose title is over the cap is not seeded, and it is SAID** — the seed's own
+/// rule (*"refusals are notes, not silences"*), because from the operator's side a row that
+/// silently did not arrive is indistinguishable from a file that was never read. The rest of the
+/// template still lands: one long row is not a reason to seed nothing.
+#[test]
+fn a_template_item_over_the_cap_is_not_seeded_and_is_said() {
+    use letibot_sessionlog::event::TODO_TITLE_MAX;
+    let dir = std::env::temp_dir().join(format!("letibot-seed-cap-{}", std::process::id()));
+    let long = "z".repeat(TODO_TITLE_MAX + 1);
+    let mut a = seeded_head(
+        &dir,
+        &format!("## Phase 0\n\n- [ ] {long}\n- [ ] a row that fits\n"),
+        "/home/dead/Projects/cap",
+    );
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos: Vec::new(),
+    });
+    assert_eq!(
+        a.operator_todos()
+            .iter()
+            .map(|t| t.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a row that fits"],
+        "the long row was not seeded and the rest was"
+    );
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(
+        said.contains("1 item of the template not seeded"),
+        "the refusal is a note: {said}"
+    );
+    assert!(
+        said.contains(&long),
+        "and it names the row rather than the count alone: {said}"
+    );
+    assert!(
+        said.contains("1 starter todo from"),
+        "the count of what DID land travels with it, or `say` would have dropped one of the two: \
+         {said}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

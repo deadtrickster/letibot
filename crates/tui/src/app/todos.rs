@@ -188,11 +188,20 @@ impl App {
             return;
         }
         let mut mine = self.operator_todos();
+        // **A template item over the title cap is NOT seeded, and it is said** — the seed's own rule
+        // (*"refusals are notes, not silences"*), because from the operator's side a row that
+        // silently did not arrive is indistinguishable from a file that was never read. The title is
+        // what is measured (`title_refusal`), and the body joined after ` — ` below is the DETAIL.
+        let mut skipped: Vec<(String, String)> = Vec::new();
         for r in &items {
             let mut content = r.text.trim().to_string();
             if !r.body.is_empty() {
                 content.push_str(" — ");
                 content.push_str(&r.body.join(" · "));
+            }
+            if let Some(why) = title_refusal(&content) {
+                skipped.push((content, why));
+                continue;
             }
             mine.push(letibot_sessionlog::event::TodoEntry {
                 content,
@@ -208,18 +217,34 @@ impl App {
                 needs: Vec::new(),
             });
         }
-        let n = items.len();
+        let n = items.len() - skipped.len();
         self.mark_seeded();
         self.echo_operator_todos(mine.clone());
         self.queued.push(Action::SetOperatorTodos {
             items: mine,
             moved: Vec::new(),
         });
-        self.say(&format!(
+        // **The count, and then every item that was too long to be a title, by name** — one notice,
+        // because `say` replaces what it last said: two calls would leave only the refusals on the
+        // screen and the count unread. The seed's own rule is *"refusals are notes, not silences"*.
+        let mut said = format!(
             "{n} starter todo{} from {}",
             if n == 1 { "" } else { "s" },
             path.display()
-        ));
+        );
+        if !skipped.is_empty() {
+            let listed: Vec<String> = skipped
+                .iter()
+                .map(|(content, why)| format!("  {why}\n    `{content}`"))
+                .collect();
+            said.push_str(&format!(
+                "\n{} item{} of the template not seeded:\n{}",
+                skipped.len(),
+                if skipped.len() == 1 { "" } else { "s" },
+                listed.join("\n")
+            ));
+        }
+        self.say(&said);
     }
 
     /// **Record that this project has had its starter todos** — and do it BEFORE the send, for
@@ -400,6 +425,39 @@ impl App {
         self.repo_todos_at = now;
         self.repo_todos = Some(repo_todos_map(&self.wiring.workspace));
     }
+}
+
+/// **The title cap, at the OPERATOR's own door** — the refusal `/todo TEXT`, the new-todo card and
+/// the template seed all ask, so one rule is spelled once for the person the same way
+/// `todo_write` spells it for the model.
+///
+/// The rule and the number are `letibot_tokencore::store::TODO_TITLE_MAX`'s, and the head reads them
+/// from the WIRE's copy of them (`letibot_sessionlog::event`) because that is where every other
+/// todo fact the head holds comes from — `TodoEntry`, `TodoStatus`, `TodoBy` — and because the head
+/// does not link the store: the crate is a dev-dependency here (the apparatus machinery), and the
+/// TUI binary has no business pulling rusqlite in for a constant. The wire's copy is pinned to the
+/// store's by a test in that crate, which does see both. The arithmetic: the operator's terminal is
+/// 160 cells, the todos pane draws a row at 156, and a row's own furniture — the mark, its `/todo`
+/// number, `— model` — takes 21, so a longer title is CUT at the pane's right edge and read by
+/// nobody. What is capped is the TITLE, so the part after ` — ` is the row's detail and is not
+/// capped — which is the shape the card's own Detail field already writes.
+///
+/// **It is asked where a row is CREATED and not where the half is sent.** `SetOperatorTodos`
+/// replaces the operator's half wholesale, so the rows that come back with it include every row
+/// written before this cap — a check at the door would refuse the operator's own `/todo done 2`
+/// because an old row is long, and would make a row older than the cap impossible to close. The
+/// head is the writer of the operator's words, and this is the moment they are written.
+pub(crate) fn title_refusal(text: &str) -> Option<String> {
+    use letibot_sessionlog::event::{TODO_TITLE_MAX, todo_title};
+    let title = todo_title(text);
+    let n = title.chars().count();
+    (n > TODO_TITLE_MAX).then(|| {
+        format!(
+            "that title is {n} characters, and a title is at most {TODO_TITLE_MAX} — the width the \
+             todos pane draws a row at. The rest is the DETAIL: put it after ` — ` and the pane \
+             shows it after the title"
+        )
+    })
 }
 
 /// **One row of the todos pane the cursor may land on** — see [`App::todos_stops`].

@@ -89,6 +89,16 @@ impl App {
                         text.push_str(" — ");
                         text.push_str(draft.detail.trim());
                     }
+                    // **The title cap, with the card still up.** The same rule `/todo TEXT` and
+                    // `todo_write` keep, asked of the COMPOSED row so the card and the typed door
+                    // measure the same string: what is capped is the title, and the Detail field is
+                    // where the rest of it goes — which is why this refuses rather than trimming.
+                    if let Some(why) = title_refusal(&text) {
+                        self.todo_draft = Some(draft);
+                        self.say(&why);
+                        self.redraw = true;
+                        return ControlFlow::Break(None);
+                    }
                     let when = if draft.when.trim().is_empty() {
                         None
                     } else {

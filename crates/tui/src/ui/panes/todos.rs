@@ -21,6 +21,17 @@ impl App {
             open,
             postponed,
             on_add: marked(&TodoStop::Add),
+            // **A board row has no BODY, and the title cap is what makes that livable.** rano's
+            // `TodoLine` is `mark`/`content`/`mine`/`number`/`waits_on` — there is no field for a
+            // detail, and `RepoRow` (the file's rows below) is the only row in this pane that has
+            // one. So a row's detail rides in `content` after ` — ` (`TODO_DETAIL_SEP`) and is
+            // drawn on the same line, cut at `w` like everything else; what the cap bounds
+            // (`TODO_TITLE_MAX`) is the TITLE, so the part that identifies the row always fits and
+            // the detail is what runs off the edge. **What would give it a line of its own is a
+            // `TodoLine::detail` in rano** — the pinned v0.8.1 has none — and not a row this head
+            // splices in under the pane's: a click and the arrows read the row numbers the pane
+            // recorded while drawing (`PaneLines::stop_rows`), so one extra line would put every
+            // stop below it a row out and the two readings would disagree.
             todos: self
                 .todos
                 .iter()

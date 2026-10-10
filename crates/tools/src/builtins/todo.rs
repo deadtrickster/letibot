@@ -30,7 +30,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use letibot_tokencore::store::{TodoBy, TodoCondition, TodoItem, TodoNeed, TodoStatus};
+use letibot_tokencore::store::{
+    TODO_TITLE_MAX, TodoBy, TodoCondition, TodoItem, TodoNeed, TodoStatus, todo_title,
+};
 use serde_json::{Value, json};
 
 use crate::runtime::{Invocation, InvokeCtx, Tool};
@@ -135,6 +137,15 @@ impl TodoBoard {
     /// **The operator's half, replaced wholesale.** A head sends its whole list on every change: it
     /// owns these rows, they are its own store's contents, and a delta protocol for a list of tens of
     /// items would be a second source of truth about them.
+    ///
+    /// **THE TITLE CAP IS NOT HERE, and that is the whole-list contract rather than an omission.**
+    /// A replace carries every row the operator owns — including every row written before the cap
+    /// existed — so a check here would refuse the operator's own `/todo done 2` because some old row
+    /// is long, and a row older than the cap could never be closed. The rule binds the words a writer
+    /// CREATES, and the operator's words are created in the HEAD
+    /// (`tui/src/app/todos.rs::title_refusal`, asked by `/todo TEXT`, the card and the seed); the
+    /// daemon's job on this door is to hold the half it was given. The model's half and a parent's
+    /// are the other way round — `upsert_model`/`upsert_parent` ADD rows, so the check is there.
     ///
     /// Returns the new version, so the caller decides whether an announcement is owed exactly as it
     /// does for the model's half.
@@ -313,6 +324,10 @@ impl TodoBoard {
     /// `/todo rm N` numbers the operator's own rows, and a head never sends it — the only caller is
     /// the daemon that just read the queue.
     ///
+    /// **And the title cap is not this half's business either**, for that same reason: these words
+    /// are a VIEW of the store's own queue entries rather than anybody's title — a branch, a
+    /// project, a state — and the daemon that writes them is not the writer the cap binds.
+    ///
     /// Returns how many rows the half now holds, and bumps the version only when the rows actually
     /// CHANGED — the rule every other writer here keeps, so a queue that has not moved does not cost
     /// the store a write or the pane a publish on every pass.
@@ -355,15 +370,25 @@ impl TodoBoard {
     /// construction, and comparing anyway is what makes that a checked fact rather than an
     /// assumption a future writer could break.
     ///
+    /// **A NEW row's title is capped here, and a row already on this half never is** — the check is
+    /// [`check_titles`], the one spelling of the rule, and it runs BEFORE anything is pushed so a
+    /// refusal costs the board nothing. It is here rather than in the tool because a `target` write
+    /// reaches the CHILD's half through the daemon's resolver, and this is the only place that half
+    /// is in hand.
+    ///
     /// Returns how many rows were ADDED or CHANGED, and bumps the version only when that is not
     /// zero — the same rule `set_operator_states` keeps, so a re-send of an unchanged plan is not
     /// an event and does not cost the store a write or the pane a publish.
+    ///
+    /// `Err` is a refusal written to be shown to the model as it stands — the title cap, and only
+    /// it: the resolver above this has already decided the target is the caller's own child.
     pub fn upsert_parent(
         &self,
         rows: &[(String, TodoStatus, Vec<TodoNeed>)],
         by: &TodoBy,
-    ) -> usize {
+    ) -> Result<usize, String> {
         let mut half = self.parent.lock().unwrap_or_else(|e| e.into_inner());
+        check_titles(&half, rows)?;
         let mut changed = 0usize;
         for (content, status, needs) in rows {
             let want = content.trim();
@@ -397,7 +422,7 @@ impl TodoBoard {
         if changed > 0 {
             self.version.fetch_add(1, Ordering::SeqCst);
         }
-        changed
+        Ok(changed)
     }
 
     /// **The model's own rows, as an UPSERT — and never a delete.**
@@ -1714,7 +1739,16 @@ impl Tool for TodoWriteTool {
              nothing this tool sends removes a row, because only the operator \
              deletes, and only through their own `/todo rm`. Retire a row by marking \
              it `completed`. To mark ONE row without re-sending the list, name it in \
-             `update`, quoting its `content` exactly.\n\nA row the OPERATOR has POSTPONED comes \
+             `update`, quoting its `content` exactly.\n\n**A row is a TITLE, and a title is at most 135 \
+             characters.** The todos pane draws a row at the width of the operator's terminal less the \
+             gutter and the row's own mark, number and `— model`, which leaves 135 — so a longer title \
+             is cut off at the pane's right edge and read by nobody, and a `todos` entry whose title is \
+             over that is REFUSED by name, with nothing written. **The rest of a row goes after ` — ` \
+             in the same `content`**: `title — the detail`. That part is the row's DETAIL, it is not \
+             capped, and the pane draws it after the title — so put anything long there rather than in \
+             the title: `Fix the flaky test — it fails when the store is busy; see the gate run`. A row \
+             already on the board is never refused for its length: the cap binds the words a call \
+             WRITES, so an old long row can still be restated, or moved by quoting it in `update`.\n\nA row the OPERATOR has POSTPONED comes \
              back marked `[p]`: it stays on the board, it is still theirs, and it is \
              not work you are being asked for — do not propose it again. `postponed` \
              is not a status you may send; setting one aside and lifting it again are \
@@ -1821,7 +1855,14 @@ impl Tool for TodoWriteTool {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "content": {"type": "string"},
+                                "content": {
+                                    "type": "string",
+                                    "description": "The step, as a TITLE of at most 135 \
+                                                    characters. Anything longer goes after ` — ` \
+                                                    in this same string — that part is the row's \
+                                                    DETAIL, it is not capped, and the pane draws \
+                                                    it after the title."
+                                },
                                 "status": {
                                     "type": "string",
                                     "enum": ["pending", "in_progress", "completed"]
@@ -1967,11 +2008,28 @@ impl Tool for TodoWriteTool {
                 )),
                 Err(why) => Invocation::failed(
                     format!("`{target}` was not written: {why}"),
-                    "a target must be a session THIS session spawned with `task`. Quote one of \
-                     your children — the subagent pane (`ctrl-g`) and `task_result` list them — \
-                     or leave `target` out to write your own board.",
+                    format!(
+                        "a `target` must be a session THIS session spawned with `task`, and the rows \
+                         you send are titles of at most {TODO_TITLE_MAX} characters (the part after \
+                         ` — ` is the detail, which is not capped). Quote one of your children — the \
+                         subagent pane (`ctrl-g`) and `task_result` list them — or leave `target` out \
+                         to write your own board."
+                    ),
                 ),
             };
+        }
+        // **THE TITLE CAP, BEFORE ANYTHING MOVES.** The check is HERE and not in `upsert_model`
+        // because this call is ALL OR NOTHING: `set_states_on_both_halves` below writes both halves,
+        // and a list refused after it would leave the operator's rows moved and the plan not — the
+        // drift `set_states_on_both_halves`' own doc is arranged against. The `target` path keeps
+        // its copy inside `upsert_parent`, where the half that matters is the child's.
+        //
+        // `before` is read here, above the moves, and used twice: the check reads it, and the reply
+        // names the rows this call left out against it. A status moved between those two readings
+        // cannot change which rows were named — `omitted` compares contents.
+        let before = self.board.model_snapshot();
+        if let Err(why) = check_titles(&before, &rows) {
+            return Invocation::failed(format!("nothing was written: {why}"), title_why());
         }
         let updates = match parse_moves(args.get("update"), "update") {
             Ok(v) => v,
@@ -2019,7 +2077,6 @@ impl Tool for TodoWriteTool {
         // out — it never said what the list is — so this sentence belongs to the whole-list form
         // alone.
         let list_sent = args.get("todos").and_then(|v| v.as_array()).is_some();
-        let before = self.board.model_snapshot();
         self.board.upsert_model(&rows);
         let omitted: Vec<String> = if list_sent {
             before
@@ -2070,6 +2127,64 @@ impl Tool for TodoWriteTool {
         }
         Invocation::ok(out)
     }
+}
+
+/// **The title cap, in one place** — the check every write of a board row's WORDS passes.
+///
+/// The rule itself is [`letibot_tokencore::store::TODO_TITLE_MAX`]'s, and the reason it is 135 is
+/// written there: the operator's terminal is 160 cells, the pane draws a row at 156, and the row's
+/// own furniture — the mark, its number, `— model` — takes 21, so a longer title is cut at the
+/// pane's right edge and read by nobody.
+///
+/// **It bounds what a call WRITES, and never what a row IS.** A row whose trimmed words are
+/// already on this half is being RESTATED — the whole-list contract's ordinary case — so its words
+/// are the board's and not this call's, and the cap has nothing to say about it. That is what keeps
+/// a row written before this cap usable: an old long row can still be restated, and can still be
+/// disposed of by quoting it in `update`/`operator`, because a quote is not a new title either. A
+/// cap that refused those would make every row older than it immortal — the operator could not
+/// close one and the model could not restate its own plan — which is a worse failure than the cut
+/// this exists to prevent.
+///
+/// **All-or-nothing**: the whole list is checked before any of it is written, so a call carrying
+/// one over-long row costs the board nothing at all — the rule `set_states_on_both_halves` keeps
+/// for its quotes, one step earlier.
+fn check_titles(
+    existing: &[TodoItem],
+    rows: &[(String, TodoStatus, Vec<TodoNeed>)],
+) -> Result<(), String> {
+    for (content, _, _) in rows {
+        if existing.iter().any(|t| t.content.trim() == content.trim()) {
+            continue;
+        }
+        let title = todo_title(content);
+        let n = title.chars().count();
+        if n > TODO_TITLE_MAX {
+            return Err(format!(
+                "`{title}` is {n} characters, and a title is at most {TODO_TITLE_MAX}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// **What a title over the cap is told**, beside the refusal itself: the cap, where the number
+/// comes from, and where the rest of the row goes.
+///
+/// One spelling, because both writers that can write a NEW row reach it — `todo_write`'s own
+/// `todos` list, and a parent's `target` write — and a second sentence is how one of them ends up
+/// telling a model something different about the same rule.
+fn title_why() -> String {
+    format!(
+        "**nothing was written.** A row's TITLE — the words before ` — `, or the whole row when it \
+         has none — is at most {TODO_TITLE_MAX} characters: the todos pane draws a row at the \
+         operator's 160-cell terminal less the gutter and the row's own mark, number and `— model`, \
+         and a longer title is cut off at the pane's right edge. **The rest of a row is not lost: \
+         put it after ` — ` in the same `content`** — `Fix the flaky test — it fails when the store \
+         is busy` — and that part is the row's DETAIL: it is not capped, and the pane draws it after \
+         the title. A row already on the board is never refused for its length — the cap binds the \
+         words a call WRITES — so a long row written before it can still be restated, or moved by \
+         quoting it in `update`."
+    )
 }
 
 /// **Parse and validate a `todos` list — the shared gate both boards' writes pass.**
@@ -4591,8 +4706,7 @@ mod tests {
 
         // **The same age, nothing moving.** The two notices differ, and that difference is the
         // whole of what the operator asked for.
-        let quiet =
-            ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
+        let quiet = ChildSessions::none().running("s-1-sub-2", child(45 * 60, Some(12 * 60), true));
         let quiet_msg = nag_with(&plan, &quiet, &no_jobs()).expect("a stuck plan speaks");
         assert_ne!(msg, quiet_msg, "working and quiet must not read the same");
         assert!(
@@ -5167,7 +5281,9 @@ mod tests {
             // The real resolver stamps the author itself; the fake does the same, with an id
             // shaped like a real one so the rendered reply can be asserted on it.
             let by = TodoBy::parent_of("s-1789462738453908838");
-            self.board.upsert_parent(rows, &by);
+            // The board's own writer, so its title-cap refusal reaches the tool as the real
+            // resolver's does: `?` and nothing else.
+            self.board.upsert_parent(rows, &by)?;
             Ok(self.board.snapshot())
         }
     }
@@ -5211,17 +5327,19 @@ mod tests {
         let author = TodoBy::parent_of("s-1789462738453908838");
 
         // Two rows arrive from the parent.
-        let changed = b.upsert_parent(
-            &[
-                (
-                    "land the parity row".into(),
-                    TodoStatus::Pending,
-                    Vec::new(),
-                ),
-                ("write the report".into(), TodoStatus::Pending, Vec::new()),
-            ],
-            &author,
-        );
+        let changed = b
+            .upsert_parent(
+                &[
+                    (
+                        "land the parity row".into(),
+                        TodoStatus::Pending,
+                        Vec::new(),
+                    ),
+                    ("write the report".into(), TodoStatus::Pending, Vec::new()),
+                ],
+                &author,
+            )
+            .unwrap();
         assert_eq!(changed, 2, "both rows were added");
         assert_eq!(b.version(), 1);
 
@@ -5248,28 +5366,32 @@ mod tests {
         // **A re-send is a state update, not a duplicate** — and the SAME text under a different
         // author's name would be a different row, which is the scoping, but one parent is one
         // author, so the second send moves what the first wrote.
-        let changed = b.upsert_parent(
-            &[(
-                "land the parity row".into(),
-                TodoStatus::Completed,
-                Vec::new(),
-            )],
-            &author,
-        );
+        let changed = b
+            .upsert_parent(
+                &[(
+                    "land the parity row".into(),
+                    TodoStatus::Completed,
+                    Vec::new(),
+                )],
+                &author,
+            )
+            .unwrap();
         assert_eq!(changed, 1, "the existing row moved, nothing was added");
         assert_eq!(b.parent_snapshot().len(), 2, "still two rows: no duplicate");
         assert_eq!(b.version(), 2);
 
         // **Omission is not deletion.** The parent sends one row and leaves the other out —
         // under the own-board contract that would delete it; here it must not.
-        let changed = b.upsert_parent(
-            &[(
-                "write the report".into(),
-                TodoStatus::InProgress,
-                Vec::new(),
-            )],
-            &author,
-        );
+        let changed = b
+            .upsert_parent(
+                &[(
+                    "write the report".into(),
+                    TodoStatus::InProgress,
+                    Vec::new(),
+                )],
+                &author,
+            )
+            .unwrap();
         assert_eq!(changed, 1);
         assert_eq!(
             b.parent_snapshot().len(),
@@ -5280,14 +5402,16 @@ mod tests {
 
         // **An unchanged re-send is not an event** — the version rule `set_operator_states` keeps.
         let before = b.version();
-        let changed = b.upsert_parent(
-            &[(
-                "write the report".into(),
-                TodoStatus::InProgress,
-                Vec::new(),
-            )],
-            &author,
-        );
+        let changed = b
+            .upsert_parent(
+                &[(
+                    "write the report".into(),
+                    TodoStatus::InProgress,
+                    Vec::new(),
+                )],
+                &author,
+            )
+            .unwrap();
         assert_eq!(changed, 0, "nothing changed");
         assert_eq!(b.version(), before, "and nothing was announced");
 
@@ -5531,5 +5655,224 @@ mod tests {
         let said = format!("{} {:?}", r.payload, r.outcome);
         assert!(said.contains("no children's boards"), "{}", said);
         assert!(own.snapshot().is_empty(), "and this board stayed empty");
+    }
+
+    /// **The description names the cap the code enforces.**
+    ///
+    /// The number in the model-facing prose is a literal — a `format!` over the whole description
+    /// would mean escaping every `{"kind": …}` example in it — so this is the test that catches the
+    /// one drift a reader cannot see: a constant moved and the sentence left behind, which would
+    /// teach the model a cap the tool refuses at a different length.
+    #[test]
+    fn the_tools_description_names_the_cap_it_enforces() {
+        let board = Arc::new(TodoBoard::new(Vec::new()));
+        let schema = super::TodoWriteTool::new(board).schema();
+        let cap = TODO_TITLE_MAX.to_string();
+        assert!(
+            schema
+                .description
+                .contains(&format!("a title is at most {cap}")),
+            "the description does not name the cap: {}",
+            schema.description
+        );
+        assert!(
+            schema
+                .description
+                .contains("The rest of a row goes after ` — `"),
+            "nor where the rest of a row goes: {}",
+            schema.description
+        );
+        let content = schema.parameters["properties"]["todos"]["items"]["properties"]["content"]
+            ["description"]
+            .as_str()
+            .expect("the `todos` entry's `content` says what a content is");
+        assert!(
+            content.contains(&cap),
+            "the field the model writes does not name the cap either: {content}"
+        );
+    }
+
+    // -- the title cap -------------------------------------------------------
+
+    /// **A title over the cap is refused BY NAME, and nothing is written** — the refusal names the
+    /// row's own words, the number it measured and the cap, and the sentence says where the rest of
+    /// the row goes.
+    ///
+    /// The cap itself is `TODO_TITLE_MAX`'s and its reason is written there: the operator's 160-cell
+    /// terminal, the pane's 156-column row, and the 21 columns of furniture a row spends before its
+    /// own words.
+    #[test]
+    fn a_title_over_the_cap_is_refused_by_name_and_nothing_is_written() {
+        let (mut rt, board) = runtime();
+        let mut sink = RecordingToolSink::new();
+        let long = "x".repeat(TODO_TITLE_MAX + 1);
+        let r = rt.invoke(
+            "t1",
+            &call(
+                &serde_json::json!({"todos": [{"content": long, "status": "pending"}]}).to_string(),
+            ),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "{:?}",
+            r.outcome
+        );
+        let said = format!("{} {:?}", r.payload, r.outcome);
+        assert!(
+            said.contains(&format!("is {} characters", TODO_TITLE_MAX + 1)),
+            "the length it measured is named: {said}"
+        );
+        assert!(
+            said.contains(&format!("at most {TODO_TITLE_MAX}")),
+            "and the cap: {said}"
+        );
+        assert!(
+            said.contains("put it after ` — `"),
+            "and where the rest of the row goes: {said}"
+        );
+        assert!(board.snapshot().is_empty(), "nothing was written: {said}");
+    }
+
+    /// **A title AT the cap is written whole** — the bound is a bound and not a shave, and the row
+    /// that passes is the row the model gets back.
+    #[test]
+    fn a_title_at_the_cap_is_written() {
+        let (mut rt, board) = runtime();
+        let mut sink = RecordingToolSink::new();
+        let exact = "y".repeat(TODO_TITLE_MAX);
+        let r = rt.invoke(
+            "t1",
+            &call(
+                &serde_json::json!({"todos": [{"content": exact, "status": "pending"}]})
+                    .to_string(),
+            ),
+            &mut sink,
+        );
+        assert_eq!(r.outcome, ToolOutcome::Ok, "{} {:?}", r.payload, r.outcome);
+        let all = board.snapshot();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].content, exact, "the words are kept verbatim");
+    }
+
+    /// **The cap is on the TITLE, and the detail after ` — ` is not capped.** A row whose title fits
+    /// is written whole, detail and all — that is the sentence the tool's description gives the
+    /// model for anything long, so it has to be the thing that actually passes.
+    #[test]
+    fn a_long_detail_after_the_separator_is_not_the_title() {
+        let (mut rt, board) = runtime();
+        let mut sink = RecordingToolSink::new();
+        let content = format!("fix the flaky test — {}", "d".repeat(TODO_TITLE_MAX * 3));
+        let r = rt.invoke(
+            "t1",
+            &call(
+                &serde_json::json!({"todos": [{"content": content, "status": "pending"}]})
+                    .to_string(),
+            ),
+            &mut sink,
+        );
+        assert_eq!(r.outcome, ToolOutcome::Ok, "{} {:?}", r.payload, r.outcome);
+        let all = board.snapshot();
+        assert_eq!(all.len(), 1);
+        assert_eq!(
+            all[0].content, content,
+            "the detail is kept, and the title is what was measured"
+        );
+    }
+
+    /// **A row written BEFORE the cap is not made immortal by it.** The cap binds the words a call
+    /// WRITES, so an old long row can still be restated by the whole-list form and still be moved by
+    /// quoting it in `update` — which is what keeps a board that predates the cap disposable rather
+    /// than stuck with a row nobody can close.
+    #[test]
+    fn a_row_written_before_the_cap_can_still_be_restated_and_moved() {
+        let legacy = "L".repeat(TODO_TITLE_MAX * 2);
+        let (mut rt, board) = runtime_with(vec![TodoItem {
+            content: legacy.clone(),
+            status: TodoStatus::Pending,
+            by: TodoBy::Model,
+            when: None,
+            needs: Vec::new(),
+        }]);
+        let mut sink = RecordingToolSink::new();
+
+        // The whole-list form, restating it — the case that would be a wedge if the cap were
+        // checked on the row rather than on the write.
+        let r = rt.invoke(
+            "t1",
+            &call(
+                &serde_json::json!({"todos": [{"content": legacy, "status": "completed"}]})
+                    .to_string(),
+            ),
+            &mut sink,
+        );
+        assert_eq!(r.outcome, ToolOutcome::Ok, "{} {:?}", r.payload, r.outcome);
+        assert_eq!(board.snapshot()[0].status, TodoStatus::Completed);
+
+        // And a quote, which is not a title at all.
+        let r = rt.invoke(
+            "t2",
+            &call(
+                &serde_json::json!({"update": [{"content": legacy, "status": "pending"}]})
+                    .to_string(),
+            ),
+            &mut sink,
+        );
+        assert_eq!(r.outcome, ToolOutcome::Ok, "{} {:?}", r.payload, r.outcome);
+        assert_eq!(board.snapshot()[0].status, TodoStatus::Pending);
+    }
+
+    /// **A parent's `target` write follows the same cap**, and the refusal is the CHILD's board's:
+    /// the half a `target` writes is not the caller's, so the check is `upsert_parent`'s and its
+    /// `Err` reaches the model through the tool's target arm.
+    #[test]
+    fn a_parents_target_write_follows_the_same_cap() {
+        let child = Arc::new(TodoBoard::new(Vec::new()));
+        let (mut rt, own, _fake) = children_runtime(child.clone());
+        let mut sink = RecordingToolSink::new();
+
+        let long = "z".repeat(TODO_TITLE_MAX + 1);
+        let r = rt.invoke(
+            "t1",
+            &call(
+                &serde_json::json!({"target": "s-…908838",
+                    "todos": [{"content": long, "status": "pending"}]})
+                .to_string(),
+            ),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "{:?}",
+            r.outcome
+        );
+        let said = format!("{} {:?}", r.payload, r.outcome);
+        assert!(
+            said.contains(&format!("at most {TODO_TITLE_MAX}")),
+            "the refusal names the cap on the child's board too: {said}"
+        );
+        assert!(
+            child.snapshot().is_empty(),
+            "nothing reached the child's board: {said}"
+        );
+
+        // **And a title at the cap lands there** — the rule is a bound, not a bar.
+        let exact = "w".repeat(TODO_TITLE_MAX);
+        let r = rt.invoke(
+            "t2",
+            &call(
+                &serde_json::json!({"target": "s-…908838",
+                    "todos": [{"content": exact, "status": "pending"}]})
+                .to_string(),
+            ),
+            &mut sink,
+        );
+        assert_eq!(r.outcome, ToolOutcome::Ok, "{} {:?}", r.payload, r.outcome);
+        assert_eq!(child.snapshot().len(), 1);
+        assert_eq!(child.snapshot()[0].content, exact);
+        assert!(
+            own.snapshot().is_empty(),
+            "and this session's own board stayed empty"
+        );
     }
 }

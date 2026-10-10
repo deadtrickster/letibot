@@ -242,7 +242,12 @@ impl ChildTodos for ParentTodos {
             ));
         };
         let author = TodoBy::parent_of(&self.caller);
-        let changed = board.upsert_parent(rows, &author);
+        // **The title cap is the BOARD's here, and `Err` is its refusal.** A parent writes onto a
+        // half this tool cannot see — the child's — so `upsert_parent` holds the one spelling of the
+        // rule (`check_titles`) and refuses a NEW row whose title is over it before anything is
+        // pushed. It propagates unchanged: `upsert_child`'s `Err` is already written to be shown to
+        // the model as it stands, and the tool's arm for it names the cap too.
+        let changed = board.upsert_parent(rows, &author)?;
         if changed > 0 {
             // **Persist and publish at the moment of the write** — see the module doc for why
             // waiting for the child's next turn boundary is the omission, not the patience.
