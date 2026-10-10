@@ -106,6 +106,7 @@ fn a_turn_streams_reasoning_text_and_a_tool_call_and_the_request_carries_the_key
         system: "be terse",
         tools_json: &tools,
         items: &items,
+        tail: &[],
         max_output_tokens: Some(256),
     };
     let mut deltas = Vec::new();
@@ -139,6 +140,48 @@ fn a_turn_streams_reasoning_text_and_a_tool_call_and_the_request_carries_the_key
     assert_eq!(v["tools"][0]["function"]["name"], "read");
 }
 
+/// **The tail reaches the wire as the last message, and an absent tail adds
+/// nothing.** `TurnRequest::tail` is where the standing-notes offer rides
+/// (`letibot_harnessd::notes_offer`); this is the same claim as `messages`' own
+/// unit test, made against a real socket and a real request body rather than
+/// against `convert`'s return value.
+#[test]
+fn a_tail_is_the_last_message_on_the_wire() {
+    let f = fake(SCRIPT, 200);
+    let p = provider(&f.url);
+    let items = vec![TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![UserPart::Text {
+            text: "read a.txt".into(),
+        }],
+    }];
+    let tail = vec![TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Agent,
+        parts: vec![UserPart::Text {
+            text: "[standing-notes offer] `.letibot/notes/x.md` looks relevant".into(),
+        }],
+    }];
+    let req = TurnRequest {
+        system: "be terse",
+        tools_json: &[],
+        items: &items,
+        tail: &tail,
+        max_output_tokens: None,
+    };
+    p.complete(&req, &mut |_| StreamFlow::Continue).unwrap();
+    let seen = f.seen.lock().unwrap();
+    let v: serde_json::Value = serde_json::from_str(&seen[0].1).unwrap();
+    let messages = v["messages"].as_array().expect("messages");
+    let last = messages.last().expect("a last message");
+    assert_eq!(last["role"], "user");
+    assert!(
+        last["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("standing-notes offer")),
+        "the tail is what the request ends on: {last}"
+    );
+}
+
 #[test]
 fn a_refusal_carries_the_providers_own_message() {
     let f = fake(
@@ -151,6 +194,7 @@ fn a_refusal_carries_the_providers_own_message() {
         system: "",
         tools_json: &[],
         items: &items,
+        tail: &[],
         max_output_tokens: None,
     };
     let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
@@ -172,6 +216,7 @@ fn stopping_mid_stream_is_an_abort_not_an_answer() {
         system: "",
         tools_json: &[],
         items: &items,
+        tail: &[],
         max_output_tokens: None,
     };
     let mut n = 0;

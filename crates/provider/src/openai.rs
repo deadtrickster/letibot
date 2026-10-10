@@ -74,7 +74,7 @@ impl OpenAiProvider {
         let carries_tools = !tools.is_empty();
         let mut body = json!({
             "model": self.model,
-            "messages": crate::messages::convert(req.system, req.items, carries_tools),
+            "messages": crate::messages::convert_with_tail(req.system, req.items, req.tail, carries_tools),
             "stream": true,
             "stream_options": {"include_usage": true},
         });
@@ -806,6 +806,7 @@ mod tests {
                 system: "be terse",
                 tools_json: &tools,
                 items: &items,
+                tail: &[],
                 max_output_tokens: None,
             })
             .expect("the body builds");
@@ -830,6 +831,7 @@ mod tests {
                 system: "be terse",
                 tools_json: &[],
                 items: &items,
+                tail: &[],
                 max_output_tokens: None,
             })
             .expect("the body builds");

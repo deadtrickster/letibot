@@ -120,6 +120,22 @@ pub struct TurnRequest<'a> {
     pub system: &'a str,
     pub tools_json: &'a [String],
     pub items: &'a [TranscriptItem],
+    /// **Items this request carries and the transcript does not.**
+    ///
+    /// Rendered after everything `items` holds and committed nowhere — the
+    /// session's log, and therefore the next request's cached prefix, is exactly
+    /// `items`. The one caller today is the standing-notes offer
+    /// (`letibot_harnessd::notes_offer`), and the reason it must be here rather
+    /// than in the log is that module's whole subject: a row cannot be un-said, an
+    /// assembly can be recomposed. An offer the round does not take leaves no
+    /// trace because it was never anything but this slice.
+    ///
+    /// **Not a `System` item.** MEASURED against the live API (`crate::messages`'s
+    /// `trailing_system_becomes_user`): a request that ends on a `system` message
+    /// while carrying `tools` is refused with *"The `reasoning_content` in the
+    /// thinking mode must be passed back to the API"*, which is why a trailing
+    /// item is rendered as the user-side row it is.
+    pub tail: &'a [TranscriptItem],
     pub max_output_tokens: Option<u32>,
 }
 

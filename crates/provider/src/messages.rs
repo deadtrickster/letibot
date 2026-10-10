@@ -152,7 +152,25 @@ use serde_json::{Value, json};
 /// decision is made once, where the request is assembled, rather than guessed at here
 /// from a provider name.
 pub fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> Vec<Value> {
-    let mut out = Vec::with_capacity(items.len() + 1);
+    convert_with_tail(system, items, &[], echo_reasoning)
+}
+
+/// **The same conversion, with items the request carries and the transcript does
+/// not** — `TurnRequest::tail`, which is where the argument for it lives.
+///
+/// The tail is rendered by the SAME walk rather than by a second one: an item the
+/// request carries and the log does not is still an item, and a tail that went
+/// through its own converter would be a shape that could disagree with the
+/// transcript's. It goes last because that is the whole point of it, and
+/// [`trailing_system_becomes_user`] below is what keeps a trailing item from
+/// being the shape the API refuses.
+pub fn convert_with_tail(
+    system: &str,
+    items: &[TranscriptItem],
+    tail: &[TranscriptItem],
+    echo_reasoning: bool,
+) -> Vec<Value> {
+    let mut out = Vec::with_capacity(items.len() + tail.len() + 1);
     let leads_with_system = matches!(items.first(), Some(TranscriptItem::System { .. }));
     if !system.trim().is_empty() && !leads_with_system {
         out.push(json!({"role": "system", "content": system}));
@@ -180,7 +198,7 @@ pub fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> 
     // `tool_calls` entry above it to answer. Collected in the walk below — one walk of the
     // items — and consulted by `pair_tool_calls`, which is where the old code dropped it.
     let mut own_author: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for item in items {
+    for item in items.iter().chain(tail.iter()) {
         match item {
             TranscriptItem::System { text, .. } => {
                 out.push(json!({"role": "system", "content": text}));
@@ -557,6 +575,50 @@ pub fn tools(tools_json: &[String]) -> Result<Vec<Value>, String> {
 mod tests {
     use super::*;
     use letibot_transcript::{ReasoningField, SystemOrigin, ToolCall};
+
+    /// **The request's tail is the LAST message, and it is not in the transcript.**
+    ///
+    /// `TurnRequest::tail` is what the standing-notes offer rides on
+    /// (`letibot_harnessd::notes_offer`), and the two things that make it an offer
+    /// rather than a note are both here: it goes after everything the session
+    /// holds — so it re-prefills only the tail, never the cached prefix — and it is
+    /// rendered from the request's own slice, so a round that does not take it
+    /// sends nothing and leaves nothing.
+    #[test]
+    fn the_tail_is_the_last_message_and_is_not_the_transcript() {
+        let items = vec![TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![letibot_transcript::UserPart::Text {
+                text: "what about the notes?".into(),
+            }],
+        }];
+        let tail = vec![TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
+            parts: vec![letibot_transcript::UserPart::Text {
+                text: "[standing-notes offer] `.letibot/notes/x.md` looks relevant".into(),
+            }],
+        }];
+        let msgs = convert_with_tail("be terse", &items, &tail, true);
+        assert_eq!(msgs.len(), 3, "system, the prompt, the offer");
+        let last = msgs.last().expect("messages");
+        assert_eq!(last["role"], "user");
+        assert!(
+            last["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("standing-notes offer")),
+            "the tail is what the request ends on: {last}"
+        );
+        assert!(
+            msgs[1]["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("what about the notes?")),
+            "and the transcript is carried unchanged ahead of it"
+        );
+
+        // And an empty tail adds nothing at all — which is what an offer nobody
+        // composed, or an offer the round did not take, sends.
+        assert_eq!(convert("be terse", &items, true).len(), 2);
+    }
 
     /// **A request must not end on a system message**, which is the shape that refused
     /// every compaction this session attempted. See
@@ -1020,7 +1082,10 @@ mod pairing_tests {
             .expect("the result answers the call the model proposed");
         assert_eq!(result["role"], "tool");
         assert!(
-            result["content"].as_str().unwrap().contains("chose option 1"),
+            result["content"]
+                .as_str()
+                .unwrap()
+                .contains("chose option 1"),
             "the answer the model reads is the result's payload: {result}"
         );
         assert!(
@@ -1030,7 +1095,8 @@ mod pairing_tests {
             "the call was reported unanswered beside its own answer: {m:?}"
         );
         assert!(
-            m.iter().any(|r| r["role"] == "user" && r["content"] == "sqlite"),
+            m.iter()
+                .any(|r| r["role"] == "user" && r["content"] == "sqlite"),
             "the person's own words must reach the model as a turn of theirs: {m:?}"
         );
 

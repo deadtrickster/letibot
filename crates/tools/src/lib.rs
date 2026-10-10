@@ -108,6 +108,7 @@ pub mod permission;
 pub mod result;
 pub mod runtime;
 pub mod schema;
+pub mod similarity;
 pub mod spill;
 
 #[cfg(any(test, feature = "testing"))]

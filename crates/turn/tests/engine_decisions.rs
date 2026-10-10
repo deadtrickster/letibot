@@ -22,8 +22,8 @@ use letibot_dialect::{Guard, StablePrefix};
 use letibot_tokencore::Vocab;
 use letibot_transcript::{TranscriptItem, UserPart};
 use letibot_turn::{
-    DeltaTarget, EmptyReason, Endpoint, PrefixCheck, RecordingSink, Session, SteeringMessage,
-    SteeringSource, TurnEngine, TurnEvent, TurnFailure,
+    DeltaTarget, EmptyReason, Endpoint, NoSteering, PrefixCheck, RecordingSink, Session,
+    SteeringMessage, SteeringSource, TurnEngine, TurnEvent, TurnFailure,
 };
 
 use support::canned::{Canned, Frame};
@@ -611,6 +611,101 @@ impl SteeringSource for Once {
         // first: it was taken before anything still in the vector.
         self.0.splice(0..0, msgs);
     }
+}
+
+/// **A round's tail is in the prompt the server gets, and not in the log.**
+///
+/// `run_turn_steered_with_tail` is where the standing-notes offer rides
+/// (`letibot_harnessd::notes_offer`), and the two things that make it an OFFER
+/// rather than a note are both asserted here: the prompt grows by the tail, and
+/// `session.items` grows by the model's own row only. The second is the one that
+/// makes it droppable — the next round's prompt is rebuilt from those items, so
+/// an offer the round does not take is gone, and an offer it does take is an
+/// ordinary `read` whose result is an ordinary permanent row.
+#[test]
+fn a_rounds_tail_is_in_the_prompt_and_not_in_the_log() {
+    let _g = serial();
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let answer = ids_of("Blue.");
+    // The lead already opened `<think>`, so a turn that answers has to close it —
+    // otherwise this is the `UnfinishedReasoning` case and there is no answer to
+    // measure a prompt against.
+    let frames = || {
+        let mut f = vec![Frame::Token {
+            id: THINK_CLOSE,
+            text: "",
+        }];
+        f.extend(token_frames(&answer));
+        f.push(Frame::Token {
+            id: IM_END,
+            text: "",
+        });
+        f.push(Frame::Final {
+            stop_type: "eos",
+            n_decoded: 1 + answer.len() as u64 + 1,
+            n_prompt: 10,
+            cache_n: 0,
+        });
+        f
+    };
+    let offer = TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Agent,
+        parts: vec![UserPart::Text {
+            text: "[standing-notes offer] `.letibot/notes/the-offer-and-the-tail.md` looks \
+                   relevant to what you are doing now"
+                .into(),
+        }],
+    };
+
+    // The same round twice, over the same prefix and the same prompt: once plain,
+    // once carrying the tail.
+    let plain = Canned::serve(frames(), 1);
+    let mut plain_engine = engine(plain.endpoint.clone());
+    let mut plain_session = session(&plain_engine, "tail-plain");
+    let mut plain_sink = RecordingSink::new();
+    plain_session
+        .append_items(&plain_engine, &[user("hello")], &mut plain_sink)
+        .unwrap();
+    let without = plain_engine
+        .run_turn(&mut plain_session, &mut plain_sink)
+        .expect("the plain round answers");
+
+    let tailed = Canned::serve(frames(), 1);
+    let mut tailed_engine = engine(tailed.endpoint.clone());
+    let mut tailed_session = session(&tailed_engine, "tail-offer");
+    let mut tailed_sink = RecordingSink::new();
+    tailed_session
+        .append_items(&tailed_engine, &[user("hello")], &mut tailed_sink)
+        .unwrap();
+    let items_before = tailed_session.items.len();
+    let with = tailed_engine
+        .run_turn_steered_with_tail(
+            &mut tailed_session,
+            &mut tailed_sink,
+            &mut NoSteering,
+            std::slice::from_ref(&offer),
+        )
+        .expect("the tailed round answers");
+
+    assert!(
+        with.metrics.prompt_tokens > without.metrics.prompt_tokens,
+        "the tail is in the prompt: {} against {}",
+        with.metrics.prompt_tokens,
+        without.metrics.prompt_tokens
+    );
+    assert_eq!(
+        tailed_session.items.len(),
+        items_before + 1,
+        "only the model's own row was appended — the tail is not a transcript row"
+    );
+    assert_eq!(
+        tailed_session.ledger.len(),
+        plain_session.ledger.len(),
+        "and it is not in the ledger either: two sessions over the same prefix and the \
+         same items hold the same tokens, tail or no tail"
+    );
 }
 
 /// **A message already waiting when the turn begins goes in the prompt, not behind

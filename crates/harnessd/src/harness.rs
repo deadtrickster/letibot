@@ -4496,19 +4496,17 @@ impl Harness {
     /// into the composer can. Before this it could not — the answer was a tool payload and
     /// nothing else, and no `User` row of theirs existed to cite.
     fn settle_asked(&mut self, result: &mut TranscriptItem) -> Vec<TranscriptItem> {
-        let Some(asked) = self
-            .asked
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        else {
+        let Some(asked) = self.asked.lock().unwrap_or_else(|e| e.into_inner()).take() else {
             return Vec::new();
         };
         // **Only an answer the tool ACCEPTED.** `ask_user_question` reports an abstention as
         // `Abstained` — a real answer — and everything it refused (an empty answer, an option
         // index nobody offered, a note qualifying nothing) as `not_run`. Writing a person's
         // row for one of those would attribute to them a sentence the harness rejected.
-        let TranscriptItem::ToolResult { outcome, origin, .. } = result else {
+        let TranscriptItem::ToolResult {
+            outcome, origin, ..
+        } = result
+        else {
             return Vec::new();
         };
         if !matches!(
@@ -4524,7 +4522,8 @@ impl Harness {
             who: asked.by.clone(),
         });
         let at = Some(Instant::now());
-        self.trail.say(Speaker::Agent, &question_row_text(&asked), at);
+        self.trail
+            .say(Speaker::Agent, &question_row_text(&asked), at);
         self.trail.say(Speaker::Operator, &said, at);
         asked_rows(&asked, &said).to_vec()
     }
@@ -8630,6 +8629,13 @@ impl Harness {
         // `max_tool_rounds` below is the backstop it demotes; see `crate::progress`
         // for why a round count was the wrong instrument and what replaced it.
         let mut progress = crate::progress::ProgressDetector::new(self.cfg.stall_rounds);
+        // **The turn's standing-notes offers** — see `crate::notes_offer`, which is
+        // where the whole argument lives. Per TURN and not per round: *"rare (once
+        // per note per turn at most)"*, so a note offered in round one is not
+        // offered again in round three, however well it still scores. The offer
+        // itself is per ROUND and lives in the request assembly below, never in the
+        // transcript — *a row cannot be un-said; an assembly can be recomposed*.
+        let mut offers = crate::notes_offer::Offers::new();
         // Consecutive HTTP failures on the round being attempted. Not per turn:
         // the thing being waited out is the endpoint, and it is as likely to go
         // down on round nine as on round one.
@@ -8743,6 +8749,25 @@ impl Harness {
                 }
             }
             let mut sink = CapturingSink::new(self.hub.clone());
+            // **Compose this round's offer, before anything is sent.** It is scored
+            // against the person's prompt and the turn's tool results — the design's
+            // own subject — and handed to the engine as a trailing item that
+            // `session.items` never sees. Nothing over the floor is said, and
+            // nothing said is recorded: see `crate::notes_offer`.
+            //
+            // **Not on a compaction turn.** That turn is the harness asking for a
+            // summary of what is already here; a note offered on top of it is a
+            // fetch in the middle of a job whose whole instruction is to write, and
+            // the offer would be settled against calls the summary turn never made.
+            if !self.compacting {
+                offers.compose(
+                    &self.cfg.workspace,
+                    &crate::standing_notes::global_dir(),
+                    &self.prefix.system,
+                    &self.session.items,
+                );
+            }
+            let tail = offers.tail();
             // **Take the round again when the endpoint is the thing that
             // failed.** An inner loop, so a retry does NOT spend one of
             // `max_tool_rounds`: it produced nothing and appended nothing, and
@@ -8826,19 +8851,22 @@ impl Harness {
                     std::time::Duration::from_secs(SILENT_ROUND_SECS),
                 );
                 let attempted = match &self.provider {
-                    None => {
-                        self.engine
-                            .run_turn_steered(&mut self.session, &mut sink, &mut steering)
-                    }
+                    None => self.engine.run_turn_steered_with_tail(
+                        &mut self.session,
+                        &mut sink,
+                        &mut steering,
+                        &tail,
+                    ),
                     // A cloud turn: the transcript as messages, the ledger as the
                     // record. Same events, same verdicts, same TurnOk.
-                    Some(p) => self.engine.run_turn_messages(
+                    Some(p) => self.engine.run_turn_messages_with_tail(
                         &mut self.session,
                         &mut sink,
                         &mut steering,
                         p.as_ref(),
                         &self.prefix.system,
                         &self.prefix.tools_json,
+                        &tail,
                         None,
                     ),
                 };
@@ -9160,6 +9188,12 @@ impl Harness {
                 .flatten()
                 .collect();
             let text = visible_text(&appended);
+            // **The offer is settled here, where the round's calls are known**, and
+            // logged whichever way it went — *"the signal is did a tool call in the
+            // next round touch that path? Log offers and take-ups; tune the floor
+            // from that ratio."* A round that ends the turn with no calls settles
+            // with an empty list, which is an untaken offer and is recorded as one.
+            offers.settle(&self.cfg.workspace, &self.cfg.session_id, &calls);
             // **What the agent says it is doing, recorded before its calls are
             // adjudicated.** A model's prose for a round is the sentence in front of
             // its tool calls — "the queued-prompt rendering lives in app.rs; I am
@@ -15142,10 +15176,8 @@ mod tests {
         );
         // Typed words are the whole answer.
         assert_eq!(
-            operator_answer_text(&asked(QuestionAnswer::free(
-                "neither — split it in two"
-            )))
-            .as_deref(),
+            operator_answer_text(&asked(QuestionAnswer::free("neither — split it in two")))
+                .as_deref(),
             Some("neither — split it in two")
         );
         // And an abstention is the act, in the only word the wire carries for it.
@@ -15156,7 +15188,10 @@ mod tests {
         // **An index nobody offered has nothing of theirs in it.** The tool refuses one of
         // those, so this is the belt to that pair of braces rather than a state a session
         // reaches — and returning words here would be inventing a sentence for them.
-        assert_eq!(operator_answer_text(&asked(QuestionAnswer::choosing(7))), None);
+        assert_eq!(
+            operator_answer_text(&asked(QuestionAnswer::choosing(7))),
+            None
+        );
     }
 
     /// **The two rows: the question is the session's, the answer is the operator's.**
