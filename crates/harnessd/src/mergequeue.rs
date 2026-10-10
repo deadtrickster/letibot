@@ -42,6 +42,31 @@
 //! `evidence` on the row says what it is waiting on, why it failed, or why it is stale. A row
 //! that says `waiting` while its gate job is dead is a lie the pane would draw, which is why
 //! [`MergeState::Stale`] exists rather than a `Waiting` that means two things.
+//!
+//! # The fallback: the gatekeeper is an organ, not a single point of failure
+//!
+//! The operator's argument, in their words: *"even if gatekeeper session dies or didnt start -
+//! the queue tooling can send a message back to the main project session and projects will gate
+//! and merge on their own"*, *"because their code lives inside them in worktrees anyway"*.
+//!
+//! So the interface between the two halves is a **branch**, not a session. The gatekeeper's
+//! contribution is a verdict; the gate and the merge are git and a shell, and a project can run
+//! both itself from the worktree it already has. When there is no gatekeeper — never started,
+//! died, or an ask that failed ([`NoGatekeeper`] names the three and where each is seen) — the
+//! queue does not sit in `waiting` waiting for a verdict nobody will give. It **tells the
+//! project's own session**, once, and says so on the entry's row ([`NO_GATEKEEPER`] is the clause
+//! every reader of that row keys on): the session is the root of the tree that queued the entry
+//! ([`root_session`]), found by `GatekeeperDoor::no_gatekeeper`, resumed from the store when this
+//! daemon does not hold it.
+//!
+//! **And the project's own gate and merge are reached from that message and not from a click.**
+//! The message names the entry, the branch and the worktree, and the two ways to finish it: run
+//! this repository's gate (`main`'s `Merge gate` section — [`gate_on_main`]) in the worktree and
+//! merge the branch into main itself, which the queue records as `Landed` on its next pass
+//! (`MergeQueueDaemon::land_what_main_has`); or put `/queue approve` to the operator, which
+//! lands it through the queue's own gate. **A person is the last resort, not the mechanism** —
+//! and when the project's session is gone too, that is what the row says, with the person's verbs
+//! on it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -630,6 +655,146 @@ pub fn gate_configured(repo: &Path) -> Result<(), String> {
     }
 }
 
+/// **The clause that marks an entry the queue has handed to its own project** — what the fallback
+/// writes on the row ([`no_gatekeeper_evidence`]), what stops it being told twice ([`handed_over`]),
+/// and what the project's own session looks for to find the message it was rung for
+/// (`Harness::handover_notices`).
+///
+/// A clause rather than a column, because the row's own words ARE the queue's evidence — the store
+/// has one `evidence` string per entry and that is where every other state's reason lives — and
+/// because the readers are two: the daemon, deciding whether it has already told anybody, and the
+/// project's session, deciding whether a message is for it. **A phrase and not a flag**, so that a
+/// person reading the pane sees the same sentence the two readers key on.
+///
+/// **It does not lead the row, and that is deliberate.** A failure's own words go first — the pane
+/// truncates the row at its width, and `http 429: …` is what a person needs to see — so this is
+/// matched with `contains` rather than `starts_with` ([`WAITING_FOR_GATE`] is the other way round
+/// because nothing else can precede it). The clause is phrased so that no other sentence in this
+/// module can produce it.
+pub const NO_GATEKEEPER: &str = "the entry is handed to the project it came from";
+
+/// **The clause that marks an entry the queue has handed to its own project because the review's
+/// REFUSAL could not be delivered** — the second kind of handover, and the reason there are two
+/// clauses rather than one.
+///
+/// The shape is the operator's and the trigger is not: *"even if gatekeeper session dies or didnt
+/// start - the queue tooling can send a message back to the main project session and projects will
+/// gate and merge on their own"* is about a verdict that never comes, and this is a verdict that
+/// came and could not be handed to the child that has to act on it. What the two share is the
+/// answer — the entry is parked with nobody in the queue able to move it, and the session that
+/// owns the worktree is the one that can — and what they must NOT share is the message: telling a
+/// project to gate and land a branch a review REFUSED is the one instruction this whole queue
+/// exists to make impossible. So the kind is on the row ([`handover_message`] is where the two are
+/// told apart) and the two sentences are two functions.
+pub const REFUSAL_UNDELIVERED: &str = "the review's complaints did not reach the child";
+
+/// **Whether the queue has handed an entry to its own project** — both clauses, so the marker has
+/// one spelling per KIND and the readers ask one question: the daemon (deciding whether it has
+/// already told anybody, and whether main may have the branch anyway) and the project's own
+/// session (deciding whether a message is for it).
+pub fn handed_over(entry: &MergeEntry) -> bool {
+    entry.evidence.contains(NO_GATEKEEPER) || entry.evidence.contains(REFUSAL_UNDELIVERED)
+}
+
+/// **The entries this session is the project OF, which the queue has handed over** — the filter
+/// `Harness::handover_notices` applies, as a function so the rule can be asserted without a
+/// harness, a model or a vocabulary file.
+///
+/// *This session is the project of* is [`root_session`]'s walk up the stored parents, which is the
+/// same rule the queue's own door uses to decide who to ring — one question, one answer, or the
+/// message and the ring could reach two different sessions.
+pub fn handed_over_to(store: &Store, me: &str) -> Vec<MergeEntry> {
+    store
+        .merge_entries()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| handed_over(e) && root_session(store, &e.session_id) == me)
+        .collect()
+}
+
+/// **How long a gatekeeper has to exist before the queue believes none is coming** — three review
+/// passes ([`crate::sessions::REVIEW_PASS_EVERY`], which is the clock that opens the review queue's
+/// session and the clock that serves its reviews).
+///
+/// # Why a grace at all, and not *is the session there this instant*
+///
+/// Because *not open YET* and *never started* are different facts and the same observation. The
+/// merge queue is a thread of its own and the session that hosts reviews is opened by the daemon's
+/// WORKER on its first idle pass, so there is a real window — milliseconds wide, and it happens on
+/// every start — in which the queue's first ask arrives before the session that will serve it
+/// exists. Read without a grace, that window is a false alarm: every daemon start with an entry in
+/// the queue would tell that entry's project that no gatekeeper can judge its branch.
+///
+/// Three passes is the smallest number that is honest about it: one pass is the clock that opens
+/// the session, and two more cover a worker that is busy running a turn (the review pass is served
+/// at the round boundary and on the idle arm, so a long turn delays it by at most one boundary).
+/// After that, a session that still does not exist is one nothing is going to open, and the entry
+/// has been waiting long enough that telling its project is the right thing to do.
+pub const GATEKEEPER_GRACE_MS: u64 = 3 * crate::sessions::REVIEW_PASS_SECS * 1_000;
+
+/// **Why the queue has no gatekeeper to get a verdict from** — the three ways a verdict does not
+/// come, and the one answer the queue gives all three: **tell the project that owns the branch**.
+///
+/// The operator's argument, in their words: *"even if gatekeeper session dies or didnt start - the
+/// queue tooling can send a message back to the main project session and projects will gate and
+/// merge on their own"*. The three are named here because each is SEEN somewhere else, and the
+/// code should say which:
+///
+/// * **Never started** — the review queue's session is in neither the daemon's registry nor the
+///   store, and has not been for [`GATEKEEPER_GRACE_MS`]. Only the door can see this
+///   ([`letibot_tools::gatekeeper::Reviewer::gatekeeper_ready`], which is asked before the verdict
+///   is), and the grace is what keeps *not open yet* out of it.
+/// * **Died** — an attempt was made and no verdict came out of it, [`MAX_REVIEW_ATTEMPTS`] times:
+///   the queue's own evidence ([`ReviewRetry::Exhausted`]), and the case that used to end at
+///   *a person has to restart it*.
+/// * **An ask that failed** — `wake` came back `Err` for any other reason (the request row could
+///   not be written, the daemon's bell is closed). The queue asks again by itself on the next pass;
+///   the project is told in the same breath, because an entry that waits while the queue retries is
+///   an entry nobody outside the store can see.
+///
+/// Each variant carries the queue's own words for it — the reason a row leads with — because the
+/// three sentences come from three places (`review_exhausted_evidence`, the door's refusal, the
+/// wake's error) and re-deriving them here would be a second spelling of each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoGatekeeper {
+    /// **Nobody was ever going to judge it** — see [`GATEKEEPER_GRACE_MS`]. The sentence is the
+    /// door's own (`Reviewer::gatekeeper_ready`'s `Err`).
+    NeverStarted(String),
+    /// **It was asked and it died** — the failure's own words, as [`review_exhausted_evidence`]
+    /// writes them on the row.
+    Died(String),
+    /// **The ask itself failed** — the queue's sentence for a `wake` that came back `Err`.
+    AskFailed(String),
+}
+
+impl NoGatekeeper {
+    /// **The queue's own words for what happened** — the half the entry's row leads with.
+    pub fn why(&self) -> &str {
+        match self {
+            NoGatekeeper::NeverStarted(why)
+            | NoGatekeeper::Died(why)
+            | NoGatekeeper::AskFailed(why) => why,
+        }
+    }
+
+    /// **The state the handover leaves the row in.**
+    ///
+    /// `Failed` for the two where the queue has STOPPED asking: nothing will judge the branch
+    /// until a person restarts the review or the project lands it itself, and `Failed` is the
+    /// state the person's verbs move ([`parked`]) — an entry left `Waiting` there would be one
+    /// `/queue restart` refuses, which is the opposite of a last resort.
+    ///
+    /// `Waiting` for an ask that failed, and that is the whole difference between this case and
+    /// the other two: the queue tries again by itself on the next pass, and parking an entry for a
+    /// provider hiccup or a closed bell would be the queue giving up on a retry it already does.
+    pub fn state(&self) -> MergeState {
+        match self {
+            NoGatekeeper::NeverStarted(_) | NoGatekeeper::Died(_) => MergeState::Failed,
+            NoGatekeeper::AskFailed(_) => MergeState::Waiting,
+        }
+    }
+}
+
 /// **The one variable that keeps a gate's build out of the main tree's `target/`.**
 ///
 /// `task_start` writes `<worktree>/.cargo/config.toml` with `[build] target-dir` pointed at the
@@ -1074,6 +1239,13 @@ pub enum StepOutcome {
     /// this branch, and a person reading the queue must not be able to mistake one for the
     /// other. [`restart`] is what moves it from here.
     ReviewGaveUp,
+    /// **No gatekeeper exists to judge an entry, and the project that owns its branch was told** —
+    /// the never-started case of the fallback ([`NoGatekeeper::NeverStarted`]), which is the one
+    /// arm of the ask loop where nothing is asked at all. Not [`Self::Idle`]: an entry WAS ready
+    /// and the queue did something about it, and *nothing was ready* is the one sentence this
+    /// vocabulary must not say falsely. Not [`Self::ReviewGaveUp`] either: no attempt was spent,
+    /// because there was nobody to make one.
+    NoGatekeeper,
 }
 
 /// **The entry's review, as the queue's gate reads it** — the three states a decision can be
@@ -2590,6 +2762,363 @@ pub fn review_exhausted_evidence(
     )
 }
 
+/// **Where the branch is, as a clause that stands on its own** — the worktree, or the fact that
+/// there is none and the project has to make one.
+///
+/// One function for the two readers because it is one fact and both sentences have to name it the
+/// same way: a row that said *the worktree `/w/b`* and a message that said *wherever it is* would
+/// be two descriptions of one path, and the second is the one a model acts on.
+///
+/// **No worktree is not an error here.** An entry is enqueued before `task_start` has created its
+/// tree (`MergeQueueDaemon::step`'s own *no worktree: the branch is not checked out*), and a
+/// branch that is checked out nowhere is a branch the project has to check out — which is what
+/// this says, rather than guessing at a path.
+fn where_the_branch_is(entry: &MergeEntry) -> String {
+    match entry.worktree.as_deref() {
+        Some(w) if !w.is_empty() => format!("the branch is checked out in the worktree `{w}`"),
+        _ => "the branch is checked out in no worktree the queue knows, so it has to be checked \
+              out before it can be gated"
+            .to_string(),
+    }
+}
+
+/// **The session that owns an entry's branch, resumed if this daemon does not hold it** — the root
+/// of the session tree the entry came from ([`root_session`]'s walk up the stored parents), found
+/// in the registry or in the store.
+///
+/// # One door for both halves of the fallback
+///
+/// Two places tell a project about its own entry, and they run on different threads: the queue's
+/// own pass (through `GatekeeperDoor`, which holds the store and the registry) and the review
+/// queue's SESSION, whose refusal could not be delivered to the child that did the work
+/// ([`hand_over_from_session`]). *Which session, and how it is found* must have one answer — a
+/// second spelling of the walk would let one of them ring a session the other would have resumed,
+/// or refuse an entry the other would have reached.
+///
+/// `what` says what the session is wanted for, and it is the refusal's own words when there is
+/// none: a session in neither the registry nor the store is one nothing can reach, and the
+/// sentence names the session and the branch rather than reporting a message that went nowhere.
+pub fn project_session(
+    store: &Store,
+    registry: &letibot_sessionlog::registry::Registry,
+    entry_id: &str,
+    what: &str,
+) -> Result<(MergeEntry, String), String> {
+    let entry = read_entry(store, entry_id)?;
+    let host = root_session(store, &entry.session_id);
+    if registry.get(&host).is_none() {
+        match registry.resumable(&host) {
+            Some(brief) => {
+                registry
+                    .create(&host, &brief.title, brief.wiring)
+                    .map_err(|e| {
+                        format!(
+                            "the session `{host}` that `{entry_id}` came from could not be resumed \
+                             to {what}: {e}"
+                        )
+                    })?;
+            }
+            None => {
+                return Err(format!(
+                    "the session `{host}` that `{entry_id}` (branch `{}`) came from is in neither \
+                     this daemon nor the store, so there is no session to {what}. The branch does \
+                     not land without it.",
+                    entry.branch
+                ));
+            }
+        }
+    }
+    Ok((entry, host))
+}
+
+/// **Hand an entry to its own project, from a session rather than from the queue's thread** — the
+/// row, then the ring, for the one kind of handover that does not happen on the queue's pass.
+///
+/// The queue's own handovers ([`NoGatekeeper`]) are made by [`MergeQueueDaemon::hand_over`], which
+/// has the entry, the state and the door. This is the other one: the review queue's SESSION has
+/// just found that its refusal could not be delivered to the child that did the work
+/// (`Harness::send_a_refusal_back`), the entry is parked with the verdict on its row, and the only
+/// session that can put the work back in front of the review is the root of the tree it came from.
+///
+/// **The verdict stays in FRONT of the sentence this appends**, which is the row rule
+/// [`no_gatekeeper_evidence`] states one kind over: the pane truncates, and *why the branch is
+/// parked* is the part a person reads there. What is appended is the clause
+/// ([`REFUSAL_UNDELIVERED`]) and what became of the ring.
+///
+/// **Once, and read off the row** — [`handed_over`] is the guard, the same one the queue's own
+/// handover uses, so a second failure to deliver does not tell the project twice.
+///
+/// Returns the sentence for the caller's own log (the Warning it was about to publish), and an
+/// `Err` when there is nobody to tell: *the project is gone too*, which the caller says out loud
+/// rather than swallowing.
+pub fn hand_over_from_session(
+    store: &Store,
+    registry: &letibot_sessionlog::registry::Registry,
+    entry_id: &str,
+    why: &str,
+) -> Result<String, String> {
+    let entry = read_entry(store, entry_id)?;
+    if handed_over(&entry) {
+        return Ok(format!(
+            "the project that owns `{}` was told once already, and nothing was said twice",
+            entry.branch
+        ));
+    }
+    let reason = format!("{} — {why}", handover_reason(&entry));
+    // **The row first**, because the message the project reads is built out of it.
+    let mut moved = entry.clone();
+    moved.evidence = refusal_undelivered_evidence(&entry, &reason, None);
+    write_and_announce(store, registry, &moved)?;
+    // **And a ring that could not happen is written on the row**, not only returned: *the project
+    // was told* and *there was nobody to tell* are the two facts a person acts differently on, and
+    // the caller's log is not where they look. `no_gatekeeper_evidence`'s own two arms, one kind
+    // over.
+    let rung = project_session(
+        store,
+        registry,
+        entry_id,
+        "act on the review's refusal and put the work back in the queue",
+    )
+    .and_then(|(_, root)| {
+        if registry.bell().is_closed() {
+            return Err(format!(
+                "the daemon's bell is closed (it is shutting down), so `{root}` was not rung about \
+                 `{entry_id}`. The row carries the handover and the next daemon rings for it."
+            ));
+        }
+        registry.bell().ring_wake(&root);
+        Ok(root)
+    });
+    let root = match rung {
+        Ok(root) => root,
+        Err(e) => {
+            moved.evidence = refusal_undelivered_evidence(&entry, &reason, Some(&e));
+            write_and_announce(store, registry, &moved)?;
+            return Err(e);
+        }
+    };
+    Ok(format!(
+        "the session `{root}` that `{entry_id}` (branch `{}`) came from was rung: {why}",
+        entry.branch
+    ))
+}
+
+/// **Write an entry's row and tell the heads** — the first act of a handover, in one place so that
+/// the path where the ring failed cannot forget the announcement: a head that folded the entry
+/// would otherwise go on drawing the row without the clause the second write put on it.
+fn write_and_announce(
+    store: &Store,
+    registry: &letibot_sessionlog::registry::Registry,
+    entry: &MergeEntry,
+) -> Result<(), String> {
+    store
+        .put_merge_entry(entry)
+        .map_err(|e| format!("the handover of `{}` could not be written: {e}", entry.id))?;
+    registry.broadcast(letibot_sessionlog::SessionEvent::MergeEntryMoved {
+        id: entry.id.clone(),
+        state: crate::mergequeue::wire_state(entry.state),
+        evidence: entry.evidence.clone(),
+    });
+    Ok(())
+}
+
+/// **What an entry's row says when a refusal could not be delivered** — the second kind of
+/// handover, on the row. See [`refusal_undelivered_message`] for the sentence the project gets.
+///
+/// Private, because the two callers that write this row are both in this module
+/// ([`hand_over_from_session`] and its own tests): the daemon's handovers go through
+/// [`no_gatekeeper_evidence`], and a public constructor for a row only one caller writes would be
+/// a second way to spell it.
+fn refusal_undelivered_evidence(entry: &MergeEntry, why: &str, told: Option<&str>) -> String {
+    let branch = &entry.branch;
+    let id = &entry.id;
+    let short = letibot_sessionlog::registry::short_id(id);
+    let tree = where_the_branch_is(entry);
+    match told {
+        None => format!(
+            "{why} — {REFUSAL_UNDELIVERED}: the entry is handed to the project it came from, which \
+             is told that the branch does NOT land as it stands and how to put it back in the queue \
+             ({tree}). A person can move it too: `/queue approve {id}` lets it through on the \
+             operator's own verdict, `/queue restart {short}` asks a gatekeeper again, \
+             `/queue rm {id}` drops the entry."
+        ),
+        Some(what) => format!(
+            "{why} — {REFUSAL_UNDELIVERED}, and nobody could be told either: {what} `{branch}` is \
+             left exactly as it is ({tree}). A person is the last resort: `/queue approve {id}` \
+             lets it through on the operator's own verdict, `/queue restart {short}` asks a \
+             gatekeeper again, `/queue rm {id}` drops the entry."
+        ),
+    }
+}
+
+/// **What an entry's row says when no gatekeeper can judge it** — the fallback, on the row.
+///
+/// The order is [`review_failed_evidence`]'s and for its reason: the queue's own reason for what
+/// happened goes FIRST, because the pane draws a row on one hard-truncated line and *why* is what
+/// a person reads there; the handover ([`NO_GATEKEEPER`]) and the person's verbs follow, and the
+/// overlay wraps the whole thing.
+///
+/// `told` is what became of the message to the project's session:
+///
+/// * **`None`** — the row is being written BEFORE the ring, and that order is forced: the message
+///   the project's model reads is read out of this row (`Harness::handover_notices`), so the
+///   row has to be there before the bell is rung. It is `gate_missing`'s order, one entry over.
+/// * **`Some(what)`** — the door could not reach anybody, and the row then carries that instead:
+///   *the project was told* and *there was nobody to tell* are the two facts a person acts
+///   differently on, and stderr is not where they look.
+pub fn no_gatekeeper_evidence(entry: &MergeEntry, why: &str, told: Option<&str>) -> String {
+    let branch = &entry.branch;
+    let id = &entry.id;
+    let short = letibot_sessionlog::registry::short_id(id);
+    let tree = where_the_branch_is(entry);
+    match told {
+        None => format!(
+            "{why} — {NO_GATEKEEPER}: it is told to gate `{branch}` and land it itself ({tree}), \
+             and the queue records the landing the moment main has the branch. A person can move \
+             it too: `/queue approve {id}` lets it through on the operator's own verdict, \
+             `/queue restart {short}` asks a gatekeeper again."
+        ),
+        Some(what) => format!(
+            "{why} — {NO_GATEKEEPER}, and nobody could be told either: {what} `{branch}` is left \
+             exactly as it is ({tree}). A person is the last resort: `/queue approve {id}` lets it \
+             through on the operator's own verdict, `/queue restart {short}` asks a gatekeeper \
+             again, `/queue rm {id}` drops the entry."
+        ),
+    }
+}
+
+/// **The queue's own reason, read back off the row** — everything before the handover clause,
+/// which is the half a message ABOUT the entry should quote.
+///
+/// The clause itself is about what the queue did with the entry, so a message that quoted it would
+/// be telling the project what the project has already been told. The split is a function rather
+/// than a second field on the row: the row is one sentence, both readers read it, and the reason is
+/// exactly the part of it that is not the handover.
+///
+/// **Whichever clause is on the row**, because the two kinds of handover lead their rows the same
+/// way — the reason first, the clause after it — and a reader that only knew about one of them
+/// would hand a message the whole of its own evidence as its reason.
+pub fn handover_reason(entry: &MergeEntry) -> String {
+    let at = [NO_GATEKEEPER, REFUSAL_UNDELIVERED]
+        .iter()
+        .filter_map(|clause| entry.evidence.find(clause))
+        .min()
+        .unwrap_or(entry.evidence.len());
+    entry.evidence[..at]
+        .trim_end_matches([' ', '-', '\u{2014}', ':', '.'])
+        .trim()
+        .to_string()
+}
+
+/// **What the project's own session is told about an entry the queue has handed it** — the one
+/// place the two kinds are told apart, so a message can never be the wrong one for the row it
+/// quotes.
+///
+/// The kinds are the two clauses ([`NO_GATEKEEPER`], [`REFUSAL_UNDELIVERED`]) and the split is
+/// forced: *no gatekeeper could judge this, so gate it and land it yourself* is the right thing to
+/// tell a project about a branch nobody judged, and the worst possible thing to tell it about a
+/// branch a review refused.
+pub fn handover_message(entry: &MergeEntry) -> String {
+    if entry.evidence.contains(REFUSAL_UNDELIVERED) {
+        refusal_undelivered_message(entry)
+    } else {
+        no_gatekeeper_message(entry)
+    }
+}
+
+/// **What the project's own session is told when no gatekeeper can judge its branch** — the
+/// operator's fallback, as the message: *"the queue tooling can send a message back to the main
+/// project session and projects will gate and merge on their own"*, *"because their code lives
+/// inside them in worktrees anyway"*.
+///
+/// # How the project's own gate and merge are reached from a MESSAGE and not from a click
+///
+/// The message is a turn in the project's session, and it names every fact the project needs to
+/// finish the entry without anybody clicking anything:
+///
+/// * **What it is about** — the entry id and the branch, in the first line, because a message
+///   about a branch nobody can name is not a message a model can act on.
+/// * **Where the work is** — `where_the_branch_is`, which is the worktree the branch is checked
+///   out in. That is the operator's *"their code lives inside them in worktrees anyway"*: the
+///   project does not have to fetch, copy or reconstruct anything.
+/// * **What the gate is** — the `Merge gate` section of `main`'s `AGENTS.md`
+///   ([`gate_on_main`]), which the `merge_gate` tool lists for the operator to choose from. The
+///   project runs those commands itself, in the worktree.
+/// * **What the merge is** — merging the branch into main and pushing. Then the queue's next pass
+///   reads main, sees it contains the branch, and records the landing itself
+///   (`MergeQueueDaemon::land_what_main_has`): the row goes `landed` and the worktree and the
+///   branch are cleaned up by the state's own rule ([`cleanup_for`]).
+/// * **The other door, which does need the operator** — `/queue approve ENTRY-ID`, which is the
+///   queue's own gate and its own rebase. Named second, and named at all, because a project that
+///   does not want to touch main itself has to be able to say so.
+///
+/// The reason is read back off the row ([`handover_reason`]) rather than passed in, because the
+/// row is what the project can also read and the two must not be able to disagree.
+pub fn no_gatekeeper_message(entry: &MergeEntry) -> String {
+    let branch = &entry.branch;
+    let id = &entry.id;
+    format!(
+        "The merge queue cannot get a verdict on `{branch}` (entry `{id}`), so it will not land \
+         through the queue's gate on its own: {reason}\n\
+         \n\
+         The work is yours and so is the gate: {tree}. This repository's gate is the `Merge gate` \
+         section of `AGENTS.md` on main, and the `merge_gate` tool lists what it asks for. Two \
+         ways to finish the entry, and the first needs nobody:\n\
+         * Gate it and land it yourself. Run those commands where the branch is checked out, then \
+         merge `{branch}` into main and push. The queue's next pass reads main, sees that it \
+         contains the branch, and moves the entry to `landed` — removing the worktree and deleting \
+         the branch, the cleanup every landing owns. No verdict is involved and nothing has to be \
+         approved.\n\
+         * Or leave it to the operator: `/queue approve {id}` lets the entry through on the \
+         operator's own verdict, and the queue then rebases it at the tip of main, runs the gate \
+         and lands it; `/queue rm {id}` drops the entry and leaves the branch and its worktree \
+         alone.",
+        reason = handover_reason(entry),
+        tree = where_the_branch_is(entry),
+    )
+}
+
+/// **What the project's own session is told when a review REFUSED its branch and the complaints
+/// could not be delivered** — the second kind of handover, and the one sentence that must not be
+/// the first kind's.
+///
+/// The operator's principle is the same one — *"a person is the last resort, not the mechanism"* —
+/// and the act the project is asked for is the opposite of the no-gatekeeper case's: the branch
+/// does **not** land as it stands, the verdict on the entry's row says why, and the work is to
+/// answer it and put the branch back in the queue. So this message names the verdict, the row it
+/// is on, and the door a re-enqueue goes through — and it says in as many words that landing it is
+/// not the move, because a project told to *gate it and land it yourself* about a refused branch
+/// would be doing the one thing the queue exists to prevent.
+///
+/// **Why the project is told at all.** The queue's own answer to a refusal is to send the
+/// complaints back to the CHILD that did the work ([`refusal_message`], and `TaskRunner::send` is
+/// how they travel) — and when that child's session is gone, the delivery fails and the entry is
+/// parked with nobody in the queue able to move it. The root of the tree that queued it is the
+/// session that owns the worktree, and the only one that can put the work back in front of the
+/// review.
+pub fn refusal_undelivered_message(entry: &MergeEntry) -> String {
+    let branch = &entry.branch;
+    let id = &entry.id;
+    format!(
+        "The merge queue cannot finish with `{branch}` (entry `{id}`): {reason}\n\
+         \n\
+         **The branch does NOT land as it stands.** {tree}, and the verdict the review reached is on \
+         the entry's row — read it there, because it is the whole of what the queue knows about why \
+         this did not go in. Nothing in the queue will move the entry on its own: the child that \
+         did the work is gone, which is why you are being told rather than it. What finishes it:\n\
+         * Answer the review in the worktree, then put the branch back in the queue — a new \
+         `task_start` on `{branch}` enqueues it again, and the queue reviews the branch as it is \
+         then. That is the door the queue expects, and it is the one that needs no verdict from \
+         anybody.\n\
+         * Or leave it to the operator: `/queue approve {id}` lets the entry through on the \
+         operator's own verdict and the queue then rebases, gates and lands it; `/queue restart \
+         {id}` asks a gatekeeper again about the branch as it is now; `/queue rm {id}` drops the \
+         entry and leaves the branch and its worktree alone.",
+        reason = handover_reason(entry),
+        tree = where_the_branch_is(entry),
+    )
+}
+
 /// **The daemon thread's half of the merge queue** — the thing that takes the next entry and
 /// serves it toward main.
 ///
@@ -2779,7 +3308,24 @@ impl MergeQueueDaemon {
         // row only when there is not one, and ringing a bell whose session has nothing new to
         // do costs a wake that answers `Ok(None)`.
         let mut asked = false;
+        // **Whether an entry was handed to its project this pass**, which is the third answer the
+        // end of the loop has to be able to give — see [`StepOutcome::NoGatekeeper`]. Its own flag
+        // rather than a `return`, because the rest of the entries are still asked about in this
+        // pass: a queue with three entries the gatekeeper is gone for should tell three projects
+        // now and not one per second.
+        let mut handed = false;
         for entry in &entries {
+            // **An entry the queue handed to its own project, whose branch main now has, has
+            // landed** — the project's own gate and merge, seen by the queue. This is checked
+            // FIRST, before the state and before the verdict, and both of those are the point:
+            // the handover leaves the row `failed` (nothing will judge the branch) and there is no
+            // verdict coming, so a check that waited for either would wait for ever while the
+            // project's work sat on main. See [`Self::land_what_main_has`].
+            if handed_over(entry)
+                && let Some(tip) = self.land_what_main_has(entry)?
+            {
+                return Ok(StepOutcome::Landed(tip));
+            }
             if entry.state != MergeState::Waiting || !is_ready(entry, &entries) {
                 continue;
             }
@@ -2794,6 +3340,18 @@ impl MergeQueueDaemon {
                 // the failure on its row rather than waiting for a reviewer that never came.
                 ReviewGate::Awaiting => match review_retry(review, now_ms) {
                     ReviewRetry::Due => {
+                        // **Is there a gatekeeper at all?** — asked BEFORE the verdict, because
+                        // *nobody has asked yet* and *nobody is there to ask* are two different
+                        // facts with two different answers: the second is the never-started case
+                        // of the fallback ([`NoGatekeeper`]), and the only half of the queue that
+                        // can see it is the door ([`Reviewer::gatekeeper_ready`]). The default
+                        // says `Ok(())`, so a door with no registry behind it — every test's —
+                        // keeps the old behaviour: ask, and let the ask say what happened.
+                        if let Err(why) = self.reviewer.gatekeeper_ready(&entry.id) {
+                            self.hand_over(entry, &NoGatekeeper::NeverStarted(why))?;
+                            handed = true;
+                            continue;
+                        }
                         asked = true;
                         let req = letibot_tools::gatekeeper::ReviewRequest {
                             brief: entry.brief.clone(),
@@ -2810,15 +3368,19 @@ impl MergeQueueDaemon {
                                 }
                             }
                             Err(e) => {
-                                // **A wake that failed is on the row.** An entry waiting for a
-                                // verdict nobody was asked for waits for ever, and a queue that
-                                // said nothing would be the same silence as an empty one.
-                                self.move_to(
+                                // **A wake that failed is on the row, and the project is told in
+                                // the same breath.** An entry waiting for a verdict nobody was
+                                // asked for waits for ever, and a queue that said nothing would be
+                                // the same silence as an empty one — so the failure leads the row
+                                // and the fallback follows it: the queue asks again by itself on
+                                // the next pass, and the project that owns the branch is told now
+                                // rather than after the retries run out
+                                // ([`NoGatekeeper::AskFailed`]).
+                                self.hand_over(
                                     entry,
-                                    MergeState::Waiting,
-                                    format!("the gatekeeper could not be asked: {e}"),
-                                    None,
-                                    None,
+                                    &NoGatekeeper::AskFailed(format!(
+                                        "the gatekeeper could not be asked: {e}"
+                                    )),
                                 )?;
                             }
                         }
@@ -2837,9 +3399,17 @@ impl MergeQueueDaemon {
                     // reviewer that cannot be asked is not a refusal, so this is not
                     // [`Self::Refused`] — but it is the same shape of stopping, and the worktree
                     // stays for the same reason: the tree is where the reason is.
+                    //
+                    // **And the project that owns the branch is told**, which is the operator's
+                    // correction to what this arm used to say: *"a person has to move it"* is the
+                    // last resort, not the mechanism — *"even if gatekeeper session dies … the
+                    // queue tooling can send a message back to the main project session and
+                    // projects will gate and merge on their own"*. The failure's own words stay on
+                    // the row, first, and the handover follows them
+                    // ([`NoGatekeeper::Died`]).
                     ReviewRetry::Exhausted => {
                         let said = review_exhausted_evidence(entry, review);
-                        self.move_to(entry, MergeState::Failed, said, None, None)?;
+                        self.hand_over(entry, &NoGatekeeper::Died(said))?;
                         return Ok(StepOutcome::ReviewGaveUp);
                     }
                 },
@@ -2856,11 +3426,15 @@ impl MergeQueueDaemon {
         }
 
         let Some(idx) = next_takeable(&entries, &reviews) else {
-            // **Nothing may be taken, and the two reasons are different.** *Something is due and
+            // **Nothing may be taken, and the three reasons are different.** *Something is due and
             // its verdict is not in* is not idleness: it is a queue waiting on a reviewer, and
-            // the loop says so rather than sleeping the same way as an empty queue.
+            // the loop says so rather than sleeping the same way as an empty queue. *A gatekeeper
+            // was asked about and there is none* is a third: an entry was ready, and what the
+            // queue did about it was tell the project that owns the branch.
             return Ok(if asked {
                 StepOutcome::AwaitingReview
+            } else if handed {
+                StepOutcome::NoGatekeeper
             } else {
                 StepOutcome::Idle
             });
@@ -3062,6 +3636,144 @@ impl MergeQueueDaemon {
         Ok(StepOutcome::Landed(tip))
     }
 
+    /// **Record a landing the PROJECT did, when main already has the branch** — `Some(tip)` when
+    /// the entry was moved to `Landed`, `None` when there was nothing to see.
+    ///
+    /// This is the second half of the fallback ([`NO_GATEKEEPER`]), and the half that makes the
+    /// message true. The queue told the project's session to gate the branch and land it itself
+    /// (`no_gatekeeper_message`), the project did it with git and a shell, and the queue's next
+    /// pass reads the one fact that decides it: **main contains the branch.** The entry goes
+    /// `landed` with main's own tip as its `landed_sha`, and the cleanup every landing owns runs
+    /// ([`cleanup_for`]) — the worktree is removed and the branch deleted, because the work is on
+    /// main and the tree was only ever holding it.
+    ///
+    /// # Why it is checked before the verdict, and why that is not a hole in the gate
+    ///
+    /// The pass's ordinary already-merged arm ([`branch_standing`] → `Landed`) sits behind
+    /// [`next_takeable`], which requires a verdict that accepts — and a handed-over entry has no
+    /// verdict and is not going to get one. Left there, the check would never run for exactly the
+    /// entries the fallback is about, and the project's landing would sit on main with the row
+    /// still saying `failed`.
+    ///
+    /// **Nothing is landed here**, and that is why moving the check earlier does not weaken the
+    /// gate: this arm rebases nothing, runs no gate and moves no SHA. It RECORDS what git already
+    /// says, and git is the authority the queue's own gate exists to reach. The gate's whole job
+    /// is to decide whether a branch may be put on main; a branch that is already on main is a
+    /// question that has been answered by whoever put it there, and the queue's row is a record of
+    /// the queue, not a veto over main.
+    ///
+    /// **`NothingCommitted` is NOT this case and is deliberately not handled here.** A branch
+    /// standing at its own base is an ancestor of main by construction, and the ordinary arm's
+    /// long paragraph is the reason that reading is the one that destroys work: this arm asks
+    /// [`branch_standing`] for exactly the `OnMain` answer, so a branch with 0 commits over its
+    /// base falls through to the ordinary path — where, for a handed-over entry, nothing is taken
+    /// either, because there is still no verdict.
+    ///
+    /// # The cost
+    ///
+    /// Two git reads per handed-over entry per pass ([`branch_standing`]'s `rev-list --count` and
+    /// `merge-base --is-ancestor`, plus `rev-parse main` here), and the pass runs once a second.
+    /// That is the same order as the ordinary arm's and it is paid only for entries the queue has
+    /// handed over — a queue with none pays nothing.
+    fn land_what_main_has(
+        &self,
+        entry: &MergeEntry,
+    ) -> Result<Option<String>, letibot_tokencore::store::StoreError> {
+        let repo = self.repo_for(entry);
+        if branch_standing(&repo, &entry.branch, &entry.base_sha) != BranchStanding::OnMain {
+            return Ok(None);
+        }
+        let Some(tip) = run_captured(&repo, "git", &["rev-parse", "main"])
+            .ok()
+            .map(|t| t.trim().to_string())
+        else {
+            // **git cannot name main, so nothing is recorded.** The same direction the ordinary
+            // arm fails in: a fact the queue cannot read is not a fact it may write down.
+            return Ok(None);
+        };
+        // **What the row says is what the queue KNOWS, which is less than who did it.** The queue
+        // can see that main has the branch; it cannot see whether the project merged it by hand or
+        // a person approved the entry and the branch was already on main. So the sentence leads
+        // with the fact the queue read and names the handover that put the entry here — either
+        // kind of it, which is why it does not say WHY the entry was handed over — rather than
+        // attributing a landing it did not witness.
+        let evidence = format!(
+            "landed without the queue's gate: main now contains `{}` at {tip}, and the entry \
+             (entry `{}`) was one the queue had handed to the project that owns the branch — so the \
+             row is the queue's record of a landing that happened elsewhere. The worktree and the \
+             branch are cleaned up as every landing's are; `/queue clean {}` drops the row if you \
+             want it gone.",
+            entry.branch,
+            entry.id,
+            letibot_sessionlog::registry::short_id(&entry.id)
+        );
+        self.move_to(entry, MergeState::Landed, evidence, Some(tip.clone()), None)?;
+        Ok(Some(tip))
+    }
+
+    /// **Hand an entry to the project that owns its branch when no gatekeeper can judge it** —
+    /// the fallback, and the operator's argument for it: *"even if gatekeeper session dies or
+    /// didnt start - the queue tooling can send a message back to the main project session and
+    /// projects will gate and merge on their own"*, *"because their code lives inside them in
+    /// worktrees anyway"*.
+    ///
+    /// [`NoGatekeeper`] names the three ways this is reached, and [`NoGatekeeper::state`] says
+    /// what the row becomes. What this adds is the two acts and their order:
+    ///
+    /// * **The row, then the ring.** The project's session is told by a WAKE, and what its model
+    ///   reads is the store ([`handed_over_to`] → `no_gatekeeper_message`) — so the row has to
+    ///   carry the handover before the bell is rung, exactly as the gate hold in [`Self::step`]
+    ///   does it. A door that could not reach anybody is written onto the row as well, and that is
+    ///   not tidiness: *the project was told* and *there was nobody to tell* are the two facts a
+    ///   person acts differently on, and the second is the one that makes a person the last resort.
+    /// * **Once, read off the row.** [`handed_over`] is the guard and it is the row's own words
+    ///   rather than a set in memory, so a daemon that restarts does not tell a project again about
+    ///   an entry it was already told about — and a row whose words have since changed (a later ask
+    ///   succeeded, or a person restarted the review) is a row the queue may hand over again, which
+    ///   is right: the fact it states has changed.
+    ///
+    /// **The queue does not stop watching the entry after this.** A handed-over entry stays in the
+    /// queue, on its row, in its worktree, and the pass goes on reading main for it
+    /// ([`Self::land_what_main_has`]) — the project landing it is the expected ending, and a person
+    /// approving or restarting it is the other one.
+    fn hand_over(
+        &self,
+        entry: &MergeEntry,
+        why: &NoGatekeeper,
+    ) -> Result<(), letibot_tokencore::store::StoreError> {
+        if handed_over(entry) {
+            return Ok(());
+        }
+        let state = why.state();
+        self.move_to(
+            entry,
+            state,
+            no_gatekeeper_evidence(entry, why.why(), None),
+            None,
+            None,
+        )?;
+        match self.reviewer.no_gatekeeper(&entry.id, why.why()) {
+            Ok(told) => eprintln!(
+                "  merge queue: no gatekeeper for `{}` (entry `{}`) — {}",
+                entry.branch, entry.id, told
+            ),
+            Err(e) => {
+                // **Nobody to tell, and the row says so rather than only the terminal.** The
+                // sentence replaces the one just written, and it keeps the clause the guard and
+                // the project's session read ([`NO_GATEKEEPER`]), so the entry is still not told
+                // twice by a daemon that comes back.
+                eprintln!(
+                    "  merge queue: no gatekeeper for `{}` (entry `{}`), and nobody could be told: \
+                     {e}",
+                    entry.branch, entry.id
+                );
+                let said = no_gatekeeper_evidence(entry, why.why(), Some(&e));
+                self.move_to(entry, state, said, None, None)?;
+            }
+        }
+        Ok(())
+    }
+
     /// **Write the entry's move, then do the cleanup the new state owns** — the two halves of
     /// every move in one place, so which tree survives is the RULE's answer ([`cleanup_for`])
     /// rather than a property of which `return` the pass happened to take.
@@ -3173,8 +3885,15 @@ impl MergeQueueDaemon {
                 StepOutcome::ReviewGaveUp => {
                     eprintln!(
                         "  merge queue: the gatekeeper could not be asked — the entry is `failed` \
-                         with the failure on its row, and `/queue restart ID` asks again"
+                         with the failure on its row and the project that owns the branch has been \
+                         told; `/queue restart ID` asks a gatekeeper again"
                     );
+                }
+                // The same wait, and for the same reason as `AwaitingGate`: what would move it
+                // arrives from somebody else's hands — a daemon that opens the review queue's
+                // session, or the project's own landing on main.
+                StepOutcome::NoGatekeeper => {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
                 }
             }
         }
@@ -3309,6 +4028,25 @@ pub fn spawn_for(
 /// row is not (*"restarted pg-noop and nothing moves"*). So the store is the mechanism and the
 /// ring is the latency: `Sessions::serve_reviews` reads the `Due` rows on the daemon's own clock
 /// and serves the ones whose host it holds, which needs nothing to reach anything.
+///
+/// # And the door has a second errand, which is the fallback
+///
+/// The queue's own half above is about a gatekeeper that will answer. This struct is also where
+/// the queue finds out that **none will** — the two questions only it can ask, because it is the
+/// half holding the registry and the store:
+///
+/// * **[`letibot_tools::gatekeeper::Reviewer::gatekeeper_ready`]** — is there a session at all
+///   that will judge this entry? `Err` is the never-started case, and [`GATEKEEPER_GRACE_MS`] is
+///   what keeps *not open yet* out of it.
+/// * **[`letibot_tools::gatekeeper::Reviewer::no_gatekeeper`]** — tell the project that owns the
+///   branch, through the same `root_for` door `gate_missing` takes. The message itself is built
+///   by the session that is rung, out of the entry's own row.
+///
+/// The operator's argument for the whole of it, in their words: *"even if gatekeeper session dies
+/// or didnt start - the queue tooling can send a message back to the main project session and
+/// projects will gate and merge on their own"*, *"because their code lives inside them in
+/// worktrees anyway"*. So this door's answer to *no gatekeeper* is not a refusal — it is a second
+/// route, and the module docs carry the rest of it.
 pub struct GatekeeperDoor {
     /// The session store, opened on the queue's own thread (a `Connection` is `Send`, not
     /// `Sync`, and this struct travels into the merge-queue thread).
@@ -3344,36 +4082,19 @@ impl GatekeeperDoor {
     /// PROJECT's agent that its repository declares no merge gate is a message to the session whose
     /// work is held, and only that session's model can write the `AGENTS.md` section that releases
     /// it. So this is the door `gate_missing` takes and `wake` does not.
+    ///
+    /// **Two callers, and they are the two facts a project's own session is told**: its repository
+    /// has no gate (`gate_missing`), and no gatekeeper can judge its branch
+    /// ([`GatekeeperDoor::no_gatekeeper`]). Both are about the WORK being held and neither is about
+    /// the review, which is why both come here and `wake` does not.
+    ///
+    /// **The rule itself is [`project_session`]'s**, because the review queue's session needs the
+    /// same answer when its refusal cannot be delivered to the child (`hand_over_from_session`) and
+    /// a second spelling of *which session, and how it is found* would let one of the two ring a
+    /// session the other would have resumed. This is the door's own store and registry handed to
+    /// that function.
     fn root_for(&self, entry_id: &str, what: &str) -> Result<(MergeEntry, String), String> {
-        let entry = self
-            .store
-            .merge_entry(entry_id)
-            .map_err(|e| format!("the entry `{entry_id}` could not be read: {e}"))?
-            .ok_or_else(|| format!("the entry `{entry_id}` is not in the queue's table"))?;
-        let host = root_session(&self.store, &entry.session_id);
-        if self.registry.get(&host).is_none() {
-            match self.registry.resumable(&host) {
-                Some(brief) => {
-                    self.registry
-                        .create(&host, &brief.title, brief.wiring)
-                        .map_err(|e| {
-                            format!(
-                                "the session `{host}` that `{entry_id}` came from could not be \
-                                 resumed to {what}: {e}"
-                            )
-                        })?;
-                }
-                None => {
-                    return Err(format!(
-                        "the session `{host}` that `{entry_id}` (branch `{}`) came from is in \
-                         neither this daemon nor the store, so there is no session to {what}. \
-                         The branch does not land without it.",
-                        entry.branch
-                    ));
-                }
-            }
-        }
-        Ok((entry, host))
+        project_session(&self.store, &self.registry, entry_id, what)
     }
 }
 
@@ -3480,6 +4201,97 @@ impl letibot_tools::gatekeeper::Reviewer for GatekeeperDoor {
         }
         self.bell.ring_wake(&root);
         Ok(())
+    }
+
+    /// **Whether a gatekeeper exists that will judge an entry's branch** — the never-started case
+    /// of [`NoGatekeeper`], and the one question only this door can answer: it is the half holding
+    /// the registry and the store.
+    ///
+    /// # The two places a gatekeeper can be
+    ///
+    /// * **The registry** — the session is live in this daemon, or in the store as something this
+    ///   daemon can resume (`Registry::resumable`), which is the same answer one restart apart.
+    /// * **The store** — a row for `s-gatekeeper` that no daemon holds yet. That is the state a
+    ///   daemon restarts into, and `Sessions::ensure_gatekeeper` resumes it on the next idle pass.
+    ///
+    /// Neither is a gatekeeper *right now*, and that is why the grace is here rather than a
+    /// verdict: [`GATEKEEPER_GRACE_MS`] is the whole of the difference between *not open yet* and
+    /// *never started*, and it is counted from the entry's own `asked_ms` — the request row the
+    /// first ask wrote — so the clock starts when the queue started waiting rather than when this
+    /// question was first asked. An entry whose review has never been asked for has no row and no
+    /// elapsed time, so the first ask always goes out and this stays out of the way until the
+    /// request is old enough to be evidence.
+    ///
+    /// **What it deliberately does not ask.** Whether a harness is RUNNING the session — a session
+    /// that is in the registry and never opened is invisible from here. That case is left to the
+    /// review row's own failure counter (`ReviewRetry::Exhausted`), which catches it the moment an
+    /// attempt is made, and to the queue's own clock, which serves every session it holds. Naming
+    /// the gap is the honest half: a door that guessed at it would refuse asks it cannot judge.
+    fn gatekeeper_ready(&self, entry_id: &str) -> Result<(), String> {
+        let host = crate::sessions::gatekeeper::SESSION;
+        if self.registry.get(host).is_some() || self.registry.resumable(host).is_some() {
+            return Ok(());
+        }
+        let asked_ms = self
+            .store
+            .merge_review(entry_id)
+            .map_err(|e| format!("the review row for `{entry_id}` could not be read: {e}"))?
+            .map(|r| r.asked_ms);
+        let now_ms = (crate::config::now_ns() / 1_000_000) as u64;
+        match asked_ms {
+            Some(asked) if now_ms.saturating_sub(asked) >= GATEKEEPER_GRACE_MS => Err(format!(
+                "the review queue's session `{host}` is in neither this daemon nor the store, and \
+                 the review of this entry has been outstanding for {}s without it — so no \
+                 gatekeeper was ever started for it and none will be: the clock that opens that \
+                 session has had its chance ({GATEKEEPER_GRACE_MS}ms). Nothing was asked.",
+                now_ms.saturating_sub(asked) / 1_000
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// **The project that owns the branch is told that no gatekeeper can judge it** — the
+    /// fallback, and the door it goes through.
+    ///
+    /// # Which session, and how it is found
+    ///
+    /// **The root of the session tree the entry came from** — [`root_session`]'s walk up the
+    /// stored parents, which is the session a person attaches to and the one that owns the
+    /// worktree — and it is found by [`GatekeeperDoor::root_for`], the same door `gate_missing`
+    /// takes: live in this daemon, or resumed from the store by its own row, or refused by name
+    /// when it is in neither. The refusal is the answer to *what happens when that session is gone
+    /// too*: `Err`, which the queue writes onto the entry's row so a person reading the pane sees
+    /// that the fallback itself fell through, and the person's verbs (`/queue approve`,
+    /// `/queue restart`, `/queue rm`) are what is left.
+    ///
+    /// **Not the queue's own session**, which is what `GatekeeperDoor::wake` rings: the queue's
+    /// session hosts reviews, and a review is exactly what nobody can run here. The project's
+    /// session is the one that can act, because *"their code lives inside them in worktrees
+    /// anyway"*.
+    ///
+    /// # What the wake delivers
+    ///
+    /// Nothing on this side: a ring has no payload. The message is built by the session that is
+    /// rung, out of the entry's own row (`handed_over_to` → `no_gatekeeper_message`), which is why
+    /// the daemon writes that row BEFORE it calls this (`MergeQueueDaemon::hand_over`) — the same
+    /// order, and for the same reason, as `gate_missing`.
+    fn no_gatekeeper(&self, entry_id: &str, why: &str) -> Result<String, String> {
+        let (entry, root) = self.root_for(entry_id, "gate the branch and land it itself")?;
+        if self.bell.is_closed() {
+            return Err(format!(
+                "the daemon's bell is closed (it is shutting down), so `{root}` was not rung about \
+                 `{entry_id}`. The row is on the entry and the next daemon rings for it."
+            ));
+        }
+        self.bell.ring_wake(&root);
+        Ok(format!(
+            "the session `{root}` that `{entry_id}` (branch `{}`) came from was rung: {why} It \
+             owns the worktree the branch is checked out in, so it can run this repository's gate \
+             there and land the branch itself — the queue records the landing on its next pass — or \
+             put `/queue approve {entry_id}` to the operator. Nothing lands through the queue's \
+             gate without a verdict.",
+            entry.branch
+        ))
     }
 }
 
@@ -4356,6 +5168,19 @@ mod tests {
         /// The sentence the door answers with. `None` is the production door's refusal, which
         /// is the state a daemon with no reviewer session is in.
         pub(super) says: Option<String>,
+        /// **What the door was asked to TELL a project, and with which reason** — `(entry id, why)`
+        /// per [`letibot_tools::gatekeeper::Reviewer::no_gatekeeper`], in order. The fallback's
+        /// half of the recording: the production door rings a session, and what the tests are about
+        /// is *whether the queue told anybody, about what, and how often*.
+        pub(super) told: std::sync::Mutex<Vec<(String, String)>>,
+        /// The sentence the fallback answers with. `None` is *the project was told*, which is the
+        /// production door's ordinary answer; `Some(e)` is a door that could not reach anybody —
+        /// the project's session gone too, which the entry's row then has to carry.
+        pub(super) told_says: Option<String>,
+        /// **What [`letibot_tools::gatekeeper::Reviewer::gatekeeper_ready`] answers** — `None` is
+        /// *a gatekeeper exists*, which is the trait's own default; `Some(why)` is the
+        /// never-started refusal, which is a door with no registry behind it.
+        pub(super) gatekeeper_missing: Option<String>,
     }
 
     impl letibot_tools::gatekeeper::Reviewer for RecordingReviewer {
@@ -4372,6 +5197,49 @@ mod tests {
                 Some(s) => Ok(s.clone()),
                 None => Err(format!("no gatekeeper session for `{entry_id}`")),
             }
+        }
+
+        fn gatekeeper_ready(&self, _entry_id: &str) -> Result<(), String> {
+            match &self.gatekeeper_missing {
+                Some(why) => Err(why.clone()),
+                None => Ok(()),
+            }
+        }
+
+        fn no_gatekeeper(&self, entry_id: &str, why: &str) -> Result<String, String> {
+            self.told
+                .lock()
+                .unwrap()
+                .push((entry_id.to_string(), why.to_string()));
+            match &self.told_says {
+                Some(e) => Err(e.clone()),
+                None => Ok(format!("the session `s-root` was rung about `{entry_id}`")),
+            }
+        }
+    }
+
+    /// **The recording door, shared with the daemon and readable by the test** — the same fixture
+    /// `mod restart`'s `Shared` is, with the fallback's two doors forwarded as well.
+    ///
+    /// The wrapper exists because the daemon owns its reviewer and the test has to read what it was
+    /// asked; `Arc` because both need the same recording.
+    pub(super) struct SharedDoor(pub(super) Arc<RecordingReviewer>);
+
+    impl letibot_tools::gatekeeper::Reviewer for SharedDoor {
+        fn wake(
+            &self,
+            entry_id: &str,
+            req: &letibot_tools::gatekeeper::ReviewRequest,
+        ) -> Result<String, String> {
+            letibot_tools::gatekeeper::Reviewer::wake(&*self.0, entry_id, req)
+        }
+
+        fn gatekeeper_ready(&self, entry_id: &str) -> Result<(), String> {
+            letibot_tools::gatekeeper::Reviewer::gatekeeper_ready(&*self.0, entry_id)
+        }
+
+        fn no_gatekeeper(&self, entry_id: &str, why: &str) -> Result<String, String> {
+            letibot_tools::gatekeeper::Reviewer::no_gatekeeper(&*self.0, entry_id, why)
         }
     }
 
@@ -5494,6 +6362,366 @@ mod tests {
             row.evidence
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **With no gatekeeper the entry does not sit in silence: the project that owns the branch is
+    /// told, once, and the row says so** — the operator's fallback, in their words: *"even if
+    /// gatekeeper session dies or didnt start - the queue tooling can send a message back to the
+    /// main project session and projects will gate and merge on their own"*.
+    ///
+    /// Three things are asserted and they are the three the ask is: **the door was asked to tell
+    /// the project** (once, with the queue's own reason), **the row carries the handover** — which
+    /// is what the project's session reads, so a row without it would be a message nobody could
+    /// find — and **the second pass does not tell again**, because the row already says it.
+    ///
+    /// **The retry is NOT stopped by any of this**, which is the other half: an ask that failed is
+    /// the case where the queue tries again by itself, so the entry stays `Waiting` and the ask
+    /// goes out on every pass. What the guard stops is the TELLING, not the asking.
+    #[test]
+    fn a_wake_that_failed_tells_the_project_once() {
+        let (root, wt, main_sha, _feature_sha) = repo_with_branch("fallback-told");
+        let db = root.join("sessions.db");
+        let entry = MergeEntry {
+            id: "m-fb".into(),
+            session_id: "s-child".into(),
+            branch: "feature".into(),
+            // **The base is the real one**, so the pass's own already-merged check can read the
+            // branch: `git rev-list --count base..feature` with a base git cannot resolve answers
+            // *carries work*, which would make the fixture assert nothing.
+            base_sha: main_sha.clone(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            brief: "do the work".into(),
+            evidence: String::new(),
+            created_ms: 1_000,
+            updated_ms: 1_000,
+            worktree: Some(wt.to_str().unwrap().to_string()),
+            landed_sha: None,
+            gate_steps: Vec::new(),
+        };
+        enqueue(&db, &entry);
+        // The door refuses the ask, which is what a daemon with no reviewer session does.
+        let door = Arc::new(RecordingReviewer::default());
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(|_| GateRun::green()),
+            Box::new(SharedDoor(door.clone())),
+            quiet_events(),
+        );
+        assert_eq!(
+            daemon.step().expect("the pass"),
+            StepOutcome::AwaitingReview,
+            "the queue asked, and it is waiting for a verdict"
+        );
+        {
+            let told = door.told.lock().unwrap();
+            assert_eq!(told.len(), 1, "the project is told: {told:?}");
+            assert_eq!(told[0].0, "m-fb", "about the entry that is stuck");
+            assert!(
+                told[0].1.contains("could not be asked"),
+                "and with the queue's own reason: {}",
+                told[0].1
+            );
+        }
+        let row = store_at(&db).merge_entry("m-fb").unwrap().unwrap();
+        assert_eq!(row.state, MergeState::Waiting, "the queue is still trying");
+        assert!(
+            handed_over(&row),
+            "the row carries the handover the project's session reads: {:?}",
+            row.evidence
+        );
+        assert!(
+            row.evidence.contains("feature") && row.evidence.contains("m-fb"),
+            "and it names the branch and the entry: {:?}",
+            row.evidence
+        );
+        assert!(
+            row.evidence.contains(&wt.display().to_string()),
+            "and the worktree the work is in: {:?}",
+            row.evidence
+        );
+
+        // The second pass: the ask goes out again and the project is NOT told again.
+        assert_eq!(
+            daemon.step().expect("the pass"),
+            StepOutcome::AwaitingReview
+        );
+        assert_eq!(
+            door.told.lock().unwrap().len(),
+            1,
+            "an entry already past that point is not re-told"
+        );
+        assert_eq!(
+            door.asked.lock().unwrap().len(),
+            2,
+            "but the ask itself is retried — this is the case the queue recovers by itself"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **An entry with no gatekeeper at all — never started — is handed over instead of being
+    /// asked about for ever.** The door is the only half that can see this
+    /// ([`letibot_tools::gatekeeper::Reviewer::gatekeeper_ready`]), and what it is asked for is the
+    /// answer to *is there anybody to ask*, not a verdict: the queue does not ask, and the row is
+    /// `failed` because nothing will judge the branch until a person restarts the review or the
+    /// project lands it.
+    #[test]
+    fn no_gatekeeper_at_all_hands_the_entry_over() {
+        let (root, wt, main_sha, _feature_sha) = repo_with_branch("fallback-none");
+        let db = root.join("sessions.db");
+        let entry = MergeEntry {
+            id: "m-none".into(),
+            session_id: "s-child".into(),
+            branch: "feature".into(),
+            base_sha: main_sha.clone(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            brief: "do the work".into(),
+            evidence: String::new(),
+            created_ms: 1_000,
+            updated_ms: 1_000,
+            worktree: Some(wt.to_str().unwrap().to_string()),
+            landed_sha: None,
+            gate_steps: Vec::new(),
+        };
+        enqueue(&db, &entry);
+        let why = "the review queue's session `s-gatekeeper` is in neither this daemon nor the \
+                   store, and the review of this entry has been outstanding for 400s without it";
+        let door = Arc::new(RecordingReviewer {
+            gatekeeper_missing: Some(why.into()),
+            ..Default::default()
+        });
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(|_| GateRun::green()),
+            Box::new(SharedDoor(door.clone())),
+            quiet_events(),
+        );
+        assert_eq!(
+            daemon.step().expect("the pass"),
+            StepOutcome::NoGatekeeper,
+            "nothing was asked — there was nobody to ask"
+        );
+        assert!(
+            door.asked.lock().unwrap().is_empty(),
+            "and that is the point: no ask goes out to a session that does not exist"
+        );
+        let told = door.told.lock().unwrap();
+        assert_eq!(told.len(), 1, "the project is told: {told:?}");
+        assert_eq!(told[0].0, "m-none");
+        assert!(told[0].1.contains("neither this daemon"), "{}", told[0].1);
+        drop(told);
+        let row = store_at(&db).merge_entry("m-none").unwrap().unwrap();
+        assert_eq!(
+            row.state,
+            MergeState::Failed,
+            "the queue has stopped asking, and `failed` is the state the person's verbs move"
+        );
+        assert!(handed_over(&row), "{:?}", row.evidence);
+        assert!(
+            row.evidence.contains("/queue restart") && row.evidence.contains("/queue approve"),
+            "and the person's verbs are on the row as the last resort: {:?}",
+            row.evidence
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A branch the project gated and landed ITSELF is recorded as landed** — the half that makes
+    /// the message true, and the operator's *"projects will gate and merge on their own"* read as
+    /// the queue's own act.
+    ///
+    /// The fixture is the whole of it: main is fast-forwarded to the branch by hand (which is what
+    /// the project's session would do with git and a shell), the entry carries the handover, and
+    /// the queue's next pass finds main contains the branch. No verdict is involved, none is asked
+    /// for, and the cleanup every landing owns runs — the worktree is removed and the branch
+    /// deleted, because the work is on main.
+    #[test]
+    fn a_branch_the_project_landed_itself_is_recorded_as_landed() {
+        let (root, wt, main_sha, _feature_sha) = repo_with_branch("project-lands");
+        // **The project's own merge**, by hand: this is the act the message asks for.
+        git(&root, &["merge", "--ff-only", "feature"]);
+        let tip = sha(&root, "main");
+        let db = root.join("sessions.db");
+        let mut entry = MergeEntry {
+            id: "m-proj".into(),
+            session_id: "s-child".into(),
+            branch: "feature".into(),
+            // The base the branch was cut from, which is what the pass's own count reads.
+            base_sha: main_sha.clone(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            brief: "do the work".into(),
+            evidence: String::new(),
+            created_ms: 1_000,
+            updated_ms: 1_000,
+            worktree: Some(wt.to_str().unwrap().to_string()),
+            landed_sha: None,
+            gate_steps: Vec::new(),
+        };
+        let said = no_gatekeeper_evidence(
+            &entry,
+            "the gatekeeper could not be asked: no gatekeeper session for `m-proj`",
+            None,
+        );
+        entry.evidence = said;
+        enqueue(&db, &entry);
+        let door = Arc::new(RecordingReviewer::default());
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(|_| GateRun::green()),
+            Box::new(SharedDoor(door.clone())),
+            quiet_events(),
+        );
+        assert_eq!(
+            daemon.step().expect("the pass"),
+            StepOutcome::Landed(tip.clone()),
+            "the queue reads main and records the landing the project did"
+        );
+        assert!(
+            door.told.lock().unwrap().is_empty(),
+            "and it tells nobody again: the entry is answered"
+        );
+        let row = store_at(&db).merge_entry("m-proj").unwrap().unwrap();
+        assert_eq!(row.state, MergeState::Landed);
+        assert_eq!(row.landed_sha.as_deref(), Some(tip.as_str()));
+        assert!(
+            row.evidence.contains("landed without the queue's gate"),
+            "{:?}",
+            row.evidence
+        );
+        assert!(
+            !handed_over(&row),
+            "the handover is off the row: it has an answer now: {:?}",
+            row.evidence
+        );
+        assert!(
+            !wt.exists(),
+            "the cleanup every landing owns ran — the worktree is gone"
+        );
+        assert!(!branch_exists(&root, "feature"), "and so is the branch");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **Only the entries a session is the PROJECT of are its notices** — the filter behind
+    /// `Harness::handover_notices`, which is the end of the fallback that reaches a model.
+    ///
+    /// Three entries and three answers: one handed over from a child of this session (its own), one
+    /// handed over from another tree (not its business), and one waiting for a verdict (not handed
+    /// over at all). The root is found by walking the stored parents — `s-child` is the session
+    /// that finished the branch and `s-root` is what a person attaches to — so the fixture carries
+    /// the walk rather than assuming it.
+    #[test]
+    fn only_this_sessions_handed_over_entries_are_its_own() {
+        let dir = std::env::temp_dir().join(format!("letibot-mq-handed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let store = store_at(&path);
+        let session = |id: &str, parent: Option<&str>| {
+            store
+                .put_session(&letibot_tokencore::store::SessionRecord {
+                    id: id.into(),
+                    title: None,
+                    model_id: "m".into(),
+                    dialect_sha: "sha".into(),
+                    workspace_root: "/w".into(),
+                    owner: "dead".into(),
+                    role: None,
+                    approvers: vec![],
+                    parent_session_id: parent.map(str::to_string),
+                })
+                .unwrap();
+        };
+        session("s-root", None);
+        session("s-child", Some("s-root"));
+        session("s-other-root", None);
+        let mut mine = entry("m-mine", MergePriority::Subagent, MergeState::Waiting, 1);
+        mine.session_id = "s-child".into();
+        mine.evidence = no_gatekeeper_evidence(&mine, "the ask failed", None);
+        let mut theirs = entry("m-theirs", MergePriority::Subagent, MergeState::Waiting, 2);
+        theirs.session_id = "s-other-root".into();
+        theirs.evidence = no_gatekeeper_evidence(&theirs, "the ask failed", None);
+        let waiting = entry("m-waiting", MergePriority::Subagent, MergeState::Waiting, 3);
+        for e in [&mine, &theirs, &waiting] {
+            store.put_merge_entry(e).unwrap();
+        }
+
+        let mine_ids: Vec<String> = handed_over_to(&store, "s-root")
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+        assert_eq!(
+            mine_ids,
+            vec!["m-mine".to_string()],
+            "the handed-over entry of THIS session's tree, and nothing else"
+        );
+        assert!(
+            handed_over_to(&store, "s-other-root")
+                .iter()
+                .any(|e| e.id == "m-theirs"),
+            "and another session gets its own"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The message the project's session is told names the entry, the branch and the worktree**,
+    /// and both doors out of it — the project's own gate and merge, and the operator's verdict.
+    ///
+    /// The one assertion that matters most is the first: a message about a branch nobody can name
+    /// is not a message a model can act on, and the entry id is what every verb takes.
+    #[test]
+    fn the_message_to_the_project_names_the_entry_and_the_branch() {
+        let mut e = entry("m-1", MergePriority::Subagent, MergeState::Failed, 1_000);
+        e.worktree = Some("/w/worktrees/feature".into());
+        let said = no_gatekeeper_evidence(
+            &e,
+            "http 429: Weekly/Monthly Limit Exhausted — the gatekeeper's attempt failed 3 times \
+             and the queue has stopped asking",
+            None,
+        );
+        e.evidence = said;
+        let message = no_gatekeeper_message(&e);
+        assert!(
+            message.contains("`b-m-1`") && message.contains("(entry `m-1`)"),
+            "the branch and the entry are in the first line: {message}"
+        );
+        assert!(
+            message.contains("/w/worktrees/feature"),
+            "and the worktree the work is in: {message}"
+        );
+        assert!(
+            message.contains("Merge gate") && message.contains("merge_gate"),
+            "the gate is named, and so is the tool that lists it: {message}"
+        );
+        assert!(
+            message.contains("merge `b-m-1` into main and push"),
+            "and the project's own merge is spelled out: {message}"
+        );
+        assert!(
+            message.contains("/queue approve m-1"),
+            "and the operator's door, for a project that will not touch main: {message}"
+        );
+        assert!(
+            message.contains("http 429"),
+            "and the reason the queue is telling it, in the queue's own words: {message}"
+        );
+        assert!(
+            !message.contains(NO_GATEKEEPER),
+            "but not the handover clause itself, which is what the queue did with the entry and \
+             not why: {message}"
+        );
+        // The queue's own reason, read back off the row: everything before the clause.
+        assert_eq!(
+            handover_reason(&e),
+            "http 429: Weekly/Monthly Limit Exhausted — the gatekeeper's attempt failed 3 times \
+             and the queue has stopped asking"
+        );
     }
 
     /// **Every move the queue makes is announced, after the row is written.** The events
@@ -6808,6 +8036,364 @@ mod gatekeeper_door {
             "on the row, which is the durable half"
         );
         assert!(row.answered_ms.is_none(), "and still waiting for a verdict");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A registry with the store behind it** — the two halves `GatekeeperDoor::root_for` reads,
+    /// wired the way the daemon wires them (`Sessions::open` is the same `Arc<dyn SessionSource>`
+    /// the daemon sets).
+    ///
+    /// Needed by the fallback's own tests and by nothing else: `wake` never resumes a session, so
+    /// the tests above need no source at all, and `root_for` does.
+    fn wired(dir: &std::path::Path, path: &std::path::Path) -> Arc<SessionRegistry> {
+        let mut cfg = crate::config::Config::for_this_box(dir);
+        cfg.store = Some(path.to_path_buf());
+        let registry = SessionRegistry::new();
+        registry.set_source(
+            crate::sessions::StoreSessions::open(&cfg).expect("a source over the store"),
+        );
+        registry
+    }
+
+    /// **The project that owns the branch is rung when no gatekeeper can judge it** — the
+    /// fallback's door, and the session it reaches is the ROOT of the tree the branch came from.
+    ///
+    /// The fixture carries both sessions on purpose: the queue's own (`s-gatekeeper`), which is
+    /// open in this daemon and is what a REVIEW rings, and the root (`s-root`), which is in the
+    /// store and NOT in the registry — so the assertion is that the ring goes to the second, that
+    /// the second is RESUMED rather than refused, and that the first hears nothing. That last one
+    /// is the difference between this door and `wake`, and it is the whole of the fallback: the
+    /// queue's session hosts reviews, and a review is exactly what nobody can run here.
+    #[test]
+    fn the_project_that_owns_the_branch_is_rung() {
+        use crate::sessions::gatekeeper::{SESSION, TITLE};
+        let dir = std::env::temp_dir().join(format!("letibot-gk-fallback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.db");
+        let store = Store::open(&path).unwrap();
+        // A root, and the child of it that finished the branch.
+        session(&store, "s-root", None);
+        session(&store, "s-child", Some("s-root"));
+        store
+            .put_merge_entry(&super::tests_entry_for_door("e-fb", "s-child"))
+            .unwrap();
+        let registry = wired(&dir, &path);
+        // **The queue's own session is open**, which is the state a review is asked in — and it is
+        // the session that must NOT be rung about this.
+        registry
+            .create(SESSION, TITLE, SessionWiring::default())
+            .expect("the queue's session registers");
+        let _ = wakes(&registry);
+        let door = GatekeeperDoor::new(
+            Store::open(&path).unwrap(),
+            registry.bell().clone(),
+            registry.clone(),
+        );
+
+        let said = door
+            .no_gatekeeper("e-fb", "the gatekeeper's attempt failed 3 times")
+            .expect("the project is told");
+        assert!(
+            said.contains("s-root"),
+            "the sentence names the session that was rung: {said}"
+        );
+        assert!(
+            !said.contains(SESSION),
+            "and it is NOT the queue's own session, which hosts reviews and cannot run one \
+             here: {said}"
+        );
+        assert!(
+            said.contains("agent/e-fb"),
+            "and the branch, so the message can be about something: {said}"
+        );
+        assert!(
+            said.contains("failed 3 times"),
+            "and the reason the queue is telling it: {said}"
+        );
+        assert_eq!(
+            wakes(&registry),
+            vec!["open s-root".to_string(), "woken s-root".to_string()],
+            "the root is RESUMED from the store (it was in neither the registry nor a harness) \
+             and then rung — and nothing was rung at the queue's session"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A project that is gone too is refused by name, with the branch in the sentence** — the
+    /// answer to *what happens when that session is gone as well*, and it is an `Err` rather than a
+    /// silence: the daemon writes it onto the entry's row, so a person reading the pane sees that
+    /// the fallback itself fell through and the person's verbs are what is left.
+    #[test]
+    fn a_project_that_is_gone_too_is_refused_by_name() {
+        let dir = std::env::temp_dir().join(format!("letibot-gk-orphan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.db");
+        let store = Store::open(&path).unwrap();
+        // **The entry's session is in NEITHER the registry nor the store**: the tree it came from
+        // has been forgotten, so there is no root to walk to and nobody to ring.
+        store
+            .put_merge_entry(&super::tests_entry_for_door("e-orphan", "s-vanished"))
+            .unwrap();
+        let registry = wired(&dir, &path);
+        let door = GatekeeperDoor::new(
+            Store::open(&path).unwrap(),
+            registry.bell().clone(),
+            registry.clone(),
+        );
+        let err = door
+            .no_gatekeeper("e-orphan", "the gatekeeper could not be asked")
+            .expect_err("there is no session to tell");
+        assert!(
+            err.contains("s-vanished") && err.contains("agent/e-orphan"),
+            "the refusal names the session it looked for and the branch it is about: {err}"
+        );
+        assert!(
+            err.contains("neither this daemon nor the store"),
+            "and says which two places it looked: {err}"
+        );
+        assert!(wakes(&registry).is_empty(), "nothing was rung at anybody");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A refusal whose complaints could not be delivered goes to the PROJECT** — the second kind
+    /// of handover, and the one the operator's sentence names: *"a person is the last resort, not
+    /// the mechanism"*.
+    ///
+    /// The shape is the one `Harness::send_a_refusal_back` is in when the child's session is gone:
+    /// the entry is parked with the VERDICT on its row, nobody in the queue can move it, and the
+    /// only session that can put the work back in front of the review is the root of the tree it
+    /// came from. Three things are asserted — the root is rung (resumed from the store), the row
+    /// keeps the verdict in FRONT and gains the clause, and a second delivery failure does not tell
+    /// the project twice.
+    #[test]
+    fn a_refusal_that_could_not_be_delivered_goes_to_the_project() {
+        let dir = std::env::temp_dir().join(format!("letibot-gk-refusal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.db");
+        let store = Store::open(&path).unwrap();
+        session(&store, "s-root", None);
+        session(&store, "s-child", Some("s-root"));
+        let mut e = super::tests_entry_for_door("e-ref", "s-child");
+        e.state = MergeState::Failed;
+        // **The verdict, as `review_gate` renders it onto the row** — which is what is there when
+        // the delivery fails, and what the handover has to leave in front of its own sentence.
+        e.evidence =
+            "gatekeeper verdict\n  branch   agent/e-ref\n  decision reject\n  reasons\n    \
+                      - it does not do what the brief asked\n"
+                .to_string();
+        store.put_merge_entry(&e).unwrap();
+        let registry = wired(&dir, &path);
+
+        let said = hand_over_from_session(
+            &store,
+            &registry,
+            "e-ref",
+            "the complaints did NOT reach the child: the session is gone",
+        )
+        .expect("the project is told");
+        assert!(
+            said.contains("s-root") && said.contains("agent/e-ref"),
+            "the sentence names the session that was rung and the branch: {said}"
+        );
+        assert_eq!(
+            wakes(&registry),
+            vec!["open s-root".to_string(), "woken s-root".to_string()],
+            "the root is resumed from the store and rung"
+        );
+
+        let row = store.merge_entry("e-ref").unwrap().unwrap();
+        assert_eq!(
+            row.state,
+            MergeState::Failed,
+            "the handover does not move the entry: the verdict parked it, and it stays parked"
+        );
+        assert!(
+            handed_over(&row),
+            "the row carries the handover: {:?}",
+            row.evidence
+        );
+        assert!(
+            row.evidence.starts_with("gatekeeper verdict"),
+            "and the VERDICT still leads it, because the pane truncates: {:?}",
+            row.evidence
+        );
+        assert!(
+            row.evidence.contains(REFUSAL_UNDELIVERED),
+            "{:?}",
+            row.evidence
+        );
+
+        // **The message the project gets is the refusal's, and it does not tell it to land.** The
+        // two kinds share a door and must not share a sentence: *gate it and land it yourself* is
+        // the one instruction this queue exists to make impossible about a refused branch.
+        let message = handover_message(&row);
+        assert!(
+            message.contains("`agent/e-ref`") && message.contains("(entry `e-ref`)"),
+            "the message names the branch and the entry: {message}"
+        );
+        assert!(
+            message.contains("does NOT land as it stands"),
+            "and says the branch does not land: {message}"
+        );
+        assert!(
+            !message.contains("Gate it and land it yourself"),
+            "a refused branch must never be told to land itself: {message}"
+        );
+        assert!(
+            message.contains("/queue approve e-ref"),
+            "and the operator's door is named: {message}"
+        );
+
+        // The second failure does not re-tell.
+        let again = hand_over_from_session(&store, &registry, "e-ref", "and it failed again")
+            .expect("a second call is answered, not an error");
+        assert!(
+            again.contains("was told once already"),
+            "an entry already past that point is not re-told: {again}"
+        );
+        assert!(wakes(&registry).is_empty(), "and nothing is rung again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **And when the project is gone too, the ROW says so** — the last resort, written where a
+    /// person reads it rather than only returned to the caller's log.
+    ///
+    /// The entry's session is in neither the registry nor the store, so there is no root to walk to
+    /// and nobody to ring: the row carries the handover AND the fact that nobody could be told, and
+    /// the person's three verbs are on it. That is `no_gatekeeper_evidence`'s two arms, one kind
+    /// over, and the reason the ring's failure is written down rather than published and forgotten.
+    #[test]
+    fn a_refusal_with_no_project_to_tell_is_written_on_the_row() {
+        let dir = std::env::temp_dir().join(format!("letibot-gk-lost-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.db");
+        let store = Store::open(&path).unwrap();
+        let mut e = super::tests_entry_for_door("e-lost", "s-vanished");
+        e.state = MergeState::Failed;
+        e.evidence = "gatekeeper verdict\n  decision reject\n".to_string();
+        store.put_merge_entry(&e).unwrap();
+        let registry = wired(&dir, &path);
+
+        let err = hand_over_from_session(
+            &store,
+            &registry,
+            "e-lost",
+            "the complaints did NOT reach the child: the session is gone",
+        )
+        .expect_err("there is no session to tell");
+        assert!(
+            err.contains("s-vanished") && err.contains("neither this daemon nor the store"),
+            "the refusal names the session and the two places: {err}"
+        );
+        let row = store.merge_entry("e-lost").unwrap().unwrap();
+        assert!(handed_over(&row), "{:?}", row.evidence);
+        assert!(
+            row.evidence.contains("nobody could be told either"),
+            "and the row says the fallback itself fell through: {:?}",
+            row.evidence
+        );
+        assert!(
+            row.evidence.contains("A person is the last resort"),
+            "with the person's verbs on it: {:?}",
+            row.evidence
+        );
+        assert!(
+            wakes(&registry).is_empty(),
+            "and nothing was rung at anybody"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **`never started` and `not open yet` are different facts, and the grace is what draws the
+    /// line between them** — the three answers of `gatekeeper_ready`, on one fixture.
+    ///
+    /// The queue is a thread of its own and the session that hosts reviews is opened by the
+    /// daemon's WORKER, so an ask that arrives in the first second of a daemon's life arrives
+    /// before the session that will serve it exists. Read without a grace, that window is a false
+    /// alarm on every start — which is why the middle case below is `Ok` and the third is not.
+    #[test]
+    fn a_gatekeeper_that_never_started_is_not_one_that_is_not_open_yet() {
+        use crate::sessions::gatekeeper::{SESSION, TITLE};
+        let dir = std::env::temp_dir().join(format!("letibot-gk-grace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.db");
+        let store = Store::open(&path).unwrap();
+        store
+            .put_merge_entry(&super::tests_entry_for_door("e-grace", "s-child"))
+            .unwrap();
+        let now_ms = (crate::config::now_ns() / 1_000_000) as u64;
+        let request = |asked_ms: u64| letibot_tokencore::store::ReviewRecord {
+            entry_id: "e-grace".into(),
+            session_id: SESSION.into(),
+            branch: "b-e-grace".into(),
+            base_sha: "abc".into(),
+            asked_ms,
+            answered_ms: None,
+            decision: None,
+            attempts: 0,
+            failed_ms: None,
+            failure: String::new(),
+            reasons: vec![],
+            files: vec![],
+            commands: vec![],
+        };
+
+        // **(1) The session is open in this daemon** — the ordinary case, and the only one where
+        // the queue asks for a verdict at all.
+        let registry = wired(&dir, &path);
+        registry
+            .create(SESSION, TITLE, SessionWiring::default())
+            .expect("the queue's session registers");
+        let door = GatekeeperDoor::new(
+            Store::open(&path).unwrap(),
+            registry.bell().clone(),
+            registry.clone(),
+        );
+        assert!(
+            door.gatekeeper_ready("e-grace").is_ok(),
+            "an open session is a gatekeeper"
+        );
+
+        // **(2) Nothing anywhere, and the ask is young** — the startup window. `Ok`, because a
+        // session that is not open yet is what the daemon's own clock is about to fix, and an ask
+        // that went out is on the row for that clock to serve.
+        let registry = SessionRegistry::new();
+        let door = GatekeeperDoor::new(
+            Store::open(&path).unwrap(),
+            registry.bell().clone(),
+            registry.clone(),
+        );
+        assert!(
+            door.gatekeeper_ready("e-grace").is_ok(),
+            "no request row at all is *nobody has asked yet*, not *nobody is there*"
+        );
+        store.put_review(&request(now_ms)).unwrap();
+        assert!(
+            door.gatekeeper_ready("e-grace").is_ok(),
+            "and a request written a moment ago is the same answer: not open YET"
+        );
+
+        // **(3) Nothing anywhere, and the request has waited out the grace** — never started, and
+        // the sentence says which two places were looked in.
+        store
+            .put_review(&request(now_ms.saturating_sub(GATEKEEPER_GRACE_MS + 1_000)))
+            .unwrap();
+        let why = door
+            .gatekeeper_ready("e-grace")
+            .expect_err("no session has judged this entry and none is coming");
+        assert!(
+            why.contains(SESSION) && why.contains("neither this daemon nor the store"),
+            "the refusal names the session and the two places: {why}"
+        );
+        assert!(
+            why.contains("Nothing was asked"),
+            "and says that nothing was asked, which is what the queue's row then reports: {why}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

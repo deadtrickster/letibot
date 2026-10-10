@@ -61,6 +61,10 @@
 //! * **The reviewer.** The verdict is written straight into the store, which is where the queue
 //!   reads it. The reviewer's own session — the door that writes it in production — is
 //!   `gatekeeper`'s and is not run here.
+//! * **The fallback's message as a TURN.** [`with_no_gatekeeper_the_project_is_told_once`] opens
+//!   a real session and asserts the notice it builds; that the notice then becomes a turn is
+//!   `Harness::wake`'s, which is the same function every other notice in this daemon goes
+//!   through and which no test here can run without a model.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -68,12 +72,15 @@ use std::sync::Arc;
 
 use letibot_sessionlog::registry::{Registry as SessionRegistry, SessionWiring};
 use letibot_tokencore::apparatus::present_gguf;
-use letibot_tokencore::store::{MergePriority, MergeState, ReviewRecord};
+use letibot_tokencore::store::{MergeEntry, MergePriority, MergeState, ReviewRecord};
 use letibot_tools::builtins::task::{Finished, TaskRunner as _, WorktreePlacement};
 use letibot_tools::gatekeeper::NoReviewer;
 
 use super::*;
-use crate::mergequeue::{GateRun, MergeQueueDaemon, REVIEWER_SESSION_ID, StepOutcome};
+use crate::mergequeue::{
+    GateRun, MergeQueueDaemon, REVIEWER_SESSION_ID, StepOutcome, no_gatekeeper_evidence,
+};
+use crate::sessions::Sessions;
 
 /// **The branch every child in this file is on** — `worktree_branch`'s own shape,
 /// `agent/<slug>`, so a name that reaches the queue here is a name `task_start` produces.
@@ -729,5 +736,131 @@ fn a_daemon_with_no_store_refuses_by_name() {
     assert!(
         git_ok(&root, &["rev-parse", "--verify", "--quiet", &child.branch]),
         "the refusal is about a queue that is not there, not about a branch that is"
+    );
+}
+
+/// **With no gatekeeper, the project that owns the branch is TOLD — once — and the message names
+/// the entry and the branch.** The fallback, at the end of it that reaches a model.
+///
+/// The operator's argument, in their words: *"even if gatekeeper session dies or didnt start -
+/// the queue tooling can send a message back to the main project session and projects will gate
+/// and merge on their own"*, *"because their code lives inside them in worktrees anyway"*. The
+/// queue's own half is asserted in `mergequeue`'s tests — the row carries the handover, the door
+/// is asked to ring the ROOT, and a second pass does not tell again — and this is the other end:
+/// the session that was rung reads the store and builds the sentence its model is handed.
+///
+/// **Why it is here and not in `mergequeue`.** The notice is built by a `Harness`, so the test
+/// needs a session opened over a store, and this file is the one that already opens one. What it
+/// does NOT run is the turn the notice becomes: that is [`Harness::wake`], the same door every
+/// other notice in this daemon goes through, and running it needs a model.
+///
+/// Three facts, and they are the three the fallback is measured by: an entry the queue has handed
+/// over does not sit in silence, the sentence names the entry and the branch, and a second look
+/// does not re-tell.
+#[test]
+fn with_no_gatekeeper_the_project_is_told_once() {
+    let Some(f) = Fixture::new("fallback") else {
+        return;
+    };
+    // **The row `MergeQueueDaemon::hand_over` leaves behind** — written here rather than produced
+    // by a pass, because a pass needs a repository, a gate and a reviewer, and every one of those
+    // is asserted where it lives. The session is `s-parent`: this entry came from the session
+    // this test opens, which is the *project* the message is for.
+    let mut entry = MergeEntry {
+        id: "m-fb".into(),
+        session_id: "s-parent".into(),
+        branch: "agent/queue-e2e-child".into(),
+        base_sha: "base".into(),
+        priority: MergePriority::Subagent,
+        needs: Vec::new(),
+        state: MergeState::Failed,
+        brief: "make the reader keep the last record".into(),
+        evidence: String::new(),
+        created_ms: 1,
+        updated_ms: 1,
+        worktree: Some("/w/worktrees/queue-e2e-child".into()),
+        landed_sha: None,
+        gate_steps: Vec::new(),
+    };
+    entry.evidence = no_gatekeeper_evidence(
+        &entry,
+        "the gatekeeper could not be asked: no gatekeeper session for `m-fb`",
+        None,
+    );
+    f.store()
+        .put_merge_entry(&entry)
+        .expect("the handed-over row");
+    // **And the second kind, on its own entry**: the review refused this branch and the complaints
+    // did not reach the child that did the work — the case `Harness::send_a_refusal_back` hands to
+    // this same door, and the one whose message must NOT be the first kind's.
+    let mut refused = entry.clone();
+    refused.id = "m-ref".into();
+    refused.branch = "agent/queue-e2e-refused".into();
+    refused.evidence = format!(
+        "gatekeeper verdict\n  branch   agent/queue-e2e-refused\n  decision reject\n  reasons\n    \
+         - it does not do what the brief asked\n — {}: the entry is handed to the project it came \
+         from, which is told that the branch does NOT land as it stands.",
+        crate::mergequeue::REFUSAL_UNDELIVERED
+    );
+    f.store()
+        .put_merge_entry(&refused)
+        .expect("the refused row");
+
+    let mut sessions = Sessions::open_first(&f.parts, f.cfg.clone(), f.registry.clone())
+        .expect("the session opens");
+    let project = sessions
+        .held("s-parent")
+        .expect("the project's own session is open");
+
+    let notices = project.handover_notices();
+    assert_eq!(
+        notices.len(),
+        2,
+        "an entry the queue handed over is not left in silence: {notices:?}"
+    );
+    let said = notices
+        .iter()
+        .find(|n| n.contains("`m-fb`"))
+        .expect("the no-gatekeeper entry's message");
+    assert!(
+        said.contains("`agent/queue-e2e-child`") && said.contains("`m-fb`"),
+        "the message names the branch and the entry, which is what every verb takes: {said}"
+    );
+    assert!(
+        said.contains("/w/worktrees/queue-e2e-child"),
+        "and the worktree the work is in — the operator's *their code lives inside them in \
+         worktrees anyway*: {said}"
+    );
+    assert!(
+        said.contains("no gatekeeper session for"),
+        "and the queue's own reason, read back off the row: {said}"
+    );
+    assert!(
+        said.contains("/queue approve m-fb"),
+        "and the operator's door, for a project that will not touch main itself: {said}"
+    );
+    // **And the refused entry's message is the OTHER one.** Both kinds come out of one door and
+    // one filter, so the only thing that tells them apart is the clause on the row — and the
+    // failure of that split is a project told to gate and land a branch a review refused, which is
+    // the one instruction this queue exists to make impossible.
+    let refusal = notices
+        .iter()
+        .find(|n| n.contains("`m-ref`"))
+        .expect("the refused entry's message");
+    assert!(
+        refusal.contains("gatekeeper verdict"),
+        "the message quotes the verdict, which is why the entry is parked: {refusal}"
+    );
+    assert!(
+        refusal.contains("does NOT land as it stands"),
+        "and says in as many words that the branch does not land: {refusal}"
+    );
+    assert!(
+        !refusal.contains("Gate it and land it yourself"),
+        "a refused branch must never be told to land itself: {refusal}"
+    );
+    assert!(
+        project.handover_notices().is_empty(),
+        "and each is said ONCE: a second look at the same rows re-tells nothing"
     );
 }

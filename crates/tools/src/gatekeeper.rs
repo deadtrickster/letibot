@@ -398,11 +398,55 @@ pub trait Reviewer {
     /// words the operator gets; `Err` is why it could not be, said rather than swallowed.
     fn wake(&self, entry_id: &str, req: &ReviewRequest) -> Result<String, String>;
 
+    /// **Whether a session exists that will judge an entry's branch** — `Ok(())` is *one will*,
+    /// and `Err` is why none will: the never-started case of the queue's fallback.
+    ///
+    /// The queue asks this BEFORE it asks for a verdict, and the difference it makes is the whole
+    /// of the operator's argument for a fallback: *"even if gatekeeper session dies or didnt
+    /// start - the queue tooling can send a message back to the main project session and projects
+    /// will gate and merge on their own"*. *Nobody has asked yet* and *nobody is there to ask* are
+    /// two different facts, and only the door can tell them apart — it is the one holding the
+    /// registry and the store. The daemon's own door carries the grace that draws the line
+    /// between *not open yet* and *never started* (`GatekeeperDoor::gatekeeper_ready`), because a
+    /// session the daemon's own clock opens on its first idle pass is not a missing gatekeeper.
+    ///
+    /// The default says `Ok(())`, which is a door with no registry behind it (and every test's):
+    /// a door that cannot answer *is there a gatekeeper* must not be read as *there is none*, or
+    /// every daemon built with one would hand its entries to their projects on the first pass.
+    fn gatekeeper_ready(&self, _entry_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
     /// **Tell the project's agent that the entry's repository has no merge gate.** Called once,
     /// when an entry starts waiting for one. The default tells nobody, which is a door with no
     /// sessions behind it (and every test's); the daemon's door rings the session that queued it.
     fn gate_missing(&self, _entry_id: &str) -> Result<(), String> {
         Ok(())
+    }
+
+    /// **Tell the project's agent that no gatekeeper can judge its branch** — the queue's
+    /// fallback, and the door it goes through: the session the branch came from, which owns the
+    /// worktree the branch is checked out in.
+    ///
+    /// The operator's argument for it, verbatim: *"even if gatekeeper session dies or didnt start
+    /// - the queue tooling can send a message back to the main project session and projects will
+    /// gate and merge on their own"*, *"because their code lives inside them in worktrees
+    /// anyway"*. So the interface between the two halves is a BRANCH and not a session: the
+    /// gatekeeper's contribution is a verdict, and the gate and the merge are git and a shell —
+    /// which a project can run itself, from the worktree it already has.
+    ///
+    /// `why` is the queue's own words for what happened (never started, died, or an ask that
+    /// failed), and it is passed rather than re-derived: the door does not read the queue's
+    /// vocabulary and the queue does not guess at the door's.
+    ///
+    /// `Ok` is what was done, in the words the operator gets; `Err` is why it could not be, said
+    /// rather than swallowed — the entry's row carries it, because *the project was told* and
+    /// *there was nobody to tell* are the two facts a person acts differently on. The default
+    /// tells nobody and says so, which is a door with no sessions behind it.
+    fn no_gatekeeper(&self, entry_id: &str, _why: &str) -> Result<String, String> {
+        Err(format!(
+            "the door this daemon was built with has no session to tell about `{entry_id}`"
+        ))
     }
 }
 
@@ -420,6 +464,18 @@ impl Reviewer for NoReviewer {
             "this daemon has no gatekeeper session attached, so nothing was asked about \
              `{entry_id}` (branch `{}`, base `{}`). The branch does not land without a verdict.",
             req.branch, req.base_sha
+        ))
+    }
+
+    /// **And this is the door that has nobody to tell either.** A build with no reviewer session
+    /// is a build with no registry behind the door, so the queue's fallback cannot reach a project
+    /// session from here: the entry's row says *nobody could be told*, and the person's verbs are
+    /// what is left. [`Reviewer::no_gatekeeper`]'s default says the same thing one word wider; this
+    /// is that sentence for the door whose whole reason for existing is that it has no sessions.
+    fn no_gatekeeper(&self, entry_id: &str, _why: &str) -> Result<String, String> {
+        Err(format!(
+            "this daemon has no session to tell about `{entry_id}`, and no gatekeeper session \
+             attached either. The branch does not land without a verdict."
         ))
     }
 }

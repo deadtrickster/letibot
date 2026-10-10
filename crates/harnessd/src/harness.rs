@@ -1699,8 +1699,13 @@ pub struct Harness {
     /// `in progress` with the child's handle, or gone), not a sentence about a child that has
     /// already been collected.
     gatekeepers: std::collections::HashSet<String>,
-    /// **The queue entries this session's model has been told need a merge gate**, so each is
-    /// said once per daemon. See [`Harness::queue_notices`].
+    /// **The queue entries this session's model has been told about** — that its repository needs a
+    /// merge gate, or that no gatekeeper can judge its branch — so each is said once per daemon.
+    /// See [`Harness::queue_notices`] and [`Harness::handover_notices`].
+    ///
+    /// One set for both, because an entry has one `evidence` string and is therefore in one of the
+    /// two states at a time: the second telling would be about the same row, and a session told
+    /// twice about one entry is the nag the set exists to prevent.
     gate_told: std::collections::HashSet<String>,
     /// The cloud provider the turns go to, when the session has one. `None` is
     /// the local server through the engine's own `/completion` path — **unless**
@@ -7251,6 +7256,12 @@ impl Harness {
     /// the sentence names the branch, the repository, and what to do — `merge_gate` for the
     /// choices, the operator to pick, the `AGENTS.md` section on main — so the model offers the
     /// operator the choices without being asked to.
+    ///
+    /// **This is one of the two things a project's session is told about its queue**, and the other
+    /// is [`Harness::handover_notices`]: *your repository has no gate* and *the queue has handed
+    /// your entry back to you* are different facts with different actions, so they are two
+    /// functions with their own sentences — and one set of told-ids, because one entry can be in
+    /// only one of the two states.
     pub fn queue_notices(&mut self) -> Vec<String> {
         let me = self.hub.session_id();
         let Some(store) = self.store.as_ref() else {
@@ -7287,6 +7298,50 @@ impl Harness {
                 branch = e.branch,
                 id = e.id,
             ));
+        }
+        out
+    }
+
+    /// **What this session's model is told about the entries the queue has handed to it** — the
+    /// fallback, arriving at the session it was rung for.
+    ///
+    /// The operator's argument, in their words: *"even if gatekeeper session dies or didnt start -
+    /// the queue tooling can send a message back to the main project session and projects will gate
+    /// and merge on their own"*, *"because their code lives inside them in worktrees anyway"*. The
+    /// queue's half is `MergeQueueDaemon::hand_over` — the row, then the ring — and this is the
+    /// ring's other end: the session that was rung reads the store for the entries it is the
+    /// PROJECT of which the queue has handed over ([`crate::mergequeue::handed_over_to`]), and
+    /// builds the message out of the row ([`crate::mergequeue::handover_message`]).
+    ///
+    /// **Two kinds of handover, one door.** *No gatekeeper can judge this branch* and *a review
+    /// refused it and the complaints did not reach the child* are the same shape of stuck — an
+    /// entry parked with nobody in the queue able to move it, and the session that owns the
+    /// worktree being the one that can — and they are opposite instructions: the first tells the
+    /// project to gate and land the branch, and the second tells it that the branch does NOT land
+    /// as it stands. Which one this session is handed is the row's own clause, read by
+    /// [`crate::mergequeue::handover_message`], and this function does not decide it.
+    ///
+    /// **Nothing is passed by the ring, and nothing needs to be.** A ring is a bell: it says *look*
+    /// and not *here is what*. The row is the durable half and the only medium the queue's thread
+    /// and this session's share — the same arrangement as the review queue's own board, one entry
+    /// over — so a session that was busy when the ring came, or that is opened a minute later,
+    /// reads the same message as one that was idle.
+    ///
+    /// **Said once per daemon**, on [`Harness::queue_notices`]'s own rule and its own set: a wake is
+    /// not the only door that builds notices, and an entry still carrying the handover on its row
+    /// must not be re-told every time something else wakes this session.
+    pub fn handover_notices(&mut self) -> Vec<String> {
+        let me = self.hub.session_id();
+        let Some(store) = self.store.as_ref() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for e in crate::mergequeue::handed_over_to(store, &me) {
+            if self.gate_told.contains(&e.id) {
+                continue;
+            }
+            self.gate_told.insert(e.id.clone());
+            out.push(crate::mergequeue::handover_message(&e));
         }
         out
     }
@@ -7640,9 +7695,17 @@ impl Harness {
     ///
     /// **A delivery that failed is said, and it does not undo the verdict.** The row is the durable
     /// fact and it is already written; what a person needs is not a retry but to know that the ball
-    /// did NOT go back — a child whose session has closed cannot be sent to work, and the entry then
-    /// waits for a person (`/queue approve`, `/queue restart`, `/queue rm`) with the reason on the
-    /// session's own log rather than only in the store.
+    /// did NOT go back — a child whose session has closed cannot be sent to work.
+    ///
+    /// **And the ball goes to the PROJECT instead, which is the fallback.** The child that should
+    /// have carried the complaints back is exactly the session that is gone, so the root of the
+    /// tree it belonged to is the only session left that owns the worktree and can put the work in
+    /// front of the review again: `mergequeue::hand_over_from_session` writes the handover onto the
+    /// entry's row and rings it, and that session's model is told
+    /// ([`Harness::handover_notices`]) that the branch does **not** land as it stands and how to
+    /// put it back in the queue. **A person is the last resort** — `/queue approve`,
+    /// `/queue restart` and `/queue rm` are named on the row and in this log when the project is
+    /// gone too, and not before.
     ///
     /// `store` is passed rather than read from `self` because the caller already holds it: the
     /// review row's own write is the half this follows.
@@ -7678,14 +7741,44 @@ impl Harness {
         let runner = self.subagents.clone();
         if let Err(why) = letibot_tools::builtins::task::TaskRunner::send(&*runner, entry_id, &said)
         {
-            self.hub.publish(SessionEvent::Warning {
-                code: "refusal_undelivered".into(),
-                detail: format!(
+            // **And the PROJECT that owns the branch is told**, which is what this arm used to end
+            // at *"a person has to move it"*. The operator's principle: *"a person is the last
+            // resort, not the mechanism"* — and the child that should have carried the complaints
+            // back is exactly the session that is gone, so the root of the tree it belonged to is
+            // the only session left that owns the worktree and can put the work in front of the
+            // review again.
+            //
+            // **The door is `mergequeue`'s and not this method's**, because the same act — the row
+            // carrying the handover, then the root of the entry's tree rung — is the queue's own
+            // fallback one kind over, and *which session, and how it is found* must have one
+            // answer (`mergequeue::project_session`). What is this method's is the sentence: the
+            // delivery failure, in the transport's own words.
+            let told = crate::mergequeue::hand_over_from_session(
+                store,
+                &self.session_registry,
+                entry_id,
+                &format!("the complaints did NOT reach the child: {why}"),
+            );
+            let detail = match told {
+                Ok(what) => format!(
                     "the review of `{entry_id}` refused it, and the complaints did NOT reach the \
                      child: {why} The verdict stands — the entry does not land until a review \
-                     accepts it — and a person has to move it: `/queue restart {entry_id}`, \
-                     `/queue approve {entry_id}`, or `/queue rm {entry_id}`."
+                     accepts it — and the project it came from is told: {what}"
                 ),
+                // **Nobody to tell is said, not swallowed**, and the person's verbs are what is
+                // left — which is the last resort this whole fallback is written to keep as the
+                // last resort.
+                Err(e) => format!(
+                    "the review of `{entry_id}` refused it, and the complaints did NOT reach the \
+                     child: {why} The verdict stands — the entry does not land until a review \
+                     accepts it — and nobody could be told either: {e} A person has to move it: \
+                     `/queue restart {entry_id}`, `/queue approve {entry_id}`, or \
+                     `/queue rm {entry_id}`."
+                ),
+            };
+            self.hub.publish(SessionEvent::Warning {
+                code: "refusal_undelivered".into(),
+                detail,
                 compaction: None,
             });
         }
@@ -7878,6 +7971,13 @@ impl Harness {
         // **And the queue's entries that wait for a merge gate**, said to this session's model —
         // the operator: *"let main project agent manage it"*.
         let mut notices: Vec<String> = self.queue_notices();
+        // **And the entries the queue has handed to this session**, which is the fallback: no
+        // gatekeeper could judge them, or a review refused one and the complaints did not reach the
+        // child, so the project that owns the branch is told — and this is the telling. Second, and
+        // after the gate notice, because an entry can be in only one of the two states: the first
+        // is *the repository has no gate*, the second is *the queue has given the entry back to
+        // you*, and the one that matters to the model reading them is the one that is true.
+        notices.extend(self.handover_notices());
         if let Some(monitors) = self.monitors.clone() {
             let since = self.monitor_cursor.load(Ordering::SeqCst);
             let settled = monitors.settled_count();

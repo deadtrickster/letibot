@@ -133,7 +133,13 @@ const TODO_NAG_AFTER: Duration = Duration::from_secs(60);
 /// lags the bound the queue already holds the entry to, and the cost of a pass is one indexed
 /// `SELECT` over a table that is one row per queue entry, against a daemon that is otherwise
 /// parked on a condvar.
-pub(crate) const REVIEW_PASS_EVERY: Duration = Duration::from_secs(30);
+pub(crate) const REVIEW_PASS_EVERY: Duration = Duration::from_secs(REVIEW_PASS_SECS);
+
+/// **The same number in seconds, for the reader that has no `Duration`** — the merge queue's own
+/// grace, [`crate::mergequeue::GATEKEEPER_GRACE_MS`], which is counted in milliseconds and is
+/// expressed in PASSES rather than in seconds so that the two cannot drift apart: a grace shorter
+/// than one pass would declare a gatekeeper missing before the clock that opens it had run.
+pub(crate) const REVIEW_PASS_SECS: u64 = 30;
 
 /// **The ceiling on the repeat's interval** — how long a stalled plan may go unmentioned.
 ///
@@ -1424,6 +1430,17 @@ impl<'a> Sessions<'a> {
     /// twice for one session.
     pub fn open(&mut self, session_id: &str) -> Result<bool, HarnessError> {
         self.open_as(session_id, None)
+    }
+
+    /// **One session this daemon holds, by id** — for a test that has to ask a session something no
+    /// door of the daemon's exposes.
+    ///
+    /// `#[cfg(test)]` and `pub(crate)` for the reason [`Harness::set_subagents_for_test`] is: the
+    /// field stays private, this is in no binary, and the one caller is `harness::queue_e2e`'s
+    /// fallback test, which needs the notice a SESSION builds rather than the queue's own row.
+    #[cfg(test)]
+    pub(crate) fn held(&mut self, session_id: &str) -> Option<&mut Harness> {
+        self.open.get_mut(session_id)
     }
 
     /// [`Sessions::open`] with the two facts a session the DAEMON ITSELF starts needs — the door
