@@ -425,6 +425,19 @@ impl TermSession {
     pub fn start(cfg: &TermConfig, sink: Arc<dyn TermSink>) -> Result<TermSession, TermError> {
         let (prog, args) = argv(cfg)?;
         let pty = Pty::open().map_err(|e| TermError::Start(format!("no pty: {e}")))?;
+        // **The size is set BEFORE the child exists, and that is the whole of this call's
+        // position.** `TIOCSWINSZ` on the pair is a real change from the pty default, so a
+        // child spawned first and resized after receives a SIGWINCH — and on a loaded box it
+        // installs its `WINCH` trap before the ioctl lands, which is what made a same-size
+        // resize read as a nudge (`a_same_size_resize_is_not_a_nudge`). Set here, the child is
+        // born at the pane's rectangle and the resize below is a no-op on a terminal that is
+        // already the right shape.
+        set_size(
+            &pty.input()
+                .map_err(|e| TermError::Start(format!("the pty master: {e}")))?,
+            cfg.cols,
+            cfg.rows,
+        );
 
         let mut cmd = std::process::Command::new(&prog);
         cmd.args(&args);
@@ -452,8 +465,9 @@ impl TermSession {
         // lines bash printed on every row was *"nah, i think that bash should feel
         // comfortable actually"*, so the row path took the same terminal and the mechanism
         // moved to [`super::pty::controlling_terminal`] — one call, two callers, and no
-        // second copy to drift. What is still this path's own is the rectangle (below) and
-        // the echo (`super::pty`'s header says which reader wants which).
+        // second copy to drift. What is still this path's own is the echo
+        // (`super::pty`'s header says which reader wants which); the rectangle used to be the
+        // other half of that difference and is now set BEFORE the spawn, above.
         super::pty::controlling_terminal(&mut cmd, 0);
 
         let mut child = cmd
@@ -465,10 +479,6 @@ impl TermSession {
         // thirty seconds of that.
         let master = pty.into_master();
         drop(cmd);
-
-        // **The size before the first byte**, so a program that asks on startup — which is
-        // every full-screen program — gets the pane's rectangle rather than the default.
-        set_size(&master, cfg.cols, cfg.rows);
 
         let closing: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let ended = Arc::new(AtomicBool::new(false));
