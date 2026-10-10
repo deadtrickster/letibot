@@ -877,6 +877,13 @@ impl<'a> Sessions<'a> {
         // COMMON case rather than a corner. Same rule as there: the board was just rebuilt from the
         // store, so an unfinished plan is the model's own outstanding work and is worth one check.
         sessions.rearm_todo_nag(&id);
+        // **And the same rule one line down, because THIS is the session a restart restores.** A
+        // `--continue` comes back to a board, a queue and a set of job handles that the process
+        // before it left behind; the clock above speaks about the PLAN a minute later, while what
+        // is due NOW — a row whose job is gone, an entry the queue is holding — has no clock of its
+        // own. The ring is drained by the worker's first pass. See
+        // [`Sessions::put_a_restored_session_to_work`].
+        sessions.put_a_restored_session_to_work(&id);
         Ok(sessions)
     }
 
@@ -1642,6 +1649,18 @@ impl<'a> Sessions<'a> {
             h.set_bang_state(bang);
             self.open.insert(session_id.to_string(), h);
             self.declare_flowy_monitor(session_id, cond);
+            // **A SESSION THAT HAS JUST BEEN BUILT IS PUT TO WORK, WHICH ARMING IS NOT.**
+            //
+            // This is the one place a harness is built for a session the daemon holds — the
+            // constructor above builds the first session's inline — so this is the one place
+            // every restored session passes through: a head's `ResumeSession`, the merge queue's
+            // project session, the review queue's own, and a session whose first act is somebody's
+            // prompt. What each of them owes is not only the PLAN (that clock is armed a few lines
+            // up, and again at every turn's end) but the facts that have no clock of their own — a
+            // row whose condition the world already meets, an entry the queue is holding, a
+            // handover — and those are carried by a RING, which a restart throws away. See
+            // [`Sessions::put_a_restored_session_to_work`].
+            self.put_a_restored_session_to_work(session_id);
         }
         Ok(self.open.get_mut(session_id).expect("just inserted"))
     }
@@ -2057,6 +2076,50 @@ impl<'a> Sessions<'a> {
         if let Some(clock) = self.nags.get_mut(session_id) {
             clock.prompt_arrived();
         }
+    }
+
+    /// **A session this daemon has just RESTORED is put to work, not left to be woken.**
+    ///
+    /// # The hole this closes, in one sentence
+    ///
+    /// Every door that turns a fact that is already true in the STORE into a turn is a bell —
+    /// `Harness::wake` is the only reader of `due_todo_rows`, of `queue_notices` and of
+    /// `handover_notices`, and `Sessions::wake` is its only servant on the worker — and **a bell
+    /// is rung by something that was running before the restart**. So a daemon that came back to
+    /// a board whose row is due, to an entry the queue is holding, or to a review it owes opened
+    /// its session, armed its clock and parked: nothing ever rang it.
+    ///
+    /// # Why arming is not enough, in the operator's own case
+    ///
+    /// Their ruling, and the acceptance case: *"a todo conditioned on job end, and then i
+    /// restart head and harnessd. once server is back it should fire - job is gone"*. The
+    /// DECISION is already right (`JobFate::Unknown` meets the condition, and the job's own row
+    /// answers what became of it), and what the row waited for was a DELIVERY. The watcher that
+    /// would have rung for that very settlement is a thread that died with the daemon it belonged
+    /// to — `jobwatch`'s watcher is one thread per watched job, and the job it was watching is
+    /// not in this process's table at all. So the firing waited for whatever armed the session
+    /// next, and the only thing on an idle resumed session's clock is the idle plan-check a
+    /// minute later, whose text is the plan's unfinished work and **not** the fate.
+    ///
+    /// # Why the ring and not a turn here
+    ///
+    /// `Sessions::wake` could be called on the spot, and it must not be: this runs on the
+    /// daemon's own startup path, before `Daemon::run` has taken the worker, and a turn is a
+    /// model call — the constructor would then block the banner and the socket on a generation.
+    /// The ring is the same door every other between-turns fact arrives through, and the worker
+    /// drains it on its first pass. It is cheap when there is nothing to say: a wake with no
+    /// notice behind it runs no turn at all (`Harness::wake` answers `Ok(None)`, which is
+    /// `Outcome::Ignored`), so a session whose plan is ordinary and whose queue is empty pays
+    /// one lock and one comparison.
+    ///
+    /// # What it does not do
+    ///
+    /// It does not make the plan check earlier or different: an unfinished plan still speaks a
+    /// minute after the last turn, by the operator's own scheduling (*"but certainly not after
+    /// my message"*). What it fixes is the class of fact that has NO clock of its own — the ones
+    /// that are true in the store and were only ever carried by an event.
+    fn put_a_restored_session_to_work(&self, session_id: &str) {
+        self.registry.bell().ring_wake(session_id);
     }
 
     /// When the next check comes due, for the worker's blocking wait.
