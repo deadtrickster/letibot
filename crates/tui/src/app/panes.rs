@@ -261,24 +261,28 @@ impl App {
         // **The child this head climbed up out of**, by id, once the rebuild has happened
         // — a stop index taken before it would point at whatever the new list has there.
         //
-        // **A finished child is unfolded to land on.** The cursor is an index into the stops
-        // ([`App::subagent_stops`]), and a finished child is not one of them while the group is
-        // collapsed — so coming back up out of a child that has since ended opens the group it
-        // went into, rather than dropping the cursor on the fold and hiding the row the operator
-        // just left.
+        // **The fold is the operator's, and the walk does not open it.** This used to unfold a
+        // finished child so the cursor could land on its row, and that is the defect the operator
+        // reported: *"it supposed to group finishes subagents, and it doesnt. but it was grouping
+        // before i entered one of the gatekeepers."* … *"so somehow it expands itself."* A child
+        // that ended while they were inside it is exactly the case that fired, because a finished
+        // row is not a stop while the group is collapsed — so the walk spent the operator's fold
+        // to save itself one keystroke, and the group came back open under a wall of two hundred.
+        //
+        // So the cursor lands on the row that STANDS FOR the child while it is folded — the
+        // `finished` group — and the fold is left exactly as the operator set it. **Nothing but
+        // Enter on the group row writes `subagents_finished_open`**; see
+        // `the_fold_survives_going_down_into_a_child_and_back_up`.
         let up_from = self.up_from.clone();
         if let Some(from) = up_from {
             if let Some(i) = self.subagents.iter().position(|r| r.session_id == from) {
-                if self.subagents[i].is_finished() && !self.subagents_finished_open {
-                    self.subagents_finished_open = true;
-                }
-                if let Some(k) = self
-                    .subagent_stops()
+                let stops = self.subagent_stops();
+                self.subagents_sel = stops
                     .iter()
                     .position(|s| matches!(s, SubStop::Agent(j) if *j == i))
-                {
-                    self.subagents_sel = k;
-                }
+                    // Folded away: the group row is the row that stands for it now.
+                    .or_else(|| stops.iter().position(|s| matches!(s, SubStop::Finished)))
+                    .unwrap_or(0);
                 self.up_from = None;
             }
         }

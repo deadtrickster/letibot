@@ -1275,3 +1275,128 @@ fn a_gatekeeper_child_is_not_counted_or_listed() {
         "rebuilt with the reviewer in it: {ids:?}"
     );
 }
+
+/// **The finished fold survives the round trip down into a child and back up.**
+///
+/// The operator, of this pane: *"it supposed to group finishes subagents, and it doesnt. but
+/// it was grouping before i entered one of the gatekeepers."* … *"so somehow it expands
+/// itself."* The group was folded; they went into a child; they came back; the group was open.
+///
+/// **The unfold was deliberate, and it is the defect.** `fold_subagents` opened the group so
+/// the cursor could land on the row of the child the operator had just left — and a child that
+/// ENDED while they were inside it is exactly the case that fires, because a finished row is
+/// not a stop while the group is folded. So the walk was allowed to spend the operator's fold
+/// to save itself one keystroke, and the price was the whole pane: a folded group of two
+/// hundred children coming back open, which is the wall the fold exists to prevent.
+///
+/// The cure is the one the flag already has — it lives in the head ([`App`],
+/// `subagents_finished_open`) and is handed to the pane each frame — so the walk must not
+/// write it. The cursor instead lands on the row that STANDS FOR the child while it is folded,
+/// the `finished` group, and the fold is left exactly as the operator set it. See
+/// [`App::fold_subagents`].
+#[test]
+fn the_fold_survives_going_down_into_a_child_and_back_up() {
+    let mut a = app();
+    a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+    // The premise: `s-sub-1` is running and `s-sub-2` is not, so the pane has one live row and
+    // a folded group of one.
+    assert!(
+        !a.subagents_finished_open,
+        "the premise: the finished group starts folded"
+    );
+    a.key(Key::CtrlG);
+
+    // Down: Enter on the live child is the switch, and the child's own session has no children
+    // of its own.
+    assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
+    a.apply(hello("s-sub-1", a_family(), Hub::new("s-sub-1").snapshot()));
+    assert_eq!(a.session_id, "s-sub-1");
+
+    // **The child ENDS while the operator is inside it** — the event, and the list that no
+    // longer measures a turn generating in it. This is the whole of the reproduction.
+    a.apply(ServerFrame::Event(env(
+        5,
+        child_event("s-sub-1", "done", Some("the answer")),
+    )));
+    let mut ended = a_family();
+    ended[1].status.running = false;
+
+    // Up: one Esc, then the parent's `Hello` — which carries the list `fold_subagents` reads.
+    assert_eq!(a.key(Key::Esc), Some(Action::Switch("s".into())));
+    a.apply(hello("s", ended, Hub::new("s").snapshot()));
+
+    assert!(
+        !a.subagents_finished_open,
+        "the round trip re-opened the group the operator had folded"
+    );
+    // And it is drawn folded: the finished children are under the group row and not on the
+    // glass. This is the operator's *"it doesnt group finished subagents"* read off the screen
+    // rather than off the flag.
+    let screen = a.screen(100, 24).join("\n");
+    assert!(screen.contains("finished (2)"), "{screen}");
+    assert!(
+        !screen.contains("find the bug in the reader"),
+        "the child the operator left is drawn, so the group is open:\n{screen}"
+    );
+    assert!(!screen.contains("audit the store"), "{screen}");
+}
+
+/// **A child ending does not re-open the group the operator folded.**
+///
+/// The handoff note's own reading of the same report, pinned so it cannot come back: *"the
+/// fold does not survive an update of the list. Entering a child was merely how it was first
+/// noticed, and the list updates constantly while anything is finishing."* The fold is
+/// explicitly folded first — the same Enter on the group row the operator presses — and then a
+/// live child ends, which is a row landing under the group. Whether a re-open arrives with the
+/// round trip or with a later list frame, the rule is one: the fold is the operator's, and a
+/// row landing under it is not a reason to open it.
+#[test]
+fn a_child_ending_does_not_re_open_the_fold() {
+    let mut a = app();
+    a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+    a.apply(ServerFrame::Event(env(
+        1,
+        child_event("s-sub-1", "running", None),
+    )));
+    a.key(Key::CtrlG);
+
+    // Fold the group the way the operator folds it: Enter on the group row. The cursor starts
+    // on the live child, so one Down lands on the group.
+    a.key(Key::Down);
+    assert_eq!(
+        a.subagent_stops().get(a.subagents_sel),
+        Some(&SubStop::Finished),
+        "the cursor is not on the group row"
+    );
+    a.key(Key::Enter);
+    assert!(
+        a.subagents_finished_open,
+        "Enter on the group row unfolds it"
+    );
+    a.key(Key::Enter);
+    assert!(!a.subagents_finished_open, "and Enter folds it again");
+
+    // The live child ends: the event, and a list that no longer measures a turn in it.
+    a.apply(ServerFrame::Event(env(
+        2,
+        child_event("s-sub-1", "done", Some("the answer")),
+    )));
+    let mut ended = a_family();
+    ended[1].status.running = false;
+    a.apply(ServerFrame::Sessions {
+        sessions: ended,
+        current: "s".into(),
+        created: None,
+    });
+
+    assert!(
+        !a.subagents_finished_open,
+        "a child ending re-opened the group the operator folded"
+    );
+    let screen = a.screen(100, 24).join("\n");
+    assert!(screen.contains("finished (2)"), "{screen}");
+    assert!(
+        !screen.contains("find the bug in the reader"),
+        "the ended child is drawn, so the group is open:\n{screen}"
+    );
+}

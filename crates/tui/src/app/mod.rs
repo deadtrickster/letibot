@@ -934,6 +934,12 @@ pub struct App {
     /// and the eighteen pushed the one the operator opened the pane for off the bottom of the
     /// screen: *"i went to subagents panel and dont see it here"*. Enter on the group row
     /// toggles it.
+    ///
+    /// **And nothing else writes it.** It is the head's own state, handed to the pane each
+    /// frame ([`App::subagents_view`]), so no rebuild of the list can lose it — and the walk
+    /// must not spend it either: climbing back up out of a child used to unfold a finished one
+    /// to land the cursor on its row, which is the operator's *"so somehow it expands itself"*.
+    /// See [`App::fold_subagents`].
     pub(crate) subagents_finished_open: bool,
     /// **The pane row each stop was DRAWN on** — the same record [`App::todos_stop_rows`]
     /// keeps for its own pane, and for the same reason: the arrows scroll the cursor into
