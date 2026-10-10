@@ -299,6 +299,50 @@ pub(crate) fn live_tail_covered(
     vis.hides_the_working() && items.last().is_some_and(|it| !row_drawn_at(vis, bound, it))
 }
 
+/// **Does the work in flight belong to this run** — R37 AMENDED's `live_here`, in ONE place,
+/// because three callers ask it and the marker the reader sees is the one they agree on.
+///
+/// Two clauses, and the first is the one this function exists for:
+///
+///  * **the run reaches the end of the transcript** (`end == items.len()`). The work in flight
+///    is after every row there is, so it is contiguous with the LAST stretch of invisible rows
+///    and with no other — and a stretch that reaches the end is the stretch the next row will
+///    be appended to. Its absence is the operator's twice-reported screen: **a turn that has
+///    committed no row yet** (`TurnStarted` has landed, the round's rows have not) has an empty
+///    `turn_rows`, so the second clause below cannot answer for it, and the pane drew the work
+///    in flight as a SECOND fold beside the run it is about to join —
+///    `[36 tool calls, 869 thinking lines]` with `[94 thinking lines]` directly under it, which
+///    becomes one fold the moment the round's first row lands. Their words for the pair, twice
+///    in one evening: *"somehow you have thinking not merged again"*, *"again not merged - tho
+///    when you start to reply it merges"*. It is not only a new prompt: `Sessions::wake` — a job
+///    settlement, a monitor, a todo nag — opens a turn with no prompt row at all, so nothing the
+///    reader can see separates that turn's live work from the run above it.
+///  * **or the run holds one of the turn's own rows.** The turn is the second fact because
+///    contiguity alone is not enough: a run of a PREVIOUS turn's rows can be the last stretch of
+///    invisible rows while the current turn's work is not going to land in it — the operator's
+///    own message is a drawn row and ends a run, so the work after it starts a new one — and
+///    folding the live counts into that run is the defect `marker_carries_live` records (*"old
+///    tool calls stayed yellow for some reason"*).
+///
+/// **Neither clause merges two runs, and nothing here touches a boundary.** [`unseen_run_at`]
+/// still ends a run at every row the reader can see, so a tool row, the reply or a system row
+/// between two stretches keeps them two folds; what this decides is only whether the work with
+/// NO row yet — which is contiguous with the tail by construction — is drawn inside the run it
+/// is about to join or beside it.
+///
+/// **And the second clause is still needed**, which is why the first is a disjunction and not a
+/// replacement: a drawn row landing after the run (the model's own prose, the operator's
+/// message) leaves the run reaching nothing, and the run is still this turn's — see
+/// [`hidden_run_marker`]'s own account of the pair that fix was made for.
+pub(crate) fn run_carries_live(
+    items: &[SnapshotItem],
+    turn_rows: &std::collections::HashSet<String>,
+    start: usize,
+    end: usize,
+) -> bool {
+    end == items.len() || (start..end).any(|r| turn_rows.contains(items[r].item_id.as_str()))
+}
+
 /// **Does the MODEL's own sentence introduce this run.**
 ///
 /// The marker continues the sentence the colon points at, and that sentence is the model's
@@ -903,8 +947,10 @@ pub(crate) fn hidden_run_marker(
     // renderer free to read a fact the key does not carry, which is how the colour and then the
     // run went missing.
     facts: MarkerFacts,
-    // **Does this run hold a row of the current turn** — leticl's `live-here`, and the fact that
-    // decides whether the in-flight work is these counts' continuation. See the fold below.
+    // **Is the work in flight this run's** — leticl's `live-here`, and the fact that decides
+    // whether the in-flight counts are this marker's continuation. Computed by the callers
+    // through [`run_carries_live`], which is where the two clauses and their history live; the
+    // fold itself is below.
     live_here: bool,
 ) -> Marker {
     let live = facts.live;
@@ -944,17 +990,23 @@ pub(crate) fn hidden_run_marker(
     // a previous round, or a previous turn — and stays plain. The second of the three wrong cuts
     // was exactly this question asked of the turn instead of the marker, which lit every run
     // behind it.
-    // **Fold when this run holds a row of the CURRENT TURN**, which is the fact the gate was
-    // standing in for. `end == items.len()` said *this stretch reaches the live edge*, and that is
-    // true only while nothing visible has arrived after it — so a row the reader can see landing
-    // after the run (the operator's own message, say) turned the fold OFF, and the same work was
-    // then drawn twice: the run's counts in one marker and the live work in another.
+    // **Fold when the work in flight belongs to this run** — see [`run_carries_live`] for the
+    // rule and for the two screens its two clauses answer. This comment used to carry the
+    // account itself, and it was the account that was wrong: it said the discriminating fact is
+    // *the run holds one of the turn's own rows*, which is false for a turn that has committed
+    // no row yet — the window the operator caught twice (`[36 tool calls, 869 thinking lines]`
+    // with `[94 thinking lines]` under it).
+    //
+    // **`end == items.len()` said *this stretch reaches the live edge*, and that is true only
+    // while nothing visible has arrived after it** — so a row the reader can see landing after
+    // the run (the operator's own message, say) turned the fold OFF, and the same work was then
+    // drawn twice: the run's counts in one marker and the live work in another. That is why the
+    // turn clause is still here and why the two are a disjunction.
     //
     // **And `newest` alone is the wrong widening** — that is the trap this file already records.
-    // The newest run with hidden rows can be the PREVIOUS turn's, and folding the live work into it
-    // is *"all tool call counters are yellow now"*. The discriminating fact is the turn: the live
-    // work belongs to the run the current turn is working in, so the run has to hold one of the
-    // turn's own rows.
+    // The newest run with hidden rows can be the PREVIOUS turn's, and folding the live work into
+    // it is *"all tool call counters are yellow now"*. That is the `newest_run == Some(start)`
+    // half, which the callers keep.
     let carries_live = live_here && marker_carries_live(live);
     if live_here {
         calls += live.calls;

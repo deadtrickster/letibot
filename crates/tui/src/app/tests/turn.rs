@@ -1396,6 +1396,254 @@ fn a_boundary_nobody_measured_does_not_split_the_run() {
     );
 }
 
+/// **The work in flight is ONE fold with the run it is about to join** — R37 AMENDED, and the
+/// operator's screen twice in one evening.
+///
+/// Their screen, verbatim, and the pair is two folds where one belongs:
+///
+/// ```text
+///   [36 tool calls, 869 thinking lines]
+///   [94 thinking lines]
+/// ```
+///
+/// **The first is the walk's marker for the run of rows the conversation rung hides; the second
+/// was the live pane's**, drawn for the thinking that is still streaming with no row of its own.
+/// The gate that should have folded it in — `live_here`, and `walk_carried_live` beside it —
+/// asked *does this run hold a row of the CURRENT TURN*, and **a turn that has committed no row
+/// yet has an empty `turn_rows`**: `TurnStarted` has landed and the round's rows have not. Both
+/// answered no, so the pane drew the work in flight BESIDE the run instead of inside it, and the
+/// reader got two folds for one stretch of thinking. Their own account of when it goes away is
+/// the diagnosis: *"again not merged - tho when you start to reply it merges"* — the merge is
+/// the round's first row landing, which is the moment that gate can answer.
+///
+/// **And it is not only a new prompt.** `Sessions::wake` — a job settlement, a monitor, a todo
+/// nag — opens a turn with no prompt row at all, so nothing the reader can see separates that
+/// turn's live work from the run above it; that is the shape this fixture drives, because it is
+/// the one that puts the two folds on ADJACENT lines.
+///
+/// **Driven through the live path, one frame at a time** — the rows appended and the reasoning
+/// arriving as deltas, in the order the daemon sends them, with every assertion made on a screen
+/// drawn in that state — because that is the difference the bug lives in.
+///
+/// See [`run_carries_live`] for the rule, and for the second clause the fix keeps: a run of an
+/// EARLIER turn's rows must not fold the live counts in.
+#[test]
+fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
+    /// One display line at this frame's width.
+    const WORKING: &str = "round 1: weighing up the reader and the caller";
+    /// The same, arriving as two: the stream, and the row it becomes.
+    const STREAMED: &str = "the call came back saying it is in the reader\n\
+                          so the next thing to look at is who hands it over";
+    /// A second round's working-out, which lands as a row of its own.
+    const SECOND: &str = "and now the caller, which is where the value is constructed";
+
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::CONVERSATION);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    // The operator's own message, which is what a turn follows.
+    a.apply(ServerFrame::Event(env(1, testing::appended("s.u", "user"))));
+    a.record_item("s.u", operator_row("run the tests"));
+    // **ROUND 1**: two calls answered and the model's own working-out. All three are rows this
+    // rung hides, so they are ONE run — `[2 tool calls, 1 thinking line]`.
+    a.apply(ServerFrame::Event(env_at(
+        2,
+        1_000,
+        SessionEvent::TurnStarted {
+            turn_id: "r1".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        },
+    )));
+    let mut seq = 3;
+    for (id, call) in [("s.1", "c1"), ("s.2", "c2")] {
+        a.apply(ServerFrame::Event(env(
+            seq,
+            testing::appended(id, "tool_result"),
+        )));
+        a.record_item(
+            id,
+            TranscriptItem::ToolResult {
+                call_id: call.into(),
+                name: "read".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "SOMETHING LONG ENOUGH TO HIDE THE ROW".into(),
+                edit: None,
+                origin: None,
+                media: None,
+            },
+        );
+        seq += 1;
+    }
+    a.apply(ServerFrame::Event(env(
+        seq,
+        testing::appended("s.3", "reasoning"),
+    )));
+    a.record_item(
+        "s.3",
+        TranscriptItem::Reasoning {
+            text: WORKING.into(),
+            field: letibot_transcript::ReasoningField::ReasoningContent,
+            truncated: false,
+        },
+    );
+    seq += 1;
+    // …and the round's own assistant row, which is the shape a tool-calling round has: no prose,
+    // so it draws nothing and is part of the run.
+    a.apply(ServerFrame::Event(env(
+        seq,
+        testing::appended("s.4", "assistant"),
+    )));
+    a.record_item(
+        "s.4",
+        TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+    seq += 1;
+    // **The turn ends and the daemon WAKES the session** — a job settlement, a monitor, a todo
+    // nag. `Sessions::wake` does not stamp a clock (`harnessd::sessions`: `run_prompt` calls
+    // `begin_turn_clock` and `wake` does not) and appends no prompt row, so this turn starts with
+    // an empty `turn_rows` and nothing the reader can see in front of it.
+    a.apply(ServerFrame::Event(env_at(
+        seq,
+        2_000,
+        SessionEvent::TurnFinished {
+            turn_id: "r1".into(),
+            finish_reason: letibot_sessionlog::event::FinishReason::Eos,
+            usage: Usage::default(),
+            timings: Default::default(),
+        },
+    )));
+    seq += 1;
+    a.apply(ServerFrame::Event(env_at(
+        seq,
+        3_000,
+        SessionEvent::TurnStarted {
+            turn_id: "r2".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: None,
+        },
+    )));
+    seq += 1;
+    // **The premise**, so a failure below is about the live work and not about the fixture: the
+    // run is on the screen, and it is one fold.
+    let before = a.screen(100, 30).join("\n");
+    assert_eq!(markers(&before), 1, "one run, one fold: {before}");
+    assert!(
+        before.contains("[2 tool calls, 1 thinking line]"),
+        "and it carries what is committed: {before}"
+    );
+
+    // **THE BUG.** The model thinks, with no row of its own yet — two display lines. That is the
+    // work in flight, it is contiguous with the run above it, and it is the same fold: one
+    // marker, and the counts are the SUM. The pane drew a second `[2 thinking lines]` here.
+    a.apply(ServerFrame::Event(env(
+        seq,
+        SessionEvent::Delta {
+            turn_id: "r2".into(),
+            target: DeltaTarget::Reasoning,
+            text: STREAMED.into(),
+        },
+    )));
+    seq += 1;
+    let streaming = a.screen(100, 30).join("\n");
+    assert_eq!(
+        markers(&streaming),
+        1,
+        "the thinking that is still arriving is the SAME fold as the run it will join, not a \
+         second one beside it — the operator's `[36 tool calls, 869 thinking lines]` with \
+         `[94 thinking lines]` under it: {streaming}"
+    );
+    assert!(
+        streaming.contains("[2 tool calls, 3 thinking lines]"),
+        "and the fold carries the sum, committed and in flight: {streaming}"
+    );
+
+    // **Two thinking rows land, one after the other, and the merge does not move.** The first is
+    // the streamed text becoming a row, which takes the in-flight count to zero and adds the same
+    // lines to the run — so the number the reader is looking at does not change. The second is a
+    // new round's own working-out, and it joins the same fold: one block, the summed count.
+    for (id, text) in [("s.5", STREAMED), ("s.7", SECOND)] {
+        a.apply(ServerFrame::Event(env(
+            seq,
+            testing::appended(id, "reasoning"),
+        )));
+        a.record_item(
+            id,
+            TranscriptItem::Reasoning {
+                text: text.into(),
+                field: letibot_transcript::ReasoningField::ReasoningContent,
+                truncated: false,
+            },
+        );
+        seq += 1;
+        // The round's assistant row, with no prose: it draws nothing and is part of the run.
+        let aid = format!("{id}a");
+        a.apply(ServerFrame::Event(env(
+            seq,
+            testing::appended(&aid, "assistant"),
+        )));
+        a.record_item(
+            &aid,
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        );
+        seq += 1;
+    }
+    let landed = a.screen(100, 30).join("\n");
+    assert_eq!(
+        markers(&landed),
+        1,
+        "consecutive thinking rows are ONE block, whatever order they arrive in: {landed}"
+    );
+    assert!(
+        landed.contains("[2 tool calls, 4 thinking lines]"),
+        "and the block counts the sum of them: {landed}"
+    );
+
+    // **And the reply starting does not change the merge.** The round's prose lands: it is a row
+    // the reader can SEE, so it ends the run — which is what the run's marker must still obey —
+    // and the fold above it keeps the same counts and stays one fold.
+    a.apply(ServerFrame::Event(env(
+        seq,
+        testing::appended("s.9", "assistant"),
+    )));
+    a.record_item(
+        "s.9",
+        TranscriptItem::Assistant {
+            text: "here is what I found:".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+    let replied = a.screen(100, 30).join("\n");
+    assert_eq!(
+        markers(&replied),
+        1,
+        "the reply is a drawn row and ends the run, and it is not a second fold: {replied}"
+    );
+    assert!(
+        replied.contains("[2 tool calls, 4 thinking lines]"),
+        "the fold above the reply keeps the number it had while the thinking was arriving: \
+         {replied}"
+    );
+    assert!(
+        replied.contains("here is what I found:"),
+        "and the reply itself is on the screen: {replied}"
+    );
+}
+
 /// **A subagent whose whole product is prose is readable.**
 ///
 /// The peek rendered tool results and nothing else, so a `digest` subagent —

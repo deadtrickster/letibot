@@ -192,20 +192,18 @@ impl App {
         // guess. The same technique the marker-doubling hunt used (`scripts/headwatch.sh` and the
         // captured frames in `docs/evidence/`), applied to the predicate rather than to the screen.
         let walk_carried_live = live.work() > 0
-            && (0..self.items.len())
-                .rev()
-                .find_map(|k| {
-                    let (s0, e0) =
-                        unseen_run_at(&self.items, self.visibility, &self.bound_prompts, live, k)?;
-                    (s0 == k).then_some((s0, e0))
-                })
+            && facts.run.is_some_and(|start| {
+                unseen_run_at(
+                    &self.items,
+                    self.visibility,
+                    &self.bound_prompts,
+                    live,
+                    start,
+                )
                 .is_some_and(|(s0, e0)| {
-                    (s0..e0).any(|r| {
-                        self.turn.as_ref().is_some_and(|t| {
-                            t.turn_rows.iter().any(|id| *id == self.items[r].item_id)
-                        })
-                    })
-                });
+                    s0 == start && run_carries_live(&self.items, &turn_rows, s0, e0)
+                })
+            });
         if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
             let runs: Vec<(usize, usize)> = (0..self.items.len())
                 .filter_map(|k| {
@@ -1015,7 +1013,7 @@ impl App {
                         // See the backward walk's note: the run holding the turn's
                         // NEWEST row, which is the one the in-flight work continues.
                         let live_here = newest_run == Some(start)
-                            && (start..end).any(|r| turn_rows.contains(items[r].item_id.as_str()));
+                            && run_carries_live(items, &turn_rows, start, end);
                         let marker = hidden_run_marker(
                             items,
                             start,

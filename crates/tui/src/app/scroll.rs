@@ -417,20 +417,15 @@ impl App {
             // renders newest first, so the prose this marker continues has not been reached
             // yet when the row is built. See [`hidden_run_marker`].
             let marker = unseen.filter(|(start, _)| *start == k).map(|(start, end)| {
-                // **Does this run hold one of the TURN's rows, AND reach the live edge** —
-                // the `live_here` question, and it is two clauses because one is not enough.
-                //
-                // A run made only of an earlier turn's rows is history, and folding the
-                // in-flight work into it is the defect `marker_carries_live` already records.
-                // But *this turn's rows* is not the discriminator either, and that is what the
-                // operator saw: one long turn of forty rounds is forty runs, every one of them
-                // holding this turn's rows — so every marker folded the live counts (inflating
-                // each) and every marker went yellow. *"old tool calls stayed yellow for some
-                // reason."* The work in flight happens AFTER every committed row, so it belongs
-                // to the run that REACHES THE TAIL (`end == items.len()`) and to no other; every
-                // earlier run of the same turn is settled history and draws plain.
+                // **Does this run hold the TURN's rows, or reach the live edge** — the
+                // `live_here` question, whose two clauses live in [`run_carries_live`] so the
+                // two walks and the pane's own guard cannot disagree about it. The doc there
+                // carries the whole account: a run of an earlier turn's rows is history and must
+                // not fold the live counts, and a run that reaches the end of the transcript is
+                // the run the work in flight is about to join whatever `turn_rows` says — which
+                // is the case a turn that has committed no row yet is in.
                 let live_here = newest_run == Some(start)
-                    && (start..end).any(|r| turn_rows.contains(&self.items[r].item_id));
+                    && run_carries_live(&self.items, &turn_rows, start, end);
                 hidden_run_marker(
                     &self.items,
                     start,
