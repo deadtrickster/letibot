@@ -27,11 +27,11 @@
 
 use crate::app::standing::{Corpus, OnDisk};
 use crate::app::*;
-use crate::ui::render::{row_strings, wrap};
+use crate::ui::render::{path_span, row_strings, wrap};
 use letibot_sessionlog::protocol::NoteForm;
 use rano::agent::pane::{self, PaneLines};
 use rano::agent::text::{bytes_human, clean_line};
-use rano::render::{Line, Span};
+use rano::render::{Line, Span, Style};
 use rano::style::Role;
 
 impl App {
@@ -101,9 +101,19 @@ impl App {
             let picked = i == cursor;
             let disk = OnDisk::read(&e.path);
             corpus.note(&e.path, disk.as_ref());
+            // **The note's path, as a link the terminal opens** (OSC 8) where it speaks it —
+            // the operator's own report, about this very row's fact: *"yeah you gave md name
+            // but it is not clickable"*. The pane prints the path the prompt's section
+            // carries, so this is where a printed path becomes a span, and `file_url` is the
+            // decision about which URL opens it. `Style::new()` rather than a role: the row is
+            // drawn plain today, and a terminal without links must get the same bytes.
             let left = Line::new(vec![
                 Span::raw(format!("{} ", pane::mark(picked))),
-                Span::raw(clean_line(&e.path)),
+                path_span(
+                    self.cfg.links.as_deref(),
+                    &clean_line(&e.path),
+                    Style::new(),
+                ),
             ]);
             // **The disk's half, read now** — see the module doc. `None` is the file being
             // gone, and it is said in the same column the size and the age would be, so a row

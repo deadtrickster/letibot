@@ -265,3 +265,58 @@ fn a_note_edited_while_the_pane_is_open_makes_the_pane_ask_again() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// **The path on a note's row is a link the terminal opens** (OSC 8) — the operator's own
+/// report, about this pane's fact: *"yeah you gave md name but it is not clickable"*.
+///
+/// The row names the path the prompt's section carries, and `rano::term::links::file_url` is
+/// what turns it into the URL — absolute against the session's workspace, with this machine's
+/// name in it. A terminal that does not speak links gets the row it always got, byte for byte:
+/// that half is asserted here too, because the gate is the whole reason the feature is safe.
+#[test]
+fn a_notes_path_on_the_row_is_a_link_the_terminal_can_open() {
+    let d = corpus("link");
+    let p = d.join("clickable.md");
+    std::fs::write(&p, "the note's prose\n").unwrap();
+
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.wiring.workspace = d.display().to_string();
+    a.set_features(rano::term::Features::ALL);
+    a.command("standing");
+    a.apply(frame(vec![note(
+        &p,
+        Some("a line"),
+        true,
+        NoteForm::Verbatim,
+    )]));
+    let screen = a.screen(140, 24).join("\n");
+    assert!(screen.contains("clickable.md"), "{screen}");
+    // The URL the row carries, read off the row: everything between the opener and its `ST`.
+    let opener = screen
+        .find("\u{1b}]8;;")
+        .map(|at| &screen[at + "\u{1b}]8;;".len()..])
+        .and_then(|rest| rest.split_once("\u{1b}\\"))
+        .map(|(url, _)| url.to_string());
+    let url = opener.expect("the row's path is not a link");
+    assert!(
+        url.starts_with("file://") && url.ends_with(&p.display().to_string()),
+        "the link is not the file's URL: {url:?}"
+    );
+
+    // The same frame on a terminal that does not speak OSC 8 carries no sequence at all.
+    let mut b = app();
+    b.session_id = "s1".into();
+    b.wiring.workspace = d.display().to_string();
+    b.command("standing");
+    b.apply(frame(vec![note(
+        &p,
+        Some("a line"),
+        true,
+        NoteForm::Verbatim,
+    )]));
+    let plain = b.screen(140, 24).join("\n");
+    assert!(plain.contains("clickable.md"), "{plain}");
+    assert!(!plain.contains("\u{1b}]8;;"), "{plain:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}

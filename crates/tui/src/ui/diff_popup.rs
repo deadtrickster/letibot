@@ -2,8 +2,9 @@
 //! and an edge with the popup's own keys. See `app::diff_popup`.
 
 use crate::app::*;
+use crate::ui::render::path_span;
 use crate::ui::rows::row;
-use rano::render::{Line, Span};
+use rano::render::{Line, Span, Style};
 use rano::style::Role;
 
 impl App {
@@ -40,8 +41,16 @@ impl App {
             p.placed = true;
         }
         p.scroll = p.scroll.min(max);
+        // **The file's path, as a link the terminal opens** (OSC 8) where it speaks it: this
+        // edge names the file the change is in, and a printed path that cannot be clicked is
+        // the operator's own report. `Style::of(Role::Strong)` is the register the path was
+        // drawn in, and the span is that same span when the terminal has no links.
         let title = Line::new(vec![
-            Span::role(file.path.clone(), Role::Strong),
+            path_span(
+                self.cfg.links.as_deref(),
+                &file.path,
+                Style::of(Role::Strong),
+            ),
             Span::raw(format!(" · the change at line {}", file.line)),
         ]);
         let keys = Line::new(vec![Span::raw(

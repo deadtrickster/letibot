@@ -28,7 +28,7 @@
 use rano::style::{Palette, Role};
 
 use rano::markdown::{Block, IncrementalMarkdown, MarkdownView, RenderOptions};
-use rano::render::Line;
+use rano::render::{Line, Span, Style};
 
 /// Columns, wrapping and truncation come from `letibot-ui`.
 ///
@@ -282,6 +282,25 @@ fn md_row(l: &Line, p: Palette) -> String {
 
 pub use crate::ui::rows::{row, row_strings};
 
+/// **A path the head prints, as a span the terminal can open** (OSC 8).
+///
+/// The one place a printed path becomes a rendered span: [`rano::term::links::file_url`] is
+/// rano's decision about what a path is and which URL opens it — absolute, or relative to
+/// `root`, and carrying this machine's name so a link drawn by a head on the far end of `ssh`
+/// does not open the same-named file on the near one — and it was never called from this tree.
+/// `root` is [`RenderConfig::links`]: `None` is a terminal that does not speak OSC 8, and every
+/// pipe, replay and test, and the span is then byte-for-byte the one that was drawn before.
+///
+/// The caller says which text is a path, because that is the half only it knows — a note's
+/// path, the file a change is in. `file_url` decides whether what it was handed is one path and
+/// nothing else, so a target that is a command line or a call id comes back as plain text.
+pub fn path_span(root: Option<&str>, text: &str, style: Style) -> Span {
+    match root.and_then(|r| rano::term::links::file_url(r, text)) {
+        Some(url) => Span::styled(text, style.link(url)),
+        None => Span::styled(text, style),
+    }
+}
+
 /// Render one block to rows, unbounded. One-shot: see `rano::markdown::render_block`.
 pub fn render_block(b: &Block, cfg: &RenderConfig) -> Vec<String> {
     rows(
@@ -336,6 +355,10 @@ impl Decor {
     }
 }
 
+/// The bytes of a document's head the cache compares to tell *the same document, grown* from
+/// *another document*. See [`BlockCache::split`].
+const DRAWN_HEAD: usize = 64;
+
 /// Rendered rows for a growing document, with the frozen prefix cached.
 ///
 /// rano's [`MarkdownView`] keeps the settled blocks' *lines* and re-renders only the tail;
@@ -350,6 +373,17 @@ pub struct BlockCache {
     /// re-renders on the first, third and fourth itself; the palette is the head's alone —
     /// rano's lines hold no colour — so a `color` flip must drop the strings here.
     key: Option<(usize, Palette, Option<Role>, usize)>,
+    /// **The document these rows were drawn from**, as far as it can be checked for the cost
+    /// of a frame: the bytes at its head and its length. A document that is not an extension of
+    /// this one is a document nobody wrote, and the rows are not its rows.
+    ///
+    /// The first site of this bug was fixed in `feed` — *a text that is no longer an extension
+    /// of what was fed starts the parse over rather than appending to a tree that describes
+    /// something else* — and this is the same cause one layer up, in the half of the cache the
+    /// head owns: the settled rows were keyed on the width, the palette, the register and the
+    /// bound, and reused **by count**, so a replaced document was drawn as the old one's rows
+    /// followed by the new one's tail. See [`BlockCache::split`].
+    drawn: Option<(String, usize)>,
     /// The view's settled lines, as rows, decorated.
     stable_rows: Vec<String>,
     /// **The live tail's rows, and the document they were drawn from.** A frame with nothing
@@ -383,6 +417,7 @@ impl BlockCache {
             self.decor = decor;
             self.stable_rows.clear();
             self.tail_of = None;
+            self.drawn = None;
         }
     }
 
@@ -426,7 +461,38 @@ impl BlockCache {
             self.key = key;
             self.stable_rows.clear();
             self.tail_of = None;
+            self.drawn = None;
         }
+        // **A document that is not an extension of the one these rows were drawn from starts
+        // the cache over.** The same reasoning as the fence highlighter's: what was drawn is a
+        // prefix of what is being drawn only while the document grows at its end, and a
+        // replaced document — a re-seat, a fork, a row re-rendered from another item — is not
+        // an extension of anything. Without this the frame is the old document's settled rows
+        // followed by the new one's tail: rows from a text nobody wrote, in one frame.
+        //
+        // The head is what is compared, and the length, because that is the check a frame can
+        // afford — a hash of the whole prefix would be O(document) per frame, which is the cost
+        // this cache exists to avoid. A replaced document that shares its first
+        // [`DRAWN_HEAD`] bytes and is no shorter is still mistaken for an extension of the one
+        // before it; said rather than left to be discovered.
+        let raw = md.raw();
+        let head = raw.get(..raw.len().min(DRAWN_HEAD)).unwrap_or("");
+        if !self
+            .drawn
+            .as_ref()
+            .is_some_and(|(h, n)| h == head && *n <= raw.len())
+        {
+            // **The view goes with the rows.** It keeps the settled blocks' *lines*, keyed on
+            // the width and the bound alone, so clearing only the strings here left the frame
+            // drawn from the other document's lines anyway — measured while fixing this: the
+            // test below still showed the previous document's three fences. A restart is what
+            // the first site's fix does (a fresh `Stream`), one layer down.
+            self.view = MarkdownView::new();
+            self.stable_rows.clear();
+            self.tail_rows.clear();
+            self.tail_of = None;
+        }
+        self.drawn = Some((head.to_string(), raw.len()));
         let now = Some((md.lex_calls(), md.raw().len()));
         if self.tail_of == now {
             return (&self.stable_rows, &self.tail_rows);
@@ -534,6 +600,98 @@ mod tests {
             streamed.contains(&keyword),
             "the streamed fence is plain:\n{streamed}"
         );
+    }
+
+    /// **A document that is not an extension of the one the cache drew is not drawn as the old
+    /// one's rows.** The first site of this bug was fixed in `feed` (see
+    /// `a_fence_named_after_its_backticks_is_still_highlighted`, and its commit message for the
+    /// cause); this is the same cause in the half of the cache the head owns. Before the fix
+    /// this test drew the first document's three fences followed by the second document's tail
+    /// — rows from a text nobody wrote, in one frame — because the settled rows were reused by
+    /// count.
+    #[test]
+    fn a_replaced_document_is_not_drawn_as_the_previous_ones_rows() {
+        let cfg = RenderConfig {
+            width: 60,
+            color: true,
+            ..RenderConfig::default()
+        };
+        let mut md = IncrementalMarkdown::new();
+        let mut cache = BlockCache::new();
+        for delta in [
+            "```rust\nfn one() {}\n```\n\n",
+            "```rust\nlet x = \"\u{e9}\u{e9}\";\n```\n\n",
+            "```rust\nlet y = \"\u{e9}\";\n```\n\nDone.\n",
+        ] {
+            md.push(delta);
+            assert!(!cache.lines(&md, &cfg, 40).is_empty());
+        }
+        // Another document entirely, handed to the cache that drew the one above.
+        let mut other = IncrementalMarkdown::new();
+        other.push(
+            "# a different document entirely\n\nwith a fence:\n\n```rust\nlet z = 1;\n```\n\n",
+        );
+        let joined = cache.lines(&other, &cfg, 40).join("\n");
+        assert!(
+            joined.contains("a different document"),
+            "the cache drew the previous document's rows:\n{joined}"
+        );
+        assert!(
+            !joined.contains("fn one"),
+            "a row of a document nobody wrote survived:\n{joined}"
+        );
+        // **And a document that only GREW keeps its rows** — the restart is for another
+        // document, not for growth. One more paragraph, the same cache: the text above it is
+        // still on the frame and the new paragraph is drawn under it.
+        let before = cache.lines(&other, &cfg, 40);
+        other.push("and one more paragraph\n");
+        let after = cache.lines(&other, &cfg, 40);
+        let grown_rows = after.join("\n");
+        assert!(grown_rows.contains("one more paragraph"), "{grown_rows}");
+        assert!(
+            grown_rows.contains("a different document"),
+            "the settled prefix was dropped:\n{grown_rows}"
+        );
+        assert!(
+            after.len() > before.len(),
+            "the new paragraph drew no rows: {after:?}"
+        );
+    }
+
+    /// **A printed path becomes a span the terminal can open** (OSC 8) — and a span that is
+    /// not a path is left exactly as it was.
+    #[test]
+    fn a_paths_span_carries_the_link_the_terminal_opens() {
+        let sp = path_span(Some("/w/proj"), "crates/tui/src/ui/render.rs", Style::new());
+        let url = sp.style.link.as_deref().expect("the path is not a link");
+        assert!(
+            url.starts_with("file://") && url.ends_with("/w/proj/crates/tui/src/ui/render.rs"),
+            "{url}"
+        );
+        assert_eq!(sp.content, "crates/tui/src/ui/render.rs");
+        // An absolute path resolves to itself.
+        let abs = path_span(Some("/w"), "/tmp/x.md", Style::new());
+        assert!(
+            abs.style
+                .link
+                .as_deref()
+                .is_some_and(|u| u.ends_with("/tmp/x.md")),
+            "{abs:?}"
+        );
+        // A terminal that does not speak links, and a target that is not one path, are the
+        // same span they were before — no sequence, no guess.
+        for (root, text) in [
+            (None, "a/b.rs"),
+            (Some("/w"), "cargo test --workspace"),
+            (Some("/w"), "\"quoted\""),
+            (Some("/w"), "(call_0)"),
+            (Some("/w"), ""),
+        ] {
+            let sp = path_span(root, text, Style::of(Role::Strong));
+            assert!(sp.style.link.is_none(), "{text:?} was linked: {sp:?}");
+            assert_eq!(sp.content, text);
+            assert_eq!(sp.style, Style::of(Role::Strong));
+        }
     }
 
     #[test]
