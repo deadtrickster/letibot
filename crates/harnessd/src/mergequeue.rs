@@ -241,8 +241,15 @@ fn rebase(worktree: &Path, onto: &str) -> Result<(), String> {
     git(worktree, &["rebase", "--autostash", onto]).map(|_| ())
 }
 
-/// **Whether `main` already contains `branch`** — the check that turns a stale row into what it
-/// is, instead of rebasing a branch onto a main that already has it.
+/// **Whether `main` already contains `branch`** — HALF of the check that turns a stale row into
+/// what it is, instead of rebasing a branch onto a main that already has it.
+///
+/// **This half alone is a trap, and [`branch_standing`] is the whole answer.** *The branch is an
+/// ancestor of main* is ALSO true of a branch a child never committed to: a branch standing at its
+/// own base is an ancestor of main by construction, because its base is where main was when the
+/// branch was cut. Read alone, this says *already merged* about a branch with no work on it — so
+/// the pass asks the count in [`commits_over_base`] as well, and neither answer is used without
+/// the other.
 ///
 /// `git merge-base --is-ancestor BRANCH main` answers with its EXIT STATUS and nothing else: 0
 /// when the branch is an ancestor of main, 1 when it is not, and neither prints a word. So the
@@ -257,6 +264,81 @@ fn main_contains(repo: &Path, branch: &str) -> bool {
         &["merge-base", "--is-ancestor", branch, "main"],
     )
     .is_ok()
+}
+
+/// **How many commits the entry's branch carries over the base it was cut from** — the fact
+/// [`main_contains`] cannot answer, and the one without which its answer is a trap.
+///
+/// `git rev-list --count <base>..<branch>` counts the commits reachable from the branch and not
+/// from the base, so **0 is *the branch stands where it was cut*: nothing was committed on it.**
+/// That is the state a child leaves behind when it does the work and never commits — and it is
+/// also the state that reads as *already merged* to the ancestor check, because the base of a
+/// branch with nothing on it is, by construction, an ancestor of main.
+///
+/// **A base git cannot answer for is `Err`, and `Err` is NOT 0.** A base sha that does not
+/// resolve, or the empty string a row with no base carries, is *the queue cannot tell* — and
+/// *cannot tell* must never be read as the one answer that bins an entry's work. The caller gets
+/// git's own words here rather than a guess.
+fn commits_over_base(repo: &Path, branch: &str, base: &str) -> Result<usize, String> {
+    // **The empty side of a git range means `HEAD`.** `..branch` is `HEAD..branch`, so an empty
+    // base would answer a question about a different commit while looking like an answer about
+    // this one; it is refused here instead.
+    if base.trim().is_empty() {
+        return Err(format!(
+            "`{branch}` records no base sha, so there is no range to count its commits over"
+        ));
+    }
+    let range = format!("{base}..{branch}");
+    let count = git(repo, &["rev-list", "--count", &range])?;
+    count.trim().parse::<usize>().map_err(|e| {
+        format!(
+            "git rev-list --count {range} answered `{}`, which is not a number: {e}",
+            count.trim()
+        )
+    })
+}
+
+/// **What a branch is, relative to the base it was cut from AND to `main`** — the one question the
+/// pass asks before it may skip the rebase, the gate and the fast-forward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchStanding {
+    /// It carries commits of its own AND `main` already contains its tip: the work is on main by
+    /// somebody else's hand. `Landed`, without a rebase and without a gate.
+    OnMain,
+    /// **Nothing was committed on it** — its tip is its base, or behind it. Never `Landed`,
+    /// whatever `main` contains.
+    NothingCommitted,
+    /// Anything else: commits of its own that main does not contain, and the ordinary path (take,
+    /// rebase, gate, fast-forward) is the one that decides. **Also the answer when git cannot
+    /// tell**, because a fact the queue cannot read must not be read as a fact it can.
+    CarriesWork,
+}
+
+/// **The pass's decision about an entry's branch, as one function of two git facts** — and both
+/// facts are needed, which is the whole reason this is a function rather than a condition.
+///
+/// **Neither half is the answer alone, and the cheap-looking one is the dangerous one.**
+/// `main_contains` is the fact the check was added for: an entry whose branch was rebased and
+/// landed by another path is genuinely already in main, and it must become `Landed` rather than be
+/// rebased onto a main that has it. But *the branch is an ancestor of main* is ALSO true of a
+/// branch that was never committed to at all — a branch sitting at its own base is an ancestor of
+/// main by construction — and read alone that fact says *already landed* about a branch with no
+/// work on it: the row is moved to `Landed`, the cleanup `Landed` owns runs, the worktree is
+/// removed and the branch deleted. **The worktree is where the uncommitted work is**, so that
+/// reading does not leave a stale row behind — it destroys the work and then says it landed.
+///
+/// So the count comes first and it is not optional: **0 commits over the base is
+/// [`BranchStanding::NothingCommitted`] whatever main contains**, because *main has this branch's
+/// tip* is not evidence that the branch's work is on main when the branch's tip is its base. A
+/// reader tempted to keep only the ancestor check — it is one command fewer — should read the
+/// paragraph above as the reason it is not one command fewer but one bug fewer, and the reason
+/// [`main_contains`]'s own doc comment points here.
+fn branch_standing(repo: &Path, branch: &str, base: &str) -> BranchStanding {
+    match commits_over_base(repo, branch, base) {
+        Ok(0) => BranchStanding::NothingCommitted,
+        Ok(_) if main_contains(repo, branch) => BranchStanding::OnMain,
+        _ => BranchStanding::CarriesWork,
+    }
 }
 
 /// **Fast-forward main to the entry's branch**, returning the new tip SHA.
@@ -911,14 +993,17 @@ pub enum StepOutcome {
     Idle,
     /// The entry was taken and landed: main was fast-forwarded, pushed, and the worktree and
     /// branch were removed. The tip is the SHA main moved to — or, for an entry whose branch was
-    /// **already** an ancestor of main, the tip main already stood at, since the queue landed the
-    /// row without moving anything (see [`main_contains`]).
+    /// **already** on main, the tip main already stood at, since the queue landed the row without
+    /// moving anything (see [`branch_standing`]).
     Landed(String),
     /// The entry was taken and the rebase conflicted: the worktree stays, with git's words on
     /// the row.
     Conflict,
     /// The entry was taken and the gate failed: the worktree stays, with the gate's words on
-    /// the row.
+    /// the row. **It is also what a branch that carries nothing lands as** — 0 commits over its
+    /// base is never `Landed` ([`branch_standing`]), because the row would then say main has work
+    /// that main has never seen — with the reason on the row and the worktree, which is where the
+    /// uncommitted work is, kept.
     Failed,
     /// **An entry is ready and its review is not in yet.** The reviewer was asked (again) and
     /// nothing was taken: the queue does not land a branch nobody reviewed, and it does not
@@ -2675,26 +2760,64 @@ impl MergeQueueDaemon {
             .ok()
             .map(|t| t.trim().to_string());
 
+        // **What the branch is, against the base it was cut from AND against main** — one answer
+        // from two git facts, and BOTH are needed. [`branch_standing`] is where the reason lives,
+        // and it is the reason this pass cannot be read as *"if main contains it, it has landed"*.
+        //
         // **An entry whose branch is already in main is what it is: `Landed`.** The operator's
         // ruling on the row that describes exactly this: *"and i love your 2"*. A branch that is
-        // an ancestor of main has nothing left to rebase onto and no diff left to gate — the work
-        // it was holding is on main already, landed by somebody else's hand (a merge of its own, a
-        // later commit that carried it) — and rebasing it would replay commits main already has,
-        // which is either a no-op git refuses or a conflict with itself. So the row is moved to
-        // `Landed` with main's own tip as its `landed_sha`, and the pass returns without claiming
-        // the entry, without rebasing it and without asking anybody's gate about it.
+        // an ancestor of main AND carries commits of its own has nothing left to rebase onto and
+        // no diff left to gate — the work it was holding is on main already, landed by somebody
+        // else's hand (a merge of its own, a later commit that carried it) — and rebasing it would
+        // replay commits main already has, which is either a no-op git refuses or a conflict with
+        // itself. So the row is moved to `Landed` with main's own tip as its `landed_sha`, and the
+        // pass returns without claiming the entry, without rebasing it and without asking
+        // anybody's gate about it.
         //
-        // **The claim is deliberately NOT taken first.** A claim is the queue saying *I am landing
-        // this*; here there is nothing to land, and a row that is claimed and then moved leaves a
-        // `taken` state on disk for a daemon that dies in between — for a landing that never
-        // needed to happen.
-        if let Some(tip) = tip_now.as_deref() {
-            if main_contains(&repo, &entry.branch) {
+        // **An entry whose branch carries NOTHING is the other case, and it is never `Landed`.**
+        // A branch a child never committed to stands at its own base, and its base is an ancestor
+        // of main by construction — so *the branch is an ancestor of main* is TRUE of it, and
+        // reading that one fact as *already landed* moved the row to `Landed` and ran the cleanup
+        // `Landed` owns: the worktree, which is where the uncommitted work was, was removed, the
+        // branch was deleted, and the row said the work had landed when main had never seen it.
+        // Two branches of real work were lost to exactly that. So the count is asked FIRST, and 0
+        // over the base is `Failed` with the reason on the row — which keeps the tree, and the
+        // work in it.
+        //
+        // **The claim is deliberately NOT taken first**, in either case. A claim is the queue
+        // saying *I am landing this*; here there is nothing to land, and a row that is claimed and
+        // then moved leaves a `taken` state on disk for a daemon that dies in between — for a
+        // landing that never needed to happen.
+        match (
+            branch_standing(&repo, &entry.branch, &entry.base_sha),
+            tip_now.as_deref(),
+        ) {
+            (BranchStanding::NothingCommitted, _) => {
+                let evidence = format!(
+                    "nothing was committed on `{}`: the branch carries 0 commits over the base it \
+                     was cut from (`{}`), so there is no diff to rebase onto and nothing for a gate \
+                     to judge — and it is NOT `landed`, whatever main contains. A branch standing \
+                     at its own base is an ancestor of main by construction, and that is not the \
+                     same fact as *main has this branch's work*. The row is parked `failed` and the \
+                     branch and its worktree are left exactly as they are, holding whatever the \
+                     tree holds; the child that did the work is this entry's session, so \
+                     `/queue veto {}` sends it back to commit what is in the tree, and \
+                     `/queue rm {entry_id}` drops the entry.",
+                    entry.branch,
+                    entry.base_sha,
+                    letibot_sessionlog::registry::short_id(&entry.id),
+                    entry_id = entry.id,
+                );
+                self.move_to(&entry, MergeState::Failed, evidence, None, None)?;
+                return Ok(StepOutcome::Failed);
+            }
+            (BranchStanding::OnMain, Some(tip)) => {
                 let evidence = format!(
                     "landed without a rebase and without a gate: main already contains `{}` — the \
-                     branch is an ancestor of main at {tip}, so there is no diff left to rebase \
-                     onto and nothing left for a gate to judge. The row was moved to `landed` as \
-                     it stands; `/queue clean {}` drops it if you want it gone.",
+                     branch is an ancestor of main at {tip} and carries commits of its own over \
+                     its base, so there is no diff left to rebase onto and nothing left for a gate \
+                     to judge. The row was moved to `landed` as it stands; `/queue clean {}` drops \
+                     it if you want it gone.",
                     entry.branch,
                     letibot_sessionlog::registry::short_id(&entry.id)
                 );
@@ -2707,6 +2830,11 @@ impl MergeQueueDaemon {
                 )?;
                 return Ok(StepOutcome::Landed(tip.to_string()));
             }
+            // **The ordinary path decides** — a branch carrying work main does not have, and a
+            // branch git could not answer about: *cannot tell* is not a conclusion, so it falls
+            // through to the take, the rebase, the gate and the fast-forward, which report their
+            // own reasons in git's own words.
+            _ => {}
         }
 
         // **Take it**: mark it `Taken`, so a daemon that dies now comes back to a row that
@@ -3968,6 +4096,165 @@ mod tests {
         // the branch being gone is the same fact as the check being right.
         assert!(!wt.exists(), "the worktree was removed");
         assert!(!branch_exists(&root, "feature"), "the branch was deleted");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **The two facts the pass decides on, over a real repo** — *ahead of its base* AND *in main*
+    /// — and the three standings they make together.
+    ///
+    /// Neither fact alone is the answer, and this is the test that says so in git's own terms:
+    /// the branch `nothing` IS an ancestor of main and is NOT already merged, because it carries
+    /// nothing at all. That pair of facts is the whole bug — the ancestor check read alone says
+    /// *landed* about a branch with no work on it.
+    #[test]
+    fn a_branch_is_judged_on_both_its_base_and_main() {
+        let (root, _wt, main_sha, _feature_sha) = repo_with_branch("standing");
+        // Ahead of its base, tip NOT in main: the ordinary path decides (take, rebase, gate).
+        assert_eq!(
+            branch_standing(&root, "feature", &main_sha),
+            BranchStanding::CarriesWork
+        );
+        // Ahead of its base, tip IN main: somebody else's hand landed it, and the row is `Landed`
+        // without a rebase and without a gate — the case the ancestor check was added for.
+        git(&root, &["merge", "--ff-only", "feature"]);
+        assert_eq!(
+            branch_standing(&root, "feature", &main_sha),
+            BranchStanding::OnMain
+        );
+        // Equal to its base: nothing was committed — and the ancestor check still says yes, which
+        // is exactly the reading that binned two branches of work.
+        let tip = sha(&root, "main");
+        git(&root, &["branch", "nothing", "main"]);
+        assert!(
+            main_contains(&root, "nothing"),
+            "a branch at its own base IS an ancestor of main — the trap"
+        );
+        assert_eq!(
+            branch_standing(&root, "nothing", &tip),
+            BranchStanding::NothingCommitted
+        );
+        // **And a base git cannot name is NOT *nothing was committed*.** The queue cannot tell,
+        // and *cannot tell* must never be read as the one answer that bins work: the empty string
+        // a row with no base carries, and a sha that does not resolve, both leave the ordinary
+        // path to decide.
+        assert_eq!(
+            branch_standing(&root, "feature", ""),
+            BranchStanding::CarriesWork,
+            "no base recorded"
+        );
+        assert_eq!(
+            branch_standing(&root, "feature", "0000000000000000000000000000000000000000"),
+            BranchStanding::CarriesWork,
+            "a base git cannot resolve"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A branch that is its own base is NEVER `Landed`** — the regression, and the one that cost
+    /// two branches of real work.
+    ///
+    /// A child that never commits leaves its branch standing at its own base, and that base is an
+    /// ancestor of `main` *by construction*: `git merge-base --is-ancestor <branch> main` answers
+    /// yes about a branch with nothing on it at all. Read as *"already landed"*, that one true
+    /// fact moved the row to `Landed` and ran the cleanup `Landed` owns — the worktree, which is
+    /// where the uncommitted work was, was removed and the branch deleted. The work was never on
+    /// main and the row said it was.
+    ///
+    /// So the pass asks the other question first: does the branch carry any commit over its base?
+    /// `git rev-list --count <base>..<branch>` is 0 here, and 0 is *nothing was committed*, which
+    /// is never `Landed`. Against the code that asked only whether main contains the branch, this
+    /// test is red on every assertion below the pass: the row comes back `Landed`, the worktree is
+    /// gone, and the uncommitted `b.txt` with it.
+    #[test]
+    fn a_branch_that_is_its_own_base_is_never_landed() {
+        let root = std::env::temp_dir().join(format!("letibot-mq-nothing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["config", "user.email", "t@t"]);
+        git(&root, &["config", "user.name", "t"]);
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").expect("write");
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-qm", "first"]);
+        let main_sha = sha(&root, "main");
+        // The branch, cut from main — with NOTHING committed on it. This is the shape of the two
+        // lost entries: a child that did the work in the worktree and never committed.
+        git(&root, &["branch", "feature"]);
+        let wt = root.join("worktrees").join("feature");
+        git(
+            &root,
+            &["worktree", "add", "-q", wt.to_str().unwrap(), "feature"],
+        );
+        std::fs::write(wt.join("b.txt"), "three\n").expect("write");
+        assert_eq!(
+            sha(&root, "feature"),
+            main_sha,
+            "the branch is at its own base"
+        );
+        assert!(
+            main_contains(&root, "feature"),
+            "and the ancestor check says yes about it — that is the trap"
+        );
+
+        let db = root.join("sessions.db");
+        let entry = MergeEntry {
+            id: "m-nothing".into(),
+            session_id: "s".into(),
+            branch: "feature".into(),
+            base_sha: main_sha.clone(),
+            priority: MergePriority::Subagent,
+            needs: vec![],
+            state: MergeState::Waiting,
+            brief: "do the work".into(),
+            evidence: String::new(),
+            created_ms: 1_000,
+            updated_ms: 1_000,
+            worktree: Some(wt.to_str().unwrap().to_string()),
+            landed_sha: None,
+            gate_steps: Vec::new(),
+        };
+        enqueue(&db, &entry);
+        // An accepting verdict, so the queue may TAKE it: the bug is in what the pass does with
+        // an entry it is allowed to take, not in a row nobody reviewed.
+        approve(&db, "m-nothing");
+
+        let daemon = MergeQueueDaemon::new(
+            store_at(&db),
+            root.clone(),
+            Box::new(|_| GateRun::green()),
+            quiet_reviewer(),
+            quiet_events(),
+        );
+        let outcome = daemon.step().expect("the pass");
+        assert_ne!(
+            outcome,
+            StepOutcome::Landed(main_sha.clone()),
+            "a branch with nothing committed on it is not landed"
+        );
+
+        let row = store_at(&db)
+            .merge_entry("m-nothing")
+            .expect("reads")
+            .expect("the entry");
+        assert_ne!(row.state, MergeState::Landed, "the row is not landed");
+        assert_eq!(
+            row.state,
+            MergeState::Failed,
+            "it is parked with the reason on it: {:?}",
+            row.evidence
+        );
+        assert!(
+            row.evidence.contains("nothing was committed"),
+            "and the row says why: {:?}",
+            row.evidence
+        );
+
+        // **The work survives** — the whole point. The worktree and the uncommitted file in it are
+        // where they were, because `Failed` keeps the tree.
+        assert!(wt.exists(), "the worktree is still there");
+        assert!(wt.join("b.txt").exists(), "and the uncommitted work in it");
+        assert!(branch_exists(&root, "feature"), "the branch is still there");
+        assert_eq!(sha(&root, "main"), main_sha, "main did not move");
         let _ = std::fs::remove_dir_all(&root);
     }
 
