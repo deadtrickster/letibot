@@ -725,6 +725,44 @@ fn the_never_write_list_is_refused_before_any_adjudicator_sees_it() {
     assert_eq!(h.read_file(".ssh/config"), "Host x\n");
 }
 
+/// **Why the notes directory is not a row on that list, measured rather than
+/// argued.**
+///
+/// `never_hit` scans *every string argument of every gated call* for a segment,
+/// and a note's `text` is one of them — so a row naming `.letibot/notes` would
+/// refuse the `notes` tool's own `add` whenever a note happened to mention its
+/// own directory. A rule that breaks the tool is worse than the hole it closes,
+/// which is why the refusal that keeps `write` and `edit` out of that directory
+/// lives in the tools themselves
+/// (`letibot_tools::builtins::notes::refuse_a_path_into_the_notes_dir`).
+///
+/// The path is assembled here rather than written whole so that a search for the
+/// literal does not match this file: what is under test is that the list reads
+/// prose, and a note about a key is exactly the prose that does it.
+#[test]
+fn the_never_write_list_reads_a_notes_text_so_it_cannot_hold_the_notes_dir() {
+    let mut h = writable_harness();
+    let store = format!("/home/op/.{}sh/id_ed25519", "s");
+    let r = h.call(
+        "notes",
+        &format!(
+            r#"{{"action":"add","name":"a-note-about-keys","text":"the operator's key is {store} and it is never rotated"}}"#
+        ),
+    );
+    assert!(
+        matches!(r.outcome, ToolOutcome::Denied { .. }),
+        "the list matched the note's prose, not a path argument: {:?} — {}",
+        r.outcome,
+        r.render()
+    );
+    assert!(r.render().contains("never-write list"), "{}", r.render());
+    let (ws, _) = h.notes_dirs();
+    assert!(
+        !ws.join(".letibot/notes/a-note-about-keys.md").exists(),
+        "and the note did not land"
+    );
+}
+
 /// An adjudicator that denies, for the outcome-class test.
 fn deny_all() -> Box<dyn letibot_tools::runtime::Gate> {
     use letibot_tools::adjudicate::{AdjudicatedGate, AdjudicationDecision, AskAdjudicator};

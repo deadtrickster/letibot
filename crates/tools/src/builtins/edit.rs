@@ -56,7 +56,7 @@ use crate::edit::{Candidate, FileEdit, FileText, changed_span, display_lines, oc
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
-use super::{near_names, nearest_listing, render_listing};
+use super::{near_names, nearest_listing, notes, render_listing};
 
 /// How many lines of the file are shown either side of a reported region.
 const CONTEXT: usize = 3;
@@ -140,6 +140,15 @@ impl Tool for Edit {
                 "call `edit` again with `path`, `old_string` and `new_string`.",
             );
         };
+        // **The one directory this door must not open.** `.letibot/notes/` is the
+        // `notes` tool's, and a note put there by a path goes around the similarity
+        // gate that is the whole reason the tool exists — see
+        // `notes::refuse_a_path_into_the_notes_dir`, which also says why the rule is
+        // here rather than on §11.4's never-write list. Before the `edits` dispatch,
+        // so a batch cannot slip past it either.
+        if let Some(refusal) = notes::refuse_a_path_into_the_notes_dir(ctx.backend, path) {
+            return refusal;
+        }
         // **Several changes to one file, in one call.** The reason this exists is
         // measured rather than assumed: a model that wants four non-adjacent
         // changes to one file has, until now, had to make four calls — four round

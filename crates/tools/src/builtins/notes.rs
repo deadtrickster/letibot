@@ -76,13 +76,19 @@
 //! gate's way by saying what distinguishes it, which is the act the refusal is
 //! asking for.
 //!
-//! **And the door it does not close.** `write` and `edit` can put a file into
-//! `.letibot/notes/` without passing through here, and nothing in this tool can
-//! see that. Closing it needs the same [`NotesScope`] seam threaded into those
-//! two tools, which are unit structs today (`crates/tools/src/builtins/edit.rs`),
-//! so it is named here rather than pretended about. The gate is on the documented
-//! door: the one the schema describes, the one `list` reports, and the one a
-//! session reaches for when it means *write a note*.
+//! **And the doors that were open beside it.** `write` and `edit` take a `path`,
+//! and a path can spell `.letibot/notes/foo.md` — so both verbs refuse a target in
+//! this directory, by name, and point at the verbs here
+//! ([`refuse_a_path_into_the_notes_dir`], which carries the argument for where
+//! that refusal lives). The gate is still on the documented door — the one the
+//! schema describes, the one `list` reports, and the one a session reaches for
+//! when it means *write a note* — but it is no longer the only one a session has
+//! to walk through.
+//!
+//! **What is still open, and it is named rather than pretended about:** `bash`.
+//! A shell redirect into the directory is not a path argument, so neither this
+//! tool nor the two file verbs can see it, and the note it lands is a note nobody
+//! scored.
 //!
 //! # The search door
 //! `search` answers a query with paths, line numbers and the matching lines —
@@ -201,7 +207,7 @@ fn sources(scope: &dyn NotesScope) -> Vec<Source> {
             label: "box-wide (the operator's)",
         },
         Source {
-            dir: ws.join(".letibot").join("notes"),
+            dir: ws.join(NOTES_DIR),
             file: None,
             label: "project notes (written with this tool, and by the operator)",
         },
@@ -242,6 +248,95 @@ fn corpus(scope: &dyn NotesScope) -> Vec<(PathBuf, String)> {
 pub fn sort_newest_first(paths: &mut [PathBuf]) {
     let mtime = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     paths.sort_by(|a, b| mtime(b).cmp(&mtime(a)).then_with(|| a.cmp(b)));
+}
+
+/// Where the project notes live under a workspace — the one directory this tool
+/// writes, named once so the reader, the writer and the refusals that keep the
+/// other doors out cannot come to disagree about it.
+pub const NOTES_DIR: &str = ".letibot/notes";
+
+/// **The other doors into this directory, and why the refusal is here.**
+///
+/// `write` and `edit` take a path, and a path can spell `.letibot/notes/foo.md` —
+/// so a note can be put there without ever reaching this tool, which is the one
+/// place [`DUPLICATE_FLOOR`]'s similarity gate is asked. A note that arrives that
+/// way is a note nobody scored, and the reader injects it exactly as it injects
+/// the ones that were: the corpus is curated on purpose, so a door around the
+/// gate is a door around the curation.
+///
+/// # Why this is not a row on §11.4's never-write list
+///
+/// [`crate::adjudicate::NEVER_WRITE`] is a **boundary**: checked before any
+/// adjudicator, overridable by nobody — and its matcher (`never_hit`) scans
+/// *every string argument of every gated call* for a segment, with no tool in the
+/// test. `.letibot/notes/` is the opposite kind of rule: this harness writes it on
+/// purpose, through this tool, and a `never` row naming it would refuse **this
+/// tool's own writes** the moment a note's text happened to mention the directory
+/// — a rule that breaks the tool is worse than the hole it closes. The honest
+/// home is the door: the rule is *this door does not lead into that directory, the
+/// tool that owns it does*, and a door is where a routing rule belongs.
+///
+/// # What it reads, and what it does not
+///
+/// The path as the session sees it, lexically: the leading components, `.`
+/// dropped and `..` resolved — the walk [`crate::runtime::GateCall::path_is_inside`]
+/// keeps, for the same reason (the class of a path is a property of the argument,
+/// not of what the filesystem happens to hold). An absolute path is read against
+/// [`crate::backend::ExecBackend::workspace_path`], the directory a relative path
+/// starts from; a backend that cannot name one is the case this misses, and it is
+/// named here rather than papered over.
+///
+/// `None` for every other path, so the two verbs that call it are unchanged for
+/// everything that is not a note.
+pub(crate) fn refuse_a_path_into_the_notes_dir(
+    backend: &dyn crate::backend::ExecBackend,
+    path: &str,
+) -> Option<Invocation> {
+    let relative = if path.starts_with('/') {
+        // An absolute spelling of the same file. `workspace_path` is the cwd a
+        // relative path starts from — not `root_path`, which for an unconfined
+        // seat is `/` and would make the tail match mean nothing.
+        let workspace = backend.workspace_path()?;
+        let rest = path.strip_prefix(workspace.trim_end_matches('/'))?;
+        rest.strip_prefix('/')?.to_string()
+    } else {
+        path.to_string()
+    };
+    let mut lead: Vec<&str> = Vec::new();
+    for seg in relative.split('/') {
+        match seg {
+            "" | "." => {}
+            // `..` is resolved rather than counted: `docs/../.letibot/notes/x.md`
+            // is the same file, and a path that climbs out of the directory it
+            // starts from cannot be this one.
+            ".." => {
+                if lead.pop().is_none() {
+                    return None;
+                }
+            }
+            other => lead.push(other),
+        }
+    }
+    // Three components or more: the directory itself is left to the backend's own
+    // "is a directory" refusal, which is the true answer for it. What this rule is
+    // about is a FILE inside the directory the tool owns — and its whole subtree,
+    // because the directory is the tool's.
+    if lead.len() < 3 || !lead.starts_with(&NOTES_DIR.split('/').collect::<Vec<_>>()) {
+        return None;
+    }
+    Some(Invocation::failed(
+        format!("`{path}` is inside `{NOTES_DIR}/`, which the `notes` tool owns"),
+        format!(
+            "Nothing was written. A note put there by `write` or `edit` goes around the 
+             similarity gate those two verbs do not carry — the gate that refuses a note 
+             which would land as a near-copy of one that already exists — and the reader 
+             injects what lands exactly as it injects the notes that were scored. So this 
+             is not a file to write: it is a note. Call `notes` with a bare `name` (not a 
+             path) and `action` = \"add\" to create one, \"append\" to grow one that 
+             exists, or \"replace\" to rewrite one — it writes into `{NOTES_DIR}/` itself, 
+             and it refuses a near-copy rather than letting the corpus fill with them."
+        ),
+    ))
 }
 
 /// A note NAME as this tool accepts it: a file stem, no path in it. `.md` is
@@ -928,7 +1023,7 @@ impl NotesTool {
                 ),
             );
         }
-        let dir = self.scope.workspace().join(".letibot").join("notes");
+        let dir = self.scope.workspace().join(NOTES_DIR);
         let target = dir.join(format!("{stem}.md"));
         let existing = std::fs::read_to_string(&target).ok();
         // The abstract is the author's to set, and it is the one part of a note
@@ -1596,6 +1691,108 @@ mod tests {
             })
             .unwrap_or_default();
         assert!(wrote.is_empty(), "nothing was written: {wrote:?}");
+    }
+
+    /// **The two other doors into the notes directory are refused, and the tool
+    /// that owns it still writes.**
+    ///
+    /// The hole this closes was named in this module's own doc: a note put in
+    /// `.letibot/notes/` by `write` or `edit` never reaches [`DUPLICATE_FLOOR`]'s
+    /// gate, and the reader injects it exactly as it injects the notes that were
+    /// scored. The second half is the half that must not break — the fix is a rule
+    /// about two OTHER doors, and a rule that also caught this tool's own writes
+    /// would be worse than the hole.
+    ///
+    /// The spellings are the ones a caller actually produces: the plain one, the
+    /// `./`-prefixed one, one that climbs out and comes back, and the absolute path
+    /// of the same file. A rule that read the spelling rather than the fact would
+    /// be this same defect one door over, so the whole list is one case.
+    #[test]
+    fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
+        let mut h = writable_harness();
+        let (ws, _) = h.notes_dirs();
+        // The absolute spelling is compared against the backend's own cwd, which is
+        // canonicalised when the backend opens — so the fixture's path is too.
+        let abs = std::fs::canonicalize(&ws).unwrap_or_else(|_| ws.clone());
+        std::fs::create_dir_all(ws.join(NOTES_DIR)).expect("project dir");
+
+        for path in [
+            format!("{NOTES_DIR}/by-hand.md"),
+            format!("./{NOTES_DIR}/by-hand.md"),
+            format!("src/../{NOTES_DIR}/by-hand.md"),
+            abs.join(NOTES_DIR).join("by-hand.md").display().to_string(),
+        ] {
+            let args = format!(r#"{{"path":{path:?},"content":"a note nobody scored\n"}}"#);
+            let r = h.call("write", &args);
+            assert!(!r.is_grounded(), "`{path}` must be refused: {}", r.render());
+            let said = r.render();
+            assert!(
+                said.contains("which the `notes` tool owns"),
+                "the refusal is by name — the directory and the tool that owns it: {said}"
+            );
+            assert!(said.contains("Nothing was written"), "{said}");
+            assert!(
+                said.contains("near-copy") && said.contains("\"append\""),
+                "and it says what to do instead, in the verbs that do it: {said}"
+            );
+        }
+
+        // **`edit`, in both of its shapes.** The check is before the `edits`
+        // dispatch, so a batch is not a way round it.
+        std::fs::write(ws.join(NOTES_DIR).join("existing.md"), "a note\n").expect("fixture");
+        for args in [
+            format!(
+                r#"{{"path":"{NOTES_DIR}/existing.md","old_string":"a note","new_string":"b note"}}"#
+            ),
+            format!(
+                r#"{{"path":"{NOTES_DIR}/existing.md","edits":[{{"old_string":"a note","new_string":"b note"}}]}}"#
+            ),
+        ] {
+            let r = h.call("edit", &args);
+            assert!(!r.is_grounded(), "{args}: {}", r.render());
+            assert!(
+                r.render().contains("which the `notes` tool owns"),
+                "{args}: {}",
+                r.render()
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(ws.join(NOTES_DIR).join("existing.md")).unwrap(),
+            "a note\n",
+            "no spelling of a write or an edit reached the note"
+        );
+        assert!(
+            !ws.join(NOTES_DIR).join("by-hand.md").exists(),
+            "and none of the four `write` spellings landed a file"
+        );
+
+        // **And the door that owns the directory still opens.** A rule that caught
+        // the wrong door would show up here and nowhere else.
+        let r = h.call(
+            "notes",
+            r#"{"action":"add","name":"scored","text":"the gate scored this one before it landed"}"#,
+        );
+        assert!(
+            r.is_grounded(),
+            "the notes tool still writes: {}",
+            r.render()
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join(NOTES_DIR).join("scored.md")).unwrap(),
+            "the gate scored this one before it landed\n"
+        );
+        // And the gate on that door is still the gate — a verbatim copy under a new
+        // name is the shape the floor was measured against.
+        let r = h.call(
+            "notes",
+            r#"{"action":"add","name":"scored-again","text":"the gate scored this one before it landed"}"#,
+        );
+        assert!(
+            !r.is_grounded(),
+            "the similarity gate still bites, on the tool's own door: {}",
+            r.render()
+        );
+        assert!(r.render().contains("near-copy"), "{}", r.render());
     }
 
     /// **A read reaches the box-wide dir — outside every session's backend

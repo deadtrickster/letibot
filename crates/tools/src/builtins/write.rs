@@ -23,7 +23,7 @@ use crate::edit::{FileEdit, FileText, changed_span, display_lines};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
-use super::{near_names, nearest_listing, render_listing};
+use super::{near_names, nearest_listing, notes, render_listing};
 
 const CONTEXT: usize = 3;
 
@@ -71,6 +71,16 @@ impl Tool for Write {
                 ),
             );
         };
+
+        // **The one directory this door must not open.** `.letibot/notes/` belongs to
+        // the `notes` tool, which is the only place a note is scored against the
+        // corpus before it lands; a note written here would be injected exactly as
+        // though it had been. See `notes::refuse_a_path_into_the_notes_dir`, which
+        // carries the argument for the rule being here rather than on §11.4's
+        // never-write list.
+        if let Some(refusal) = notes::refuse_a_path_into_the_notes_dir(ctx.backend, path) {
+            return refusal;
+        }
 
         // Existing or new decides which rules apply, so it is the first thing
         // established and it is established from the backend rather than assumed.
