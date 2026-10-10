@@ -38,6 +38,14 @@ RUN set -eux; apt-get update; apt-get install -y --no-install-recommends libsqli
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
 RUN set -eux; curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable; ln -sfn /usr/local/cargo/bin/cargo /usr/local/bin/cargo; ln -sfn /usr/local/cargo/bin/rustc /usr/local/bin/rustc; ln -sfn /usr/local/cargo/bin/rustup /usr/local/bin/rustup; cargo --version; rustc --version
 RUN printf 'export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo\n' > /etc/profile.d/10-letibot-rust.sh
+# ── Ownership, so the recipe's chown finds nothing to do ─────────────────────────────────────
+#
+# MEASURED: any edit to `firecode.layer` re-runs EVERY one of its RUN lines — the stamp is per FILE —
+# and the recipe's `chown -R 1000:1000 /usr/local/cargo /usr/local/rustup` costs about 24 of the 40
+# seconds such a boot takes, against about 14 on an unchanged layer file. The image should own its own
+# toolchain so that line is a no-op. The crates.io registry is deliberately NOT here: it needs this
+# repo's Cargo.lock, and the recipe's own fetch measured seconds.
+RUN set -eux; chown -R 1000:1000 /usr/local/cargo /usr/local/rustup; ls -ld /usr/local/cargo /usr/local/rustup
 
 # ── The llama.cpp checkout crates/llama/build.rs insists on ──────────────────────────────────────
 # The FORK, at the absolute path the build reads by default (DEFAULT_LLAMA_DIR), which is why nothing

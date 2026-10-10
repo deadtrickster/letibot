@@ -1,5 +1,12 @@
 # letibot's guest layer — what a VM needs to build THIS repository.
 #
+# MEASURED 2026-10-10, and it is why this file is edited so rarely: the stamp is per FILE, so ANY
+# change to it re-runs every RUN line below. With the imported image on top of this project that
+# costs about SIXTEEN seconds (the lines find their work already done), and before the image existed
+# it cost about TWO MINUTES. The one line that used to dominate the difference was the `chown -R`
+# over the 1.5 GB toolchain — 24 of those 40 seconds — which `letibot-layer:2` now satisfies, so
+# the recipe's chown is a no-op.
+#
 # The cookbook names this file as owed: "a firecode.layer for this project waiting to be written
 # (llama.cpp fork, libsqlite3-dev, the Rust toolchain), and until it exists every Rust run in a VM
 # pays ten minutes to rediscover it."
@@ -91,4 +98,13 @@ RUN set -eux; cd /home/dead/Projects/llama.cpp; cmake -B build-glm -G Ninja -DCM
 # toolchain that works and a build that refuses. An earlier draft left the fetch out of the IMAGE on
 # the grounds that a cold one costs seconds — measured in a probe whose own home was writable, which
 # is precisely the condition the image removes.
-RUN set -eux; CARGO_HOME=/usr/local/cargo cargo fetch; chown -R 1000:1000 /usr/local/cargo /usr/local/rustup; ls -ld /usr/local/cargo/registry
+# **AND THE LAST LINE WAS THE EXPENSIVE ONE AFTER ALL — FOR A REASON NOBODY WOULD GUESS.** MEASURED:
+# a boot with this file changed took 37.9 s against 40.6 s before the image owned the toolchain — a
+# gain of 2.7 s, not the 24 the chown itself costs. `/proc/mounts` shows the root overlay with
+# `metacopy` **N**, so chowning an inode that lives in a LOWER layer forces a full COPY-UP of that
+# file's data: the unconditional `chown -R` pushed 1.9 GB into the upper filesystem on every boot, and
+# the image carrying 1000:1000 changed nothing about that. So the chown is now asked only where it is
+# needed, from a `stat` — which reads metadata and copies nothing.
+# It is needed exactly once, on a guest built from a bare image: the fetch below runs as ROOT and
+# creates `registry/` root-owned, which is what made uid 1000 unable to build at all.
+RUN set -eux; CARGO_HOME=/usr/local/cargo cargo fetch; [ "$(stat -c %u /usr/local/cargo/registry 2>/dev/null)" = 1000 ] || chown -R 1000:1000 /usr/local/cargo/registry; [ "$(stat -c %u /usr/local/rustup)" = 1000 ] || chown -R 1000:1000 /usr/local/rustup; ls -ld /usr/local/cargo /usr/local/cargo/registry /usr/local/rustup
