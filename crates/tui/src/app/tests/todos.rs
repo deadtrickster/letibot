@@ -2,6 +2,89 @@
 
 use super::*;
 
+/// **The todos pane's bar names the keys THAT pane answers.**
+///
+/// The footer used to be rano's pinned `HintMode::Todos` sentence — *"↑↓ moves · enter or tab
+/// unfolds · pgup/pgdn and the wheel scroll · esc closes"* — and `enter or tab unfolds` is false on
+/// two of the three stops this pane's cursor can be on: `key_todos_pane` opens the card on the add
+/// control, and on one of the operator's rows the same two keys mark it done (and unmark it again).
+/// Only a repo item unfolds.
+///
+/// The head composes the whole bar now, so the act it names follows the cursor — and the way out is
+/// still named, from `Reading`'s tail, which is true of this pane.
+#[test]
+fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
+    use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoStatus};
+    let row = |content: &str, by| TodoEntry {
+        by,
+        content: content.into(),
+        status: TodoStatus::Pending,
+        when: None,
+        needs: Vec::new(),
+    };
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::TodosUpdated {
+            todos: vec![row("my own row", TodoBy::Operator)],
+        },
+    )));
+    a.todos_pane = true;
+
+    // **The add control**, which is where the cursor starts.
+    a.todos_sel = 0;
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("↑↓ moves"), "the movement key is named: {bar}");
+    assert!(
+        bar.contains("enter or tab opens the card"),
+        "the add control's act is opening the card, not unfolding anything: {bar}"
+    );
+    assert!(
+        bar.contains("esc closes this"),
+        "and the way out is named, from the tail: {bar}"
+    );
+    assert!(!bar.contains("unfolds"), "nothing here unfolds: {bar}");
+
+    // **One of the operator's own rows** — one Down from the add control. Enter TOGGLES it, which
+    // is the sentence rano's pinned footer got wrong, and `/todo rm` is named because deletion is
+    // the operator's own act and this is the only place it is spelled.
+    a.todos_sel = 1;
+    let bar = a.hint_bar(200);
+    assert!(
+        bar.contains("enter or tab toggles it done"),
+        "the act on the operator's row is the toggle: {bar}"
+    );
+    assert!(
+        !bar.contains("unfolds"),
+        "**the lie is gone**: the old footer said `unfolds` on a row where enter marks it done: {bar}"
+    );
+    assert!(
+        bar.contains("/todo rm N"),
+        "and the operator's own delete verb is discoverable: {bar}"
+    );
+
+    // **A repo item unfolds**, which is the one stop where the old sentence was true — and it is
+    // still said, so the fix is a correction rather than a deletion.
+    a.repo_todos = Some(vec![TodoRow {
+        indent: 0,
+        mark: Some(TodoMark::Open),
+        text: "an item in the file".into(),
+        body: Vec::new(),
+        item: true,
+    }]);
+    a.todos_sel = 2;
+    let bar = a.hint_bar(200);
+    assert!(
+        bar.contains("enter or tab unfolds the item"),
+        "the repo's own act is still named: {bar}"
+    );
+}
+
 #[test]
 fn ctrl_t_opens_the_todos_pane_and_esc_closes_it() {
     let mut a = app();

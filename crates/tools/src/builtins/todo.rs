@@ -6,12 +6,24 @@
 //! right. It writes nothing the operator owns, so nobody adjudicates it — but it
 //! is not read-class either, and the schema says so.
 //!
-//! The whole list every time. A delta — add one, complete one — would let a model
-//! that misremembered the current list drift it silently; a full replace either
-//! matches what the head saw or shows the whole difference. The harness persists
-//! the list and announces it, and [`TodoBoard`] is the seam that makes that
-//! split possible without the tools crate knowing about stores or logs: the tool
-//! mutates the board, the harness watches the version.
+//! The whole list every time, and **the whole list is an UPSERT: nothing a model
+//! sends removes a row.** The operator's rule is *"regarding todo - only i should be
+//! able to delete todo items. as a rule everything that ever created stays in
+//! history"*, and *"so done items or canceled items should be kept."* So a row left
+//! out of `todos` stays on the board, and the reply says so at the one call that
+//! would have meant a removal. A row is retired by marking it `completed`, which is
+//! a state and not a deletion.
+//!
+//! **A single row is addressed by quoting its own words**, in `update` (one of the
+//! model's own rows) or `operator` (one of the operator's): a quote that resolves to
+//! exactly one row moves that row's state and nothing else, and a quote that fits
+//! none or two is refused with the candidates named. There is no id on the wire —
+//! `TodoEntry` is `content`, `status`, `by` — so the words are the key, and the model
+//! has them character for character from the reply.
+//!
+//! The harness persists the list and announces it, and [`TodoBoard`] is the seam
+//! that makes that split possible without the tools crate knowing about stores or
+//! logs: the tool mutates the board, the harness watches the version.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,22 +48,22 @@ pub struct TodoBoard {
     /// the NAG (`harness.rs`'s `nag_notice` → `unfinished_plan`) and the prompt the model reads all
     /// pick the operator's items up for free, with no code that knows they exist.
     ///
-    /// **Separate, and not appended to `todos`, for one reason: the `todo` tool REPLACES the model's
-    /// list wholesale** — *"the whole list is replaced on every write, because a delta the model got
-    /// wrong is a delta nobody can audit"* — so an operator row left in that vector would be deleted
-    /// by the model's next `todo` call. Two halves, one getter.
+    /// **Separate, and not appended to `todos`, for one reason: every write the `todo` tool makes is
+    /// scoped to the MODEL's own rows** — the whole list is what the model is saying about its own
+    /// plan, and it neither reaches nor deletes anybody else's row — so an operator row left in that
+    /// vector would be written, re-worded and `by`-stamped as the model's. Two halves, one getter.
     operator: Mutex<Vec<TodoItem>>,
     /// **A PARENT session's rows on THIS board — the third half, and the one that must never meet
-    /// the wholesale replace.**
+    /// the model's own write.**
     ///
     /// The operator: *"yes - i want parent agents to be able to create todos for subagents.
     /// throught tree author - (Parent <session-id-of-parent>)"*. A child's board therefore has three
-    /// authors, and the new one's write is the OPPOSITE of the model's own: the parent's `todos` are
-    /// an UPSERT scoped to the parent's authorship ([`TodoBoard::upsert_parent`]), because
-    /// *"send the whole list; omitting an entry removes it"* is a contract about **your own** board —
-    /// carried across sessions it would be a parent's three rows wiping a child's plan and the
-    /// operator's rows, which is precisely the collision the two-author rule on this board exists to
-    /// prevent. Same reasoning as the operator's half, one author over: three halves, one getter.
+    /// authors, and the new one's write is scoped to the parent's own authorship
+    /// ([`TodoBoard::upsert_parent`]), because *"send the whole list"* is a contract about **your
+    /// own** rows — carried across sessions it would be a parent's three rows restating a child's
+    /// plan and the operator's rows, which is precisely the collision the two-author rule on this
+    /// board exists to prevent. Same reasoning as the operator's half, one author over: three halves,
+    /// one getter.
     ///
     /// Single-author by construction — [`ChildTodos::upsert_child`] is the only writer, it stamps
     /// `by` itself from the calling session's id, and only a child's own parent reaches it — so the
@@ -67,9 +79,9 @@ impl TodoBoard {
     /// **AND THE STORE'S LIST IS THE UNION, so it is SPLIT BY AUTHOR here.** `flush_todos` persists
     /// `snapshot()`, which is all three halves in one list, and this used to put all of it into the
     /// model's half with the operator's half empty. A resumed session then had the operator's rows
-    /// **inside the model's list** — so `todo_write`'s wholesale replace would delete them, the nag
-    /// would count them twice once the head re-pushed its own half on hello, and the pane would draw
-    /// each of them twice. Sorting it once, here, is what makes *several halves, one getter* an
+    /// **inside the model's list** — so the model's own write would have taken them for its own, the
+    /// nag would count them twice once the head re-pushed its own half on hello, and the pane would
+    /// draw each of them twice. Sorting it once, here, is what makes *several halves, one getter* an
     /// invariant rather than a property of the callers: nothing that loads a list can get it wrong.
     /// A `Parent` row is the third case, and a resumed child is the one that has them: its board is
     /// restored from the store the same way, so what its parent told it survives the restart.
@@ -103,90 +115,65 @@ impl TodoBoard {
         self.version.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// **Move the STATE of the operator's rows — the model's only way to dispose of one.**
+    /// **Move the STATE of rows on this board — the model's own, the operator's, or both, in ONE
+    /// all-or-nothing call.**
     ///
-    /// The board is one list (*"the existing getter should return mine and yours"*), and
-    /// `TodoBy::Operator`'s doc claimed the model could already act on the operator's half: *"the
+    /// `mine` addresses rows of the MODEL's half (the `update` field of `todo_write`), `theirs` the
+    /// operator's (its `operator` field). The board is one list (*"the existing getter should
+    /// return mine and yours"*), and this is the model's only way to dispose of a row it did not
+    /// write: `TodoBy::Operator`'s doc claimed it could already act on the operator's half — *"the
     /// model can mark the operator's item done, and the nag in `harness.rs` picks it up like any
-    /// other."* **It could not.** `todo_write` replaces the model's half and `set_operator` is the
-    /// HEAD's frame, so a row the operator wrote could be nagged about every idle turn and never
-    /// disposed of — the wedge R48 describes, and the reason this exists.
+    /// other"* — and **it could not**, because `todo_write` replaced the model's half and
+    /// `set_operator` is the HEAD's frame. A row the operator wrote could then be nagged about
+    /// every idle turn and never disposed of — the wedge R48 describes, and the reason this exists.
     ///
     /// **The words are the key, and that is not a shortcut — there is no other key.** Measured:
     /// `TodoEntry` on the wire is `content`, `status`, `by` (protocol.rs:677), and the operator has
     /// ruled out a bump, so a row cannot be addressed by an id. What the model HAS is the exact
-    /// string, because the nag hands it over character for character.
+    /// string, because the reply and the nag hand it over character for character.
     ///
     /// **So a name that does not resolve exactly once is REFUSED, and the candidates are named.**
     /// This is the house rule for an ambiguous name — `ClientFrame`'s own precedent for an
     /// ambiguous option prefix is *"refused, with the candidates named"* — and it is what makes
     /// content-keying safe rather than sloppy: the guess this refuses to make is a row silently
-    /// changing state under a model that quoted something else.
+    /// changing state under a model that quoted something else. [`resolve`] is the one spelling of
+    /// it, shared by both halves.
     ///
-    /// **ALL OR NOTHING.** Every update resolves before any is applied, so a call that names one
-    /// good row and one bad one moves neither, and the caller may apply its own list only after
-    /// this has succeeded. A partial write would leave the model's plan updated and the operator's
-    /// half not, which is the drift this whole board is arranged to prevent.
+    /// **ALL OR NOTHING, ACROSS BOTH HALVES.** Every quote in both lists resolves before any of
+    /// them is applied, so a call that names one good row and one bad one moves neither — not the
+    /// bad half's and not the good half's. A partial write would leave the model's plan updated and
+    /// the operator's half not, which is the drift this whole board is arranged to prevent.
     ///
     /// **It sets STATE and never membership.** A model may mark the operator's row done — or put
     /// it back to pending — and may not delete it: the row is the operator's own words, and a model
     /// that misquotes must not be able to take them off the board. Membership is the head's, by
-    /// `set_operator`, and the operator's own delete key.
+    /// `set_operator`, and the operator's own `/todo rm`.
     ///
-    /// Returns how many rows actually CHANGED, and bumps the version only when that is not zero: a
-    /// status set to what it already was is not an event, and announcing it would put a row on the
-    /// wire and a write in the store for nothing.
-    pub fn set_operator_states(&self, updates: &[(String, TodoStatus)]) -> Result<usize, String> {
-        let mut half = self.operator.lock().unwrap_or_else(|e| e.into_inner());
-        // resolve every update BEFORE any is applied — see ALL OR NOTHING
-        let mut plan: Vec<(usize, TodoStatus)> = Vec::new();
-        for (asked, status) in updates {
-            let want = asked.trim();
-            let hits: Vec<usize> = half
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| t.content.trim() == want)
-                .map(|(i, _)| i)
-                .collect();
-            match hits.as_slice() {
-                [one] => plan.push((*one, *status)),
-                [] => {
-                    let have: Vec<&str> = half.iter().map(|t| t.content.trim()).collect();
-                    return Err(format!(
-                        "no row of the operator's says `{want}`{}. The operator's own rows are:                          {}",
-                        if have.is_empty() {
-                            ", and there are none"
-                        } else {
-                            ""
-                        },
-                        if have.is_empty() {
-                            "(none)".to_string()
-                        } else {
-                            have.iter()
-                                .map(|c| format!("`{c}`"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        }
-                    ));
-                }
-                _ => {
-                    return Err(format!(
-                        "`{want}` is TWO of the operator's rows, so which one changes is not                          something this can know. Quote the one you mean, or say in your reply                          which you left and why."
-                    ));
-                }
-            }
-        }
-        let mut changed = 0usize;
-        for (i, status) in plan {
-            if half[i].status != status {
-                half[i].status = status;
-                changed += 1;
-            }
-        }
-        if changed > 0 {
+    /// Returns how many rows on each half actually CHANGED — `(mine, theirs)` — and bumps the
+    /// version only when that is not zero: a status set to what it already was is not an event, and
+    /// announcing it would put a row on the wire and a write in the store for nothing.
+    pub fn set_states(
+        &self,
+        mine: &[(String, TodoStatus)],
+        theirs: &[(String, TodoStatus)],
+    ) -> Result<(usize, usize), String> {
+        let mut model = self.todos.lock().unwrap_or_else(|e| e.into_inner());
+        let mut operator = self.operator.lock().unwrap_or_else(|e| e.into_inner());
+        // Resolve every quote on BOTH halves before either is touched — see ALL OR NOTHING.
+        let my_plan = resolve_plan(&model, mine, "your own")?;
+        let their_plan = resolve_plan(&operator, theirs, "the operator's")?;
+        let mine_moved = apply_states(&mut model, my_plan);
+        let theirs_moved = apply_states(&mut operator, their_plan);
+        if mine_moved + theirs_moved > 0 {
             self.version.fetch_add(1, Ordering::SeqCst);
         }
-        Ok(changed)
+        Ok((mine_moved, theirs_moved))
+    }
+
+    /// **The operator's half alone** — the shape a caller that has only their rows to move wants,
+    /// and the one this board's own tests and the `operator` field had before `update` existed.
+    pub fn set_operator_states(&self, updates: &[(String, TodoStatus)]) -> Result<usize, String> {
+        self.set_states(&[], updates).map(|(_, theirs)| theirs)
     }
 
     /// The operator's half alone, for a caller that needs to tell the two apart.
@@ -207,13 +194,13 @@ impl TodoBoard {
             .clone()
     }
 
-    /// **A PARENT's write: an UPSERT scoped to the parent's own authorship — never the wholesale
-    /// replace the model's half takes.**
+    /// **A PARENT's write: an UPSERT scoped to the parent's own authorship** — the shape the model's
+    /// own half takes too, and for the same reason.
     ///
-    /// The whole of the safety here is WHAT IT DOES NOT TOUCH, so read this twice. The model's
-    /// `todo_write` contract is *"send the WHOLE list every time — there is no delta; omitting an
-    /// entry removes it"*, and that contract **does not carry across sessions**: a parent sending
-    /// its own three rows as the whole list would delete the child's plan and the operator's rows —
+    /// The whole of the safety here is WHAT IT DOES NOT TOUCH, so read this twice. A parent's list is
+    /// a statement about the PARENT's own rows, and it does not reach across sessions: under the old
+    /// wholesale-replace contract a parent sending its own three rows as the whole list would have
+    /// deleted the child's plan and the operator's rows —
     /// one agent overwriting another agent's plan, the exact collision the author split on this
     /// board exists to prevent. So here the rows sent are the rows the parent is ADDING or
     /// state-updating AS THE PARENT, and nothing else moves:
@@ -278,12 +265,63 @@ impl TodoBoard {
         changed
     }
 
-    /// Replace the list. Returns the new version, which is what the harness
-    /// compares against to decide whether a store write and an announcement are
-    /// owed.
-    pub fn replace(&self, todos: Vec<TodoItem>) -> u64 {
-        *self.todos.lock().unwrap_or_else(|e| e.into_inner()) = todos;
-        self.version.fetch_add(1, Ordering::SeqCst) + 1
+    /// **The model's own rows, as an UPSERT — and never a delete.**
+    ///
+    /// The operator's rule is *"only i should be able to delete todo items. as a rule everything
+    /// that ever created stays in history"*, so there is no key on this board that removes a row:
+    ///
+    /// * a row whose trimmed text matches one of the model's own rows **moves that row's state and
+    ///   its edges** — the text is the name, and a re-worded row is a NEW row, which is why the
+    ///   reply prints the whole board rather than a diff;
+    /// * a row that matches none is **appended** to this half;
+    /// * a row of the model's that this call does not name is **left exactly where it was**, and the
+    ///   tool says which ones, at the call that would have meant a removal under the old contract.
+    ///
+    /// **A name fits at most one row here by construction.** This is the only writer of the model's
+    /// half and it never writes a second row under a name the half already holds, so the upsert needs
+    /// no ambiguity refusal of [`resolve`]'s kind: there is nothing to choose between. (A store
+    /// written by hand could hold two rows that trim alike, and the first is the one that moves.)
+    ///
+    /// Returns how many rows were ADDED or CHANGED, and bumps the version only when that is not
+    /// zero — [`TodoBoard::upsert_parent`]'s rule, so a re-send of an unchanged plan is not an event
+    /// and does not cost the store a write or the pane a publish.
+    pub fn upsert_model(&self, rows: &[(String, TodoStatus, Vec<TodoNeed>)]) -> usize {
+        let mut half = self.todos.lock().unwrap_or_else(|e| e.into_inner());
+        let mut changed = 0usize;
+        for (content, status, needs) in rows {
+            let want = content.trim();
+            if let Some(hit) = half.iter_mut().find(|t| t.content.trim() == want) {
+                if hit.status != *status || &hit.needs != needs {
+                    hit.status = *status;
+                    hit.needs = needs.clone();
+                    changed += 1;
+                }
+            } else {
+                half.push(TodoItem {
+                    content: content.clone(),
+                    status: *status,
+                    by: TodoBy::Model,
+                    // **A condition is the OPERATOR's own act** and this tool has no `when` field:
+                    // a job-conditioned row fires on a clock the model does not own. See
+                    // `TodoItem::when`.
+                    when: None,
+                    // **But its EDGES are the model's to write**, and the whole list is the whole of
+                    // what it is saying about them: a row restated is restated, edges included.
+                    needs: needs.clone(),
+                });
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        changed
+    }
+
+    /// **The model's own half alone** — what a call STARTED with, which is what lets the tool name
+    /// the rows that call left out (and so did not remove).
+    pub fn model_snapshot(&self) -> Vec<TodoItem> {
+        self.todos.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// **Clear the condition a row has been reported with** — the firing, as the board records it.
@@ -299,9 +337,9 @@ impl TodoBoard {
     /// the reader sees still says what the row was waiting for, and the idle nag — which reads
     /// `unfinished_plan` off this board — picks it up like any other work the model owes somebody.
     ///
-    /// The OPERATOR's half only, and not for symmetry: a model row is replaced wholesale by its
-    /// next `todo_write`, so a condition written there would already be gone, and the caller here is
-    /// the harness, whose rows these are.
+    /// The OPERATOR's half only, and not for symmetry: `todo_write` has no `when` field and writes
+    /// `when: None` on every row it adds, so a condition on a model row is not something this build
+    /// can write at all — and the caller here is the harness, whose rows these are.
     ///
     /// Returns how many rows changed, which is what the caller checks before announcing: `0` must
     /// not bump the version, or every wake would republish the board.
@@ -347,6 +385,87 @@ impl TodoBoard {
     pub fn version(&self) -> u64 {
         self.version.load(Ordering::SeqCst)
     }
+}
+
+/// **One quote, resolved against one half of the board — and the house rule for a name.**
+///
+/// `whose` is the phrase a refusal speaks with: `"your own"` or `"the operator's"`. Both readings
+/// work in every sentence below, which is why there is one function rather than two.
+///
+/// Three outcomes and no fourth. Exactly one row is the answer. None is refused **with the rows that
+/// half DOES hold**, so the model can quote one of them instead of guessing again. Two or more is
+/// refused **with every candidate named** — by its place and its exact words — because which one
+/// changes is not something this can know: the rows can differ only in whitespace (the match trims),
+/// so the place is the only thing that tells them apart.
+///
+/// This is the same rule [`unmet_needs`] keeps for a `needs` name, and `set_states`' own doc says
+/// why it is the rule: a guess here is a row silently changing state under a model that quoted
+/// something else.
+fn resolve(half: &[TodoItem], asked: &str, whose: &str) -> Result<usize, String> {
+    let want = asked.trim();
+    let hits: Vec<usize> = half
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.content.trim() == want)
+        .map(|(i, _)| i)
+        .collect();
+    match hits.as_slice() {
+        [one] => Ok(*one),
+        [] if half.is_empty() => Err(format!(
+            "no row of {whose} says `{want}` — there are none of them at all, so there is nothing to \
+             move. `todos` adds rows; `update` and `operator` move the ones already on the board."
+        )),
+        [] => {
+            let have: Vec<String> = half
+                .iter()
+                .enumerate()
+                .map(|(i, t)| format!("{}. `{}`", i + 1, t.content.trim()))
+                .collect();
+            Err(format!(
+                "no row of {whose} says `{want}`. {whose} rows are: {}",
+                have.join(", ")
+            ))
+        }
+        many => {
+            let which: Vec<String> = many
+                .iter()
+                .map(|i| format!("row {} `{}`", i + 1, half[*i].content))
+                .collect();
+            Err(format!(
+                "`{want}` is {} of {whose} rows — {} — so which one changes is not something this \
+                 can know. Quote the one you mean exactly, or say in your reply which you left and \
+                 why.",
+                many.len(),
+                which.join(", ")
+            ))
+        }
+    }
+}
+
+/// Resolve a whole list of `{content, status}` quotes against one half, or refuse the call.
+fn resolve_plan(
+    half: &[TodoItem],
+    updates: &[(String, TodoStatus)],
+    whose: &str,
+) -> Result<Vec<(usize, TodoStatus)>, String> {
+    let mut plan = Vec::with_capacity(updates.len());
+    for (asked, status) in updates {
+        plan.push((resolve(half, asked, whose)?, *status));
+    }
+    Ok(plan)
+}
+
+/// Apply a resolved plan to one half. Returns how many rows actually CHANGED — a status set to what
+/// it already said is not a move, which is what keeps a re-stated plan from being announced.
+fn apply_states(half: &mut [TodoItem], plan: Vec<(usize, TodoStatus)>) -> usize {
+    let mut changed = 0usize;
+    for (at, status) in plan {
+        if half[at].status != status {
+            half[at].status = status;
+            changed += 1;
+        }
+    }
+    changed
 }
 
 /// **The open work as a PRIORITY QUEUE, in the order it should be served.**
@@ -697,11 +816,11 @@ pub fn unfinished_plan_for(
         n => format!(" ({n} more open)"),
     };
     // **WHO ASKED, and it is not a courtesy — it decides WHICH FIELD disposes of the row.** A row the
-    // model wrote is rewritten with `todos`; a row the OPERATOR wrote is moved with `operator`, its
-    // text quoted exactly; and a row a PARENT wrote is one NO field of this tool may dispose of —
-    // the author retires it — which the child has to be told rather than left to guess. The nag is
-    // the one place the model hears about a row before acting on it, so leaving the author out is
-    // how a model comes to rewrite its own plan at the row somebody else is waiting on.
+    // model wrote is moved with `update`, its text quoted exactly; a row the OPERATOR wrote is moved
+    // with `operator`, the same way; and a row a PARENT wrote is one NO field of this tool may
+    // dispose of — the author retires it — which the child has to be told rather than left to guess.
+    // The nag is the one place the model hears about a row before acting on it, so leaving the author
+    // out is how a model comes to rewrite its own plan at the row somebody else is waiting on.
     let who = match &next.by {
         TodoBy::Operator => "the operator's",
         // The author string itself (`Parent <session id>`), verbatim: a child reading its own
@@ -723,10 +842,11 @@ pub fn unfinished_plan_for(
         ),
         (_, false) => format!(" — {who}"),
     };
-    // **AND THE VERBS DIFFER BY AUTHOR, for the same reason.** The model may drop its OWN row — that
-    // is what `drop` is for — and may not drop the operator's: their row is their words, so the model
-    // moves its STATE and says in its reply why it is not doing the work. `todo_write`'s `operator`
-    // field is named in the message because a model that has to guess a mechanism guesses wrong.
+    // **AND THE VERBS DIFFER BY AUTHOR, for the same reason.** The model may mark its OWN row done —
+    // `update`, quoting it — and may not do that to the operator's: their row is their words, so the
+    // model moves its STATE with `operator` and says in its reply why it is not doing the work.
+    // Neither verb removes a row, and the message names the field because a model that has to guess a
+    // mechanism guesses wrong.
     // A parent's row is the third case and the line is deliberately harder than the operator's: the
     // parent is a live session that will read this child's reply, so the child's way out is to DO
     // the work and SAY it did — no field of this tool aims at the parent's half, and a child that
@@ -744,8 +864,15 @@ pub fn unfinished_plan_for(
              reply."
         }
         TodoBy::Model => {
-            "do this one, or mark it done, or drop it — a plan left open is a plan nobody is \
-             following. If you are stopping here deliberately, say why in your reply."
+            // **"or drop it" was the old contract's verb and it went with it.** A row left out of a
+            // `todo_write` STAYS on the board now, so the model retires one by marking it done — and
+            // dropping a line of work is something it SAYS in its reply rather than something a call
+            // does. The phrase `mark it done with \`todo_write\`` is kept whole on purpose:
+            // `blocks.rs`'s notice fold matches on it, so the nag still folds to its item.
+            "do this one, or mark it done with `todo_write`'s `update` field, quoting the text \
+             above exactly — a row left out of `todo_write` STAYS on the board, so a line of work \
+             you are dropping is something you say in your reply, not something a call does. If you \
+             are stopping here deliberately, say why in your reply."
         }
     };
     // **AND WHAT CANNOT START IS SAID, not merely skipped.** A blocked row is invisible to the ask
@@ -1113,11 +1240,13 @@ impl Tool for TodoWriteTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "todo_write",
-            "Replace the session's todo list with exactly this list. Use it to plan \
-             multi-step work and to keep the operator's pane current: one entry per \
-             step, the step being worked on marked in_progress, finished steps \
-             marked completed. Send the WHOLE list every time — there is no delta; \
-             omitting an entry removes it.\n\nA row the OPERATOR has POSTPONED comes \
+            "Write the session's todo list: one entry per step, the step being \
+             worked on marked in_progress, finished steps marked completed. Send the \
+             WHOLE list every time — and a row you leave out STAYS on the board: \
+             nothing this tool sends removes a row, because only the operator \
+             deletes, and only through their own `/todo rm`. Retire a row by marking \
+             it `completed`. To mark ONE row without re-sending the list, name it in \
+             `update`, quoting its `content` exactly.\n\nA row the OPERATOR has POSTPONED comes \
              back marked `[p]`: it stays on the board, it is still theirs, and it is \
              not work you are being asked for — do not propose it again. `postponed` \
              is not a status you may send; setting one aside and lifting it again are \
@@ -1127,7 +1256,14 @@ impl Tool for TodoWriteTool {
              does not match exactly one of their rows is refused and nothing is \
              written, because a guessed row is a row changing state under you. You \
              cannot delete their row; if you think it should not be done, say so in \
-             your reply.\n\n`target` names a session YOU spawned with `task` and \
+             your reply.\n\n`update` moves ONE of YOUR OWN rows — the way to mark a \
+             single row without re-sending the list. It takes `content` (the row's \
+             own words, quoted exactly as the reply shows them) and `status`, and \
+             sets the status and nothing else: it cannot add a row, cannot change \
+             one's edges, and cannot remove one. A quote that matches no row is \
+             refused with the rows you do have; one that matches more than one is \
+             refused with the candidates named; and either refusal writes NOTHING — \
+             not even the `todos` beside it.\n\n`target` names a session YOU spawned with `task` and \
              writes YOUR rows onto THAT session's board instead of your own. There the \
              whole-list contract is OFF: your `todos` are the rows you are adding or \
              updating as the parent — a row whose text matches one of yours there \
@@ -1157,7 +1293,32 @@ impl Tool for TodoWriteTool {
                         "type": "array",
                         "description": "Rows the OPERATOR wrote, whose STATE you are \
                                         changing. Quote `content` exactly as the reply \
-                                        shows it. Sets state; never deletes.",
+                                        shows it. Sets state and never membership: it \
+                                        can neither add a row nor remove one.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string"},
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed"]
+                                }
+                            },
+                            "required": ["content", "status"]
+                        }
+                    },
+                    "update": {
+                        "type": "array",
+                        "description": "ONE OR MORE OF YOUR OWN ROWS, moved by quoting \
+                                        each one's `content` exactly as the reply shows \
+                                        it — the way to mark a single row without \
+                                        re-sending `todos`. Sets `status` and nothing \
+                                        else: it never adds a row, never changes one's \
+                                        edges and never removes one. A quote that \
+                                        matches no row of yours is refused with the \
+                                        rows you do have, and one that matches two is \
+                                        refused with both named; either refusal writes \
+                                        nothing at all.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -1172,11 +1333,14 @@ impl Tool for TodoWriteTool {
                     },
                     "todos": {
                         "type": "array",
-                        "description": "The complete list, in the order to do them. With \
-                                        `target`: the rows you are adding to or \
-                                        state-updating on that child's board — not a \
-                                        replace; the child's own rows and everyone \
-                                        else's are untouched.",
+                        "description": "Your plan, in the order to do them. A row whose \
+                                        trimmed text matches one you already wrote moves \
+                                        that row's state (and its edges); a new text is \
+                                        added; and a row you leave OUT stays on the board \
+                                        — there is no delete. With `target`: the rows you \
+                                        are adding to or state-updating on that child's \
+                                        board — not a replace; the child's own rows and \
+                                        everyone else's are untouched.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -1220,24 +1384,38 @@ impl Tool for TodoWriteTool {
                                         untouched, and there is no delete."
                     }
                 },
-                "required": ["todos"]
+                "required": []
             }),
             Access::Session,
         )
     }
 
     fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
-        let Some(list) = args.get("todos").and_then(|v| v.as_array()) else {
-            return Invocation::failed(
-                "todo_write needs `todos`",
-                "call it again with `todos` set to the complete list — every entry's \
-                 `content` and `status`. Omitting the field writes nothing; it does \
-                 not clear the list.",
-            );
-        };
-        let rows = match parse_rows(list) {
-            Ok(rows) => rows,
-            Err(inv) => return inv,
+        // **AN UNKNOWN TOP-LEVEL FIELD IS REFUSED BY NAME** — the same rule an entry's unknown
+        // field keeps below, one level up. This call has three fields a model confuses (`todos`,
+        // `update`, `operator`) and a fourth (`target`) that aims at another session's board, and a
+        // field that is silently ignored is exactly how a wrong write becomes a quiet one.
+        if let Some(obj) = args.as_object() {
+            for key in obj.keys() {
+                if !matches!(key.as_str(), "todos" | "update" | "operator" | "target") {
+                    return Invocation::failed(
+                        format!("`{key}` is not an argument of `todo_write`"),
+                        "**nothing was written.** The arguments are `todos` (the whole list), \
+                         `update` (one of YOUR rows, quoted), `operator` (one of the OPERATOR's \
+                         rows, quoted) and `target` (a child's board).",
+                    );
+                }
+            }
+        }
+        // **A MISSING `todos` IS NOT A MISSING ARGUMENT ANY MORE.** `update` and `operator` name a
+        // row on their own, which is the whole point of `update`; what is refused is a call that
+        // names no row by ANY of the three — see the block below the target path.
+        let rows = match args.get("todos").and_then(|v| v.as_array()) {
+            Some(list) => match parse_rows(list) {
+                Ok(rows) => rows,
+                Err(inv) => return inv,
+            },
+            None => Vec::new(),
         };
         // **THE TARGET PATH — a write onto a CHILD's board — runs before anything of this
         // session's own moves, and it never reaches `board` at all.**
@@ -1263,15 +1441,22 @@ impl Tool for TodoWriteTool {
                      subagent pane shows — or leave it out to write your own board.",
                 );
             };
-            if let Some(op) = args.get("operator") {
-                return refused(
-                    format!(
-                        "`target` and `operator` do not mix: this call named a child (`{target}`) \
-                         and an `operator` block ({op})"
-                    ),
-                    "`operator` moves the rows the OPERATOR wrote on YOUR board; `target` writes \
-                     your rows onto a CHILD's board. One call, one board — send them separately.",
-                );
+            // **One call, one board.** `operator` and `update` both move a row on THIS session's
+            // board and `target` writes onto a child's, so either of them beside `target` is a
+            // wrong write waiting to happen.
+            for field in ["operator", "update"] {
+                if let Some(given) = args.get(field) {
+                    return refused(
+                        format!(
+                            "`target` and `{field}` do not mix: this call named a child \
+                             (`{target}`) and a `{field}` block ({given})"
+                        ),
+                        &format!(
+                            "`{field}` moves a row on YOUR board; `target` writes your rows onto \
+                             a CHILD's board. One call, one board — send them separately."
+                        ),
+                    );
+                }
             }
             if rows.is_empty() {
                 return refused(
@@ -1307,92 +1492,99 @@ impl Tool for TodoWriteTool {
                 ),
             };
         }
-        let items: Vec<TodoItem> = rows
-            .into_iter()
-            .map(|(content, status, needs)| TodoItem {
-                content,
-                status,
-                // the MODEL's list, by definition: this arm of the function is the `todo` tool
-                by: letibot_tokencore::store::TodoBy::Model,
-                // **The model's own half is replaced wholesale on every call**, so a condition
-                // written here would die on the model's next `todo_write` — see
-                // `TodoItem::when`. A conditioned row belongs to the OPERATOR's half, which this
-                // tool does not own and cannot overwrite.
-                when: None,
-                // **And its EDGES are the model's own**, which is the difference between this and
-                // `when`: a need is not an act of the world's, it is a statement about this list,
-                // and this list is exactly what the call replaces. So the graph is written the
-                // same way the rows are — whole, every time.
-                needs,
-            })
-            .collect();
-        // **THE OPERATOR'S ROWS ARE MOVED BEFORE THE MODEL'S LIST IS REPLACED**, so a quote that
-        // does not resolve costs nothing at all: `set_operator_states` resolves every name before it
-        // applies any, and a refusal here leaves the model's own half exactly as it was. The other
-        // order would write the plan and then refuse, which is a half-applied call.
-        let mut moved = 0usize;
-        if let Some(rows) = args.get("operator") {
-            let Some(rows) = rows.as_array() else {
-                return Invocation::failed(
-                    "`operator` needs to be a list of `{content, status}`",
-                    "send `operator` as a list, or leave it out when you are not touching the \
-                     operator's rows.",
-                );
-            };
-            let mut updates: Vec<(String, TodoStatus)> = Vec::new();
-            for (i, r) in rows.iter().enumerate() {
-                let Some(content) = r.get("content").and_then(|v| v.as_str()) else {
-                    return Invocation::failed(
-                        format!("operator entry {} has no `content`", i + 1),
-                        "every `operator` entry needs `content` — the row's own words, quoted \
-                         exactly as the list shows them.",
-                    );
-                };
-                let status = match r.get("status").and_then(|v| v.as_str()) {
-                    Some("pending") => TodoStatus::Pending,
-                    Some("in_progress") => TodoStatus::InProgress,
-                    Some("completed") => TodoStatus::Completed,
-                    other => {
-                        return Invocation::failed(
-                            format!(
-                                "operator entry {} has status `{}`",
-                                i + 1,
-                                other.unwrap_or("(none)")
-                            ),
-                            "`status` is one of: pending, in_progress, completed.",
-                        );
-                    }
-                };
-                updates.push((content.to_string(), status));
-            }
-            match self.board.set_operator_states(&updates) {
-                Ok(n) => moved = n,
-                Err(why) => {
-                    return Invocation::failed(
-                        format!("the operator's rows were not moved: {why}"),
-                        "**nothing was written** — not their rows and not yours. Quote the row's \
-                         `content` exactly as the list below shows it, or leave `operator` out.",
-                    );
-                }
-            }
+        let updates = match parse_moves(args.get("update"), "update") {
+            Ok(v) => v,
+            Err(inv) => return inv,
+        };
+        let ops = match parse_moves(args.get("operator"), "operator") {
+            Ok(v) => v,
+            Err(inv) => return inv,
+        };
+        // **A CALL THAT NAMES NO ROW BY ANY FIELD IS REFUSED.** `{"todos": []}` used to mean *clear
+        // the board*; with no delete on this board it means nothing at all, and a call that says
+        // nothing must not be read as one that did something. The three fields are the three ways to
+        // name a row — `todos` is the whole list, `update` one of the model's own, `operator` one of
+        // the operator's — and a call with none of them has nothing to say.
+        if rows.is_empty() && updates.is_empty() && ops.is_empty() {
+            return Invocation::failed(
+                "this call names no rows",
+                "**nothing was written**: there is no delete and no way to clear the board. \
+                 `todos` is the whole list, `update` moves one of YOUR rows by quoting it, \
+                 `operator` moves one of the operator's. Send one of the three — and to retire a \
+                 row, mark it `completed` rather than leaving it out.",
+            );
         }
-        self.board.replace(items);
-        // The list back to the model, as it now stands — so the next call is
-        // written against what the pane shows, not against what the model
-        // believes it wrote.
-        let mut out = render(&self.board.snapshot());
-        if let Some(rows) = args.get("operator").and_then(|v| v.as_array()) {
-            if !rows.is_empty() {
-                out.push_str(&format!(
-                    "\nof the operator's rows you named, {} changed status{}.\n",
-                    moved,
-                    if moved == rows.len() {
-                        ""
-                    } else {
-                        " (the rest already said that)"
-                    }
-                ));
+        // **EVERY QUOTE RESOLVES BEFORE ANYTHING MOVES**, on both halves at once: a name that does
+        // not resolve costs nothing at all — not the operator's rows, not the model's own, and not
+        // the list beside them. `TodoBoard::set_states` is where that all-or-nothing lives; the
+        // model's own list is an upsert and cannot refuse.
+        let (moved_mine, moved_theirs) = match self.board.set_states(&updates, &ops) {
+            Ok(counts) => counts,
+            Err(why) => {
+                return Invocation::failed(
+                    format!("nothing was moved: {why}"),
+                    "**nothing was written** — not the operator's rows, not your own rows, and not \
+                     your list. Quote a row's `content` exactly as the list below shows it, or \
+                     leave the field out.",
+                );
             }
+        };
+        // **WHAT THIS CALL STARTED WITH**, so the reply can say which rows it did NOT remove. The
+        // model's half is an upsert now, and a model whose frozen prefix still carries the old
+        // contract (*"omitting an entry removes it"*) has to be told — at the call that would have
+        // meant a removal, and only when a row was actually left out — that the row is still there.
+        // **ONLY WHEN `todos` WAS SENT.** A call that names one row with `update` leaves nothing
+        // out — it never said what the list is — so this sentence belongs to the whole-list form
+        // alone.
+        let list_sent = args.get("todos").and_then(|v| v.as_array()).is_some();
+        let before = self.board.model_snapshot();
+        self.board.upsert_model(&rows);
+        let omitted: Vec<String> = if list_sent {
+            before
+                .iter()
+                .filter(|t| !rows.iter().any(|(c, _, _)| c.trim() == t.content.trim()))
+                .map(|t| t.content.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // The list back to the model, as it now stands — so the next call is written against what
+        // the pane shows, not against what the model believes it wrote.
+        let mut out = render(&self.board.snapshot());
+        if !updates.is_empty() {
+            out.push_str(&format!(
+                "\nof your own rows you named, {} changed status{}.\n",
+                moved_mine,
+                if moved_mine == updates.len() {
+                    ""
+                } else {
+                    " (the rest already said that)"
+                }
+            ));
+        }
+        if !ops.is_empty() {
+            out.push_str(&format!(
+                "\nof the operator's rows you named, {} changed status{}.\n",
+                moved_theirs,
+                if moved_theirs == ops.len() {
+                    ""
+                } else {
+                    " (the rest already said that)"
+                }
+            ));
+        }
+        if !omitted.is_empty() {
+            out.push_str(&format!(
+                "\n**{} of your rows were left out of this call and are still on the board**: {}. \
+                 Nothing this tool sends removes a row — mark one `completed` when it is done, and \
+                 say in your reply when you are dropping a line of work.\n",
+                omitted.len(),
+                omitted
+                    .iter()
+                    .map(|c| format!("`{c}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         Invocation::ok(out)
     }
@@ -1431,10 +1623,10 @@ fn parse_rows(list: &[Value]) -> Result<Vec<(String, TodoStatus, Vec<TodoNeed>)>
                 if !matches!(key.as_str(), "content" | "status" | "needs") {
                     return Err(Invocation::failed(
                         format!("entry {} has an unknown field `{key}`", i + 1),
-                        if key == "operator" {
-                            "**`operator` is a TOP-LEVEL argument, not a field of a `todos` \
-                             entry**: send it BESIDE `todos`, as {\"todos\": […], \"operator\": \
-                             [{\"content\": \"<the row's own words, quoted exactly>\", \
+                        if key == "operator" || key == "update" {
+                            "**`operator` and `update` are TOP-LEVEL arguments, not fields of a \
+                             `todos` entry**: send one BESIDE `todos`, as {\"todos\": […], \
+                             \"update\": [{\"content\": \"<one of YOUR rows, quoted exactly>\", \
                              \"status\": \"completed\"}]}. Left inside an entry it is ignored, \
                              and being ignored is what makes it look like the row changed when \
                              it did not."
@@ -1444,9 +1636,8 @@ fn parse_rows(list: &[Value]) -> Result<Vec<(String, TodoStatus, Vec<TodoNeed>)>
                              `Parent <your session id>` on a child's. Send only `content` and \
                              `status`."
                         } else {
-                            "a `todos` entry has `content`, `status` and an optional `needs` — the \
-                             whole list is replaced on every call, so an unknown field is refused \
-                             rather than ignored."
+                            "a `todos` entry has `content`, `status` and an optional `needs` — an \
+                             unknown field is refused rather than ignored."
                         },
                     ));
                 }
@@ -1501,6 +1692,72 @@ fn parse_rows(list: &[Value]) -> Result<Vec<(String, TodoStatus, Vec<TodoNeed>)>
         rows.push((content.to_string(), status, needs));
     }
     Ok(rows)
+}
+
+/// **Parse a `{content, status}` list — `update` and `operator`, one function.**
+///
+/// Both fields name rows by quoting them and set their state; they differ only in WHICH half of the
+/// board they aim at, which is the board's business and not this parse's. The refusals name the field
+/// the model actually sent, because a message that says `operator` to a model that wrote `update` is
+/// the same class of lie as a key that does nothing.
+///
+/// **Nothing here can add or remove a row**: an entry has `content` and `status` and nothing else,
+/// which is the whole of what this field means, and an unknown key is refused by name rather than
+/// ignored — the same rule `parse_rows` keeps one level down.
+fn parse_moves(v: Option<&Value>, field: &str) -> Result<Vec<(String, TodoStatus)>, Invocation> {
+    let Some(v) = v else {
+        return Ok(Vec::new());
+    };
+    let Some(rows) = v.as_array() else {
+        return Err(Invocation::failed(
+            format!("`{field}` needs to be a list of `{{content, status}}`"),
+            format!(
+                "send `{field}` as a list of the rows you are moving, each quoting `content` \
+                 exactly as the reply shows it, or leave it out."
+            ),
+        ));
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for (i, r) in rows.iter().enumerate() {
+        if let Some(obj) = r.as_object() {
+            for key in obj.keys() {
+                if !matches!(key.as_str(), "content" | "status") {
+                    return Err(Invocation::failed(
+                        format!("{field} entry {} has an unknown field `{key}`", i + 1),
+                        format!(
+                            "a `{field}` entry has `content` and `status` — nothing else. The \
+                             words are the name and the status is the only thing that moves: a row \
+                             is never added or removed by this field."
+                        ),
+                    ));
+                }
+            }
+        }
+        let Some(content) = r.get("content").and_then(|v| v.as_str()) else {
+            return Err(Invocation::failed(
+                format!("{field} entry {} has no `content`", i + 1),
+                "every entry needs `content` — the row's own words, quoted exactly as the list \
+                 shows them.",
+            ));
+        };
+        let status = match r.get("status").and_then(|v| v.as_str()) {
+            Some("pending") => TodoStatus::Pending,
+            Some("in_progress") => TodoStatus::InProgress,
+            Some("completed") => TodoStatus::Completed,
+            other => {
+                return Err(Invocation::failed(
+                    format!(
+                        "{field} entry {} has status `{}`",
+                        i + 1,
+                        other.unwrap_or("(none)")
+                    ),
+                    "`status` is one of: pending, in_progress, completed.",
+                ));
+            }
+        };
+        out.push((content.to_string(), status));
+    }
+    Ok(out)
 }
 
 /// **One `needs` entry, as the tool spells it** — a plain string (the other row's own words), or the
@@ -1604,10 +1861,10 @@ fn render(todos: &[TodoItem]) -> String {
         // **AND WHO WROTE IT, or `operator` is a field the model cannot aim.** The `by` field is
         // the whole of the difference between the halves, the pane has drawn it on every row since
         // R44, and this is the same fact for the reader that has to ACT on it: a row marked `— the
-        // operator's` is one this call moves with `operator`, one marked `— yours` is one it
-        // replaces with `todos`, and one marked with a `Parent` author is one NO field of this
-        // tool disposes of — the author retires it. Content is printed VERBATIM (never trimmed,
-        // never elided), because that string is the name the model has to quote back.
+        // operator's` is one this call moves with `operator`, one marked `— yours` is one it moves
+        // with `update` or restates with `todos`, and one marked with a `Parent` author is one NO
+        // field of this tool disposes of — the author retires it. Content is printed VERBATIM (never
+        // trimmed, never elided), because that string is the name the model has to quote back.
         let author = match &t.by {
             TodoBy::Operator => "the operator's".to_string(),
             // **The operator's own string, verbatim and in full** — `Parent s-…` — because a
@@ -1835,7 +2092,7 @@ mod tests {
     ///
     /// Two claims, and the second is why the halves are separate: the union is what `snapshot`
     /// answers — which is what `unfinished_plan`, and therefore the idle nag, reads — and the `todo`
-    /// tool's wholesale REPLACE of the model's list does not take the operator's rows with it.
+    /// tool's own write, scoped to the model's rows, does not take the operator's rows with it.
     #[test]
     fn the_board_returns_the_operators_rows_alongside_the_models() {
         let b = TodoBoard::new(vec![TodoItem {
@@ -1867,18 +2124,27 @@ mod tests {
             "so the reminder can fire for work the OPERATOR queued"
         );
 
-        // **AND THE MODEL'S WHOLESALE REPLACE DOES NOT DELETE THEM.** `replace` is the `todo` tool's
+        // **AND THE MODEL'S OWN WRITE DOES NOT DELETE THEM.** `upsert_model` is the `todo` tool's
         // own write, and it is why the two halves are kept apart rather than concatenated.
-        b.replace(vec![TodoItem {
-            content: "the model's, revised".into(),
-            status: TodoStatus::Pending,
-            by: TodoBy::Model,
-            when: None,
-            needs: Vec::new(),
-        }]);
+        b.upsert_model(&[("the model's".into(), TodoStatus::Completed, Vec::new())]);
         let after = b.snapshot();
         assert_eq!(after.len(), 2, "the operator's row survived: {after:?}");
+        assert_eq!(
+            after[0].status,
+            TodoStatus::Completed,
+            "and the model's own row moved"
+        );
         assert!(after.iter().any(|t| t.content == "the operator's"));
+        // **A RE-WORDED ROW IS A NEW ROW** — the text is the name — so the old row stays as well:
+        // there is no write on this board that removes one.
+        b.upsert_model(&[(
+            "the model's, revised".into(),
+            TodoStatus::Pending,
+            Vec::new(),
+        )]);
+        let after = b.snapshot();
+        assert_eq!(after.len(), 3, "nothing was removed: {after:?}");
+        assert!(after.iter().any(|t| t.content == "the model's"));
     }
 
     /// **The union is TWO BLOCKS, not an interleaving** — and with hierarchy coming, that is the
@@ -1886,9 +2152,9 @@ mod tests {
     ///
     /// `snapshot` is a clone-then-`extend`: every model row precedes every operator row, always,
     /// because nothing merges the two vectors. So the halves cannot interleave by depth, which means
-    /// **"replace my half" stays a well-defined edit**: the model's wholesale write cannot move,
-    /// delete or re-parent a row of the operator's, and the operator's half is a suffix of the
-    /// union rather than a scatter through it.
+    /// **"my own write" stays a well-defined edit**: the model's write cannot move, delete or
+    /// re-parent a row of the operator's, and the operator's half is a suffix of the union rather
+    /// than a scatter through it.
     ///
     /// # And the hazard that comes with it, which is why this is asserted and not assumed
     ///
@@ -1896,9 +2162,9 @@ mod tests {
     /// choice. But positional depth over a concatenation means a row's apparent parent is *the row
     /// before it in the union*, and at the seam that row belongs to somebody else. An operator row at
     /// depth 1 sitting after a model row at depth 0 renders as a child of it, and **the model's next
-    /// write can change that parent without touching a single operator row**: a wholesale replace
-    /// changes the last model row and the operator's subtree is silently re-hung under whatever took
-    /// its place. That is the same failure as a flattened subtree — data that reads as a statement
+    /// write can change that parent without touching a single operator row**: a write that re-words
+    /// or adds a row changes the last model row, and the operator's subtree is silently re-hung
+    /// under whatever took its place. That is the same failure as a flattened subtree — data that reads as a statement
     /// nobody made — one level up, and it is silent.
     ///
     /// **The rule that removes it is one line and it is asserted here**: each half is its own tree,
@@ -1955,24 +2221,22 @@ mod tests {
                 TodoBy::Operator,
                 TodoBy::Operator
             ],
-            "the union interleaved the halves, so `replace` is no longer a half-edit: {all:?}"
+            "the union interleaved the halves, so the model's write is no longer a half-edit: {all:?}"
         );
 
-        // **And a wholesale replace cannot reorder what it does not own.** The model rewrites its
-        // own rows — fewer of them here — and the operator's block is still the tail, in the same
-        // order, with the same contents.
-        b.replace(vec![TodoItem {
-            content: "m1 rewritten".into(),
-            status: TodoStatus::Pending,
-            by: TodoBy::Model,
-            when: None,
-            needs: Vec::new(),
-        }]);
+        // **And the model's own write cannot reorder what it does not own.** It restates one of its
+        // rows and adds another; the operator's block is still the tail, in the same order, with the
+        // same contents — and the row it did not mention is still there, because a row left out is
+        // not a row removed.
+        b.upsert_model(&[
+            ("m1".into(), TodoStatus::InProgress, Vec::new()),
+            ("m3".into(), TodoStatus::Pending, Vec::new()),
+        ]);
         let after = b.snapshot();
         assert_eq!(
             after.iter().map(|t| t.content.as_str()).collect::<Vec<_>>(),
-            vec!["m1 rewritten", "o1", "o2"],
-            "the model's replace moved the operator's rows: {after:?}"
+            vec!["m1", "m2", "m3", "o1", "o2"],
+            "the model's write moved the operator's rows: {after:?}"
         );
         assert_eq!(
             after.iter().filter(|t| t.by == TodoBy::Operator).count(),
@@ -1985,7 +2249,14 @@ mod tests {
     /// its way past — and `Access::Session` must pass it unattended, which this
     /// doubles as a check of.
     fn runtime() -> (ToolRuntime, Arc<TodoBoard>) {
-        let board = Arc::new(TodoBoard::new(vec![]));
+        runtime_with(Vec::new())
+    }
+
+    /// The same runtime, on a board that already holds rows — the shape a RESUMED session gets from
+    /// its store, and the only way two rows can share a name (this tool never writes a second row
+    /// under a name the half already holds).
+    fn runtime_with(initial: Vec<TodoItem>) -> (ToolRuntime, Arc<TodoBoard>) {
+        let board = Arc::new(TodoBoard::new(initial));
         let mut reg = Registry::new();
         reg.register(Box::new(TodoWriteTool::new(board.clone())))
             .unwrap();
@@ -2007,9 +2278,9 @@ mod tests {
 
     /// **THE MODEL CAN DISPOSE OF THE OPERATOR'S ROW, which is what `TodoBy::Operator`'s doc
     /// claimed and the code did not do.** *"the model can mark the operator's item done, and the
-    /// nag in `harness.rs` picks it up like any other"* — and it could not: `todo_write` replaces
-    /// the model's half, `set_operator` is the head's frame, so a row the operator wrote was nagged
-    /// about every idle turn and could never be answered. R48's wedge, from the other side.
+    /// nag in `harness.rs` picks it up like any other"* — and it could not: `todo_write` was scoped
+    /// to the model's half, `set_operator` is the head's frame, so a row the operator wrote was
+    /// nagged about every idle turn and could never be answered. R48's wedge, from the other side.
     ///
     /// The words are the name — there is no id on the wire, and the operator ruled out a bump — so
     /// this also pins what happens when the name does not fit: **refused, with the candidates
@@ -2290,8 +2561,12 @@ mod tests {
         let mine = nag_for(&[item("my step", TodoStatus::Pending)]).unwrap();
         assert!(mine.contains("— yours"), "{mine}");
         assert!(
-            mine.contains("or drop it"),
-            "the model may drop its OWN row: {mine}"
+            mine.contains("mark it done with `todo_write`'s `update` field"),
+            "**the model's own row is retired by MARKING it**, and the field is named: {mine}"
+        );
+        assert!(
+            !mine.contains("drop it"),
+            "a row left out of `todo_write` STAYS on the board, so *drop it* is gone: {mine}"
         );
 
         let theirs = nag_for(&[TodoItem {
@@ -2308,7 +2583,7 @@ mod tests {
             "**and names the mechanism**, because a model that has to guess one guesses wrong: {theirs}"
         );
         assert!(
-            !theirs.contains("or drop it"),
+            !theirs.contains("drop it"),
             "while *drop* is not offered for a row that is not the model's to remove: {theirs}"
         );
         assert!(theirs.contains("say why in your reply"), "{theirs}");
@@ -2374,8 +2649,8 @@ mod tests {
 
     /// **A RESUMED BOARD COMES BACK SPLIT, and it is the store's own list that has to be.** The
     /// persisted list is the UNION, so a `new` that put all of it in the model's half gave a resumed
-    /// session the operator's rows as its own: `todo_write` would delete them, and once the head
-    /// re-pushed its own half on hello the union held each of them twice.
+    /// session the operator's rows as its own: the model's write would have taken them for its own,
+    /// and once the head re-pushed its own half on hello the union held each of them twice.
     #[test]
     fn the_stores_union_is_split_back_into_its_two_halves() {
         let stored = vec![
@@ -2409,18 +2684,19 @@ mod tests {
         );
         assert_eq!(theirs[0].content, "the operator's, from the store");
 
-        // the model's replace cannot take their row with it — the whole reason the halves are apart
-        b.replace(vec![TodoItem {
-            content: "a fresh plan".into(),
-            status: TodoStatus::Pending,
-            by: TodoBy::Model,
-            when: None,
-            needs: Vec::new(),
-        }]);
+        // the model's own write cannot take their row with it — the whole reason the halves are apart
+        b.upsert_model(&[("a fresh plan".into(), TodoStatus::Pending, Vec::new())]);
         assert_eq!(
             b.snapshot().len(),
-            2,
+            3,
             "and it survives the model's next write: {:?}",
+            b.snapshot()
+        );
+        assert!(
+            b.snapshot()
+                .iter()
+                .any(|t| t.content == "the operator's, from the store"),
+            "the operator's row is still on the board: {:?}",
             b.snapshot()
         );
         // and it came back with a status the MODEL can still move, which is the point of the split
@@ -2434,8 +2710,17 @@ mod tests {
         );
     }
 
+    /// **THE WHOLE LIST IS AN UPSERT, and a row left out of it STAYS on the board.**
+    ///
+    /// The operator's rule, verbatim: *"regarding todo - only i should be able to delete todo items.
+    /// as a rule everything that ever created stays in history"* and *"so done items or canceled
+    /// items should be kept."* So the second write below — ONE entry, where the first wrote three —
+    /// leaves all three on the board: the named row moves, the two it did not name are exactly where
+    /// they were, and the reply SAYS so. That sentence is for the model whose frozen prefix still
+    /// carries the old contract (*"omitting an entry removes it"*), and it is printed at the one call
+    /// that would have meant a removal.
     #[test]
-    fn the_whole_list_replaces_and_the_reply_is_the_list_as_it_stands() {
+    fn the_whole_list_upserts_and_a_row_left_out_stays_on_the_board() {
         let (mut rt, board) = runtime();
         let mut sink = RecordingToolSink::new();
         let r = rt.invoke(
@@ -2458,17 +2743,48 @@ mod tests {
         assert_eq!(snap.len(), 3);
         assert_eq!(snap[0].status, TodoStatus::Completed);
         assert_eq!(snap[2].content, "render the pane");
+        assert!(
+            !r.payload.contains("left out of this call"),
+            "the first write left nothing out: {}",
+            r.payload
+        );
 
-        // The second write is the list, not a patch on it: three entries in, one
-        // entry out means one entry on the board.
+        // **THREE ENTRIES IN, ONE ENTRY SENT, THREE STILL ON THE BOARD.** The named row moves; the
+        // two it does not name are untouched.
         let r2 = rt.invoke(
             "t1",
             &call(r#"{"todos": [{"content": "render the pane", "status": "in_progress"}]}"#),
             &mut sink,
         );
-        assert_eq!(r2.outcome, ToolOutcome::Ok);
-        assert_eq!(board.snapshot().len(), 1);
-        // And the version moved twice, which is what the harness flush reads.
+        assert_eq!(r2.outcome, ToolOutcome::Ok, "{}", r2.payload);
+        let after = board.snapshot();
+        assert_eq!(
+            after.len(),
+            3,
+            "a row left out of the list is NOT a deletion: {after:?}"
+        );
+        assert_eq!(after[0].content, "read the harness");
+        assert_eq!(
+            after[0].status,
+            TodoStatus::Completed,
+            "and its state is its own"
+        );
+        assert_eq!(after[1].content, "seat the tool");
+        assert_eq!(after[1].status, TodoStatus::InProgress);
+        assert_eq!(
+            after[2].status,
+            TodoStatus::InProgress,
+            "and the named row moved"
+        );
+        assert!(
+            r2.payload.contains("left out of this call")
+                && r2.payload.contains("read the harness")
+                && r2.payload.contains("seat the tool"),
+            "**the reply names the rows it did NOT remove**: {}",
+            r2.payload
+        );
+        // And the version moved twice, which is what the harness flush reads — once per call that
+        // changed something.
         assert_eq!(board.version(), 2);
     }
 
@@ -3020,11 +3336,15 @@ mod tests {
             "the remainder is counted, not listed: {msg}"
         );
         // **all three honest answers are offered, and the third is the one that keeps this from
-        // being a trap.** Without *drop what you no longer mean to do* the model's only exit is to
-        // lie about its own statuses, which is the failure this exists to stop.
+        // being a trap.** Without *say in your reply that you are dropping it* the model's only exit
+        // is to lie about its own statuses, which is the failure this exists to stop — and now that
+        // a row left out of `todo_write` STAYS on the board, saying so is the only way to drop one.
         assert!(msg.contains("do this one"), "{msg}");
         assert!(msg.contains("mark it done"), "{msg}");
-        assert!(msg.contains("drop it"), "{msg}");
+        assert!(
+            msg.contains("you are dropping is something you say in your reply"),
+            "{msg}"
+        );
         assert!(
             msg.contains("deliberately"),
             "and stopping on purpose is answerable: {msg}"
@@ -3072,8 +3392,8 @@ mod tests {
     #[test]
     fn a_plan_written_and_completed_says_nothing() {
         let board = TodoBoard::new(vec![]);
-        board.replace(vec![item("do the thing", TodoStatus::InProgress)]);
-        board.replace(vec![item("do the thing", TodoStatus::Completed)]);
+        board.upsert_model(&[("do the thing".into(), TodoStatus::InProgress, Vec::new())]);
+        board.upsert_model(&[("do the thing".into(), TodoStatus::Completed, Vec::new())]);
         assert!(
             nag_for(&board.snapshot()).is_none(),
             "the plan as it STANDS is what is asked about"
@@ -3112,9 +3432,11 @@ mod tests {
         assert_eq!(
             nag_for(&plan).expect("open work"),
             "[todo check] this turn is finished and one item is not done (1 more open):\n  - wire \
-             the check — yours, and you had it in progress\ndo this one, or mark it done, or drop \
-             it — a plan left open is a plan nobody is following. If you are stopping here \
-             deliberately, say why in your reply.",
+             the check — yours, and you had it in progress\ndo this one, or mark it done with \
+             `todo_write`'s `update` field, quoting the text above exactly — a row left out of \
+             `todo_write` STAYS on the board, so a line of work you are dropping is something you \
+             say in your reply, not something a call does. If you are stopping here deliberately, \
+             say why in your reply.",
             "the sentence a dependency-free board gets is the one `1d24fab` produced, byte for byte"
         );
 
@@ -3122,8 +3444,10 @@ mod tests {
         assert_eq!(
             nag_for(&[item("first", TodoStatus::Pending)]).expect("open work"),
             "[todo check] this turn is finished and one item is not done:\n  - first — yours\ndo \
-             this one, or mark it done, or drop it — a plan left open is a plan nobody is \
-             following. If you are stopping here deliberately, say why in your reply."
+             this one, or mark it done with `todo_write`'s `update` field, quoting the text above \
+             exactly — a row left out of `todo_write` STAYS on the board, so a line of work you \
+             are dropping is something you say in your reply, not something a call does. If you \
+             are stopping here deliberately, say why in your reply."
         );
         assert_eq!(
             nag_for(&[
@@ -3575,8 +3899,14 @@ mod tests {
         );
     }
 
+    /// **A CALL THAT NAMES NO ROW IS REFUSED, and an empty list is one of those.**
+    ///
+    /// `{"todos": []}` used to mean *clear the board*, and the operator has ruled that out: *"only i
+    /// should be able to delete todo items."* With no delete on this board an empty list says
+    /// nothing at all, so it is refused rather than read as one that did something — and the board
+    /// keeps every row it had.
     #[test]
-    fn an_empty_list_is_a_real_write_and_clears_the_board() {
+    fn an_empty_list_is_refused_and_removes_nothing() {
         let (mut rt, board) = runtime();
         let mut sink = RecordingToolSink::new();
         rt.invoke(
@@ -3585,11 +3915,191 @@ mod tests {
             &mut sink,
         );
         assert_eq!(board.snapshot().len(), 1);
+        let v = board.version();
         let r = rt.invoke("t1", &call(r#"{"todos": []}"#), &mut sink);
-        assert_eq!(r.outcome, ToolOutcome::Ok);
-        assert!(r.payload.contains("empty"), "{}", r.payload);
-        assert!(board.snapshot().is_empty());
-        assert_eq!(board.version(), 2);
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "an empty list is not a write: {:?}",
+            r.outcome
+        );
+        let told = format!("{:?}\n{}", r.outcome, r.payload);
+        assert!(
+            told.contains("names no rows"),
+            "the refusal says what is wrong with it: {told}"
+        );
+        assert_eq!(
+            board.snapshot().len(),
+            1,
+            "**and the row is still there** — nothing this tool sends removes one"
+        );
+        assert_eq!(board.version(), v, "and nothing was announced");
+    }
+
+    // -- ONE ROW, BY ITS OWN WORDS -----------------------------------------
+
+    /// **A QUOTE MARKS EXACTLY ONE ROW, and `update` does it without re-sending the list.**
+    ///
+    /// The operator's ask: an `update` field that takes the row's exact content plus the new status,
+    /// because there was no way to say *this row, and only this one, is now done* without sending the
+    /// whole list again.
+    ///
+    /// The assertion is a DIFF of the rendered board: one line moved, only the mark inside it, and
+    /// the line count is the same. A status change that also moved a row, added one or dropped one
+    /// would pass a count of `snapshot().len()` and fail here.
+    #[test]
+    fn a_quote_marks_exactly_one_row() {
+        let (mut rt, board) = runtime();
+        let mut sink = RecordingToolSink::new();
+        rt.invoke(
+            "t1",
+            &call(
+                r#"{"todos": [
+                    {"content": "read the harness", "status": "pending"},
+                    {"content": "seat the tool", "status": "pending"},
+                    {"content": "render the pane", "status": "pending"}
+                ]}"#,
+            ),
+            &mut sink,
+        );
+        let before = render(&board.snapshot());
+        // **NO `todos` AT ALL.** One row, named by its own words — which is why `todos` is no longer
+        // a required argument of this tool.
+        let r = rt.invoke(
+            "t1",
+            &call(r#"{"update": [{"content": "seat the tool", "status": "completed"}]}"#),
+            &mut sink,
+        );
+        assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
+        let after = render(&board.snapshot());
+        let moved: Vec<(&str, &str)> = before
+            .lines()
+            .zip(after.lines())
+            .filter(|(b, a)| b != a)
+            .collect();
+        assert_eq!(
+            moved.len(),
+            1,
+            "exactly one line moved:\n{before}\n---\n{after}"
+        );
+        assert!(moved[0].1.contains("[x] seat the tool"), "{:?}", moved[0]);
+        assert_eq!(
+            before.lines().count(),
+            after.lines().count(),
+            "and no line was added or removed:\n{after}"
+        );
+        // The status is the ONLY thing that moved, and it moved on the named row.
+        let snap = board.snapshot();
+        assert_eq!(snap[0].status, TodoStatus::Pending);
+        assert_eq!(snap[1].status, TodoStatus::Completed);
+        assert_eq!(snap[2].status, TodoStatus::Pending);
+        assert!(
+            r.payload
+                .contains("of your own rows you named, 1 changed status"),
+            "{}",
+            r.payload
+        );
+        assert!(
+            !r.payload.contains("left out of this call"),
+            "no `todos` was sent, so nothing was left out of one: {}",
+            r.payload
+        );
+        assert!(
+            snap.iter().all(|t| t.needs.is_empty()),
+            "and `update` wrote no edges: {snap:?}"
+        );
+    }
+
+    /// **A QUOTE THAT FITS NO ROW IS REFUSED, and the refusal names the rows that half DOES hold.**
+    ///
+    /// The house rule for a name — `set_states`' own doc — and what makes content-keying safe: the
+    /// model can quote one of the rows it was just shown instead of guessing again. **AND NOTHING IS
+    /// WRITTEN** — not the row, and not the `todos` beside it.
+    #[test]
+    fn a_quote_that_fits_no_row_is_refused_by_name() {
+        let (mut rt, board) = runtime();
+        let mut sink = RecordingToolSink::new();
+        rt.invoke(
+            "t1",
+            &call(r#"{"todos": [{"content": "seat the tool", "status": "pending"}]}"#),
+            &mut sink,
+        );
+        let before = board.snapshot();
+        let v = board.version();
+        let r = rt.invoke(
+            "t1",
+            &call(
+                r#"{"todos": [{"content": "a plan that must not land", "status": "pending"}],
+                    "update": [{"content": "seat the tool please", "status": "completed"}]}"#,
+            ),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "a quote that fits nothing is not a write: {:?}",
+            r.outcome
+        );
+        let told = format!("{:?}\n{}", r.outcome, r.payload);
+        assert!(
+            told.contains("no row of your own says `seat the tool please`"),
+            "the refusal names the fact: {told}"
+        );
+        assert!(
+            told.contains("`seat the tool`"),
+            "**and the row it does have**, so the model can quote that instead: {told}"
+        );
+        assert_eq!(
+            board.snapshot(),
+            before,
+            "**AND NOTHING WAS WRITTEN** — not the row, and not the list beside it"
+        );
+        assert_eq!(board.version(), v, "and nothing was announced");
+    }
+
+    /// **A QUOTE THAT FITS TWO ROWS IS REFUSED, and BOTH are named.**
+    ///
+    /// Two rows answer to one quote when their text differs only in whitespace — the match trims —
+    /// which `todo_write` cannot produce (it upserts by trimmed text) and a store written by hand
+    /// can. So the board is built directly, through the same door a RESUMED session's store comes in
+    /// by. The guess this refuses to make is a row silently changing state under a model that quoted
+    /// something else.
+    #[test]
+    fn a_quote_that_fits_two_rows_is_refused_naming_both() {
+        let (mut rt, board) = runtime_with(vec![
+            TodoItem {
+                content: "same words".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+                when: None,
+                needs: Vec::new(),
+            },
+            TodoItem {
+                content: "same words ".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+                when: None,
+                needs: Vec::new(),
+            },
+        ]);
+        let mut sink = RecordingToolSink::new();
+        assert_eq!(board.snapshot().len(), 2, "both rows are on the board");
+        let before = board.snapshot();
+        let r = rt.invoke(
+            "t1",
+            &call(r#"{"update": [{"content": "same words", "status": "completed"}]}"#),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "an ambiguous name is refused: {:?}",
+            r.outcome
+        );
+        let told = format!("{:?}\n{}", r.outcome, r.payload);
+        assert!(told.contains("is 2 of your own rows"), "{told}");
+        assert!(
+            told.contains("row 1 `same words`") && told.contains("row 2 `same words `"),
+            "**both candidates are named**, by their place and their exact words: {told}"
+        );
+        assert_eq!(board.snapshot(), before, "and neither of the two moved");
     }
 
     // -- a parent writing a child's board ---------------------------------
@@ -3638,10 +4148,9 @@ mod tests {
     /// **A parent's write UPSERTS and never replaces — the child's rows, the operator's rows and
     /// the version's economy all survive it.**
     ///
-    /// This is the hazard the whole feature turns on, measured rather than argued: `todo_write`'s
-    /// own-board contract is *"send the WHOLE list; omitting an entry removes it"*, and a parent
-    /// that wrote a child's board under that contract would delete the child's plan with its own
-    /// three rows. Every arm below is one thing that must not move.
+    /// This is the hazard the whole feature turns on, measured rather than argued: under the old
+    /// whole-list-replace contract a parent that wrote a child's board would have deleted the
+    /// child's plan with its own three rows. Every arm below is one thing that must not move.
     #[test]
     fn a_parents_write_upserts_its_own_rows_and_nobody_elses_move() {
         let b = TodoBoard::new(vec![
@@ -3737,19 +4246,32 @@ mod tests {
         assert_eq!(changed, 0, "nothing changed");
         assert_eq!(b.version(), before, "and nothing was announced");
 
-        // **And the CHILD's own wholesale replace cannot reach them either** — the other edge of
-        // the same rule. The child re-plans its own half and the parent's rows stay.
-        b.replace(vec![item("the child's revised step", TodoStatus::Pending)]);
+        // **And the CHILD's own write cannot reach them either** — the other edge of the same rule.
+        // The child re-plans its own half and the parent's rows stay; and because a row left out is
+        // not a row removed, its own old row stays too — what it writes is what it ADDS or RESTATES.
+        b.upsert_model(&[
+            (
+                "the child's own step".into(),
+                TodoStatus::Completed,
+                Vec::new(),
+            ),
+            (
+                "the child's revised step".into(),
+                TodoStatus::Pending,
+                Vec::new(),
+            ),
+        ]);
         let all = b.snapshot();
         assert_eq!(
             all.iter().map(|t| t.content.as_str()).collect::<Vec<_>>(),
             vec![
+                "the child's own step",
                 "the child's revised step",
                 "land the parity row",
                 "write the report",
                 "the operator's row",
             ],
-            "the child's replace moved somebody else's rows: {all:?}"
+            "the child's write moved somebody else's rows: {all:?}"
         );
     }
 

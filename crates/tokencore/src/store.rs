@@ -1585,8 +1585,11 @@ fn review_from_raw(raw: RawReviewRecord) -> Result<ReviewRecord> {
 ///
 /// Stored as mutable session metadata — the `set_title` class, not the
 /// append-only class: a todo list the model revised three times is one list with
-/// a history nobody asked to keep. The whole list is replaced on every write,
-/// because a delta the model got wrong is a delta nobody can audit.
+/// a history nobody asked to keep. **The whole list is sent on every write, and it
+/// is an UPSERT**: a row whose text matches one already there moves that row's
+/// state, a new text is added, and a row left out is NOT removed — the operator's
+/// rule is *"only i should be able to delete todo items. as a rule everything that
+/// ever created stays in history."*
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TodoItem {
     pub content: String,
@@ -1786,7 +1789,7 @@ pub enum TodoBy {
     ///
     /// Same board, same statuses, same nag as the other authors. What differs is the WRITE: a
     /// parent's `todo_write` with a `target` is an UPSERT scoped to this authorship (rows matched
-    /// by exact text), never the whole-list replace the model's own half takes — see
+    /// by exact text), and it reaches neither the child's rows nor the operator's — see
     /// `TodoBoard::upsert_parent`.
     Parent(String),
 }

@@ -132,10 +132,12 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
     const PROMISES: &[&str] = &[
         "you do not need to wait for it",
         // The plan's nudge, whose two closings are the operator's row and the model's own
-        // (`unfinished_plan`): the first is *do it or mark it done, quoting the text*, the
-        // second is *do this one, or mark it done, or drop it*.
+        // (`unfinished_plan`): the first is *do it, or mark it done with `todo_write`'s `operator`
+        // field*, the second is *do this one, or mark it done with `todo_write`'s `update` field*.
+        // **One phrase covers both, and it is the phrase both closings contain.** The old second
+        // closing — *mark it done, or drop it* — is gone with the old contract: a row left out of
+        // `todo_write` STAYS on the board, so a model's own row is retired by marking it done.
         "mark it done with `todo_write`",
-        "mark it done, or drop it",
     ];
     let mut out: Vec<String> = Vec::new();
     for group in text.split("\n\n") {

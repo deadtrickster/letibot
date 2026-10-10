@@ -3924,15 +3924,15 @@ fn a_named_jobs_settlement_folds_with_its_name() {
 ///
 /// Their words, on the row they have been reading all evening: *"in read verbosity todo nag
 /// shouldnt show me model prompt only todo head."* The row is `[todo check] …` and its closing
-/// paragraph is advice **addressed to the model** — *do this one, or mark it done, or drop
-/// it* — so it folds like a completion notice does, to the item and whose row it is.
+/// paragraph is advice **addressed to the model** — *do this one, or mark it done with
+/// `todo_write`* — so it folds like a completion notice does, to the item and whose row it is.
 ///
 /// **Both closings are named**, because the operator's row and the model's own are different
 /// sentences (`unfinished_plan`), and a nag the fold cannot account for is drawn whole rather
 /// than halved.
 #[test]
 fn the_todo_nag_folds_to_the_item_and_not_to_the_advice() {
-    const MINE: &str = "[todo check] this turn is finished and one item is not done (1 more open):\n  - T2 · the launcher — yours\ndo this one, or mark it done, or drop it — a plan left open is a plan nobody is following.";
+    const MINE: &str = "[todo check] this turn is finished and one item is not done (1 more open):\n  - T2 · the launcher — yours\ndo this one, or mark it done with `todo_write`'s `update` field, quoting the text above exactly — a row left out of `todo_write` STAYS on the board, so a line of work you are dropping is something you say in your reply, not something a call does. If you are stopping here deliberately, say why in your reply.";
     assert_eq!(
         folded_notice(MINE, &[]).unwrap(),
         "Todo T2 · the launcher — yours"
@@ -3947,7 +3947,7 @@ fn the_todo_nag_folds_to_the_item_and_not_to_the_advice() {
         let folded = folded_notice(nag, &[]).expect("a nag folds");
         for advice in [
             "mark it done",
-            "plan nobody is following",
+            "STAYS on the board",
             "quoting the text above",
             "do this one",
         ] {

@@ -38,7 +38,13 @@ impl App {
         } else if self.pick.is_some() {
             HintMode::Pick
         } else if self.todos_pane {
-            HintMode::Todos
+            // **The todos pane's keys, composed HERE.** rano keeps the bar's tail sentences and is
+            // pinned by tag, and its `HintMode::Todos` sentence says *enter or tab unfolds* — true of
+            // rano's pane, false of this one, where those two keys open the card on the add row and
+            // mark one of the operator's rows done. So this pane takes `Reading`'s tail (`esc closes
+            // this`, which is true of it) and its own keys go in the half this head owns, exactly as
+            // the queue pane's verbs and the standing-notes pane do below.
+            HintMode::Reading
         } else if self.config_pane {
             HintMode::Config
         } else if self.subagents_pane {
@@ -69,7 +75,9 @@ impl App {
         // of the SAME row and is empty while a pane has the keyboard. They lead there on purpose:
         // the bar is over capacity at 80 columns by construction, and the renderer keeps the head,
         // so the keys this pane adds are the ones that survive the cut.
-        let editor = if self.queue_pane && self.queue_open.is_none() {
+        let editor = if self.todos_pane {
+            Line::styled(self.todos_hint(), Role::Faint)
+        } else if self.queue_pane && self.queue_open.is_none() {
             Line::styled("a approve · v veto · d drop · r restart", Role::Faint)
         } else if self.note_open.is_some() {
             Line::styled("↑↓ scrolls", Role::Faint)
