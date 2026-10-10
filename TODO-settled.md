@@ -1202,3 +1202,62 @@ Found on the way: `decisions_tool::counts_are_per_session_and_any_widens_to_ever
 **already failing at HEAD** — the R11 fixture gave all three rows `consulted: Some(true)`, so
 *"one oracle answered"* measured 3 — and the two rows a person and a boundary decided now say
 `false`.
+
+## N6 — a `harnessd` quit while a subagent is mid-turn dies of SIGSEGV at exit — **SETTLED 2026-10-10 — `3b7db2b`**
+
+**Found 2026-10-10** while landing `agent/the-exit-that-crashes-2` (`382a8c6`), which fixed
+the test binary's half and filed this one rather than smuggling it in. The measurement was a
+core, not a theory: `cargo test -p letibot-harnessd --test message_between_turns` died of
+SIGSEGV at exit on a minority of runs with **all five tests printing `ok` first** (2/60 on a
+quiet box). `coredumpctl info <pid>` read it in one frame: the main thread in `exit()` →
+`__run_exit_handlers` → `_dl_fini` → `__do_global_dtors_aux` (libggml-cuda.so.0) →
+`libcudart.so.13`'s own destructor → `_int_free_chunk`, while the faulting thread was in
+`unicode_byte_to_utf8` ← `unicode_regex_split` ← `llm_tokenizer_bpe_session::tokenize` ←
+`HarnessTaskRunner::run_to_completion`; `si_code` 1 (SEGV_MAPERR), `si_addr` 0x3.
+
+**The daemon had the same path and nothing had walked through the door.** `cli.rs` ran
+`daemon.run(...)` until the registry closed, then `drop(merge_queue)`, `firecode::down_all()`,
+`daemon.shutdown()` — which DOES close every hub, so a child parked in `serve_child` leaves at
+once — `drop(sessions)`, `Ok(0)`, which `bin/harnessd.rs` and `letibot daemon` both turn into a
+process exit. The child that survives a hub close is the one **mid-turn**: closing a hub does
+not end a turn already in flight, so it was still tokenizing when the finalizers ran.
+`382a8c6` had given the tree `Harness::wait_for_children` and `Harness::stop_children`; no
+shutdown path called either.
+
+**What landed.** `Sessions::drain_subagents(timeout)` — stop each session's children, then wait
+for their threads — called from `cli.rs` on both exits, after `daemon.shutdown()` and before
+`Ok(0)`. The order is the whole of the first half: a wait that ran first would spend its bound
+on a child nobody had told to stop, and a child between turns would never be told at all. The
+wait is `Harness::wait_for_children`'s, which already covers each session's whole tree.
+
+**The bound is 5 s, and it is argued where it lives** (`SUBAGENT_EXIT_GRACE`). Three kinds of
+child answer at once — a parked one leaves on the closed hub, one between rounds leaves at its
+next round boundary (the round loop already polls its steering on 250 ms slices), and one in a
+tool call leaves when that call returns — so several times the slice covers everything the
+interrupt can reach. What is left is the child inside ONE model call or one long tool, which
+cannot be interrupted at all and has been measured in minutes on this box; a bound large enough
+for that would make every Ctrl-C wait minutes for a case a larger number cannot fix anyway.
+Past the bound the exit gives up, names the session, and takes the crash risk rather than the
+hang — the same ruling `drop(merge_queue)` already makes one line up.
+
+**The log says which of the two it did**, which was this item's own done-when.
+`drain_subagents` answers `SubagentExit::Waited { told }` or `GaveUp { sessions, waited }`, and
+`sentence()` is the line to print: `None` when nothing was running, so the ordinary quit stays
+silent, while a quit that HAD to wait and one that could not are told apart. A give-up names
+the sessions rather than counting them, because the session still computing is the one somebody
+can go and look at.
+
+**The comment that was the bug's alibi is fixed in the same change.** `cli.rs` said
+*"`std::process::exit` above runs no destructors"* — true of Rust destructors, false of the ELF
+finalizers `exit()` runs, and it now says which half is which.
+
+**Tests.** `the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound` builds a `Sessions`,
+spawns a real child through the session's own runtime, holds its turn open with the stub's
+gate, closes the registry the way the daemon does, and asserts the first drain spends its
+300 ms bound and names the session — then, after the release, that the same call is a clean
+`Waited` and returns at once. **What it does not stage is a real `harnessd` process exiting**:
+that `exit()` is not something a unit test can watch and the crash it would take is a race, so
+what is tested is the call and the bound, where both defects would live.
+`the_daemons_exit_returns_promptly_when_nothing_is_running` is the one that catches a hang — an
+empty tree must not cost the grace — and `the_subagent_exit_wait` (sessions.rs) pins the naming
+and the silence.

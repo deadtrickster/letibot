@@ -2611,61 +2611,7 @@ transcript-edge choke point, which is the other half.
 
 # 2. NEEDS A NOD — small question first, then unblocked
 
-## N6 — a `harnessd` quit while a subagent is mid-turn dies of SIGSEGV at exit, the way the test binary did
-
-**Found 2026-10-10** while landing `agent/the-exit-that-crashes-2` (`382a8c6`), which fixed
-the test binary's half of this and filed this one rather than smuggling it in.
-
-**The measurement, and it is a core rather than a theory.**
-`cargo test -p letibot-harnessd --test message_between_turns` died of SIGSEGV at exit on a
-minority of runs with **all five tests printing `ok` first** (2/60 on a quiet box, and the
-carrier is one test — see that commit). `coredumpctl info <pid>` printed it in one frame of
-reading:
-
-    main thread:  exit() → __run_exit_handlers → _dl_fini → __do_global_dtors_aux
-                  (libggml-cuda.so.0) → __cxa_finalize → libcudart.so.13's own destructor
-                  → _int_free_chunk
-    faulting:     unicode_byte_to_utf8 ← unicode_regex_split ←
-                  llm_tokenizer_bpe_session::tokenize ← HarnessTaskRunner::run_to_completion
-                  ← HarnessTaskRunner::start::{closure#1}
-    siginfo:      si_code 1 (SEGV_MAPERR), si_addr 0x3
-
-`exit()` runs every ELF finalizer, and `HarnessTaskRunner::start` drops the child thread's
-`JoinHandle`, so nothing could wait for it: a child still inside libllama when `_dl_fini`
-finalized the ggml/cuda libraries is the crash. `cli.rs`'s comment — *"`std::process::exit`
-above runs no destructors"* — is true of Rust destructors and false of `_dl_fini`.
-
-**The daemon has the same path.** `cli.rs`: `daemon.run(...)` returns once the registry
-closes, then `drop(merge_queue)`, `firecode::down_all()`, `daemon.shutdown()` (which DOES
-close every hub, so a child parked in `serve_child` leaves at once), `drop(sessions)`,
-`Ok(0)` — and `bin/harnessd.rs` exits through `std::process::exit(0)`. The child that
-survives the hub close is the one **mid-turn**: closing a hub does not end a running turn,
-so it is still tokenizing when the finalizers run.
-
-**The door exists now.** `Harness::wait_for_children(timeout)` (`382a8c6`) waits for every
-subagent thread in a tree to leave, and `Harness::stop_children` interrupts them. Both are
-reachable from `Sessions`.
-
-**still open?** `grep -n 'wait_for_children\|process::exit' crates/harnessd/src/cli.rs
-crates/harnessd/src/bin/harnessd.rs` — nothing on the shutdown path calls the wait.
-
-**done when** a `harnessd` quit with a subagent mid-turn exits 0 with no core, and the
-daemon's log says which of the two it did: waited, or gave up and named what it could not
-wait for.
-
-### The question, which is why this is a nod
-
-**How long may a shutdown hold the exit for a turn in flight?** Both ends of that answer are
-already in the tree and they disagree. `drop(merge_queue)` deliberately does NOT join a gate
-in flight — *"waiting here would hold the daemon's exit for minutes — and nothing is lost by
-not waiting"* (the row on disk is recovered by the next daemon). Here something IS lost by
-not waiting: the process's own exit. But a child mid-turn on a real model can take minutes,
-and a Ctrl-C that hangs is its own defect.
-
-The shape I would build, for a nod: **stop the children first** (`stop_children`, so the
-interrupt reaches the turn), **then wait** with a bound the operator names — and if the
-bound is hit, say so on stderr and exit anyway, because a crash nobody can explain is worse
-than a sentence naming what could not be waited for.
+## N6 — a `harnessd` quit while a subagent is mid-turn dies of SIGSEGV at exit — **SETTLED 2026-10-10, see TODO-settled.md (N6) — 3b7db2b**
 
 ---
 
