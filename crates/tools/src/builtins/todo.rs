@@ -16,7 +16,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use letibot_tokencore::store::{TodoBy, TodoCondition, TodoItem, TodoStatus};
+use letibot_tokencore::store::{TodoBy, TodoCondition, TodoItem, TodoNeed, TodoStatus};
 use serde_json::{Value, json};
 
 use crate::runtime::{Invocation, InvokeCtx, Tool};
@@ -216,9 +216,11 @@ impl TodoBoard {
     /// board exists to prevent. So here the rows sent are the rows the parent is ADDING or
     /// state-updating AS THE PARENT, and nothing else moves:
     ///
-    /// * a row whose trimmed text matches one of this author's existing rows **moves its state**
-    ///   (and nothing else — the text is the name, and a re-worded row is a NEW row, the same rule
-    ///   `set_operator_states` keeps for the operator's);
+    /// * a row whose trimmed text matches one of this author's existing rows **moves its state and
+    ///   its edges** (the text is the name, and a re-worded row is a NEW row, the same rule
+    ///   `set_operator_states` keeps for the operator's — a row the parent restates is restated,
+    ///   edges included, because the parent's list is the whole of what it is saying about its own
+    ///   rows);
     /// * a row that matches none is **appended** to this half, stamped `by` the author the CALLER
     ///   passed — never a `by` from the wire, which the tool refuses as an unknown field;
     /// * the child's rows, the operator's rows, and any other author's rows are **untouched**, and
@@ -232,17 +234,22 @@ impl TodoBoard {
     /// Returns how many rows were ADDED or CHANGED, and bumps the version only when that is not
     /// zero — the same rule `set_operator_states` keeps, so a re-send of an unchanged plan is not
     /// an event and does not cost the store a write or the pane a publish.
-    pub fn upsert_parent(&self, rows: &[(String, TodoStatus)], by: &TodoBy) -> usize {
+    pub fn upsert_parent(
+        &self,
+        rows: &[(String, TodoStatus, Vec<TodoNeed>)],
+        by: &TodoBy,
+    ) -> usize {
         let mut half = self.parent.lock().unwrap_or_else(|e| e.into_inner());
         let mut changed = 0usize;
-        for (content, status) in rows {
+        for (content, status, needs) in rows {
             let want = content.trim();
             if let Some(hit) = half
                 .iter_mut()
                 .find(|t| t.by == *by && t.content.trim() == want)
             {
-                if hit.status != *status {
+                if hit.status != *status || &hit.needs != needs {
                     hit.status = *status;
+                    hit.needs = needs.clone();
                     changed += 1;
                 }
             } else {
@@ -254,6 +261,11 @@ impl TodoBoard {
                     // clock the parent does not own, and `[p]`/`postponed` is the operator's own
                     // state besides. A parent's row is plain work, asked for now.
                     when: None,
+                    // **But its EDGES are the parent's to write**, and they are the one thing about
+                    // a parent's row that is not plain work: a parent handing a child a plan hands
+                    // it the ORDER too, and a child's check offering its own ready set is the whole
+                    // reason the DAG exists on a child's board at all.
+                    needs: needs.clone(),
                 });
                 changed += 1;
             }
@@ -358,6 +370,11 @@ impl TodoBoard {
 /// caller and the pane is a second reader of the same list; a queue stated once can be tested as an
 /// order — five items in, five items out in the serving order — where a find can only be tested by
 /// reading one message and hoping.
+///
+/// **It is the ORDER, not the answer.** This says what the plan's open work is and how it is
+/// ranked; WHICH of those rows can start is the graph's question, and `as_a_graph` is where it is
+/// answered — the ready set is this order with the blocked rows taken out, so *in progress first,
+/// then list order* survives the DAG unchanged.
 pub fn open_priority(todos: &[TodoItem]) -> Vec<&TodoItem> {
     let mut open: Vec<&TodoItem> = todos
         .iter()
@@ -405,8 +422,13 @@ pub fn open_priority(todos: &[TodoItem]) -> Vec<&TodoItem> {
 /// narrowing happens before the message (`harnessd`'s `the_plan_as_checked`, which the arming
 /// decision reads through as well) rather than inside this function, which would then be two
 /// answers to one question about what a plan is.
-pub fn unfinished_plan(todos: &[TodoItem]) -> Option<String> {
-    unfinished_plan_for(todos, None).map(|(text, _)| text)
+///
+/// **And `board` is the WHOLE board, which is the second half of the same fact**: the rows the
+/// check may speak about have had their DONE rows taken out of them, and a done row is exactly what
+/// an edge is satisfied by. Two arguments rather than one because the narrowing is the caller's and
+/// the resolution is this function's — see [`unfinished_plan_for`].
+pub fn unfinished_plan(rows: &[TodoItem], board: &[TodoItem]) -> Option<String> {
+    unfinished_plan_for(rows, board, None).map(|(text, _)| text)
 }
 
 /// **The check's sentence, and the row it named** — the row handed back so the caller can remember
@@ -421,19 +443,63 @@ pub fn unfinished_plan(todos: &[TodoItem]) -> Option<String> {
 /// cannot tell the next caller which row to stick to.
 ///
 /// `chosen` is the content of the row the last check named, or `None` for a plan's first check.
-pub fn unfinished_plan_for(todos: &[TodoItem], chosen: Option<&str>) -> Option<(String, String)> {
-    // **THE QUEUE, served one at a time** — see `open_priority` for the order and why it is one.
-    let open = open_priority(todos);
-    // **AND THE ONE ALREADY ASKED ABOUT COMES FIRST**, while it is still in the queue. A row that
-    // has left the queue — done, or set aside by the operator — is no longer a choice, and the head
-    // of the queue is; `the_check_may_ask_about` is what decided that, so this agrees with the
-    // clock by construction rather than by a second rule.
+///
+/// **THE READY SET, and no longer the head of the list.** A row is READY when every row it waits
+/// for is done ([`TodoItem::needs`]), so what this check asks about is work that can actually
+/// start: an old blocked row no longer heads the line for ever, and a row nobody can start is not
+/// asked for at all — it is SAID, with what it waits for. The order inside the ready set is
+/// [`open_priority`]'s, so *in progress first, then list order* is unchanged.
+///
+/// **The set is OFFERED and the ask is still ONE row** — the operator's two rulings, which look
+/// opposed and are not: *"i think the nagger should mention only one todo at a time, so a model
+/// will not be defocused"* and *"and since it is a DAG - multiple items can be offered - subagents
+/// case"*. The ready set is the pool the check draws from, and the `in_progress` mark is how the
+/// model CHOOSES inside it (only the model may set that mark; `postponed` is deliberately the
+/// operator's alone, so a model cannot silence the check). The ASK is the row this check is holding
+/// the agent to: the sticky `chosen` while it is still ready, and the head of the ready set
+/// otherwise. The set is recomputed as the graph moves — a row completing makes others ready — and
+/// the CHOICE is what sticks.
+///
+/// **A plan with no edges anywhere is read EXACTLY as it was before any of this existed**, and that
+/// is not a special case in the code: nothing can be blocked and the ready set cannot be empty, so
+/// neither of the two additions below can fire. The blocked line and the nothing-can-start sentence
+/// are the only places this message knows there is a graph — which is what makes the compatibility
+/// claim a consequence of the design rather than a promise kept by hand.
+pub fn unfinished_plan_for(
+    rows: &[TodoItem],
+    board: &[TodoItem],
+    chosen: Option<&str>,
+) -> Option<(String, String)> {
+    let PlanAsGraph {
+        open,
+        ready,
+        blocked,
+    } = as_a_graph(rows, board);
+    // **AND THE ONE ALREADY ASKED ABOUT COMES FIRST**, while it is still ready. A row that has left
+    // the ready set — done, set aside by the operator, or BLOCKED — is no longer a choice, and the
+    // head of the ready set is; `the_check_may_ask_about` is what decided the first two, so this
+    // agrees with the clock by construction rather than by a second rule.
     let next = chosen
-        .and_then(|content| open.iter().copied().find(|row| row.content == content))
-        .or_else(|| open.first().copied())?;
-    let left = open.len() - 1;
+        .and_then(|content| ready.iter().copied().find(|row| row.content == content))
+        .or_else(|| ready.first().copied());
+    let Some(next) = next else {
+        // **THE DEGENERATE CASE, and it is the one that has to be SAID out loud.** An unfinished
+        // plan whose ready set is EMPTY — every row left waits on another — is not a plan to work,
+        // it is a plan to UNBLOCK: something has to finish, or a need that names nothing has to be
+        // corrected, before any of this can start. Silence here would read as *nothing to do*,
+        // which is the one reading that is wrong; and asking about the head of the list anyway is
+        // the head-of-line blocking this replaced, wearing the new field's clothes.
+        //
+        // The name handed back is EMPTY, which is the one string no row can have (`todo_write`
+        // refuses an entry whose text trims to nothing): nothing is being held to, so the next
+        // check draws its choice from whatever the graph has made ready by then.
+        return (!blocked.is_empty()).then(|| (nothing_can_start(&blocked), String::new()));
+    };
     // The count of what is BEHIND this one, because the model is entitled to know the plan is bigger
-    // than the row it is being asked about — and that is exactly the fact that must not become a list.
+    // than the row it is being asked about — and that is exactly the fact that must not become a
+    // list. **It is the OPEN rows and not the ready ones**: a blocked row is still work nobody has
+    // done, and the count has always been the plan's size rather than the queue's.
+    let left = open - 1;
     let rest = match left {
         0 => String::new(),
         1 => " (1 more open)".to_string(),
@@ -491,13 +557,161 @@ pub fn unfinished_plan_for(todos: &[TodoItem], chosen: Option<&str>) -> Option<(
              following. If you are stopping here deliberately, say why in your reply."
         }
     };
+    // **AND WHAT CANNOT START IS SAID, not merely skipped.** A blocked row is invisible to the ask
+    // — that is the whole point — so the model would otherwise learn nothing about the rows it
+    // cannot be asked for, and a plan whose edges have gone stale would look like a shorter plan.
+    let waiting = if blocked.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}", blocked_said(&blocked))
+    };
     Some((
         format!(
-            "[todo check] this turn is finished and one item is not done{rest}:\n  - {}{state}\n{advice}",
+            "[todo check] this turn is finished and one item is not done{rest}:\n  - {}{state}\n{advice}{waiting}",
             next.content.trim(),
         ),
         next.content.clone(),
     ))
+}
+
+/// **Why a row cannot start** — one need the board does not meet, and the reason it does not.
+///
+/// **Everything that is not a DONE row is unmet**, and these are the four ways that happens. The
+/// rule is `TodoCondition`'s, learned there first: *a condition nobody can evaluate must never read
+/// as met.* An edge that names nothing is not satisfied by the naming, an edge that names two rows
+/// is not satisfied by the coincidence, and an edge of a kind this build cannot evaluate is not
+/// satisfied by the reader's ignorance — a row silently starting on the strength of a name that
+/// meant something else is exactly the failure the graph exists to make impossible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeedFate {
+    /// The row it names is on the board and is not `Completed`.
+    NotDone,
+    /// The name matches no row on the board — a re-worded row, a deleted one, or a name that was
+    /// never right. The common case, and the one the message has to make repairable.
+    NoSuchRow,
+    /// The name matches more than one row, so which one is meant is not knowable — the house rule
+    /// [`TodoBoard::set_operator_states`] already keeps for an ambiguous name.
+    Ambiguous,
+    /// A [`TodoNeed`] kind this build cannot evaluate — see that enum's `Unknown` variant.
+    UnknownKind,
+}
+
+/// **The rows the check may speak about, read as a graph** — split by whether they can start.
+struct PlanAsGraph<'a> {
+    /// How many rows the check may speak about at all: the plan's size, which is what the message
+    /// counts. A blocked row is still open work, so it counts here and not in `ready`.
+    open: usize,
+    /// The READY rows, in [`open_priority`]'s order.
+    ready: Vec<&'a TodoItem>,
+    /// The rest, each with what it waits for that the board does not give it.
+    blocked: Vec<(&'a TodoItem, Vec<(String, NeedFate)>)>,
+}
+
+/// **The plan as a graph**: which of the check's rows can start, and what the rest wait on.
+///
+/// `rows` are the rows the check may speak about — `harnessd`'s `the_plan_as_checked`, the ONE
+/// narrowing — and `board` is the WHOLE board, because an edge is met by a row that is DONE and a
+/// done row is exactly what that narrowing removes. Two arguments rather than one because the
+/// narrowing is the caller's and the resolution is this function's: a function that narrowed would
+/// be a second answer to *what is this plan*, which is the failure the one-filter rule exists to
+/// prevent.
+fn as_a_graph<'a>(rows: &'a [TodoItem], board: &[TodoItem]) -> PlanAsGraph<'a> {
+    let queue = open_priority(rows);
+    let mut ready = Vec::new();
+    let mut blocked = Vec::new();
+    for row in queue.iter().copied() {
+        let unmet = unmet_needs(board, row);
+        if unmet.is_empty() {
+            ready.push(row);
+        } else {
+            blocked.push((row, unmet));
+        }
+    }
+    PlanAsGraph {
+        open: queue.len(),
+        ready,
+        blocked,
+    }
+}
+
+/// **What this row is waiting for that the board does not give it** — empty when the row is ready.
+///
+/// The name is matched against the row's `content` TRIMMED, which is the same key
+/// [`TodoBoard::set_operator_states`] resolves the operator's rows by: the model quotes what the
+/// nag handed it, and a pane that padded a row would otherwise break every edge into it.
+fn unmet_needs(board: &[TodoItem], row: &TodoItem) -> Vec<(String, NeedFate)> {
+    let mut out = Vec::new();
+    for need in &row.needs {
+        match need {
+            TodoNeed::Row { content } => {
+                let want = content.trim();
+                let hits: Vec<&TodoItem> =
+                    board.iter().filter(|t| t.content.trim() == want).collect();
+                match hits.as_slice() {
+                    // **The one answer that is MET.** A single row, and it is done.
+                    [one] if one.status == TodoStatus::Completed => {}
+                    [_] => out.push((content.clone(), NeedFate::NotDone)),
+                    [] => out.push((content.clone(), NeedFate::NoSuchRow)),
+                    _ => out.push((content.clone(), NeedFate::Ambiguous)),
+                }
+            }
+            TodoNeed::Unknown => out.push((String::new(), NeedFate::UnknownKind)),
+        }
+    }
+    out
+}
+
+/// **One blocked row, as the message says it** — `` `deploy` waits on `run the tests` (still open) ``.
+fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
+    let waits: Vec<String> = unmet
+        .iter()
+        .map(|(name, fate)| match fate {
+            NeedFate::NotDone => format!("`{name}` (still open)"),
+            NeedFate::NoSuchRow => format!("`{name}` (no such row on this board)"),
+            NeedFate::Ambiguous => format!("`{name}` (two rows on this board say that)"),
+            NeedFate::UnknownKind => {
+                "a dependency of a kind this build cannot evaluate".to_string()
+            }
+        })
+        .collect();
+    format!("`{}` waits on {}", row.content.trim(), waits.join(", "))
+}
+
+/// **What the check says about the rows it cannot ask for**, in one line — so the model learns the
+/// plan is not empty, it is STUCK, and on what.
+fn blocked_said(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String {
+    let lines: Vec<String> = blocked
+        .iter()
+        .map(|(row, unmet)| blocked_line(row, unmet))
+        .collect();
+    let count = match lines.len() {
+        1 => "1 row".to_string(),
+        n => format!("{n} rows"),
+    };
+    format!("{count} cannot start yet: {}.", lines.join("; "))
+}
+
+/// **The sentence for an unfinished plan with an EMPTY ready set** — every row left waits on
+/// another, so there is nothing to work on and something to UNBLOCK.
+///
+/// This is the degenerate case the whole feature has to design deliberately. A plan that is stuck
+/// is the state where the agent's next move is *finish a row something is waiting on*, or *correct
+/// a need that names nothing* — not *start something*. Saying nothing would read as *nothing to
+/// do*, which is the one reading that is wrong, and it is why this is a sentence rather than the
+/// absence of one. A cycle lands here too, and it is said the same way: every row in it is waiting,
+/// and the fix is the same one.
+fn nothing_can_start(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String {
+    let lines: Vec<String> = blocked
+        .iter()
+        .map(|(row, unmet)| format!("  - {}", blocked_line(row, unmet)))
+        .collect();
+    format!(
+        "[todo check] this turn is finished and NOTHING can start — every item left waits on \
+         another:\n{}\nunblock one of these rather than starting something new: finish a row they \
+         wait on, or correct a need that names nothing on this board. A plan where nothing can \
+         start is a plan to fix, not a plan to work.",
+        lines.join("\n")
+    )
 }
 
 // `MAX_PLAN_LINES` is gone with the list it capped: the message names ONE item now, so there is no
@@ -530,7 +744,7 @@ pub trait ChildTodos: Send + Sync {
     fn upsert_child(
         &self,
         target: &str,
-        rows: &[(String, TodoStatus)],
+        rows: &[(String, TodoStatus, Vec<TodoNeed>)],
     ) -> Result<Vec<TodoItem>, String>;
 }
 
@@ -587,7 +801,13 @@ impl Tool for TodoWriteTool {
              one of your rows leaves it on the child's board; there is no delete, so \
              retire a row by marking it completed. The child is told through the usual \
              todo nags, and rows you write there show as `Parent <your session id>`. \
-             `target` and `operator` do not mix: name one child, your own rows only.",
+             `target` and `operator` do not mix: name one child, your own rows only.\n\nA row \
+              may WAIT ON other rows: `needs` names them by their exact `content`, and the row \
+              cannot start until every row it names is `completed`. The plan is then a graph \
+              rather than a queue — the check asks about what can actually start, and says what \
+              cannot and what it is waiting for — so an order you mean should be written down \
+              rather than implied by position. A name that matches no row, or two rows, blocks \
+              the row that needs it and the check says so; a need that is satisfied is silent.",
             json!({
                 "type": "object",
                 "properties": {
@@ -622,6 +842,17 @@ impl Tool for TodoWriteTool {
                                 "status": {
                                     "type": "string",
                                     "enum": ["pending", "in_progress", "completed"]
+                                },
+                                "needs": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "The exact `content` of other rows on this \
+                                                    list that must be COMPLETED before this one \
+                                                    can start. Optional, and empty is the \
+                                                    ordinary row: a row that names nothing is \
+                                                    ready as soon as it is open. A name that \
+                                                    matches no row, or two, blocks this row and \
+                                                    the check says which one it could not place."
                                 }
                             },
                             "required": ["content", "status"]
@@ -731,7 +962,7 @@ impl Tool for TodoWriteTool {
         }
         let items: Vec<TodoItem> = rows
             .into_iter()
-            .map(|(content, status)| TodoItem {
+            .map(|(content, status, needs)| TodoItem {
                 content,
                 status,
                 // the MODEL's list, by definition: this arm of the function is the `todo` tool
@@ -741,6 +972,11 @@ impl Tool for TodoWriteTool {
                 // `TodoItem::when`. A conditioned row belongs to the OPERATOR's half, which this
                 // tool does not own and cannot overwrite.
                 when: None,
+                // **And its EDGES are the model's own**, which is the difference between this and
+                // `when`: a need is not an act of the world's, it is a statement about this list,
+                // and this list is exactly what the call replaces. So the graph is written the
+                // same way the rows are — whole, every time.
+                needs,
             })
             .collect();
         // **THE OPERATOR'S ROWS ARE MOVED BEFORE THE MODEL'S LIST IS REPLACED**, so a quote that
@@ -817,6 +1053,10 @@ impl Tool for TodoWriteTool {
 
 /// **Parse and validate a `todos` list — the shared gate both boards' writes pass.**
 ///
+/// Each row comes back as `(content, status, needs)`: the row's own words, its state, and the edges
+/// it declares. The edges ride through to whichever board the call aims at — this session's, or a
+/// child's by `target` — because a plan's ORDER is part of the plan.
+///
 /// The refusals are the tool's own and both paths keep them: an unknown field inside an entry is
 /// refused BY NAME, an empty entry is refused, a status outside the three words is refused. The
 /// unknown-field check is the one that cost a real turn — MEASURED, verbatim, from the transcript
@@ -836,12 +1076,12 @@ impl Tool for TodoWriteTool {
 /// field rather than saying it does not know it turns a wrong write into a silent one. With
 /// `target` the same check refuses a smuggled `by` — the author is the daemon's to stamp, never
 /// the call's to claim.
-fn parse_rows(list: &[Value]) -> Result<Vec<(String, TodoStatus)>, Invocation> {
+fn parse_rows(list: &[Value]) -> Result<Vec<(String, TodoStatus, Vec<TodoNeed>)>, Invocation> {
     let mut rows = Vec::with_capacity(list.len());
     for (i, t) in list.iter().enumerate() {
         if let Some(obj) = t.as_object() {
             for key in obj.keys() {
-                if !matches!(key.as_str(), "content" | "status") {
+                if !matches!(key.as_str(), "content" | "status" | "needs") {
                     return Err(Invocation::failed(
                         format!("entry {} has an unknown field `{key}`", i + 1),
                         if key == "operator" {
@@ -857,9 +1097,9 @@ fn parse_rows(list: &[Value]) -> Result<Vec<(String, TodoStatus)>, Invocation> {
                              `Parent <your session id>` on a child's. Send only `content` and \
                              `status`."
                         } else {
-                            "a `todos` entry has exactly `content` and `status` — the whole list \
-                             is replaced on every call, so an unknown field is refused rather \
-                             than ignored."
+                            "a `todos` entry has `content`, `status` and an optional `needs` — the \
+                             whole list is replaced on every call, so an unknown field is refused \
+                             rather than ignored."
                         },
                     ));
                 }
@@ -877,6 +1117,23 @@ fn parse_rows(list: &[Value]) -> Result<Vec<(String, TodoStatus)>, Invocation> {
                 "an empty entry says nothing; drop it or write the step.",
             ));
         }
+        let needs = match t.get("needs") {
+            None => Vec::new(),
+            Some(v) => {
+                let Some(list) = v.as_array() else {
+                    return Err(Invocation::failed(
+                        format!("entry {} has a `needs` that is not a list", i + 1),
+                        "`needs` is a list of the exact `content` of other rows on this list — the \
+                         rows this one waits for. Leave it out for a row that waits for nothing.",
+                    ));
+                };
+                let mut edges = Vec::with_capacity(list.len());
+                for (j, need) in list.iter().enumerate() {
+                    edges.push(parse_need(need, i, j)?);
+                }
+                edges
+            }
+        };
         let status = match t.get("status").and_then(|v| v.as_str()) {
             Some("pending") => TodoStatus::Pending,
             Some("in_progress") => TodoStatus::InProgress,
@@ -894,9 +1151,65 @@ fn parse_rows(list: &[Value]) -> Result<Vec<(String, TodoStatus)>, Invocation> {
                 ));
             }
         };
-        rows.push((content.to_string(), status));
+        rows.push((content.to_string(), status, needs));
     }
     Ok(rows)
+}
+
+/// **One `needs` entry, as the tool spells it** — a plain string (the other row's own words), or the
+/// tagged form the store and the wire carry: `{"kind": "row", "content": "…"}`.
+///
+/// **A kind this build cannot evaluate is REFUSED, by name.** The tag exists so a kind can be added
+/// without a new field on every row — *"a kind can be added without a new field on every row and a
+/// reader that does not know one can SAY SO rather than misread it"* — and the tool's half of that
+/// promise is here: a model that writes a kind this build does not know is told so, rather than
+/// having it quietly dropped, which would leave a row that looks like it waits for something and
+/// waits for nothing. What the *store* does with a kind from a NEWER build is the other half of the
+/// same rule, and it is [`TodoNeed`]'s own `Unknown` variant.
+fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation> {
+    let where_ = format!("entry {}'s need {}", entry + 1, at + 1);
+    let named = |content: &str| -> Result<TodoNeed, Invocation> {
+        if content.trim().is_empty() {
+            return Err(Invocation::failed(
+                format!("{where_} is empty"),
+                "a need names another row by its exact `content`; an empty name waits for nothing \
+                 while saying it waits.",
+            ));
+        }
+        Ok(TodoNeed::Row {
+            content: content.to_string(),
+        })
+    };
+    match v {
+        Value::String(content) => named(content),
+        Value::Object(o) => match o.get("kind").and_then(|k| k.as_str()) {
+            Some("row") => match o.get("content").and_then(|c| c.as_str()) {
+                Some(content) => named(content),
+                None => Err(Invocation::failed(
+                    format!("{where_} has kind `row` and no `content`"),
+                    "a `row` need names the other row with `content` — the exact text this list \
+                     shows for it.",
+                )),
+            },
+            Some(other) => Err(Invocation::failed(
+                format!("{where_} has kind `{other}`, which this build cannot evaluate"),
+                "the only kind of need today is `row` — another row on this list, by its exact \
+                 `content`. Send the name as a plain string, or as {\"kind\": \"row\", \"content\": \
+                 \"…\"}. A kind nobody can evaluate is refused rather than dropped: a need that \
+                 cannot be answered must never read as met.",
+            )),
+            None => Err(Invocation::failed(
+                format!("{where_} has no `kind`"),
+                "a need is either a plain string (the other row's exact `content`) or \
+                 {\"kind\": \"row\", \"content\": \"…\"}.",
+            )),
+        },
+        _ => Err(Invocation::failed(
+            format!("{where_} is neither a string nor an object"),
+            "a need is either a plain string (the other row's exact `content`) or \
+             {\"kind\": \"row\", \"content\": \"…\"}.",
+        )),
+    }
 }
 
 /// The list, the way the model wrote it.
@@ -930,11 +1243,30 @@ fn render(todos: &[TodoItem]) -> String {
             TodoBy::Model => "yours".to_string(),
         };
         out.push_str(&format!(
-            "  {}. {} {}  — {}\n",
+            "  {}. {} {}  — {}{}\n",
             i + 1,
             mark,
             t.content,
-            author
+            author,
+            // **AND WHAT IT WAITS FOR, because an edge the model cannot SEE is an edge it cannot
+            // maintain.** The list is the whole of what the model knows about the plan at the start
+            // of a turn, so a row that waits on another has to say so here — otherwise the first
+            // `todo_write` that rewrites a row's text silently breaks every edge into it, and the
+            // model has no way to know that is what happened. `the_check` says it too, but only
+            // about the rows it cannot ask for.
+            if t.needs.is_empty() {
+                String::new()
+            } else {
+                let named: Vec<String> = t
+                    .needs
+                    .iter()
+                    .map(|need| match need {
+                        TodoNeed::Row { content } => format!("`{}`", content.trim()),
+                        TodoNeed::Unknown => "a kind this build cannot evaluate".to_string(),
+                    })
+                    .collect();
+                format!("  (waiting on {})", named.join(", "))
+            }
         ));
     }
     // **AND WHAT `[p]` MEANS, because the model has to stop proposing the row without being told
@@ -983,12 +1315,14 @@ mod tests {
                     status: TodoStatus::Pending,
                     by: TodoBy::Operator,
                     when: None,
+                    needs: Vec::new(),
                 },
                 TodoItem {
                     content: "T2 wire the pane".into(),
                     status: TodoStatus::Pending,
                     by: TodoBy::Operator,
                     when: None,
+                    needs: Vec::new(),
                 },
             ]
         };
@@ -1035,6 +1369,7 @@ mod tests {
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
             when: None,
+            needs: Vec::new(),
         }]);
         let all = b.snapshot();
         // The renderer the model reads.
@@ -1044,7 +1379,7 @@ mod tests {
             "the tag did not survive into what the model is told: {rendered}"
         );
         // And the nag, whose only edit is a trim.
-        let nag = unfinished_plan(&all).expect("one row is open");
+        let nag = nag_for(&all).expect("one row is open");
         assert!(
             nag.contains("#model"),
             "the tag did not survive the nag: {nag}"
@@ -1073,6 +1408,7 @@ mod tests {
             when: Some(TodoCondition::Job {
                 handle: "j121".into(),
             }),
+            needs: Vec::new(),
         };
         let all = vec![item("the model's own row", TodoStatus::Pending), set_aside];
 
@@ -1130,6 +1466,7 @@ mod tests {
             status: TodoStatus::Pending,
             by: TodoBy::Model,
             when: None,
+            needs: Vec::new(),
         }]);
         assert_eq!(b.snapshot().len(), 1, "the model's list as given");
 
@@ -1138,6 +1475,7 @@ mod tests {
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
             when: None,
+            needs: Vec::new(),
         }]);
 
         let all = b.snapshot();
@@ -1148,7 +1486,7 @@ mod tests {
         );
         // **`unfinished_plan` — what the nag asks — sees the operator's row with no change at all**
         assert!(
-            unfinished_plan(&all).is_some(),
+            nag_for(&all).is_some(),
             "so the reminder can fire for work the OPERATOR queued"
         );
 
@@ -1159,6 +1497,7 @@ mod tests {
             status: TodoStatus::Pending,
             by: TodoBy::Model,
             when: None,
+            needs: Vec::new(),
         }]);
         let after = b.snapshot();
         assert_eq!(after.len(), 2, "the operator's row survived: {after:?}");
@@ -1202,12 +1541,14 @@ mod tests {
                 status: TodoStatus::Pending,
                 by: TodoBy::Model,
                 when: None,
+                needs: Vec::new(),
             },
             TodoItem {
                 content: "m2".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Model,
                 when: None,
+                needs: Vec::new(),
             },
         ]);
         b.set_operator(vec![
@@ -1216,12 +1557,14 @@ mod tests {
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
             TodoItem {
                 content: "o2".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
         ]);
 
@@ -1246,6 +1589,7 @@ mod tests {
             status: TodoStatus::Pending,
             by: TodoBy::Model,
             when: None,
+            needs: Vec::new(),
         }]);
         let after = b.snapshot();
         assert_eq!(
@@ -1311,6 +1655,7 @@ mod tests {
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
             when: None,
+            needs: Vec::new(),
         }]);
         let mut sink = RecordingToolSink::new();
 
@@ -1370,6 +1715,7 @@ mod tests {
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
             when: None,
+            needs: Vec::new(),
         }]);
         let mut sink = RecordingToolSink::new();
         let r = rt.invoke(
@@ -1404,12 +1750,14 @@ mod tests {
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
             TodoItem {
                 content: "push leticl".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
         ]);
         let mut sink = RecordingToolSink::new();
@@ -1488,12 +1836,14 @@ mod tests {
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
             TodoItem {
                 content: "same words".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
         ]);
         let r = rt.invoke(
@@ -1529,6 +1879,7 @@ mod tests {
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
             when: None,
+            needs: Vec::new(),
         }]);
         let v = b.version();
 
@@ -1559,18 +1910,19 @@ mod tests {
     /// operator's row, and the guess it makes is the one it always makes — its own list.
     #[test]
     fn the_nag_says_whose_row_it_is_and_how_to_dispose_of_it() {
-        let mine = unfinished_plan(&[item("my step", TodoStatus::Pending)]).unwrap();
+        let mine = nag_for(&[item("my step", TodoStatus::Pending)]).unwrap();
         assert!(mine.contains("— yours"), "{mine}");
         assert!(
             mine.contains("or drop it"),
             "the model may drop its OWN row: {mine}"
         );
 
-        let theirs = unfinished_plan(&[TodoItem {
+        let theirs = nag_for(&[TodoItem {
             content: "restart the daemon".into(),
             status: TodoStatus::Pending,
             by: TodoBy::Operator,
             when: None,
+            needs: Vec::new(),
         }])
         .unwrap();
         assert!(theirs.contains("— the operator's"), "{theirs}");
@@ -1603,12 +1955,14 @@ mod tests {
                 when: Some(TodoCondition::Job {
                     handle: "j121".into(),
                 }),
+                needs: Vec::new(),
             },
             TodoItem {
                 content: "an ordinary row".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
         ]);
         let v = b.version();
@@ -1653,12 +2007,14 @@ mod tests {
                 status: TodoStatus::InProgress,
                 by: TodoBy::Model,
                 when: None,
+                needs: Vec::new(),
             },
             TodoItem {
                 content: "the operator's, from the store".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
         ];
         let b = TodoBoard::new(stored);
@@ -1682,6 +2038,7 @@ mod tests {
             status: TodoStatus::Pending,
             by: TodoBy::Model,
             when: None,
+            needs: Vec::new(),
         }]);
         assert_eq!(
             b.snapshot().len(),
@@ -1772,7 +2129,166 @@ mod tests {
         assert!(board.snapshot().is_empty());
     }
 
+    /// **A PLAN CAN WRITE ITS OWN EDGES, and the reply SHOWS them.** Both halves matter: the field
+    /// is only a graph if the tool that writes the plan can express an edge, and an edge the model
+    /// cannot SEE is an edge it cannot maintain — the next `todo_write` that re-words a row would
+    /// break every edge into it with nothing said.
+    #[test]
+    fn a_plan_writes_its_edges_and_the_reply_shows_them() {
+        let (mut rt, board) = runtime();
+        let mut sink = RecordingToolSink::new();
+        let r = rt.invoke(
+            "t1",
+            &call(
+                r#"{"todos": [
+                    {"content": "run the tests", "status": "pending"},
+                    {"content": "deploy", "status": "pending", "needs": ["run the tests"]}
+                ]}"#,
+            ),
+            &mut sink,
+        );
+        assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
+        let snap = board.snapshot();
+        assert_eq!(
+            snap[1].needs,
+            vec![TodoNeed::Row {
+                content: "run the tests".into()
+            }],
+            "the edge is on the board"
+        );
+        assert!(
+            r.payload.contains("(waiting on `run the tests`)"),
+            "and the reply shows it, so the model can maintain it: {}",
+            r.payload
+        );
+        // **And the check then asks about the row that can start** — the whole point of the edge.
+        let msg = nag_for(&snap).expect("the plan is unfinished");
+        assert!(msg.contains("  - run the tests"), "{msg}");
+        assert!(
+            msg.contains("`deploy` waits on `run the tests` (still open)"),
+            "{msg}"
+        );
+    }
+
+    /// **The tagged form is accepted as well as the plain name**, so the shape the store and the
+    /// wire carry is one a model can write too — which is what keeps the tool's vocabulary and the
+    /// store's from being two spellings a reader has to know.
+    #[test]
+    fn a_need_may_be_written_in_the_tagged_form() {
+        let (mut rt, board) = runtime();
+        let mut sink = RecordingToolSink::new();
+        let r = rt.invoke(
+            "t1",
+            &call(
+                r#"{"todos": [{"content": "run the tests", "status": "completed"},
+                    {"content": "deploy", "status": "pending",
+                     "needs": [{"kind": "row", "content": "run the tests"}]}]}"#,
+            ),
+            &mut sink,
+        );
+        assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.payload);
+        assert_eq!(
+            board.snapshot()[1].needs,
+            vec![TodoNeed::Row {
+                content: "run the tests".into()
+            }]
+        );
+        // And it is satisfied, so the row is READY and nothing is blocked.
+        let msg = nag_for(&board.snapshot()).expect("open work");
+        assert!(msg.contains("  - deploy"), "{msg}");
+        assert!(!msg.contains("cannot start yet"), "{msg}");
+    }
+
+    /// **A kind this build cannot evaluate is REFUSED by name** — never dropped. Dropping it would
+    /// leave a row that looks like it waits for something and waits for nothing, which is the one
+    /// reading a dependency must never have.
+    #[test]
+    fn a_need_of_a_kind_this_build_does_not_know_is_refused_by_name() {
+        let (mut rt, board) = runtime();
+        let mut sink = RecordingToolSink::new();
+        let r = rt.invoke(
+            "t1",
+            &call(
+                r#"{"todos": [{"content": "deploy", "status": "pending",
+                     "needs": [{"kind": "session", "id": "s-child"}]}]}"#,
+            ),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "a kind nobody can evaluate is not a write: {:?}",
+            r.outcome
+        );
+        let said = format!("{} {:?}", r.payload, r.outcome);
+        assert!(
+            said.contains("kind `session`") && said.contains("cannot evaluate"),
+            "the refusal names the kind it does not know: {said}"
+        );
+        assert!(
+            said.contains("the only kind of need today is `row`"),
+            "and says what it does take: {said}"
+        );
+        assert!(
+            board.snapshot().is_empty(),
+            "and nothing was written: {:?}",
+            board.snapshot()
+        );
+    }
+
+    /// **An empty name and a `needs` that is not a list are refused by name too** — the same rule,
+    /// one level down: an edge that names nothing is not an edge.
+    #[test]
+    fn an_empty_need_and_a_malformed_needs_are_refused_by_name() {
+        let (mut rt, board) = runtime();
+        let mut sink = RecordingToolSink::new();
+        let r = rt.invoke(
+            "t1",
+            &call(r#"{"todos": [{"content": "deploy", "status": "pending", "needs": ["  "]}]}"#),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert!(
+            format!("{:?} {}", r.outcome, r.payload).contains("is empty"),
+            "the empty name is named: {:?} {}",
+            r.outcome,
+            r.payload
+        );
+
+        let r = rt.invoke(
+            "t2",
+            &call(r#"{"todos": [{"content": "deploy", "status": "pending", "needs": "x"}]}"#),
+            &mut sink,
+        );
+        assert!(
+            matches!(r.outcome, ToolOutcome::Failed { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert!(
+            format!("{:?} {}", r.outcome, r.payload).contains("not a list"),
+            "a `needs` that is not a list is refused rather than ignored: {:?} {}",
+            r.outcome,
+            r.payload
+        );
+        assert!(
+            board.snapshot().is_empty(),
+            "nothing was written by either refusal"
+        );
+    }
+
     // -- the turn boundary ------------------------------------------------
+
+    /// **The check's sentence for a plan that IS the whole board** — the shorthand every test below
+    /// uses, and the honest one: these plans carry no POSTPONED row, so the caller's narrowing
+    /// (`the_plan_as_checked`) would hand back exactly the same rows. A test that needs the two to
+    /// differ says so by calling `unfinished_plan` with both.
+    fn nag_for(todos: &[TodoItem]) -> Option<String> {
+        unfinished_plan(todos, todos)
+    }
 
     fn item(content: &str, status: TodoStatus) -> TodoItem {
         TodoItem {
@@ -1780,6 +2296,7 @@ mod tests {
             status,
             by: TodoBy::Model,
             when: None,
+            needs: Vec::new(),
         }
     }
 
@@ -1789,9 +2306,9 @@ mod tests {
     /// are asserted first and with the same weight as the firing one.
     #[test]
     fn a_plan_with_nothing_open_has_nothing_to_say() {
-        assert!(unfinished_plan(&[]).is_none(), "no plan at all");
+        assert!(nag_for(&[]).is_none(), "no plan at all");
         assert!(
-            unfinished_plan(&[
+            nag_for(&[
                 item("one", TodoStatus::Completed),
                 item("two", TodoStatus::Completed),
             ])
@@ -1810,7 +2327,7 @@ mod tests {
             item("first", TodoStatus::Pending),
             item("second", TodoStatus::Pending),
         ];
-        let (text, named) = unfinished_plan_for(&plan, None).expect("open work");
+        let (text, named) = unfinished_plan_for(&plan, &plan, None).expect("open work");
         assert_eq!(named, "first", "the queue's head is named first");
         assert!(text.contains("first"), "{text}");
 
@@ -1821,7 +2338,7 @@ mod tests {
             item("first", TodoStatus::Pending),
             item("second", TodoStatus::Pending),
         ];
-        let (text, named) = unfinished_plan_for(&grown, Some(&named)).expect("open work");
+        let (text, named) = unfinished_plan_for(&grown, &grown, Some(&named)).expect("open work");
         assert_eq!(
             named, "first",
             "the row already named is the row asked about"
@@ -1843,14 +2360,15 @@ mod tests {
             item("first", TodoStatus::Pending),
             item("second", TodoStatus::Pending),
         ];
-        let (_, named) = unfinished_plan_for(&plan, None).expect("open work");
+        let (_, named) = unfinished_plan_for(&plan, &plan, None).expect("open work");
         assert_eq!(named, "first");
 
         let first_done = vec![
             item("first", TodoStatus::Completed),
             item("second", TodoStatus::Pending),
         ];
-        let (text, named) = unfinished_plan_for(&first_done, Some("first")).expect("open work");
+        let (text, named) =
+            unfinished_plan_for(&first_done, &first_done, Some("first")).expect("open work");
         assert_eq!(named, "second", "the answered row is not a choice any more");
         assert!(text.contains("second"), "{text}");
 
@@ -1860,12 +2378,18 @@ mod tests {
         // check named is simply not in it and the head of the queue is the new choice.
         let after_a_postponement = vec![item("second", TodoStatus::Pending)];
         let (_, named) =
-            unfinished_plan_for(&after_a_postponement, Some("first")).expect("open work");
+            unfinished_plan_for(&after_a_postponement, &after_a_postponement, Some("first"))
+                .expect("open work");
         assert_eq!(named, "second");
 
         // And with nothing askable left there is no sentence at all.
         assert!(
-            unfinished_plan_for(&[item("first", TodoStatus::Completed)], Some("first")).is_none(),
+            unfinished_plan_for(
+                &[item("first", TodoStatus::Completed)],
+                &[item("first", TodoStatus::Completed)],
+                Some("first")
+            )
+            .is_none(),
             "a finished plan is silence, whatever the last check named"
         );
     }
@@ -1877,13 +2401,14 @@ mod tests {
     #[test]
     fn a_row_marked_in_progress_is_asked_about_as_its_own_claim() {
         let plan = vec![item("the migration", TodoStatus::InProgress)];
-        let (fresh, _) = unfinished_plan_for(&plan, None).expect("open work");
+        let (fresh, _) = unfinished_plan_for(&plan, &plan, None).expect("open work");
         assert!(
             fresh.contains("you had it in progress"),
             "a row already in progress at the first check: {fresh}"
         );
 
-        let (sticky, _) = unfinished_plan_for(&plan, Some("the migration")).expect("open work");
+        let (sticky, _) =
+            unfinished_plan_for(&plan, &plan, Some("the migration")).expect("open work");
         assert!(
             sticky.contains("marked in progress and still open"),
             "the model's own claim, said back to it: {sticky}"
@@ -1893,8 +2418,9 @@ mod tests {
         // And a PENDING row that was already asked about says so, rather than repeating the first
         // check's sentence verbatim — which is what makes the repeat legible as a repeat.
         let pending = vec![item("the migration", TodoStatus::Pending)];
-        let (first, _) = unfinished_plan_for(&pending, None).expect("open work");
-        let (repeat, _) = unfinished_plan_for(&pending, Some("the migration")).expect("open work");
+        let (first, _) = unfinished_plan_for(&pending, &pending, None).expect("open work");
+        let (repeat, _) =
+            unfinished_plan_for(&pending, &pending, Some("the migration")).expect("open work");
         assert!(
             repeat.contains("asked about this one already"),
             "the repeat says it is a repeat: {repeat}"
@@ -1936,7 +2462,7 @@ mod tests {
             "**a completed item is not in the queue at all**: {queued:?}"
         );
         // and the head of that queue is what the message names
-        let msg = unfinished_plan(&todos).expect("four open items is a finding");
+        let msg = nag_for(&todos).expect("four open items is a finding");
         assert!(msg.contains("model in progress"), "{msg}");
         assert!(msg.contains("(3 more open)"), "{msg}");
     }
@@ -1952,7 +2478,7 @@ mod tests {
             item("third", TodoStatus::Pending),
         ];
         for expected in ["first", "second", "third"] {
-            let msg = unfinished_plan(&todos).expect("open work");
+            let msg = nag_for(&todos).expect("open work");
             assert!(
                 msg.contains(expected),
                 "the queue serves {expected} next: {msg}"
@@ -1963,7 +2489,7 @@ mod tests {
             todos[at].status = TodoStatus::Completed;
         }
         assert!(
-            unfinished_plan(&todos).is_none(),
+            nag_for(&todos).is_none(),
             "and when the work runs out, the check is silent"
         );
     }
@@ -1977,7 +2503,7 @@ mod tests {
     /// marked `in_progress` is the one it told the board it was doing, so that is what gets named.
     #[test]
     fn an_open_plan_names_one_item_and_what_to_do_about_it() {
-        let msg = unfinished_plan(&[
+        let msg = nag_for(&[
             item("write it up", TodoStatus::Completed),
             item("wire the check", TodoStatus::InProgress),
             item("test it", TodoStatus::Pending),
@@ -2023,7 +2549,7 @@ mod tests {
     /// so the list's own order is the only thing to go on, and singling one out is still the rule.
     #[test]
     fn with_nothing_in_progress_it_names_the_first_open_row() {
-        let msg = unfinished_plan(&[
+        let msg = nag_for(&[
             item("the first", TodoStatus::Pending),
             item("the second", TodoStatus::Pending),
             item("the third", TodoStatus::Pending),
@@ -2047,7 +2573,7 @@ mod tests {
         let todos: Vec<TodoItem> = (0..10)
             .map(|i| item(&format!("item {i}"), TodoStatus::Pending))
             .collect();
-        let msg = unfinished_plan(&todos).expect("ten open items is a finding");
+        let msg = nag_for(&todos).expect("ten open items is a finding");
         assert!(msg.contains("item 0"), "the first is named: {msg}");
         assert!(!msg.contains("item 1"), "and no other: {msg}");
         assert!(msg.contains("(9 more open)"), "the rest is counted: {msg}");
@@ -2062,8 +2588,314 @@ mod tests {
         board.replace(vec![item("do the thing", TodoStatus::InProgress)]);
         board.replace(vec![item("do the thing", TodoStatus::Completed)]);
         assert!(
-            unfinished_plan(&board.snapshot()).is_none(),
+            nag_for(&board.snapshot()).is_none(),
             "the plan as it STANDS is what is asked about"
+        );
+    }
+
+    /// **A row that waits on the rows it names** — the DAG's edge, as these tests write one.
+    fn needs(content: &str, status: TodoStatus, on: &[&str]) -> TodoItem {
+        TodoItem {
+            needs: on
+                .iter()
+                .map(|c| TodoNeed::Row {
+                    content: (*c).to_string(),
+                })
+                .collect(),
+            ..item(content, status)
+        }
+    }
+
+    /// **A BOARD WITH NO EDGES IS READ EXACTLY AS IT WAS BEFORE EDGES EXISTED** — the compatibility
+    /// claim, as evidence rather than as a promise.
+    ///
+    /// Two halves, and the second is what makes the first more than a golden string. The TEXT is
+    /// asserted byte for byte against what `1d24fab`'s implementation produced — every `state` arm
+    /// and the count — so a change to any of them fails here. And the STRUCTURE is asserted too:
+    /// with no `needs` anywhere, `as_a_graph` is the IDENTITY on `open_priority` — nothing can be
+    /// blocked and the ready set is the whole queue — which is *why* the text cannot have moved,
+    /// rather than a coincidence that it has not.
+    #[test]
+    fn a_board_with_no_dependencies_is_read_exactly_as_before() {
+        let plan = vec![
+            item("write it up", TodoStatus::Completed),
+            item("wire the check", TodoStatus::InProgress),
+            item("test it", TodoStatus::Pending),
+        ];
+        assert_eq!(
+            nag_for(&plan).expect("open work"),
+            "[todo check] this turn is finished and one item is not done (1 more open):\n  - wire \
+             the check — yours, and you had it in progress\ndo this one, or mark it done, or drop \
+             it — a plan left open is a plan nobody is following. If you are stopping here \
+             deliberately, say why in your reply.",
+            "the sentence a dependency-free board gets is the one `1d24fab` produced, byte for byte"
+        );
+
+        // The other three arms, one at a time, because the arm is what the field could have moved.
+        assert_eq!(
+            nag_for(&[item("first", TodoStatus::Pending)]).expect("open work"),
+            "[todo check] this turn is finished and one item is not done:\n  - first — yours\ndo \
+             this one, or mark it done, or drop it — a plan left open is a plan nobody is \
+             following. If you are stopping here deliberately, say why in your reply."
+        );
+        assert_eq!(
+            nag_for(&[
+                item("first", TodoStatus::Pending),
+                item("second", TodoStatus::Pending)
+            ])
+            .expect("open work")
+            .lines()
+            .next()
+            .expect("a first line"),
+            "[todo check] this turn is finished and one item is not done (1 more open):"
+        );
+        assert!(
+            nag_for(&[
+                item("first", TodoStatus::Pending),
+                item("second", TodoStatus::Pending)
+            ])
+            .expect("open work")
+            .contains("  - first — yours\n"),
+            "the first open row is named, and the repeat arm says so"
+        );
+        assert_eq!(
+            nag_for(&[item("first", TodoStatus::InProgress)])
+                .expect("open work")
+                .lines()
+                .nth(1),
+            Some("  - first — yours, and you had it in progress")
+        );
+        let sticky = unfinished_plan_for(
+            &[item("first", TodoStatus::Pending)],
+            &[item("first", TodoStatus::Pending)],
+            Some("first"),
+        )
+        .expect("open work");
+        assert_eq!(
+            sticky.0.lines().nth(1),
+            Some(
+                "  - first — yours, and you were asked about this one already and it has not \
+                 been started"
+            )
+        );
+
+        // **AND THE STRUCTURE**: the graph split of a board with no edges is the identity.
+        let graph = as_a_graph(&plan, &plan);
+        assert_eq!(
+            graph.open, 2,
+            "the plan's size, minus the row that is done — a completed row is not work this check \
+             may speak about"
+        );
+        assert!(
+            graph.blocked.is_empty(),
+            "nothing can be blocked with no edges: {:?}",
+            graph.blocked
+        );
+        assert_eq!(
+            graph
+                .ready
+                .iter()
+                .map(|t| t.content.as_str())
+                .collect::<Vec<_>>(),
+            open_priority(&plan)
+                .iter()
+                .map(|t| t.content.as_str())
+                .collect::<Vec<_>>(),
+            "the ready set IS the queue, in the queue's order"
+        );
+    }
+
+    /// **An edge that is MET is inert.** The same board with a satisfied need is read exactly as
+    /// the same board with no need at all — which is the general form of the compatibility claim,
+    /// and the reason a plan that adopts the field gradually cannot change under itself.
+    #[test]
+    fn a_satisfied_need_is_inert() {
+        let flat = vec![
+            item("first", TodoStatus::Completed),
+            item("second", TodoStatus::Pending),
+        ];
+        let edged = vec![
+            item("first", TodoStatus::Completed),
+            needs("second", TodoStatus::Pending, &["first"]),
+        ];
+        assert_eq!(nag_for(&flat), nag_for(&edged));
+    }
+
+    /// **A BLOCKED ROW IS NOT THE ASK, and the row behind it is** — the whole point of the DAG.
+    ///
+    /// The defect this replaces is head-of-line blocking: `open_priority(todos).first()` named the
+    /// first open row whatever it was waiting for, so a row that could not start was asked about
+    /// for ever and the row that could start was never reached.
+    #[test]
+    fn a_row_whose_need_is_open_is_not_asked_about() {
+        let plan = vec![
+            needs("deploy", TodoStatus::Pending, &["run the tests"]),
+            item("run the tests", TodoStatus::Pending),
+        ];
+        let msg = nag_for(&plan).expect("one row can start");
+        assert!(
+            msg.contains("  - run the tests"),
+            "the ready row is the one named: {msg}"
+        );
+        assert!(
+            !msg.contains("  - deploy"),
+            "and the blocked row is not named as the thing to do: {msg}"
+        );
+        // **And it is SAID rather than skipped**, because a blocked row is invisible to the ask and
+        // a plan whose edges went stale would otherwise look like a shorter plan.
+        assert!(
+            msg.contains("1 row cannot start yet: `deploy` waits on `run the tests` (still open)."),
+            "what cannot start is said, with what it waits for: {msg}"
+        );
+        assert!(
+            msg.contains("(1 more open)"),
+            "and a blocked row is still open work, so it is counted: {msg}"
+        );
+    }
+
+    /// **THE DEGENERATE CASE, designed deliberately: an unfinished plan with an EMPTY ready set.**
+    ///
+    /// Everything left waits on something, so there is nothing to work on and something to UNBLOCK.
+    /// Going quiet here would read as *nothing to do*, which is the one reading that is wrong; and
+    /// asking about the head of the list anyway is the head-of-line blocking this replaced. A cycle
+    /// lands in exactly this state, which is why it is the example.
+    #[test]
+    fn a_plan_where_nothing_can_start_says_so() {
+        let plan = vec![
+            needs("deploy", TodoStatus::Pending, &["run the tests"]),
+            needs("run the tests", TodoStatus::Pending, &["deploy"]),
+        ];
+        let (msg, named) =
+            unfinished_plan_for(&plan, &plan, None).expect("a stuck plan is a finding");
+        assert!(
+            msg.starts_with("[todo check] this turn is finished and NOTHING can start"),
+            "the state is said in the house prefix's own voice: {msg}"
+        );
+        assert!(
+            msg.contains("  - `deploy` waits on `run the tests` (still open)\n")
+                && msg.contains("  - `run the tests` waits on `deploy` (still open)\n"),
+            "every row that is waiting, and on what: {msg}"
+        );
+        assert!(
+            msg.contains("unblock one of these rather than starting something new"),
+            "and what to do about it — unblock, rather than start: {msg}"
+        );
+        assert_eq!(
+            named, "",
+            "nothing is being held to, so the next check draws its choice afresh"
+        );
+    }
+
+    /// **An unresolvable need is NEVER met** — the rule `TodoCondition` learned first, *a condition
+    /// nobody can evaluate must never read as met*.
+    ///
+    /// A name that matches no row is the common case and the one the message has to make
+    /// repairable: a row was re-worded, or deleted, or the name was never right.
+    #[test]
+    fn a_need_that_names_nothing_blocks_the_row_and_says_so() {
+        let plan = vec![
+            needs("deploy", TodoStatus::Pending, &["publish"]),
+            item("run the tests", TodoStatus::Pending),
+        ];
+        let msg = nag_for(&plan).expect("one row can start");
+        assert!(
+            msg.contains("  - run the tests"),
+            "the resolvable row is the one named: {msg}"
+        );
+        assert!(
+            msg.contains("`deploy` waits on `publish` (no such row on this board)"),
+            "and the unresolvable need is said as unresolvable, never quietly satisfied: {msg}"
+        );
+
+        // Alone, it is the degenerate case: the ONLY row cannot start.
+        let alone = vec![needs("deploy", TodoStatus::Pending, &["publish"])];
+        let (msg, named) = unfinished_plan_for(&alone, &alone, None).expect("a stuck plan speaks");
+        assert!(msg.contains("NOTHING can start"), "{msg}");
+        assert!(
+            msg.contains("`deploy` waits on `publish` (no such row on this board)"),
+            "{msg}"
+        );
+        assert_eq!(named, "");
+    }
+
+    /// **A name that matches two rows is unresolvable** — the house rule for an ambiguous name,
+    /// read one step earlier: the guess this refuses to make is a row silently starting on the
+    /// strength of a name that meant something else.
+    #[test]
+    fn a_need_that_matches_two_rows_is_unresolvable() {
+        let plan = vec![
+            item("same words", TodoStatus::Pending),
+            item("same words", TodoStatus::Pending),
+            needs("deploy", TodoStatus::Pending, &["same words"]),
+        ];
+        let msg = nag_for(&plan).expect("two rows can start");
+        assert!(
+            msg.contains("`deploy` waits on `same words` (two rows on this board say that)"),
+            "{msg}"
+        );
+    }
+
+    /// **A need of a kind this build cannot evaluate blocks the row and SAYS SO** — the promise
+    /// `TodoCondition` makes in its own words, kept where breaking it would be silent. This is the
+    /// value a NEWER build's store leaves behind; see `TodoNeed::Unknown` for why it does not fail
+    /// the whole plan instead.
+    #[test]
+    fn a_need_of_a_kind_this_build_cannot_evaluate_blocks_and_says_so() {
+        let plan = vec![TodoItem {
+            needs: vec![TodoNeed::Unknown],
+            ..item("deploy", TodoStatus::Pending)
+        }];
+        let msg = nag_for(&plan).expect("a stuck plan speaks");
+        assert!(msg.contains("NOTHING can start"), "{msg}");
+        assert!(
+            msg.contains("`deploy` waits on a dependency of a kind this build cannot evaluate"),
+            "an edge nobody can answer must never read as met: {msg}"
+        );
+    }
+
+    /// **The graph MOVES**: finishing a row is what makes the rows that waited on it ready, so the
+    /// check's question follows the work rather than the list's order.
+    #[test]
+    fn finishing_a_row_makes_what_waited_on_it_ready() {
+        let mut plan = vec![
+            item("first", TodoStatus::Pending),
+            needs("second", TodoStatus::Pending, &["first"]),
+        ];
+        let (_, named) = unfinished_plan_for(&plan, &plan, None).expect("first can start");
+        assert_eq!(named, "first", "the only ready row is the one asked about");
+
+        plan[0].status = TodoStatus::Completed;
+        let (msg, named) = unfinished_plan_for(&plan, &plan, Some("first")).expect("second can");
+        assert_eq!(
+            named, "second",
+            "the answered row is gone and the graph moved on"
+        );
+        assert!(msg.contains("  - second"), "{msg}");
+        assert!(
+            !msg.contains("cannot start yet"),
+            "nothing is blocked once the row it waited on is done: {msg}"
+        );
+    }
+
+    /// **The sticky choice is held only while the row is READY** — the composition of the two
+    /// halves. A row that has left the ready set — done, set aside, or BLOCKED — is no longer a
+    /// choice, and the head of the ready set is.
+    #[test]
+    fn the_sticky_choice_moves_on_when_the_named_row_becomes_blocked() {
+        let plan = vec![
+            needs("deploy", TodoStatus::Pending, &["later"]),
+            item("later", TodoStatus::Pending),
+        ];
+        let (msg, named) =
+            unfinished_plan_for(&plan, &plan, Some("deploy")).expect("one row can start");
+        assert_eq!(
+            named, "later",
+            "the row the check was holding to is blocked, so it is not the choice any more"
+        );
+        assert!(msg.contains("  - later"), "{msg}");
+        assert!(
+            msg.contains("`deploy` waits on `later` (still open)"),
+            "and the row it stopped holding is still SAID, as blocked: {msg}"
         );
     }
 
@@ -2099,7 +2931,7 @@ mod tests {
         fn upsert_child(
             &self,
             _target: &str,
-            rows: &[(String, TodoStatus)],
+            rows: &[(String, TodoStatus, Vec<TodoNeed>)],
         ) -> Result<Vec<TodoItem>, String> {
             // The real resolver stamps the author itself; the fake does the same, with an id
             // shaped like a real one so the rendered reply can be asserted on it.
@@ -2143,6 +2975,7 @@ mod tests {
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
         ]);
         let author = TodoBy::parent_of("s-1789462738453908838");
@@ -2150,8 +2983,12 @@ mod tests {
         // Two rows arrive from the parent.
         let changed = b.upsert_parent(
             &[
-                ("land the parity row".into(), TodoStatus::Pending),
-                ("write the report".into(), TodoStatus::Pending),
+                (
+                    "land the parity row".into(),
+                    TodoStatus::Pending,
+                    Vec::new(),
+                ),
+                ("write the report".into(), TodoStatus::Pending, Vec::new()),
             ],
             &author,
         );
@@ -2182,7 +3019,11 @@ mod tests {
         // author's name would be a different row, which is the scoping, but one parent is one
         // author, so the second send moves what the first wrote.
         let changed = b.upsert_parent(
-            &[("land the parity row".into(), TodoStatus::Completed)],
+            &[(
+                "land the parity row".into(),
+                TodoStatus::Completed,
+                Vec::new(),
+            )],
             &author,
         );
         assert_eq!(changed, 1, "the existing row moved, nothing was added");
@@ -2192,7 +3033,11 @@ mod tests {
         // **Omission is not deletion.** The parent sends one row and leaves the other out —
         // under the own-board contract that would delete it; here it must not.
         let changed = b.upsert_parent(
-            &[("write the report".into(), TodoStatus::InProgress)],
+            &[(
+                "write the report".into(),
+                TodoStatus::InProgress,
+                Vec::new(),
+            )],
             &author,
         );
         assert_eq!(changed, 1);
@@ -2206,7 +3051,11 @@ mod tests {
         // **An unchanged re-send is not an event** — the version rule `set_operator_states` keeps.
         let before = b.version();
         let changed = b.upsert_parent(
-            &[("write the report".into(), TodoStatus::InProgress)],
+            &[(
+                "write the report".into(),
+                TodoStatus::InProgress,
+                Vec::new(),
+            )],
             &author,
         );
         assert_eq!(changed, 0, "nothing changed");
@@ -2246,9 +3095,10 @@ mod tests {
                 status: TodoStatus::Pending,
                 by: author.clone(),
                 when: None,
+                needs: Vec::new(),
             },
         ];
-        let nag = unfinished_plan(&all).expect("a pending parent row is open work");
+        let nag = nag_for(&all).expect("a pending parent row is open work");
         assert!(
             nag.contains("land the parity row"),
             "the nag names the parent's row: {nag}"
@@ -2276,6 +3126,7 @@ mod tests {
                 status: TodoStatus::Pending,
                 by: author,
                 when: None,
+                needs: Vec::new(),
             },
         ]);
         let served: Vec<String> = open_priority(&board.snapshot())
@@ -2297,12 +3148,14 @@ mod tests {
                 status: TodoStatus::Pending,
                 by: TodoBy::parent_of("s-1789462738453908838"),
                 when: None,
+                needs: Vec::new(),
             },
             TodoItem {
                 content: "the operator's".into(),
                 status: TodoStatus::Pending,
                 by: TodoBy::Operator,
                 when: None,
+                needs: Vec::new(),
             },
         ]);
         assert!(shown.contains("— yours"), "{shown}");

@@ -626,6 +626,7 @@ fn the_nag_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
             status: TodoStatus::InProgress,
             by: TodoBy::Model,
             when: None,
+            needs: Vec::new(),
         }],
     );
     let rel = write_the_big_file(&dir);
@@ -710,6 +711,7 @@ fn the_wake_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
             when: Some(TodoCondition::Job {
                 handle: "j-nothing".into(),
             }),
+            needs: Vec::new(),
         }],
     );
     let rel = write_the_big_file(&dir);

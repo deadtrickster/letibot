@@ -74,18 +74,21 @@ fn a_resume_comes_back_with_the_plan_the_model_was_working_from() {
                     status: TodoStatus::Completed,
                     by: TodoBy::Model,
                     when: None,
+                    needs: Vec::new(),
                 },
                 TodoItem {
                     content: "seat the tool".into(),
                     status: TodoStatus::InProgress,
                     by: TodoBy::Model,
                     when: None,
+                    needs: Vec::new(),
                 },
                 TodoItem {
                     content: "render the pane".into(),
                     status: TodoStatus::Pending,
                     by: TodoBy::Model,
                     when: None,
+                    needs: Vec::new(),
                 },
             ],
         )
@@ -211,6 +214,7 @@ fn a_session_with_an_open_plan(tag: &str) -> (TempDir, std::path::PathBuf, Strin
             status: TodoStatus::InProgress,
             by: TodoBy::Model,
             when: None,
+            needs: Vec::new(),
         }],
     )
     .expect("the todo row");
@@ -256,6 +260,7 @@ fn a_reopened_session_with_a_finished_plan_arms_nothing() {
                 status: TodoStatus::Completed,
                 by: TodoBy::Model,
                 when: None,
+                needs: Vec::new(),
             }],
         )
         .expect("the todo row");
