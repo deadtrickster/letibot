@@ -31,6 +31,25 @@
 //! next round's prompt: the request's token ids, detokenized with the same vocabulary the
 //! child tokenized with.
 //!
+//! # The exit that used to crash, and why the fixture drains the tree
+//!
+//! This file also carries a pre-existing defect's fix, because it was the file that measured
+//! it: the binary died of SIGSEGV at exit on a minority of runs — **8 in 20 on the commit that
+//! reported it, 2 in 60 measured here** — with every test printing `ok` first. The cause was
+//! not in this file. A subagent's thread is spawned **detached** (`HarnessTaskRunner::start`
+//! drops the `JoinHandle`), so nothing could wait for it; `exit()` runs the ELF finalizers of
+//! every loaded library; and a child still inside `libllama`'s tokenizer when `_dl_fini`
+//! finalizes `libggml-cuda`/`libcudart` takes SIGSEGV. The core says it in one frame: the
+//! faulting thread's stack is `HarnessTaskRunner::start` → `run_to_completion` → `tokenize`,
+//! `si_addr: 0x3` (SEGV_MAPERR), while the main thread is in `_dl_fini` → the CUDA runtime's
+//! own destructor → `free`.
+//!
+//! So the fix has two halves and this file needs both: the tree gained a door to wait for the
+//! threads it started ([`Harness::wait_for_children`], and the runner behind it), and the
+//! fixture below **drains the tree** — release the gate, close the hubs, wait for the threads
+//! to be gone — instead of only closing it. A file that closed its tree and returned was
+//! racing the process's own exit, which is why one green run proved nothing.
+//!
 //! # What this needs, and what it does not
 //!
 //! The vocabulary GGUF (`Harness::open` renders its stable prefix) and **not** a model: the
@@ -131,12 +150,19 @@ fn wiring(cfg: &Config) -> SessionWiring {
 
 /// **A parent session with the REAL runner** — the whole production path, with the model
 /// replaced by the stub. Its own hub is adopted so the tree looks the way a daemon's does.
+///
+/// It also owns the two things its teardown needs, so the test does not have to remember
+/// them: the **gate** its children are served by, and the **handles** it started. See
+/// [`Parent`'s `Drop`](#impl-Drop-for-Parent) — a fixture whose safety depends on a test
+/// remembering to drain the tree is the same flake one file later.
 struct Parent {
     harness: Harness,
     registry: Arc<Registry>,
+    gate: Arc<Stub>,
+    children: Mutex<Vec<String>>,
 }
 
-fn a_parent(session_id: &str, parts: &Parts, cfg: &Config) -> Parent {
+fn a_parent(session_id: &str, parts: &Parts, cfg: &Config, gate: Arc<Stub>) -> Parent {
     let registry = Registry::new();
     let hub = registry.new_hub(session_id.to_string());
     registry
@@ -145,7 +171,12 @@ fn a_parent(session_id: &str, parts: &Parts, cfg: &Config) -> Parent {
     let harness =
         Harness::open_with_registry(parts, cfg.clone(), hub, None, None, registry.clone())
             .expect("the parent opens");
-    Parent { harness, registry }
+    Parent {
+        harness,
+        registry,
+        gate,
+        children: Mutex::new(Vec::new()),
+    }
 }
 
 impl Parent {
@@ -165,7 +196,12 @@ impl Parent {
     fn spawn(&self, prompt: &str) -> String {
         let r = self.call("task", serde_json::json!({"prompt": prompt}));
         match r.outcome {
-            letibot_transcript::ToolOutcome::Backgrounded { handle, .. } => handle,
+            letibot_transcript::ToolOutcome::Backgrounded { handle, .. } => {
+                // **Recorded, so the teardown can wait for this child's thread.** Nothing
+                // else in the process can: the thread is spawned detached. See `Drop`.
+                self.children.lock().expect("children").push(handle.clone());
+                handle
+            }
             other => panic!("`task` did not start a child: {other:?} — {}", r.payload),
         }
     }
@@ -222,14 +258,42 @@ impl Parent {
     }
 }
 
-/// **The tree is closed at the end of a test**, the way the daemon closes it: every child's
-/// hub goes, so its serving thread takes `Closed`, leaves `run_to_completion` and ends. A
-/// parked child left behind is a thread still holding a session — harmless in principle, and
-/// measured here as a process that exited with a signal now and then, which is exactly the
-/// kind of flake that gets blamed on the next person's change.
+/// **The tree is DRAINED at the end of a test, and that is a crash fix rather than tidiness.**
+///
+/// Closing the registry is what the daemon does, and it is only half of it: every child's hub
+/// goes, so its serving thread takes `Closed` and leaves `run_to_completion`. The other half
+/// was missing, and the cost was a SIGSEGV at exit on roughly one run in ten to one in thirty
+/// — **after all five tests had printed `ok`**, which is the shape that gets blamed on the
+/// next person's change. A child's thread is spawned detached, so nothing could tell "the
+/// child has finished" from "the child is still mid-turn", and a thread still inside
+/// `libllama`'s tokenizer when `exit()` runs the loader's finalizers for
+/// `libggml-cuda`/`libcudart` takes SIGSEGV. The core says exactly that: `_dl_fini` → the CUDA
+/// runtime's own destructor → `free`, while `unicode_regex_split` walks a table the finalizer
+/// is tearing down; the faulting thread's stack is `HarnessTaskRunner::start` →
+/// `run_to_completion` → `tokenize`, and the signal is `si_addr: 0x3`.
+///
+/// So the three steps below are ordered, and each one is load-bearing:
+///
+/// 1. **Let a held turn finish.** A child parked on the stub's gate holds its turn open, and
+///    the release has to happen HERE rather than in the stub's own `Drop`, which runs after
+///    this one: a wait that started first would sit out its whole patience on a child that
+///    cannot move, and then the release would put the thread back inside the tokenizer with
+///    nothing left to wait for it.
+/// 2. **Close the tree**, the way the daemon closes it.
+/// 3. **Wait for the threads to be GONE** ([`Harness::wait_for_children`]) — the step that did
+///    not exist, and the one that makes the process's exit safe.
 impl Drop for Parent {
     fn drop(&mut self) {
+        self.gate.release(usize::MAX);
         self.registry.close();
+        if !self.harness.wait_for_children(PATIENCE) && !std::thread::panicking() {
+            panic!(
+                "the tree still had a subagent thread after {PATIENCE:?} of waiting, with its \
+                 hubs closed. The process must not exit with one: `exit()` finalizes \
+                 libllama/libggml-cuda underneath it, and the last time this binary did that \
+                 it died of SIGSEGV after every test had passed."
+            );
+        }
     }
 }
 
@@ -677,10 +741,10 @@ fn a_message_to_a_child_between_turns_starts_its_turn() {
     let second = a_plain_answer_turn(&parts.vocab, "hearing", TO_THE_PARENT, 30);
     // Two requests: the task's own turn, and the turn the message starts. A third would be
     // a turn nothing asked for, and it would arrive as a socket error rather than silence.
-    let stub = Stub::answering(vec![first, second], 2);
+    let stub = Arc::new(Stub::answering(vec![first, second], 2));
 
     let cfg = config(parent_id, stub.endpoint.clone(), &path);
-    let parent = a_parent(parent_id, &parts, &cfg);
+    let parent = a_parent(parent_id, &parts, &cfg, stub.clone());
     let handle = parent.spawn("do the task, then stop and wait");
     let child = parent.hub_of(&handle);
 
@@ -779,10 +843,10 @@ fn a_message_to_a_running_child_lands_in_that_turn() {
     let round1 = a_plain_answer_turn(&parts.vocab, "hearing", TO_THE_PARENT, 30);
     // **Held**: nothing is answered until this test says so, which is what makes the child
     // reliably mid-turn when the message arrives.
-    let stub = Stub::held(vec![round0, round1], 2);
+    let stub = Arc::new(Stub::held(vec![round0, round1], 2));
 
     let cfg = config(parent_id, stub.endpoint.clone(), &path);
-    let parent = a_parent(parent_id, &parts, &cfg);
+    let parent = a_parent(parent_id, &parts, &cfg, stub.clone());
     let handle = parent.spawn("read the note, then answer");
     let child = parent.hub_of(&handle);
 
@@ -864,10 +928,10 @@ fn a_second_message_does_not_start_a_second_turn_for_the_first() {
     let task = a_plain_answer_turn(&parts.vocab, "planning", TO_THE_TASK, 30);
     let one = a_plain_answer_turn(&parts.vocab, "hearing", "reporting", 30);
     let two = a_plain_answer_turn(&parts.vocab, "hearing", "and what I tried", 30);
-    let stub = Stub::answering(vec![task, one, two], 3);
+    let stub = Arc::new(Stub::answering(vec![task, one, two], 3));
 
     let cfg = config(parent_id, stub.endpoint.clone(), &path);
-    let parent = a_parent(parent_id, &parts, &cfg);
+    let parent = a_parent(parent_id, &parts, &cfg, stub.clone());
     let handle = parent.spawn("do the task, then stop and wait");
     let child = parent.hub_of(&handle);
     parent.wait_until_parked(&handle);
@@ -936,16 +1000,16 @@ fn a_message_to_a_child_that_is_gone_is_refused_by_name() {
     let parts = parts_for(&config(parent_id, Endpoint::new("127.0.0.1", 1), &path));
     // Two children are spawned below, one turn each — and both are HELD, because the second
     // child's turn must still be running when its hub closes.
-    let stub = Stub::held(
+    let stub = Arc::new(Stub::held(
         vec![
             a_plain_answer_turn(&parts.vocab, "planning", TO_THE_TASK, 30),
             a_plain_answer_turn(&parts.vocab, "planning", TO_THE_TASK, 30),
         ],
         2,
-    );
+    ));
 
     let cfg = config(parent_id, stub.endpoint.clone(), &path);
-    let parent = a_parent(parent_id, &parts, &cfg);
+    let parent = a_parent(parent_id, &parts, &cfg, stub.clone());
 
     // **No such handle.** Nothing was sent and the refusal says which ones there are. It is a
     // refusal for a SESSION that does not exist — a peer this daemon does hold is deliverable

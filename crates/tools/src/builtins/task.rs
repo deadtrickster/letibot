@@ -491,6 +491,28 @@ pub trait TaskRunner: Send + Sync {
     fn stop_all(&self) -> Vec<(String, Result<String, String>)> {
         Vec::new()
     }
+
+    /// **Wait until every child this session started has left its own thread**, up to
+    /// `timeout`; `true` when they all have.
+    ///
+    /// The fourth edge of the same supervision tree [`Self::stop_all`] is the third of, and
+    /// the one that was missing: a parent can start a child, talk to it, stop it — and had
+    /// **no way to wait for it to be gone**. A child's thread is spawned detached (nothing
+    /// keeps a `JoinHandle`), so neither the daemon's shutdown nor a test that drove one
+    /// could tell "the child has finished" from "the child is still running", and the
+    /// difference is not cosmetic: a thread still inside `libllama` when the process runs its
+    /// exit handlers is a SIGSEGV *after every test passed* — measured, `harnessd`'s
+    /// `message_between_turns`, where `_dl_fini` finalizes `libggml-cuda` while a child is
+    /// mid-`tokenize`. See [`crate::builtins::task::TaskRunner::stop_all`]'s caller and
+    /// `Harness::wait_for_children`.
+    ///
+    /// **A wait, not a stop.** It sends nothing and changes no child's state; it is the
+    /// observation the caller makes AFTER it has closed the tree (or stopped the children),
+    /// which is why a runner that starts nothing answers `true` rather than refusing: there
+    /// is nothing of its own to wait for.
+    fn wait_for_children(&self, _timeout: std::time::Duration) -> bool {
+        true
+    }
 }
 
 /// The default: no runner, and it says so rather than pretending to have run.

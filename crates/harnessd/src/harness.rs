@@ -7073,6 +7073,25 @@ impl Harness {
         stop_children_first(Some(&self.subagents), &self.hub)
     }
 
+    /// **Wait until every subagent in this tree has left its own thread**, up to `timeout`;
+    /// `true` when they all have.
+    ///
+    /// The other half of [`Harness::stop_children`], and the half that was missing: a tree can
+    /// be stopped and closed, and there was still no way to learn that its threads were GONE.
+    /// The reason that matters is the process's exit and not the tree's tidiness — `exit()`
+    /// runs the ELF finalizers of every loaded library, so a child still inside `libllama`
+    /// when `_dl_fini` finalizes `libggml-cuda` takes SIGSEGV **after everything else has
+    /// finished**, which is a crash that looks like somebody else's change. See
+    /// [`letibot_tools::builtins::task::TaskRunner::wait_for_children`].
+    ///
+    /// **Call it after the hubs are closed**, which is what makes it finite: a closed hub is
+    /// what a child parked in `serve_child` is waiting for. It sends nothing and stops nothing
+    /// itself, so calling it on a live tree with a child mid-turn waits for that turn — the
+    /// deadline is the caller's answer to how long that is worth.
+    pub fn wait_for_children(&self, timeout: std::time::Duration) -> bool {
+        self.subagents.wait_for_children(timeout)
+    }
+
     /// **What this session's model is told about the merge queue**: each entry it queued (from
     /// anywhere in its tree) that is waiting because its repository has no merge gate, once.
     ///
@@ -12019,12 +12038,41 @@ impl TaskSlot {
 
     /// **This child's thread has ended.** Read by [`HarnessTaskRunner::stop_all`], which is
     /// the only caller that has to tell "already answered" from "still here".
+    ///
+    /// **Set under the state lock and announced on its condvar**, because a second reader
+    /// arrived: [`TaskSlot::wait_until_exited`], which is how a caller that is shutting a tree
+    /// down waits for the threads it started to be gone. Storing the flag outside the lock
+    /// would be the classic lost wakeup — the waiter checks, this sets and notifies, the
+    /// waiter then sleeps — and the cost of losing it is a shutdown that gives up on a child
+    /// that has already left.
     fn mark_exited(&self) {
+        let _held = self.state.lock().expect("task slot");
         self.exited.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.settled.notify_all();
     }
 
     fn has_exited(&self) -> bool {
         self.exited.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// **Block until this child's thread has ended**, or `timeout` passes; `true` if it has.
+    ///
+    /// The fact [`TaskSlot::has_exited`] holds, as something a caller can WAIT on rather than
+    /// poll — and the difference is not politeness. A child's thread is spawned detached, so
+    /// nothing else in the process can be joined to it, and a caller that is about to let the
+    /// process exit has to know the thread is gone: the ELF finalizers that `exit()` runs
+    /// tear down `libllama`/`libggml-cuda`, and a child still inside `tokenize` when they do
+    /// takes SIGSEGV at address `0x3` — measured on `message_between_turns`, where every test
+    /// printed `ok` first. See [`TaskRunner::wait_for_children`].
+    fn wait_until_exited(&self, timeout: std::time::Duration) -> bool {
+        let g = self.state.lock().expect("task slot");
+        // Re-checks the flag while holding the mutex, which is what pairs with the locked
+        // store in `mark_exited` to make the wakeup unlosable.
+        let _ = self
+            .settled
+            .wait_timeout_while(g, timeout, |_| !self.has_exited())
+            .expect("task slot");
+        self.has_exited()
     }
 
     /// The child's own last word about what it is doing. Kept only while it is
@@ -13907,6 +13955,45 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 (handle, said)
             })
             .collect()
+    }
+
+    /// **Wait until every subagent in this tree has left its own thread.**
+    ///
+    /// The fourth edge of the tree [`Self::stop_all`] is the third of, and the one that was
+    /// missing until a SIGSEGV at exit said so. A child's thread is spawned detached —
+    /// [`HarnessTaskRunner::start`] drops the `JoinHandle` — so nothing in the process can join
+    /// it, and a caller that is about to let the process end had no way to tell a child that
+    /// has finished from one still running. The cost is not theoretical: `exit()` runs the
+    /// loader's finalizers for every loaded `.so`, so a child still inside `libllama`'s
+    /// tokenizer when `_dl_fini` finalizes `libggml-cuda` takes SIGSEGV — **after every test in
+    /// the binary has printed `ok`**, at ~3–40% of runs, which is exactly the shape that gets
+    /// blamed on the next person's change. See [`TaskSlot::wait_until_exited`].
+    ///
+    /// **The whole tree's slots and not only this session's children.** `slots` is the tree's
+    /// list (`Parts::tree_slots`), and the caller here is a shutdown: the hub is already closed,
+    /// so every thread in the tree is on its way out, and a wait that covered one level would
+    /// leave a grandchild's thread inside the tokenizer at exit. Stopping is the direction that
+    /// must be per-level ([`stoppable_children`]); waiting is not.
+    ///
+    /// **A deadline, and it is the caller's.** Waiting is the caller's act and so is giving up:
+    /// this returns `false` rather than blocking forever, so a shutdown that cannot be waited
+    /// out says so instead of hanging. `true` is the honest "nothing of mine is running".
+    fn wait_for_children(&self, timeout: std::time::Duration) -> bool {
+        let slots: Vec<Arc<TaskSlot>> = self
+            .slots
+            .lock()
+            .expect("task slots")
+            .iter()
+            .map(|(_, s)| s.clone())
+            .collect();
+        let began = std::time::Instant::now();
+        let mut all = true;
+        for slot in slots {
+            if !slot.wait_until_exited(timeout.saturating_sub(began.elapsed())) {
+                all = false;
+            }
+        }
+        all
     }
 }
 
@@ -17071,6 +17158,56 @@ mod tests {
         assert!(
             stoppable_children(&slots, "s-nobody").is_empty(),
             "a session with no children of its own in this tree stops nothing"
+        );
+    }
+
+    /// **The wait for a child's thread is a wait and not a hope.**
+    ///
+    /// `TaskSlot::wait_until_exited` is what a caller about to let the process exit uses to
+    /// know no child is still inside `libllama` when `exit()` finalizes it — the SIGSEGV this
+    /// was written for (`message_between_turns`, after every test had printed `ok`). Two
+    /// things have to be true of it and neither is free:
+    ///
+    /// * **It does NOT return true for a child that is still here.** A wait that answered
+    ///   "gone" on a live thread would make the crash invisible rather than fixed, which is
+    ///   the worse of the two failures.
+    /// * **It returns as soon as the thread leaves, not at the deadline.** The caller gives a
+    ///   deadline in seconds; a wait that spent it would make every shutdown as slow as its
+    ///   own patience. The child here exits after 50 ms and the deadline is 30 s, so a return
+    ///   within seconds is the child's own departure and not the clock.
+    #[test]
+    fn the_wait_for_a_childs_thread_ends_when_the_thread_does() {
+        let slot = Arc::new(TaskSlot::new("s-parent"));
+
+        // Still running: the wait honours its deadline and says so rather than answering
+        // "gone" about a thread that is right there.
+        let began = std::time::Instant::now();
+        assert!(
+            !slot.wait_until_exited(std::time::Duration::from_millis(60)),
+            "a wait that returns true on a live child would hide the crash instead of fixing it"
+        );
+        assert!(
+            began.elapsed() >= std::time::Duration::from_millis(50),
+            "it must actually wait: it returned in {:?}",
+            began.elapsed()
+        );
+
+        // The child's thread leaves 50 ms from now, and the waiter must wake on that rather
+        // than on its own deadline.
+        let leaving = slot.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            leaving.mark_exited();
+        });
+        let began = std::time::Instant::now();
+        assert!(
+            slot.wait_until_exited(std::time::Duration::from_secs(30)),
+            "the child's own `mark_exited` must be what ends the wait"
+        );
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(5),
+            "the wait ended {:?} after the child left, which is a deadline and not a wakeup",
+            began.elapsed()
         );
     }
 
